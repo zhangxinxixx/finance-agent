@@ -40,7 +40,7 @@ def emit_execution_event(
         created_at=datetime.now(timezone.utc),
     )
     db.add(event)
-    db.commit()
+    db.flush()
     return event
 
 

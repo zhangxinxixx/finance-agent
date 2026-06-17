@@ -9,9 +9,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from apps.api.main import api_run_artifacts, api_run_detail, api_run_steps, api_runs
+from apps.api.main import api_run_artifacts, api_run_detail, api_run_events, api_run_steps, api_runs
 from apps.api.schemas.common import TaskStatus as ApiTaskStatus
 from apps.api.services.task_service import map_task_status_to_api
+from database.models.execution import ExecutionEvent, ensure_execution_tables
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
 
 
@@ -22,6 +23,7 @@ def _make_session() -> tuple[Session, sessionmaker]:
         poolclass=StaticPool,
     )
     ensure_task_tables(engine)
+    ensure_execution_tables(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     return factory(), factory
 
@@ -155,3 +157,35 @@ def test_get_run_detail_maps_public_status() -> None:
     assert payload["task_id"] == str(run.id)
     assert payload["status"] == "degraded"
     assert payload["current_stage"] == "analysis"
+
+
+def test_get_run_events_returns_sorted_timeline() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session, status=TaskStatus.success)
+    step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    session.add_all(
+        [
+            ExecutionEvent(
+                run_id=run.id,
+                task_id=None,
+                event_type="RUN_STARTED",
+                payload=json.dumps({"task_name": "agent_task"}),
+                created_at=datetime(2026, 5, 26, 8, 0, tzinfo=UTC),
+            ),
+            ExecutionEvent(
+                run_id=run.id,
+                task_id=step.id,
+                event_type="TASK_FAILED",
+                payload=json.dumps({"step_name": step.name, "error_message": "upstream blocked"}),
+                created_at=datetime(2026, 5, 26, 8, 0, 3, tzinfo=UTC),
+            ),
+        ]
+    )
+    session.commit()
+
+    payload = api_run_events(str(run.id), db=session)
+
+    assert payload["run_id"] == str(run.id)
+    assert [event["event_type"] for event in payload["events"]] == ["RUN_STARTED", "TASK_FAILED"]
+    assert payload["events"][1]["task_id"] == str(step.id)
+    assert payload["events"][1]["payload"]["error_message"] == "upstream blocked"

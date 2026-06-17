@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session as DBSession
 from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
 from apps.output.artifacts import artifact_run_dir
 from apps.premarket import sort_premarket_steps
+from apps.runtime.state_machine import derive_task_run_status, transition_task_run
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
 # ── C4 agent pipeline imports (deterministic, no LLM / network / file reads) ──
@@ -89,7 +90,7 @@ def run_premarket(
     if not task:
         return TaskStatus.failed
 
-    task.status = TaskStatus.running
+    transition_task_run(db, task, TaskStatus.running, source="worker", reason="worker_started")
     db.commit()
 
     # Ensure analysis DB tables exist (idempotent, additive sink)
@@ -347,14 +348,15 @@ def run_premarket(
     except Exception:
         logger.exception("Failed to write run provenance artifact")
 
-    if had_failure:
-        task.status = TaskStatus.partial_success if had_non_failed_step else TaskStatus.failed
-    elif had_partial_summary:
-        task.status = TaskStatus.partial_success
-    else:
-        task.status = TaskStatus.success
+    final_status = derive_task_run_status(
+        (step.status for step in ordered_steps),
+        has_partial_signal=had_partial_summary,
+    )
+    if had_failure and not had_non_failed_step:
+        final_status = TaskStatus.failed
+    transition_task_run(db, task, final_status, source="worker", reason="step_rollup")
     db.commit()
-    return task.status
+    return final_status
 
 
 def _classify_error_type(exc: Exception) -> str:
