@@ -8,8 +8,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from database.models.execution import RunArtifact, ensure_execution_tables
+from database.models.task import TaskRun, TaskStatus, ensure_task_tables
 from database.models.analysis import ensure_analysis_tables
-from database.models.task import ensure_task_tables
 
 
 def _make_session_factory() -> sessionmaker:
@@ -20,6 +21,7 @@ def _make_session_factory() -> sessionmaker:
     )
     ensure_analysis_tables(engine)
     ensure_task_tables(engine)
+    ensure_execution_tables(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
@@ -100,6 +102,25 @@ def _seed_final_result(session: Session, **overrides):
     return upsert_final_analysis_result(session, payload=payload, paths=paths)
 
 
+def _seed_task_run(session: Session, **overrides) -> TaskRun:
+    run = TaskRun(
+        name="premarket",
+        task_type="premarket",
+        workspace_id="workspace-001",
+        status=TaskStatus.success,
+        current_stage="analysis",
+        progress=1.0,
+        snapshot_id="snap-001",
+        final_result_id="run-001",
+        trade_date="2026-05-26",
+    )
+    for key, value in overrides.items():
+        setattr(run, key, value)
+    session.add(run)
+    session.flush()
+    return run
+
+
 def test_get_source_trace_by_snapshot_returns_snapshot_and_refs() -> None:
     from apps.api.main import api_source_trace_detail
 
@@ -159,8 +180,38 @@ def test_get_source_trace_by_strategy_resolves_run_trace() -> None:
     assert payload["snapshot"]["snapshot_id"] == "snap-001"
 
 
+def test_get_source_trace_by_artifact_bridges_registry_artifact_to_snapshot_trace() -> None:
+    from apps.api.main import api_source_trace_by_artifact
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_snapshot(session)
+        _seed_final_result(session)
+        run = _seed_task_run(session)
+        session.add(
+            RunArtifact(
+                run_id=run.id,
+                task_id=None,
+                artifact_type="feature_json",
+                file_path="storage/features/macro/2026-05-26/run-001/rollup.json",
+                sha256="sha-rollup-001",
+            )
+        )
+        session.commit()
+        artifact_id = str(session.query(RunArtifact).one().artifact_id)
+
+    with factory() as db:
+        payload = api_source_trace_by_artifact(artifact_id, db=db).model_dump(mode="json")
+
+    assert payload["run_id"] == "run-001"
+    assert payload["snapshot_id"] == "snap-001"
+    artifact_paths = {item["file_path"] for item in payload["artifact_refs"]}
+    assert "storage/features/macro/2026-05-26/run-001/rollup.json" in artifact_paths
+    assert payload["source_refs"][0]["source_id"] == "src-cme-001"
+
+
 def test_source_trace_missing_snapshot_and_report_return_404() -> None:
-    from apps.api.main import api_source_trace_by_report, api_source_trace_detail
+    from apps.api.main import api_source_trace_by_artifact, api_source_trace_by_report, api_source_trace_detail
 
     factory = _make_session_factory()
     with factory() as db:
@@ -169,8 +220,13 @@ def test_source_trace_missing_snapshot_and_report_return_404() -> None:
     with factory() as db:
         with pytest.raises(HTTPException) as report_exc:
             api_source_trace_by_report("missing-report", db=db)
+    with factory() as db:
+        with pytest.raises(HTTPException) as artifact_exc:
+            api_source_trace_by_artifact("11111111-1111-1111-1111-111111111111", db=db)
 
     assert snapshot_exc.value.status_code == 404
     assert snapshot_exc.value.detail == "Source trace not found"
     assert report_exc.value.status_code == 404
     assert report_exc.value.detail == "Source trace not found"
+    assert artifact_exc.value.status_code == 404
+    assert artifact_exc.value.detail == "Source trace not found"

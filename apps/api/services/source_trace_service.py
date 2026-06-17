@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from apps.api.schemas.common import ArtifactType, DataStatus
 from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef, SourceRef, SourceTraceResponse
 from apps.api.services._storage import _PROJECT_ROOT, _iso
+from apps.api.services.artifact_service import get_artifact_detail_response
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
 
 
@@ -44,6 +45,31 @@ def get_source_trace_by_strategy_card_id(db: Session, strategy_card_id: str) -> 
         return None
     snapshot = _find_snapshot_for_final(db, final_result)
     return _build_source_trace_response(db, snapshot=snapshot, final_result=final_result)
+
+
+def get_source_trace_by_artifact_id(db: Session, artifact_id: str) -> SourceTraceResponse | None:
+    detail = get_artifact_detail_response(db, artifact_id)
+    if detail is None:
+        return None
+
+    trace = get_source_trace_by_snapshot_id(db, detail.snapshot_id) if detail.snapshot_id else None
+    if trace is None:
+        return SourceTraceResponse(
+            run_id=detail.run_id,
+            snapshot_id=detail.snapshot_id,
+            data_status=DataStatus.partial,
+            source_refs=detail.source_refs,
+            artifact_refs=detail.artifact_refs,
+            related_artifacts=detail.artifact_refs,
+        )
+
+    return trace.model_copy(
+        update={
+            "source_refs": _dedupe_sources([*trace.source_refs, *detail.source_refs]),
+            "artifact_refs": _dedupe_artifacts([*trace.artifact_refs, *detail.artifact_refs]),
+            "related_artifacts": _dedupe_artifacts([*trace.related_artifacts, *detail.artifact_refs]),
+        }
+    )
 
 
 def _find_final_for_snapshot(db: Session, snapshot: AnalysisSnapshot) -> FinalAnalysisResult | None:

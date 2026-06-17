@@ -124,6 +124,7 @@ from apps.api.services.feishu_jin10_message_monitor_service import get_feishu_ji
 from apps.api.services.artifact_service import get_artifact_detail_response
 from apps.api.services.source_service import get_data_status_summary
 from apps.api.services.source_trace_service import (
+    get_source_trace_by_artifact_id,
     get_source_trace_by_report_id,
     get_source_trace_by_snapshot_id,
     get_source_trace_by_strategy_card_id,
@@ -941,6 +942,20 @@ def api_source_trace_by_report(report_id: str, db: Session = Depends(get_db)) ->
 def api_source_trace_by_strategy(strategy_card_id: str, db: Session = Depends(get_db)) -> SourceTraceResponse:
     """按 strategy_card_id 反查关联 run/snapshot/source/artifact。"""
     trace = get_source_trace_by_strategy_card_id(db, strategy_card_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="Source trace not found")
+    return trace
+
+
+@app.get("/api/source-trace/by-artifact/{artifact_id}", response_model=SourceTraceResponse)
+def api_source_trace_by_artifact(artifact_id: str, db: Session = Depends(get_db)) -> SourceTraceResponse:
+    """按 artifact_id 反查关联 snapshot/source/artifact 溯源视图。"""
+    try:
+        uuid.UUID(artifact_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid artifact_id format")
+
+    trace = get_source_trace_by_artifact_id(db, artifact_id)
     if trace is None:
         raise HTTPException(status_code=404, detail="Source trace not found")
     return trace
