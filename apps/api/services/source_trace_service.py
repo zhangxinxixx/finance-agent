@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from apps.api.schemas.common import ArtifactType, DataStatus
 from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef, SourceRef, SourceTraceResponse
 from apps.api.services._storage import _PROJECT_ROOT, _iso
+from apps.api.services._trace_refs import dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
 from apps.api.services.artifact_service import get_artifact_detail_response
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
 
@@ -65,9 +66,9 @@ def get_source_trace_by_artifact_id(db: Session, artifact_id: str) -> SourceTrac
 
     return trace.model_copy(
         update={
-            "source_refs": _dedupe_sources([*trace.source_refs, *detail.source_refs]),
-            "artifact_refs": _dedupe_artifacts([*trace.artifact_refs, *detail.artifact_refs]),
-            "related_artifacts": _dedupe_artifacts([*trace.related_artifacts, *detail.artifact_refs]),
+            "source_refs": dedupe_source_refs([*trace.source_refs, *detail.source_refs]),
+            "artifact_refs": dedupe_artifact_refs([*trace.artifact_refs, *detail.artifact_refs]),
+            "related_artifacts": dedupe_artifact_refs([*trace.related_artifacts, *detail.artifact_refs]),
         }
     )
 
@@ -198,21 +199,21 @@ def _build_source_trace_response(
 
     snapshot_ref = _build_snapshot_ref(snapshot, final_result=final_result, input_snapshot_ids=input_snapshot_ids)
     agent_outputs = _list_agent_outputs(db, snapshot_id)
-    source_refs = _dedupe_sources(
+    source_refs = dedupe_source_refs(
         [
-            *_parse_source_refs(snapshot.source_refs if snapshot is not None else []),
-            *_parse_source_refs(final_result.source_refs if final_result is not None else []),
+            *parse_source_refs(snapshot.source_refs if snapshot is not None else []),
+            *parse_source_refs(final_result.source_refs if final_result is not None else []),
             *[
                 source
                 for agent_output in agent_outputs
-                for source in _parse_source_refs(agent_output.source_refs)
+                for source in parse_source_refs(agent_output.source_refs)
             ],
         ]
     )
 
     snapshot_artifacts = _build_snapshot_artifacts(snapshot)
     related_artifacts = _build_final_result_artifacts(final_result)
-    artifact_refs = _dedupe_artifacts([*snapshot_artifacts, *related_artifacts])
+    artifact_refs = dedupe_artifact_refs([*snapshot_artifacts, *related_artifacts])
 
     data_status = _derive_data_status(
         snapshot=snapshot,
@@ -328,7 +329,7 @@ def _build_final_result_artifacts(final_result: FinalAnalysisResult | None) -> l
                 sha256=sha256,
             )
         )
-    return _dedupe_artifacts(refs)
+    return dedupe_artifact_refs(refs)
 
 
 def _structured_report_path(final_report_path: str | None) -> str | None:
@@ -400,33 +401,6 @@ def _list_agent_outputs(db: Session, snapshot_id: str | None) -> list[AgentOutpu
     )
 
 
-def _parse_source_refs(payload: Any) -> list[SourceRef]:
-    if not isinstance(payload, list):
-        return []
-    refs: list[SourceRef] = []
-    for index, item in enumerate(payload):
-        if not isinstance(item, dict):
-            continue
-        source_name = str(item.get("source_name") or item.get("source") or item.get("source_id") or f"source-{index}")
-        source_id = str(item.get("source_id") or f"{source_name}:{index}")
-        source_type = str(item.get("source_type") or item.get("type") or "unknown")
-        refs.append(
-            SourceRef(
-                source_id=source_id,
-                source_name=source_name,
-                source_type=source_type,
-                data_date=item.get("data_date"),
-                endpoint=item.get("endpoint"),
-                captured_at=item.get("captured_at"),
-                file_path=item.get("file_path"),
-                sha256=item.get("sha256"),
-                url=item.get("url"),
-                status=item.get("status"),
-            )
-        )
-    return refs
-
-
 def _normalize_snapshot_ids(payload: Any) -> list[str]:
     if isinstance(payload, dict):
         candidates = payload.values()
@@ -446,27 +420,3 @@ def _normalize_snapshot_ids(payload: Any) -> list[str]:
                     snapshot_ids.append(value)
                     break
     return list(dict.fromkeys(snapshot_ids))
-
-
-def _dedupe_sources(sources: list[SourceRef]) -> list[SourceRef]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[SourceRef] = []
-    for source in sources:
-        key = (source.source_id, source.source_type)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(source)
-    return deduped
-
-
-def _dedupe_artifacts(artifacts: list[ArtifactRef]) -> list[ArtifactRef]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[ArtifactRef] = []
-    for artifact in artifacts:
-        key = (artifact.file_path, artifact.artifact_type.value)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(artifact)
-    return deduped
