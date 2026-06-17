@@ -84,7 +84,7 @@ output/playwright-mcp/
 .worktrees/
 
 # Local generated market/archive artifacts
-raw/
+/raw/
 storage/archive/
 
 # Local Hermes run staging and spike scripts
