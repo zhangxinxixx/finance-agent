@@ -1,0 +1,20 @@
+# LLM / Agent 配置
+# Hermes 负责计划统筹，Codex 负责代码执行
+# LLM 仅用于 analysis 层，不直接操作 raw 数据或指标计算
+
+llm:
+  provider: openai
+  model: gpt-5.4-mini
+  api_key_env: OPENAI_API_KEY
+  max_tokens: 4096
+
+analysis:
+  allow_tools:
+    - read_snapshot
+    - read_report
+    - read_strategy_card
+  forbid_tools:
+    - modify_raw
+    - modify_parsers
+    - modify_indicators
+    - direct_trade

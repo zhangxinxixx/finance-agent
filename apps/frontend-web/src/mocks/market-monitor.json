@@ -1,0 +1,324 @@
+{
+  "generated_at": "2026-05-17T07:20:00Z",
+  "latest_date": "2026-05-17",
+  "has_data": true,
+  "source": "mock",
+  "metrics": [
+    {
+      "key": "XAUUSD",
+      "label": "XAUUSD",
+      "group": "metals",
+      "latest_date": "2026-05-17",
+      "latest_value": 3328.4,
+      "unit": "USD/oz",
+      "one_week_change": "+1.9%",
+      "one_month_change": "+4.8%",
+      "status": "ok",
+      "interpretation": "黄金维持高位震荡，上方抛压仍在，但价格没有明显失守。",
+      "source_refs": [
+        "GET /api/market/tickers#xauusd",
+        "GET /api/market/tickers"
+      ],
+      "snapshot_id": "market-xauusd-20260517"
+    },
+    {
+      "key": "DXY",
+      "label": "DXY",
+      "group": "dollar",
+      "latest_date": "2026-05-17",
+      "latest_value": 105.82,
+      "unit": "index",
+      "one_week_change": "-0.6%",
+      "one_month_change": "-1.4%",
+      "status": "warn",
+      "interpretation": "美元指数仍偏强，但周度动能已明显放缓。",
+      "source_refs": [
+        "GET /api/market/tickers#dxy",
+        "GET /api/market/tickers"
+      ],
+      "snapshot_id": "market-dxy-20260517"
+    },
+    {
+      "key": "US10Y",
+      "label": "US10Y",
+      "group": "rates",
+      "latest_date": "2026-05-17",
+      "latest_value": 4.52,
+      "unit": "%",
+      "one_week_change": "+8bp",
+      "one_month_change": "+14bp",
+      "status": "warn",
+      "interpretation": "十年期收益率处于偏高区域，对黄金估值形成持续压制。",
+      "source_refs": [
+        "GET /api/macro/latest#us10y"
+      ],
+      "snapshot_id": "macro-us10y-20260517"
+    },
+    {
+      "key": "US02Y",
+      "label": "US02Y",
+      "group": "rates",
+      "latest_date": "2026-05-17",
+      "latest_value": 4.03,
+      "unit": "%",
+      "one_week_change": "-3bp",
+      "one_month_change": "-11bp",
+      "status": "ok",
+      "interpretation": "两年期收益率回落，短端压力较前一周期有所缓和。",
+      "source_refs": [
+        "GET /api/macro/latest#us02y"
+      ],
+      "snapshot_id": "macro-us02y-20260517"
+    },
+    {
+      "key": "T10YIE",
+      "label": "T10YIE",
+      "group": "rates",
+      "latest_date": "2026-05-17",
+      "latest_value": 2.31,
+      "unit": "%",
+      "one_week_change": "+2bp",
+      "one_month_change": "+5bp",
+      "status": "info",
+      "interpretation": "通胀预期保持稳定，暂未给出新的显著偏离信号。",
+      "source_refs": [
+        "GET /api/macro/latest#t10yie"
+      ],
+      "snapshot_id": "macro-t10yie-20260517"
+    },
+    {
+      "key": "REAL_10Y",
+      "label": "10Y Real Rate",
+      "group": "rates",
+      "latest_date": "2026-05-17",
+      "latest_value": 1.98,
+      "unit": "%",
+      "one_week_change": "+6bp",
+      "one_month_change": "+12bp",
+      "status": "warn",
+      "interpretation": "实际利率仍偏高，是黄金价格最直接的宏观约束。",
+      "source_refs": [
+        "GET /api/macro/latest#real_10y"
+      ],
+      "snapshot_id": "macro-real-10y-20260517"
+    },
+    {
+      "key": "RRP",
+      "label": "RRP",
+      "group": "liquidity",
+      "latest_date": "2026-05-17",
+      "latest_value": 327.5,
+      "unit": "B",
+      "one_week_change": "-11.2B",
+      "one_month_change": "-28.9B",
+      "status": "info",
+      "interpretation": "隔夜逆回购余额继续回落，流动性回收压力略有下降。",
+      "source_refs": [
+        "GET /api/macro/latest#rrp"
+      ],
+      "snapshot_id": "macro-rrp-20260517"
+    },
+    {
+      "key": "TGA",
+      "label": "TGA",
+      "group": "liquidity",
+      "latest_date": "2026-05-17",
+      "latest_value": 842.3,
+      "unit": "B",
+      "one_week_change": "+46.5B",
+      "one_month_change": "+81.4B",
+      "status": "warn",
+      "interpretation": "财政账户重新积累，对市场流动性形成阶段性抽水。",
+      "source_refs": [
+        "GET /api/macro/latest#tga"
+      ],
+      "snapshot_id": "macro-tga-20260517"
+    },
+    {
+      "key": "BANK_RESERVES",
+      "label": "Bank Reserves",
+      "group": "liquidity",
+      "latest_date": "2026-05-17",
+      "latest_value": 3121.4,
+      "unit": "B",
+      "one_week_change": "-14.1B",
+      "one_month_change": "-22.0B",
+      "status": "info",
+      "interpretation": "银行准备金仍处高位，但边际回落值得持续跟踪。",
+      "source_refs": [
+        "GET /api/macro/latest#bank_reserves"
+      ],
+      "snapshot_id": "macro-bank-reserves-20260517"
+    },
+    {
+      "key": "SOFR",
+      "label": "SOFR",
+      "group": "funding",
+      "latest_date": "2026-05-17",
+      "latest_value": 5.31,
+      "unit": "%",
+      "one_week_change": "0.00bp",
+      "one_month_change": "+1bp",
+      "status": "ok",
+      "interpretation": "担保隔夜融资利率稳定，短端资金压力未见明显恶化。",
+      "source_refs": [
+        "GET /api/macro/latest#sofr"
+      ],
+      "snapshot_id": "macro-sofr-20260517"
+    },
+    {
+      "key": "EFFR",
+      "label": "EFFR",
+      "group": "funding",
+      "latest_date": "2026-05-17",
+      "latest_value": null,
+      "unit": "%",
+      "one_week_change": null,
+      "one_month_change": null,
+      "status": "unavailable",
+      "interpretation": "EFFR 最新值在当前 mock 快照中不可用，保留空值等待后续接入。",
+      "source_refs": [
+        "GET /api/macro/latest#effr"
+      ],
+      "snapshot_id": null
+    },
+    {
+      "key": "IORB",
+      "label": "IORB",
+      "group": "funding",
+      "latest_date": "2026-05-17",
+      "latest_value": 4.4,
+      "unit": "%",
+      "one_week_change": "0bp",
+      "one_month_change": "0bp",
+      "status": "ok",
+      "interpretation": "准备金利率维持稳定，作为短端资金地板继续生效。",
+      "source_refs": [
+        "GET /api/macro/latest#iorb"
+      ],
+      "snapshot_id": "macro-iorb-20260517"
+    }
+  ],
+  "market_regimes": {
+    "rate_pressure": {
+      "label": "Rate Pressure",
+      "status": "warn",
+      "confidence": 84,
+      "description": "Real yields and nominal rates remain elevated.",
+      "interpretation": "利率压力仍是黄金的主导约束，交易上更适合防守而非追涨。",
+      "drivers": [
+        "US10Y 仍在 4.5% 上方",
+        "10Y Real Rate 接近 2%",
+        "DXY 维持高位"
+      ]
+    },
+    "transition_release": {
+      "label": "Transition Release",
+      "status": "info",
+      "confidence": 57,
+      "description": "Liquidity drain is easing, but the release is still partial.",
+      "interpretation": "流动性抽离仍在，但边际压力已经比前一阶段收敛。",
+      "drivers": [
+        "RRP 持续回落",
+        "Bank Reserves 仍然充足",
+        "SOFR 没有继续走高"
+      ]
+    },
+    "trend_tailwind": {
+      "label": "Trend Tailwind",
+      "status": "ok",
+      "confidence": 62,
+      "description": "Gold retains a constructive medium-term trend if rates stall.",
+      "interpretation": "若收益率无法进一步上行，黄金趋势仍保留顺风结构。",
+      "drivers": [
+        "XAUUSD 月度仍为正变化",
+        "T10YIE 保持稳定",
+        "价格对高利率表现出一定钝化"
+      ]
+    }
+  },
+  "environment_filters": {
+    "us10y": {
+      "label": "US10Y",
+      "status": "warn",
+      "latest_value": 4.52,
+      "one_week_change": "+8bp",
+      "one_month_change": "+14bp",
+      "interpretation": "长端收益率高位运行，对黄金估值偏压制。",
+      "unit": "%"
+    },
+    "dxy": {
+      "label": "DXY",
+      "status": "warn",
+      "latest_value": 105.82,
+      "one_week_change": "-0.6%",
+      "one_month_change": "-1.4%",
+      "interpretation": "美元指数仍强，但价格已经出现边际钝化。",
+      "unit": "index"
+    },
+    "us02y": {
+      "label": "US02Y",
+      "status": "ok",
+      "latest_value": 4.03,
+      "one_week_change": "-3bp",
+      "one_month_change": "-11bp",
+      "interpretation": "短端收益率回落，短期利率压力略缓。",
+      "unit": "%"
+    },
+    "xauusd_price_reaction": {
+      "label": "XAUUSD price reaction",
+      "status": "info",
+      "latest_value": "钝化",
+      "one_week_change": "+1.9%",
+      "one_month_change": "+4.8%",
+      "interpretation": "黄金对高利率和强美元的反应开始钝化，说明多头尚未被完全破坏。"
+    }
+  },
+  "source_trace": [
+    {
+      "name": "FRED API",
+      "trade_date": "2026-05-17",
+      "file": "mocks/market-monitor.json",
+      "snapshot_id": "macro-fred-20260517",
+      "source_ref": "GET /api/macro/latest#fred",
+      "endpoint": "GET /api/macro/latest",
+      "latest_raw_time": "2026-05-17T06:00:00Z",
+      "latest_parsed_time": "2026-05-17T06:01:00Z",
+      "status": "ok"
+    },
+    {
+      "name": "CME Daily Bulletin",
+      "trade_date": "2026-05-17",
+      "file": "mocks/market-monitor.json",
+      "snapshot_id": "cme-bulletin-20260517",
+      "source_ref": "GET /api/market/tickers#cme",
+      "endpoint": "GET /api/market/tickers",
+      "latest_raw_time": "2026-05-17T02:30:00Z",
+      "latest_parsed_time": "2026-05-17T02:31:00Z",
+      "status": "ok"
+    },
+    {
+      "name": "Treasury.gov",
+      "trade_date": "2026-05-17",
+      "file": "mocks/market-monitor.json",
+      "snapshot_id": null,
+      "source_ref": "GET /api/macro/latest#treasury",
+      "endpoint": "GET /api/macro/latest",
+      "latest_raw_time": null,
+      "latest_parsed_time": null,
+      "status": "error"
+    },
+    {
+      "name": "Market Odds Report",
+      "trade_date": "2026-05-17",
+      "file": "mocks/market-monitor.json",
+      "snapshot_id": "market-odds-20260517",
+      "source_ref": "GET /api/market-odds/report?date=2026-05-17",
+      "endpoint": "GET /api/market-odds/report",
+      "latest_raw_time": "2026-05-17T05:12:00Z",
+      "latest_parsed_time": "2026-05-17T05:13:00Z",
+      "model_version": "odds-v1",
+      "status": "warn"
+    }
+  ]
+}

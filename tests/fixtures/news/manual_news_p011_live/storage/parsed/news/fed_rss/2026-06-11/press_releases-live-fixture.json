@@ -1,0 +1,11 @@
+{
+  "source_key": "fed_rss",
+  "items": [
+    {
+      "news_item_id": "news:fed_rss:f5799775c29b886bad62d499",
+      "event_type": "fomc_statement",
+      "verification_status": "official_confirmed",
+      "title": "Kevin Warsh takes oath of office as chairman and a member of the Board of Governors of the Federal Reserve System, and the Federal Open Market Committee unanimously selects Warsh as its chairman"
+    }
+  ]
+}

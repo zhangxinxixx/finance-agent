@@ -1,0 +1,22 @@
+flowchart TD
+  Snapshot["分析快照<br/>AnalysisSnapshot"] --> Macro["宏观流动性 Agent<br/>macro_liquidity_agent"]
+  Snapshot --> Options["CME 期权 Agent<br/>cme_options_agent"]
+  Snapshot --> Risk["风险 Agent<br/>risk_agent"]
+  Snapshot --> Technical["技术面 Agent<br/>technical_agent"]
+  Snapshot --> Positioning["持仓 Agent<br/>positioning_agent"]
+  Snapshot --> News["新闻 Agent<br/>news_agent"]
+  Snapshot --> Odds["市场赔率 Agent<br/>market_odds_agent"]
+
+  Macro --> Coordinator["协调器 Agent<br/>coordinator_agent"]
+  Options --> Coordinator
+  Risk --> Coordinator
+  Technical --> Coordinator
+  Positioning --> Coordinator
+  News --> Coordinator
+  Odds --> Coordinator
+
+  Coordinator --> FinalReport["最终报告"]
+  Coordinator --> StrategyCard["策略卡片"]
+  Coordinator --> Review["人工复核项 / 事实复核<br/>NEED_VERIFY 主链覆盖率"]
+  Review --> Synthesis["综合分析 Agent<br/>NEED_VERIFY 主链覆盖率"]
+  Synthesis --> Dashboard["前端消费<br/>Dashboard / Reports / Strategy"]

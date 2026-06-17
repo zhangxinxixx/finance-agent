@@ -1,0 +1,282 @@
+from __future__ import annotations
+
+from datetime import date
+
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+
+from apps.analysis.agents.fact_review import build_fact_review_agent_output_payload, persist_fact_review_agent_output
+from database.models.analysis import AgentOutput, ensure_analysis_tables
+from database.models.report import ensure_report_tables
+from database.models.report import ReportItem
+from database.queries.review import list_review_items
+
+
+def _session():
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    ensure_analysis_tables(engine)
+    ensure_report_tables(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)()
+
+
+def _agent_output(
+    *,
+    agent_name: str,
+    bias: str,
+    claims: list[dict],
+    source_refs: list[dict] | None = None,
+    status: str = "success",
+    confidence: float = 0.72,
+    snapshot_id: str = "snap-review-001",
+    run_id: str = "run-review-001",
+) -> AgentOutput:
+    return AgentOutput(
+        snapshot_id=snapshot_id,
+        asset="XAUUSD",
+        trade_date=date(2026, 5, 31),
+        run_id=run_id,
+        agent_name=agent_name,
+        module="analysis",
+        version="1.0",
+        status=status,
+        bias=bias,
+        confidence=confidence,
+        input_snapshot_ids={"analysis": snapshot_id},
+        source_refs=source_refs or [],
+        key_findings=[],
+        risk_points=[],
+        watchlist=[],
+        invalid_conditions=[],
+        summary=f"{agent_name} summary",
+        payload={
+            "claims": claims,
+            "generated_by": "rule",
+            "artifact_refs": [],
+        },
+        payload_sha256=f"sha-{agent_name}",
+    )
+
+
+def test_build_fact_review_agent_output_payload_reviews_claim_evidence_chain() -> None:
+    jin10 = _agent_output(
+        agent_name="jin10_report_analysis_agent",
+        bias="bullish",
+        source_refs=[{"source_id": "src-jin10", "source_name": "Jin10", "source_type": "article", "status": "available"}],
+        claims=[
+            {
+                "claim_id": "claim-supported",
+                "text": "地缘风险抬升支撑金价风险溢价。",
+                "claim_type": "market_view",
+                "source_refs": [{"source_id": "src-jin10", "source_name": "Jin10", "source_type": "article", "status": "available"}],
+                "evidence_refs": [{"artifact_path": "storage/outputs/jin10/analysis.md"}],
+                "confidence": 0.76,
+            }
+        ],
+    )
+    options = _agent_output(
+        agent_name="cme_options_agent",
+        bias="neutral",
+        source_refs=[{"source_id": "src-cme", "source_name": "CME", "source_type": "pdf", "status": "available"}],
+        claims=[
+            {
+                "claim_id": "claim-partial",
+                "text": "Gamma Zero 位于 3325。",
+                "claim_type": "data_fact",
+                "source_refs": [{"source_id": "src-cme", "source_name": "CME", "source_type": "pdf", "status": "available"}],
+                "evidence_refs": [],
+                "confidence": 0.81,
+            },
+            {
+                "claim_id": "claim-unsupported",
+                "text": "上破 3350 后会形成单边趋势。",
+                "claim_type": "strategy_condition",
+                "source_refs": [],
+                "evidence_refs": [],
+                "confidence": 0.64,
+            },
+        ],
+    )
+
+    payload = build_fact_review_agent_output_payload([jin10, options])
+
+    assert payload["agent_name"] == "fact_review_agent"
+    assert payload["payload"]["fact_review_status"] == "needs_review"
+    assert payload["summary"] == "事实审查发现 1 条证据不完整、1 条缺少证据链。"
+    assert payload["payload"]["prompt_version"] == "fact_review_rules_v1"
+    assert payload["payload"]["prompt_messages"][0]["role"] == "system"
+    assert payload["payload"]["input_payload"]["reviewed_agent_outputs"][0]["agent_name"] == "jin10_report_analysis_agent"
+    assert payload["payload"]["verdict_counts"] == {
+        "supported": 1,
+        "partially_supported": 1,
+        "unsupported": 1,
+        "contradicted": 0,
+        "insufficient_evidence": 0,
+    }
+
+    claim_reviews = {item["claim_id"]: item for item in payload["payload"]["claim_reviews"]}
+    assert claim_reviews["claim-supported"]["verdict"] == "supported"
+    assert claim_reviews["claim-partial"]["verdict"] == "partially_supported"
+    assert claim_reviews["claim-unsupported"]["verdict"] == "unsupported"
+    assert claim_reviews["claim-unsupported"]["reviewer_agent_id"] == "fact_review_agent"
+
+
+def test_build_fact_review_agent_output_payload_marks_conflicting_bias_as_contradicted() -> None:
+    bullish = _agent_output(
+        agent_name="jin10_report_analysis_agent",
+        bias="bullish",
+        confidence=0.83,
+        source_refs=[{"source_id": "src-jin10", "source_name": "Jin10", "source_type": "article", "status": "available"}],
+        claims=[
+            {
+                "claim_id": "claim-bull",
+                "text": "短线偏多修复仍有效。",
+                "claim_type": "market_view",
+                "source_refs": [{"source_id": "src-jin10", "source_name": "Jin10", "source_type": "article", "status": "available"}],
+                "evidence_refs": [{"artifact_path": "storage/outputs/jin10/analysis.md"}],
+                "confidence": 0.83,
+            }
+        ],
+    )
+    bearish = _agent_output(
+        agent_name="cme_options_agent",
+        bias="bearish",
+        confidence=0.79,
+        source_refs=[{"source_id": "src-cme", "source_name": "CME", "source_type": "pdf", "status": "available"}],
+        claims=[
+            {
+                "claim_id": "claim-bear",
+                "text": "结构仍偏空，下破 3300 风险更大。",
+                "claim_type": "market_view",
+                "source_refs": [{"source_id": "src-cme", "source_name": "CME", "source_type": "pdf", "status": "available"}],
+                "evidence_refs": [{"artifact_path": "storage/outputs/cme/options_analysis.md"}],
+                "confidence": 0.79,
+            }
+        ],
+    )
+
+    payload = build_fact_review_agent_output_payload([bullish, bearish])
+
+    assert payload["payload"]["fact_review_status"] == "conflicted"
+    claim_reviews = {item["claim_id"]: item for item in payload["payload"]["claim_reviews"]}
+    assert claim_reviews["claim-bull"]["verdict"] == "contradicted"
+    assert claim_reviews["claim-bear"]["verdict"] == "contradicted"
+    assert "bias 冲突" in claim_reviews["claim-bull"]["reason"]
+    assert set(payload["payload"]["conflicted_claim_ids"]) == {"claim-bull", "claim-bear"}
+
+
+def test_persist_fact_review_agent_output_is_idempotent() -> None:
+    session = _session()
+    domain_output = _agent_output(
+        agent_name="jin10_report_analysis_agent",
+        bias="bullish",
+        source_refs=[{"source_id": "src-jin10", "source_name": "Jin10", "source_type": "article", "status": "available"}],
+        claims=[
+            {
+                "claim_id": "claim-supported",
+                "text": "地缘风险抬升支撑金价风险溢价。",
+                "claim_type": "market_view",
+                "source_refs": [{"source_id": "src-jin10", "source_name": "Jin10", "source_type": "article", "status": "available"}],
+                "evidence_refs": [{"artifact_path": "storage/outputs/jin10/analysis.md"}],
+                "confidence": 0.76,
+            }
+        ],
+    )
+    session.add(domain_output)
+    session.commit()
+
+    first = persist_fact_review_agent_output(session, snapshot_id="snap-review-001")
+    session.commit()
+    second = persist_fact_review_agent_output(session, snapshot_id="snap-review-001")
+    session.commit()
+
+    assert first["agent_output_id"] == second["agent_output_id"]
+    rows = session.scalars(select(AgentOutput).where(AgentOutput.agent_name == "fact_review_agent")).all()
+    assert len(rows) == 1
+    assert rows[0].payload["fact_review_status"] == "passed"
+    assert rows[0].payload["reviewed_agent_outputs"][0]["agent_name"] == "jin10_report_analysis_agent"
+
+
+def test_persist_fact_review_agent_output_creates_review_items_for_review_worthy_claims() -> None:
+    session = _session()
+    session.add(
+        ReportItem(
+            report_id="report-review-001",
+            family="macro",
+            title="Macro report",
+            asset="XAUUSD",
+            trade_date=date(2026, 5, 31),
+            run_id="run-review-001",
+            snapshot_id="snap-review-001",
+            data_status="live",
+            lifecycle_status="generated",
+            source_refs=[],
+            report_metadata={},
+        )
+    )
+    session.add_all(
+        [
+            _agent_output(
+                agent_name="jin10_report_analysis_agent",
+                bias="bullish",
+                source_refs=[
+                    {
+                        "source_id": "src-jin10",
+                        "source_name": "Jin10",
+                        "source_type": "article",
+                        "status": "available",
+                    }
+                ],
+                claims=[
+                    {
+                        "claim_id": "claim-unsupported",
+                        "text": "地缘风险会单边推升金价。",
+                        "claim_type": "market_view",
+                        "source_refs": [],
+                        "evidence_refs": [],
+                        "confidence": 0.71,
+                    }
+                ],
+            ),
+            _agent_output(
+                agent_name="cme_options_agent",
+                bias="bearish",
+                source_refs=[
+                    {
+                        "source_id": "src-cme",
+                        "source_name": "CME",
+                        "source_type": "pdf",
+                        "status": "available",
+                    }
+                ],
+                claims=[
+                    {
+                        "claim_id": "claim-contradicted",
+                        "text": "结构仍偏空。",
+                        "claim_type": "market_view",
+                        "source_refs": [
+                            {
+                                "source_id": "src-cme",
+                                "source_name": "CME",
+                                "source_type": "pdf",
+                                "status": "available",
+                            }
+                        ],
+                        "evidence_refs": [{"artifact_path": "storage/outputs/cme/options_analysis.md"}],
+                        "confidence": 0.68,
+                    }
+                ],
+            ),
+        ]
+    )
+    session.commit()
+
+    persist_fact_review_agent_output(session, snapshot_id="snap-review-001")
+    session.commit()
+
+    reviews = {item.claim_id: item for item in list_review_items(session)}
+    assert set(reviews) == {"claim-unsupported", "claim-contradicted"}
+    assert reviews["claim-unsupported"].agent_output_id is not None
+    assert reviews["claim-unsupported"].source_refs[0]["source_id"] == "src-jin10"
+    assert reviews["claim-unsupported"].impact_report_ids == ["report-review-001"]
+    assert "report_detail" in reviews["claim-unsupported"].impact_modules
+    assert reviews["claim-contradicted"].source_refs[0]["source_id"] == "src-cme"

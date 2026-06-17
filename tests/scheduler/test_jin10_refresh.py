@@ -1,0 +1,326 @@
+from __future__ import annotations
+
+import json
+import sys
+from datetime import UTC, datetime
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from apps.scheduler import jin10_refresh as scheduler
+from database.models.analysis import AppSetting, DataSourceStatus, MarketCandle, ensure_analysis_tables
+
+
+class _FakeClient:
+    def __init__(self, *args, **kwargs):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get_kline(self, symbol: str, count: int = 100):
+        assert symbol == "XAUUSD"
+        assert count == 100
+        return {
+            "data": {
+                "klines": [
+                    {"time": 1780645620, "open": "4462.47", "high": "4464.30", "low": "4461.88", "close": "4462.81", "volume": 20},
+                    {"time": 1780645680, "open": "4462.82", "high": "4463.11", "low": "4461.90", "close": "4463.04", "volume": 18},
+                ]
+            }
+        }
+
+
+def test_refresh_jin10_kline_cache_inserts_only_new_rows(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with session_factory() as session:
+        ensure_analysis_tables(session)
+        session.add(
+            MarketCandle(
+                asset="XAUUSD",
+                timeframe="1m",
+                open_time=datetime.fromtimestamp(1780645620, tz=UTC),
+                open=4462.47,
+                high=4464.30,
+                low=4461.88,
+                close=4462.81,
+                volume=20,
+                source="jin10_mcp_kline_1m",
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(scheduler, "_get_mcp_key", lambda: "fake-key")
+    monkeypatch.setattr(scheduler, "Jin10MCPClient", _FakeClient)
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+
+    scheduler.refresh_jin10_kline_cache()
+
+    with session_factory() as session:
+        rows = session.query(MarketCandle).order_by(MarketCandle.open_time.asc()).all()
+        assert len(rows) == 2
+        latest_open_time = rows[-1].open_time
+        if latest_open_time.tzinfo is None:
+            latest_open_time = latest_open_time.replace(tzinfo=UTC)
+        assert latest_open_time == datetime.fromtimestamp(1780645680, tz=UTC)
+        assert rows[-1].close == 4463.04
+        assert rows[-1].source == "jin10_mcp_kline_1m"
+        assert rows[-1].source_ref["source_key"] == "jin10_mcp_market"
+        assert rows[-1].source_ref["source"] == "jin10_mcp"
+
+
+class _FakeHttpResponse:
+    def __init__(self, *, text: str = "", headers: dict[str, str] | None = None):
+        self.text = text
+        self.headers = headers or {}
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+class _FakeFlashHttpxClient:
+    def __init__(self, *args, **kwargs):
+        self._calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url: str, json: dict | None = None, headers: dict | None = None):
+        self._calls += 1
+        if self._calls == 1:
+            return _FakeHttpResponse(headers={"Mcp-Session-Id": "sid-test"})
+        if self._calls == 2:
+            return _FakeHttpResponse()
+        assert json is not None
+        assert json.get("method") == "tools/call"
+        items = [
+            {"id": f"flash-{idx}", "time": f"2026-06-13 09:{idx:02d}:00", "content": f"headline-{idx}"}
+            for idx in range(60)
+        ]
+        payload = {
+            "result": {
+                "structuredContent": {
+                    "status": 200,
+                    "data": {"items": items},
+                }
+            }
+        }
+        return _FakeHttpResponse(text=f"data:{json_module(payload)}\n")
+
+
+def json_module(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
+class _FakeLLMResponse:
+    def __init__(self, content: str, *, provider: str = "mimo", model: str = "mimo-small-test"):
+        self.content = content
+        self.provider = provider
+        self.model = model
+        self.latency_ms = 12
+        self.usage = {}
+
+
+def test_refresh_jin10_flash_cache_handles_data_items_shape(monkeypatch, tmp_path):
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with session_factory() as session:
+        ensure_analysis_tables(session)
+        session.commit()
+
+    monkeypatch.setattr(scheduler, "_get_mcp_key", lambda: "fake-key")
+    monkeypatch.setattr(scheduler, "_FLASH_CACHE_PATH", tmp_path / "flash_cache.json")
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setitem(sys.modules, "httpx", type("FakeHttpxModule", (), {"Client": _FakeFlashHttpxClient})())
+
+    def fake_chat_sync(*, messages, provider, model, temperature, max_tokens, json_mode, max_retries):
+        assert provider == "mimo"
+        assert model == "mimo-v2.5"
+        assert temperature == 0.0
+        assert json_mode is True
+        assert max_retries == 1
+        assert "不要按固定关键词机械判断" in messages[0]["content"]
+        labels = [
+            {
+                "index": idx,
+                "is_key_event": idx == 0,
+                "importance": "high" if idx == 0 else "normal",
+                "signal_tags": ["risk_sentiment"] if idx == 0 else [],
+                "filter_reason": "LLM semantic decision",
+                "confidence": 0.91 if idx == 0 else 0.74,
+            }
+            for idx in range(50)
+        ]
+        return _FakeLLMResponse(json.dumps({"items": labels}, ensure_ascii=False))
+
+    monkeypatch.setattr(scheduler, "chat_sync", fake_chat_sync)
+
+    scheduler.refresh_jin10_flash_cache()
+
+    payload = json.loads((tmp_path / "flash_cache.json").read_text(encoding="utf-8"))
+    assert len(payload["items"]) == 50
+    assert payload["items"][0]["id"] == "flash-0"
+    assert payload["items"][0]["is_key_event"] is True
+    assert payload["items"][0]["importance"] == "high"
+    assert payload["items"][0]["signal_tags"] == ["risk_sentiment"]
+    assert payload["items"][0]["classification_provider"] == "mimo"
+    assert payload["items"][0]["classification_model"] == "mimo-small-test"
+    assert payload["items"][0]["classification_confidence"] == 0.91
+    assert payload["items"][-1]["id"] == "flash-49"
+    assert payload["classification_version"] == "jin10-flash-semantic-llm-v2"
+    assert payload["classification_provider"] == "mimo"
+    assert payload["key_item_count"] == 1
+
+    with session_factory() as session:
+        status = session.query(DataSourceStatus).filter_by(source_key="jin10_flash").one()
+        assert status.status == "ok"
+        assert status.configured is True
+        assert status.raw_ingested is True
+        assert status.parsed is True
+        assert status.analysis_ready is True
+        assert status.row_count == 50
+        assert status.source_metadata["key_item_count"] == 1
+        assert status.source_metadata["classification_provider"] == "mimo"
+        assert status.source_metadata["classification_model"] == "mimo-small-test"
+        assert status.source_metadata["cache_artifact_path"].endswith("flash_cache.json")
+        assert status.source_metadata["lane_source_key"] == "jin10_mcp_flash"
+
+
+def test_refresh_jin10_flash_cache_respects_disabled_jin10_mcp_setting(monkeypatch, tmp_path):
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with session_factory() as session:
+        ensure_analysis_tables(session)
+        session.add(
+            AppSetting(
+                setting_key="source.jin10_mcp.enabled",
+                scope="source",
+                source_key="jin10_mcp",
+                value_json={"enabled": False},
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(scheduler, "_FLASH_CACHE_PATH", tmp_path / "flash_cache.json")
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler, "_get_mcp_key", lambda: "fake-key")
+    monkeypatch.setitem(
+        sys.modules,
+        "httpx",
+        type("UnexpectedHttpxModule", (), {"Client": lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("httpx should not be called"))})(),
+    )
+
+    scheduler.refresh_jin10_flash_cache()
+
+    assert not (tmp_path / "flash_cache.json").exists()
+    with session_factory() as session:
+        status = session.query(DataSourceStatus).filter_by(source_key="jin10_flash").one()
+        assert status.status == "disabled"
+        assert status.configured is False
+        assert status.raw_ingested is False
+        assert status.error_message == "disabled_by_settings: source.jin10_mcp.enabled=false"
+
+
+def test_classify_jin10_flash_items_with_llm_uses_semantic_labels(monkeypatch):
+    def fake_chat_sync(**kwargs):
+        assert kwargs["provider"] == "mimo"
+        return _FakeLLMResponse(
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "index": 0,
+                            "is_key_event": True,
+                            "importance": "medium",
+                            "signal_tags": ["shipping_chokepoint", "oil"],
+                            "filter_reason": "航运咽喉风险可能传导至油价和避险情绪",
+                            "confidence": 0.86,
+                        },
+                        {
+                            "index": 1,
+                            "is_key_event": False,
+                            "importance": "normal",
+                            "signal_tags": ["low_signal_followup"],
+                            "filter_reason": "伤亡统计缺少新增市场传导",
+                            "confidence": 0.88,
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    monkeypatch.setattr(scheduler, "chat_sync", fake_chat_sync)
+
+    result = scheduler.classify_jin10_flash_items_with_llm(
+        [
+            {"id": "a", "content": "某海峡附近出现新的航运保险费率飙升迹象。"},
+            {"id": "b", "content": "某机构更新伤亡统计。"},
+        ]
+    )
+
+    assert result[0]["is_key_event"] is True
+    assert result[0]["importance"] == "medium"
+    assert result[0]["signal_tags"] == ["shipping_chokepoint", "oil"]
+    assert result[0]["classification_provider"] == "mimo"
+    assert result[0]["classification_model"] == "mimo-small-test"
+    assert result[1]["is_key_event"] is False
+    assert result[1]["filter_reason"] == "伤亡统计缺少新增市场传导"
+
+
+def test_classify_jin10_flash_items_with_llm_falls_back_when_unavailable(monkeypatch):
+    def fake_chat_sync(**kwargs):
+        raise RuntimeError("mimo unavailable")
+
+    monkeypatch.setattr(scheduler, "chat_sync", fake_chat_sync)
+
+    result = scheduler.classify_jin10_flash_items_with_llm(
+        [
+            {
+                "content": "【伊朗称霍尔木兹收服务费完全合理】金十数据6月13日讯，伊朗外长表示正在就霍尔木兹海峡通航问题进行磋商。",
+                "time": "2026-06-13T19:54:58+08:00",
+            }
+        ]
+    )
+
+    assert result[0]["is_key_event"] is True
+    assert result[0]["classification_provider"] == "fallback_rule"
+    assert result[0]["classification_model"] == ""
+
+
+def test_classify_jin10_flash_item_fallback_marks_key_events():
+    strategic = scheduler.classify_jin10_flash_item_fallback(
+        {
+            "content": "【伊朗称霍尔木兹收服务费完全合理】金十数据6月13日讯，伊朗外长表示正在就霍尔木兹海峡通航问题进行磋商。",
+            "time": "2026-06-13T19:54:58+08:00",
+        }
+    )
+    assert strategic["is_key_event"] is True
+    assert strategic["importance"] == "high"
+    assert "strategic_channel" in strategic["signal_tags"]
+    assert strategic["classification_provider"] == "fallback_rule"
+
+    escalation = scheduler.classify_jin10_flash_item_fallback(
+        {
+            "content": "黎巴嫩真主党：我们在黎巴嫩南部用导弹击落了一架以色列无人机。",
+            "time": "2026-06-13T19:58:11+08:00",
+        }
+    )
+    assert escalation["is_key_event"] is True
+    assert "geopolitical_escalation" in escalation["signal_tags"]
+
+    low_signal = scheduler.classify_jin10_flash_item_fallback(
+        {
+            "content": "联合国：自以色列攻势开始以来，黎巴嫩已有135名医务工作者遇害。",
+            "time": "2026-06-13T19:57:52+08:00",
+        }
+    )
+    assert low_signal["is_key_event"] is False
+    assert low_signal["filter_reason"] == "low_signal_followup"

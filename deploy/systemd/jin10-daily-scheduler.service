@@ -1,0 +1,14 @@
+[Unit]
+Description=Finance Agent Jin10 daily report scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/finance-agent
+Environment=no_proxy=127.0.0.1,localhost,::1
+Environment=UV_CACHE_DIR=/tmp/uv-cache
+ExecStart=%h/workspace/finance-agent/scripts/start_jin10_daily_scheduler.sh
+
+[Install]
+WantedBy=default.target

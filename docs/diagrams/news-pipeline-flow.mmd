@@ -1,0 +1,78 @@
+flowchart LR
+  subgraph Sources["新闻与事件源"]
+    Fed["Fed RSS"]
+    BEA["BEA Calendar"]
+    EIA["EIA Energy"]
+    GNews["Google News RSS"]
+    GDELT["GDELT DOC 2.0"]
+    ReutersMeta["Reuters Public Metadata"]
+    Jin10["Feishu / Jin10"]
+  end
+
+  subgraph Collect["采集与标准化"]
+    Collectors["news_collect collectors"]
+    Raw["raw_news_items / storage raw"]
+    Parsed["parsed news items"]
+    Diagnostics["collection_diagnostics"]
+  end
+
+  subgraph Features["事件特征层"]
+    Candidates["event_candidates"]
+    Impact["impact_assessments"]
+    Reactions["market_reactions"]
+    Brief["daily_market_brief"]
+    ArticleBriefs["jin10_article_briefs"]
+    Triggers["daily_analysis_triggers"]
+  end
+
+  subgraph Followup["后续日报任务"]
+    Queue["daily_analysis_followups"]
+    TaskRun["TaskRun daily_analysis_followup"]
+    Detail["detail_fetch"]
+    Browser["vip_browser_fallback"]
+    Snapshot["daily_brief_input_snapshot"]
+    Render["daily_brief md/json"]
+  end
+
+  subgraph ReadModels["只读消费层"]
+    DataStatus["GET /api/data-sources/status"]
+    EventFlow["GET /api/events/flow/overview"]
+    Dashboard["Vite Dashboard / Event Flow"]
+  end
+
+  Fed --> Collectors
+  BEA --> Collectors
+  EIA --> Collectors
+  GNews --> Collectors
+  GDELT --> Collectors
+  ReutersMeta --> Collectors
+  Jin10 --> Collectors
+
+  Collectors --> Raw
+  Raw --> Parsed
+  Collectors --> Diagnostics
+  Parsed --> Candidates
+  Candidates --> Impact
+  Impact --> Brief
+  Candidates --> Reactions
+  Reactions --> Brief
+  Jin10 --> ArticleBriefs
+  Brief --> Triggers
+  ArticleBriefs --> Queue
+  Triggers --> Queue
+
+  Queue --> TaskRun
+  TaskRun --> Detail
+  Detail --> Browser
+  Detail --> Snapshot
+  Browser --> Snapshot
+  Brief --> Snapshot
+  Reactions --> Snapshot
+  Snapshot --> Render
+
+  Diagnostics --> DataStatus
+  Brief --> EventFlow
+  Queue --> EventFlow
+  ArticleBriefs --> EventFlow
+  EventFlow --> Dashboard
+  DataStatus --> Dashboard

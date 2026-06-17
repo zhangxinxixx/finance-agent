@@ -1,0 +1,914 @@
+{
+  "default_date": "2026-05-17",
+  "dates": [
+    {
+      "trade_date": "2026-05-17",
+      "modules": [
+        "macro",
+        "options",
+        "final_report",
+        "strategy_card",
+        "market_odds"
+      ],
+      "latest_run_id": "550e8400-e29b-41d4-a716-446655440000",
+      "has_final_report": true,
+      "has_strategy_card": true
+    },
+    {
+      "trade_date": "2026-05-16",
+      "modules": [
+        "macro",
+        "options",
+        "strategy_card"
+      ],
+      "latest_run_id": "550e8400-e29b-41d4-a716-446655440001",
+      "has_final_report": true,
+      "has_strategy_card": true
+    },
+    {
+      "trade_date": "2026-05-15",
+      "modules": [
+        "macro",
+        "options"
+      ],
+      "latest_run_id": "550e8400-e29b-41d4-a716-446655440002",
+      "has_final_report": false,
+      "has_strategy_card": false
+    },
+    {
+      "trade_date": "2026-05-14",
+      "modules": [],
+      "latest_run_id": null,
+      "has_final_report": false,
+      "has_strategy_card": false
+    }
+  ],
+  "summaries": {
+    "2026-05-17": {
+      "generated_at": "2026-05-17T06:30:00Z",
+      "conclusion": {
+        "bias": "黄金在 Pin 位上方仍保持建设性，宏观背景偏多，下方支撑带稳定。",
+        "direction": "bullish",
+        "confidence": 0.72,
+        "macro_phase": "宏观阶段：通胀降温稳定，流动性中性偏支撑",
+        "options_summary": "期权结构维持中性偏多。上方阻力较近，但下方支撑密集，足以防守当前区间。",
+        "pin_level": 3225.5,
+        "resistance_levels": [
+          3300,
+          3340,
+          3375
+        ],
+        "support_levels": [
+          3200,
+          3180,
+          3155
+        ],
+        "wall_score": 0.84,
+        "net_gex": 12.4
+      },
+      "market_summary": {
+        "XAUUSD": {
+          "label": "XAUUSD",
+          "value": 3333.4,
+          "unit": "",
+          "change": "+0.82%",
+          "trend": "up",
+          "status": "ok",
+          "note": "现货黄金"
+        },
+        "DXY": {
+          "label": "DXY",
+          "value": 104.82,
+          "unit": "",
+          "change": "-0.31%",
+          "trend": "down",
+          "status": "ok",
+          "note": "美元指数"
+        },
+        "US10Y": {
+          "label": "US10Y",
+          "value": 4.41,
+          "unit": "%",
+          "change": "-2 bps",
+          "trend": "down",
+          "status": "ok",
+          "note": "10Y 美债收益率"
+        },
+        "US02Y": {
+          "label": "US02Y",
+          "value": 4.82,
+          "unit": "%",
+          "change": "-1 bps",
+          "trend": "down",
+          "status": "ok",
+          "note": "2Y 美债收益率"
+        },
+        "T10YIE": {
+          "label": "T10YIE",
+          "value": 2.34,
+          "unit": "%",
+          "change": "+0.02%",
+          "trend": "up",
+          "status": "ok",
+          "note": "通胀盈亏平衡率"
+        },
+        "REAL_10Y": {
+          "label": "10Y Real Rate",
+          "value": 2.07,
+          "unit": "%",
+          "change": "-0.04%",
+          "trend": "down",
+          "status": "ok",
+          "note": "10Y 实际利率"
+        }
+      },
+      "macro_liquidity": {
+        "RRP": {
+          "label": "RRP",
+          "value": 412.8,
+          "unit": "B",
+          "change": "-8.1B",
+          "trend": "down",
+          "status": "ok",
+          "note": "隔夜逆回购工具"
+        },
+        "TGA": {
+          "label": "TGA",
+          "value": 624.1,
+          "unit": "B",
+          "change": "+4.6B",
+          "trend": "up",
+          "status": "warn",
+          "note": "财政部一般账户"
+        },
+        "BANK_RESERVES": {
+          "label": "Bank Reserves",
+          "value": 3.24,
+          "unit": "T",
+          "change": "+0.03T",
+          "trend": "up",
+          "status": "ok",
+          "note": "银行准备金"
+        },
+        "SOFR": {
+          "label": "SOFR",
+          "value": 5.31,
+          "unit": "%",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "隔夜融资利率"
+        },
+        "IORB": {
+          "label": "IORB",
+          "value": 5.4,
+          "unit": "%",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "准备金余额利率"
+        }
+      },
+      "cme_options": {
+        "trade_date": "2026-05-17",
+        "product": "GC",
+        "expiries": [
+          "2026-06",
+          "2026-08",
+          "2026-10"
+        ],
+        "intent": "neutral-bullish",
+        "intent_score": 0.62,
+        "gamma_zero": 3225.5,
+        "pin_level": 3225.5,
+        "net_gex": 12.4,
+        "wall_score": 0.84,
+        "market_regime": "range-to-upside",
+        "upper_resistance_walls": [
+          {
+            "strike": 3300,
+            "score": 0.87,
+            "distance_pct": 1.02
+          },
+          {
+            "strike": 3340,
+            "score": 0.78,
+            "distance_pct": 2.23
+          },
+          {
+            "strike": 3375,
+            "score": 0.64,
+            "distance_pct": 3.27
+          }
+        ],
+        "lower_support_walls": [
+          {
+            "strike": 3200,
+            "score": 0.91,
+            "distance_pct": -0.79
+          },
+          {
+            "strike": 3180,
+            "score": 0.83,
+            "distance_pct": -1.41
+          },
+          {
+            "strike": 3155,
+            "score": 0.73,
+            "distance_pct": -2.18
+          }
+        ]
+      },
+      "strategy": {
+        "bias": "只要价格守住 Pin 位且下方支撑墙保持完整，维持偏多思路。",
+        "direction": "bullish",
+        "confidence": 0.72,
+        "macro_phase": "流动性中性偏支撑",
+        "key_levels": {
+          "resistance": [
+            3300,
+            3340,
+            3375
+          ],
+          "support": [
+            3200,
+            3180,
+            3155
+          ]
+        },
+        "triggers": [
+          "XAUUSD 重新站上并守住 3330",
+          "DXY 继续走低，同时 US10Y 保持在 4.45% 下方",
+          "Pin 位附近 Net GEX 维持正值"
+        ],
+        "invalid_conditions": [
+          "XAUUSD 收盘跌破 3200",
+          "US02Y 与 US10Y 同步上行重新定价",
+          "流动性面板变为不可用或数据陈旧"
+        ],
+        "risk_points": [
+          "3300 上方阻力墙可能压制第一波上冲",
+          "TGA 增加可能短期抽紧流动性",
+          "CME 期权数据在 FINAL 公告前仍为 PRELIM"
+        ]
+      },
+      "risk": {
+        "items": [
+          {
+            "label": "CME 公告",
+            "value": "PRELIM",
+            "status": "warn",
+            "note": "FINAL 公告尚未确认"
+          },
+          {
+            "label": "宏观延迟",
+            "value": "正常",
+            "status": "ok",
+            "note": "Fed/FRED 缓存新鲜"
+          },
+          {
+            "label": "来源覆盖",
+            "value": "完整",
+            "status": "ok",
+            "note": "所有 Dashboard 模块均有溯源"
+          }
+        ],
+        "alerts": [
+          "CME 期权公告仍为 PRELIM。",
+          "TGA 扩张可能带来流动性压力。"
+        ]
+      },
+      "pipeline": {
+        "raw": "done",
+        "parsed": "done",
+        "features": "done",
+        "agent": "done",
+        "report": "done",
+        "knowledge": "running"
+      },
+      "warnings": [
+        "options: PRELIM only"
+      ],
+      "risk_alerts": [
+        "CME PRELIM 数据",
+        "TGA 扩张压力"
+      ],
+      "latest_reports": [
+        {
+          "title": "最终报告",
+          "trade_date": "2026-05-17",
+          "run_id": "550e8400-e29b-41d4-a716-446655440000",
+          "url": null,
+          "status": "ready"
+        },
+        {
+          "title": "策略卡片",
+          "trade_date": "2026-05-17",
+          "run_id": "550e8400-e29b-41d4-a716-446655440000",
+          "url": null,
+          "status": "ready"
+        }
+      ],
+      "recent_tasks": [
+        {
+          "title": "采集最新宏观快照",
+          "status": "done",
+          "detail": "FRED/Fed/Treasury 刷新完成"
+        },
+        {
+          "title": "解析 CME 公告",
+          "status": "done",
+          "detail": "PRELIM 公告已入库"
+        },
+        {
+          "title": "生成策略卡片",
+          "status": "running",
+          "detail": "等待知识库同步"
+        }
+      ],
+      "data_source_status": {
+        "CME": {
+          "label": "CME",
+          "status": "warn",
+          "updated_at": "2026-05-17T06:05:00Z"
+        },
+        "FRED": {
+          "label": "FRED",
+          "status": "ok",
+          "updated_at": "2026-05-17T05:54:00Z"
+        },
+        "Treasury": {
+          "label": "Treasury",
+          "status": "ok",
+          "updated_at": "2026-05-17T05:52:00Z"
+        },
+        "Fed": {
+          "label": "Fed",
+          "status": "ok",
+          "updated_at": "2026-05-17T05:49:00Z"
+        }
+      },
+      "source_trace": [
+        {
+          "name": "CME Daily Bulletin",
+          "trade_date": "2026-05-17",
+          "file": "cme/bulletins/2026-05-17-gc.pdf",
+          "snapshot_id": "snapshot-cme-20260517",
+          "source_ref": "cme.daily_bulletin.gc",
+          "model_version": null,
+          "status": "warn"
+        },
+        {
+          "name": "FRED 宏观快照",
+          "trade_date": "2026-05-17",
+          "file": "macro/fred/latest.json",
+          "snapshot_id": "snapshot-fred-20260517",
+          "source_ref": "macro.fred.latest",
+          "model_version": null,
+          "status": "ok"
+        },
+        {
+          "name": "策略 Agent 输出",
+          "trade_date": "2026-05-17",
+          "file": "analysis/strategy/2026-05-17.json",
+          "snapshot_id": "snapshot-analysis-20260517",
+          "source_ref": "analysis.strategy.dashboard",
+          "model_version": "finance-agent/0.3",
+          "status": "ok"
+        }
+      ]
+    },
+    "2026-05-16": {
+      "generated_at": "2026-05-16T06:30:00Z",
+      "conclusion": {
+        "bias": "黄金保持区间震荡，宏观信号混合，期权墙位限制短线方向。",
+        "direction": "bearish",
+        "confidence": 0.58,
+        "macro_phase": "宏观阶段：利率压力与流动性支撑并存",
+        "options_summary": "期权结构显示下方支撑较稳定，但上方追涨空间有限。",
+        "pin_level": 3208.0,
+        "resistance_levels": [
+          3265,
+          3300
+        ],
+        "support_levels": [
+          3188,
+          3160
+        ],
+        "wall_score": 0.66,
+        "net_gex": -3.8
+      },
+      "market_summary": {
+        "XAUUSD": {
+          "label": "XAUUSD",
+          "value": 3204.8,
+          "unit": "",
+          "change": "-0.41%",
+          "trend": "down",
+          "status": "ok",
+          "note": "现货黄金"
+        },
+        "DXY": {
+          "label": "DXY",
+          "value": 105.23,
+          "unit": "",
+          "change": "+0.28%",
+          "trend": "up",
+          "status": "ok",
+          "note": "美元指数"
+        },
+        "US10Y": {
+          "label": "US10Y",
+          "value": 4.49,
+          "unit": "%",
+          "change": "+4 bps",
+          "trend": "up",
+          "status": "ok",
+          "note": "10Y 美债收益率"
+        },
+        "US02Y": {
+          "label": "US02Y",
+          "value": 4.87,
+          "unit": "%",
+          "change": "+5 bps",
+          "trend": "up",
+          "status": "ok",
+          "note": "2Y 美债收益率"
+        },
+        "T10YIE": {
+          "label": "T10YIE",
+          "value": 2.31,
+          "unit": "%",
+          "change": "-0.01%",
+          "trend": "down",
+          "status": "ok",
+          "note": "通胀盈亏平衡率"
+        },
+        "REAL_10Y": {
+          "label": "10Y Real Rate",
+          "value": 2.14,
+          "unit": "%",
+          "change": "+0.05%",
+          "trend": "up",
+          "status": "ok",
+          "note": "实际利率"
+        }
+      },
+      "macro_liquidity": {
+        "RRP": {
+          "label": "RRP",
+          "value": 420.1,
+          "unit": "B",
+          "change": "+1.5B",
+          "trend": "up",
+          "status": "ok",
+          "note": "隔夜逆回购工具"
+        },
+        "TGA": {
+          "label": "TGA",
+          "value": 619.5,
+          "unit": "B",
+          "change": "+9.1B",
+          "trend": "up",
+          "status": "warn",
+          "note": "财政部一般账户"
+        },
+        "BANK_RESERVES": {
+          "label": "Bank Reserves",
+          "value": 3.21,
+          "unit": "T",
+          "change": "-0.02T",
+          "trend": "down",
+          "status": "ok",
+          "note": "Fed 账户余额"
+        },
+        "SOFR": {
+          "label": "SOFR",
+          "value": 5.31,
+          "unit": "%",
+          "change": "+1 bp",
+          "trend": "up",
+          "status": "ok",
+          "note": "隔夜融资"
+        },
+        "IORB": {
+          "label": "IORB",
+          "value": 5.4,
+          "unit": "%",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "准备金利率"
+        }
+      },
+      "cme_options": {
+        "trade_date": "2026-05-16",
+        "product": "GC",
+        "expiries": [
+          "2026-06",
+          "2026-08",
+          "2026-10"
+        ],
+        "intent": "bearish",
+        "intent_score": 0.44,
+        "gamma_zero": 3208,
+        "pin_level": 3208,
+        "net_gex": -3.8,
+        "wall_score": 0.66,
+        "market_regime": "range-to-downside",
+        "upper_resistance_walls": [
+          {
+            "strike": 3265,
+            "score": 0.9,
+            "distance_pct": 1.88
+          },
+          {
+            "strike": 3300,
+            "score": 0.76,
+            "distance_pct": 2.97
+          }
+        ],
+        "lower_support_walls": [
+          {
+            "strike": 3188,
+            "score": 0.78,
+            "distance_pct": -0.53
+          },
+          {
+            "strike": 3160,
+            "score": 0.7,
+            "distance_pct": -1.4
+          }
+        ]
+      },
+      "strategy": {
+        "bias": "在区间结构内保持中性，等待突破或跌破确认。",
+        "direction": "bearish",
+        "confidence": 0.58,
+        "macro_phase": "利率压力与流动性支撑并存",
+        "key_levels": {
+          "resistance": [
+            3265,
+            3300
+          ],
+          "support": [
+            3188,
+            3160
+          ]
+        },
+        "triggers": [
+          "XAUUSD 重新站上 3290",
+          "DXY 跌破前低",
+          "下方支撑墙继续上移"
+        ],
+        "invalid_conditions": [
+          "XAUUSD 跌破 3180",
+          "US10Y 重新上行",
+          "CME 数据缺失"
+        ],
+        "risk_points": [
+          "FINAL OI 尚未确认",
+          "事件窗口可能放大波动",
+          "上方阻力墙密集"
+        ]
+      },
+      "risk": {
+        "items": [
+          {
+            "label": "数据覆盖",
+            "value": "部分",
+            "status": "warn",
+            "note": "缺少 final_report"
+          },
+          {
+            "label": "Rate shock",
+            "value": "elevated",
+            "status": "warn",
+            "note": "rates moved higher"
+          }
+        ],
+        "alerts": [
+          "报告链路不完整。"
+        ]
+      },
+      "pipeline": {
+        "raw": "done",
+        "parsed": "done",
+        "features": "done",
+        "agent": "done",
+        "report": "done",
+        "knowledge": "done"
+      },
+      "warnings": [
+        "options: PRELIM only"
+      ],
+      "risk_alerts": [
+        "final_report 缺失"
+      ],
+      "latest_reports": [
+        {
+          "title": "策略卡片",
+          "trade_date": "2026-05-16",
+          "run_id": "550e8400-e29b-41d4-a716-446655440001",
+          "url": null,
+          "status": "ready"
+        }
+      ],
+      "recent_tasks": [
+        {
+          "title": "等待报告渲染",
+          "status": "done",
+          "detail": "final_report 缺失"
+        },
+        {
+          "title": "Generate analysis report",
+          "status": "done",
+          "detail": "complete"
+        }
+      ],
+      "data_source_status": {
+        "CME": {
+          "label": "CME",
+          "status": "warn",
+          "updated_at": "2026-05-16T06:05:00Z"
+        },
+        "FRED": {
+          "label": "FRED",
+          "status": "ok",
+          "updated_at": "2026-05-16T05:54:00Z"
+        },
+        "Treasury": {
+          "label": "Treasury",
+          "status": "ok",
+          "updated_at": "2026-05-16T05:52:00Z"
+        }
+      },
+      "source_trace": [
+        {
+          "name": "CME Daily Bulletin",
+          "trade_date": "2026-05-16",
+          "file": "cme/bulletins/2026-05-16-gc.pdf",
+          "snapshot_id": "snapshot-cme-20260516",
+          "source_ref": "cme.daily_bulletin.gc",
+          "model_version": null,
+          "status": "warn"
+        },
+        {
+          "name": "Strategy agent output",
+          "trade_date": "2026-05-16",
+          "file": "analysis/strategy/2026-05-16.json",
+          "snapshot_id": "snapshot-analysis-20260516",
+          "source_ref": "analysis.strategy.dashboard",
+          "model_version": "finance-agent/0.3",
+          "status": "ok"
+        }
+      ]
+    },
+    "2026-05-15": {
+      "generated_at": "2026-05-15T06:30:00Z",
+      "conclusion": {
+        "bias": "数据不完整，Dashboard 仅展示可用宏观和 CME 占位信息。",
+        "direction": "neutral",
+        "confidence": 0.51,
+        "macro_phase": "宏观阶段：数据不完整",
+        "options_summary": "期权快照可用，但策略卡片尚未生成。",
+        "pin_level": 3188,
+        "resistance_levels": [
+          3230,
+          3260
+        ],
+        "support_levels": [
+          3165,
+          3140
+        ],
+        "wall_score": 0.51,
+        "net_gex": 0.3
+      },
+      "market_summary": {
+        "XAUUSD": {
+          "label": "XAUUSD",
+          "value": 3188.1,
+          "unit": "",
+          "change": "+0.11%",
+          "trend": "flat",
+          "status": "ok",
+          "note": "spot gold"
+        },
+        "DXY": {
+          "label": "DXY",
+          "value": 104.92,
+          "unit": "",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "usd index"
+        },
+        "US10Y": {
+          "label": "US10Y",
+          "value": 4.43,
+          "unit": "%",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "10Y yield"
+        },
+        "US02Y": {
+          "label": "US02Y",
+          "value": 4.83,
+          "unit": "%",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "2Y yield"
+        },
+        "T10YIE": {
+          "label": "T10YIE",
+          "value": 2.33,
+          "unit": "%",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "inflation breakeven"
+        },
+        "REAL_10Y": {
+          "label": "10Y Real Rate",
+          "value": 2.09,
+          "unit": "%",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "real yield"
+        }
+      },
+      "macro_liquidity": {
+        "RRP": {
+          "label": "RRP",
+          "value": 417.2,
+          "unit": "B",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "overnight facility"
+        },
+        "TGA": {
+          "label": "TGA",
+          "value": 615.3,
+          "unit": "B",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "treasury account"
+        },
+        "BANK_RESERVES": {
+          "label": "Bank Reserves",
+          "value": 3.23,
+          "unit": "T",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "fed balances"
+        },
+        "SOFR": {
+          "label": "SOFR",
+          "value": 5.31,
+          "unit": "%",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "overnight funding"
+        },
+        "IORB": {
+          "label": "IORB",
+          "value": 5.4,
+          "unit": "%",
+          "change": "flat",
+          "trend": "flat",
+          "status": "ok",
+          "note": "reserve interest"
+        }
+      },
+      "cme_options": {
+        "trade_date": "2026-05-15",
+        "product": "GC",
+        "expiries": [
+          "2026-06",
+          "2026-08"
+        ],
+        "intent": "neutral",
+        "intent_score": 0.51,
+        "gamma_zero": 3188,
+        "pin_level": 3188,
+        "net_gex": 0.3,
+        "wall_score": 0.51,
+        "market_regime": "balanced",
+        "upper_resistance_walls": [
+          {
+            "strike": 3230,
+            "score": 0.62,
+            "distance_pct": 1.31
+          },
+          {
+            "strike": 3260,
+            "score": 0.54,
+            "distance_pct": 2.25
+          }
+        ],
+        "lower_support_walls": [
+          {
+            "strike": 3165,
+            "score": 0.59,
+            "distance_pct": -0.73
+          },
+          {
+            "strike": 3140,
+            "score": 0.48,
+            "distance_pct": -1.51
+          }
+        ]
+      },
+      "strategy": {
+        "bias": "策略卡片不可用。",
+        "direction": "neutral",
+        "confidence": 0.51,
+        "macro_phase": "未完成",
+        "key_levels": {
+          "resistance": [
+            3230,
+            3260
+          ],
+          "support": [
+            3165,
+            3140
+          ]
+        },
+        "triggers": [
+          "等待 strategy_card 生成"
+        ],
+        "invalid_conditions": [
+          "缺少 final_report"
+        ],
+        "risk_points": [
+          "仅可用于占位验收"
+        ]
+      },
+      "risk": {
+        "items": [
+          {
+            "label": "策略卡片",
+            "value": "missing",
+            "status": "warn",
+            "note": "等待 agent 输出"
+          }
+        ],
+        "alerts": [
+          "策略卡片缺失。"
+        ]
+      },
+      "pipeline": {
+        "raw": "done",
+        "parsed": "done",
+        "features": "running",
+        "agent": "pending",
+        "report": "pending",
+        "knowledge": "pending"
+      },
+      "warnings": [
+        "options: PRELIM only"
+      ],
+      "risk_alerts": [
+        "strategy_card 缺失"
+      ],
+      "latest_reports": [],
+      "recent_tasks": [
+        {
+          "title": "等待 features 运行",
+          "status": "running",
+          "detail": "features 阶段运行中"
+        }
+      ],
+      "data_source_status": {
+        "CME": {
+          "label": "CME",
+          "status": "warn",
+          "updated_at": "2026-05-15T06:05:00Z"
+        },
+        "FRED": {
+          "label": "FRED",
+          "status": "ok",
+          "updated_at": "2026-05-15T05:54:00Z"
+        }
+      },
+      "source_trace": [
+        {
+          "name": "CME Daily Bulletin",
+          "trade_date": "2026-05-15",
+          "file": "cme/bulletins/2026-05-15-gc.pdf",
+          "snapshot_id": "snapshot-cme-20260515",
+          "source_ref": "cme.daily_bulletin.gc",
+          "model_version": null,
+          "status": "warn"
+        }
+      ]
+    }
+  }
+}

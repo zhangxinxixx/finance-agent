@@ -1,0 +1,134 @@
+{
+  "trade_date": "2026-05-17",
+  "data_source": {
+    "product": "GC",
+    "status": "PRELIM",
+    "expiries": ["2026-06", "2026-08", "2026-10"],
+    "row_count": 12480
+  },
+  "parameters": {
+    "f_value": 3265.4,
+    "r_value": 0.043
+  },
+  "gex": {
+    "netgex_aggregate": {
+      "net_gex": 125000000,
+      "net_gex_direction": "positive",
+      "gamma_zero": {
+        "price": 3225.5,
+        "method": "weighted-average"
+      }
+    }
+  },
+  "wall_scores": [
+    {
+      "strike": 3200,
+      "wall_type": "Put Wall",
+      "oi": 18320,
+      "delta_oi": 560,
+      "wall_score": 0.91,
+      "pnt": 0.85
+    },
+    {
+      "strike": 3300,
+      "wall_type": "Call Wall",
+      "oi": 15420,
+      "delta_oi": 320,
+      "wall_score": 0.87,
+      "pnt": 0.72
+    },
+    {
+      "strike": 3250,
+      "wall_type": "Call Wall",
+      "oi": 12840,
+      "delta_oi": null,
+      "wall_score": 0.74,
+      "pnt": 0.61
+    },
+    {
+      "strike": 3150,
+      "wall_type": "Put Wall",
+      "oi": 11200,
+      "delta_oi": -80,
+      "wall_score": 0.65,
+      "pnt": 0.53
+    }
+  ],
+  "support_resistance": {
+    "resistance": [
+      {
+        "strike": 3300,
+        "wall_score": 0.87,
+        "distance_pct": 1.02
+      },
+      {
+        "strike": 3250,
+        "wall_score": 0.74,
+        "distance_pct": 0.23
+      },
+      {
+        "strike": 3350,
+        "wall_score": 0.58,
+        "distance_pct": 2.56
+      }
+    ],
+    "support": [
+      {
+        "strike": 3200,
+        "wall_score": 0.91,
+        "distance_pct": -1.98
+      },
+      {
+        "strike": 3150,
+        "wall_score": 0.65,
+        "distance_pct": -3.54
+      },
+      {
+        "strike": 3100,
+        "wall_score": 0.49,
+        "distance_pct": -5.11
+      }
+    ]
+  },
+  "intent": {
+    "type": "neutral-bullish",
+    "confidence": 0.62
+  },
+  "calibration": {
+    "oi_deltas_available": true,
+    "wall_migration_detected": false,
+    "expiry_roll_detected": false,
+    "findings": [
+      "Near-month OI concentrates in the 3200-3300 range.",
+      "No expiry roll detected in the current PRELIM snapshot.",
+      "The 3250 call wall keeps delta_oi as null and must remain explicit."
+    ]
+  },
+  "source_trace": [
+    {
+      "name": "CME Daily Bulletin",
+      "trade_date": "2026-05-17",
+      "file": "mocks/cme-options.json",
+      "snapshot_id": "cme-bulletin-20260517",
+      "source_ref": "GET /api/options/snapshot?date=2026-05-17#cme",
+      "endpoint": "GET /api/options/snapshot",
+      "latest_raw_time": "2026-05-17T02:45:00Z",
+      "latest_parsed_time": "2026-05-17T02:47:00Z",
+      "status": "warn"
+    },
+    {
+      "name": "CME Options Parser",
+      "trade_date": "2026-05-17",
+      "file": "mocks/cme-options.json",
+      "snapshot_id": "cme-options-20260517",
+      "source_ref": "GET /api/options/snapshot?date=2026-05-17",
+      "endpoint": "GET /api/options/snapshot",
+      "latest_raw_time": "2026-05-17T02:47:30Z",
+      "latest_parsed_time": "2026-05-17T02:48:00Z",
+      "model_version": "cme-options-parser/v1",
+      "status": "warn"
+    }
+  ],
+  "has_data": true,
+  "source": "mock"
+}

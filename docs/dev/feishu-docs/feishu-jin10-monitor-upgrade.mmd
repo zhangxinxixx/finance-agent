@@ -1,0 +1,18 @@
+flowchart TD
+    A[金十机器人推送到飞书群] --> B[定时拉取群消息]
+    B --> C[保存 raw 与 parsed message]
+    C --> D{业务价值判断}
+    D -->|低价值或重复| E[保留到每日清单并标记原因]
+    D -->|高价值| F[生成 daily_analysis_triggers]
+    F --> G[抓取详情页和图片资产]
+    G --> H{详情访问状态}
+    H -->|public| I[生成 article brief]
+    H -->|vip_locked 或 JS required| J[使用本机金十 VIP 浏览器 profile 补抓]
+    J --> I
+    I --> K[创建 follow-up 分析任务]
+    K --> L[日报分析和 market_events]
+    C --> M[飞书消息监控页]
+    E --> M
+    F --> M
+    I --> M
+    K --> M

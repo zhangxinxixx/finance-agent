@@ -1,0 +1,25 @@
+{
+  "title": "finance-agent 工程文档中台 V2",
+  "created_at": "2026-06-09T15:07:13.967413+00:00",
+  "entry_doc_id": "ATJQd801Ho9jPNxK8qTcxxgsnfg",
+  "entry_doc_url": "https://my.feishu.cn/docx/ATJQd801Ho9jPNxK8qTcxxgsnfg",
+  "architecture_doc_url": "https://my.feishu.cn/docx/NGvydwvL0omSskxocHKc6J8znoh",
+  "bitable_app_token": "XwQgbvxOvakyq5sxqnscjLPpnbf",
+  "bitable_url": "https://my.feishu.cn/base/XwQgbvxOvakyq5sxqnscjLPpnbf",
+  "bitable_tables": {
+    "API_MAP": "tblrYeua55LL05Fs",
+    "PAGE_MATRIX": "tblZDx4f2MTDzGed",
+    "ROADMAP": "tbld3lloE14tqzEF",
+    "RISKS_TODO": "tblyNKPUQCTtPOUN",
+    "DATA_MODEL_STORAGE": "tblfuyQysqRB2UDT",
+    "MODULE_STATUS": "tblrrai7LW01C7jy"
+  },
+  "bitable_record_counts": {
+    "API_MAP": 101,
+    "PAGE_MATRIX": 12,
+    "ROADMAP": 21,
+    "RISKS_TODO": 10,
+    "DATA_MODEL_STORAGE": 88,
+    "MODULE_STATUS": 43
+  }
+}

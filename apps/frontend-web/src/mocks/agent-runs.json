@@ -1,0 +1,229 @@
+{
+  "runs": [
+    {
+      "run_id": "run-mock-20260526-001",
+      "snapshot_id": "snap-mock-20260526-001",
+      "data_status": "partial",
+      "source_refs": [
+        {
+          "source_id": "fred-real-10y",
+          "source_name": "FRED REAL_10Y",
+          "source_type": "api",
+          "data_date": "2026-05-26",
+          "endpoint": "GET /api/macro/latest",
+          "captured_at": "2026-05-26T08:01:00Z",
+          "status": "live"
+        },
+        {
+          "source_id": "cme-daily-bulletin",
+          "source_name": "CME Daily Bulletin",
+          "source_type": "pdf",
+          "data_date": "2026-05-26",
+          "file_path": "storage/raw/cme/2026-05-26/daily_bulletin.pdf",
+          "captured_at": "2026-05-26T08:02:00Z",
+          "status": "partial"
+        }
+      ],
+      "artifact_refs": [
+        {
+          "artifact_id": "artifact-analysis-001",
+          "artifact_type": "analysis_md",
+          "file_path": "storage/outputs/reports/2026-05-26/run-mock-20260526-001/analysis.md",
+          "generated_at": "2026-05-26T08:10:00Z"
+        }
+      ],
+      "task_id": "run-mock-20260526-001",
+      "task_type": "premarket",
+      "workspace_id": "finance-agent",
+      "trading_date": "2026-05-26",
+      "status": "degraded",
+      "current_stage": "report_render",
+      "progress": 0.75,
+      "started_at": "2026-05-26T08:00:00Z",
+      "ended_at": "2026-05-26T08:11:00Z",
+      "total_cost_usd": 1.82,
+      "token_in": 8120,
+      "token_out": 3241,
+      "final_result_id": "final-result-mock-001",
+      "error_summary": "Jin10 article bundle missing, report generated with partial inputs",
+      "steps": [
+        {
+          "run_id": "run-mock-20260526-001",
+          "snapshot_id": "snap-mock-20260526-001",
+          "data_status": "available",
+          "source_refs": [
+            {
+              "source_id": "fred-real-10y",
+              "source_name": "FRED REAL_10Y",
+              "source_type": "api",
+              "data_date": "2026-05-26",
+              "endpoint": "GET /api/macro/latest",
+              "captured_at": "2026-05-26T08:01:00Z",
+              "status": "live"
+            }
+          ],
+          "artifact_refs": [
+            {
+              "artifact_id": "artifact-feature-001",
+              "artifact_type": "feature_json",
+              "file_path": "storage/features/snapshots/XAUUSD/2026-05-26/run-mock-20260526-001/premarket_snapshot.json"
+            }
+          ],
+          "step_id": "step-mock-collector-001",
+          "task_name": "macro_collect",
+          "stage": "collector",
+          "task_kind": "collector",
+          "status": "success",
+          "progress": 1,
+          "input_refs": [],
+          "output_refs": [
+            {
+              "artifact_id": "artifact-feature-001",
+              "artifact_type": "feature_json",
+              "file_path": "storage/features/snapshots/XAUUSD/2026-05-26/run-mock-20260526-001/premarket_snapshot.json"
+            }
+          ],
+          "started_at": "2026-05-26T08:00:00Z",
+          "ended_at": "2026-05-26T08:03:00Z",
+          "duration_ms": 180000,
+          "retry_count": 0,
+          "error_type": null,
+          "error_message": null
+        },
+        {
+          "run_id": "run-mock-20260526-001",
+          "snapshot_id": "snap-mock-20260526-001",
+          "data_status": "partial",
+          "source_refs": [
+            {
+              "source_id": "jin10-bundle",
+              "source_name": "Jin10 Bundle",
+              "source_type": "html",
+              "data_date": "2026-05-26",
+              "endpoint": "GET /api/jin10/report-bundle/latest",
+              "captured_at": "2026-05-26T08:06:00Z",
+              "status": "partial"
+            }
+          ],
+          "artifact_refs": [
+            {
+              "artifact_id": "artifact-analysis-001",
+              "artifact_type": "analysis_md",
+              "file_path": "storage/outputs/reports/2026-05-26/run-mock-20260526-001/analysis.md"
+            }
+          ],
+          "step_id": "step-mock-render-001",
+          "task_name": "report_render",
+          "stage": "renderer",
+          "task_kind": "renderer",
+          "status": "needs_review",
+          "progress": 1,
+          "input_refs": [],
+          "output_refs": [
+            {
+              "artifact_id": "artifact-analysis-001",
+              "artifact_type": "analysis_md",
+              "file_path": "storage/outputs/reports/2026-05-26/run-mock-20260526-001/analysis.md"
+            }
+          ],
+          "started_at": "2026-05-26T08:07:00Z",
+          "ended_at": "2026-05-26T08:11:00Z",
+          "duration_ms": 240000,
+          "retry_count": 1,
+          "error_type": "missing_dependency",
+          "error_message": "Jin10 bundle unavailable, renderer downgraded to partial report"
+        }
+      ]
+    },
+    {
+      "run_id": "run-mock-20260525-001",
+      "snapshot_id": "snap-mock-20260525-001",
+      "data_status": "live",
+      "source_refs": [],
+      "artifact_refs": [],
+      "task_id": "run-mock-20260525-001",
+      "task_type": "premarket",
+      "workspace_id": "finance-agent",
+      "trading_date": "2026-05-25",
+      "status": "success",
+      "current_stage": "completed",
+      "progress": 1,
+      "started_at": "2026-05-25T08:00:00Z",
+      "ended_at": "2026-05-25T08:09:00Z",
+      "total_cost_usd": 1.24,
+      "token_in": 7320,
+      "token_out": 2910,
+      "final_result_id": "final-result-mock-002",
+      "error_summary": null,
+      "steps": []
+    }
+  ],
+  "run_artifacts": {
+    "run-mock-20260526-001": {
+      "run_id": "run-mock-20260526-001",
+      "artifacts": [
+        {
+          "artifact_id": "artifact-analysis-001",
+          "artifact_type": "analysis_md",
+          "file_path": "storage/outputs/reports/2026-05-26/run-mock-20260526-001/analysis.md"
+        },
+        {
+          "artifact_id": "artifact-visual-001",
+          "artifact_type": "visual_html",
+          "file_path": "storage/outputs/reports/2026-05-26/run-mock-20260526-001/visual.html"
+        }
+      ]
+    }
+  },
+  "run_logs": {
+    "run-mock-20260526-001": {
+      "run_id": "run-mock-20260526-001",
+      "logs": [
+        {
+          "step_id": "step-mock-render-001",
+          "task_name": "report_render",
+          "stage": "renderer",
+          "task_kind": "renderer",
+          "status": "needs_review",
+          "progress": 1,
+          "input_refs": [],
+          "output_refs": [],
+          "source_refs": [],
+          "artifact_refs": [],
+          "started_at": "2026-05-26T08:07:00Z",
+          "ended_at": "2026-05-26T08:11:00Z",
+          "duration_ms": 240000,
+          "retry_count": 1,
+          "error_type": "missing_dependency",
+          "error_message": "Jin10 bundle unavailable, renderer downgraded to partial report"
+        }
+      ]
+    }
+  },
+  "reviews": {
+    "reviews": [
+      {
+        "review_id": "review-mock-001",
+        "run_id": "run-mock-20260526-001",
+        "source_module": "jin10_bundle",
+        "source_step_id": "step-mock-render-001",
+        "severity": "warning",
+        "reason": "bundle missing one subview",
+        "impact_modules": ["reports", "dashboard"],
+        "evidence_refs": [
+          {
+            "artifact_id": "artifact-visual-001",
+            "artifact_type": "visual_html",
+            "file_path": "storage/outputs/reports/2026-05-26/run-mock-20260526-001/visual.html"
+          }
+        ],
+        "suggested_action": "manual review",
+        "status": "pending",
+        "created_at": "2026-05-26T08:12:00Z",
+        "updated_at": "2026-05-26T08:12:00Z",
+        "resolved_at": null
+      }
+    ],
+    "total": 1
+  }
+}

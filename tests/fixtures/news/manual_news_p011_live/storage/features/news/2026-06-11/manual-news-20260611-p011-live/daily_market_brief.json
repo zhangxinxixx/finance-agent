@@ -1,0 +1,101 @@
+{
+  "retrieved_date": "2026-06-11",
+  "run_id": "manual-news-20260611-p011-live",
+  "daily_market_brief": {
+    "as_of": "2026-06-11T07:16:00+00:00",
+    "market_mainline": {
+      "status": "available",
+      "summary": "Kevin Warsh takes oath of office as chairman and a member of the Board of Governors of the Federal Reserve System, and the Federal Open Market Committee unanimously selects Warsh as its chairman",
+      "primary_event_id": "event:fomc_statement:0b5e408a21ddbdf7",
+      "risk_level": "medium",
+      "verification_status": "official_confirmed",
+      "pricing_status": "partially_priced"
+    },
+    "next_7d_calendar": [],
+    "confirmed_events": [
+      {
+        "event_id": "event:fomc_statement:0b5e408a21ddbdf7",
+        "event_type": "fomc_statement",
+        "event_time": "2026-05-22T20:15:00+00:00",
+        "what_happened": "Kevin Warsh takes oath of office as chairman and a member of the Board of Governors of the Federal Reserve System, and the Federal Open Market Committee unanimously selects Warsh as its chairman",
+        "who_said": "fed_rss",
+        "verification_status": "official_confirmed",
+        "pricing_status": "partially_priced",
+        "risk_level": "medium",
+        "source_refs": [
+          {
+            "source_ref": "news:fed_rss:f5799775c29b886bad62d499",
+            "source": "fed_rss"
+          }
+        ]
+      }
+    ],
+    "candidate_events": [
+      {
+        "event_id": "event:macro_watchlist:0100d9d5478f44ae",
+        "event_type": "macro_watchlist",
+        "event_time": "2026-06-11T00:00:00+00:00",
+        "what_happened": "CPI and Fed catalyst watchlist remains active.",
+        "who_said": "jin10_report_events",
+        "verification_status": "single_source",
+        "pricing_status": "unpriced",
+        "risk_level": "medium"
+      },
+      {
+        "event_id": "event:gold_market_narrative:9cde12a062462454",
+        "event_type": "gold_market_narrative",
+        "event_time": "2026-06-11T00:00:00+00:00",
+        "what_happened": "Gold remains in a direction-selection regime before CPI.",
+        "who_said": "jin10_report_events",
+        "verification_status": "single_source",
+        "pricing_status": "unpriced",
+        "risk_level": "medium"
+      }
+    ],
+    "unconfirmed_risks": [
+      {
+        "event_id": "event:macro_watchlist:0100d9d5478f44ae",
+        "event_type": "macro_watchlist",
+        "risk_level": "medium"
+      }
+    ],
+    "asset_reactions": [
+      {
+        "event_id": "event:macro_watchlist:0100d9d5478f44ae",
+        "asset": "XAUUSD",
+        "pricing_status": "unpriced",
+        "direction": "down"
+      }
+    ],
+    "data_quality": {
+      "event_candidate_count": 3,
+      "candidate_event_count": 2
+    },
+    "report_inputs": {
+      "news_highlights": [
+        {
+          "event_id": "event:fomc_statement:0b5e408a21ddbdf7"
+        }
+      ],
+      "watchlist": [
+        {
+          "event_id": "event:macro_watchlist:0100d9d5478f44ae"
+        }
+      ],
+      "risk_points": []
+    },
+    "source_refs": [
+      {
+        "source_ref": "news:fed_rss:f5799775c29b886bad62d499",
+        "source": "fed_rss"
+      },
+      {
+        "source_ref": "outputs/jin10/2026-06-11/221600/raw_article_report.json",
+        "source": "jin10_report_events"
+      }
+    ],
+    "warnings": [
+      "Jin10 report quality_audit.status=needs_review."
+    ]
+  }
+}

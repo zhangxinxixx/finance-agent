@@ -1,0 +1,104 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from apps.analysis.agents import AgentOutput
+
+
+class ReportSection(BaseModel):
+    """One renderer-ready section for the final research report."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    body: str
+    source_refs: list[dict[str, Any]]
+
+
+class FinalReportOutput(BaseModel):
+    """Renderer-facing final report output contract.
+
+    This schema validates an already-computed report payload only. It does not
+    write files, call workers, read raw/parsed data, or render Markdown/JSON.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    asset: str
+    trade_date: str
+    run_id: str
+    snapshot_id: str
+    input_snapshot_ids: dict[str, Any]
+    source_refs: list[dict[str, Any]]
+    coordinator_output: AgentOutput
+    sections: list[ReportSection] = Field(min_length=1)
+    risk_disclosures: list[str]
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def _require_lineage(self) -> FinalReportOutput:
+        missing = [key for key in ("analysis_snapshot", "coordinator") if key not in self.input_snapshot_ids]
+        if missing:
+            raise ValueError(f"input_snapshot_ids must include lineage keys: {', '.join(missing)}")
+        return self
+
+
+# ── P4-04: Structured Report contract ────────────────────────────────────
+
+
+class StructuredReportSection(BaseModel):
+    """One structured section in the final report JSON output.
+
+    Each section corresponds to a logical unit of the research report:
+    summary, macro logic, options structure, market odds, conflicts,
+    scenarios, risks, data quality, and provenance.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    section_id: str = Field(description="Machine-readable section key, e.g. 'one_line_summary'")
+    title: str = Field(description="Human-readable section title")
+    body: str = Field(description="Section content (deterministic, no LLM)")
+    status: str = Field(default="ok", description="ok | partial | unavailable")
+    source_refs: list[dict[str, Any]] = Field(default_factory=list)
+    data_category: str = Field(default="confirmed_data", description="confirmed_data | external_opinion | system_inference")
+
+
+class StructuredReportVersion(BaseModel):
+    """Report version metadata for traceability and diff support."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: str = Field(description="Unique report identifier: <asset>:<trade_date>:<run_id>:final_report")
+    report_type: str = Field(default="structured_final_report")
+    report_version: str = Field(default="1.0.0")
+    snapshot_id: str
+    run_id: str
+    trade_date: str
+    created_at: datetime
+    source_agent_outputs: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of {agent_name, module, version, bias, confidence} for each contributing agent",
+    )
+    is_final: bool = Field(default=True)
+    status: str = Field(default="generated", description="generated | draft | superseded")
+
+
+class StructuredReportOutput(BaseModel):
+    """Structured final report JSON output (P4-04).
+
+    A deterministic, machine-readable complement to the Markdown report.
+    Produced by the same renderer pipeline from the same C3 agent outputs,
+    without LLM, network, or file reads.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: StructuredReportVersion
+    sections: list[StructuredReportSection] = Field(min_length=1)
+    source_refs: list[dict[str, Any]] = Field(default_factory=list)
+    risk_disclosures: list[str] = Field(default_factory=list)

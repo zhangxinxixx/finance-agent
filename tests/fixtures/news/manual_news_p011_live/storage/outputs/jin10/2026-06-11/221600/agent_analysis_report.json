@@ -1,0 +1,22 @@
+{
+  "article_id": "221600",
+  "document_id": "jin10-2026-06-11-221600",
+  "run_id": "221600",
+  "one_line_conclusion": "黄金处于方向抉择态，等待CPI与Fed催化剂双确认。",
+  "gold_analysis": "黄金在CPI前维持方向抉择态，若关键位收复则看修复反弹。",
+  "quality_audit": {
+    "status": "needs_review",
+    "reasons": [
+      {
+        "code": "evidence_insufficient",
+        "message": "no stable prices, key sentences, levels, or logic chain extracted"
+      }
+    ]
+  },
+  "evidence_basis": {
+    "author_views": [
+      "CPI与Fed催化剂将决定黄金下一阶段方向。",
+      "若4270站稳则看修复反弹，否则维持谨慎。"
+    ]
+  }
+}

@@ -1,0 +1,56 @@
+[
+  {
+    "symbol": "DGS10",
+    "date": "2026-04-29",
+    "value": 4.2,
+    "source": "fred",
+    "source_url": "fixture://fred/DGS10",
+    "retrieved_at": "2026-05-06T00:00:00+00:00",
+    "raw_path": "storage/raw/macro/fred/2026-05-06/DGS10.json"
+  },
+  {
+    "symbol": "T10YIE",
+    "date": "2026-04-29",
+    "value": 2.3,
+    "source": "fred",
+    "source_url": "fixture://fred/T10YIE",
+    "retrieved_at": "2026-05-06T00:00:00+00:00",
+    "raw_path": "storage/raw/macro/fred/2026-05-06/T10YIE.json"
+  },
+  {
+    "symbol": "DGS10",
+    "date": "2026-05-01",
+    "value": 4.25,
+    "source": "fred",
+    "source_url": "fixture://fred/DGS10",
+    "retrieved_at": "2026-05-06T00:00:00+00:00",
+    "raw_path": "storage/raw/macro/fred/2026-05-06/DGS10.json"
+  },
+  {
+    "symbol": "T10YIE",
+    "date": "2026-05-01",
+    "value": 2.32,
+    "source": "fred",
+    "source_url": "fixture://fred/T10YIE",
+    "retrieved_at": "2026-05-06T00:00:00+00:00",
+    "raw_path": "storage/raw/macro/fred/2026-05-06/T10YIE.json"
+  },
+  {
+    "symbol": "DGS10",
+    "date": "2026-05-06",
+    "value": 4.3,
+    "source": "fred",
+    "source_url": "fixture://fred/DGS10",
+    "retrieved_at": "2026-05-06T00:00:00+00:00",
+    "raw_path": "storage/raw/macro/fred/2026-05-06/DGS10.json"
+  },
+  {
+    "symbol": "T10YIE",
+    "date": "2026-05-06",
+    "value": 2.35,
+    "source": "fred",
+    "source_url": "fixture://fred/T10YIE",
+    "retrieved_at": "2026-05-06T00:00:00+00:00",
+    "raw_path": "storage/raw/macro/fred/2026-05-06/T10YIE.json"
+  }
+]

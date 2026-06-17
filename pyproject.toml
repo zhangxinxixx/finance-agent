@@ -1,0 +1,56 @@
+[project]
+name = "finance-agent"
+version = "0.1.0"
+description = "XAUUSD/GC 金融研究中台：数据采集、指标计算、策略报告"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "sqlalchemy>=2.0",
+    "alembic>=1.15",
+    "psycopg2-binary>=2.9",
+    "redis>=5.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "httpx[socks]>=0.28",
+    "apscheduler>=3.10",
+    "python-dotenv>=1.0",
+    "openai>=2.37",
+    "mem0ai>=0.1",
+    "pandas>=2.2",
+    "pymupdf>=1.25",
+    "playwright>=1.59",
+    "opencv-python>=4.13",
+    "cryptography>=45.0",
+    "openbb>=4.7.2",
+    "yfinance>=1.4.1",
+    "dagster>=1.9",
+    "dagster-webserver>=1.9",
+    "dagster-graphql>=1.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    "ruff>=0.11",
+]
+
+[tool.dagster]
+python_module = "dagster_finance.definitions"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+markers = [
+    "unit: fast isolated tests with mocks (default layer)",
+    "integration: tests requiring local services (DB, Redis, file system)",
+    "live: tests requiring external network or real credentials — must be explicitly selected",
+    "slow: tests that are slow even with mocks",
+]

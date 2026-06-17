@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+from apps.api.services.dashboard_service import get_dashboard_summary
+
+
+def test_dashboard_summary_options_confidence_degrades_for_prelim_and_stale(monkeypatch):
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.get_options_snapshot",
+        lambda: {
+            "trade_date": "2026-06-01",
+            "data_source": {"product": "OG", "expiries": ["JUL26"], "status": "PRELIM"},
+            "intent": {"type": "I1_defensive", "score": 0.62},
+            "gex": {"netgex_aggregate": {"gamma_zero": {"price": 4509.9}}},
+            "parameters": {"f_value": 4506.7},
+            "support_resistance": {
+                "resistance": [{"strike": 4515, "wall_score": 0.13, "distance_pct": 0.18}],
+                "support": [{"strike": 4505, "wall_score": 0.11, "distance_pct": -0.04}],
+            },
+        },
+    )
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_market_tickers", lambda: {"sources": [], "tickers": {}, "generated_at": None})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_macro_latest", lambda: {"indicators": {}, "unavailable_symbols": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_recent_tasks", lambda _limit=5: [])
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_reports_index", lambda: {"reports": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_data_source_statuses", lambda: {"sources": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.build_dashboard_agent_summary", lambda: {"coordinator": None, "synthesis": None})
+
+    data = get_dashboard_summary()
+    options = data["options"]
+    assert options["trade_date"] == "2026-06-01"
+    assert options["confidence"]["data_status"] == "PRELIM"
+    assert options["confidence"]["score"] < 0.62
+    assert "PRELIM" in options["confidence"]["reasons"]
+
+
+def test_dashboard_summary_includes_agent_read_model(monkeypatch):
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_options_snapshot", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_market_tickers", lambda: {"sources": [], "tickers": {}, "generated_at": None})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_macro_latest", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_recent_tasks", lambda _limit=5: [])
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_reports_index", lambda: {"reports": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_data_source_statuses", lambda: {"sources": []})
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.build_dashboard_agent_summary",
+        lambda: {
+            "coordinator": {"agent_name": "coordinator", "summary": "协调摘要"},
+            "synthesis": {"agent_name": "synthesis_agent", "summary": "综合摘要", "confidence": 0.72},
+        },
+    )
+
+    data = get_dashboard_summary()
+
+    assert data["agent_summary"]["synthesis"]["summary"] == "综合摘要"
+    assert data["agent_summary"]["coordinator"]["agent_name"] == "coordinator"
+
+
+def test_dashboard_summary_latest_reports_are_globally_sorted_by_trade_date(monkeypatch):
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_options_snapshot", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_market_tickers", lambda: {"sources": [], "tickers": {}, "generated_at": None})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_macro_latest", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_recent_tasks", lambda _limit=5: [])
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.list_reports_index",
+        lambda: {
+            "reports": [
+                {"type": "final_report", "trade_date": "2026-06-08", "run_id": "final-run", "report_id": "final-run", "available": True},
+                {"type": "strategy_card", "trade_date": "2026-06-08", "run_id": "strategy-run", "report_id": "strategy-run", "available": True},
+                {"type": "jin10_daily_report", "trade_date": "2026-06-11", "run_id": "jin10-run", "report_id": "jin10-run", "available": True},
+                {"type": "options_report", "trade_date": "2026-06-10", "run_id": "options-run", "report_id": "options-run", "available": True},
+            ]
+        },
+    )
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_data_source_statuses", lambda: {"sources": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.build_dashboard_agent_summary", lambda: {"coordinator": None, "synthesis": None})
+
+    data = get_dashboard_summary()
+
+    assert [item["trade_date"] for item in data["latest_reports"]] == [
+        "2026-06-11",
+        "2026-06-10",
+        "2026-06-08",
+        "2026-06-08",
+    ]
+    assert [item["type"] for item in data["latest_reports"][:2]] == [
+        "jin10_daily_report",
+        "options_report",
+    ]
+
+
+def test_dashboard_summary_marks_composite_partial_when_newer_jin10_is_degraded(monkeypatch):
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.get_options_snapshot",
+        lambda: {
+            "trade_date": "2026-06-10",
+            "data_source": {"product": "OG", "expiries": ["JUL26"], "status": "PRELIM"},
+            "intent": {"type": "I1_defensive", "score": 0.46},
+            "gex": {"netgex_aggregate": {"gamma_zero": {"price": 4515.6}}},
+            "parameters": {"f_value": 4133.8},
+            "support_resistance": {"resistance": [], "support": []},
+        },
+    )
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_market_tickers", lambda: {"sources": [], "tickers": {}, "generated_at": None})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_macro_latest", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_recent_tasks", lambda _limit=5: [])
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.list_reports_index",
+        lambda: {
+            "reports": [
+                {"type": "strategy_card", "trade_date": "2026-06-10", "run_id": "strategy-run", "report_id": "strategy-run", "available": True},
+                {"type": "final_report", "trade_date": "2026-06-10", "run_id": "final-run", "report_id": "final-run", "available": True},
+                {
+                    "type": "jin10_daily_report",
+                    "trade_date": "2026-06-12",
+                    "run_id": "221592",
+                    "report_id": "221592",
+                    "title": "霍尔木兹海峡受阻3个月，全球通胀水平如何了？",
+                    "available": True,
+                    "status": "degraded",
+                    "quality_audit": {"status": "rejected", "reason_codes": ["evidence_insufficient"]},
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_data_source_statuses", lambda: {"sources": []})
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.build_dashboard_agent_summary",
+        lambda: {
+            "coordinator": None,
+            "synthesis": {
+                "agent_name": "synthesis_agent",
+                "run_id": "221592",
+                "snapshot_id": "jin10:2026-06-12:221592:agent_analysis",
+                "summary": "Rejected Jin10 synthesis",
+            },
+        },
+    )
+
+    data = get_dashboard_summary()
+
+    assert data["composite_analysis"]["status"] == "partial"
+    assert data["composite_analysis"]["trade_date"] == "2026-06-10"
+    assert data["composite_analysis"]["latest_report_date"] == "2026-06-12"
+    assert data["composite_analysis"]["latest_eligible_context_date"] == "2026-06-10"
+    assert data["composite_analysis"]["degraded_newer_reports"][0]["run_id"] == "221592"
+    assert data["latest_reports"][0]["status"] == "degraded"
+    assert any("newer Jin10 reports are degraded" in warning for warning in data["warnings"])
+    assert data["agent_summary"]["synthesis"] is None
+    assert data["agent_summary"]["synthesis_gate"]["run_id"] == "221592"
