@@ -5,11 +5,20 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from apps.api.main import api_run_artifacts, api_run_detail, api_run_events, api_run_steps, api_runs
+from apps.api.main import (
+    api_artifact_detail,
+    api_run_artifacts,
+    api_run_detail,
+    api_run_events,
+    api_run_steps,
+    api_runs,
+)
 from apps.api.schemas.common import TaskStatus as ApiTaskStatus
 from apps.api.services.task_service import map_task_status_to_api
 from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
@@ -168,6 +177,62 @@ def test_get_run_artifacts_prefers_registry_rows_when_present() -> None:
     assert [item["file_path"] for item in payload["artifacts"]] == ["storage/features/macro/rollup.json"]
     assert payload["artifacts"][0]["artifact_type"] == "feature_json"
     assert payload["artifacts"][0]["sha256"] == "sha-rollup-001"
+
+
+def test_get_artifact_detail_returns_registry_context() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session)
+    step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    row = RunArtifact(
+        run_id=run.id,
+        task_id=step.id,
+        artifact_type="feature_json",
+        file_path="storage/features/macro/rollup.json",
+        sha256="sha-rollup-001",
+        source_refs=json.dumps(
+            [
+                {
+                    "source_id": "src-registry-001",
+                    "source_name": "FRED",
+                    "source_type": "api",
+                    "data_date": "2026-05-26",
+                }
+            ]
+        ),
+        metadata_json=json.dumps(
+            {
+                "artifact_id": "legacy-art-001",
+                "generated_at": "2026-05-26T08:00:05+00:00",
+                "label": "macro rollup",
+            }
+        ),
+    )
+    session.add(row)
+    session.commit()
+
+    payload = api_artifact_detail(str(row.artifact_id), db=session).model_dump(mode="json")
+
+    assert payload["run_id"] == str(run.id)
+    assert payload["snapshot_id"] == "snap-001"
+    assert payload["task_id"] == str(step.id)
+    assert payload["task_name"] == "macro_collect"
+    assert payload["stage"] == "collector"
+    assert payload["artifact"]["artifact_id"] == str(row.artifact_id)
+    assert payload["artifact"]["artifact_type"] == "feature_json"
+    assert payload["artifact"]["file_path"] == "storage/features/macro/rollup.json"
+    assert payload["artifact_refs"][0]["artifact_id"] == str(row.artifact_id)
+    assert payload["source_refs"][0]["source_id"] == "src-registry-001"
+    assert payload["metadata"]["label"] == "macro rollup"
+
+
+def test_get_artifact_detail_raises_404_for_missing_registry_row() -> None:
+    session, _ = _make_session()
+
+    with pytest.raises(HTTPException) as exc_info:
+        api_artifact_detail("11111111-1111-1111-1111-111111111111", db=session)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Artifact not found"
 
 
 def test_get_run_detail_maps_public_status() -> None:

@@ -53,6 +53,7 @@ from apps.api.schemas.playbook import (
     PlaybookTemplateListResponse,
     PlaybookTemplateVersion,
 )
+from apps.api.schemas.artifact import ArtifactDetailResponse
 from apps.api.schemas.strategy import StrategyAssetListResponse
 from apps.api.schemas.source_trace import SourceTraceResponse
 from apps.api.schemas.report import ReportAnalysisInputs, ReportArtifact, ReportDetail
@@ -120,6 +121,7 @@ from apps.api.services.daily_analysis_followup_service import (
 from apps.api.services.daily_analysis_followup_task_service import create_daily_analysis_followup_tasks
 from apps.api.services.execution_event_api import get_run_events
 from apps.api.services.feishu_jin10_message_monitor_service import get_feishu_jin10_message_monitor
+from apps.api.services.artifact_service import get_artifact_detail_response
 from apps.api.services.source_service import get_data_status_summary
 from apps.api.services.source_trace_service import (
     get_source_trace_by_report_id,
@@ -880,6 +882,20 @@ def api_run_artifacts(run_id: str, db: Session = Depends(get_db)):
     if artifacts is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return artifacts
+
+
+@app.get("/api/artifacts/{artifact_id}", response_model=ArtifactDetailResponse)
+def api_artifact_detail(artifact_id: str, db: Session = Depends(get_db)) -> ArtifactDetailResponse:
+    """返回单个 registry artifact 的上下文详情。"""
+    try:
+        uuid.UUID(artifact_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid artifact_id format")
+
+    artifact = get_artifact_detail_response(db, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return artifact
 
 
 @app.get("/api/runs/{run_id}/events")
