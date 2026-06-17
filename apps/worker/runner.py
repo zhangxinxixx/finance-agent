@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session as DBSession
 from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
 from apps.output.artifacts import artifact_run_dir
 from apps.premarket import sort_premarket_steps
+from apps.runtime.artifact_registry import register_step_artifacts
 from apps.runtime.state_machine import derive_task_run_status, transition_task_run
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
@@ -222,6 +223,8 @@ def run_premarket(
                         break
 
             summary_status = _apply_step_summary_status(step, summary)
+            if step.status in {StepStatus.success, StepStatus.skipped}:
+                _register_runner_step_artifacts(db, run_id=run_id, step=step, summary=summary)
             # ── T1.3: successful steps are not retryable ───────────
             step.retryable = False
             if summary_status == _STEP_STATUS_FAILED:
@@ -417,6 +420,28 @@ def _apply_step_summary_status(step, summary: dict[str, object] | None) -> str:
         logger.warning("Step %s returned %s", getattr(step, "name", "<unknown>"), unknown_status)
         return _STEP_STATUS_FAILED
     return status
+
+
+def _register_runner_step_artifacts(
+    db: DBSession,
+    *,
+    run_id: str,
+    step,
+    summary: dict[str, object] | None,
+) -> None:
+    if not isinstance(summary, dict) and not step.output_ref:
+        return
+    output_refs = summary.get("output_refs") if isinstance(summary, dict) else None
+    artifact_refs = summary.get("artifact_refs") if isinstance(summary, dict) else None
+    register_step_artifacts(
+        db,
+        run_id=run_id,
+        step=step,
+        output_refs=output_refs if isinstance(output_refs, list) else None,
+        artifact_refs=artifact_refs if isinstance(artifact_refs, list) else None,
+        output_ref=step.output_ref,
+        source_refs=None,
+    )
 
 
 def _persist_analysis_snapshot(

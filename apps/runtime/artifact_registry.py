@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.common import ArtifactType
@@ -16,6 +17,22 @@ from database.models.execution import RunArtifact
 from database.models.task import TaskStep
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_artifacts_available(db: Session) -> bool:
+    cached = db.info.get("_run_artifacts_available")
+    if cached is not None:
+        return bool(cached)
+    try:
+        bind = db.connection()
+    except Exception:
+        return False
+    try:
+        available = inspect(bind).has_table("run_artifacts")
+    except Exception:
+        return False
+    db.info["_run_artifacts_available"] = available
+    return available
 
 
 def register_step_artifacts(
@@ -29,6 +46,8 @@ def register_step_artifacts(
     source_refs: list[dict[str, Any]] | None = None,
 ) -> list[RunArtifact]:
     """Persist additive registry rows for a step's artifacts."""
+    if not _run_artifacts_available(db):
+        return []
     persisted: list[RunArtifact] = []
     seen: set[tuple[str, str]] = set()
 
@@ -80,6 +99,8 @@ def register_step_artifacts(
 
 
 def list_run_artifacts(db: Session, run_id: str) -> list[ArtifactRef]:
+    if not _run_artifacts_available(db):
+        return []
     rows = (
         db.query(RunArtifact)
         .filter(RunArtifact.run_id == uuid.UUID(run_id))
