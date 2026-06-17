@@ -68,6 +68,23 @@ def test_parse_source_refs_and_dedupe_support_json_and_python_lists() -> None:
     assert [item.source_id for item in deduped] == ["src-001", "src-002"]
 
 
+def test_parse_source_refs_supports_report_date_and_source_url_aliases() -> None:
+    parsed = parse_source_refs(
+        [
+            {
+                "source_id": "src-review-001",
+                "source_name": "CME",
+                "source_type": "pdf",
+                "report_date": "2026-05-06",
+                "source_url": "https://example.test/cme.pdf",
+            }
+        ]
+    )
+
+    assert parsed[0].data_date == "2026-05-06"
+    assert parsed[0].url == "https://example.test/cme.pdf"
+
+
 def test_artifact_ref_from_path_supports_report_alias_filenames() -> None:
     source_ref = artifact_ref_from_path(
         "storage/outputs/jin10/2026-05-31/220787/raw_article_report.md",

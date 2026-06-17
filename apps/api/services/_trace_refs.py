@@ -25,12 +25,12 @@ def parse_source_refs(raw: Any) -> list[SourceRef]:
                 source_id=source_id,
                 source_name=source_name,
                 source_type=source_type,
-                data_date=item.get("data_date"),
+                data_date=item.get("data_date") or item.get("report_date"),
                 endpoint=item.get("endpoint"),
                 captured_at=item.get("captured_at"),
                 file_path=item.get("file_path"),
                 sha256=item.get("sha256"),
-                url=item.get("url"),
+                url=item.get("url") or item.get("source_url"),
                 status=item.get("status"),
             )
         )
