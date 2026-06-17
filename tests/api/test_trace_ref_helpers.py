@@ -67,3 +67,21 @@ def test_parse_source_refs_and_dedupe_support_json_and_python_lists() -> None:
 
     assert [item.source_id for item in deduped] == ["src-001", "src-002"]
 
+
+def test_artifact_ref_from_path_supports_report_alias_filenames() -> None:
+    source_ref = artifact_ref_from_path(
+        "storage/outputs/jin10/2026-05-31/220787/raw_article_report.md",
+        artifact_id="report:source",
+    )
+    analysis_ref = artifact_ref_from_path(
+        "storage/outputs/final_report/XAUUSD/2026-05-26/run-001/final_report.md",
+        artifact_id="report:analysis",
+    )
+    visual_ref = artifact_ref_from_path(
+        "storage/outputs/jin10/2026-05-31/220787/daily_analysis.html",
+        artifact_id="report:visual",
+    )
+
+    assert source_ref.artifact_type == ArtifactType.source_md
+    assert analysis_ref.artifact_type == ArtifactType.analysis_md
+    assert visual_ref.artifact_type == ArtifactType.visual_html

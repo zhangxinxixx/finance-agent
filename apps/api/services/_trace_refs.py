@@ -103,11 +103,19 @@ def coerce_artifact_type(raw_type: str | None, file_path: str) -> ArtifactType:
             pass
 
     normalized = file_path.lower()
-    if normalized.endswith("source.md"):
+    if normalized.endswith("source.md") or normalized.endswith("raw_article_report.md"):
         return ArtifactType.source_md
-    if normalized.endswith("analysis.md"):
+    if (
+        normalized.endswith("analysis.md")
+        or normalized.endswith("final_report.md")
+        or normalized.endswith("agent_analysis_report.md")
+    ):
         return ArtifactType.analysis_md
-    if normalized.endswith("visual.html"):
+    if (
+        normalized.endswith("visual.html")
+        or normalized.endswith("daily_analysis.html")
+        or normalized.endswith("options_visual_report.html")
+    ):
         return ArtifactType.visual_html
     if normalized.endswith("report_structured.json"):
         return ArtifactType.structured_json
@@ -131,4 +139,3 @@ def _normalize_payload(raw: Any) -> Any:
         except json.JSONDecodeError:
             return None
     return raw
-
