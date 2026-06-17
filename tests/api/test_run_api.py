@@ -217,10 +217,14 @@ def test_get_artifact_detail_returns_registry_context() -> None:
     assert payload["task_id"] == str(step.id)
     assert payload["task_name"] == "macro_collect"
     assert payload["stage"] == "collector"
+    assert payload["input_refs"][0]["artifact_id"] == "art-in-001"
+    assert payload["input_refs"][0]["artifact_type"] == "raw_file"
     assert payload["artifact"]["artifact_id"] == str(row.artifact_id)
     assert payload["artifact"]["artifact_type"] == "feature_json"
     assert payload["artifact"]["file_path"] == "storage/features/macro/rollup.json"
     assert payload["artifact_refs"][0]["artifact_id"] == str(row.artifact_id)
+    assert any(item["artifact_id"] == "art-out-001" for item in payload["artifact_refs"])
+    assert any(item["artifact_id"] == "art-visual-001" for item in payload["artifact_refs"])
     assert payload["source_refs"][0]["source_id"] == "src-registry-001"
     assert payload["metadata"]["label"] == "macro rollup"
 

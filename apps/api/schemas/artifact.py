@@ -15,4 +15,5 @@ class ArtifactDetailResponse(TraceableResponse):
     task_id: str | None = None
     task_name: str | None = None
     stage: str | None = None
+    input_refs: list[ArtifactRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

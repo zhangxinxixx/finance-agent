@@ -31,6 +31,8 @@ def get_artifact_detail_response(db: Session, artifact_id: str) -> ArtifactDetai
     source_refs = _parse_source_refs(row.source_refs)
     if not source_refs and step is not None:
         source_refs = _parse_source_refs(step.source_refs)
+    input_refs = _parse_artifact_refs(step.input_refs) if step is not None else []
+    related_artifacts = _build_related_artifacts(artifact, step=step)
 
     return ArtifactDetailResponse(
         run_id=str(row.run_id) if row.run_id else None,
@@ -39,8 +41,9 @@ def get_artifact_detail_response(db: Session, artifact_id: str) -> ArtifactDetai
         task_id=str(step.id) if step is not None else str(row.task_id) if row.task_id else None,
         task_name=step.name if step is not None else None,
         stage=step.stage if step is not None else None,
+        input_refs=input_refs,
         source_refs=source_refs,
-        artifact_refs=[artifact],
+        artifact_refs=related_artifacts,
         metadata=_parse_metadata(row.metadata_json),
     )
 
@@ -87,6 +90,70 @@ def _parse_source_refs(raw: str | None) -> list[SourceRef]:
             )
         )
     return refs
+
+
+def _parse_artifact_refs(raw: str | None) -> list[ArtifactRef]:
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+
+    artifacts: list[ArtifactRef] = []
+    for index, item in enumerate(payload):
+        if isinstance(item, dict):
+            file_path = item.get("file_path")
+            if not file_path:
+                continue
+            artifacts.append(
+                ArtifactRef(
+                    artifact_id=str(item.get("artifact_id") or f"{file_path}:{index}"),
+                    artifact_type=_coerce_artifact_type(item.get("artifact_type"), file_path),
+                    file_path=file_path,
+                    version=item.get("version"),
+                    generated_at=item.get("generated_at"),
+                    sha256=item.get("sha256"),
+                )
+            )
+        elif isinstance(item, str):
+            artifacts.append(_artifact_from_path(item, artifact_id=f"{item}:{index}"))
+    return artifacts
+
+
+def _artifact_from_path(path: str, *, artifact_id: str) -> ArtifactRef:
+    return ArtifactRef(
+        artifact_id=artifact_id,
+        artifact_type=_coerce_artifact_type(None, path),
+        file_path=path,
+    )
+
+
+def _build_related_artifacts(current: ArtifactRef, *, step: TaskStep | None) -> list[ArtifactRef]:
+    if step is None:
+        return [current]
+    artifacts = [
+        current,
+        *_parse_artifact_refs(step.output_refs),
+        *_parse_artifact_refs(step.artifact_refs),
+    ]
+    if step.output_ref:
+        artifacts.append(_artifact_from_path(step.output_ref, artifact_id=f"{step.id}:output_ref"))
+    return _dedupe_artifacts(artifacts)
+
+
+def _dedupe_artifacts(artifacts: list[ArtifactRef]) -> list[ArtifactRef]:
+    seen: set[tuple[str, str]] = set()
+    deduped: list[ArtifactRef] = []
+    for artifact in artifacts:
+        key = (artifact.file_path, artifact.artifact_type.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(artifact)
+    return deduped
 
 
 def _coerce_artifact_type(raw_type: str | None, file_path: str) -> ArtifactType:
