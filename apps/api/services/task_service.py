@@ -8,9 +8,16 @@ from typing import Any
 
 from sqlalchemy.orm import Session, selectinload
 
-from apps.api.schemas.common import ArtifactType, TaskStatus as ApiTaskStatus
-from apps.api.schemas.source_trace import ArtifactRef, SourceRef
+from apps.api.schemas.source_trace import ArtifactRef
+from apps.api.schemas.common import TaskStatus as ApiTaskStatus
 from apps.api.schemas.task_run import TaskRunResponse, TaskStepResponse
+from apps.api.services._trace_refs import (
+    artifact_ref_from_path,
+    dedupe_artifact_refs,
+    dedupe_source_refs,
+    parse_artifact_refs,
+    parse_source_refs,
+)
 from apps.runtime.artifact_registry import list_run_artifacts
 from database.models.engine import SessionLocal
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
@@ -116,7 +123,7 @@ def get_task_run_artifacts(db: Session, run_id: str) -> dict[str, Any] | None:
 
     artifacts = list_run_artifacts(db, run_id)
     if not artifacts:
-        artifacts = _dedupe_artifacts(
+        artifacts = dedupe_artifact_refs(
             artifact
             for step in run.steps
             for artifact in _step_artifact_refs(step)
@@ -148,8 +155,8 @@ def build_task_run_response(run: TaskRun) -> TaskRunResponse:
         token_out=run.token_out,
         final_result_id=run.final_result_id,
         error_summary=run.error_summary or run.error,
-        source_refs=_dedupe_sources(source for step in run.steps for source in _parse_source_refs(step.source_refs)),
-        artifact_refs=_dedupe_artifacts(artifact for step in run.steps for artifact in _step_artifact_refs(step)),
+        source_refs=dedupe_source_refs(source for step in run.steps for source in parse_source_refs(step.source_refs)),
+        artifact_refs=dedupe_artifact_refs(artifact for step in run.steps for artifact in _step_artifact_refs(step)),
         steps=steps,
     )
 
@@ -164,11 +171,11 @@ def _try_parse_json(raw: str | None) -> dict | None:
 
 
 def build_task_step_response(step: TaskStep, *, run: TaskRun | None = None) -> TaskStepResponse:
-    input_refs = _parse_artifact_refs(step.input_refs)
-    output_refs = _parse_artifact_refs(step.output_refs)
-    extra_artifacts = _parse_artifact_refs(step.artifact_refs)
-    primary_output = _artifact_from_path(step.output_ref, artifact_id=f"{step.id}:output_ref") if step.output_ref else None
-    artifact_refs = _dedupe_artifacts(
+    input_refs = parse_artifact_refs(step.input_refs)
+    output_refs = parse_artifact_refs(step.output_refs)
+    extra_artifacts = parse_artifact_refs(step.artifact_refs)
+    primary_output = artifact_ref_from_path(step.output_ref, artifact_id=f"{step.id}:output_ref") if step.output_ref else None
+    artifact_refs = dedupe_artifact_refs(
         [*output_refs, *extra_artifacts, *([primary_output] if primary_output else [])]
     )
     return TaskStepResponse(
@@ -182,7 +189,7 @@ def build_task_step_response(step: TaskStep, *, run: TaskRun | None = None) -> T
         progress=_infer_step_progress(step.status),
         input_refs=input_refs,
         output_refs=output_refs,
-        source_refs=_parse_source_refs(step.source_refs),
+        source_refs=parse_source_refs(step.source_refs),
         artifact_refs=artifact_refs,
         started_at=step.started_at,
         ended_at=step.finished_at,
@@ -260,123 +267,8 @@ def _parse_json(raw: str | None) -> Any:
         return None
 
 
-def _parse_artifact_refs(raw: str | None) -> list[ArtifactRef]:
-    payload = _parse_json(raw)
-    if not isinstance(payload, list):
-        return []
-
-    artifacts: list[ArtifactRef] = []
-    for index, item in enumerate(payload):
-        if isinstance(item, dict):
-            file_path = item.get("file_path")
-            if not file_path:
-                continue
-            artifact_type = _coerce_artifact_type(item.get("artifact_type"), file_path)
-            artifacts.append(
-                ArtifactRef(
-                    artifact_id=str(item.get("artifact_id") or f"{file_path}:{index}"),
-                    artifact_type=artifact_type,
-                    file_path=file_path,
-                    version=item.get("version"),
-                    generated_at=item.get("generated_at"),
-                    sha256=item.get("sha256"),
-                )
-            )
-        elif isinstance(item, str):
-            artifacts.append(_artifact_from_path(item, artifact_id=f"{item}:{index}"))
-    return artifacts
-
-
-def _parse_source_refs(raw: str | None) -> list[SourceRef]:
-    payload = _parse_json(raw)
-    if not isinstance(payload, list):
-        return []
-
-    refs: list[SourceRef] = []
-    for index, item in enumerate(payload):
-        if not isinstance(item, dict):
-            continue
-        source_name = str(item.get("source_name") or item.get("source") or item.get("source_id") or f"source-{index}")
-        source_id = str(item.get("source_id") or f"{source_name}:{index}")
-        source_type = str(item.get("source_type") or item.get("type") or "unknown")
-        refs.append(
-            SourceRef(
-                source_id=source_id,
-                source_name=source_name,
-                source_type=source_type,
-                data_date=item.get("data_date"),
-                endpoint=item.get("endpoint"),
-                captured_at=item.get("captured_at"),
-                file_path=item.get("file_path"),
-                sha256=item.get("sha256"),
-                url=item.get("url"),
-                status=item.get("status"),
-            )
-        )
-    return refs
-
-
-def _artifact_from_path(path: str, *, artifact_id: str) -> ArtifactRef:
-    return ArtifactRef(
-        artifact_id=artifact_id,
-        artifact_type=_coerce_artifact_type(None, path),
-        file_path=path,
-    )
-
-
 def _step_artifact_refs(step: TaskStep) -> list[ArtifactRef]:
-    refs = [*_parse_artifact_refs(step.output_refs), *_parse_artifact_refs(step.artifact_refs)]
+    refs = [*parse_artifact_refs(step.output_refs), *parse_artifact_refs(step.artifact_refs)]
     if step.output_ref:
-        refs.append(_artifact_from_path(step.output_ref, artifact_id=f"{step.id}:output_ref"))
+        refs.append(artifact_ref_from_path(step.output_ref, artifact_id=f"{step.id}:output_ref"))
     return refs
-
-
-def _coerce_artifact_type(raw_type: str | None, file_path: str) -> ArtifactType:
-    if raw_type:
-        try:
-            return ArtifactType(raw_type)
-        except ValueError:
-            pass
-
-    normalized = file_path.lower()
-    if normalized.endswith("source.md"):
-        return ArtifactType.source_md
-    if normalized.endswith("analysis.md"):
-        return ArtifactType.analysis_md
-    if normalized.endswith("visual.html"):
-        return ArtifactType.visual_html
-    if normalized.endswith("report_structured.json"):
-        return ArtifactType.structured_json
-    if "/raw/" in normalized:
-        return ArtifactType.raw_file
-    if "/parsed/" in normalized:
-        return ArtifactType.parsed_file
-    if "/features/" in normalized:
-        return ArtifactType.feature_json
-    if normalized.endswith(".png") or normalized.endswith(".jpg") or normalized.endswith(".jpeg"):
-        return ArtifactType.chart_snapshot
-    return ArtifactType.structured_json
-
-
-def _dedupe_artifacts(artifacts: Iterable[ArtifactRef]) -> list[ArtifactRef]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[ArtifactRef] = []
-    for artifact in artifacts:
-        key = (artifact.file_path, artifact.artifact_type.value)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(artifact)
-    return deduped
-
-
-def _dedupe_sources(sources: Iterable[SourceRef]) -> list[SourceRef]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[SourceRef] = []
-    for source in sources:
-        key = (source.source_id, source.source_type)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(source)
-    return deduped
