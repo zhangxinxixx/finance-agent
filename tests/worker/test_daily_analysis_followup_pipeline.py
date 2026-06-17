@@ -14,6 +14,7 @@ from apps.worker.pipelines.daily_analysis_followup import (
     run_pending_daily_analysis_followup_tasks,
 )
 from apps.collectors.news.jin10_detail_fetcher import Jin10DetailFetchResult
+from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 
 
@@ -120,6 +121,7 @@ def test_run_daily_analysis_followup_task_expands_auditable_steps(tmp_path: Path
 
 def test_run_daily_analysis_followup_task_fetches_readable_detail_page(tmp_path: Path) -> None:
     session = _make_db_session(tmp_path)
+    ensure_execution_tables(session)
     run = _seed_followup_run(session)
     run_daily_analysis_followup_task(session, run.id, storage_root=tmp_path)
 
@@ -156,6 +158,8 @@ def test_run_daily_analysis_followup_task_fetches_readable_detail_page(tmp_path:
     assert {item["artifact_type"] for item in refs} >= {"raw_file", "parsed_file", "chart_snapshot"}
     source_refs = json.loads(detail_step.source_refs or "[]")
     assert any(item.get("source_name") == "jin10_detail_pages" for item in source_refs)
+    run_artifacts = session.query(RunArtifact).filter(RunArtifact.run_id == run.id).all()
+    assert {artifact.artifact_type for artifact in run_artifacts} >= {"raw_file", "parsed_file", "chart_snapshot"}
     assert steps[VIP_BROWSER_FALLBACK_STEP].status == StepStatus.skipped
     assert steps[DAILY_ANALYSIS_STEP].status == StepStatus.pending
 
@@ -354,6 +358,7 @@ def test_run_daily_analysis_followup_task_vip_browser_fallback_routes_to_daily_a
     monkeypatch,
 ) -> None:
     session = _make_db_session(tmp_path)
+    ensure_execution_tables(session)
     profile_dir = tmp_path / "jin10-browser-profile"
     profile_dir.mkdir()
     monkeypatch.setenv("JIN10_BROWSER_PROFILE", str(profile_dir))
@@ -404,9 +409,45 @@ def test_run_daily_analysis_followup_task_vip_browser_fallback_routes_to_daily_a
     refs = json.loads(fallback_step.output_refs or "[]")
     assert {item["artifact_type"] for item in refs} >= {"raw_file", "parsed_file", "chart_snapshot"}
     assert fallback_step.artifact_refs == fallback_step.output_refs
+    run_artifacts = session.query(RunArtifact).filter(RunArtifact.run_id == run.id).all()
+    assert {artifact.file_path for artifact in run_artifacts} >= {
+        output["vip_browser_fallback"]["raw_html_path"],
+        output["vip_browser_fallback"]["parsed_path"],
+    }
     source_refs = json.loads(fallback_step.source_refs or "[]")
     assert any(item.get("source_name") == "jin10_vip_browser_fallback" for item in source_refs)
     assert steps[DAILY_ANALYSIS_STEP].status == StepStatus.pending
+
+
+def test_run_daily_analysis_followup_task_daily_analysis_registers_snapshot_artifact(tmp_path: Path) -> None:
+    session = _make_db_session(tmp_path)
+    ensure_execution_tables(session)
+    run = _seed_followup_run(session)
+    run_daily_analysis_followup_task(session, run.id, storage_root=tmp_path)
+
+    def fake_fetcher(**kwargs):
+        return Jin10DetailFetchResult(
+            detail_url=kwargs["url"],
+            final_url=kwargs["url"],
+            status="fetched",
+            access_status="readable",
+            title="黄金日报",
+            raw_text="黄金和美联储主线仍需重点跟进，美元和收益率反应是关键。",
+            raw_html_path="raw/news/jin10_detail_pages/2026-06-12/detail.html",
+            parsed_path="parsed/news/jin10_detail_pages/2026-06-12/detail.json",
+            fetched_at="2026-06-12T00:00:00+00:00",
+        )
+
+    run_daily_analysis_followup_task(session, run.id, storage_root=tmp_path, detail_fetcher=fake_fetcher)
+    status = run_daily_analysis_followup_task(session, run.id, storage_root=tmp_path)
+
+    assert status == TaskStatus.success
+    run_artifacts = session.query(RunArtifact).filter(RunArtifact.run_id == run.id).all()
+    assert any(
+        artifact.artifact_type == "feature_json"
+        and artifact.file_path == "features/news/2026-06-12/run-news/daily_brief_input_snapshot.json"
+        for artifact in run_artifacts
+    )
 
 
 def test_run_daily_analysis_followup_task_vip_browser_fallback_keeps_logged_in_vip_text_readable(
