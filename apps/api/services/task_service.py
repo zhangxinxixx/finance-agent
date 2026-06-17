@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from apps.api.schemas.common import ArtifactType, TaskStatus as ApiTaskStatus
 from apps.api.schemas.source_trace import ArtifactRef, SourceRef
 from apps.api.schemas.task_run import TaskRunResponse, TaskStepResponse
+from apps.runtime.artifact_registry import list_run_artifacts
 from database.models.engine import SessionLocal
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 
@@ -113,11 +114,13 @@ def get_task_run_artifacts(db: Session, run_id: str) -> dict[str, Any] | None:
     if run is None:
         return None
 
-    artifacts = _dedupe_artifacts(
-        artifact
-        for step in run.steps
-        for artifact in _step_artifact_refs(step)
-    )
+    artifacts = list_run_artifacts(db, run_id)
+    if not artifacts:
+        artifacts = _dedupe_artifacts(
+            artifact
+            for step in run.steps
+            for artifact in _step_artifact_refs(step)
+        )
     return {
         "run_id": str(run.id),
         "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts],

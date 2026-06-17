@@ -16,6 +16,7 @@ import json
 import uuid
 from typing import Any
 
+from apps.runtime.artifact_registry import register_step_artifacts
 from apps.runtime.execution_event_bridge import emit_run_event, emit_task_event
 from apps.runtime.state_machine import coerce_step_status, transition_task_run, transition_task_step
 from database.models.engine import SessionLocal
@@ -189,6 +190,7 @@ class TaskRecorder:
             status=status,
             error=error,
             output_refs=output_refs,
+            source_refs=source_refs,
             artifact_refs=artifact_refs,
             output_ref=output_ref,
         )
@@ -201,6 +203,7 @@ class TaskRecorder:
         status: str,
         error: str | None,
         output_refs: list[dict] | None,
+        source_refs: list[dict] | None,
         artifact_refs: list[dict] | None,
         output_ref: str | None,
     ) -> None:
@@ -256,6 +259,15 @@ class TaskRecorder:
                 "step_order": step.step_order,
                 "status": status,
             },
+        )
+        register_step_artifacts(
+            self._session,
+            run_id=run_id,
+            step=step,
+            output_refs=output_refs,
+            artifact_refs=artifact_refs,
+            output_ref=output_ref,
+            source_refs=source_refs,
         )
         for artifact_payload in self._artifact_event_payloads(
             output_refs=output_refs,

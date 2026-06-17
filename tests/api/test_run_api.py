@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from apps.api.main import api_run_artifacts, api_run_detail, api_run_events, api_run_steps, api_runs
 from apps.api.schemas.common import TaskStatus as ApiTaskStatus
 from apps.api.services.task_service import map_task_status_to_api
-from database.models.execution import ExecutionEvent, ensure_execution_tables
+from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
 
 
@@ -146,6 +146,28 @@ def test_get_run_artifacts_aggregates_output_refs_and_output_ref() -> None:
     artifact_ids = {item["artifact_id"] for item in payload["artifacts"]}
     assert {"art-out-001", "art-visual-001"} <= artifact_ids
     assert any(item["file_path"] == "storage/parsed/macro/output.json" for item in payload["artifacts"])
+
+
+def test_get_run_artifacts_prefers_registry_rows_when_present() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session)
+    step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    session.add(
+        RunArtifact(
+            run_id=run.id,
+            task_id=step.id,
+            artifact_type="feature_json",
+            file_path="storage/features/macro/rollup.json",
+            sha256="sha-rollup-001",
+        )
+    )
+    session.commit()
+
+    payload = api_run_artifacts(str(run.id), db=session)
+
+    assert [item["file_path"] for item in payload["artifacts"]] == ["storage/features/macro/rollup.json"]
+    assert payload["artifacts"][0]["artifact_type"] == "feature_json"
+    assert payload["artifacts"][0]["sha256"] == "sha-rollup-001"
 
 
 def test_get_run_detail_maps_public_status() -> None:

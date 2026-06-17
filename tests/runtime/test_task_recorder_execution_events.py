@@ -6,7 +6,7 @@ from sqlalchemy.pool import StaticPool
 
 from apps.runtime import task_recorder as task_recorder_module
 from apps.runtime.task_recorder import TaskRecorder
-from database.models.execution import ExecutionEvent, ensure_execution_tables
+from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.task import ensure_task_tables
 
 
@@ -44,6 +44,7 @@ def test_task_recorder_emits_run_and_artifact_events(monkeypatch) -> None:
 
     with factory() as session:
         events = session.query(ExecutionEvent).order_by(ExecutionEvent.created_at.asc()).all()
+        artifacts = session.query(RunArtifact).order_by(RunArtifact.created_at.asc()).all()
 
     event_types = [event.event_type for event in events]
     assert "RUN_STARTED" in event_types
@@ -53,6 +54,8 @@ def test_task_recorder_emits_run_and_artifact_events(monkeypatch) -> None:
     assert "TASK_FINISHED" in event_types
     assert "ARTIFACT_WRITTEN" in event_types
     assert event_types[-1] == "RUN_FINISHED"
+    assert [artifact.file_path for artifact in artifacts] == ["storage/raw/macro/fred.json"]
+    assert artifacts[0].artifact_type == "raw_file"
 
 
 def test_task_recorder_emits_failed_event(monkeypatch) -> None:
