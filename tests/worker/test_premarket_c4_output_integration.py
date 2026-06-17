@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
@@ -343,6 +344,7 @@ def test_c4_pipeline_source_refs_flow_through(tmp_path: Path) -> None:
 def test_run_premarket_with_c4_writes_all_artifacts(tmp_path: Path) -> None:
     """Full premarket run with mocked steps should produce C4 outputs."""
     db = _make_db_session(tmp_path)
+    ensure_execution_tables(db)
     task = _make_task_with_steps(
         db,
         [
@@ -427,6 +429,13 @@ def test_run_premarket_with_c4_writes_all_artifacts(tmp_path: Path) -> None:
     assert "c3_agents" in summaries["steps"]
     assert "final_report" in summaries["steps"]
     assert "strategy_card" in summaries["steps"]
+
+    run_artifacts = db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
+    artifact_paths = {artifact.file_path for artifact in run_artifacts}
+    assert str(report_path) in artifact_paths
+    assert str(sc_json_candidates[0]) in artifact_paths
+    assert str(sc_md_candidates[0]) in artifact_paths
+    assert any(artifact.artifact_type == "analysis_md" for artifact in run_artifacts)
 
 
 def test_run_premarket_c4_not_triggered_when_snapshot_fails(tmp_path: Path) -> None:

@@ -316,6 +316,12 @@ def run_premarket(
                     "status": "failed",
                     "error": str(db_exc),
                 }
+            _register_c4_output_artifacts(
+                db,
+                run_id=run_id,
+                steps=ordered_steps,
+                c4_outputs=c4_outputs,
+            )
         except Exception as exc:
             logger.exception("C4 agent pipeline failed")
             had_failure = True
@@ -357,6 +363,8 @@ def run_premarket(
     )
     if had_failure and not had_non_failed_step:
         final_status = TaskStatus.failed
+    elif had_failure and final_status == TaskStatus.success:
+        final_status = TaskStatus.partial_success
     transition_task_run(db, task, final_status, source="worker", reason="step_rollup")
     db.commit()
     return final_status
@@ -440,6 +448,61 @@ def _register_runner_step_artifacts(
         output_refs=output_refs if isinstance(output_refs, list) else None,
         artifact_refs=artifact_refs if isinstance(artifact_refs, list) else None,
         output_ref=step.output_ref,
+        source_refs=None,
+    )
+
+
+def _register_c4_output_artifacts(
+    db: DBSession,
+    *,
+    run_id: str,
+    steps: list[Any],
+    c4_outputs: dict[str, Any],
+) -> None:
+    report_step = next((step for step in steps if step.name == "report_render"), None)
+    if report_step is None:
+        return
+
+    report_result = c4_outputs.get("report_result") if isinstance(c4_outputs, dict) else None
+    card_result = c4_outputs.get("card_result") if isinstance(c4_outputs, dict) else None
+
+    artifacts: list[dict[str, Any]] = []
+    if isinstance(report_result, dict):
+        report_paths = report_result.get("paths")
+        if isinstance(report_paths, list):
+            for index, path in enumerate(report_paths):
+                if not isinstance(path, str):
+                    continue
+                artifacts.append(
+                    {
+                        "artifact_id": f"{run_id}:final_report:{index}",
+                        "artifact_type": "analysis_md" if path.endswith(".md") else "structured_json",
+                        "file_path": path,
+                    }
+                )
+    if isinstance(card_result, dict):
+        card_paths = card_result.get("paths")
+        if isinstance(card_paths, list):
+            for index, path in enumerate(card_paths):
+                if not isinstance(path, str):
+                    continue
+                artifacts.append(
+                    {
+                        "artifact_id": f"{run_id}:strategy_card:{index}",
+                        "artifact_type": "analysis_md" if path.endswith(".md") else "structured_json",
+                        "file_path": path,
+                    }
+                )
+    if not artifacts:
+        return
+
+    register_step_artifacts(
+        db,
+        run_id=run_id,
+        step=report_step,
+        output_refs=artifacts,
+        artifact_refs=None,
+        output_ref=None,
         source_refs=None,
     )
 
