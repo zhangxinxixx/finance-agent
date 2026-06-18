@@ -83,6 +83,7 @@ def build_agent_output_summary(row) -> dict[str, Any]:
     artifact_refs = payload.get("artifact_refs")
     if artifact_refs is None:
         artifact_refs = payload.get("source_artifact_refs") or []
+    source_refs = [source_ref.model_dump(mode="json") for source_ref in parse_source_refs(row.source_refs)]
 
     claims = normalize_claims(payload.get("claims"))
     claim_reviews = normalize_claim_reviews(payload.get("claim_reviews"))
@@ -110,7 +111,7 @@ def build_agent_output_summary(row) -> dict[str, Any]:
         "watchlist": row.watchlist or [],
         "invalid_conditions": row.invalid_conditions or [],
         "input_snapshot_ids": row.input_snapshot_ids or {},
-        "source_refs": row.source_refs or [],
+        "source_refs": source_refs,
         "artifact_refs": artifact_refs,
         "market_phase": payload.get("market_phase"),
         "regime_drivers": payload.get("regime_drivers"),

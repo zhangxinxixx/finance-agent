@@ -38,7 +38,13 @@ def test_agent_analysis_response_exposes_unified_agent_output_summary() -> None:
         bias="bullish",
         confidence=0.73,
         input_snapshot_ids={"options": "snap-options-001"},
-        source_refs=[{"source": "cme"}],
+        source_refs=[
+            {
+                "source": "cme",
+                "report_date": "2026-05-31",
+                "source_url": "https://example.test/cme/options/2026-05-31",
+            }
+        ],
         key_findings=["Gamma Zero 上移"],
         risk_points=["PRELIM 数据待终稿确认"],
         watchlist=["4500"],
@@ -89,6 +95,8 @@ def test_agent_analysis_response_exposes_unified_agent_output_summary() -> None:
     assert cme_summary["summary"] == "CME options read-only view is bullish; confidence 0.73."
     assert cme_summary["summary_zh"] == "期权结构只读视图为偏多；确信度 0.73。"
     assert cme_summary["artifact_refs"] == ["storage/outputs/options/2026-05-31/options_report.md"]
+    assert cme_summary["source_refs"][0]["data_date"] == "2026-05-31"
+    assert cme_summary["source_refs"][0]["url"] == "https://example.test/cme/options/2026-05-31"
     assert cme_summary["claim_count"] == 1
     assert cme_summary["claims"][0]["claim_id"] == "claim-cme-1"
     assert cme_summary["claims"][0]["claim_type"] == "market_view"
