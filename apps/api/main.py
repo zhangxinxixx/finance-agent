@@ -97,6 +97,7 @@ from apps.api.services import (
     event_flow_action_service,
     ingestion_action_service,
     ingestion_source_test_service,
+    pipeline_contract_service,
     playbook_service,
     review_service,
     settings_service,
@@ -536,6 +537,12 @@ def api_memory_context(task: str) -> MemoryContextResponse:
 
 
 PREMARKET_STEPS = PREMARKET_STEP_ORDER
+
+
+@app.get("/api/pipelines/premarket/contract")
+def api_premarket_pipeline_contract() -> dict[str, Any]:
+    """Return the read-only canonical premarket step topology contract."""
+    return pipeline_contract_service.build_premarket_pipeline_contract()
 
 
 @app.post("/tasks/premarket", response_model=TaskCreateResponse)
