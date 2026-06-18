@@ -133,7 +133,16 @@ def test_agent_analysis_response_includes_fact_review_agent_output() -> None:
                     "claim_id": "claim-jin10-1",
                     "text": "地缘风险抬升支撑金价风险溢价。",
                     "claim_type": "market_view",
-                    "source_refs": [{"source_id": "src-jin10", "source_name": "Jin10", "source_type": "article", "status": "available"}],
+                    "source_refs": [
+                        {
+                            "source_id": "src-jin10",
+                            "source_name": "Jin10",
+                            "source_type": "article",
+                            "status": "available",
+                            "report_date": "2026-05-31",
+                            "source_url": "https://example.test/jin10/218330",
+                        }
+                    ],
                     "evidence_refs": [{"artifact_path": "storage/outputs/jin10/2026-05-31/analysis.md"}],
                     "confidence": 0.74,
                 }
@@ -155,6 +164,9 @@ def test_agent_analysis_response_includes_fact_review_agent_output() -> None:
     assert fact_summary["fact_review_status"] == "passed"
     assert fact_summary["claim_count"] == 0
     assert fact_summary["claim_reviews"][0]["claim_id"] == "claim-jin10-1"
+    claim_source_ref = next(item for item in payload["agent_outputs"] if item["agent_name"] == "jin10_report_analysis_agent")["claims"][0]["source_refs"][0]
+    assert claim_source_ref["data_date"] == "2026-05-31"
+    assert claim_source_ref["url"] == "https://example.test/jin10/218330"
 
 
 def test_agent_analysis_synthesis_latest_returns_latest_synthesis_output() -> None:
