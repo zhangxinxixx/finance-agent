@@ -75,7 +75,51 @@ def test_transition_helpers_emit_execution_events() -> None:
     events = session.query(ExecutionEvent).order_by(ExecutionEvent.created_at.asc()).all()
     event_types = [event.event_type for event in events]
 
+    assert "RUN_STARTED" in event_types
     assert "RUN_STATUS_CHANGED" in event_types
     assert "TASK_STATUS_CHANGED" in event_types
     assert "TASK_BLOCKED" in event_types
+    assert "RUN_FINISHED" in event_types
     assert "RUN_MARKED_STALE" in event_types
+
+
+def test_transition_helpers_emit_run_and_step_lifecycle_events() -> None:
+    session = _make_session()
+    run = TaskRun(name="premarket", status=TaskStatus.pending)
+    session.add(run)
+    session.flush()
+    step = TaskStep(task_run_id=run.id, name="collect_macro", status=StepStatus.pending, step_order=0)
+    session.add(step)
+    session.flush()
+
+    transition_task_run(session, run, TaskStatus.running, source="worker", reason="worker_started")
+    transition_task_step(session, step, StepStatus.running, source="worker", reason="step_started")
+    transition_task_step(session, step, StepStatus.success, source="worker", reason="step_finished")
+    transition_task_run(session, run, TaskStatus.success, source="worker", reason="worker_finished")
+    session.commit()
+
+    events = session.query(ExecutionEvent).order_by(ExecutionEvent.created_at.asc()).all()
+    event_types = [event.event_type for event in events]
+
+    assert "RUN_STARTED" in event_types
+    assert "TASK_STARTED" in event_types
+    assert "TASK_FINISHED" in event_types
+    assert "RUN_FINISHED" in event_types
+
+
+def test_transition_helpers_do_not_repeat_terminal_lifecycle_events_for_reason_only_update() -> None:
+    session = _make_session()
+    run = TaskRun(name="premarket", status=TaskStatus.pending)
+    session.add(run)
+    session.flush()
+
+    transition_task_run(session, run, TaskStatus.stale, source="scheduler", reason="timeout")
+    transition_task_run(session, run, TaskStatus.stale, source="api", reason="operator_ack")
+    session.commit()
+
+    events = session.query(ExecutionEvent).order_by(ExecutionEvent.created_at.asc()).all()
+    event_types = [event.event_type for event in events]
+
+    assert event_types.count("RUN_STATUS_CHANGED") == 2
+    assert event_types.count("RUN_FINISHED") == 1
+    assert event_types.count("RUN_MARKED_STALE") == 2

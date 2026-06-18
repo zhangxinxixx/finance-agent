@@ -17,7 +17,7 @@ import uuid
 from typing import Any
 
 from apps.runtime.artifact_registry import register_step_artifacts
-from apps.runtime.execution_event_bridge import emit_run_event, emit_task_event
+from apps.runtime.execution_event_bridge import emit_task_event
 from apps.runtime.state_machine import coerce_step_status, transition_task_run, transition_task_step
 from database.models.engine import SessionLocal
 from database.models.task import TaskRun, TaskStatus, TaskStep, StepStatus
@@ -80,17 +80,6 @@ class TaskRecorder:
             source="task_recorder",
             reason="run_started",
         )
-        emit_run_event(
-            self._session,
-            str(self._run_id),
-            "RUN_STARTED",
-            {
-                "task_name": self._task_name,
-                "task_type": self._task_type,
-                "trade_date": self._trade_date,
-                "workspace_id": self._workspace_id,
-            },
-        )
 
     def _succeed(self):
         if not self._run_id or not self._session:
@@ -105,15 +94,6 @@ class TaskRecorder:
                 reason="run_finished",
                 progress=1.0,
             )
-        emit_run_event(
-            self._session,
-            str(self._run_id),
-            "RUN_FINISHED",
-            {
-                "status": TaskStatus.success.value,
-                "progress": 1.0,
-            },
-        )
         self._session.commit()
 
     def _fail(self, error_message: str):
@@ -129,15 +109,6 @@ class TaskRecorder:
                 reason="run_failed",
                 error_message=error_message,
             )
-        emit_run_event(
-            self._session,
-            str(self._run_id),
-            "RUN_FAILED",
-            {
-                "status": TaskStatus.failed.value,
-                "error_message": error_message,
-            },
-        )
         self._session.commit()
 
     def step(
@@ -214,52 +185,14 @@ class TaskRecorder:
         task_id = str(step.id)
 
         if status == "running":
-            emit_task_event(
-                self._session,
-                run_id,
-                task_id,
-                "TASK_STARTED",
-                {
-                    "step_name": step.name,
-                    "stage": step.stage,
-                    "task_kind": step.task_kind,
-                    "step_order": step.step_order,
-                },
-            )
             return
 
         if status == "failed":
-            emit_task_event(
-                self._session,
-                run_id,
-                task_id,
-                "TASK_FAILED",
-                {
-                    "step_name": step.name,
-                    "stage": step.stage,
-                    "task_kind": step.task_kind,
-                    "step_order": step.step_order,
-                    "error_message": error,
-                },
-            )
             return
 
         if status != "success":
             return
 
-        emit_task_event(
-            self._session,
-            run_id,
-            task_id,
-            "TASK_FINISHED",
-            {
-                "step_name": step.name,
-                "stage": step.stage,
-                "task_kind": step.task_kind,
-                "step_order": step.step_order,
-                "status": status,
-            },
-        )
         register_step_artifacts(
             self._session,
             run_id=run_id,

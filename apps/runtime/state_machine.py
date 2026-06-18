@@ -165,6 +165,7 @@ def transition_task_run(
 
     if from_status != target or reason or error_message or progress is not None:
         emit_run_event(db, str(run.id), "RUN_STATUS_CHANGED", payload)
+        _emit_run_lifecycle_event(db, run, from_status=from_status, to_status=target, payload=payload)
         if target == TaskStatus.stale:
             emit_run_event(db, str(run.id), "RUN_MARKED_STALE", payload)
 
@@ -230,7 +231,100 @@ def transition_task_step(
 
     if from_status != target or reason or error_message or blocked_reason or error_type:
         emit_task_event(db, str(step.task_run_id), str(step.id), "TASK_STATUS_CHANGED", payload)
+        _emit_task_lifecycle_event(db, step, from_status=from_status, to_status=target, payload=payload)
         if target == StepStatus.blocked:
             emit_task_event(db, str(step.task_run_id), str(step.id), "TASK_BLOCKED", payload)
 
     return target
+
+
+def _emit_run_lifecycle_event(
+    db: Session,
+    run: TaskRun,
+    *,
+    from_status: TaskStatus,
+    to_status: TaskStatus,
+    payload: dict[str, object],
+) -> None:
+    lifecycle_payload = {
+        "task_name": run.name,
+        "task_type": run.task_type,
+        "trade_date": run.trade_date,
+        "workspace_id": run.workspace_id,
+        **payload,
+    }
+    if to_status == TaskStatus.running and from_status != TaskStatus.running:
+        emit_run_event(db, str(run.id), "RUN_STARTED", lifecycle_payload)
+        return
+    if to_status == TaskStatus.success and from_status != TaskStatus.success:
+        emit_run_event(
+            db,
+            str(run.id),
+            "RUN_FINISHED",
+            {"status": TaskStatus.success.value, "progress": 1.0, **lifecycle_payload},
+        )
+        return
+    if (
+        to_status in {TaskStatus.partial_success, TaskStatus.degraded, TaskStatus.blocked, TaskStatus.cancelled, TaskStatus.stale}
+        and from_status != to_status
+    ):
+        emit_run_event(
+            db,
+            str(run.id),
+            "RUN_FINISHED",
+            {"status": to_status.value, "progress": payload.get("progress"), **lifecycle_payload},
+        )
+        return
+    if to_status == TaskStatus.failed and from_status != TaskStatus.failed:
+        emit_run_event(
+            db,
+            str(run.id),
+            "RUN_FAILED",
+            {"status": TaskStatus.failed.value, "error_message": payload.get("error_message"), **lifecycle_payload},
+        )
+
+
+def _emit_task_lifecycle_event(
+    db: Session,
+    step: TaskStep,
+    *,
+    from_status: StepStatus,
+    to_status: StepStatus,
+    payload: dict[str, object],
+) -> None:
+    lifecycle_payload = {
+        "step_name": step.name,
+        "stage": step.stage,
+        "task_kind": step.task_kind,
+        "step_order": step.step_order,
+        **payload,
+    }
+    if to_status == StepStatus.running and from_status != StepStatus.running:
+        emit_task_event(db, str(step.task_run_id), str(step.id), "TASK_STARTED", lifecycle_payload)
+        return
+    if to_status == StepStatus.success and from_status != StepStatus.success:
+        emit_task_event(
+            db,
+            str(step.task_run_id),
+            str(step.id),
+            "TASK_FINISHED",
+            {"status": StepStatus.success.value, **lifecycle_payload},
+        )
+        return
+    if to_status == StepStatus.failed and from_status != StepStatus.failed:
+        emit_task_event(
+            db,
+            str(step.task_run_id),
+            str(step.id),
+            "TASK_FAILED",
+            {"error_message": payload.get("error_message"), **lifecycle_payload},
+        )
+        return
+    if to_status == StepStatus.skipped and from_status != StepStatus.skipped:
+        emit_task_event(
+            db,
+            str(step.task_run_id),
+            str(step.id),
+            "TASK_FINISHED",
+            {"status": StepStatus.skipped.value, **lifecycle_payload},
+        )
