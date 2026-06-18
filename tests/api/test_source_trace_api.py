@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -9,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database.models.execution import RunArtifact, ensure_execution_tables
-from database.models.task import TaskRun, TaskStatus, ensure_task_tables
+from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
 from database.models.analysis import ensure_analysis_tables
 
 
@@ -188,13 +190,40 @@ def test_get_source_trace_by_artifact_bridges_registry_artifact_to_snapshot_trac
         _seed_snapshot(session)
         _seed_final_result(session)
         run = _seed_task_run(session)
+        step = TaskStep(
+            task_run_id=run.id,
+            name="macro_collect",
+            stage="collector",
+            task_kind="collector",
+            status=StepStatus.success,
+            source_refs=json.dumps(
+                [
+                    {
+                        "source_id": "src-001",
+                        "source_name": "FRED",
+                        "source_type": "api",
+                    }
+                ]
+            ),
+        )
+        session.add(step)
+        session.flush()
         session.add(
             RunArtifact(
                 run_id=run.id,
-                task_id=None,
+                task_id=step.id,
                 artifact_type="feature_json",
                 file_path="storage/features/macro/2026-05-26/run-001/rollup.json",
                 sha256="sha-rollup-001",
+                source_refs=json.dumps(
+                    [
+                        {
+                            "source_id": "src-registry-001",
+                            "source_name": "FRED",
+                            "source_type": "api",
+                        }
+                    ]
+                ),
             )
         )
         session.commit()
@@ -207,7 +236,12 @@ def test_get_source_trace_by_artifact_bridges_registry_artifact_to_snapshot_trac
     assert payload["snapshot_id"] == "snap-001"
     artifact_paths = {item["file_path"] for item in payload["artifact_refs"]}
     assert "storage/features/macro/2026-05-26/run-001/rollup.json" in artifact_paths
-    assert payload["source_refs"][0]["source_id"] == "src-cme-001"
+    assert {item["source_id"] for item in payload["source_refs"]} == {
+        "src-cme-001",
+        "src-final-001",
+        "src-registry-001",
+        "src-001",
+    }
 
 
 def test_source_trace_missing_snapshot_and_report_return_404() -> None:

@@ -12,6 +12,7 @@ from apps.api.services._trace_refs import (
     artifact_ref_from_path,
     coerce_artifact_type,
     dedupe_artifact_refs,
+    dedupe_source_refs,
     parse_artifact_refs,
     parse_source_refs,
 )
@@ -35,8 +36,8 @@ def get_artifact_detail_response(db: Session, artifact_id: str) -> ArtifactDetai
         sha256=row.sha256,
     )
     source_refs = parse_source_refs(row.source_refs)
-    if not source_refs and step is not None:
-        source_refs = parse_source_refs(step.source_refs)
+    if step is not None:
+        source_refs = dedupe_source_refs([*source_refs, *parse_source_refs(step.source_refs)])
     input_refs = parse_artifact_refs(step.input_refs) if step is not None else []
     related_artifacts = _build_related_artifacts(artifact, step=step)
 
