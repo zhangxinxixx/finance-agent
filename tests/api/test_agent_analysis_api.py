@@ -94,7 +94,11 @@ def test_agent_analysis_response_exposes_unified_agent_output_summary() -> None:
     assert cme_summary["role"] == "domain_agent"
     assert cme_summary["summary"] == "CME options read-only view is bullish; confidence 0.73."
     assert cme_summary["summary_zh"] == "期权结构只读视图为偏多；确信度 0.73。"
-    assert cme_summary["artifact_refs"] == ["storage/outputs/options/2026-05-31/options_report.md"]
+    assert cme_summary["artifact_refs"][0]["artifact_type"] == "analysis_md"
+    assert cme_summary["artifact_refs"][0]["file_path"] == "storage/outputs/options/2026-05-31/options_report.md"
+    assert cme_summary["artifact_refs"][0]["artifact_id"].startswith(
+        "storage/outputs/options/2026-05-31/options_report.md"
+    )
     assert cme_summary["source_refs"][0]["data_date"] == "2026-05-31"
     assert cme_summary["source_refs"][0]["url"] == "https://example.test/cme/options/2026-05-31"
     assert cme_summary["claim_count"] == 1

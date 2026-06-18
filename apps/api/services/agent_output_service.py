@@ -6,6 +6,8 @@ from apps.api.schemas.claim import Claim, ClaimReview, ClaimReviewVerdict, Claim
 from apps.api.services._trace_refs import (
     artifact_ref_from_path,
     coerce_artifact_type,
+    dedupe_artifact_refs,
+    parse_artifact_refs,
     parse_source_refs,
 )
 
@@ -80,9 +82,9 @@ def build_agent_output_summary(row) -> dict[str, Any]:
     if generated_by is None:
         generated_by = "llm" if row.llm_model else "rule"
 
-    artifact_refs = payload.get("artifact_refs")
-    if artifact_refs is None:
-        artifact_refs = payload.get("source_artifact_refs") or []
+    artifact_refs = _normalize_artifact_refs(
+        payload.get("artifact_refs") if payload.get("artifact_refs") is not None else payload.get("source_artifact_refs"),
+    )
     source_refs = [source_ref.model_dump(mode="json") for source_ref in parse_source_refs(row.source_refs)]
 
     claims = normalize_claims(payload.get("claims"))
@@ -251,3 +253,9 @@ def _parse_evidence_refs(raw: Any) -> list[dict[str, Any]]:
             continue
         refs.extend(source_ref.model_dump(mode="json") for source_ref in parse_source_refs([item]))
     return refs
+
+
+def _normalize_artifact_refs(raw: Any) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    return [artifact.model_dump(mode="json") for artifact in dedupe_artifact_refs(parse_artifact_refs(raw))]

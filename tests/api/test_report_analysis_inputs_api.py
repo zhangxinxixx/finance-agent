@@ -203,6 +203,7 @@ def test_report_analysis_inputs_returns_snapshot_and_agent_outputs(tmp_path: Pat
     assert jin10_output["llm_model"] == "qwen3-vl-plus"
     assert jin10_output["claims"][0]["claim_type"] == "market_view"
     assert jin10_output["claim_reviews"] == []
+    assert jin10_output["artifact_refs"][0]["artifact_type"] == "analysis_md"
     snapshot_input = next(item for item in payload["deterministic_inputs"] if item["input_type"] == "analysis_snapshot")
     assert snapshot_input["sections"] == ["macro", "options"]
     assert snapshot_input["snapshot"]["snapshot_id"] == "snap-std-001"
