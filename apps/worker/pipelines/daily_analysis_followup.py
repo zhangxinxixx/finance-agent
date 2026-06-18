@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session, selectinload
 
+from apps.runtime.artifact_registry import register_step_artifacts
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 
 TASK_TYPE = "daily_analysis_followup"
@@ -258,6 +259,7 @@ def _run_detail_fetch_stage(
     detail_step.output_refs = _dump_json(_detail_artifact_refs(result_payload))
     detail_step.artifact_refs = detail_step.output_refs
     detail_step.source_refs = _dump_json(_merge_source_refs(detail_step.source_refs, _detail_source_ref(source_url, result_payload)))
+    _register_step_artifacts(db, run=run, step=detail_step)
     detail_step.finished_at = _now()
     detail_step.retryable = False
 
@@ -425,6 +427,7 @@ def _run_vip_browser_fallback_stage(
     fallback_step.source_refs = _dump_json(
         _merge_source_refs(fallback_step.source_refs, _vip_browser_source_ref(source_url, result_payload))
     )
+    _register_step_artifacts(db, run=run, step=fallback_step)
     fallback_step.finished_at = _now()
     fallback_step.retryable = False
 
@@ -559,6 +562,7 @@ def _run_daily_analysis_stage(
     analysis_step.artifact_refs = analysis_step.output_refs
     analysis_step.source_refs = _dump_json(snapshot["source_refs"])
     analysis_step.input_refs = _dump_json(snapshot["input_refs"])
+    _register_step_artifacts(db, run=run, step=analysis_step)
     analysis_step.finished_at = _now()
     analysis_step.retryable = False
     analysis_step.error = None
@@ -916,6 +920,18 @@ def _ensure_step(
     db.flush()
     run.steps.append(step)
     return step
+
+
+def _register_step_artifacts(db: Session, *, run: TaskRun, step: TaskStep) -> None:
+    register_step_artifacts(
+        db,
+        run_id=str(run.id),
+        step=step,
+        output_refs=_parse_json(step.output_refs) if isinstance(_parse_json(step.output_refs), list) else None,
+        artifact_refs=_parse_json(step.artifact_refs) if isinstance(_parse_json(step.artifact_refs), list) else None,
+        output_ref=step.output_ref,
+        source_refs=_parse_json(step.source_refs) if isinstance(_parse_json(step.source_refs), list) else None,
+    )
 
 
 def _build_execution_plan(*, payload: dict[str, Any], source_url: str, storage_root: Path) -> dict[str, Any]:

@@ -207,7 +207,13 @@ def test_agent_analysis_inspection_exposes_cme_options_prompt_and_artifacts() ->
         bias="neutral",
         confidence=0.58,
         input_snapshot_ids={"options_analysis_snapshot": "options:2026-05-06:options-sample"},
-        source_refs=[{"source": "cme_daily_bulletin", "report_date": "2026-05-06"}],
+        source_refs=[
+            {
+                "source": "cme_daily_bulletin",
+                "report_date": "2026-05-06",
+                "source_url": "https://example.test/cme/2026-05-06.pdf",
+            }
+        ],
         key_findings=["Aggregate gamma zero is 4195."],
         risk_points=["PRELIM 数据可能修订。"],
         watchlist=["gamma zero", "wall scores"],
@@ -238,6 +244,8 @@ def test_agent_analysis_inspection_exposes_cme_options_prompt_and_artifacts() ->
     assert agent["registry_id"] == "cme_options_agent"
     assert agent["role"] == "domain_agent"
     assert agent["prompt"]["available"] is True
+    assert agent["input"]["source_refs"][0]["data_date"] == "2026-05-06"
+    assert agent["input"]["source_refs"][0]["url"] == "https://example.test/cme/2026-05-06.pdf"
     assert agent["input"]["payload"]["options_snapshot"]["product"] == "OG"
     assert agent["output"]["summary"] == "Gamma Zero 附近仍是短线主战区。"
     assert agent["output"]["payload"]["prompt_version"] == "cme_options_agent_v1"

@@ -31,6 +31,7 @@ from apps.worker.pipelines.cme import (
     CmePipelineState,
     run_cme_step,
 )
+from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 from database.queries.cme import ensure_cme_tables
 
@@ -869,6 +870,28 @@ class TestRunPremarket:
         assert task.status == TaskStatus.failed
         assert task.steps[0].status == StepStatus.failed
         assert task.steps[0].error == "Unknown pipeline summary status: mystery"
+
+    def test_runner_persists_output_ref_into_run_artifact_registry_when_table_exists(self, tmp_path):
+        db = _make_db_session(tmp_path)
+        ensure_execution_tables(db)
+        task = self._make_task_with_steps(db, ["cme_download"])
+
+        def mock_run_cme_step(step_name, state, **kwargs):
+            return {
+                "step": step_name,
+                "status": "success",
+                "raw_path": "storage/raw/cme/daily_bulletin.pdf",
+            }
+
+        with patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_run_cme_step):
+            from apps.worker.runner import run_premarket
+
+            result = run_premarket(db, task.id, storage_root=tmp_path)
+
+        assert result == TaskStatus.success
+        artifacts = db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
+        assert [artifact.file_path for artifact in artifacts] == ["storage/raw/cme/daily_bulletin.pdf"]
+        assert artifacts[0].artifact_type == "raw_file"
 
     def test_task_not_found_returns_failed(self, tmp_path):
         """Test that a non-existent task_id returns TaskStatus.failed."""

@@ -10,11 +10,28 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from apps.api.services.execution_event_service import emit_execution_event
 
 logger = logging.getLogger(__name__)
+
+
+def _execution_events_available(db: Session) -> bool:
+    cached = db.info.get("_execution_events_available")
+    if cached is not None:
+        return bool(cached)
+    try:
+        bind = db.connection()
+    except Exception:
+        return False
+    try:
+        available = inspect(bind).has_table("execution_events")
+    except Exception:
+        return False
+    db.info["_execution_events_available"] = available
+    return available
 
 
 def emit_run_event(
@@ -24,6 +41,8 @@ def emit_run_event(
     payload: dict[str, Any] | None = None,
 ) -> None:
     """Emit a run-scoped event (best-effort)."""
+    if not _execution_events_available(db):
+        return
     try:
         emit_execution_event(
             db,
@@ -44,6 +63,8 @@ def emit_task_event(
     payload: dict[str, Any] | None = None,
 ) -> None:
     """Emit a task/step-scoped event (best-effort)."""
+    if not _execution_events_available(db):
+        return
     try:
         emit_execution_event(
             db,

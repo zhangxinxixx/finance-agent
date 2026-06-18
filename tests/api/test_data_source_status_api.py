@@ -50,6 +50,11 @@ _JIN10_MULTI_ENTRY_EXPECTATIONS = {
 def _relative_to(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
+
+def _mtime_iso(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat()
+
+
 def _latest_materialized_file(base: Path) -> Path:
     files = sorted(base.glob("*/*.json"))
     assert files, f"No fixture files materialized under {base}"
@@ -272,6 +277,60 @@ def test_data_service_each_source_has_four_booleans() -> None:
         assert isinstance(src[key], bool), f"{key} must be bool, got {type(src[key])}"
 
 
+def test_data_service_exposes_readiness_and_gate_states() -> None:
+    """Readiness/gating semantics are derived in the output layer only."""
+    from apps.api.data_service import get_data_source_statuses
+
+    session = _db_session()
+    _seed_source(
+        session,
+        source_key="ready_source",
+        source_name="Ready Source",
+        configured=True,
+        raw_ingested=True,
+        parsed=True,
+        analysis_ready=True,
+        status="ok",
+    )
+    _seed_source(
+        session,
+        source_key="degraded_source",
+        source_name="Degraded Source",
+        configured=True,
+        raw_ingested=True,
+        parsed=False,
+        analysis_ready=False,
+        status="partial",
+    )
+    _seed_source(
+        session,
+        source_key="blocked_source",
+        source_name="Blocked Source",
+        configured=True,
+        raw_ingested=False,
+        parsed=False,
+        analysis_ready=False,
+        status="not_connected",
+        error_message="missing api key",
+    )
+
+    with patch("apps.api.data_service._try_db_session", return_value=session):
+        result = get_data_source_statuses()
+
+    sources = _sources_by_key(result)
+    assert sources["ready_source"]["readiness_state"] == "ready"
+    assert sources["ready_source"]["gate_state"] == "open"
+    assert sources["ready_source"]["gating_reason"] == "analysis_ready"
+
+    assert sources["degraded_source"]["readiness_state"] == "degraded"
+    assert sources["degraded_source"]["gate_state"] == "degraded"
+    assert sources["degraded_source"]["gating_reason"] == "status_partial"
+
+    assert sources["blocked_source"]["readiness_state"] == "blocked"
+    assert sources["blocked_source"]["gate_state"] == "closed"
+    assert sources["blocked_source"]["gating_reason"] == "error_message"
+
+
 def test_data_service_handles_empty_db() -> None:
     """When DB is available but has no records, return compatible sources list."""
     from apps.api.data_service import get_data_source_statuses
@@ -396,6 +455,9 @@ def test_data_service_filesystem_fallback_exposes_p0_news_sources(tmp_path: Path
         if source_key == "reuters_public_news":
             assert src["metadata"]["priority_level"] == "P0.5"
             assert src["metadata"]["authorized_wire"] is False
+        assert src["readiness_state"] == "not_configured"
+        assert src["gate_state"] == "closed"
+        assert src["gating_reason"] == "not_configured"
 
 
 def test_data_service_filesystem_fallback_attaches_news_feature_artifacts(tmp_path: Path) -> None:
@@ -489,6 +551,10 @@ def test_data_service_filesystem_fallback_attaches_news_collection_diagnostics(t
         "written_at": "2026-06-11T12:00:00+00:00",
         "reason": "HTTP 429 from https://api.gdeltproject.org/api/v2/doc/doc",
     }
+    assert fed_rss["metadata"]["latest_health_at"] == _mtime_iso(replay["feature_dir"] / "collection_diagnostics.json")
+    assert fed_rss["metadata"]["health_state"] == "healthy"
+    assert gdelt["metadata"]["latest_health_at"] == _mtime_iso(replay["feature_dir"] / "collection_diagnostics.json")
+    assert gdelt["metadata"]["health_state"] == "cooldown"
 
 
 def test_data_service_db_rows_are_augmented_with_news_feature_artifacts(tmp_path: Path) -> None:
@@ -602,6 +668,7 @@ def test_api_route_each_source_has_required_fields() -> None:
             "analysis_ready", "latest_raw_time", "latest_parsed_time",
             "latest_snapshot_id", "row_count", "status", "error_message",
             "last_run_id", "next_run_time", "metadata",
+            "readiness_state", "gate_state", "gating_reason",
         ]
         for field in required_fields:
             assert field in src, f"Missing field: {field}"
@@ -625,6 +692,19 @@ def test_api_route_four_booleans_are_present() -> None:
         for key in ["configured", "raw_ingested", "parsed", "analysis_ready"]:
             assert key in src
             assert isinstance(src[key], bool)
+        assert src["readiness_state"] in {"ready", "degraded", "blocked", "not_configured"}
+        assert src["gate_state"] in {"open", "degraded", "closed"}
+        assert isinstance(src["gating_reason"], str)
+
+
+def test_api_route_exposes_readiness_contract_on_known_fallback_sources() -> None:
+    """Clean fallback rows expose the gating contract for frontend consumption."""
+    data = _api_status_payload()
+    sources = _sources_by_key(data)
+
+    assert sources["fred"]["readiness_state"] == "not_configured"
+    assert sources["fred"]["gate_state"] == "closed"
+    assert sources["fred"]["gating_reason"] == "not_configured"
 
 
 def test_api_route_exposes_dual_source_metadata_contract() -> None:
@@ -715,6 +795,44 @@ def test_data_status_summary_marks_partial_and_lists_missing_sources() -> None:
     assert result["sources"][0]["status"] == "LIVE"
     assert result["sources"][1]["status"] == "UNAVAILABLE"
     assert result["sources"][2]["status"] == "PARTIAL"
+
+
+def test_data_status_summary_exposes_latest_health_signal() -> None:
+    """Summary read model should surface the latest health timestamp and state."""
+    payload = {
+        "sources": [
+            {
+                "source_key": "fred",
+                "source_name": "FRED",
+                "status": "ok",
+                "metadata": {
+                    "frontend_label": "FRED 官方宏观主源",
+                    "latest_health_at": "2026-06-11T12:05:00+00:00",
+                    "health_state": "healthy",
+                },
+            },
+            {
+                "source_key": "gdelt_news",
+                "source_name": "GDELT DOC News Radar",
+                "status": "not_connected",
+                "metadata": {
+                    "frontend_label": "GDELT 全球新闻雷达",
+                    "latest_health_at": "2026-06-11T12:15:00+00:00",
+                    "health_state": "cooldown",
+                },
+            },
+        ]
+    }
+
+    with patch("apps.api.services.source_service.get_data_source_statuses", return_value=payload), patch(
+        "apps.api.services.source_service._try_db_session", return_value=None
+    ):
+        result = get_data_status_summary()
+
+    assert result["sources"][0]["latest_health_at"] == "2026-06-11T12:05:00+00:00"
+    assert result["sources"][0]["health_state"] == "healthy"
+    assert result["sources"][1]["latest_health_at"] == "2026-06-11T12:15:00+00:00"
+    assert result["sources"][1]["health_state"] == "cooldown"
 
 
 def test_api_data_sources_status_http_smoke() -> None:

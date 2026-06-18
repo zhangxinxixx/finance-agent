@@ -3,7 +3,8 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.review import ReviewItem as ReviewItemSchema
-from apps.api.schemas.source_trace import ArtifactRef, SourceRef
+from apps.api.schemas.source_trace import ArtifactRef
+from apps.api.services._trace_refs import coerce_artifact_type, parse_source_refs
 from database.models.analysis import ReviewItem
 from database.queries.review import (
     get_review_item,
@@ -96,7 +97,7 @@ def build_review_item_response(item: ReviewItem) -> ReviewItemSchema:
         reason=item.reason,
         impact_modules=list(item.impact_modules or []),
         impact_report_ids=[str(value) for value in (item.impact_report_ids or [])],
-        source_refs=_parse_source_refs(item.source_refs),
+        source_refs=parse_source_refs(item.source_refs),
         evidence_refs=_parse_artifact_refs(item.evidence_refs),
         suggested_action=item.suggested_action,
         status=item.status,
@@ -111,32 +112,6 @@ def build_review_item_response(item: ReviewItem) -> ReviewItemSchema:
         updated_at=item.updated_at,
         resolved_at=item.resolved_at,
     )
-
-
-def _parse_source_refs(raw: list[dict] | None) -> list[SourceRef]:
-    refs: list[SourceRef] = []
-    for index, item in enumerate(raw or []):
-        if not isinstance(item, dict):
-            continue
-        source_name = str(item.get("source_name") or item.get("source") or item.get("source_id") or f"source-{index}")
-        source_id = str(item.get("source_id") or f"{source_name}:{index}")
-        refs.append(
-            SourceRef(
-                source_id=source_id,
-                source_name=source_name,
-                source_type=str(item.get("source_type") or item.get("type") or "unknown"),
-                data_date=item.get("data_date") or item.get("report_date"),
-                endpoint=item.get("endpoint"),
-                captured_at=item.get("captured_at"),
-                file_path=item.get("file_path"),
-                sha256=item.get("sha256"),
-                url=item.get("url") or item.get("source_url"),
-                status=item.get("status"),
-            )
-        )
-    return refs
-
-
 def _parse_artifact_refs(raw: list[dict] | None) -> list[ArtifactRef]:
     refs: list[ArtifactRef] = []
     for index, item in enumerate(raw or []):
@@ -157,7 +132,7 @@ def _parse_artifact_refs(raw: list[dict] | None) -> list[ArtifactRef]:
         refs.append(
             ArtifactRef(
                 artifact_id=str(item.get("artifact_id") or f"evidence-{index + 1}"),
-                artifact_type=str(item.get("artifact_type") or _infer_artifact_type(str(file_path))),
+                artifact_type=str(item.get("artifact_type") or coerce_artifact_type(None, str(file_path))),
                 file_path=str(file_path),
                 version=item.get("version"),
                 generated_at=item.get("generated_at"),
@@ -165,12 +140,3 @@ def _parse_artifact_refs(raw: list[dict] | None) -> list[ArtifactRef]:
             )
         )
     return refs
-
-
-def _infer_artifact_type(path: str) -> str:
-    normalized = path.lower()
-    if normalized.endswith(".json"):
-        return "structured_json"
-    if normalized.endswith(".html"):
-        return "visual_html"
-    return "analysis_md"

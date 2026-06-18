@@ -545,7 +545,7 @@ export function EventFlowDetailPage() {
     setReviewError(null);
     try {
       const response = await reviewEventFlowEvent(activeEvent.id, {
-        review: `event ${activeEvent.id} requested manual review`,
+        reason: `event ${activeEvent.id} requested manual review`,
       });
       setReviewReceipt({
         runId: response.run_id,

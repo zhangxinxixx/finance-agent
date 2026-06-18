@@ -53,6 +53,7 @@ from apps.api.schemas.playbook import (
     PlaybookTemplateListResponse,
     PlaybookTemplateVersion,
 )
+from apps.api.schemas.artifact import ArtifactDetailResponse
 from apps.api.schemas.strategy import StrategyAssetListResponse
 from apps.api.schemas.source_trace import SourceTraceResponse
 from apps.api.schemas.report import ReportAnalysisInputs, ReportArtifact, ReportDetail
@@ -96,6 +97,7 @@ from apps.api.services import (
     event_flow_action_service,
     ingestion_action_service,
     ingestion_source_test_service,
+    pipeline_contract_service,
     playbook_service,
     review_service,
     settings_service,
@@ -118,9 +120,12 @@ from apps.api.services.daily_analysis_followup_service import (
     get_daily_analysis_followups_latest,
 )
 from apps.api.services.daily_analysis_followup_task_service import create_daily_analysis_followup_tasks
+from apps.api.services.execution_event_api import get_run_events
 from apps.api.services.feishu_jin10_message_monitor_service import get_feishu_jin10_message_monitor
+from apps.api.services.artifact_service import get_artifact_detail_response
 from apps.api.services.source_service import get_data_status_summary
 from apps.api.services.source_trace_service import (
+    get_source_trace_by_artifact_id,
     get_source_trace_by_report_id,
     get_source_trace_by_snapshot_id,
     get_source_trace_by_strategy_card_id,
@@ -135,9 +140,16 @@ from apps.api.services.report_service import (
     get_report_visual,
 )
 from apps.api.services.agent_output_service import build_agent_output_summary
+from apps.api.services._trace_refs import parse_source_refs
 from apps.api.services.scheduler_service import get_scheduler_overview
+from apps.runtime.state_machine import (
+    ACTIVE_DAGSTER_RUN_STATUSES,
+    map_dagster_status_to_task_status,
+    transition_task_run,
+)
 from database.models.engine import SessionLocal, get_db
 from database.models.analysis import ensure_analysis_tables
+from database.models.execution import ensure_execution_tables
 from database.models.report import ensure_report_tables
 from database.models.task import TaskRun, TaskStatus, TaskStep, ensure_task_tables
 
@@ -150,7 +162,6 @@ _JIN10_FLASH_CACHE_MAX_AGE_SECONDS = 60
 _PREMARKET_ACTIVE_TASK_STALE_AFTER = timedelta(
     hours=int(os.getenv("PREMARKET_ACTIVE_TASK_STALE_AFTER_HOURS", "6"))
 )
-_DAGSTER_ACTIVE_RUN_STATUSES = {"QUEUED", "STARTING", "STARTED", "CANCELING"}
 
 
 def _run_premarket_scheduled() -> None:
@@ -197,13 +208,14 @@ def _cleanup_stale_active_premarket_tasks(db: Session, *, now: datetime | None =
     for task in active_runs:
         ref_time = _premarket_active_task_ref_time(task)
         if ref_time is not None and current_time - ref_time > _PREMARKET_ACTIVE_TASK_STALE_AFTER:
-            task.status = TaskStatus.stale
-            task.ended_at = current_time
-            task.error_summary = (
-                f"Marked stale after exceeding active timeout ({_PREMARKET_ACTIVE_TASK_STALE_AFTER})."
+            transition_task_run(
+                db,
+                task,
+                TaskStatus.stale,
+                source="api",
+                reason=f"active_timeout_exceeded:{_PREMARKET_ACTIVE_TASK_STALE_AFTER}",
+                error_message=task.error or "Legacy premarket task timed out before Dagster migration verification.",
             )
-            if not task.error:
-                task.error = "Legacy premarket task timed out before Dagster migration verification."
             stale_marked = True
             continue
         if stale_marked:
@@ -240,20 +252,13 @@ def _find_active_dagster_premarket_run(dagster_url: str) -> dict[str, str] | Non
     runs = data.get("data", {}).get("runsOrError", {}).get("results", [])
     for run in runs:
         status = str(run.get("status") or "").upper()
-        if status in _DAGSTER_ACTIVE_RUN_STATUSES:
+        if status in ACTIVE_DAGSTER_RUN_STATUSES:
             return {"run_id": str(run.get("runId")), "status": status}
     return None
 
 
 def _dagster_status_to_task_status(status: str | None) -> str:
-    value = str(status or "").upper()
-    if value in {"QUEUED", "STARTING", "STARTED", "CANCELING"}:
-        return "running"
-    if value == "SUCCESS":
-        return "success"
-    if value in {"FAILURE", "CANCELED", "CANCELLED"}:
-        return "failed"
-    return "pending"
+    return map_dagster_status_to_task_status(status)
 
 
 def _timestamp_to_utc(value: float | int | None) -> datetime | None:
@@ -340,6 +345,7 @@ async def lifespan(_app: FastAPI):
         db = SessionLocal()
         try:
             ensure_task_tables(db)
+            ensure_execution_tables(db)
             ensure_analysis_tables(db)
             ensure_report_tables(db)
         except Exception:
@@ -531,6 +537,12 @@ def api_memory_context(task: str) -> MemoryContextResponse:
 
 
 PREMARKET_STEPS = PREMARKET_STEP_ORDER
+
+
+@app.get("/api/pipelines/premarket/contract")
+def api_premarket_pipeline_contract() -> dict[str, Any]:
+    """Return the read-only canonical premarket step topology contract."""
+    return pipeline_contract_service.build_premarket_pipeline_contract()
 
 
 @app.post("/tasks/premarket", response_model=TaskCreateResponse)
@@ -881,6 +893,34 @@ def api_run_artifacts(run_id: str, db: Session = Depends(get_db)):
     return artifacts
 
 
+@app.get("/api/artifacts/{artifact_id}", response_model=ArtifactDetailResponse)
+def api_artifact_detail(artifact_id: str, db: Session = Depends(get_db)) -> ArtifactDetailResponse:
+    """返回单个 registry artifact 的上下文详情。"""
+    try:
+        uuid.UUID(artifact_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid artifact_id format")
+
+    artifact = get_artifact_detail_response(db, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return artifact
+
+
+@app.get("/api/runs/{run_id}/events")
+def api_run_events(run_id: str, db: Session = Depends(get_db)):
+    """返回某次运行的执行事件时间线。"""
+    try:
+        uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run_id format")
+
+    run = task_service.get_task_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return get_run_events(db, run_id)
+
+
 # ── API: Scheduler Center ──
 
 
@@ -910,6 +950,20 @@ def api_source_trace_by_report(report_id: str, db: Session = Depends(get_db)) ->
 def api_source_trace_by_strategy(strategy_card_id: str, db: Session = Depends(get_db)) -> SourceTraceResponse:
     """按 strategy_card_id 反查关联 run/snapshot/source/artifact。"""
     trace = get_source_trace_by_strategy_card_id(db, strategy_card_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="Source trace not found")
+    return trace
+
+
+@app.get("/api/source-trace/by-artifact/{artifact_id}", response_model=SourceTraceResponse)
+def api_source_trace_by_artifact(artifact_id: str, db: Session = Depends(get_db)) -> SourceTraceResponse:
+    """按 artifact_id 反查关联 snapshot/source/artifact 溯源视图。"""
+    try:
+        uuid.UUID(artifact_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid artifact_id format")
+
+    trace = get_source_trace_by_artifact_id(db, artifact_id)
     if trace is None:
         raise HTTPException(status_code=404, detail="Source trace not found")
     return trace
@@ -2531,7 +2585,7 @@ def _agent_inspection_item(row, snapshot_payload: dict[str, Any] | None) -> dict
         },
         "input": {
             "input_snapshot_ids": row.input_snapshot_ids or {},
-            "source_refs": row.source_refs or [],
+            "source_refs": [source_ref.model_dump(mode="json") for source_ref in parse_source_refs(row.source_refs)],
             "payload": input_payload,
         },
         "output": {

@@ -26,6 +26,8 @@ from sqlalchemy.orm import Session as DBSession
 from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
 from apps.output.artifacts import artifact_run_dir
 from apps.premarket import sort_premarket_steps
+from apps.runtime.artifact_registry import register_step_artifacts
+from apps.runtime.state_machine import derive_task_run_status, transition_task_run
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
 # ── C4 agent pipeline imports (deterministic, no LLM / network / file reads) ──
@@ -89,7 +91,7 @@ def run_premarket(
     if not task:
         return TaskStatus.failed
 
-    task.status = TaskStatus.running
+    transition_task_run(db, task, TaskStatus.running, source="worker", reason="worker_started")
     db.commit()
 
     # Ensure analysis DB tables exist (idempotent, additive sink)
@@ -221,6 +223,8 @@ def run_premarket(
                         break
 
             summary_status = _apply_step_summary_status(step, summary)
+            if step.status in {StepStatus.success, StepStatus.skipped}:
+                _register_runner_step_artifacts(db, run_id=run_id, step=step, summary=summary)
             # ── T1.3: successful steps are not retryable ───────────
             step.retryable = False
             if summary_status == _STEP_STATUS_FAILED:
@@ -312,6 +316,12 @@ def run_premarket(
                     "status": "failed",
                     "error": str(db_exc),
                 }
+            _register_c4_output_artifacts(
+                db,
+                run_id=run_id,
+                steps=ordered_steps,
+                c4_outputs=c4_outputs,
+            )
         except Exception as exc:
             logger.exception("C4 agent pipeline failed")
             had_failure = True
@@ -347,14 +357,17 @@ def run_premarket(
     except Exception:
         logger.exception("Failed to write run provenance artifact")
 
-    if had_failure:
-        task.status = TaskStatus.partial_success if had_non_failed_step else TaskStatus.failed
-    elif had_partial_summary:
-        task.status = TaskStatus.partial_success
-    else:
-        task.status = TaskStatus.success
+    final_status = derive_task_run_status(
+        (step.status for step in ordered_steps),
+        has_partial_signal=had_partial_summary,
+    )
+    if had_failure and not had_non_failed_step:
+        final_status = TaskStatus.failed
+    elif had_failure and final_status == TaskStatus.success:
+        final_status = TaskStatus.partial_success
+    transition_task_run(db, task, final_status, source="worker", reason="step_rollup")
     db.commit()
-    return task.status
+    return final_status
 
 
 def _classify_error_type(exc: Exception) -> str:
@@ -415,6 +428,83 @@ def _apply_step_summary_status(step, summary: dict[str, object] | None) -> str:
         logger.warning("Step %s returned %s", getattr(step, "name", "<unknown>"), unknown_status)
         return _STEP_STATUS_FAILED
     return status
+
+
+def _register_runner_step_artifacts(
+    db: DBSession,
+    *,
+    run_id: str,
+    step,
+    summary: dict[str, object] | None,
+) -> None:
+    if not isinstance(summary, dict) and not step.output_ref:
+        return
+    output_refs = summary.get("output_refs") if isinstance(summary, dict) else None
+    artifact_refs = summary.get("artifact_refs") if isinstance(summary, dict) else None
+    register_step_artifacts(
+        db,
+        run_id=run_id,
+        step=step,
+        output_refs=output_refs if isinstance(output_refs, list) else None,
+        artifact_refs=artifact_refs if isinstance(artifact_refs, list) else None,
+        output_ref=step.output_ref,
+        source_refs=None,
+    )
+
+
+def _register_c4_output_artifacts(
+    db: DBSession,
+    *,
+    run_id: str,
+    steps: list[Any],
+    c4_outputs: dict[str, Any],
+) -> None:
+    report_step = next((step for step in steps if step.name == "report_render"), None)
+    if report_step is None:
+        return
+
+    report_result = c4_outputs.get("report_result") if isinstance(c4_outputs, dict) else None
+    card_result = c4_outputs.get("card_result") if isinstance(c4_outputs, dict) else None
+
+    artifacts: list[dict[str, Any]] = []
+    if isinstance(report_result, dict):
+        report_paths = report_result.get("paths")
+        if isinstance(report_paths, list):
+            for index, path in enumerate(report_paths):
+                if not isinstance(path, str):
+                    continue
+                artifacts.append(
+                    {
+                        "artifact_id": f"{run_id}:final_report:{index}",
+                        "artifact_type": "analysis_md" if path.endswith(".md") else "structured_json",
+                        "file_path": path,
+                    }
+                )
+    if isinstance(card_result, dict):
+        card_paths = card_result.get("paths")
+        if isinstance(card_paths, list):
+            for index, path in enumerate(card_paths):
+                if not isinstance(path, str):
+                    continue
+                artifacts.append(
+                    {
+                        "artifact_id": f"{run_id}:strategy_card:{index}",
+                        "artifact_type": "analysis_md" if path.endswith(".md") else "structured_json",
+                        "file_path": path,
+                    }
+                )
+    if not artifacts:
+        return
+
+    register_step_artifacts(
+        db,
+        run_id=run_id,
+        step=report_step,
+        output_refs=artifacts,
+        artifact_refs=None,
+        output_ref=None,
+        source_refs=None,
+    )
 
 
 def _persist_analysis_snapshot(

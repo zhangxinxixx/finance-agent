@@ -3,7 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from apps.api.schemas.claim import Claim, ClaimReview, ClaimReviewVerdict, ClaimType
-from apps.api.schemas.source_trace import ArtifactRef, SourceRef
+from apps.api.services._trace_refs import (
+    artifact_ref_from_path,
+    coerce_artifact_type,
+    dedupe_artifact_refs,
+    parse_artifact_refs,
+    parse_source_refs,
+)
 
 
 _BIAS_LABELS = {
@@ -76,9 +82,10 @@ def build_agent_output_summary(row) -> dict[str, Any]:
     if generated_by is None:
         generated_by = "llm" if row.llm_model else "rule"
 
-    artifact_refs = payload.get("artifact_refs")
-    if artifact_refs is None:
-        artifact_refs = payload.get("source_artifact_refs") or []
+    artifact_refs = _normalize_artifact_refs(
+        payload.get("artifact_refs") if payload.get("artifact_refs") is not None else payload.get("source_artifact_refs"),
+    )
+    source_refs = [source_ref.model_dump(mode="json") for source_ref in parse_source_refs(row.source_refs)]
 
     claims = normalize_claims(payload.get("claims"))
     claim_reviews = normalize_claim_reviews(payload.get("claim_reviews"))
@@ -106,7 +113,7 @@ def build_agent_output_summary(row) -> dict[str, Any]:
         "watchlist": row.watchlist or [],
         "invalid_conditions": row.invalid_conditions or [],
         "input_snapshot_ids": row.input_snapshot_ids or {},
-        "source_refs": row.source_refs or [],
+        "source_refs": source_refs,
         "artifact_refs": artifact_refs,
         "market_phase": payload.get("market_phase"),
         "regime_drivers": payload.get("regime_drivers"),
@@ -141,7 +148,7 @@ def normalize_claims(raw_claims: Any) -> list[dict[str, Any]]:
         if not text:
             continue
         claim_type = _coerce_claim_type(item.get("claim_type"))
-        source_refs = _parse_source_refs(item.get("source_refs"))
+        source_refs = parse_source_refs(item.get("source_refs"))
         evidence_refs = _parse_evidence_refs(item.get("evidence_refs"))
         confidence = _coerce_confidence(item.get("confidence"))
         claims.append(
@@ -210,32 +217,6 @@ def _optional_string(raw: Any) -> str | None:
     return text or None
 
 
-def _parse_source_refs(raw: Any) -> list[SourceRef]:
-    if not isinstance(raw, list):
-        return []
-    refs: list[SourceRef] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            continue
-        source_name = str(item.get("source_name") or item.get("source") or item.get("source_id") or f"source-{index}")
-        source_id = str(item.get("source_id") or f"{source_name}:{index}")
-        refs.append(
-            SourceRef(
-                source_id=source_id,
-                source_name=source_name,
-                source_type=str(item.get("source_type") or item.get("type") or "unknown"),
-                data_date=item.get("data_date"),
-                endpoint=item.get("endpoint"),
-                captured_at=item.get("captured_at"),
-                file_path=item.get("file_path"),
-                sha256=item.get("sha256"),
-                url=item.get("url"),
-                status=item.get("status"),
-            )
-        )
-    return refs
-
-
 def _parse_evidence_refs(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
@@ -243,10 +224,9 @@ def _parse_evidence_refs(raw: Any) -> list[dict[str, Any]]:
     for index, item in enumerate(raw):
         if isinstance(item, str):
             refs.append(
-                ArtifactRef(
+                artifact_ref_from_path(
+                    item,
                     artifact_id=f"evidence-{index + 1}",
-                    artifact_type=_coerce_artifact_type(None, item),
-                    file_path=item,
                 ).model_dump(mode="json")
             )
             continue
@@ -254,50 +234,28 @@ def _parse_evidence_refs(raw: Any) -> list[dict[str, Any]]:
             continue
         file_path = item.get("file_path") or item.get("artifact_path") or item.get("path")
         if file_path:
+            artifact_id = str(item.get("artifact_id") or f"evidence-{index + 1}")
             refs.append(
-                ArtifactRef(
-                    artifact_id=str(item.get("artifact_id") or f"evidence-{index + 1}"),
-                    artifact_type=_coerce_artifact_type(item.get("artifact_type"), str(file_path)),
-                    file_path=str(file_path),
-                    version=item.get("version"),
-                    generated_at=item.get("generated_at"),
-                    sha256=item.get("sha256"),
-                ).model_dump(mode="json")
+                artifact_ref_from_path(
+                    str(file_path),
+                    artifact_id=artifact_id,
+                )
+                .model_copy(
+                    update={
+                        "artifact_type": coerce_artifact_type(item.get("artifact_type"), str(file_path)),
+                        "version": item.get("version"),
+                        "generated_at": item.get("generated_at"),
+                        "sha256": item.get("sha256"),
+                    }
+                )
+                .model_dump(mode="json")
             )
             continue
-        source_name = str(item.get("source_name") or item.get("source") or item.get("source_id") or f"source-{index}")
-        source_id = str(item.get("source_id") or f"{source_name}:{index}")
-        refs.append(
-            SourceRef(
-                source_id=source_id,
-                source_name=source_name,
-                source_type=str(item.get("source_type") or item.get("type") or "unknown"),
-                data_date=item.get("data_date"),
-                endpoint=item.get("endpoint"),
-                captured_at=item.get("captured_at"),
-                file_path=item.get("file_path"),
-                sha256=item.get("sha256"),
-                url=item.get("url"),
-                status=item.get("status"),
-            ).model_dump(mode="json")
-        )
+        refs.extend(source_ref.model_dump(mode="json") for source_ref in parse_source_refs([item]))
     return refs
 
 
-def _coerce_artifact_type(raw_type: Any, file_path: str) -> str:
-    from apps.api.schemas.common import ArtifactType
-
-    if raw_type:
-        try:
-            return ArtifactType(str(raw_type)).value
-        except ValueError:
-            pass
-
-    normalized = file_path.lower()
-    if normalized.endswith(".md"):
-        return ArtifactType.analysis_md.value
-    if normalized.endswith(".html"):
-        return ArtifactType.visual_html.value
-    if normalized.endswith(".json"):
-        return ArtifactType.structured_json.value
-    return ArtifactType.raw_file.value
+def _normalize_artifact_refs(raw: Any) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    return [artifact.model_dump(mode="json") for artifact in dedupe_artifact_refs(parse_artifact_refs(raw))]

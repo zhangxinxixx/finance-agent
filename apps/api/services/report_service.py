@@ -14,8 +14,9 @@ from apps.api.schemas.common import ArtifactType, DataStatus, ReportLifecycleSta
 from apps.api.schemas.report import ReportAnalysisAgentOutput, ReportAnalysisInputs, ReportDeterministicInput
 from apps.api.schemas.report import ReportArtifact as ReportArtifactSchema
 from apps.api.schemas.report import ReportDetail
-from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef, SourceRef
+from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef
 from apps.api.services._storage import _PROJECT_ROOT, _iso, _latest_asset_date_run, _try_db_session
+from apps.api.services._trace_refs import coerce_artifact_type, dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
 from apps.api.services.agent_output_service import build_agent_output_summary
 from apps.analysis.macro.regime import classify_macro_regime
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
@@ -124,14 +125,14 @@ def get_report_analysis_inputs(db: Session, report_id: str) -> ReportAnalysisInp
             )
         )
 
-    source_refs = _dedupe_sources(
+    source_refs = dedupe_source_refs(
         [
             *detail.source_refs,
             *[source for item in deterministic_inputs for source in item.source_refs],
             *[source for item in all_agent_outputs for source in item.source_refs],
         ]
     )
-    artifact_refs = _dedupe_artifacts(
+    artifact_refs = dedupe_artifact_refs(
         [
             *detail.artifacts,
             *[artifact for item in deterministic_inputs for artifact in item.artifact_refs],
@@ -236,7 +237,7 @@ def _build_report_agent_output(row: AgentOutput) -> ReportAnalysisAgentOutput:
         risk_points=[str(item) for item in summary["risk_points"]],
         watchlist=[str(item) for item in summary["watchlist"]],
         invalid_conditions=[str(item) for item in summary["invalid_conditions"]],
-        source_refs=_parse_source_refs(summary["source_refs"]),
+        source_refs=parse_source_refs(summary["source_refs"]),
         artifact_refs=_normalize_agent_artifact_refs(summary["artifact_refs"], agent_output_id=summary["agent_output_id"]),
         claims=summary["claims"],
         claim_reviews=summary["claim_reviews"],
@@ -251,7 +252,7 @@ def _build_report_agent_output(row: AgentOutput) -> ReportAnalysisAgentOutput:
 
 def _build_analysis_snapshot_input(snapshot: AnalysisSnapshot) -> ReportDeterministicInput:
     sections = _snapshot_sections(snapshot.payload)
-    source_refs = _parse_source_refs(snapshot.source_refs)
+    source_refs = parse_source_refs(snapshot.source_refs)
     snapshot_ref = SnapshotRef(
         snapshot_id=snapshot.snapshot_id,
         snapshot_type="analysis",
@@ -303,7 +304,7 @@ def _build_input_snapshot_items(
                 input_snapshot_ids=_normalize_snapshot_ids(snapshot.input_snapshot_ids),
             )
             sections = _snapshot_sections(snapshot.payload)
-            source_refs = _parse_source_refs(snapshot.source_refs)
+            source_refs = parse_source_refs(snapshot.source_refs)
             artifact_refs = [
                 ArtifactRef(
                     artifact_id=f"{snapshot.snapshot_id}:snapshot",
@@ -367,7 +368,7 @@ def _build_agent_fallback_inputs(agent_rows: list[AgentOutput]) -> list[ReportDe
                     input_snapshot_ids=_normalize_snapshot_ids(row.input_snapshot_ids),
                 ),
                 sections=sorted(input_payload.keys()) if isinstance(input_payload, dict) else [],
-                source_refs=_parse_source_refs(row.source_refs),
+                source_refs=parse_source_refs(row.source_refs),
                 artifact_refs=[],
                 payload=input_payload if isinstance(input_payload, dict) else None,
             )
@@ -408,7 +409,7 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
         run_id=item.run_id,
         snapshot_id=item.snapshot_id,
         data_status=data_status,
-        source_refs=_parse_source_refs(item.source_refs),
+        source_refs=parse_source_refs(item.source_refs),
         artifact_refs=schema_artifacts,
         warnings=warnings,
         report_id=item.report_id,
@@ -480,7 +481,7 @@ def _legacy_final_report_detail(row: FinalAnalysisResult) -> ReportDetail | None
         run_id=row.run_id,
         snapshot_id=row.snapshot_id,
         data_status=DataStatus.partial,
-        source_refs=_parse_source_refs(row.source_refs),
+        source_refs=parse_source_refs(row.source_refs),
         artifact_refs=artifacts,
         warnings=[
             WarningItem(
@@ -712,7 +713,7 @@ def _pick_legacy_analysis_artifact(artifacts: list[ReportArtifactSchema]) -> Rep
 def _to_report_artifact_schema(artifact: ReportArtifactModel) -> ReportArtifactSchema:
     return _artifact_schema(
         artifact_id=artifact.artifact_id,
-        artifact_type=_coerce_artifact_type(artifact.artifact_type, artifact.file_path),
+        artifact_type=coerce_artifact_type(artifact.artifact_type, artifact.file_path),
         file_path=artifact.file_path,
         generated_at=artifact.generated_at or artifact.updated_at or artifact.created_at,
         sha256=artifact.sha256,
@@ -764,12 +765,12 @@ def _normalize_agent_artifact_refs(raw_refs: Any, *, agent_output_id: str) -> li
     for index, item in enumerate(raw_refs, start=1):
         if isinstance(item, str):
             file_path = item
-            artifact_type = _coerce_artifact_type(None, file_path)
+            artifact_type = coerce_artifact_type(None, file_path)
         elif isinstance(item, dict):
             file_path = item.get("file_path") or item.get("artifact_path") or item.get("path")
             if not file_path:
                 continue
-            artifact_type = _coerce_artifact_type(item.get("artifact_type"), str(file_path))
+            artifact_type = coerce_artifact_type(item.get("artifact_type"), str(file_path))
         else:
             continue
         artifacts.append(
@@ -779,24 +780,7 @@ def _normalize_agent_artifact_refs(raw_refs: Any, *, agent_output_id: str) -> li
                 file_path=str(file_path),
             )
         )
-    return _dedupe_artifacts(artifacts)
-
-
-def _coerce_artifact_type(raw_type: str | None, file_path: str) -> ArtifactType:
-    if raw_type:
-        try:
-            return ArtifactType(raw_type)
-        except ValueError:
-            pass
-
-    normalized = file_path.lower()
-    if normalized.endswith("source.md") or normalized.endswith("raw_article_report.md"):
-        return ArtifactType.source_md
-    if normalized.endswith("analysis.md") or normalized.endswith("final_report.md") or normalized.endswith("agent_analysis_report.md"):
-        return ArtifactType.analysis_md
-    if normalized.endswith("visual.html") or normalized.endswith("daily_analysis.html") or normalized.endswith("options_visual_report.html"):
-        return ArtifactType.visual_html
-    return ArtifactType.structured_json
+    return dedupe_artifact_refs(artifacts)
 
 
 def _coerce_data_status(raw: str | None) -> DataStatus:
@@ -883,54 +867,6 @@ def _normalize_snapshot_ids(raw: Any) -> list[str]:
     return list(dict.fromkeys(snapshot_ids))
 
 
-def _parse_source_refs(raw: Any) -> list[SourceRef]:
-    if not isinstance(raw, list):
-        return []
-    refs: list[SourceRef] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            continue
-        source_name = str(item.get("source_name") or item.get("source") or item.get("source_id") or f"source-{index}")
-        source_id = str(item.get("source_id") or f"{source_name}:{index}")
-        refs.append(
-            SourceRef(
-                source_id=source_id,
-                source_name=source_name,
-                source_type=str(item.get("source_type") or item.get("type") or "unknown"),
-                data_date=item.get("data_date"),
-                endpoint=item.get("endpoint"),
-                captured_at=item.get("captured_at"),
-                file_path=item.get("file_path"),
-                sha256=item.get("sha256"),
-                url=item.get("url"),
-                status=item.get("status"),
-            )
-        )
-    return refs
-
-
-def _dedupe_sources(sources: list[SourceRef]) -> list[SourceRef]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[SourceRef] = []
-    for source in sources:
-        key = (source.source_id, source.source_type)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(source)
-    return deduped
-
-
-def _dedupe_artifacts(artifacts: list[ArtifactRef]) -> list[ArtifactRef]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[ArtifactRef] = []
-    for artifact in artifacts:
-        key = (artifact.file_path, artifact.artifact_type.value)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(artifact)
-    return deduped
 
 
 def _find_run_dir(base: Path, report_id: str) -> tuple[str, Path] | None:
