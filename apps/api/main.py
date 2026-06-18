@@ -139,6 +139,7 @@ from apps.api.services.report_service import (
     get_report_visual,
 )
 from apps.api.services.agent_output_service import build_agent_output_summary
+from apps.api.services._trace_refs import parse_source_refs
 from apps.api.services.scheduler_service import get_scheduler_overview
 from apps.runtime.state_machine import (
     ACTIVE_DAGSTER_RUN_STATUSES,
@@ -2577,7 +2578,7 @@ def _agent_inspection_item(row, snapshot_payload: dict[str, Any] | None) -> dict
         },
         "input": {
             "input_snapshot_ids": row.input_snapshot_ids or {},
-            "source_refs": row.source_refs or [],
+            "source_refs": [source_ref.model_dump(mode="json") for source_ref in parse_source_refs(row.source_refs)],
             "payload": input_payload,
         },
         "output": {
