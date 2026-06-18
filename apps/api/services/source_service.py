@@ -403,6 +403,7 @@ def _latest_news_feature_artifacts() -> dict[str, Any]:
             "artifact_path": artifact_paths.get("brief_artifact_path")
             or artifact_paths.get("impact_assessments_artifact_path")
             or artifact_paths.get("event_candidates_artifact_path"),
+            "collection_diagnostics_artifact_mtime": _path_mtime_iso(diagnostics_path) if diagnostics_path.exists() else None,
             **artifact_paths,
             **summary,
             **diagnostics,
@@ -605,6 +606,35 @@ def _latest_cooldown_metadata(source_runtime: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in cooldown.items() if value not in (None, "", [])}
 
 
+def _source_health_state(source: dict[str, Any]) -> str:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    cooldown = metadata.get("latest_cooldown") if isinstance(metadata.get("latest_cooldown"), dict) else {}
+    if cooldown.get("active"):
+        return "cooldown"
+
+    status = str(source.get("status") or "").strip().lower()
+    if status == "ok" and (source.get("analysis_ready") or source.get("parsed") or source.get("raw_ingested")):
+        return "healthy"
+    if status in {"partial", "stale", "warn", "rate_limited"}:
+        return "degraded"
+    if status in {"not_connected", "unavailable", "error", "failed"}:
+        return "unavailable"
+    if source.get("configured") or source.get("raw_ingested") or source.get("parsed"):
+        return "degraded"
+    return "unavailable"
+
+
+def _source_latest_health_at(source: dict[str, Any]) -> str | None:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    cooldown = metadata.get("latest_cooldown") if isinstance(metadata.get("latest_cooldown"), dict) else {}
+    return _max_iso_datetime(
+        source.get("latest_update_time"),
+        metadata.get("latest_artifact_mtime"),
+        metadata.get("collection_diagnostics_artifact_mtime"),
+        cooldown.get("written_at"),
+    )
+
+
 def _load_json_artifact(path_rel: str) -> dict[str, Any]:
     path = _resolve_project_or_storage_path(path_rel)
     if path is None:
@@ -742,6 +772,13 @@ def _augment_source_observability(source: dict[str, Any]) -> dict[str, Any]:
     metadata.update(contract)
     result["metadata"] = metadata
     result["latest_update_time"] = _latest_update_time(result)
+    latest_health_at = _source_latest_health_at(result)
+    if latest_health_at:
+        metadata["latest_health_at"] = latest_health_at
+        result["latest_health_at"] = latest_health_at
+    health_state = _source_health_state(result)
+    metadata["health_state"] = health_state
+    result["health_state"] = health_state
     return result
 
 
@@ -818,22 +855,45 @@ def get_data_status_summary() -> dict[str, Any]:
     live_count = 0
     partial_count = 0
     unavailable_count = 0
-    source_list: list[dict[str, str]] = []
+    source_list: list[dict[str, Any]] = []
     missing_sources: list[str] = []
 
     for src in sources:
         status = src.get("status", "not_connected")
         source_key = src.get("source_key", "")
         label = src.get("metadata", {}).get("frontend_label") or src.get("source_name", source_key)
+        latest_health_at = src.get("latest_health_at") or src.get("metadata", {}).get("latest_health_at")
+        health_state = src.get("health_state") or src.get("metadata", {}).get("health_state") or "unavailable"
 
         if status == "ok":
-            source_list.append({"name": source_key, "status": "LIVE", "source": "api", "label": label})
+            source_list.append({
+                "name": source_key,
+                "status": "LIVE",
+                "source": "api",
+                "label": label,
+                "latest_health_at": latest_health_at,
+                "health_state": health_state,
+            })
             live_count += 1
         elif status in ("partial", "stale", "warn"):
-            source_list.append({"name": source_key, "status": "PARTIAL", "source": "api", "label": label})
+            source_list.append({
+                "name": source_key,
+                "status": "PARTIAL",
+                "source": "api",
+                "label": label,
+                "latest_health_at": latest_health_at,
+                "health_state": health_state,
+            })
             partial_count += 1
         else:
-            source_list.append({"name": source_key, "status": "UNAVAILABLE", "source": "unavailable", "label": label})
+            source_list.append({
+                "name": source_key,
+                "status": "UNAVAILABLE",
+                "source": "unavailable",
+                "label": label,
+                "latest_health_at": latest_health_at,
+                "health_state": health_state,
+            })
             unavailable_count += 1
             missing_sources.append(label)
 

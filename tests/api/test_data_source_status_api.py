@@ -50,6 +50,11 @@ _JIN10_MULTI_ENTRY_EXPECTATIONS = {
 def _relative_to(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
+
+def _mtime_iso(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat()
+
+
 def _latest_materialized_file(base: Path) -> Path:
     files = sorted(base.glob("*/*.json"))
     assert files, f"No fixture files materialized under {base}"
@@ -489,6 +494,10 @@ def test_data_service_filesystem_fallback_attaches_news_collection_diagnostics(t
         "written_at": "2026-06-11T12:00:00+00:00",
         "reason": "HTTP 429 from https://api.gdeltproject.org/api/v2/doc/doc",
     }
+    assert fed_rss["metadata"]["latest_health_at"] == _mtime_iso(replay["feature_dir"] / "collection_diagnostics.json")
+    assert fed_rss["metadata"]["health_state"] == "healthy"
+    assert gdelt["metadata"]["latest_health_at"] == _mtime_iso(replay["feature_dir"] / "collection_diagnostics.json")
+    assert gdelt["metadata"]["health_state"] == "cooldown"
 
 
 def test_data_service_db_rows_are_augmented_with_news_feature_artifacts(tmp_path: Path) -> None:
@@ -715,6 +724,44 @@ def test_data_status_summary_marks_partial_and_lists_missing_sources() -> None:
     assert result["sources"][0]["status"] == "LIVE"
     assert result["sources"][1]["status"] == "UNAVAILABLE"
     assert result["sources"][2]["status"] == "PARTIAL"
+
+
+def test_data_status_summary_exposes_latest_health_signal() -> None:
+    """Summary read model should surface the latest health timestamp and state."""
+    payload = {
+        "sources": [
+            {
+                "source_key": "fred",
+                "source_name": "FRED",
+                "status": "ok",
+                "metadata": {
+                    "frontend_label": "FRED 官方宏观主源",
+                    "latest_health_at": "2026-06-11T12:05:00+00:00",
+                    "health_state": "healthy",
+                },
+            },
+            {
+                "source_key": "gdelt_news",
+                "source_name": "GDELT DOC News Radar",
+                "status": "not_connected",
+                "metadata": {
+                    "frontend_label": "GDELT 全球新闻雷达",
+                    "latest_health_at": "2026-06-11T12:15:00+00:00",
+                    "health_state": "cooldown",
+                },
+            },
+        ]
+    }
+
+    with patch("apps.api.services.source_service.get_data_source_statuses", return_value=payload), patch(
+        "apps.api.services.source_service._try_db_session", return_value=None
+    ):
+        result = get_data_status_summary()
+
+    assert result["sources"][0]["latest_health_at"] == "2026-06-11T12:05:00+00:00"
+    assert result["sources"][0]["health_state"] == "healthy"
+    assert result["sources"][1]["latest_health_at"] == "2026-06-11T12:15:00+00:00"
+    assert result["sources"][1]["health_state"] == "cooldown"
 
 
 def test_api_data_sources_status_http_smoke() -> None:
