@@ -277,6 +277,60 @@ def test_data_service_each_source_has_four_booleans() -> None:
         assert isinstance(src[key], bool), f"{key} must be bool, got {type(src[key])}"
 
 
+def test_data_service_exposes_readiness_and_gate_states() -> None:
+    """Readiness/gating semantics are derived in the output layer only."""
+    from apps.api.data_service import get_data_source_statuses
+
+    session = _db_session()
+    _seed_source(
+        session,
+        source_key="ready_source",
+        source_name="Ready Source",
+        configured=True,
+        raw_ingested=True,
+        parsed=True,
+        analysis_ready=True,
+        status="ok",
+    )
+    _seed_source(
+        session,
+        source_key="degraded_source",
+        source_name="Degraded Source",
+        configured=True,
+        raw_ingested=True,
+        parsed=False,
+        analysis_ready=False,
+        status="partial",
+    )
+    _seed_source(
+        session,
+        source_key="blocked_source",
+        source_name="Blocked Source",
+        configured=True,
+        raw_ingested=False,
+        parsed=False,
+        analysis_ready=False,
+        status="not_connected",
+        error_message="missing api key",
+    )
+
+    with patch("apps.api.data_service._try_db_session", return_value=session):
+        result = get_data_source_statuses()
+
+    sources = _sources_by_key(result)
+    assert sources["ready_source"]["readiness_state"] == "ready"
+    assert sources["ready_source"]["gate_state"] == "open"
+    assert sources["ready_source"]["gating_reason"] == "analysis_ready"
+
+    assert sources["degraded_source"]["readiness_state"] == "degraded"
+    assert sources["degraded_source"]["gate_state"] == "degraded"
+    assert sources["degraded_source"]["gating_reason"] == "status_partial"
+
+    assert sources["blocked_source"]["readiness_state"] == "blocked"
+    assert sources["blocked_source"]["gate_state"] == "closed"
+    assert sources["blocked_source"]["gating_reason"] == "error_message"
+
+
 def test_data_service_handles_empty_db() -> None:
     """When DB is available but has no records, return compatible sources list."""
     from apps.api.data_service import get_data_source_statuses
@@ -401,6 +455,9 @@ def test_data_service_filesystem_fallback_exposes_p0_news_sources(tmp_path: Path
         if source_key == "reuters_public_news":
             assert src["metadata"]["priority_level"] == "P0.5"
             assert src["metadata"]["authorized_wire"] is False
+        assert src["readiness_state"] == "not_configured"
+        assert src["gate_state"] == "closed"
+        assert src["gating_reason"] == "not_configured"
 
 
 def test_data_service_filesystem_fallback_attaches_news_feature_artifacts(tmp_path: Path) -> None:
@@ -611,6 +668,7 @@ def test_api_route_each_source_has_required_fields() -> None:
             "analysis_ready", "latest_raw_time", "latest_parsed_time",
             "latest_snapshot_id", "row_count", "status", "error_message",
             "last_run_id", "next_run_time", "metadata",
+            "readiness_state", "gate_state", "gating_reason",
         ]
         for field in required_fields:
             assert field in src, f"Missing field: {field}"
@@ -634,6 +692,19 @@ def test_api_route_four_booleans_are_present() -> None:
         for key in ["configured", "raw_ingested", "parsed", "analysis_ready"]:
             assert key in src
             assert isinstance(src[key], bool)
+        assert src["readiness_state"] in {"ready", "degraded", "blocked", "not_configured"}
+        assert src["gate_state"] in {"open", "degraded", "closed"}
+        assert isinstance(src["gating_reason"], str)
+
+
+def test_api_route_exposes_readiness_contract_on_known_fallback_sources() -> None:
+    """Clean fallback rows expose the gating contract for frontend consumption."""
+    data = _api_status_payload()
+    sources = _sources_by_key(data)
+
+    assert sources["fred"]["readiness_state"] == "not_configured"
+    assert sources["fred"]["gate_state"] == "closed"
+    assert sources["fred"]["gating_reason"] == "not_configured"
 
 
 def test_api_route_exposes_dual_source_metadata_contract() -> None:

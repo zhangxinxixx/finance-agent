@@ -624,6 +624,77 @@ def _source_health_state(source: dict[str, Any]) -> str:
     return "unavailable"
 
 
+def _source_readiness_state(source: dict[str, Any]) -> dict[str, str]:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    status = str(source.get("status") or "").strip().lower()
+    health_state = str(source.get("health_state") or metadata.get("health_state") or "").strip().lower()
+    configured = bool(source.get("configured"))
+    raw_ingested = bool(source.get("raw_ingested"))
+    parsed = bool(source.get("parsed"))
+    analysis_ready = bool(source.get("analysis_ready"))
+    error_message = str(source.get("error_message") or "").strip()
+
+    if not configured:
+        return {
+            "readiness_state": "not_configured",
+            "gate_state": "closed",
+            "gating_reason": "not_configured",
+        }
+
+    if error_message:
+        return {
+            "readiness_state": "blocked",
+            "gate_state": "closed",
+            "gating_reason": "error_message",
+        }
+
+    if status in {"error", "failed"}:
+        return {
+            "readiness_state": "blocked",
+            "gate_state": "closed",
+            "gating_reason": f"status_{status}",
+        }
+
+    if health_state in {"unavailable", "error", "failed"}:
+        return {
+            "readiness_state": "blocked",
+            "gate_state": "closed",
+            "gating_reason": f"health_{health_state}",
+        }
+
+    if analysis_ready and status == "ok" and health_state in {"", "healthy"}:
+        return {
+            "readiness_state": "ready",
+            "gate_state": "open",
+            "gating_reason": "analysis_ready",
+        }
+
+    if status in {"partial", "stale", "warn", "rate_limited"} or health_state in {"degraded", "cooldown"} or raw_ingested or parsed or analysis_ready:
+        if health_state == "cooldown":
+            reason = "health_cooldown"
+        elif status in {"partial", "stale", "warn", "rate_limited"}:
+            reason = f"status_{status}"
+        elif analysis_ready:
+            reason = "analysis_ready_partial"
+        elif parsed:
+            reason = "parsed_only"
+        elif raw_ingested:
+            reason = "raw_only"
+        else:
+            reason = "pipeline_incomplete"
+        return {
+            "readiness_state": "degraded",
+            "gate_state": "degraded",
+            "gating_reason": reason,
+        }
+
+    return {
+        "readiness_state": "blocked",
+        "gate_state": "closed",
+        "gating_reason": "pipeline_incomplete",
+    }
+
+
 def _source_latest_health_at(source: dict[str, Any]) -> str | None:
     metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
     cooldown = metadata.get("latest_cooldown") if isinstance(metadata.get("latest_cooldown"), dict) else {}
@@ -779,6 +850,9 @@ def _augment_source_observability(source: dict[str, Any]) -> dict[str, Any]:
     health_state = _source_health_state(result)
     metadata["health_state"] = health_state
     result["health_state"] = health_state
+    readiness = _source_readiness_state(result)
+    metadata.update(readiness)
+    result.update(readiness)
     return result
 
 
