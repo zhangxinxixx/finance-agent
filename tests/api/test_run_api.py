@@ -250,6 +250,40 @@ def test_get_run_detail_maps_public_status() -> None:
     assert payload["current_stage"] == "analysis"
 
 
+def test_run_list_and_detail_include_registry_artifact_and_source_refs() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session, status=TaskStatus.success)
+    step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    registry_row = RunArtifact(
+        run_id=run.id,
+        task_id=step.id,
+        artifact_type="feature_json",
+        file_path="storage/features/macro/rollup.json",
+        sha256="sha-rollup-001",
+        source_refs=json.dumps(
+            [
+                {
+                    "source_id": "src-registry-001",
+                    "source_name": "FRED",
+                    "source_type": "api",
+                    "data_date": "2026-05-26",
+                }
+            ]
+        ),
+    )
+    session.add(registry_row)
+    session.commit()
+
+    detail_payload = api_run_detail(str(run.id), db=session).model_dump(mode="json")
+    list_payload = api_runs(db=session)
+
+    for payload in (detail_payload, list_payload["runs"][0]):
+        assert any(item["artifact_id"] == str(registry_row.artifact_id) for item in payload["artifact_refs"])
+        assert any(item["file_path"] == "storage/features/macro/rollup.json" for item in payload["artifact_refs"])
+        assert any(item["source_id"] == "src-registry-001" for item in payload["source_refs"])
+        assert any(item["artifact_id"] == "art-out-001" for item in payload["artifact_refs"])
+
+
 def test_get_run_events_returns_sorted_timeline() -> None:
     session, _ = _make_session()
     run = _seed_run(session, status=TaskStatus.success)

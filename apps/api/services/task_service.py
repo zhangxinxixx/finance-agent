@@ -6,13 +6,16 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session, selectinload
 
 from apps.api.schemas.source_trace import ArtifactRef
+from apps.api.schemas.source_trace import SourceRef
 from apps.api.schemas.common import TaskStatus as ApiTaskStatus
 from apps.api.schemas.task_run import TaskRunResponse, TaskStepResponse
 from apps.api.services._trace_refs import (
     artifact_ref_from_path,
+    coerce_artifact_type,
     dedupe_artifact_refs,
     dedupe_source_refs,
     parse_artifact_refs,
@@ -20,6 +23,7 @@ from apps.api.services._trace_refs import (
 )
 from apps.runtime.artifact_registry import list_run_artifacts
 from database.models.engine import SessionLocal
+from database.models.execution import RunArtifact
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 
 
@@ -79,7 +83,7 @@ def list_task_runs(db: Session, limit: int = 20) -> list[TaskRunResponse]:
         .limit(limit)
         .all()
     )
-    return [build_task_run_response(run) for run in runs]
+    return [build_task_run_response(db, run) for run in runs]
 
 
 def get_task_run(db: Session, run_id: str) -> TaskRun | None:
@@ -99,7 +103,7 @@ def get_task_run_response(db: Session, run_id: str) -> TaskRunResponse | None:
     run = get_task_run(db, run_id)
     if run is None:
         return None
-    return build_task_run_response(run)
+    return build_task_run_response(db, run)
 
 
 def get_task_run_steps(db: Session, run_id: str) -> list[TaskStepResponse] | None:
@@ -134,8 +138,11 @@ def get_task_run_artifacts(db: Session, run_id: str) -> dict[str, Any] | None:
     }
 
 
-def build_task_run_response(run: TaskRun) -> TaskRunResponse:
+def build_task_run_response(db: Session, run: TaskRun) -> TaskRunResponse:
     steps = [build_task_step_response(step, run=run) for step in _sorted_steps(run.steps)]
+    run_artifacts = _list_run_artifact_rows(db, run.id)
+    run_artifact_refs = _run_artifact_refs(run_artifacts)
+    run_artifact_source_refs = _run_artifact_source_refs(run_artifacts)
     started_at = run.started_at or _first_non_null(step.started_at for step in run.steps)
     ended_at = run.ended_at or _last_non_null(step.finished_at for step in run.steps)
     return TaskRunResponse(
@@ -155,8 +162,18 @@ def build_task_run_response(run: TaskRun) -> TaskRunResponse:
         token_out=run.token_out,
         final_result_id=run.final_result_id,
         error_summary=run.error_summary or run.error,
-        source_refs=dedupe_source_refs(source for step in run.steps for source in parse_source_refs(step.source_refs)),
-        artifact_refs=dedupe_artifact_refs(artifact for step in run.steps for artifact in _step_artifact_refs(step)),
+        source_refs=dedupe_source_refs(
+            [
+                *run_artifact_source_refs,
+                *(source for step in run.steps for source in parse_source_refs(step.source_refs)),
+            ]
+        ),
+        artifact_refs=dedupe_artifact_refs(
+            [
+                *run_artifact_refs,
+                *(artifact for step in run.steps for artifact in _step_artifact_refs(step)),
+            ]
+        ),
         steps=steps,
     )
 
@@ -272,3 +289,32 @@ def _step_artifact_refs(step: TaskStep) -> list[ArtifactRef]:
     if step.output_ref:
         refs.append(artifact_ref_from_path(step.output_ref, artifact_id=f"{step.id}:output_ref"))
     return refs
+
+
+def _list_run_artifact_rows(db: Session, run_id: uuid.UUID) -> list[RunArtifact]:
+    try:
+        return (
+            db.query(RunArtifact)
+            .filter(RunArtifact.run_id == run_id)
+            .order_by(RunArtifact.created_at.asc(), RunArtifact.file_path.asc())
+            .all()
+        )
+    except (OperationalError, ProgrammingError, TypeError, ValueError):
+        return []
+
+
+def _run_artifact_refs(rows: list[RunArtifact]) -> list[ArtifactRef]:
+    return [
+        ArtifactRef(
+            artifact_id=str(row.artifact_id),
+            artifact_type=coerce_artifact_type(row.artifact_type, row.file_path),
+            file_path=row.file_path,
+            generated_at=row.created_at,
+            sha256=row.sha256,
+        )
+        for row in rows
+    ]
+
+
+def _run_artifact_source_refs(rows: list[RunArtifact]) -> list[SourceRef]:
+    return dedupe_source_refs(source for row in rows for source in parse_source_refs(row.source_refs))
