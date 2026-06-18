@@ -94,6 +94,10 @@ def test_artifact_ref_from_path_supports_report_alias_filenames() -> None:
         "storage/outputs/final_report/XAUUSD/2026-05-26/run-001/final_report.md",
         artifact_id="report:analysis",
     )
+    options_ref = artifact_ref_from_path(
+        "storage/outputs/cme/2026-05-26/run-001/options_analysis_agent_report.md",
+        artifact_id="report:options",
+    )
     visual_ref = artifact_ref_from_path(
         "storage/outputs/jin10/2026-05-31/220787/daily_analysis.html",
         artifact_id="report:visual",
@@ -101,4 +105,5 @@ def test_artifact_ref_from_path_supports_report_alias_filenames() -> None:
 
     assert source_ref.artifact_type == ArtifactType.source_md
     assert analysis_ref.artifact_type == ArtifactType.analysis_md
+    assert options_ref.artifact_type == ArtifactType.analysis_md
     assert visual_ref.artifact_type == ArtifactType.visual_html

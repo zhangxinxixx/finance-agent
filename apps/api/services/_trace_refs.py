@@ -109,6 +109,9 @@ def coerce_artifact_type(raw_type: str | None, file_path: str) -> ArtifactType:
         normalized.endswith("analysis.md")
         or normalized.endswith("final_report.md")
         or normalized.endswith("agent_analysis_report.md")
+        or normalized.endswith("options_report.md")
+        or normalized.endswith("options_analysis.md")
+        or normalized.endswith("options_analysis_agent_report.md")
     ):
         return ArtifactType.analysis_md
     if (
