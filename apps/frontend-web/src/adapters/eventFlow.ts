@@ -652,12 +652,14 @@ export async function ignoreEventFlowBrief(
 
 export async function reviewEventFlowEvent(
   eventId: string,
-  body: { review?: string },
+  body: { reason?: string; review?: string },
 ): Promise<EventFlowActionResponse> {
   return fetchJson<EventFlowActionResponse>(`/api/events/${eventId}/review`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      reason: body.reason ?? body.review,
+    }),
   });
 }
 
