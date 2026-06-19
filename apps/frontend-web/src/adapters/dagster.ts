@@ -421,6 +421,14 @@ export async function fetchDagsterSchedules(): Promise<DagsterScheduleInfo[]> {
 // ── Build DagGraph from Dagster topology + runs ──
 
 import type { DagGraph, DagNodeSpec, DagEdge, DagNodeType } from "@/types/pipeline-dag";
+import {
+  DAG_GROUPS,
+  DAG_GROUP_ORDER,
+  aggregateDagStatus,
+  attachDagLineage,
+  buildFixedTaskDataFlowEdges,
+  taskNodesForOpName,
+} from "@/adapters/pipeline-dag-groups";
 
 const OP_TO_STAGE: Record<string, DagNodeType> = {
   macro_init_op: "collector",
@@ -498,65 +506,65 @@ export function buildDagsterDagGraph(
   const stepEvents = latestRunDetail?.stepEvents ?? [];
   const tradeDate = latestRunDetail?.tradeDate ?? runs[0]?.tradeDate ?? null;
 
-  // Build nodes from topology ops
-  const nodes: DagNodeSpec[] = topology.ops.map((op) => {
-    const stage = OP_TO_STAGE[op.name] || "analysis";
-    const status = latestRunDetail ? findStepStatus(stepEvents, op.name) : "pending";
-    const label = OP_LABELS[op.name] || op.name;
+  const nodes: DagNodeSpec[] = DAG_GROUP_ORDER
+    .flatMap((groupId) => {
+      const meta = DAG_GROUPS[groupId];
+      return meta.tasks.map((task) => {
+        const matchedOps = topology.ops.filter((op) => taskNodesForOpName(groupId, op.name).includes(task.id));
+        const statuses = matchedOps.map((op) => (
+          latestRunDetail ? findStepStatus(stepEvents, op.name) as DagNodeSpec["status"] : "pending"
+        ));
+        const status = aggregateDagStatus(statuses);
+        const memberLabels = matchedOps.map((op) => OP_LABELS[op.name] || op.name);
 
-    return {
-      node_id: op.name,
-      type: stage,
-      label,
-      sub_type: op.name,
-      trade_date: tradeDate,
-      status: status as DagNodeSpec["status"],
-      category: stage,
-      module: op.name,
-      input: {
-        source: "dagster_op",
-        summary: op.description || "",
-        fields: {},
-        source_refs: [],
-        artifact_refs: [],
-      },
-      output: {
-        source: "dagster_op",
-        summary: "",
-        fields: {},
-        source_refs: [],
-        artifact_refs: [],
-      },
-      execution: {
-        started_at: latestRunDetail?.startedAt ?? null,
-        ended_at: latestRunDetail?.endedAt ?? null,
-        duration_ms: null,
-        retries: 0,
-      },
-      upstream_ids: [],
-      downstream_ids: [],
-    };
-  });
+        return {
+          node_id: task.id,
+          type: meta.type,
+          label: task.label,
+          sub_type: meta.label,
+          trade_date: tradeDate,
+          status,
+          category: meta.id,
+          module: meta.module,
+          input: {
+            source: "dagster_task",
+            summary: task.description,
+            fields: {
+              group_id: meta.id,
+              group_label: meta.label,
+              task_id: task.id,
+              matched_ops: matchedOps.map((op) => op.name),
+              op_count: matchedOps.length,
+            },
+            source_refs: [],
+            artifact_refs: [],
+          },
+          output: {
+            source: "dagster_task",
+            summary: memberLabels.length > 0 ? memberLabels.join(" / ") : meta.summary,
+            fields: {
+              status,
+              group_order: meta.order,
+              matched_ops: memberLabels,
+              op_count: matchedOps.length,
+            },
+            source_refs: [],
+            artifact_refs: [],
+          },
+          execution: {
+            started_at: matchedOps.length > 0 ? latestRunDetail?.startedAt ?? null : null,
+            ended_at: matchedOps.length > 0 ? latestRunDetail?.endedAt ?? null : null,
+            duration_ms: null,
+            retries: 0,
+          },
+          upstream_ids: [],
+          downstream_ids: [],
+        } satisfies DagNodeSpec;
+      });
+    });
 
-  // Build edges from topology connections
-  const edges: DagEdge[] = [];
-  for (const op of topology.ops) {
-    for (const output of op.outputs) {
-      for (const downstreamOp of output.downstreamOps) {
-        edges.push({
-          from: op.name,
-          to: downstreamOp,
-          edge_type: "data_flow",
-          data_contract: { fields: [output.name], stage: `${op.name}→${downstreamOp}` },
-        });
-        // Update upstream/downstream references
-        const fromNode = nodes.find((n) => n.node_id === op.name);
-        const toNode = nodes.find((n) => n.node_id === downstreamOp);
-        if (fromNode) fromNode.downstream_ids.push(downstreamOp);
-        if (toNode) toNode.upstream_ids.push(op.name);
-      }
-    }
-  }
+  const edges: DagEdge[] = buildFixedTaskDataFlowEdges(nodes);
+  attachDagLineage(nodes, edges);
 
   return {
     nodes,

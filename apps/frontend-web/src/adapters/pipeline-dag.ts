@@ -17,6 +17,15 @@ import {
   type DagsterGraphTopology,
   type DagsterRunSummary,
 } from "@/adapters/dagster";
+import {
+  DAG_GROUPS,
+  DAG_GROUP_ORDER,
+  aggregateDagStatus,
+  attachDagLineage,
+  buildFixedTaskDataFlowEdges,
+  groupForTaskLike,
+  taskNodesForTaskLike,
+} from "@/adapters/pipeline-dag-groups";
 import type {
   DagNodeSpec,
   DagNodeType,
@@ -239,18 +248,71 @@ export function buildDagGraph(input: DagGraphInput): DagGraph {
 
   const taskNodes = taskRunsFiltered.map(taskRunToDagNode);
   const agentNodes = agentsFiltered.map(agentOutputToDagNode);
+  const sourceNodes = [...taskNodes, ...agentNodes];
 
-  const taskNodeIds = new Set(taskNodes.map(n => n.node_id));
-  const uniqueAgentNodes = agentNodes.filter(n => !taskNodeIds.has(n.node_id));
+  const allNodes = DAG_GROUP_ORDER
+    .flatMap((groupId) => {
+      const meta = DAG_GROUPS[groupId];
+      return meta.tasks.map((task) => {
+        const matchedMembers: DagNodeSpec[] = sourceNodes.filter((node) => {
+          const nodeGroupId = groupForTaskLike(node.sub_type, node.category);
+          return nodeGroupId === groupId && taskNodesForTaskLike(groupId, node.sub_type, node.category).includes(task.id);
+        });
+        const startedAt = matchedMembers.map((node) => node.execution.started_at).filter(Boolean).sort()[0] ?? null;
+        const endedAt = matchedMembers.map((node) => node.execution.ended_at).filter(Boolean).sort().reverse()[0] ?? null;
+        const status = aggregateDagStatus(matchedMembers.map((node) => node.status));
+        const memberTradeDate = matchedMembers.find((node: DagNodeSpec) => node.trade_date)?.trade_date ?? null;
+        const memberSubTypes = matchedMembers.map((node: DagNodeSpec) => node.sub_type);
+        const memberLabels = matchedMembers.map((node: DagNodeSpec) => node.label);
 
-  const allNodes = [...taskNodes, ...uniqueAgentNodes];
-  const edges = buildDagEdges(allNodes);
+        return {
+          node_id: task.id,
+          type: meta.type,
+          label: task.label,
+          sub_type: meta.label,
+          trade_date: tradeDateFilter || memberTradeDate,
+          status,
+          category: meta.id,
+          module: meta.module,
+          input: {
+            source: "task_run_read_model",
+            summary: task.description,
+            fields: {
+              group_id: meta.id,
+              group_label: meta.label,
+              task_id: task.id,
+              task_count: matchedMembers.length,
+              members: memberSubTypes,
+            },
+            source_refs: [],
+            artifact_refs: [],
+          },
+          output: {
+            source: "task_run_read_model",
+            summary: matchedMembers.length > 0 ? matchedMembers.slice(0, 4).map((node) => node.label).join(" / ") : meta.summary,
+            fields: {
+              status,
+              group_order: meta.order,
+              task_count: matchedMembers.length,
+              members: memberLabels,
+            },
+            source_refs: [],
+            artifact_refs: [],
+          },
+          execution: {
+            started_at: startedAt,
+            ended_at: endedAt,
+            duration_ms: null,
+            retries: 0,
+          },
+          upstream_ids: [],
+          downstream_ids: [],
+        } satisfies DagNodeSpec;
+      });
+    });
 
-  allNodes.sort((a, b) => {
-    const dateCmp = (b.trade_date || "").localeCompare(a.trade_date || "");
-    if (dateCmp !== 0) return dateCmp;
-    return STAGE_ORDER.indexOf(a.type) - STAGE_ORDER.indexOf(b.type);
-  });
+  const edges: DagEdge[] = buildFixedTaskDataFlowEdges(allNodes);
+  attachDagLineage(allNodes, edges);
 
   return {
     nodes: allNodes,
