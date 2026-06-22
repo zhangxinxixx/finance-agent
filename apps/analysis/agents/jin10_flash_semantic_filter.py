@@ -43,6 +43,7 @@ def build_jin10_flash_semantic_filter_prompt_template() -> dict[str, Any]:
                     '      "is_key_event": true,\n'
                     '      "importance": "high|medium|normal",\n'
                     '      "signal_tags": ["macro_policy|rates|inflation|employment|usd|gold|oil|geopolitical_risk|shipping_chokepoint|risk_sentiment|low_signal_followup"],\n'
+                    '      "summary_zh": "一句中文短摘要，概括市场影响，不超过35字",\n'
                     '      "filter_reason": "一句话说明为什么展示或过滤",\n'
                     '      "confidence": 0.0,\n'
                     '      "content_type": "flash|article|report|calendar"\n'
@@ -63,6 +64,7 @@ def build_jin10_flash_semantic_filter_prompt_template() -> dict[str, Any]:
                     "is_key_event": True,
                     "importance": "high|medium|normal",
                     "signal_tags": ["geopolitical_risk"],
+                    "summary_zh": "中东风险升温，油价与避险资产承压上行。",
                     "filter_reason": "一句话说明为什么展示或过滤",
                     "confidence": 0.0,
                     "content_type": "flash|article|report|calendar",

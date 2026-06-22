@@ -10,6 +10,8 @@ export interface ReportIndexItem {
   trade_date: string;
   run_id: string | null;
   report_id?: string | null;
+  family?: string | null;
+  title?: string | null;
   format: string;
   available: boolean;
 }
@@ -262,7 +264,8 @@ export interface ReportArtifactPayloadResponse {
   artifact_type: string;
   content_type?: string | null;
   path?: string | null;
-  content: string;
+  asset_base_url?: string | null;
+  content: unknown;
 }
 
 export type ReportArtifactTabKey = "analysis" | "source" | "visual" | "evidence";
@@ -277,6 +280,7 @@ export interface ReportArtifactContentView {
   format: ReportFormat;
   content: string;
   path?: string | null;
+  asset_base_url?: string | null;
   source_endpoint: string;
 }
 

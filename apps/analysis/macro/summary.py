@@ -5,7 +5,16 @@ from apps.features.macro.snapshot import MACRO_INDICATOR_SPECS, MacroIndicator, 
 
 def render_macro_snapshot_markdown(snapshot: MacroSnapshot) -> str:
     lines = [
-        f"# Macro Snapshot {snapshot.as_of}",
+        "# XAUUSD 宏观数据报告",
+        "",
+        f"- 数据刷新时间: {snapshot.as_of}",
+        "- 报告主题: 利率、美元、流动性与黄金机会成本",
+        "",
+        "## 宏观数据主题",
+        "",
+        "本报告只呈现宏观数据状态、边际变化和数据限制，用于解释黄金的宏观环境，不提供交易指令。",
+        "",
+        "## 核心宏观指标",
         "",
         "指标 | 最新日期 | 最新值 | 1周变化 | 1月变化 | 方向解读",
         "--- | --- | --- | --- | --- | ---",
@@ -21,18 +30,18 @@ def render_macro_snapshot_markdown(snapshot: MacroSnapshot) -> str:
             f"{_format_change(indicator, indicator.monthly_change)} | {indicator.direction_note or '暂无可用方向解读'}"
         )
 
-    lines.extend(["", "## Unavailable Symbols"])
+    lines.extend(["", "## 宏观数据限制"])
     if snapshot.unavailable_symbols:
         lines.extend(f"- {symbol}" for symbol in snapshot.unavailable_symbols)
     else:
-        lines.append("- None")
+        lines.append("- 暂无明确缺失指标")
 
-    lines.extend(["", "## Source Refs"])
+    lines.extend(["", "## 数据来源"])
     if snapshot.source_refs:
         for symbol, ref in snapshot.source_refs.items():
             lines.append(f"- {symbol}: {ref.get('source_url', '')} ({ref.get('raw_path', '')})")
     else:
-        lines.append("- None")
+        lines.append("- 暂无数据来源记录")
     lines.append("")
     return "\n".join(lines)
 

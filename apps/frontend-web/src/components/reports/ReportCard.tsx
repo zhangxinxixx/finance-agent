@@ -2,6 +2,7 @@ import type { ReportIndexItem } from "@/types/reports";
 import {
   canOpenReport,
   CATEGORY_MAP,
+  getReportTitle,
   inferAssetLabel,
   shortRunId,
   TYPE_DESCRIPTIONS,
@@ -42,7 +43,7 @@ export function ReportCard({
         background: "var(--bg-card)",
         border: `1px solid ${highlightMatch ? "var(--brand)" : "var(--border)"}`,
         borderRadius: "var(--radius-lg)",
-        padding: 14,
+        padding: 12,
         cursor: isOpenable ? "pointer" : "default",
         transition: "all 120ms",
         display: "flex",
@@ -71,7 +72,7 @@ export function ReportCard({
         </span>
         {item.type === "options_report" ? (
           <span style={{ padding: "2px 5px", background: "rgba(52,211,153,0.1)", color: "#34d399", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 2, fontSize: 9, fontWeight: 600 }}>
-            策略卡
+            期权墙位
           </span>
         ) : null}
         {item.format ? (
@@ -87,50 +88,27 @@ export function ReportCard({
       </div>
 
       <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.35, color: "var(--fg-2)", marginBottom: 4 }}>
-        {item.type === "options_report"
-          ? `黄金期权结构日报 · ${dateLabel}`
-          : item.type === "jin10_weekly_report"
-            ? `Jin10 黄金周报 · ${dateLabel}`
-            : `Jin10 黄金日报 · ${dateLabel}`}
+        {getReportTitle(item)}
       </div>
 
       <div style={{ fontSize: 10, color: "var(--fg-4)", lineHeight: 1.55, marginBottom: 8, flex: 1 }}>
         {meta.summary}
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-          gap: 6,
-          marginBottom: 8,
-        }}
-      >
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginBottom: 8, fontSize: 10, color: "var(--fg-4)" }}>
         {[
           { label: "资产", value: assetLabel, color: cat.color },
           { label: "日期", value: dateLabel, color: "var(--fg-2)" },
-          { label: "绑定", value: item.run_id ? "Snapshot" : "Unbound", color: item.run_id ? "#60a5fa" : "var(--fg-5)" },
+          { label: "绑定", value: item.run_id ? "Snapshot" : "未绑定", color: item.run_id ? "#60a5fa" : "var(--fg-5)" },
         ].map((metric) => (
-          <div
-            key={metric.label}
-            style={{
-              padding: "8px 9px",
-              background: "var(--bg-card-inner)",
-              border: "1px solid var(--border-faint)",
-              borderRadius: 3,
-            }}
-          >
-            <div style={{ fontSize: 8, color: "var(--fg-5)", marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-              {metric.label}
-            </div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: metric.color, fontFamily: "var(--font-mono)" }}>
-              {metric.value}
-            </div>
+          <div key={metric.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 9, color: "var(--fg-5)" }}>{metric.label}</span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: metric.color, fontFamily: "var(--font-mono)" }}>{metric.value}</span>
           </div>
         ))}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, padding: "6px 0", borderTop: "1px solid var(--border-faint)", marginTop: "auto" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, paddingTop: 8, borderTop: "1px solid var(--border-faint)", marginTop: "auto" }}>
         <div className="flex items-center gap-2">
           <span style={{ fontSize: 9, color: "var(--fg-5)", fontFamily: "var(--font-mono)" }}>{runLabel}</span>
         </div>

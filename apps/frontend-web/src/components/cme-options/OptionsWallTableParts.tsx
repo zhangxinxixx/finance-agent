@@ -23,9 +23,9 @@ const WALL_COLUMNS: Array<{ key: OptionsWallSortKey; label: string }> = [
   { key: "strike", label: "行权价" },
   { key: "wall_type", label: "墙型" },
   { key: "oi", label: "持仓" },
-  { key: "delta_oi", label: "ΔOI" },
+  { key: "delta_oi", label: "持仓变化" },
   { key: "wall_score", label: "评分" },
-  { key: "pnt", label: "PNT" },
+  { key: "pnt", label: "吸附值" },
 ];
 
 function formatInteger(value: number) {
@@ -107,6 +107,22 @@ function deltaClassName(deltaOi: CMEOptionsWallScore["delta_oi"]) {
   return "text-[var(--fg-3)]";
 }
 
+function wallTypeLabel(wallType: CMEOptionsWallScore["wall_type"]) {
+  const labels: Record<CMEOptionsWallScore["wall_type"], string> = {
+    "Call Wall": "看涨压力墙",
+    "Put Wall": "看跌支撑墙",
+    "Balanced Wall": "均衡墙",
+    "Active Wall": "活跃墙",
+    "Pin Wall": "吸附墙",
+    "Static Wall": "静态墙",
+    "Turnover Wall": "换手墙",
+    "New Wall": "新增墙",
+    "Resistance Wall": "阻力墙",
+    "Support Wall": "支撑墙",
+  };
+  return labels[wallType] ?? wallType;
+}
+
 interface OptionsWallTableHeaderProps {
   sortKey: OptionsWallSortKey;
   sortDirection: OptionsWallSortDirection;
@@ -163,7 +179,7 @@ function OptionsWallTableRow({ row, index }: OptionsWallTableRowProps) {
         <span className={MONO_CELL}>{formatInteger(row.strike)}</span>
       </td>
       <td className={CELL_CLASS_NAME}>
-        <FAStatusPill tone={wallStatus(row.wall_type)}>{row.wall_type}</FAStatusPill>
+        <FAStatusPill tone={wallStatus(row.wall_type)}>{wallTypeLabel(row.wall_type)}</FAStatusPill>
       </td>
       <td className={`${NUMERIC_CLASS_NAME} whitespace-nowrap`}>{formatInteger(row.oi)}</td>
       <td className={`${NUMERIC_CLASS_NAME} whitespace-nowrap ${deltaClassName(row.delta_oi)}`}>
@@ -197,7 +213,7 @@ export function OptionsWallEmptyState() {
   return (
     <FACard title="墙位明细" eyebrow="墙位评分" accent="warn">
       <div className="flex min-h-32 items-center justify-center rounded-[var(--radius-lg)] border border-dashed border-[var(--border)] bg-[var(--bg-card-inner)] px-4 py-8 text-sm text-[var(--fg-4)]">
-        该日期无 CME 期权数据
+        该日期无期权数据
       </div>
     </FACard>
   );

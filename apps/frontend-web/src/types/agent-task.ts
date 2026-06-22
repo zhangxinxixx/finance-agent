@@ -97,6 +97,20 @@ export interface ApiTaskRunLogsResponse {
   logs: ApiTaskStepResponse[];
 }
 
+export interface ApiTaskRunEventResponse {
+  id: string;
+  run_id: string;
+  task_id?: string | null;
+  event_type: string;
+  payload?: Record<string, unknown>;
+  created_at?: string | null;
+}
+
+export interface ApiTaskRunEventsResponse {
+  run_id: string;
+  events: ApiTaskRunEventResponse[];
+}
+
 export interface ApiReviewItem {
   review_id: string;
   run_id?: string | null;
@@ -134,6 +148,14 @@ export interface TaskLogViewModel {
   step_id?: string;
   lines: string[];
   status: DataStatus;
+}
+
+export interface TaskRunEventViewModel {
+  id: string;
+  created_at?: string | null;
+  event_type: string;
+  task_id?: string | null;
+  payload: Record<string, unknown>;
 }
 
 export interface TaskStepViewModel {
@@ -179,6 +201,7 @@ export interface TaskRunViewModel extends TaskRunSummaryViewModel {
   source_refs: SourceRef[];
   artifact_refs: ArtifactRef[];
   steps: TaskStepViewModel[];
+  events: TaskRunEventViewModel[];
   logs: TaskLogViewModel[];
   asOf?: string | null;
   dataDate?: string | null;
@@ -282,5 +305,6 @@ export interface AgentTasksMockFile {
   runs: ApiTaskRunResponse[];
   run_artifacts?: Record<string, ApiTaskRunArtifactsResponse>;
   run_logs?: Record<string, ApiTaskRunLogsResponse>;
+  run_events?: Record<string, ApiTaskRunEventsResponse>;
   reviews?: ApiReviewsResponse;
 }

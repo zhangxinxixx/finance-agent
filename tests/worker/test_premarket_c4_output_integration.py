@@ -16,6 +16,13 @@ _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
 _TRADE_DATE = "2026-05-14"
 
 
+@pytest.fixture(autouse=True)
+def _mock_source_status_index():
+    """Keep C4 output integration tests isolated from source gating by default."""
+    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+        yield
+
+
 def _make_db_session(tmp_path: Path):
     engine = create_engine(f"sqlite:///{(tmp_path / 'test.db').as_posix()}", echo=False)
     Base.metadata.create_all(engine)
@@ -172,9 +179,9 @@ def test_c4_pipeline_writes_final_report_and_strategy_card(tmp_path: Path) -> No
     report_path = Path(summaries["final_report"]["paths"][0])
     assert report_path.exists()
     report_text = report_path.read_text(encoding="utf-8")
-    assert "# XAUUSD 盘前综合报告" in report_text
-    assert "生成时间:" in report_text
-    assert "## 宏观流动性视图" in report_text
+    assert "# XAUUSD 相关报告" in report_text
+    assert "数据刷新时间:" in report_text
+    assert "### 宏观流动性视图" in report_text
     assert "## 免责声明" in report_text
 
     # P4-04: verify structured_report.json when present
@@ -283,7 +290,7 @@ def test_c4_pipeline_records_partial_when_snapshot_has_missing_data(tmp_path: Pa
     report_path = Path(summaries["final_report"]["paths"][0])
     assert report_path.exists()
     report_text = report_path.read_text(encoding="utf-8")
-    assert "### 告警" in report_text  # unavailable agents produce warnings
+    assert "## 数据质量与限制" in report_text  # unavailable agents produce warnings
     assert "unavailable" in report_text.lower()
 
 
@@ -414,7 +421,7 @@ def test_run_premarket_with_c4_writes_all_artifacts(tmp_path: Path) -> None:
     report_path = base / "final_report" / "XAUUSD" / _TRADE_DATE / run_id / "final_report.md"
     assert report_path.exists(), f"Missing: {report_path}"
     report = report_path.read_text(encoding="utf-8")
-    assert "# XAUUSD 盘前综合报告" in report
+    assert "# XAUUSD 相关报告" in report
 
     # Strategy card may use build_strategy_card's extracted/fallback date.
     sc_json_candidates = list(base.glob(f"strategy_card/XAUUSD/*/{run_id}/strategy_card.json"))
@@ -428,6 +435,14 @@ def test_run_premarket_with_c4_writes_all_artifacts(tmp_path: Path) -> None:
     summaries = json.loads(summaries_candidates[0].read_text(encoding="utf-8"))
     assert "c3_agents" in summaries["steps"]
     assert "final_report" in summaries["steps"]
+
+    support_artifact_paths = {
+        row.file_path
+        for row in db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
+    }
+    assert any(path.endswith("premarket_snapshot.json") for path in support_artifact_paths)
+    assert any(path.endswith("step_summaries.json") for path in support_artifact_paths)
+    assert any(path.endswith("run_provenance.json") for path in support_artifact_paths)
     assert "strategy_card" in summaries["steps"]
 
     run_artifacts = db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()

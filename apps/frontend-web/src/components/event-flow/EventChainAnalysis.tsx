@@ -1,6 +1,7 @@
 import { GitMerge } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
+import { formatEventFlowHeadlineSummary } from "./eventFlowFormat";
 import type { EventFlowChainStep, EventFlowTimelineItem, PricingStatus } from "@/types/event-flow";
 
 const KIND_COLORS: Record<string, string> = {
@@ -147,9 +148,11 @@ interface EventChainAnalysisProps {
 }
 
 export function EventChainAnalysis({ chain, activeEvent }: EventChainAnalysisProps) {
+  const activeHeadline = activeEvent ? formatEventFlowHeadlineSummary(activeEvent.title, 40) : null;
+
   if (chain.length === 0) {
     return (
-      <FACard title="事件传导链分析" eyebrow="Chain" accent="brand">
+      <FACard title="事件传导链分析" eyebrow="链路" accent="brand">
         <FAEmptyState title="暂无传导链" description="当前事件没有传导链分析数据。" className="p-4" />
       </FACard>
     );
@@ -163,7 +166,7 @@ export function EventChainAnalysis({ chain, activeEvent }: EventChainAnalysisPro
           <span>事件传导链分析</span>
         </div>
       }
-      eyebrow="Event Chain"
+      eyebrow="事件链"
       accent="brand"
       action={
         <div className="flex items-center gap-[10px]">
@@ -183,7 +186,7 @@ export function EventChainAnalysis({ chain, activeEvent }: EventChainAnalysisPro
       {activeEvent ? (
         <div className="mb-2 inline-flex items-center gap-2 rounded-[3px] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 py-1">
           <span className="text-[10px] text-[var(--fg-5)]">当前事件：</span>
-          <span className="text-[10px] font-semibold text-[var(--brand-hover)]">{activeEvent.title}</span>
+          <span className="text-[10px] font-semibold text-[var(--brand-hover)]">{activeHeadline?.lead ?? "原文事件"}</span>
         </div>
       ) : null}
 

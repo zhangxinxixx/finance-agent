@@ -14,6 +14,8 @@ export interface CategoryConfig {
 }
 
 export const CATEGORY_CONFIGS: CategoryConfig[] = [
+  { key: "final", label: "综合报告", color: "#60a5fa", matchType: "final_report" },
+  { key: "macro", label: "宏观数据", color: "#38bdf8", matchType: "macro_report" },
   { key: "options", label: "期权分析", color: "#a78bfa", matchType: "options_report" },
   { key: "jin10_daily", label: "Jin10日报", color: "#f59e0b", matchType: "jin10_daily_report" },
   { key: "jin10_weekly", label: "Jin10周报", color: "#14b8a6", matchType: "jin10_weekly_report" },
@@ -46,13 +48,12 @@ export const DATE_RANGE_OPTIONS: [string, string][] = [
 ];
 
 export const REPORTS_RAIL_PANEL_STYLE = {
-  width: 190,
+  width: 164,
   flexShrink: 0,
   borderRight: "1px solid var(--border)",
   background: "var(--bg-panel)",
-  overflowY: "auto",
-  overflowX: "hidden",
-  padding: "10px",
-  maxHeight: "calc(100vh - 180px)",
+  overflow: "hidden",
+  padding: "8px",
+  maxHeight: "none",
   minHeight: 0,
 } as const;

@@ -733,6 +733,43 @@ P2 必须等 P0/P1 稳定后再做。2026-05-29 的执行基线是：P1 read mod
 - fact review 的 unsupported/contradicted 不会被 synthesis 静默吞掉。
 - 事实审查失败不阻断报告生成，但报告或页面状态必须降级为 `partial`、`needs_review` 或 `unavailable`。
 
+### P2-13：非交易日宏观事件影响补充报告
+
+目标：在非交易日不重新生成正式综合报告，而是基于最近一个开盘日 `final_report / strategy_card`，每天生成一份正式落盘的 `macro_event_followup` 补充报告，用最新宏观/新闻事件解释原结论被强化、削弱、扰动还是暂不影响。
+
+交付：
+
+- 新增 `macro_event_followup` report family，写入标准 `ReportItem / ReportArtifact`，优先走 `/api/reports*` 标准入口，不新增 legacy 专用端点。
+- 输出路径采用 `storage/outputs/macro_event_followup/XAUUSD/<trade_date>/<run_id>/`，至少包含 `source.md`、`analysis.md`、`report_structured.json`。
+- 结构化 payload 必须包含 `trade_date`、`anchor_trade_date`、`anchor_report_refs`、`new_macro_events`、`impact_assessment`、`watch_items`、`revision_risk`、`source_refs`。
+- 后端生成输入只消费现有 read model / artifact：最近开盘日正式报告、`daily_market_brief`、`daily_analysis_followups`、`jin10_article_briefs`、Event Flow、宏观 freshness 和行情验证。
+- Dashboard `/api/dashboard/summary` 增加最新补充报告摘要；前端总览页分开展示“正式结论日期”和“今日补充日期”。
+- Reports / Report Detail 把该报告标为“补充分析”，不与“综合报告”混淆。
+
+边界：
+
+- 第一版只在非交易日生成；先覆盖周末，节假日交易日历后置。
+- 不改写上一开盘日 `strategy_card`，不生成新的正式 `final_report`。
+- 如果补充分析触发改判风险，只输出 `revision_risk` 和复核建议，由 Review Center 或下一开盘日正式主链处理。
+- 前端只展示后端 read model，不计算事件影响路径或交易结论。
+
+建议切片：
+
+1. Contract slice：冻结 `macro_event_followup` structured schema、artifact naming、ReportItem family metadata 和测试 fixture。
+2. Input builder slice：实现最近开盘日锚点查找和宏观/新闻 read model 聚合，缺输入时显式降级。
+3. Renderer/output slice：输出 Markdown + structured JSON，并登记 `ReportItem / ReportArtifact`。
+4. API slice：让 `/api/reports/index`、`/api/reports/{report_id}` 可检索和展示补充报告；`/api/dashboard/summary` 透出最新补充摘要。
+5. Frontend slice：Dashboard 增加“今日宏观事件补充”摘要，Reports/Detail 增加补充分析标签和日期说明。
+6. Acceptance slice：周末样本端到端生成 artifact，验证 Reports、Dashboard、source refs、`anchor_trade_date` 和 `trade_date` 均正确。
+
+验收：
+
+- 非交易日样本可生成 `storage/outputs/macro_event_followup/.../analysis.md` 和 `report_structured.json`。
+- `report_structured.json` 同时包含当天 `trade_date` 和最近开盘日 `anchor_trade_date`。
+- Reports index/detail 能打开补充报告，类型标注为“补充分析”。
+- Dashboard 同屏展示最近开盘日正式综合分析和当天补充分析，并明确两类日期。
+- 补充报告所有事件和结论都能反查 `source_refs`，单源或未确认事件不能写成 confirmed fact。
+
 ## 7. 开发执行顺序
 
 ```text
@@ -767,6 +804,7 @@ Phase 3: P2 写操作和高级能力
   5. Playbook 模板管理
   6. 多资产和历史校准
   7. P2 集成实测与文档收口
+  8. 非交易日 macro_event_followup 补充报告
 ```
 
 ## 8. 验收矩阵

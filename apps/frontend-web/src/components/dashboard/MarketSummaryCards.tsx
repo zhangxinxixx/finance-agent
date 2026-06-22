@@ -16,7 +16,7 @@ export function MarketSummaryCards({ marketSummary }: MarketSummaryCardsProps) {
   const metrics = Object.values(marketSummary);
 
   return (
-    <FACard title="市场快照" eyebrow="KPI Strip" accent="info" bodyClassName="space-y-4">
+    <FACard title="市场快照" eyebrow="关键读数" accent="info" bodyClassName="space-y-4">
       <FASectionHeader
         title="关键市场读数"
         description="黄金、美元、利率、通胀与实际利率的高密度摘要。"

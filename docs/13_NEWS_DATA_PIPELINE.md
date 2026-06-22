@@ -116,7 +116,43 @@ GDELT / Google News / Reuters Public Metadata 发现事件
 6. 如果详情页 `vip_locked` 或 `javascript_required`，转入 `vip_browser_fallback`，但不把失败伪装成成功。
 7. 后续 `daily_analysis` 将消费详情页、报告事件、行情反应和 source refs，生成稳定日报输入。
 
-## 7. 后续流程架构
+## 7. 非交易日宏观事件影响补充报告
+
+后续新增 `macro_event_followup` 报告族，用于非交易日把最新宏观/新闻事件与最近一个开盘日正式结论串起来。它是正式落盘的补充报告，不是新的正式综合报告。
+
+生成边界：
+
+- 只在非交易日生成，第一版先覆盖周末；节假日交易日历后置。
+- `trade_date` 使用非交易日当天日期。
+- `anchor_trade_date` 使用最近一个开盘日，锚定该日的 `final_report / strategy_card`。
+- 报告只能说明“新事件对原结论的影响”，不能直接改写原 `strategy_card` 或前端主交易结论。
+- 如果事件足以削弱原结论，输出 `revision_risk=needs_review` 或 `revision_risk=regenerate_on_next_open`，由人工复核或下一个开盘日正式主链处理。
+
+输入建议：
+
+- 最近开盘日 `final_report / strategy_card` 摘要与 source refs。
+- 当天 `daily_market_brief`、`daily_analysis_followups`、`jin10_article_briefs`、`event_candidates`、`impact_assessments`、`market_reactions`。
+- 最新宏观指标状态和数据源 freshness。
+- 已有 Event Flow read model 中的重点事件、影响路径和行情验证。
+
+输出建议：
+
+```text
+storage/outputs/macro_event_followup/XAUUSD/<trade_date>/<run_id>/
+  source.md
+  analysis.md
+  report_structured.json
+```
+
+核心段落：
+
+- `上一开盘日结论锚点`：说明 `anchor_trade_date` 和被补充的正式结论。
+- `新增宏观/新闻事件`：只列结构化输入中有来源的事件。
+- `影响评估`：标记强化、削弱、扰动、暂不影响。
+- `下个开盘日前观察项`：事件、价位、宏观数据、市场反应。
+- `改判风险`：说明是否需要人工复核或下一个开盘日重新生成正式综合报告。
+
+## 8. 后续流程架构
 
 下一阶段建议按下面顺序推进，避免把日报直接交给 LLM 自由发挥。
 
@@ -141,13 +177,21 @@ GDELT / Google News / Reuters Public Metadata 发现事件
 - 增加只读 API：latest、指定 date/run_id、artifact refs。
 - 前端只展示 API 结果，不计算影响路径或生成结论。
 
+### P2.5 非交易日补充分析报告
+
+- 新增 `macro_event_followup` 输入构造器，消费最近开盘日正式结论和当天宏观/新闻 read model。
+- 新增固定 Markdown/structured renderer，输出补充报告 artifact。
+- 写入标准 `ReportItem / ReportArtifact`，Reports 可检索和回看。
+- Dashboard `/api/dashboard/summary` 增加最新补充报告摘要，只展示补充层，不覆盖正式交易结论。
+- Frontend Dashboard 标清两类日期：正式综合分析 `anchor_trade_date` 与补充分析 `trade_date`。
+
 ### P3 授权与确认层
 
 - 如果后续采购 Reuters / Bloomberg / Refinitiv，只作为确认层或高质量事实源接入，不复用当前公开元数据名称。
 - 增加 official confirmation linker：同一事件与 Fed/BLS/BEA/EIA/Treasury/CME 官方条目绑定后，再升级 `verification_status`。
 - 对地缘事件保留 `need_verification=true`，直到官方或授权通讯社确认。
 
-## 8. 验收口径
+## 9. 验收口径
 
 后续每个新闻链切片完成前至少给出：
 

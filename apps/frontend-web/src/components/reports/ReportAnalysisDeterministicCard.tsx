@@ -11,17 +11,25 @@ export function ReportAnalysisDeterministicCard({ item }: { item: ReportAnalysis
         <div>
           <div className="text-[13px] font-semibold text-[var(--fg-1)]">{item.title}</div>
           <div className="mt-1 text-[11px] text-[var(--fg-4)]">
-            {item.snapshot_type ?? item.input_type} · {item.snapshot_id ?? "无 snapshot_id"}
+            {item.trade_date ?? "-"}
+            {item.snapshot_id ? ` · 快照 ${shortId(item.snapshot_id ?? undefined)}` : ""}
           </div>
         </div>
         <FAStatusPill tone={statusTone(item.data_status)}>{getDataStatusLabel(item.data_status)}</FAStatusPill>
       </div>
 
-      <div className="mt-3 grid gap-2 text-[11px] text-[var(--fg-4)] sm:grid-cols-2 xl:grid-cols-4">
-        <div>run：{shortId(item.run_id ?? undefined)}</div>
-        <div>date：{item.trade_date ?? "-"}</div>
-        <div>sources：{item.source_refs.length}</div>
-        <div>artifacts：{item.artifact_refs.length}</div>
+      <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-[var(--fg-4)]">
+        <span className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card)] px-2 py-1">
+          来源 {item.source_refs.length}
+        </span>
+        <span className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card)] px-2 py-1">
+          产物 {item.artifact_refs.length}
+        </span>
+        {item.run_id ? (
+          <span className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card)] px-2 py-1">
+            运行 {shortId(item.run_id ?? undefined)}
+          </span>
+        ) : null}
       </div>
 
       {item.sections.length > 0 ? (
@@ -37,28 +45,7 @@ export function ReportAnalysisDeterministicCard({ item }: { item: ReportAnalysis
         </div>
       ) : null}
 
-      <div className="mt-3 grid gap-2 text-[11px] text-[var(--fg-4)] sm:grid-cols-2">
-        <div>snapshot：{shortId(item.snapshot_id ?? undefined)}</div>
-        <div>created_at：{item.created_at ?? "-"}</div>
-      </div>
-
-      {item.input_snapshot_ids.length > 0 ? (
-        <div className="mt-3 space-y-2">
-          <div className="text-[11px] font-semibold text-[var(--fg-3)]">上游输入快照</div>
-          <div className="flex flex-wrap gap-2">
-            {item.input_snapshot_ids.map((snapshotId) => (
-              <span
-                key={snapshotId}
-                className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-terminal)] px-2 py-1 font-mono text-[10px] text-[var(--fg-3)]"
-              >
-                {snapshotId}
-              </span>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      <ReportTraceDrilldown sourceRefs={item.source_refs} artifactRefs={item.artifact_refs} payload={item.payload} defaultOpen />
+      <ReportTraceDrilldown sourceRefs={item.source_refs} artifactRefs={item.artifact_refs} showPayload={false} />
     </div>
   );
 }

@@ -118,6 +118,7 @@ function populateFromRunDetail(node: DagNodeSpec, detail: RunDetail): DagNodeSpe
       ended_at: detail.ended_at,
       duration_ms: durationMs,
       retries: totalRetries,
+      events: detail.events ?? [],
       step_errors: stepErrorJsons,
     } as any,
   };
@@ -153,6 +154,7 @@ function populateFromAgentOutput(node: DagNodeSpec, agent: AgentAnalysisItem): D
       ended_at: null,
       duration_ms: null,
       retries: 0,
+      events: [],
     },
   };
 }
@@ -247,6 +249,14 @@ function dagsterToRunDetail(d: DagsterRunDetailResult): RunDetail {
     error_summary: d.stepEvents?.find(e => e.eventType.includes("FAILURE"))?.message ?? null,
     started_at: d.startedAt,
     ended_at: d.endedAt,
+    events: d.stepEvents.map((e, i) => ({
+      id: `${d.runId}-event-${i}`,
+      run_id: d.runId,
+      task_id: e.stepKey || null,
+      event_type: e.eventType,
+      payload: e.message ? { error_message: e.message, step_name: e.stepKey, source: "dagster" } : { step_name: e.stepKey, source: "dagster" },
+      created_at: e.timestamp,
+    })),
     steps: d.stepEvents.map((e, i) => ({
       step_id: `${d.runId}-${e.stepKey}-${i}`,
       name: e.stepKey,
@@ -286,7 +296,7 @@ function buildPlaceholderNode(
       module: source.module || "analysis",
       input: { source: "", summary: "", fields: {}, source_refs: [], artifact_refs: [] },
       output: { source: "", summary: "", fields: {}, source_refs: [], artifact_refs: [] },
-      execution: { started_at: null, ended_at: null, duration_ms: null, retries: 0 },
+      execution: { started_at: null, ended_at: null, duration_ms: null, retries: 0, events: [] },
       upstream_ids: [],
       downstream_ids: [],
     };
@@ -302,7 +312,7 @@ function buildPlaceholderNode(
     module: "data_collection",
     input: { source: "", summary: "", fields: {}, source_refs: [], artifact_refs: [] },
     output: { source: "", summary: "", fields: {}, source_refs: [], artifact_refs: [] },
-    execution: { started_at: null, ended_at: null, duration_ms: null, retries: 0 },
+    execution: { started_at: null, ended_at: null, duration_ms: null, retries: 0, events: [] },
     upstream_ids: [],
     downstream_ids: [],
   };

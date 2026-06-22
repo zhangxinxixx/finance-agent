@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+from pathlib import Path
 from typing import Any
 
 from apps.api.services._storage import _PROJECT_ROOT
@@ -105,8 +106,12 @@ def get_options_snapshot(date_str: str | None = None, db: Session | None = None)
     def _attach_analysis(payload: dict[str, Any] | None) -> dict[str, Any] | None:
         if payload is None:
             return None
+        agent_rows: list[Any] = []
         if db is not None:
-            payload["analysis"] = _build_options_analysis(db, payload)
+            snapshot_id = str(payload.get("snapshot_id") or "")
+            agent_rows = list_agent_outputs(db, snapshot_id) if snapshot_id else []
+            payload["analysis"] = _build_options_analysis(db, payload, rows=agent_rows)
+        _enrich_options_snapshot_lineage(payload, agent_rows=agent_rows)
         return payload
 
     all_dates = list_options_report_dates()
@@ -152,10 +157,98 @@ def _finalize_snapshot_payload(
     return normalized
 
 
-def _build_options_analysis(db: Session, snapshot: dict[str, Any]) -> dict[str, Any]:
+def _enrich_options_snapshot_lineage(
+    payload: dict[str, Any],
+    *,
+    agent_rows: list[Any],
+) -> None:
+    trade_date = str(payload.get("trade_date") or "")
+    run_id = payload.get("run_id")
+    snapshot_id = str(payload.get("snapshot_id") or "")
+    data_source = dict(payload.get("data_source") or {})
+
+    primary_agent_rows = [row for row in agent_rows if getattr(row, "agent_name", None) == "cme_options_agent"] or agent_rows
+
+    merged_input_snapshot_ids = _merge_input_snapshot_id_maps(
+        data_source.get("input_snapshot_ids"),
+        *[getattr(row, "input_snapshot_ids", None) for row in primary_agent_rows],
+    )
+    if snapshot_id and snapshot_id not in merged_input_snapshot_ids.values():
+        merged_input_snapshot_ids.setdefault("options_analysis_snapshot", snapshot_id)
+    data_source["input_snapshot_ids"] = merged_input_snapshot_ids
+    payload["data_source"] = data_source
+
+    source_trace = list(payload.get("source_trace") or [])
+    endpoint = _build_options_snapshot_endpoint(trade_date)
+    source_url = data_source.get("source_url")
+    if isinstance(source_url, str) and source_url:
+        source_trace.append(
+            _build_source_trace_item(
+                name="CME Daily Bulletin",
+                trade_date=trade_date,
+                file_ref=source_url,
+                snapshot_id=snapshot_id or None,
+                source_ref=source_url,
+                status=_trace_status(data_source.get("status")),
+                endpoint=endpoint,
+                model_version=payload.get("version"),
+            )
+        )
+
+    for item in _collect_options_artifact_refs(
+        trade_date=trade_date,
+        run_id=str(run_id) if isinstance(run_id, str) and run_id else None,
+        agent_rows=primary_agent_rows,
+    ):
+        source_trace.append(
+            _build_source_trace_item(
+                name=item.get("name") or "options_artifact",
+                trade_date=trade_date,
+                file_ref=item["file_ref"],
+                snapshot_id=item.get("snapshot_id") or (snapshot_id or None),
+                source_ref=item.get("source_ref") or item["file_ref"],
+                status=item.get("status") or "ok",
+                endpoint=endpoint,
+                model_version=payload.get("version"),
+            )
+        )
+
+    for row in primary_agent_rows:
+        row_source_refs = row.source_refs if isinstance(getattr(row, "source_refs", None), list) else []
+        for raw_ref in row_source_refs:
+            if not isinstance(raw_ref, dict):
+                continue
+            source_ref = _first_non_empty(
+                raw_ref.get("source_ref"),
+                raw_ref.get("source_id"),
+                raw_ref.get("source_url"),
+                raw_ref.get("url"),
+                raw_ref.get("source"),
+            )
+            file_ref = _first_non_empty(raw_ref.get("file_path"), raw_ref.get("source_url"), raw_ref.get("url"))
+            if not source_ref and not file_ref:
+                continue
+            source_trace.append(
+                _build_source_trace_item(
+                    name=_first_non_empty(raw_ref.get("source_name"), raw_ref.get("source"), raw_ref.get("source_id"), row.agent_name)
+                    or "source",
+                    trade_date=_first_non_empty(raw_ref.get("data_date"), raw_ref.get("report_date"), trade_date) or trade_date,
+                    file_ref=file_ref or source_ref,
+                    snapshot_id=row.snapshot_id or (snapshot_id or None),
+                    source_ref=source_ref or file_ref,
+                    status=_trace_status(raw_ref.get("status") or row.status),
+                    endpoint=endpoint,
+                    model_version=payload.get("version"),
+                )
+            )
+
+    payload["source_trace"] = _dedupe_source_trace_items(source_trace)
+
+
+def _build_options_analysis(db: Session, snapshot: dict[str, Any], *, rows: list[Any] | None = None) -> dict[str, Any]:
     snapshot_id = str(snapshot.get("snapshot_id") or "")
     run_id = snapshot.get("run_id")
-    rows = list_agent_outputs(db, snapshot_id) if snapshot_id else []
+    rows = rows if rows is not None else (list_agent_outputs(db, snapshot_id) if snapshot_id else [])
     by_name = {row.agent_name: row for row in rows}
 
     cme_summary = _build_agent_summary(by_name.get("cme_options_agent"))
@@ -190,6 +283,168 @@ def _build_options_analysis(db: Session, snapshot: dict[str, Any]) -> dict[str, 
         "pending_review_count": len(pending_reviews),
         "pending_reviews": pending_reviews,
     }
+
+
+def _collect_options_artifact_refs(
+    *,
+    trade_date: str,
+    run_id: str | None,
+    agent_rows: list[Any],
+) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for path in _discover_options_artifact_paths(trade_date=trade_date, run_id=run_id):
+        refs.append(
+            {
+                "name": Path(path).name,
+                "file_ref": path,
+                "source_ref": path,
+                "status": "ok",
+            }
+        )
+
+    for row in agent_rows:
+        payload = row.payload if isinstance(getattr(row, "payload", None), dict) else {}
+        artifact_refs = payload.get("artifact_refs")
+        if not isinstance(artifact_refs, list):
+            continue
+        for artifact_ref in artifact_refs:
+            if not isinstance(artifact_ref, str) or not artifact_ref:
+                continue
+            normalized_ref = _normalize_project_relative_path(artifact_ref)
+            refs.append(
+                {
+                    "name": row.agent_name,
+                    "file_ref": normalized_ref,
+                    "source_ref": f"agent_output:{row.id}:{Path(normalized_ref).name}",
+                    "snapshot_id": row.snapshot_id or "",
+                    "status": _trace_status(row.status),
+                }
+            )
+    return refs
+
+
+def _discover_options_artifact_paths(*, trade_date: str, run_id: str | None) -> list[str]:
+    bases: list[Path] = []
+    if run_id:
+        bases.append(_PROJECT_ROOT / "storage" / "features" / "cme" / trade_date / run_id)
+        bases.append(_PROJECT_ROOT / "storage" / "outputs" / "cme" / trade_date / run_id)
+    bases.append(_PROJECT_ROOT / "storage" / "outputs" / "cme_options" / trade_date)
+
+    discovered: list[str] = []
+    for base in bases:
+        for filename in (
+            "options_analysis.json",
+            "options_analysis.md",
+            "options_visual_report.json",
+            "options_visual_report.html",
+            "options_analysis_agent_report.md",
+        ):
+            path = base / filename
+            if path.exists():
+                discovered.append(_normalize_project_relative_path(path))
+    return list(dict.fromkeys(discovered))
+
+
+def _merge_input_snapshot_id_maps(*raw_values: Any) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for raw in raw_values:
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                normalized = _normalize_snapshot_candidate(value)
+                if normalized:
+                    merged[str(key)] = normalized
+        elif isinstance(raw, list):
+            for index, value in enumerate(raw, start=1):
+                normalized = _normalize_snapshot_candidate(value)
+                if normalized:
+                    merged.setdefault(f"snapshot_{index}", normalized)
+    return merged
+
+
+def _normalize_snapshot_candidate(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict):
+        nested = _first_non_empty(value.get("snapshot_id"), value.get("id"))
+        if nested:
+            return nested
+    return None
+
+
+def _build_source_trace_item(
+    *,
+    name: str,
+    trade_date: str,
+    file_ref: str,
+    snapshot_id: str | None,
+    source_ref: str,
+    status: str,
+    endpoint: str,
+    model_version: Any,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "trade_date": trade_date,
+        "file": file_ref,
+        "snapshot_id": snapshot_id,
+        "source_ref": source_ref,
+        "status": status,
+        "endpoint": endpoint,
+        "latest_raw_time": None,
+        "latest_parsed_time": None,
+        "model_version": str(model_version) if isinstance(model_version, str) and model_version else None,
+    }
+
+
+def _dedupe_source_trace_items(items: list[Any]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        source_ref = str(item.get("source_ref") or "")
+        file_ref = str(item.get("file") or "")
+        snapshot_id = str(item.get("snapshot_id") or "")
+        if not (source_ref or file_ref):
+            continue
+        key = (source_ref, file_ref, snapshot_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _build_options_snapshot_endpoint(trade_date: str) -> str:
+    return "/api/options/snapshot" if not trade_date else f"/api/options/snapshot?date={trade_date}"
+
+
+def _normalize_project_relative_path(path: str | Path) -> str:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        return str(candidate)
+    try:
+        return str(candidate.relative_to(_PROJECT_ROOT))
+    except ValueError:
+        return str(candidate)
+
+
+def _trace_status(raw_status: Any) -> str:
+    raw = str(raw_status or "").lower()
+    if raw in {"success", "ok", "available", "generated", "final"}:
+        return "ok"
+    if raw in {"partial", "partial_success", "prelim", "stale", "fallback"}:
+        return "warn"
+    if raw in {"failed", "error", "missing", "unavailable"}:
+        return "error"
+    return "info"
+
+
+def _first_non_empty(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _build_agent_summary(row: Any | None) -> dict[str, Any] | None:

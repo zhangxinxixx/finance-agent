@@ -22,6 +22,13 @@ export interface DagNodeSpec {
     ended_at: string | null;
     duration_ms: number | null;
     retries: number;
+    events?: Array<{
+      id: string;
+      event_type: string;
+      task_id?: string | null;
+      created_at?: string | null;
+      payload?: Record<string, unknown>;
+    }>;
   };
 
   // 血缘
@@ -58,6 +65,7 @@ export interface DagEdge {
   data_contract: {
     fields: string[];
     stage: string;
+    status?: DagNodeStatus;
   };
 }
 

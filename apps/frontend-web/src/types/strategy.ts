@@ -1,6 +1,7 @@
 import type { DataStatus, SourceRef } from "@/types/common";
 import type { ArtifactRef } from "@/types/artifact";
 import type { SignalDirection } from "@/types/dashboard";
+import type { SourceTracePayload } from "@/types/source-trace";
 
 /** Strategy Center — P1-07 MVP ViewModel 口径 */
 
@@ -61,10 +62,57 @@ export interface StrategyViewModel {
   source_refs: SourceRef[];
   artifact_refs: ArtifactRef[];
   has_data: boolean;
+  source_trace?: StrategySourceTraceViewModel | null;
   /** History list from /api/strategy-cards (P1-07b-2) */
   history: StrategyHistoryItemViewModel[];
   /** Currently selected strategy card id (null = latest) */
   selected_strategy_card_id?: string | null;
+}
+
+export type StrategySourceTraceViewModel = SourceTracePayload;
+
+export interface StrategySourceTraceRawSourceRef {
+  source_id: string;
+  source_name: string;
+  source_type: string;
+  data_date?: string | null;
+  endpoint?: string | null;
+  captured_at?: string | null;
+  file_path?: string | null;
+  sha256?: string | null;
+  url?: string | null;
+  status?: string | null;
+}
+
+export interface StrategySourceTraceRawArtifactRef {
+  artifact_id: string;
+  artifact_type: string;
+  file_path: string;
+  storage_backend?: string | null;
+  version?: string | null;
+  generated_at?: string | null;
+  sha256?: string | null;
+}
+
+export interface StrategySourceTraceRawSnapshotRef {
+  snapshot_id: string;
+  snapshot_type: string;
+  data_date?: string | null;
+  run_id?: string | null;
+  data_status?: string | null;
+  created_at?: string | null;
+  input_snapshot_ids?: string[];
+}
+
+export interface StrategySourceTraceRawResponse {
+  run_id?: string | null;
+  snapshot_id?: string | null;
+  data_status?: string | null;
+  source_refs?: StrategySourceTraceRawSourceRef[];
+  artifact_refs?: StrategySourceTraceRawArtifactRef[];
+  snapshot?: StrategySourceTraceRawSnapshotRef | null;
+  input_snapshots?: StrategySourceTraceRawSnapshotRef[];
+  related_artifacts?: StrategySourceTraceRawArtifactRef[];
 }
 
 export interface StrategyAssetSummaryViewModel {

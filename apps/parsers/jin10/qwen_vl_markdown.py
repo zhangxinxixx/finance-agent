@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import httpx
 from dotenv import load_dotenv
-from openai import OpenAI
 
 from apps.runtime.secret_resolver import resolve_runtime_secret
 
@@ -39,6 +39,35 @@ class EncodedImage:
     height: int
 
 
+class DashScopeChatCompletionClient:
+    """Minimal DashScope compatible-mode client for Jin10 Qwen VLM."""
+
+    def __init__(self, *, api_key: str, base_url: str, timeout: float) -> None:
+        self._url = base_url.rstrip("/") + "/chat/completions"
+        self._timeout = timeout
+        self._headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def create(self, *, model: str, messages: list[dict[str, Any]], temperature: float = 0, extra_body: dict[str, Any] | None = None) -> str:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if extra_body:
+            payload.update(extra_body)
+        with httpx.Client(timeout=self._timeout) as client:
+            response = client.post(self._url, headers=self._headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+        try:
+            return str(data["choices"][0]["message"].get("content") or "")
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("DashScope response missing choices[0].message.content") from exc
+
+
 class DashScopeVisionMarkdownClient:
     def __init__(
         self,
@@ -54,7 +83,7 @@ class DashScopeVisionMarkdownClient:
             raise MissingDashScopeApiKey("DASHSCOPE_API_KEY is not configured")
         self.model = model or os.getenv("JIN10_QWEN_VL_MODEL", DEFAULT_QWEN_VL_MODEL)
         self.timeout = float(timeout or os.getenv("JIN10_QWEN_VL_TIMEOUT", DEFAULT_QWEN_VL_TIMEOUT))
-        self._client = OpenAI(api_key=resolved_api_key, base_url=base_url, timeout=self.timeout)
+        self._client = DashScopeChatCompletionClient(api_key=resolved_api_key, base_url=base_url, timeout=self.timeout)
 
     def recognize_page_markdown(
         self,
@@ -83,7 +112,7 @@ class DashScopeVisionMarkdownClient:
                 "model": self.model,
             }
 
-        completion = self._client.chat.completions.create(
+        content = self._client.create(
             model=self.model,
             messages=[
                 {
@@ -105,7 +134,6 @@ class DashScopeVisionMarkdownClient:
             temperature=0,
             extra_body={"enable_thinking": False},
         )
-        content = completion.choices[0].message.content or ""
         normalized = normalize_page_markdown(_strip_markdown_fences(content), figures)
         return {
             "page_no": page_no,
@@ -148,7 +176,7 @@ class DashScopeVisionMarkdownClient:
                 "model": self.model,
             }
 
-        completion = self._client.chat.completions.create(
+        content = self._client.create(
             model=self.model,
             messages=[
                 {
@@ -178,7 +206,6 @@ class DashScopeVisionMarkdownClient:
             temperature=0,
             extra_body={"enable_thinking": False},
         )
-        content = completion.choices[0].message.content or ""
         payload = _parse_layout_json(content)
         blocks = _normalize_layout_blocks(
             payload,
@@ -243,7 +270,7 @@ class DashScopeVisionMarkdownClient:
                 "model": self.model,
             }
 
-        completion = self._client.chat.completions.create(
+        content = self._client.create(
             model=self.model,
             messages=[
                 {
@@ -271,7 +298,7 @@ class DashScopeVisionMarkdownClient:
             temperature=0,
             extra_body={"enable_thinking": False},
         )
-        payload = _parse_layout_json(completion.choices[0].message.content or "")
+        payload = _parse_layout_json(content)
         blocks = _normalize_layout_blocks(
             payload,
             page_width=page_width,
@@ -309,7 +336,7 @@ class DashScopeVisionMarkdownClient:
         image: Any,
     ) -> str:
         encoded_image = _image_array_to_data_url(image)
-        completion = self._client.chat.completions.create(
+        content = self._client.create(
             model=self.model,
             messages=[
                 {
@@ -334,7 +361,7 @@ class DashScopeVisionMarkdownClient:
             temperature=0,
             extra_body={"enable_thinking": False},
         )
-        return _normalize_title_band_text(completion.choices[0].message.content or "")
+        return _normalize_title_band_text(content)
 
 
 def recognize_pages_as_markdown(

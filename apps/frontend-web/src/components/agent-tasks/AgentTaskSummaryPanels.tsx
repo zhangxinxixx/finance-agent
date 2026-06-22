@@ -4,7 +4,7 @@ import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { formatDateTime, formatTradeDate } from "@/lib/date";
 import { compactId, formatPercent } from "@/lib/format";
-import type { TaskLogViewModel, TaskRunViewModel, TaskStepViewModel } from "@/types/agent-task";
+import type { TaskLogViewModel, TaskRunEventViewModel, TaskRunViewModel, TaskStepViewModel } from "@/types/agent-task";
 import { taskStatusLabel, taskStatusTone, taskTopicSummary, taskTypeLabel } from "./agentTaskMeta";
 
 function logLevelFromStatus(status: TaskLogViewModel["status"]): FARuntimeLogLevel {
@@ -12,6 +12,45 @@ function logLevelFromStatus(status: TaskLogViewModel["status"]): FARuntimeLogLev
   if (status === "error") return "error";
   if (status === "partial") return "warn";
   return "debug";
+}
+
+function eventLevelFromType(eventType: string): FARuntimeLogLevel {
+  const value = eventType.toUpperCase();
+  if (value.includes("FAILED") || value.includes("ERROR")) return "error";
+  if (value.includes("BLOCKED") || value.includes("FALLBACK") || value.includes("DEGRADED")) return "warn";
+  if (value.includes("FINISHED") || value.includes("SUCCESS") || value.includes("WRITTEN")) return "success";
+  if (value.includes("STARTED") || value.includes("STATUS_CHANGED") || value.includes("EVALUATED")) return "info";
+  return "debug";
+}
+
+function formatEventTime(value: string | null | undefined): string {
+  if (!value) return "--:--:--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleTimeString("zh-CN", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function eventSource(event: TaskRunEventViewModel): string {
+  const stepName = typeof event.payload.step_name === "string" ? event.payload.step_name : null;
+  const source = typeof event.payload.source === "string" ? event.payload.source : null;
+  return stepName ?? event.task_id ?? source ?? "run";
+}
+
+function eventMessage(event: TaskRunEventViewModel): string {
+  const details = [
+    typeof event.payload.reason === "string" ? event.payload.reason : null,
+    typeof event.payload.blocked_reason === "string" ? event.payload.blocked_reason : null,
+    typeof event.payload.error_message === "string" ? event.payload.error_message : null,
+    typeof event.payload.from_status === "string" && typeof event.payload.to_status === "string"
+      ? `${event.payload.from_status} -> ${event.payload.to_status}`
+      : null,
+  ].filter((item): item is string => Boolean(item));
+  return details.length > 0 ? `${event.event_type} · ${details.join(" · ")}` : event.event_type;
 }
 
 export function SummaryPanel({ selectedRun }: { selectedRun: TaskRunViewModel }) {
@@ -102,6 +141,30 @@ export function LogPanel({ logs }: { logs: TaskLogViewModel[] }) {
       <div className="mb-4 text-[11px] font-semibold text-[var(--fg-2)]">运行日志</div>
       <div className="max-h-[420px] overflow-y-auto">
         {entries.length > 0 ? <FARuntimeLog entries={entries} /> : <FAEmptyState title="暂无日志" description="当前运行没有额外日志输出。" className="p-4" />}
+      </div>
+    </div>
+  );
+}
+
+export function EventTimelinePanel({ events }: { events: TaskRunEventViewModel[] }) {
+  const entries: FARuntimeLogEntry[] = events.map((event) => ({
+    id: event.id,
+    time: formatEventTime(event.created_at),
+    level: eventLevelFromType(event.event_type),
+    source: eventSource(event),
+    message: eventMessage(event),
+  }));
+
+  return (
+    <div className="rounded-[14px] border border-[var(--border)] bg-[var(--bg-card)] p-4">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="text-[11px] font-semibold text-[var(--fg-2)]">事件时间线</div>
+        <div className="text-[10px] text-[var(--fg-5)]">{events.length > 0 ? `${events.length} 条事件` : "暂无事件"}</div>
+      </div>
+      <div className="max-h-[420px] overflow-y-auto">
+        {entries.length > 0
+          ? <FARuntimeLog entries={entries} emptyText="暂无事件时间线" />
+          : <FAEmptyState title="暂无事件时间线" description="当前运行尚未返回 execution events。" className="p-4" />}
       </div>
     </div>
   );

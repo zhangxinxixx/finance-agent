@@ -1,13 +1,20 @@
+import { useMemo } from "react";
 import { useDataStatus } from "../../hooks/useDataStatus";
-import type { DataOverallStatus } from "../../types/dashboard";
 import { FAStatusPill } from "./FAStatusPill";
 import { getStatusMeta } from "./statusMeta";
 
 const SOURCE_SHORT: Record<string, string> = {
   CME: "CME",
+  cme: "CME",
   FRED: "FRED",
+  fred: "FRED",
   Treasury: "美债",
+  treasury: "美债",
   Fed: "美联储",
+  fed: "美联储",
+  OpenBB: "宏观",
+  openbb_macro: "宏观",
+  open: "宏观",
 };
 
 export function DataStatusBar() {
@@ -15,8 +22,12 @@ export function DataStatusBar() {
   const overallStatus = isError ? "UNAVAILABLE" : data.overall_status;
   const overallMeta = getStatusMeta(overallStatus);
   const pulse = overallStatus === "MOCK";
+  const sources = data.sources.filter((s) => s.status === "LIVE" || s.status === "PARTIAL").slice(0, 3);
+  const sourceSummary = useMemo(() => {
+    if (sources.length === 0) return null;
+    return sources.map((src) => SOURCE_SHORT[src.name] || src.name).join(" / ");
+  }, [sources]);
 
-  const sources = data.sources.filter((s) => s.status === "LIVE" || s.status === "PARTIAL").slice(0, 4);
 
   return (
     <div className="status-bar">
@@ -30,16 +41,15 @@ export function DataStatusBar() {
         </FAStatusPill>
       </div>
 
-      <div className="statusbar-sep" />
-
-      <div className="statusbar-group">
-        {sources.map((src) => (
-          <div key={src.name} className="flex items-center gap-1.5 rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-1">
-            <div className={`h-1.5 w-1.5 rounded-full ${getStatusMeta(src.status).tone === "up" ? "bg-finance-bullish" : "bg-finance-warning"}`} />
-            <span className="text-[10px]">{SOURCE_SHORT[src.name] || src.name.slice(0, 4)}</span>
+      {sourceSummary ? (
+        <>
+          <div className="statusbar-sep" />
+          <div className="statusbar-group text-[10px] text-[var(--fg-4)]">
+            <span className="text-[var(--fg-5)]">数据源</span>
+            <span className="truncate">{sourceSummary}</span>
           </div>
-        ))}
-      </div>
+        </>
+      ) : null}
 
       <div className="flex-1" />
 

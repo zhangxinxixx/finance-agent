@@ -41,6 +41,17 @@ type RawCMEOptionsParameters = {
   f_value?: unknown;
   r_value?: unknown;
   r?: unknown;
+  p0?: unknown;
+  p0_source?: unknown;
+  report_p0?: unknown;
+  report_p0_source?: unknown;
+  live_p0?: unknown;
+  live_p0_source?: unknown;
+  price_anchor_rule?: unknown;
+  model?: unknown;
+  used_real_gex?: unknown;
+  netgex_scope?: unknown;
+  analysis_range?: unknown;
 };
 
 type RawCMEOptionsWallScore = {
@@ -364,6 +375,8 @@ function normalizeIVSkew(value: unknown): CMEOptionsIVSkew {
     call_10d_iv: typeof r.call_10d_iv === "number" ? r.call_10d_iv : null,
     put_10d_iv: typeof r.put_10d_iv === "number" ? r.put_10d_iv : null,
     skew_10d: typeof r.skew_10d === "number" ? r.skew_10d : null,
+    tail_skew_10d: typeof r.tail_skew_10d === "number" ? r.tail_skew_10d : null,
+    interpretation: typeof r.interpretation === "string" ? r.interpretation : null,
   };
 }
 
@@ -387,13 +400,21 @@ function normalizeGEXByExpiry(value: unknown): Record<string, CMEOptionsGEXByExp
   for (const [expiry, data] of Object.entries(value as Record<string, unknown>)) {
     if (!data || typeof data !== "object") continue;
     const r = data as Record<string, unknown>;
+    const summary = r.summary && typeof r.summary === "object" ? r.summary as Record<string, unknown> : r;
     result[expiry] = {
       gex_top: normalizeGEXTopItems(r.gex_top),
       summary: {
-        forward_price: typeof r.forward_price === "number" ? r.forward_price : null,
-        gamma_zero: typeof r.gamma_zero === "number" ? r.gamma_zero : null,
-        atm_iv: typeof r.atm_iv === "number" ? r.atm_iv : null,
-        time_to_expiry: typeof r.time_to_expiry === "number" ? r.time_to_expiry : null,
+        forward_price: typeof summary.forward_price === "number" ? summary.forward_price : (typeof summary.f_value === "number" ? summary.f_value : null),
+        f_value: typeof summary.f_value === "number" ? summary.f_value : null,
+        gamma_zero: typeof summary.gamma_zero === "number" ? summary.gamma_zero : null,
+        gamma_zero_method: typeof summary.gamma_zero_method === "string" ? summary.gamma_zero_method : null,
+        net_gex: typeof summary.net_gex === "number" ? summary.net_gex : null,
+        call_gex: typeof summary.call_gex === "number" ? summary.call_gex : null,
+        put_gex: typeof summary.put_gex === "number" ? summary.put_gex : null,
+        total_gex: typeof summary.total_gex === "number" ? summary.total_gex : null,
+        atm_iv: typeof summary.atm_iv === "number" ? summary.atm_iv : null,
+        time_to_expiry: typeof summary.time_to_expiry === "number" ? summary.time_to_expiry : null,
+        structure: typeof summary.structure === "string" ? summary.structure : null,
       },
       iv_skew: normalizeIVSkew(r.iv_skew),
     };
@@ -425,6 +446,7 @@ function normalizeRollSignals(value: unknown): CMEOptionsRollSignal[] {
   return value.map((item) => {
     const r = (item ?? {}) as Record<string, unknown>;
     return {
+      roll_type: typeof r.roll_type === "string" ? r.roll_type : null,
       near_expiry: asString(r.near_expiry),
       far_expiry: asString(r.far_expiry),
       evidence: asStringArray(r.evidence),
@@ -436,11 +458,29 @@ function normalizeRollSignals(value: unknown): CMEOptionsRollSignal[] {
 function normalizeParameters(value: unknown): CMEOptionsParameters {
   if (!value || typeof value !== "object") return {};
   const r = value as Record<string, unknown>;
+  const analysisRange = r.analysis_range && typeof r.analysis_range === "object"
+    ? r.analysis_range as Record<string, unknown>
+    : null;
   return {
     f_value: typeof r.f_value === "number" ? r.f_value : null,
     r_value: typeof r.r_value === "number" ? r.r_value : (typeof r.r === "number" ? r.r : null),
     p0: typeof r.p0 === "number" ? r.p0 : (typeof r.report_p0 === "number" ? r.report_p0 : null),
     p0_source: typeof r.p0_source === "string" ? r.p0_source : (typeof r.report_p0_source === "string" ? r.report_p0_source : null),
+    report_p0: typeof r.report_p0 === "number" ? r.report_p0 : null,
+    report_p0_source: typeof r.report_p0_source === "string" ? r.report_p0_source : null,
+    live_p0: typeof r.live_p0 === "number" ? r.live_p0 : null,
+    live_p0_source: typeof r.live_p0_source === "string" ? r.live_p0_source : null,
+    price_anchor_rule: typeof r.price_anchor_rule === "string" ? r.price_anchor_rule : null,
+    model: typeof r.model === "string" ? r.model : null,
+    used_real_gex: typeof r.used_real_gex === "boolean" ? r.used_real_gex : null,
+    netgex_scope: typeof r.netgex_scope === "string" ? r.netgex_scope : null,
+    analysis_range: analysisRange
+      ? {
+          strike_min: typeof analysisRange.strike_min === "number" ? analysisRange.strike_min : null,
+          strike_max: typeof analysisRange.strike_max === "number" ? analysisRange.strike_max : null,
+          source: typeof analysisRange.source === "string" ? analysisRange.source : null,
+        }
+      : null,
   };
 }
 
@@ -615,10 +655,7 @@ function normalizeApiSnapshot(payload: RawCMEOptionsSnapshot, date?: string): CM
     run_id: typeof payload.run_id === "string" ? payload.run_id : null,
     snapshot_id: typeof payload.snapshot_id === "string" ? payload.snapshot_id : null,
     data_source: normalizeDataSource(payload.data_source),
-    parameters: {
-      f_value: asNumber(payload.parameters?.f_value),
-      r_value: asNumber(payload.parameters?.r ?? payload.parameters?.r_value),
-    },
+    parameters: normalizeParameters(payload.parameters),
     gex: {
       netgex_aggregate: {
         net_gex: asNumber(payload.gex?.netgex_aggregate?.net_gex),
@@ -648,7 +685,7 @@ function normalizeApiSnapshot(payload: RawCMEOptionsSnapshot, date?: string): CM
     exposure: normalizeExposure(payload.exposure),
     roll_signals: normalizeRollSignals(payload.roll_signals),
     normalization: typeof payload.normalization === "object" ? (payload.normalization as Record<string, unknown>) : null,
-    data_quality: typeof payload.data_quality === "object" ? (payload.data_quality as Record<string, unknown>) : null,
+    data_quality: typeof payload.data_quality === "object" ? payload.data_quality : null,
     audit: typeof payload.audit === "object" ? (payload.audit as Record<string, unknown>) : null,
   };
 }

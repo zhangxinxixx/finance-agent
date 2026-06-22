@@ -30,8 +30,8 @@ def build_options_agent_output_payload(
         "input_snapshot_ids": input_snapshot_ids,
         "source_refs": source_refs,
         "options": {
-            **snapshot,
             "status": "available" if snapshot else "unavailable",
+            "data": snapshot,
         },
     }
     deterministic_output = analyze_cme_options(wrapped_snapshot)

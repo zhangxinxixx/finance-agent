@@ -73,7 +73,7 @@ export function ReportsRail({ reports, filters, onFilterChange, railLoading, rai
   }
 
   return (
-    <aside style={REPORTS_RAIL_PANEL_STYLE}>
+    <aside className="reports-rail" style={REPORTS_RAIL_PANEL_STYLE}>
       <ReportsRailHeader hasActiveFilters={hasActiveFilters} onReset={handleReset} />
       <ReportsRailReportTypeSection filters={filters} onToggle={toggleReportType} countByType={countByType} />
       <ReportsRailAssetSection filters={filters} onFilterChange={onFilterChange} />

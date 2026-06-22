@@ -321,6 +321,7 @@ export function taskNodesForTaskLike(groupId: DagGroupId, taskType: string, cate
   const task = taskType.toLowerCase();
   const cat = (category || "").toLowerCase();
   if (groupId === "data_collection") {
+    if (task.includes("macro")) return ["fred_source", "fed_source", "treasury_source", "dxy_source"];
     if (task.includes("cme") || task.includes("bulletin") || task.includes("option")) return ["cme_bulletin_source"];
     if (task.includes("jin10") || task.includes("news") || task.includes("flash")) return ["jin10_flash_source", "jin10_report_source"];
     if (task.includes("market") || task.includes("xau") || task.includes("candle")) return ["market_price_source"];
@@ -328,40 +329,45 @@ export function taskNodesForTaskLike(groupId: DagGroupId, taskType: string, cate
     if (task.includes("fed")) return ["fed_source"];
     if (task.includes("treasury")) return ["treasury_source"];
     if (task.includes("fred")) return ["fred_source"];
-    return ["fred_source", "fed_source", "treasury_source", "dxy_source"];
+    return [];
   }
   if (groupId === "raw_archive") {
+    if (task.includes("macro")) return ["macro_api_raw"];
     if (task.includes("pdf") || task.includes("cme") || task.includes("bulletin")) return ["cme_pdf_raw"];
     if (task.includes("message") || task.includes("flash")) return ["jin10_message_raw"];
     if (task.includes("jin10") || task.includes("news")) return ["jin10_message_raw", "jin10_report_raw"];
     if (task.includes("artifact") || task.includes("upload") || task.includes("file")) return ["artifact_raw"];
     if (task.includes("market") || task.includes("candle")) return ["market_api_raw"];
-    return ["macro_api_raw"];
+    return [];
   }
   if (groupId === "raw_parse") {
+    if (task.includes("macro")) return ["fred_parse", "treasury_parse", "dxy_parse"];
     if (task.includes("cme") || task.includes("option") || task.includes("bulletin")) return ["cme_bulletin_parse", "cme_options_parse"];
     if (task.includes("jin10") || task.includes("news") || task.includes("flash")) return ["jin10_flash_parse", "jin10_report_parse"];
     if (task.includes("market") || task.includes("candle")) return ["market_candle_parse"];
     if (task.includes("dxy")) return ["dxy_parse"];
     if (task.includes("treasury")) return ["treasury_parse"];
-    return ["fred_parse", "treasury_parse", "dxy_parse"];
+    if (task.includes("fred")) return ["fred_parse"];
+    return [];
   }
   if (groupId === "feature_processing") {
+    if (task.includes("macro") || task.includes("rate") || task.includes("liquidity")) return ["real_rate_feature", "liquidity_feature"];
     if (task.includes("option") || task.includes("wall") || task.includes("gex")) return ["option_wall"];
     if (task.includes("positioning") || task.includes("cot")) return ["positioning_feature"];
     if (task.includes("technical")) return ["technical_feature"];
     if (task.includes("news") || task.includes("event") || task.includes("sentiment")) return ["event_flow_feature"];
     if (task.includes("merge") || task.includes("snapshot")) return ["snapshot_merge"];
-    return ["real_rate_feature", "liquidity_feature"];
+    return [];
   }
   if (groupId === "analysis_agents") {
+    if (task.includes("macro")) return ["macro_agent"];
     if (task.includes("cme") || task.includes("option")) return ["cme_agent"];
     if (task.includes("positioning")) return ["positioning_agent"];
     if (task.includes("risk")) return ["risk_agent"];
     if (task.includes("technical")) return ["technical_agent"];
     if (task.includes("market_odds")) return ["market_odds_agent"];
     if (task.includes("news") || task.includes("jin10") || task.includes("flash")) return ["news_agent"];
-    return ["macro_agent"];
+    return [];
   }
   if (groupId === "decision_synthesis") {
     if (task.includes("conflict") || task.includes("merge")) return ["conflict_check", "bias_confidence"];

@@ -23,7 +23,8 @@ def test_official_fred_collector_disables_environment_proxies(monkeypatch, tmp_p
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    def fake_fetch(client, *, symbol, api_key, attempts=3):
+    def fake_fetch(client, *, symbol, api_key, retrieved_date, attempts=3):
+        assert retrieved_date == "2026-05-21"
         return {"observations": [{"date": "2026-05-20", "value": "4.67"}]}
 
     monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")

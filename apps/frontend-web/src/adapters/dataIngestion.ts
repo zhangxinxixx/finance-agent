@@ -958,7 +958,10 @@ async function loadMockDataIngestion(): Promise<DataIngestionResponse> {
 
 export async function fetchDataIngestionData(): Promise<DataIngestionResponse> {
   try {
-    const payload = await fetchJson<ApiDataSourceStatuses>(DATA_INGESTION_STATUS_PATH);
+    const [payload, systemStatus] = await Promise.all([
+      fetchJson<ApiDataSourceStatuses>(DATA_INGESTION_STATUS_PATH),
+      fetchJson<DataStatusSummary>(DATA_STATUS_SUMMARY_PATH).catch(() => null),
+    ]);
 
     if (!Array.isArray(payload.sources)) {
       throw new ApiError("Data Ingestion API 响应缺少 sources", {
@@ -968,13 +971,6 @@ export async function fetchDataIngestionData(): Promise<DataIngestionResponse> {
 
     const statuses = normalizeApiStatuses(payload);
     const summary = buildSummaryFromStatuses(statuses);
-    let systemStatus: DataStatusSummary | null = null;
-
-    try {
-      systemStatus = await fetchJson<DataStatusSummary>(DATA_STATUS_SUMMARY_PATH);
-    } catch {
-      systemStatus = null;
-    }
 
     return {
       summary,

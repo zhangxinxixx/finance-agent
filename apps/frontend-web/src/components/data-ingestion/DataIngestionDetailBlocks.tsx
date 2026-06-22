@@ -187,7 +187,13 @@ export function SourceStagesBlock({
   );
 }
 
-export { SourceArtifactEvidenceBlock, SourceDrilldownBlock, SourceRawAndStageRefsBlock, SourceRefsBlock } from "./DataIngestionRefBlocks";
+export {
+  SourceArtifactEvidenceBlock,
+  SourceDrilldownBlock,
+  SourceDrilldownBlockWithLinks,
+  SourceRawAndStageRefsBlock,
+  SourceRefsBlock,
+} from "./DataIngestionRefBlocks";
 export {
   SourceNewsFeatureArtifactsBlock,
   SourceNewsRuntimeBlock,

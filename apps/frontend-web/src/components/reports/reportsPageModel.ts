@@ -35,6 +35,7 @@ export function filterReports(
       const categoryLabel = CATEGORY_MAP[item.type]?.label ?? item.type;
       const matchesSearch =
         categoryLabel.toLowerCase().includes(searchNeedle) ||
+        (item.title ?? "").toLowerCase().includes(searchNeedle) ||
         item.trade_date.toLowerCase().includes(searchNeedle) ||
         item.type.toLowerCase().includes(searchNeedle);
       if (!matchesSearch) return false;
@@ -45,7 +46,7 @@ export function filterReports(
     }
 
     if (filters.asset && filters.asset !== "all") {
-      if (filters.asset === "XAUUSD" && !["jin10_daily_report", "jin10_weekly_report"].includes(item.type)) {
+      if (filters.asset === "XAUUSD" && !["final_report", "macro_report", "jin10_daily_report", "jin10_weekly_report"].includes(item.type)) {
         return false;
       }
       if (filters.asset === "OG" && item.type !== "options_report") {

@@ -65,6 +65,8 @@ def test_build_options_agent_output_payload_binds_prompt_artifacts_and_claims(tm
     assert payload["payload"]["input_payload"]["options_snapshot"]["trade_date"] == "2026-05-06"
     assert payload["payload"]["llm_raw_output"] == enhanced_markdown.strip()
     assert payload["summary"] == "4200 上方仍是方向分水岭，结构更接近防守型再平衡。"
+    assert payload["payload"]["deterministic_output"]["summary"] != "CME 期权只读视图 neutral（输入不完整/临时）；确信度 0.16。"
+    assert any("Gamma Zero" in item for item in payload["payload"]["deterministic_output"]["key_findings"])
     assert payload["payload"]["artifact_refs"][-1].endswith("/options_analysis_agent_report.md")
     assert payload["payload"]["claims"]
     assert payload["payload"]["data_category"] == "external_opinion"

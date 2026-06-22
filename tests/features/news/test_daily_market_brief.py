@@ -149,6 +149,50 @@ def test_daily_market_brief_separates_confirmed_calendar_from_candidate_risks() 
     assert data["data_quality"]["event_candidate_count"] == len(bundle.event_candidates)
 
 
+def test_daily_market_brief_report_inputs_do_not_repeat_same_events() -> None:
+    bundle = build_event_candidates(
+        [
+            _item(
+                source_key="reuters_public_news",
+                source_type="wire_public_candidate",
+                title="Iran says Strait of Hormuz shipping risk remains elevated",
+                event_type="hormuz_risk",
+                published_at="2026-06-10T08:15:00+00:00",
+            ),
+            _item(
+                source_key="google_news_rss",
+                source_type="aggregator",
+                title="Oil markets watch Hormuz disruption risk",
+                event_type="middle_east_escalation",
+                published_at="2026-06-10T09:15:00+00:00",
+            ),
+            _item(
+                source_key="jin10_report_events",
+                source_type="supplemental",
+                title="Jin10 report says gold ETF money is waiting for catalysts",
+                event_type="gold_fund_flow",
+                published_at="2026-06-10T00:00:00+00:00",
+            ),
+        ],
+        as_of="2026-06-10T10:00:00+00:00",
+    )
+    brief = build_daily_market_brief(
+        event_bundle=bundle,
+        impact_assessments=build_impact_assessments(bundle.event_candidates, as_of="2026-06-10T10:00:00+00:00"),
+        market_reactions=[],
+        as_of="2026-06-10T10:00:00+00:00",
+    )
+
+    inputs = brief.to_dict()["report_inputs"]
+    highlighted_ids = {item["event_id"] for item in inputs["news_highlights"]}
+    watchlist_ids = {item["event_id"] for item in inputs["watchlist"]}
+    risk_points = inputs["risk_points"]
+
+    assert highlighted_ids
+    assert highlighted_ids.isdisjoint(watchlist_ids)
+    assert len(risk_points) == len(set(risk_points))
+
+
 def test_archive_daily_market_brief_writes_feature_artifact(tmp_path: Path) -> None:
     bundle = build_event_candidates(
         [

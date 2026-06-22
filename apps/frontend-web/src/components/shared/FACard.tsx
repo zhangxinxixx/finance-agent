@@ -33,10 +33,10 @@ export function FACard({
   const hasHeader = title || eyebrow || action;
 
   return (
-    <section className={`fa-card border-[var(--border-faint)] shadow-none ${className}`}>
+    <section className={`fa-card border-[var(--border-faint)] ${className}`}>
       {hasHeader ? (
         <header className={`fa-card-header border-b-[var(--border-faint)] ${headerClassName}`}>
-          <span className={`h-3 w-[2px] rounded-[var(--radius-xs)] ${accentClass[accent]}`} />
+          <span className={`h-3.5 w-[2px] rounded-[var(--radius-xs)] ${accentClass[accent]}`} />
           <div className="min-w-0 flex-1">
             {eyebrow ? <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">{eyebrow}</div> : null}
             {title ? <div className="truncate text-[11px] font-semibold leading-tight text-[var(--fg-2)]">{title}</div> : null}

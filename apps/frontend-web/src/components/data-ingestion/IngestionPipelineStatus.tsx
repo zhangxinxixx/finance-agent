@@ -47,7 +47,7 @@ export function IngestionPipelineStatus({ layers, updatedAt }: IngestionPipeline
   return (
     <FACard
       title="采集流水线"
-      eyebrow="Pipeline Status"
+      eyebrow="链路状态"
       accent="brand"
       action={updatedAt ? <FASourceTraceBadge source={updatedAt} status="updated_at" tone="info" /> : null}
       bodyClassName="space-y-4"

@@ -4,7 +4,7 @@ import { fetchCMEOptionsDates } from "@/adapters/cmeOptions";
 import { ChangeTable, ExposurePanel, GEXBreakdown, IVSkewTable, PriceLadder } from "@/components/cme-options/CMEOptionsGammaPanels";
 import { CMEOptionsOverviewGrid } from "@/components/cme-options/CMEOptionsOverviewGrid";
 import { CMEOptionsRightColumn } from "@/components/cme-options/CMEOptionsRightColumn";
-import { translateIntent } from "@/components/cme-options/cmeOptionsFormat";
+import { translateEvidence, translateIntent } from "@/components/cme-options/cmeOptionsFormat";
 import { GammaZeroCard } from "@/components/cme-options/GammaZeroCard";
 import { OptionsWallTable } from "@/components/cme-options/OptionsWallTable";
 import { SourceTracePanel } from "@/components/cme-options/SourceTracePanel";
@@ -27,6 +27,12 @@ export function sourceTone(source: "api" | "mock" | "unavailable"): FAStatusTone
 
 export function reportStatusTone(status: string | undefined): FAStatusTone {
   return getStatusTone(status, "report");
+}
+
+export function reportStatusLabel(status: string | undefined): string {
+  if (status === "FINAL") return "终版";
+  if (status === "PRELIM") return "预览";
+  return getStatusLabel(status, "report");
 }
 
 export function reviewStatusTone(status: string | null | undefined): FAStatusTone {
@@ -55,6 +61,7 @@ export function CMEOptionsIntentSummary({ snapshot }: { snapshot: CMEOptionsResp
   const intentType = translateIntent(snapshot.intent.type);
   const confPct = Math.round((snapshot.intent.confidence ?? snapshot.intent.score ?? 0) * 100);
   const evidence = snapshot.intent.evidence ?? [];
+  const localizedEvidence = evidence.map((ev) => translateEvidence(ev));
 
   return (
     <div
@@ -75,7 +82,7 @@ export function CMEOptionsIntentSummary({ snapshot }: { snapshot: CMEOptionsResp
       <div className="h-6 w-px bg-[var(--border)]" />
       <div
         className="min-w-0 text-[10px] leading-snug text-[var(--fg-3)]"
-        title={evidence.join(" / ") || `置信度 ${confPct}/100`}
+        title={localizedEvidence.join(" / ") || `置信度 ${confPct}/100`}
         style={{
           maxWidth: 360,
           overflow: "hidden",
@@ -83,9 +90,9 @@ export function CMEOptionsIntentSummary({ snapshot }: { snapshot: CMEOptionsResp
           whiteSpace: "nowrap",
         }}
       >
-        {evidence[0] ?? `置信度 ${confPct}/100`}
+        {localizedEvidence[0] ?? `置信度 ${confPct}/100`}
       </div>
-      {evidence.slice(1, 3).map((ev) => (
+      {localizedEvidence.slice(1, 3).map((ev) => (
         <span
           key={ev}
           className="max-w-[160px] truncate rounded-[var(--radius-sm)] border px-2 py-0.5 text-[9px] font-semibold text-[var(--down)]"
@@ -119,7 +126,7 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "overview") {
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflowY: "auto" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
         <CMEOptionsOverviewGrid snapshot={snapshot} wallScores={wallScores} />
       </div>
     );
@@ -127,12 +134,12 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "gex-gamma") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,0.8fr) minmax(0,1.4fr)", gap: 8, minHeight: 0 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflowY: "auto" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,0.8fr) minmax(0,1.4fr)", gap: 8, alignItems: "start" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
           <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={currentPrice} />
           <ChangeTable snapshot={snapshot} />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflowY: "auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
           <GammaZeroCard netGexAggregate={snapshot.gex?.netgex_aggregate as NetGexAggregate} wallScores={wallScores} />
           <GEXBreakdown snapshot={snapshot} selectedExpiry={selectedExpiry} />
           <ExposurePanel snapshot={snapshot} />
@@ -143,11 +150,11 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "wall-map") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,0.7fr) minmax(0,1.3fr)", gap: 8, minHeight: 0 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflowY: "auto" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,0.7fr) minmax(0,1.3fr)", gap: 8, alignItems: "start" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
           <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={currentPrice} />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflowY: "auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
           <OptionsWallTable wallScores={wallScores} />
         </div>
       </div>
@@ -156,10 +163,10 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "scenario") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.85fr)", gap: 8, minHeight: 0 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflowY: "auto" }}>
-          <CMEOptionsOverviewGrid snapshot={snapshot} wallScores={wallScores} />
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.85fr)", gap: 8, alignItems: "start" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
           <IVSkewTable snapshot={snapshot} />
+          <ExposurePanel snapshot={snapshot} />
         </div>
         <CMEOptionsRightColumn snapshot={snapshot} />
       </div>
@@ -167,10 +174,8 @@ export function renderCMEOptionsTabContent({
   }
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.85fr)", gap: 8, minHeight: 0 }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflowY: "auto" }}>
-        <IVSkewTable snapshot={snapshot} />
-        <ExposurePanel snapshot={snapshot} />
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.85fr)", gap: 8, alignItems: "start" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
         <SourceTracePanel sourceTrace={(snapshot.source_trace ?? []) as SourceTraceItems} />
       </div>
       <CMEOptionsRightColumn snapshot={snapshot} />

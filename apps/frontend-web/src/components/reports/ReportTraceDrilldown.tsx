@@ -15,38 +15,21 @@ function ArtifactRefList({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       {artifactRefs.map((artifact, index) => (
         <article
           key={`${artifact.artifact_id ?? artifact.path ?? artifact.file_path ?? "artifact"}-${index}`}
-          className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card)] p-3"
+          className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card)] px-2.5 py-2"
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-[11px] font-semibold text-[var(--fg-2)]">{artifact.artifact_type ?? "unknown"}</div>
+            <div className="text-[11px] font-semibold text-[var(--fg-2)]">{artifact.artifact_type ?? "未命名产物"}</div>
             {artifact.is_primary ? (
               <span className="rounded-[var(--radius-md)] border border-[rgba(6,182,212,0.2)] bg-[rgba(6,182,212,0.08)] px-2 py-0.5 text-[10px] text-[var(--brand)]">
-                primary
+                主产物
               </span>
             ) : null}
           </div>
-          <div className="mt-2 grid gap-1.5 text-[10px] text-[var(--fg-5)]">
-            <div className="flex items-start justify-between gap-3">
-              <span>artifact_id</span>
-              <span className="break-all text-right font-mono text-[var(--fg-4)]">{artifact.artifact_id ?? "-"}</span>
-            </div>
-            <div className="flex items-start justify-between gap-3">
-              <span>path</span>
-              <span className="break-all text-right font-mono text-[var(--fg-4)]">{artifact.path ?? artifact.file_path ?? "-"}</span>
-            </div>
-            <div className="flex items-start justify-between gap-3">
-              <span>content_type</span>
-              <span className="break-all text-right font-mono text-[var(--fg-4)]">{artifact.content_type ?? "-"}</span>
-            </div>
-            <div className="flex items-start justify-between gap-3">
-              <span>generated_at</span>
-              <span className="break-all text-right font-mono text-[var(--fg-4)]">{artifact.asOf ?? "-"}</span>
-            </div>
-          </div>
+          {artifact.asOf ? <div className="mt-1 text-[10px] text-[var(--fg-5)]">{artifact.asOf}</div> : null}
         </article>
       ))}
     </div>
@@ -114,19 +97,38 @@ export function ReportTraceDrilldown({
   payloadTitle?: string;
   defaultOpen?: boolean;
 }) {
+  const hasPayload = Boolean(payload && Object.keys(payload).length > 0);
+
   return (
-    <div className="mt-3 space-y-2">
-      <DrilldownSection title={sourceTitle} countLabel={`${sourceRefs.length} 条`} defaultOpen={defaultOpen}>
-        <SourceTrace compact sourceRefs={sourceRefs} emptyText="当前条目没有 source_refs。" />
+    <div className="mt-3">
+      <DrilldownSection
+        title="来源与产物"
+        countLabel={`来源 ${sourceRefs.length} / 产物 ${artifactRefs.length}${showPayload && hasPayload ? " / 载荷" : ""}`}
+        defaultOpen={defaultOpen}
+      >
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <div className="text-[11px] font-semibold text-[var(--fg-3)]">{sourceTitle}</div>
+            <SourceTrace compact sourceRefs={sourceRefs} emptyText="当前条目没有来源引用。" />
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="text-[11px] font-semibold text-[var(--fg-3)]">{artifactTitle}</div>
+            <ArtifactRefList artifactRefs={artifactRefs} emptyText="当前条目没有关联产物。" />
+          </div>
+
+          {showPayload && hasPayload ? (
+            <details className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-panel)]">
+              <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold text-[var(--fg-3)]">
+                {payloadTitle}
+              </summary>
+              <div className="border-t border-[var(--border-faint)] px-3 py-3">
+                <JsonPayloadPreview payload={payload} emptyText="当前条目没有可展示的原始载荷。" />
+              </div>
+            </details>
+          ) : null}
+        </div>
       </DrilldownSection>
-      <DrilldownSection title={artifactTitle} countLabel={`${artifactRefs.length} 条`}>
-        <ArtifactRefList artifactRefs={artifactRefs} emptyText="当前条目没有 artifact_refs。" />
-      </DrilldownSection>
-      {showPayload ? (
-        <DrilldownSection title={payloadTitle}>
-          <JsonPayloadPreview payload={payload} emptyText="当前条目没有可展示的 payload。" />
-        </DrilldownSection>
-      ) : null}
     </div>
   );
 }

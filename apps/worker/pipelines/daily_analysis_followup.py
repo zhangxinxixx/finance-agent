@@ -12,6 +12,7 @@ from typing import Any, Callable
 from sqlalchemy.orm import Session, selectinload
 
 from apps.runtime.artifact_registry import register_step_artifacts
+from apps.runtime.state_machine import transition_task_run, transition_task_step
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 
 TASK_TYPE = "daily_analysis_followup"
@@ -64,24 +65,22 @@ def run_daily_analysis_followup_task(
 
     initial_step = _find_initial_step(run)
     if initial_step is None:
-        run.status = TaskStatus.failed
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="missing_initial_step")
         run.current_stage = INITIAL_STAGE
         run.error_summary = "daily_analysis_followup task has no queued input step"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
 
-    run.status = TaskStatus.running
+    transition_task_run(db, run, TaskStatus.running, source=TASK_TYPE, reason="expand_followup_plan")
     run.current_stage = INITIAL_STAGE
     run.progress = 0.1
     db.commit()
 
     payload = _parse_json(initial_step.input_json)
     if not isinstance(payload, dict):
-        _fail_step(initial_step, "invalid_input_json", "initial follow-up step input_json is not an object")
-        run.status = TaskStatus.failed
+        _fail_step(db, initial_step, "invalid_input_json", "initial follow-up step input_json is not an object")
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="invalid_initial_input")
         run.error_summary = "invalid follow-up input_json"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
 
@@ -94,7 +93,7 @@ def run_daily_analysis_followup_task(
     trade_date = str(payload.get("date") or run.trade_date or "")
     plan = _build_execution_plan(payload=payload, source_url=source_url, storage_root=storage_root)
 
-    _complete_initial_step(initial_step, plan=plan)
+    _complete_initial_step(db, initial_step, plan=plan)
     detail_step = _ensure_step(
         db,
         run=run,
@@ -153,16 +152,16 @@ def run_daily_analysis_followup_task(
     )
 
     if detail_step.status == StepStatus.pending:
-        run.status = TaskStatus.pending
+        transition_task_run(db, run, TaskStatus.pending, source=TASK_TYPE, reason="detail_fetch_queued")
         run.current_stage = DETAIL_FETCH_STEP
         run.progress = 0.25
         run.error_summary = None
+        run.ended_at = None
     else:
-        run.status = TaskStatus.blocked
+        transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="detail_fetch_blocked")
         run.current_stage = DETAIL_FETCH_STEP
         run.progress = 0.25
         run.error_summary = "detail_fetch blocked: source_url is missing"
-        run.ended_at = _now()
 
     db.commit()
     return run.status
@@ -209,46 +208,46 @@ def _run_detail_fetch_stage(
 ) -> TaskStatus:
     detail_step = _find_step(run, DETAIL_FETCH_STEP)
     if detail_step is None:
-        run.status = TaskStatus.failed
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="detail_fetch_step_missing")
         run.error_summary = "detail_fetch step is missing"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
     if detail_step.status == StepStatus.success:
         return run.status
     if detail_step.status == StepStatus.blocked:
-        run.status = TaskStatus.blocked
+        transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="detail_fetch_already_blocked")
         run.error_summary = detail_step.blocked_reason or "detail_fetch is blocked"
-        run.ended_at = run.ended_at or _now()
         db.commit()
         return TaskStatus.blocked
 
     input_payload = _parse_json(detail_step.input_json)
     if not isinstance(input_payload, dict):
-        _fail_step(detail_step, "invalid_input_json", "detail_fetch input_json is not an object")
-        run.status = TaskStatus.failed
+        _fail_step(db, detail_step, "invalid_input_json", "detail_fetch input_json is not an object")
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="invalid_detail_fetch_input")
         run.error_summary = "invalid detail_fetch input_json"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
 
     source_url = str(input_payload.get("source_url") or "").strip()
     if not source_url:
-        detail_step.status = StepStatus.blocked
-        detail_step.blocked_reason = "detail_fetch source_url is missing"
-        detail_step.error_type = "data_unavailable"
-        detail_step.retryable = False
-        detail_step.finished_at = _now()
-        run.status = TaskStatus.blocked
+        transition_task_step(
+            db,
+            detail_step,
+            StepStatus.blocked,
+            source=TASK_TYPE,
+            reason="detail_fetch_source_url_missing",
+            blocked_reason="detail_fetch source_url is missing",
+            error_type="data_unavailable",
+            retryable=False,
+        )
+        transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="detail_fetch_source_url_missing")
         run.error_summary = "detail_fetch blocked: source_url is missing"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.blocked
 
-    run.status = TaskStatus.running
+    transition_task_run(db, run, TaskStatus.running, source=TASK_TYPE, reason="detail_fetch_started")
     run.current_stage = DETAIL_FETCH_STEP
-    detail_step.status = StepStatus.running
-    detail_step.started_at = detail_step.started_at or _now()
+    transition_task_step(db, detail_step, StepStatus.running, source=TASK_TYPE, reason="detail_fetch_started")
     db.commit()
 
     fetcher = detail_fetcher or _default_detail_fetcher()
@@ -269,47 +268,65 @@ def _run_detail_fetch_stage(
     analysis_step = _find_step(run, DAILY_ANALYSIS_STEP)
 
     if status != "fetched":
-        detail_step.status = StepStatus.failed
+        transition_task_step(
+            db,
+            detail_step,
+            StepStatus.failed,
+            source=TASK_TYPE,
+            reason="detail_fetch_failed",
+        )
         detail_step.error = str(result_payload.get("error_reason") or "detail fetch failed")
         detail_step.error_type = "network_timeout" if access_status == "unavailable" else "data_unavailable"
         detail_step.retryable = True
-        run.status = TaskStatus.failed
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="detail_fetch_failed")
         run.error_summary = "detail_fetch failed"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
 
-    detail_step.status = StepStatus.success
+    transition_task_step(db, detail_step, StepStatus.success, source=TASK_TYPE, reason="detail_fetch_succeeded")
     detail_step.error = None
     detail_step.error_type = None
 
     if access_status == "readable":
-        _mark_step_skipped(vip_step, reason="detail page is readable; browser fallback not required")
-        _mark_step_pending(analysis_step)
-        run.status = TaskStatus.pending
+        _mark_step_skipped(db, vip_step, reason="detail page is readable; browser fallback not required")
+        _mark_step_pending(db, analysis_step)
+        transition_task_run(db, run, TaskStatus.pending, source=TASK_TYPE, reason="route_to_daily_analysis")
         run.current_stage = DAILY_ANALYSIS_STEP
         run.progress = 0.6
         run.error_summary = None
+        run.ended_at = None
     elif access_status in {"vip_locked", "javascript_required"}:
-        _mark_step_pending(vip_step)
+        _mark_step_pending(db, vip_step)
         if analysis_step is not None:
-            analysis_step.status = StepStatus.blocked
-            analysis_step.blocked_reason = "waiting for VIP/browser fallback artifact"
-            analysis_step.retryable = False
-        run.status = TaskStatus.pending
+            transition_task_step(
+                db,
+                analysis_step,
+                StepStatus.blocked,
+                source=TASK_TYPE,
+                reason="waiting_for_vip_browser_fallback",
+                blocked_reason="waiting for VIP/browser fallback artifact",
+                retryable=False,
+            )
+        transition_task_run(db, run, TaskStatus.pending, source=TASK_TYPE, reason="route_to_vip_browser_fallback")
         run.current_stage = VIP_BROWSER_FALLBACK_STEP
         run.progress = 0.5
         run.error_summary = None
+        run.ended_at = None
     else:
         if analysis_step is not None:
-            analysis_step.status = StepStatus.blocked
-            analysis_step.blocked_reason = f"detail page access_status={access_status or 'unknown'}"
-            analysis_step.retryable = False
-        run.status = TaskStatus.blocked
+            transition_task_step(
+                db,
+                analysis_step,
+                StepStatus.blocked,
+                source=TASK_TYPE,
+                reason="detail_fetch_unusable_access_status",
+                blocked_reason=f"detail page access_status={access_status or 'unknown'}",
+                retryable=False,
+            )
+        transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="detail_fetch_unusable_access_status")
         run.current_stage = DAILY_ANALYSIS_STEP
         run.progress = 0.5
         run.error_summary = f"detail_fetch produced unusable access_status={access_status or 'unknown'}"
-        run.ended_at = _now()
 
     db.commit()
     return run.status
@@ -324,9 +341,8 @@ def _run_vip_browser_fallback_stage(
 ) -> TaskStatus:
     fallback_step = _find_step(run, VIP_BROWSER_FALLBACK_STEP)
     if fallback_step is None:
-        run.status = TaskStatus.failed
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="vip_fallback_step_missing")
         run.error_summary = "vip_browser_fallback step is missing"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
     if fallback_step.status == StepStatus.success:
@@ -334,23 +350,21 @@ def _run_vip_browser_fallback_stage(
     if fallback_step.status in {StepStatus.blocked, StepStatus.failed} and _can_use_preview_after_vip_fallback(
         fallback_step
     ):
-        _mark_step_pending(_find_step(run, DAILY_ANALYSIS_STEP))
-        _route_to_partial_daily_analysis_after_vip_unavailable(run)
+        _mark_step_pending(db, _find_step(run, DAILY_ANALYSIS_STEP))
+        _route_to_partial_daily_analysis_after_vip_unavailable(db, run)
         db.commit()
         return TaskStatus.pending
     if fallback_step.status == StepStatus.blocked:
-        run.status = TaskStatus.blocked
+        transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="vip_fallback_already_blocked")
         run.error_summary = fallback_step.blocked_reason or "vip_browser_fallback is blocked"
-        run.ended_at = run.ended_at or _now()
         db.commit()
         return TaskStatus.blocked
 
     input_payload = _parse_json(fallback_step.input_json)
     if not isinstance(input_payload, dict):
-        _fail_step(fallback_step, "invalid_input_json", "vip_browser_fallback input_json is not an object")
-        run.status = TaskStatus.failed
+        _fail_step(db, fallback_step, "invalid_input_json", "vip_browser_fallback input_json is not an object")
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="invalid_vip_fallback_input")
         run.error_summary = "invalid vip_browser_fallback input_json"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
 
@@ -358,33 +372,33 @@ def _run_vip_browser_fallback_stage(
     article_id = _extract_jin10_article_id(source_url)
     if not article_id:
         _block_vip_fallback(
+            db,
             fallback_step,
             error_type="fetch_failed",
             message="vip_browser_fallback cannot determine Jin10 article_id from source_url",
         )
-        run.status = TaskStatus.blocked
+        transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="vip_fallback_article_id_missing")
         run.current_stage = VIP_BROWSER_FALLBACK_STEP
         run.error_summary = "vip_browser_fallback blocked: article_id is missing"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.blocked
 
     profile_dir = _jin10_browser_profile_path()
     if not profile_dir.exists():
         _block_vip_fallback(
+            db,
             fallback_step,
             error_type="profile_missing",
             message=f"browser profile is missing: {profile_dir}",
         )
-        _mark_step_pending(_find_step(run, DAILY_ANALYSIS_STEP))
-        _route_to_partial_daily_analysis_after_vip_unavailable(run)
+        _mark_step_pending(db, _find_step(run, DAILY_ANALYSIS_STEP))
+        _route_to_partial_daily_analysis_after_vip_unavailable(db, run)
         db.commit()
         return TaskStatus.pending
 
-    run.status = TaskStatus.running
+    transition_task_run(db, run, TaskStatus.running, source=TASK_TYPE, reason="vip_fallback_started")
     run.current_stage = VIP_BROWSER_FALLBACK_STEP
-    fallback_step.status = StepStatus.running
-    fallback_step.started_at = fallback_step.started_at or _now()
+    transition_task_step(db, fallback_step, StepStatus.running, source=TASK_TYPE, reason="vip_fallback_started")
     db.commit()
 
     retrieved_date = str(input_payload.get("date") or run.trade_date or _now().date().isoformat())
@@ -399,16 +413,15 @@ def _run_vip_browser_fallback_stage(
         )
     except Exception as exc:
         error_type = _map_vip_fetch_error(exc)
-        _fail_step(fallback_step, error_type, f"{type(exc).__name__}: {exc}")
+        _fail_step(db, fallback_step, error_type, f"{type(exc).__name__}: {exc}")
         if _can_use_preview_after_vip_fallback(fallback_step):
-            _mark_step_pending(_find_step(run, DAILY_ANALYSIS_STEP))
-            _route_to_partial_daily_analysis_after_vip_unavailable(run)
+            _mark_step_pending(db, _find_step(run, DAILY_ANALYSIS_STEP))
+            _route_to_partial_daily_analysis_after_vip_unavailable(db, run)
             db.commit()
             return TaskStatus.pending
-        run.status = TaskStatus.failed
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="vip_fallback_failed")
         run.current_stage = VIP_BROWSER_FALLBACK_STEP
         run.error_summary = f"vip_browser_fallback failed: {_error_summary_label(error_type)}"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
 
@@ -434,30 +447,41 @@ def _run_vip_browser_fallback_stage(
     usable, error_type, blocked_reason = _vip_browser_usability(result_payload)
     analysis_step = _find_step(run, DAILY_ANALYSIS_STEP)
     if usable:
-        fallback_step.status = StepStatus.success
+        transition_task_step(db, fallback_step, StepStatus.success, source=TASK_TYPE, reason="vip_fallback_succeeded")
         fallback_step.error = None
         fallback_step.error_type = None
         fallback_step.blocked_reason = None
-        _mark_step_pending(analysis_step)
-        run.status = TaskStatus.pending
+        _mark_step_pending(db, analysis_step)
+        transition_task_run(db, run, TaskStatus.pending, source=TASK_TYPE, reason="vip_fallback_route_to_analysis")
         run.current_stage = DAILY_ANALYSIS_STEP
         run.progress = 0.7
         run.error_summary = None
         run.ended_at = None
     else:
-        _block_vip_fallback(fallback_step, error_type=error_type, message=blocked_reason)
+        _block_vip_fallback(db, fallback_step, error_type=error_type, message=blocked_reason)
         if _can_use_preview_after_vip_fallback(fallback_step):
-            _mark_step_pending(analysis_step)
-            _route_to_partial_daily_analysis_after_vip_unavailable(run)
+            _mark_step_pending(db, analysis_step)
+            _route_to_partial_daily_analysis_after_vip_unavailable(db, run)
         else:
             if analysis_step is not None:
-                analysis_step.status = StepStatus.blocked
-                analysis_step.blocked_reason = "waiting for usable VIP/browser fallback artifact"
-                analysis_step.retryable = False
-            run.status = TaskStatus.blocked if error_type in {"login_required", "profile_missing"} else TaskStatus.failed
+                transition_task_step(
+                    db,
+                    analysis_step,
+                    StepStatus.blocked,
+                    source=TASK_TYPE,
+                    reason="waiting_for_usable_vip_fallback_artifact",
+                    blocked_reason="waiting for usable VIP/browser fallback artifact",
+                    retryable=False,
+                )
+            transition_task_run(
+                db,
+                run,
+                TaskStatus.blocked if error_type in {"login_required", "profile_missing"} else TaskStatus.failed,
+                source=TASK_TYPE,
+                reason="vip_fallback_unusable_artifact",
+            )
             run.current_stage = VIP_BROWSER_FALLBACK_STEP
             run.error_summary = f"vip_browser_fallback blocked: {blocked_reason}"
-            run.ended_at = _now()
 
     db.commit()
     return run.status
@@ -467,8 +491,8 @@ def _can_use_preview_after_vip_fallback(fallback_step: TaskStep) -> bool:
     return str(fallback_step.error_type or "") in VIP_FALLBACK_PARTIAL_SNAPSHOT_ERRORS
 
 
-def _route_to_partial_daily_analysis_after_vip_unavailable(run: TaskRun) -> None:
-    run.status = TaskStatus.pending
+def _route_to_partial_daily_analysis_after_vip_unavailable(db: Session, run: TaskRun) -> None:
+    transition_task_run(db, run, TaskStatus.pending, source=TASK_TYPE, reason="vip_fallback_partial_snapshot")
     run.current_stage = DAILY_ANALYSIS_STEP
     run.progress = max(float(run.progress or 0.0), 0.7)
     run.error_summary = "vip_browser_fallback unavailable; will generate partial snapshot from preview"
@@ -483,39 +507,34 @@ def _run_daily_analysis_stage(
 ) -> TaskStatus:
     analysis_step = _find_step(run, DAILY_ANALYSIS_STEP)
     if analysis_step is None:
-        run.status = TaskStatus.failed
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="daily_analysis_step_missing")
         run.error_summary = "daily_analysis step is missing"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
     if analysis_step.status == StepStatus.success:
-        run.status = TaskStatus.success
+        transition_task_run(db, run, TaskStatus.success, source=TASK_TYPE, reason="daily_analysis_already_success")
         run.current_stage = DAILY_ANALYSIS_STEP
         run.progress = 1.0
-        run.ended_at = run.ended_at or _now()
         db.commit()
         return TaskStatus.success
     if analysis_step.status not in {StepStatus.pending, StepStatus.running}:
-        run.status = TaskStatus.blocked
+        transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="daily_analysis_not_runnable")
         run.error_summary = analysis_step.blocked_reason or "daily_analysis is not pending"
-        run.ended_at = run.ended_at or _now()
         db.commit()
         return TaskStatus.blocked
 
     initial_step = _find_initial_step(run)
     initial_payload = _parse_json(initial_step.input_json if initial_step is not None else None)
     if not isinstance(initial_payload, dict):
-        _fail_step(analysis_step, "invalid_input_json", "initial follow-up input_json is not an object")
-        run.status = TaskStatus.failed
+        _fail_step(db, analysis_step, "invalid_input_json", "initial follow-up input_json is not an object")
+        transition_task_run(db, run, TaskStatus.failed, source=TASK_TYPE, reason="invalid_daily_analysis_input")
         run.error_summary = "invalid follow-up input_json"
-        run.ended_at = _now()
         db.commit()
         return TaskStatus.failed
 
-    run.status = TaskStatus.running
+    transition_task_run(db, run, TaskStatus.running, source=TASK_TYPE, reason="daily_analysis_started")
     run.current_stage = DAILY_ANALYSIS_STEP
-    analysis_step.status = StepStatus.running
-    analysis_step.started_at = analysis_step.started_at or _now()
+    transition_task_step(db, analysis_step, StepStatus.running, source=TASK_TYPE, reason="daily_analysis_started")
     db.commit()
 
     detail_step = _find_step(run, DETAIL_FETCH_STEP)
@@ -535,7 +554,7 @@ def _run_daily_analysis_stage(
     )
     artifact_refs = [_artifact_ref("daily_brief_input_snapshot", "feature_json", snapshot_path)]
 
-    analysis_step.status = StepStatus.success
+    transition_task_step(db, analysis_step, StepStatus.success, source=TASK_TYPE, reason="daily_analysis_succeeded")
     analysis_step.output_json = _dump_json(
         {
             "status": "success",
@@ -569,11 +588,10 @@ def _run_daily_analysis_stage(
     analysis_step.error_type = None
     analysis_step.blocked_reason = None
 
-    run.status = TaskStatus.success
+    transition_task_run(db, run, TaskStatus.success, source=TASK_TYPE, reason="daily_analysis_completed")
     run.current_stage = DAILY_ANALYSIS_STEP
     run.progress = 1.0
     run.error_summary = None
-    run.ended_at = _now()
     db.commit()
     return TaskStatus.success
 
@@ -862,9 +880,8 @@ def _find_step(run: TaskRun, name: str) -> TaskStep | None:
     return next((step for step in run.steps if step.name == name), None)
 
 
-def _complete_initial_step(step: TaskStep, *, plan: dict[str, Any]) -> None:
-    if step.status != StepStatus.success:
-        step.status = StepStatus.success
+def _complete_initial_step(db: Session, step: TaskStep, *, plan: dict[str, Any]) -> None:
+    transition_task_step(db, step, StepStatus.success, source=TASK_TYPE, reason="initial_step_completed")
     step.output_json = _dump_json(plan)
     step.finished_at = step.finished_at or _now()
     step.retryable = False
@@ -1278,10 +1295,10 @@ def _merge_source_refs(raw_refs: str | None, extra_ref: dict[str, Any]) -> list[
     return normalized
 
 
-def _mark_step_pending(step: TaskStep | None) -> None:
+def _mark_step_pending(db: Session, step: TaskStep | None) -> None:
     if step is None:
         return
-    step.status = StepStatus.pending
+    transition_task_step(db, step, StepStatus.pending, source=TASK_TYPE, reason="step_requeued", retryable=True)
     step.blocked_reason = None
     step.error = None
     step.error_type = None
@@ -1289,35 +1306,40 @@ def _mark_step_pending(step: TaskStep | None) -> None:
     step.finished_at = None
 
 
-def _mark_step_skipped(step: TaskStep | None, *, reason: str) -> None:
+def _mark_step_skipped(db: Session, step: TaskStep | None, *, reason: str) -> None:
     if step is None:
         return
-    step.status = StepStatus.skipped
+    transition_task_step(db, step, StepStatus.skipped, source=TASK_TYPE, reason="step_skipped")
     step.output_json = _dump_json({"status": "skipped", "reason": reason})
     step.blocked_reason = None
     step.error = None
     step.error_type = None
     step.retryable = False
-    step.finished_at = _now()
 
 
-def _fail_step(step: TaskStep, error_type: str, message: str) -> None:
-    step.status = StepStatus.failed
+def _fail_step(db: Session, step: TaskStep, error_type: str, message: str) -> None:
+    transition_task_step(db, step, StepStatus.failed, source=TASK_TYPE, reason="step_failed")
     step.error_type = error_type
     step.error = message
     step.error_json = _dump_json({"error_type": error_type, "message": message})
-    step.finished_at = _now()
     step.retryable = False
 
 
-def _block_vip_fallback(step: TaskStep, *, error_type: str, message: str) -> None:
-    step.status = StepStatus.blocked
+def _block_vip_fallback(db: Session, step: TaskStep, *, error_type: str, message: str) -> None:
+    transition_task_step(
+        db,
+        step,
+        StepStatus.blocked,
+        source=TASK_TYPE,
+        reason="vip_fallback_blocked",
+        blocked_reason=message,
+        error_type=error_type,
+        retryable=False,
+    )
     step.error_type = error_type
     step.error = message
     step.error_json = _dump_json({"error_type": error_type, "message": message})
     step.blocked_reason = message
-    step.finished_at = _now()
-    step.retryable = False
 
 
 def _parse_json(raw: str | None) -> Any:

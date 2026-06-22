@@ -155,6 +155,7 @@ def test_refresh_jin10_flash_cache_handles_data_items_shape(monkeypatch, tmp_pat
                 "signal_tags": ["risk_sentiment"] if idx == 0 else [],
                 "filter_reason": "LLM semantic decision",
                 "confidence": 0.91 if idx == 0 else 0.74,
+                "summary_zh": "黄金与美元短线波动加大。" if idx == 0 else "",
             }
             for idx in range(50)
         ]
@@ -173,6 +174,7 @@ def test_refresh_jin10_flash_cache_handles_data_items_shape(monkeypatch, tmp_pat
     assert payload["items"][0]["classification_provider"] == "mimo"
     assert payload["items"][0]["classification_model"] == "mimo-small-test"
     assert payload["items"][0]["classification_confidence"] == 0.91
+    assert payload["items"][0]["summary_zh"] == "黄金与美元短线波动加大。"
     assert payload["items"][-1]["id"] == "flash-49"
     assert payload["classification_version"] == "jin10-flash-semantic-llm-v2"
     assert payload["classification_provider"] == "mimo"
@@ -242,6 +244,7 @@ def test_classify_jin10_flash_items_with_llm_uses_semantic_labels(monkeypatch):
                             "signal_tags": ["shipping_chokepoint", "oil"],
                             "filter_reason": "航运咽喉风险可能传导至油价和避险情绪",
                             "confidence": 0.86,
+                            "summary_zh": "航运成本与原油风险溢价可能继续上行。",
                         },
                         {
                             "index": 1,
@@ -271,6 +274,7 @@ def test_classify_jin10_flash_items_with_llm_uses_semantic_labels(monkeypatch):
     assert result[0]["signal_tags"] == ["shipping_chokepoint", "oil"]
     assert result[0]["classification_provider"] == "mimo"
     assert result[0]["classification_model"] == "mimo-small-test"
+    assert result[0]["summary_zh"] == "航运成本与原油风险溢价可能继续上行。"
     assert result[1]["is_key_event"] is False
     assert result[1]["filter_reason"] == "伤亡统计缺少新增市场传导"
 

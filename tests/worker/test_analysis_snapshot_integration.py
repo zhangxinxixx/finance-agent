@@ -4,10 +4,18 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
+
+
+@pytest.fixture(autouse=True)
+def _mock_source_status_index():
+    """Keep analysis snapshot integration tests isolated from source gating by default."""
+    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+        yield
 
 
 def _make_db_session(tmp_path: Path):

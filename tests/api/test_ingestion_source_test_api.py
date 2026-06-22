@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import uuid
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -12,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from apps.api import main
 from apps.api.schemas.data_source import DataSourceTestRequest
+from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.task import ensure_task_tables
 
 
@@ -22,6 +24,7 @@ def _make_session() -> Session:
         poolclass=StaticPool,
     )
     ensure_task_tables(engine)
+    ensure_execution_tables(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
@@ -82,6 +85,23 @@ def test_ingestion_source_test_runs_jin10_flash_probe_and_archives_preview(monke
     assert run["steps"][0]["task_kind"] == "source_probe"
     assert run["steps"][0]["source_refs"][0]["source_id"] == "jin10_mcp_flash"
     assert run["steps"][0]["artifact_refs"][0]["file_path"] == response.artifacts["raw_path"]
+
+    events = (
+        session.query(ExecutionEvent)
+        .filter(ExecutionEvent.run_id == uuid.UUID(response.run_id))
+        .order_by(ExecutionEvent.created_at.asc(), ExecutionEvent.event_type.asc())
+        .all()
+    )
+    event_types = [event.event_type for event in events]
+    assert "RUN_STARTED" in event_types
+    assert "RUN_FINISHED" in event_types
+    assert "TASK_STARTED" in event_types
+    assert "TASK_FINISHED" in event_types
+    artifacts = session.query(RunArtifact).filter(RunArtifact.run_id == uuid.UUID(response.run_id)).all()
+    assert {artifact.file_path for artifact in artifacts} >= {
+        response.artifacts["raw_path"],
+        response.artifacts["parsed_path"],
+    }
 
 
 @dataclass

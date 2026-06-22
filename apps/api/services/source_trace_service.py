@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -8,10 +9,13 @@ from sqlalchemy.orm import Session
 
 from apps.api.schemas.common import ArtifactType, DataStatus
 from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef, SourceRef, SourceTraceResponse
+from apps.api.services._lineage_warnings import merge_warning_items
+from apps.api.services._report_lineage import resolve_report_lineage_context
 from apps.api.services._storage import _PROJECT_ROOT, _iso
-from apps.api.services._trace_refs import dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
+from apps.api.services._trace_refs import coerce_artifact_type, dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
 from apps.api.services.artifact_service import get_artifact_detail_response
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
+from database.models.report import ReportArtifact, ReportItem
 
 
 def get_source_trace_by_snapshot_id(db: Session, snapshot_id: str) -> SourceTraceResponse | None:
@@ -23,6 +27,24 @@ def get_source_trace_by_snapshot_id(db: Session, snapshot_id: str) -> SourceTrac
 
 
 def get_source_trace_by_report_id(db: Session, report_id: str) -> SourceTraceResponse | None:
+    report_item = db.get(ReportItem, report_id)
+    if report_item is not None:
+        lineage = resolve_report_lineage_context(
+            db,
+            report_id=report_item.report_id,
+            report_run_id=report_item.run_id,
+            report_snapshot_id=report_item.snapshot_id,
+        )
+        report_artifacts = _list_report_artifacts(db, report_id)
+        return _build_source_trace_response(
+            db,
+            snapshot=lineage.snapshot,
+            final_result=lineage.final_result,
+            report_item=report_item,
+            report_artifacts=report_artifacts,
+            report_lineage_warnings=lineage.warnings,
+        )
+
     snapshot = db.scalar(select(AnalysisSnapshot).where(AnalysisSnapshot.snapshot_id == report_id))
     if snapshot is not None:
         final_result = _find_final_for_snapshot(db, snapshot)
@@ -49,26 +71,86 @@ def get_source_trace_by_strategy_card_id(db: Session, strategy_card_id: str) -> 
 
 
 def get_source_trace_by_artifact_id(db: Session, artifact_id: str) -> SourceTraceResponse | None:
-    detail = get_artifact_detail_response(db, artifact_id)
-    if detail is None:
+    try:
+        uuid.UUID(artifact_id)
+    except ValueError:
+        detail = None
+    else:
+        detail = get_artifact_detail_response(db, artifact_id)
+    if detail is not None:
+        detail_input_snapshot_ids = _normalize_snapshot_ids(detail.metadata.get("input_snapshot_ids"))
+        trace = get_source_trace_by_snapshot_id(db, detail.snapshot_id) if detail.snapshot_id else None
+        if trace is None:
+            input_snapshots = _merge_input_snapshot_refs(
+                db,
+                current=[],
+                extra_snapshot_ids=detail_input_snapshot_ids,
+                run_id=detail.run_id,
+            )
+            return SourceTraceResponse(
+                run_id=detail.run_id,
+                snapshot_id=detail.snapshot_id,
+                data_status=DataStatus.partial,
+                source_refs=detail.source_refs,
+                artifact_refs=detail.artifact_refs,
+                warnings=detail.warnings,
+                snapshot=_build_detail_snapshot_ref(detail, input_snapshot_ids=detail_input_snapshot_ids),
+                input_snapshots=input_snapshots,
+                related_artifacts=detail.artifact_refs,
+            )
+
+        merged_input_snapshots = _merge_input_snapshot_refs(
+            db,
+            current=trace.input_snapshots,
+            extra_snapshot_ids=detail_input_snapshot_ids,
+            run_id=trace.run_id or detail.run_id,
+        )
+        snapshot_ref = trace.snapshot
+        if snapshot_ref is not None and detail_input_snapshot_ids:
+            snapshot_ref = snapshot_ref.model_copy(
+                update={
+                    "input_snapshot_ids": list(
+                        dict.fromkeys([*snapshot_ref.input_snapshot_ids, *detail_input_snapshot_ids])
+                    )
+                }
+            )
+        return trace.model_copy(
+            update={
+                "source_refs": dedupe_source_refs([*trace.source_refs, *detail.source_refs]),
+                "artifact_refs": dedupe_artifact_refs([*trace.artifact_refs, *detail.artifact_refs]),
+                "warnings": merge_warning_items(trace.warnings, detail.warnings),
+                "snapshot": snapshot_ref,
+                "input_snapshots": merged_input_snapshots,
+                "related_artifacts": dedupe_artifact_refs([*trace.related_artifacts, *detail.artifact_refs]),
+            }
+        )
+
+    report_artifact = db.get(ReportArtifact, artifact_id)
+    if report_artifact is None:
         return None
 
-    trace = get_source_trace_by_snapshot_id(db, detail.snapshot_id) if detail.snapshot_id else None
+    report_item = db.get(ReportItem, report_artifact.report_id)
+    trace = get_source_trace_by_report_id(db, report_artifact.report_id) if report_item is not None else None
+    artifact_ref = _build_report_artifacts([report_artifact])[0]
+    source_refs = parse_source_refs(report_item.source_refs) if report_item is not None else []
+    warnings = trace.warnings if trace is not None else []
+
     if trace is None:
         return SourceTraceResponse(
-            run_id=detail.run_id,
-            snapshot_id=detail.snapshot_id,
-            data_status=DataStatus.partial,
-            source_refs=detail.source_refs,
-            artifact_refs=detail.artifact_refs,
-            related_artifacts=detail.artifact_refs,
+            run_id=report_item.run_id if report_item is not None else None,
+            snapshot_id=report_item.snapshot_id if report_item is not None else None,
+            data_status=_map_data_status(report_item.data_status) if report_item is not None and _map_data_status(report_item.data_status) is not None else DataStatus.partial,
+            source_refs=source_refs,
+            artifact_refs=[artifact_ref],
+            related_artifacts=[artifact_ref],
+            warnings=warnings,
         )
 
     return trace.model_copy(
         update={
-            "source_refs": dedupe_source_refs([*trace.source_refs, *detail.source_refs]),
-            "artifact_refs": dedupe_artifact_refs([*trace.artifact_refs, *detail.artifact_refs]),
-            "related_artifacts": dedupe_artifact_refs([*trace.related_artifacts, *detail.artifact_refs]),
+            "source_refs": dedupe_source_refs([*trace.source_refs, *source_refs]),
+            "artifact_refs": dedupe_artifact_refs([*trace.artifact_refs, artifact_ref]),
+            "related_artifacts": dedupe_artifact_refs([*trace.related_artifacts, artifact_ref]),
         }
     )
 
@@ -189,11 +271,34 @@ def _build_source_trace_response(
     *,
     snapshot: AnalysisSnapshot | None,
     final_result: FinalAnalysisResult | None,
+    report_item: ReportItem | None = None,
+    report_artifacts: list[ReportArtifact] | None = None,
+    report_lineage_warnings: list | None = None,
 ) -> SourceTraceResponse:
-    snapshot_id = snapshot.snapshot_id if snapshot is not None else final_result.snapshot_id if final_result else None
-    run_id = snapshot.run_id if snapshot is not None else final_result.run_id if final_result else None
+    snapshot_id = (
+        snapshot.snapshot_id
+        if snapshot is not None
+        else final_result.snapshot_id
+        if final_result
+        else report_item.snapshot_id
+        if report_item
+        else None
+    )
+    run_id = (
+        snapshot.run_id
+        if snapshot is not None
+        else final_result.run_id
+        if final_result
+        else report_item.run_id
+        if report_item
+        else None
+    )
     input_snapshot_ids = _normalize_snapshot_ids(
-        snapshot.input_snapshot_ids if snapshot is not None else final_result.input_snapshot_ids if final_result else {}
+        snapshot.input_snapshot_ids
+        if snapshot is not None
+        else final_result.input_snapshot_ids
+        if final_result
+        else {}
     )
     input_snapshots = [_build_input_snapshot_ref(db, item_id, run_id=run_id) for item_id in input_snapshot_ids]
 
@@ -203,6 +308,7 @@ def _build_source_trace_response(
         [
             *parse_source_refs(snapshot.source_refs if snapshot is not None else []),
             *parse_source_refs(final_result.source_refs if final_result is not None else []),
+            *parse_source_refs(report_item.source_refs if report_item is not None else []),
             *[
                 source
                 for agent_output in agent_outputs
@@ -213,14 +319,18 @@ def _build_source_trace_response(
 
     snapshot_artifacts = _build_snapshot_artifacts(snapshot)
     related_artifacts = _build_final_result_artifacts(final_result)
-    artifact_refs = dedupe_artifact_refs([*snapshot_artifacts, *related_artifacts])
+    report_artifact_refs = _build_report_artifacts(report_artifacts or [])
+    artifact_refs = dedupe_artifact_refs([*snapshot_artifacts, *related_artifacts, *report_artifact_refs])
+    related_artifacts = dedupe_artifact_refs([*related_artifacts, *report_artifact_refs])
 
     data_status = _derive_data_status(
         snapshot=snapshot,
         final_result=final_result,
+        report_item=report_item,
         artifact_refs=artifact_refs,
         source_refs=source_refs,
     )
+    warnings = report_lineage_warnings or []
 
     return SourceTraceResponse(
         run_id=run_id,
@@ -228,6 +338,7 @@ def _build_source_trace_response(
         data_status=data_status,
         source_refs=source_refs,
         artifact_refs=artifact_refs,
+        warnings=warnings,
         snapshot=snapshot_ref,
         input_snapshots=input_snapshots,
         related_artifacts=related_artifacts,
@@ -282,6 +393,35 @@ def _build_input_snapshot_ref(db: Session, snapshot_id: str, *, run_id: str | No
     )
 
 
+def _merge_input_snapshot_refs(
+    db: Session,
+    *,
+    current: list[SnapshotRef],
+    extra_snapshot_ids: list[str],
+    run_id: str | None,
+) -> list[SnapshotRef]:
+    merged: list[SnapshotRef] = list(current)
+    seen = {item.snapshot_id for item in merged}
+    for snapshot_id in extra_snapshot_ids:
+        if snapshot_id in seen:
+            continue
+        merged.append(_build_input_snapshot_ref(db, snapshot_id, run_id=run_id))
+        seen.add(snapshot_id)
+    return merged
+
+
+def _build_detail_snapshot_ref(detail: Any, *, input_snapshot_ids: list[str]) -> SnapshotRef | None:
+    if not detail.snapshot_id:
+        return None
+    return SnapshotRef(
+        snapshot_id=detail.snapshot_id,
+        snapshot_type="analysis",
+        run_id=detail.run_id,
+        data_status=DataStatus.partial,
+        input_snapshot_ids=input_snapshot_ids,
+    )
+
+
 def _build_snapshot_artifacts(snapshot: AnalysisSnapshot | None) -> list[ArtifactRef]:
     if snapshot is None:
         return []
@@ -294,6 +434,22 @@ def _build_snapshot_artifacts(snapshot: AnalysisSnapshot | None) -> list[Artifac
             sha256=snapshot.payload_sha256,
         )
     ]
+
+
+def _build_report_artifacts(report_artifacts: list[ReportArtifact]) -> list[ArtifactRef]:
+    refs: list[ArtifactRef] = []
+    for artifact in report_artifacts:
+        refs.append(
+            ArtifactRef(
+                artifact_id=artifact.artifact_id,
+                artifact_type=coerce_artifact_type(artifact.artifact_type, artifact.file_path),
+                file_path=artifact.file_path,
+                version=artifact.version,
+                generated_at=artifact.generated_at or artifact.updated_at or artifact.created_at,
+                sha256=artifact.sha256,
+            )
+        )
+    return dedupe_artifact_refs(refs)
 
 
 def _build_final_result_artifacts(final_result: FinalAnalysisResult | None) -> list[ArtifactRef]:
@@ -342,6 +498,7 @@ def _derive_data_status(
     *,
     snapshot: AnalysisSnapshot | None,
     final_result: FinalAnalysisResult | None,
+    report_item: ReportItem | None,
     artifact_refs: list[ArtifactRef],
     source_refs: list[SourceRef],
 ) -> DataStatus:
@@ -349,6 +506,7 @@ def _derive_data_status(
     for candidate in (
         _map_data_status(snapshot.status) if snapshot is not None else None,
         _map_data_status(final_result.payload.get("data_status")) if final_result is not None else None,
+        _map_data_status(report_item.data_status) if report_item is not None else None,
     ):
         if candidate is not None:
             status = candidate
@@ -361,6 +519,16 @@ def _derive_data_status(
         status = DataStatus.partial if status == DataStatus.live else status
 
     return status
+
+
+def _list_report_artifacts(db: Session, report_id: str) -> list[ReportArtifact]:
+    return list(
+        db.scalars(
+            select(ReportArtifact)
+            .where(ReportArtifact.report_id == report_id)
+            .order_by(ReportArtifact.is_primary.desc(), ReportArtifact.generated_at.desc(), ReportArtifact.artifact_id.asc())
+        )
+    )
 
 
 def _map_data_status(raw_status: Any) -> DataStatus | None:

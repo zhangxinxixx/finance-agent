@@ -5,9 +5,11 @@ import {
   formatFileSize, fetchRunDetail, fetchAgentAnalysis, agentAnalysisToTaskRun,
   type SchedulerCategoryStat, type SchedulerTaskRun,
   type SchedulerCronJob, type SchedulerOutputItem, type RunDetail, type AgentAnalysisItem,
+  type SchedulerInputSourceMatrixItem, type SchedulerInputSourceSummary,
 } from "@/adapters/scheduler";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
+import { FARuntimeLog, type FARuntimeLogEntry, type FARuntimeLogLevel } from "@/components/shared/FARuntimeLog";
 import { Link } from "react-router-dom";
 import {
   CheckCircle, XCircle, RefreshCw, Play, ChevronRight, ArrowRight,
@@ -54,6 +56,160 @@ function matchesFilter(run: SchedulerTaskRun, category: CategoryFilter, query: s
   return true;
 }
 
+function schedulerEventLevel(eventType: string): FARuntimeLogLevel {
+  const value = eventType.toUpperCase();
+  if (value.includes("FAILED") || value.includes("ERROR")) return "error";
+  if (value.includes("BLOCKED") || value.includes("FALLBACK") || value.includes("DEGRADED")) return "warn";
+  if (value.includes("FINISHED") || value.includes("SUCCESS") || value.includes("WRITTEN")) return "success";
+  if (value.includes("STARTED") || value.includes("STATUS_CHANGED") || value.includes("EVALUATED")) return "info";
+  return "debug";
+}
+
+function schedulerEventSource(event: RunDetail["events"][number]): string {
+  const payload = event.payload ?? {};
+  const stepName = typeof payload.step_name === "string" ? payload.step_name : null;
+  const source = typeof payload.source === "string" ? payload.source : null;
+  return stepName ?? event.task_id ?? source ?? "run";
+}
+
+function schedulerEventMessage(event: RunDetail["events"][number]): string {
+  const payload = event.payload ?? {};
+  const details = [
+    typeof payload.reason === "string" ? payload.reason : null,
+    typeof payload.blocked_reason === "string" ? payload.blocked_reason : null,
+    typeof payload.error_message === "string" ? payload.error_message : null,
+    typeof payload.from_status === "string" && typeof payload.to_status === "string"
+      ? `${payload.from_status} -> ${payload.to_status}`
+      : null,
+  ].filter((item): item is string => Boolean(item));
+  return details.length > 0 ? `${event.event_type} · ${details.join(" · ")}` : event.event_type;
+}
+
+function schedulerEventTime(value: string | null | undefined): string {
+  if (!value) return "--:--:--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleTimeString("zh-CN", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatSourceUpdateTime(value: string | null | undefined): string {
+  if (!value) return "暂无";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatSourceLogStatus(status: SchedulerInputSourceMatrixItem["task_log_status"]): string {
+  if (status === "connected") return "任务已接入";
+  if (status === "data_only") return "仅数据接入";
+  return "等待接入";
+}
+
+function sourceLogTone(status: SchedulerInputSourceMatrixItem["task_log_status"]): string {
+  if (status === "connected") return "var(--up)";
+  if (status === "data_only") return "var(--warn)";
+  return "var(--fg-5)";
+}
+
+const SOURCE_GROUP_LABELS: Record<string, string> = {
+  macro: "宏观",
+  cme: "CME",
+  technical: "技术行情",
+  positioning: "持仓",
+  reports: "报告",
+  news: "新闻事件",
+};
+
+const SOURCE_TYPE_LABELS: Record<string, string> = {
+  api: "接口",
+  pdf: "PDF",
+  structured: "结构化",
+  scraper: "抓取",
+  mcp: "MCP 通道",
+  calendar: "日历",
+  webhook: "消息推送",
+  rss: "订阅源",
+};
+
+const READINESS_LABELS: Record<string, string> = {
+  ready: "已就绪",
+  degraded: "降级可用",
+  blocked: "阻塞",
+  not_configured: "未配置",
+};
+
+const TASK_TYPE_LABELS: Record<string, string> = {
+  macro_collect: "宏观采集",
+  macro_feature: "宏观特征",
+  report_render: "报告产出",
+  fred: "FRED 采集",
+  fed: "Fed 采集",
+  treasury: "财政部采集",
+  dxy: "DXY 采集",
+  openbb: "OpenBB 补采",
+  cme_download: "CME 下载",
+  cme_parse: "CME 解析",
+  cme_ingest: "CME 入库",
+  option_wall: "期权墙计算",
+  options_analysis: "期权分析",
+  cme_options: "期权结构加工",
+  technical: "技术行情处理",
+  positioning: "持仓处理",
+  cot: "COT 持仓采集",
+  news_collect: "新闻采集",
+  news_feature: "新闻特征",
+  news_brief: "新闻摘要",
+  report_analysis: "报告分析",
+  jin10_report: "金十报告加工",
+  flash_article_analysis: "快讯文章分析",
+  jin10_refresh_jin10_flash: "金十快讯刷新",
+  jin10_refresh_jin10_quotes: "金十行情刷新",
+  jin10_refresh_jin10_kline: "金十 K 线刷新",
+  jin10_refresh_jin10_calendar: "金十日历刷新",
+  feishu: "飞书消息采集",
+};
+
+function formatSourceGroup(value: string): string {
+  return SOURCE_GROUP_LABELS[value] ?? value;
+}
+
+function formatSourceType(value: string): string {
+  return SOURCE_TYPE_LABELS[value] ?? value;
+}
+
+function formatReadinessState(value: string | null): string {
+  if (!value) return "未知";
+  return READINESS_LABELS[value] ?? value;
+}
+
+function formatTaskTypeLabel(value: string): string {
+  return TASK_TYPE_LABELS[value] ?? value.split("_").join(" ");
+}
+
+function formatExpectedTasks(tasks: string[]): string {
+  if (tasks.length === 0) return "未定义";
+  const labels = tasks.map(formatTaskTypeLabel);
+  if (labels.length <= 3) return labels.join(" / ");
+  return `${labels.slice(0, 3).join(" / ")} +${labels.length - 3}`;
+}
+
+function formatRecentTasks(source: SchedulerInputSourceMatrixItem): string {
+  if (source.latest_task_run?.task_name) return source.latest_task_run.task_name;
+  if (source.recent_task_types.length > 0) return source.recent_task_types.map(formatTaskTypeLabel).join(" / ");
+  return "暂无";
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  HEADER  — Stats + Controls
 // ═══════════════════════════════════════════════════════════════
@@ -84,7 +240,7 @@ function HeaderBar({
       </Link>
       <Link to="/scheduler/dag" className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-0.5 text-[8px] text-[var(--fg-4)] hover:text-[var(--brand)] hover:border-[var(--brand-gold)] transition-colors shrink-0">
         <Activity size={9} />
-        DAG
+        流程图
         <ChevronRight size={9} />
       </Link>
       <div className="w-px h-4 bg-[var(--border-faint)]" />
@@ -250,7 +406,7 @@ function PipelineGrid({
                                 <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
                                 <div className="min-w-0 flex-1">
                                   <div className="text-[9px] font-medium text-[var(--fg-2)] truncate leading-tight">{run.task_name}</div>
-                                  <div className="text-[7px] text-[var(--fg-5)] font-mono truncate">{run.task_type}</div>
+                                  <div className="text-[7px] text-[var(--fg-5)] truncate">{formatTaskTypeLabel(run.task_type)}</div>
                                 </div>
                                 {isSelected && <ChevronRight size={10} className="text-[var(--fg-5)] shrink-0" />}
                               </button>
@@ -315,8 +471,8 @@ function TaskDetailDrawer({ runId, runType, onClose }: { runId: string; runType:
           <div className="space-y-3 text-[9px]">
             <div className="rounded border border-[var(--border-faint)] px-2 py-1.5 bg-[var(--bg-card-inner)]">
               <span className="text-[7px] text-[var(--fg-6)] uppercase">来源</span>
-              <div className="font-semibold text-[var(--fg-2)]">Agent 分析产出</div>
-              <div className="text-[var(--fg-5)] mt-0.5">此条目为 Agent 分析产出，非任务管线调度条目</div>
+              <div className="font-semibold text-[var(--fg-2)]">智能体分析产出</div>
+              <div className="text-[var(--fg-5)] mt-0.5">此条目为智能体分析产出，非任务管线调度条目</div>
             </div>
           </div>
         )}
@@ -326,8 +482,8 @@ function TaskDetailDrawer({ runId, runType, onClose }: { runId: string; runType:
             {/* Meta grid */}
             <div className="grid grid-cols-2 gap-1.5">
               {[
-                { l: "Run ID", v: detail.run_id.slice(0, 12) + "..." },
-                { l: "类型", v: detail.task_type },
+                { l: "运行 ID", v: detail.run_id.slice(0, 12) + "..." },
+                { l: "类型", v: formatTaskTypeLabel(detail.task_type) },
                 { l: "状态", v: detail.status },
                 { l: "交易日", v: detail.trade_date || "—" },
                 { l: "耗时", v: (detail.started_at && detail.ended_at ? ((new Date(detail.ended_at).getTime() - new Date(detail.started_at).getTime()) / 1000).toFixed(1) + "s" : "—") },
@@ -377,7 +533,7 @@ function TaskDetailDrawer({ runId, runType, onClose }: { runId: string; runType:
                         <div className="flex-1 rounded border px-2 py-1.5 min-w-0" style={{ borderColor: "var(--border-faint)", background: "var(--bg-card-inner)" }}>
                           <div className="flex items-center gap-1.5 mb-1">
                             <span className="text-[8px] font-semibold text-[var(--fg-2)] truncate">{taskName}</span>
-                            {step.stage && <span className="text-[7px] font-mono text-[var(--fg-6)]">[{step.stage}]</span>}
+                            {step.stage && <span className="text-[7px] text-[var(--fg-6)]">[{formatTaskTypeLabel(step.stage)}]</span>}
                             <span className="flex-1" />
                             <div className="w-1.5 h-1.5 rounded-full" style={{ background: sc }} />
                           </div>
@@ -413,9 +569,30 @@ function TaskDetailDrawer({ runId, runType, onClose }: { runId: string; runType:
               </div>
             )}
 
+            {detail.events.length > 0 && (
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Activity size={10} className="text-[var(--fg-5)]" />
+                  <span className="text-[8px] font-semibold text-[var(--fg-4)] uppercase">事件时间线</span>
+                  <span className="text-[7px] text-[var(--fg-6)]">{detail.events.length} 条</span>
+                </div>
+                <FARuntimeLog
+                  className="max-h-[220px] overflow-y-auto"
+                  emptyText="暂无事件时间线"
+                  entries={detail.events.map((event): FARuntimeLogEntry => ({
+                    id: event.id,
+                    time: schedulerEventTime(event.created_at),
+                    level: schedulerEventLevel(event.event_type),
+                    source: schedulerEventSource(event),
+                    message: schedulerEventMessage(event),
+                  }))}
+                />
+              </div>
+            )}
+
             {/* Empty steps */}
-            {detail.steps.length === 0 && (
-              <div className="text-[8px] text-[var(--fg-5)] text-center py-3">暂无步骤数据</div>
+            {detail.steps.length === 0 && detail.events.length === 0 && (
+              <div className="text-[8px] text-[var(--fg-5)] text-center py-3">暂无步骤或事件数据</div>
             )}
           </div>
         )}
@@ -520,8 +697,14 @@ export function SchedulerCenterPage() {
 
         {/* Sidebar (right, when no selection) */}
         {!selectedRunId && (
-          <div className="shrink-0 border-l border-[var(--border-faint)] overflow-auto" style={{ width: "220px", background: "var(--bg-panel)" }}>
-            <SidePanel dataSource={data_source_status} cronJobs={cron_jobs} outputs={artifacts_summary.recent_outputs} />
+          <div className="shrink-0 border-l border-[var(--border-faint)] overflow-auto" style={{ width: "360px", background: "var(--bg-panel)" }}>
+            <SidePanel
+              dataSource={data_source_status}
+              sourceSummary={data.input_source_summary}
+              sourceMatrix={data.input_source_matrix}
+              cronJobs={cron_jobs}
+              outputs={artifacts_summary.recent_outputs}
+            />
           </div>
         )}
       </div>
@@ -529,7 +712,19 @@ export function SchedulerCenterPage() {
   );
 }
 
-function SidePanel({ dataSource, cronJobs, outputs }: { dataSource: any; cronJobs: SchedulerCronJob[]; outputs: SchedulerOutputItem[] }) {
+function SidePanel({
+  dataSource,
+  sourceSummary,
+  sourceMatrix,
+  cronJobs,
+  outputs,
+}: {
+  dataSource: any;
+  sourceSummary: SchedulerInputSourceSummary;
+  sourceMatrix: SchedulerInputSourceMatrixItem[];
+  cronJobs: SchedulerCronJob[];
+  outputs: SchedulerOutputItem[];
+}) {
   return (
     <div className="flex flex-col gap-3 p-2.5">
       <div className="rounded border border-[var(--border-faint)] bg-[var(--bg-card)] p-2.5">
@@ -537,6 +732,59 @@ function SidePanel({ dataSource, cronJobs, outputs }: { dataSource: any; cronJob
         <div className="flex items-center gap-2">
           <div className="flex-1 h-1 rounded-full bg-[var(--bg-card-inner)]"><div className="h-full rounded-full bg-[var(--up)]" style={{ width: `${(dataSource.ok / Math.max(dataSource.total, 1)) * 100}%` }} /></div>
           <span className="text-[8px] font-semibold text-[var(--up)]">{dataSource.ok}/{dataSource.total}</span>
+        </div>
+      </div>
+      <div className="rounded border border-[var(--border-faint)] bg-[var(--bg-card)] p-2.5">
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="flex items-center gap-1.5">
+            <Gauge size={10} className="text-[var(--fg-5)]" />
+            <span className="text-[9px] font-semibold text-[var(--fg-3)]">输入源接入矩阵</span>
+          </div>
+          <span className="text-[8px] text-[var(--fg-5)]">{sourceSummary.total} 个源</span>
+        </div>
+        <div className="grid grid-cols-3 gap-1.5">
+          {[
+            { label: "任务已接入", value: sourceSummary.connected, color: "var(--up)" },
+            { label: "仅数据接入", value: sourceSummary.data_only, color: "var(--warn)" },
+            { label: "等待接入", value: sourceSummary.waiting, color: "var(--fg-4)" },
+          ].map((item) => (
+            <div key={item.label} className="rounded border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-1.5">
+              <div className="text-[7px] text-[var(--fg-6)]">{item.label}</div>
+              <div className="mt-0.5 text-[10px] font-semibold" style={{ color: item.color }}>{item.value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-2.5 space-y-2 max-h-[540px] overflow-y-auto pr-1">
+          {sourceMatrix.map((source) => {
+            const tone = sourceLogTone(source.task_log_status);
+            return (
+              <div key={source.source_key} className="rounded border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
+                <div className="flex items-start gap-2">
+                  <div className="mt-1 h-2 w-2 rounded-full shrink-0" style={{ background: tone }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-[9px] font-semibold text-[var(--fg-2)]">{source.source_label}</span>
+                      <span className="rounded px-1.5 py-px text-[7px] font-semibold" style={{ background: `${tone}14`, color: tone }}>
+                        {formatSourceLogStatus(source.task_log_status)}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[7px] text-[var(--fg-5)]">
+                      {formatSourceGroup(source.source_group)} · {formatSourceType(source.source_type)}
+                    </div>
+                    <div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-1 text-[7px] text-[var(--fg-4)]">
+                      <div>最新数据：{formatSourceUpdateTime(source.latest_update_time)}</div>
+                      <div>就绪状态：{formatReadinessState(source.readiness_state)}</div>
+                      <div className="col-span-2">预期任务：{formatExpectedTasks(source.expected_task_types)}</div>
+                      <div className="col-span-2">最近任务：{formatRecentTasks(source)}</div>
+                    </div>
+                    {source.notes && (
+                      <div className="mt-1.5 line-clamp-2 text-[7px] text-[var(--fg-5)]">{source.notes}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
       {cronJobs.length > 0 && (

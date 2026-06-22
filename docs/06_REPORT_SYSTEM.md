@@ -67,8 +67,43 @@ report_structured.json
 | Strategy Card | `/api/strategy-card/latest`、`/api/strategy-card`、`/api/strategy-cards*` | 策略卡 read model |
 | CME Options | `/api/options/report`、`/api/options/visual-report*`、`/api/reports/{report_id}` | Markdown + HTML visual |
 | Macro | `/api/macro/report`、`storage/outputs/macro/*` | 宏观快照 Markdown |
+| Macro Event Follow-up | 待新增 `/api/reports/{report_id}` 标准入口 | 非交易日宏观/新闻事件影响补充报告，不替代正式综合报告 |
 | Jin10 Daily / Weekly | `/api/jin10/daily-report*`、`/api/jin10/weekly-report*`、`/api/jin10/report-bundle*` | 报告 bundle + assets |
 | Market Odds | `/api/market-odds/report` | 结构化摘要 |
+
+## 非交易日补充报告口径
+
+`macro_event_followup` 是后续新增的正式落盘报告族，用于非交易日补充说明当天宏观/新闻事件对最近一个开盘日正式综合结论的影响。
+
+边界：
+
+- 只在非交易日生成；第一版先覆盖周末，节假日交易日历后续补强。
+- `trade_date` 使用非交易日当天日期，便于按日回看。
+- `anchor_trade_date` 指向最近一个开盘日，表示被补充的正式 `final_report / strategy_card` 日期。
+- 不生成新的 `final_report`，不生成新的 `strategy_card`，不把补充报告展示成正式交易结论。
+- Dashboard 可以同时展示最近开盘日正式结论和当天补充分析，但必须分别标注 `anchor_trade_date` 与 `trade_date`。
+- Reports / Report Detail 应把该报告标为“补充分析”，和“综合报告”区分。
+
+建议 artifact 路径：
+
+```text
+storage/outputs/macro_event_followup/XAUUSD/<trade_date>/<run_id>/
+  source.md
+  analysis.md
+  report_structured.json
+```
+
+建议结构化字段：
+
+- `report_type`: `macro_event_followup`
+- `trade_date`: 非交易日当天
+- `anchor_trade_date`: 最近开盘日
+- `anchor_report_refs`: 上一开盘日 `final_report / strategy_card` 的 report/artifact refs
+- `new_macro_events`: 当天新增宏观、新闻和事件输入
+- `impact_assessment`: 对上一开盘日结论的强化、削弱、扰动或暂不影响判断
+- `watch_items`: 下一个开盘日前需要观察的事件、价位、数据和风险
+- `revision_risk`: 是否需要在下一个开盘日前人工复核或重新生成正式综合报告
+- `source_refs`: 最新新闻、宏观、Event Flow、原正式报告等来源引用
 
 ## 前端展示
 
@@ -101,3 +136,4 @@ Report Detail 当前支持：
 - 每个报告族都登记 source / analysis / visual / structured / evidence artifact。
 - 所有报告都绑定 `run_id`、`snapshot_id`、`source_refs`、`artifact_refs`。
 - Report Detail 只做展示，不做 report 数据拼装。
+- `macro_event_followup` 优先走标准 report tables / report detail API，不新增 legacy 专用报告端点。

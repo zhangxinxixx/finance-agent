@@ -3,9 +3,10 @@
 Runs at 08:30 Beijing time (00:30 UTC) every weekday.
 """
 
-from dagster import schedule
+from dagster import SkipReason, schedule
 
 from dagster_finance.jobs.premarket_job import premarket_job
+from apps.api.services import pipeline_contract_service
 
 
 @schedule(
@@ -16,4 +17,8 @@ from dagster_finance.jobs.premarket_job import premarket_job
     description="Run premarket pipeline at 08:30 Beijing time on weekdays",
 )
 def premarket_daily_schedule(context):
+    source_readiness = pipeline_contract_service.build_premarket_pipeline_source_readiness()
+    blocked = source_readiness["source_readiness_summary"]["decision_counts"].get("blocked", 0)
+    if blocked > 0:
+        return SkipReason("Premarket source readiness is blocked")
     return {}

@@ -48,6 +48,22 @@ def test_trigger_premarket_marks_stale_legacy_run_and_launches(monkeypatch: pyte
     session.commit()
 
     monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        api_main.pipeline_contract_service,
+        "build_premarket_pipeline_source_readiness",
+        lambda: {
+            "step_order": ["macro_collect"],
+            "steps": [],
+            "source_readiness_summary": {
+                "decision_counts": {"ready": 1, "degraded_allowed": 0, "blocked": 0},
+                "blocked_steps": [],
+                "degraded_steps": [],
+                "blocked_sources": [],
+                "degraded_sources": [],
+            },
+        },
+    )
+
     def _fake_post(*args, **kwargs):
         query = kwargs.get("json", {}).get("query", "")
         if "runsOrError" in query:
@@ -69,6 +85,13 @@ def test_trigger_premarket_marks_stale_legacy_run_and_launches(monkeypatch: pyte
     session.refresh(stale_run)
     assert resp.task_id == "dagster-run-001"
     assert resp.status == "running"
+    assert resp.source_readiness_summary == {
+        "decision_counts": {"ready": 1, "degraded_allowed": 0, "blocked": 0},
+        "blocked_steps": [],
+        "degraded_steps": [],
+        "blocked_sources": [],
+        "degraded_sources": [],
+    }
     assert stale_run.status == TaskStatus.stale
     assert stale_run.ended_at is not None
     assert stale_run.error_summary is not None
@@ -88,18 +111,32 @@ def test_trigger_premarket_keeps_fresh_active_run_blocking(monkeypatch: pytest.M
     session.commit()
 
     monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        api_main.pipeline_contract_service,
+        "build_premarket_pipeline_source_readiness",
+        lambda: {"step_order": [], "steps": [], "source_readiness_summary": {"decision_counts": {"blocked": 0}}},
+    )
 
     with pytest.raises(api_main.HTTPException) as exc_info:
         api_main.trigger_premarket()
 
     session.refresh(active_run)
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["reason"] == "legacy_active_task"
+    assert exc_info.value.detail["message"].startswith("已有进行中的 premarket 任务")
+    assert exc_info.value.detail["active_legacy_task"]["task_id"] == str(active_run.id)
+    assert exc_info.value.detail["source_readiness_summary"] == {"decision_counts": {"blocked": 0}}
     assert active_run.status == TaskStatus.running
 
 
 def test_trigger_premarket_blocks_when_dagster_run_is_active(monkeypatch: pytest.MonkeyPatch) -> None:
     session_factory, _session = _make_session_factory()
     monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        api_main.pipeline_contract_service,
+        "build_premarket_pipeline_source_readiness",
+        lambda: {"step_order": [], "steps": [], "source_readiness_summary": {"decision_counts": {"blocked": 1}}},
+    )
 
     calls: list[str] = []
 
@@ -124,7 +161,225 @@ def test_trigger_premarket_blocks_when_dagster_run_is_active(monkeypatch: pytest
         api_main.trigger_premarket()
 
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["reason"] == "dagster_active_run"
+    assert exc_info.value.detail["active_dagster_run"]["run_id"] == "dagster-active-001"
+    assert exc_info.value.detail["source_readiness_summary"] == {"decision_counts": {"blocked": 1}}
     assert any("runsOrError" in query for query in calls)
+
+
+def test_trigger_premarket_returns_structured_detail_when_dagster_launch_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_factory, _session = _make_session_factory()
+    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        api_main.pipeline_contract_service,
+        "build_premarket_pipeline_source_readiness",
+        lambda: {"step_order": [], "steps": [], "source_readiness_summary": {"decision_counts": {"blocked": 0}}},
+    )
+
+    def _fake_post(*args, **kwargs):
+        query = kwargs.get("json", {}).get("query", "")
+        if "runsOrError" in query:
+            return _FakeDagsterResponse({"data": {"runsOrError": {"results": []}}})
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+
+    with pytest.raises(api_main.HTTPException) as exc_info:
+        api_main.trigger_premarket()
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail["reason"] == "dagster_unavailable"
+    assert "Dagster unavailable" in exc_info.value.detail["message"]
+    assert "connection refused" in exc_info.value.detail["dagster_check_error"]
+    assert exc_info.value.detail["source_readiness_summary"] == {"decision_counts": {"blocked": 0}}
+
+
+def test_premarket_preflight_ignores_stale_legacy_run_and_keeps_it_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_factory, session = _make_session_factory()
+    old_time = datetime.now(UTC) - timedelta(days=17)
+    stale_run = TaskRun(
+        name="premarket",
+        status=TaskStatus.running,
+        started_at=old_time,
+        created_at=old_time,
+        updated_at=old_time,
+    )
+    session.add(stale_run)
+    session.commit()
+
+    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        api_main.pipeline_contract_service,
+        "build_premarket_pipeline_source_readiness",
+        lambda: {
+            "step_order": ["macro_collect"],
+            "steps": [],
+            "source_readiness_summary": {
+                "decision_counts": {"ready": 1, "degraded_allowed": 0, "blocked": 0},
+                "blocked_steps": [],
+                "degraded_steps": [],
+                "blocked_sources": [],
+                "degraded_sources": [],
+            },
+        },
+    )
+    monkeypatch.setattr(api_main, "_find_active_dagster_premarket_run", lambda _url: None)
+
+    resp = api_main.api_premarket_launch_preflight()
+
+    session.refresh(stale_run)
+    assert resp.can_launch is True
+    assert resp.blocking_reasons == []
+    assert resp.active_legacy_task is None
+    assert resp.stale_legacy_task_ids == [str(stale_run.id)]
+    assert resp.source_readiness_summary == {
+        "decision_counts": {"ready": 1, "degraded_allowed": 0, "blocked": 0},
+        "blocked_steps": [],
+        "degraded_steps": [],
+        "blocked_sources": [],
+        "degraded_sources": [],
+    }
+    assert stale_run.status == TaskStatus.running
+
+
+def test_premarket_preflight_reports_active_legacy_task_blocker(monkeypatch: pytest.MonkeyPatch) -> None:
+    session_factory, session = _make_session_factory()
+    fresh_time = datetime.now(UTC) - timedelta(minutes=15)
+    active_run = TaskRun(
+        name="premarket",
+        status=TaskStatus.running,
+        started_at=fresh_time,
+        created_at=fresh_time,
+        updated_at=fresh_time,
+    )
+    session.add(active_run)
+    session.commit()
+
+    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        api_main.pipeline_contract_service,
+        "build_premarket_pipeline_source_readiness",
+        lambda: {"step_order": [], "steps": [], "source_readiness_summary": {"decision_counts": {}}},
+    )
+    monkeypatch.setattr(api_main, "_find_active_dagster_premarket_run", lambda _url: None)
+
+    resp = api_main.api_premarket_launch_preflight()
+
+    assert resp.can_launch is False
+    assert resp.blocking_reasons == ["legacy_active_task"]
+    assert resp.active_legacy_task is not None
+    assert resp.active_legacy_task.task_id == str(active_run.id)
+    assert resp.active_legacy_task.status == "running"
+    assert resp.stale_legacy_task_ids == []
+
+
+def test_premarket_preflight_blocks_when_source_readiness_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_factory, _session = _make_session_factory()
+
+    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        api_main.pipeline_contract_service,
+        "build_premarket_pipeline_source_readiness",
+        lambda: {
+            "step_order": ["macro_collect"],
+            "steps": [],
+            "source_readiness_summary": {
+                "decision_counts": {"ready": 0, "degraded_allowed": 0, "blocked": 1},
+                "blocked_steps": ["macro_collect"],
+                "degraded_steps": [],
+                "blocked_sources": ["fred"],
+                "degraded_sources": [],
+            },
+        },
+    )
+    monkeypatch.setattr(api_main, "_find_active_dagster_premarket_run", lambda _url: None)
+
+    resp = api_main.api_premarket_launch_preflight()
+
+    assert resp.can_launch is False
+    assert resp.blocking_reasons == ["source_readiness_blocked"]
+    assert resp.source_readiness_summary == {
+        "decision_counts": {"ready": 0, "degraded_allowed": 0, "blocked": 1},
+        "blocked_steps": ["macro_collect"],
+        "degraded_steps": [],
+        "blocked_sources": ["fred"],
+        "degraded_sources": [],
+    }
+
+
+def test_premarket_preflight_force_true_keeps_blockers_visible_but_allows_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_factory, _session = _make_session_factory()
+
+    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        api_main.pipeline_contract_service,
+        "build_premarket_pipeline_source_readiness",
+        lambda: {"step_order": [], "steps": [], "source_readiness_summary": {"decision_counts": {}}},
+    )
+    monkeypatch.setattr(
+        api_main,
+        "_find_active_dagster_premarket_run",
+        lambda _url: {"run_id": "dagster-active-001", "status": "STARTED"},
+    )
+
+    resp = api_main.api_premarket_launch_preflight(force=True)
+
+    assert resp.force is True
+    assert resp.can_launch is True
+    assert resp.blocking_reasons == ["dagster_active_run"]
+    assert resp.active_dagster_run is not None
+    assert resp.active_dagster_run.run_id == "dagster-active-001"
+    assert resp.active_dagster_run.status == "STARTED"
+
+
+def test_trigger_premarket_blocks_when_source_readiness_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    session_factory, _session = _make_session_factory()
+
+    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        api_main.pipeline_contract_service,
+        "build_premarket_pipeline_source_readiness",
+        lambda: {
+            "step_order": ["macro_collect"],
+            "steps": [],
+            "source_readiness_summary": {
+                "decision_counts": {"ready": 0, "degraded_allowed": 0, "blocked": 2},
+                "blocked_steps": ["macro_collect", "news_collect"],
+                "degraded_steps": [],
+                "blocked_sources": ["fred", "jin10"],
+                "degraded_sources": [],
+            },
+        },
+    )
+    monkeypatch.setattr(api_main, "_find_active_dagster_premarket_run", lambda _url: None)
+
+    def _unexpected_launch(*args, **kwargs):
+        raise AssertionError("launchPipelineExecution should not run when source readiness is blocked")
+
+    monkeypatch.setattr(httpx, "post", _unexpected_launch)
+
+    with pytest.raises(api_main.HTTPException) as exc_info:
+        api_main.trigger_premarket()
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["reason"] == "source_readiness_blocked"
+    assert "source readiness blocked" in exc_info.value.detail["message"].lower()
+    assert exc_info.value.detail["blocking_reasons"] == ["source_readiness_blocked"]
+    assert exc_info.value.detail["source_readiness_summary"] == {
+        "decision_counts": {"ready": 0, "degraded_allowed": 0, "blocked": 2},
+        "blocked_steps": ["macro_collect", "news_collect"],
+        "degraded_steps": [],
+        "blocked_sources": ["fred", "jin10"],
+        "degraded_sources": [],
+    }
 
 
 def test_get_task_falls_back_to_dagster_run_when_legacy_task_missing(monkeypatch: pytest.MonkeyPatch) -> None:

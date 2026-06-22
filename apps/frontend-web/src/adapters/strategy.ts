@@ -1,9 +1,18 @@
-import { fetchJson } from "@/adapters/apiClient";
+import { ApiError, fetchJson } from "@/adapters/apiClient";
+import { normalizeDataAvailability, normalizeDataStatus } from "@/lib/status";
+import type { ArtifactRef } from "@/types/artifact";
+import type { SourceRef } from "@/types/common";
+import type { SnapshotRef } from "@/types/snapshot";
 import type {
   StrategyCardRawResponse,
   StrategyAssetListRawResponse,
   StrategyAssetSummaryViewModel,
   StrategyCardsListRawResponse,
+  StrategySourceTraceRawArtifactRef,
+  StrategySourceTraceRawResponse,
+  StrategySourceTraceRawSnapshotRef,
+  StrategySourceTraceRawSourceRef,
+  StrategySourceTraceViewModel,
   StrategyViewModel,
   StrategyHistoryItemViewModel,
 } from "@/types/strategy";
@@ -17,6 +26,75 @@ const STRATEGY_HISTORY_LIMIT = 60;
 const STRATEGY_CARDS_LATEST_PATH = "/api/strategy-cards/latest";
 const STRATEGY_CARDS_LIST_PATH = "/api/strategy-cards";
 const STRATEGY_CARDS_ASSETS_PATH = "/api/strategy-cards/assets";
+const STRATEGY_SOURCE_TRACE_PATH = "/api/source-trace/by-strategy";
+
+function mapTraceSourceRef(source: StrategySourceTraceRawSourceRef): SourceRef {
+  return {
+    source_ref: source.source_name || source.source_id,
+    label: source.source_name,
+    endpoint: source.endpoint,
+    artifact_path: source.file_path,
+    trade_date: source.data_date,
+    dataDate: source.data_date,
+    asOf: source.captured_at,
+    generated_at: source.captured_at,
+    provider: source.source_type,
+    source_url: source.url,
+    status: normalizeDataStatus(source.status),
+  };
+}
+
+function mapTraceArtifactRef(artifact: StrategySourceTraceRawArtifactRef): ArtifactRef {
+  return {
+    artifact_id: artifact.artifact_id,
+    artifact_type: artifact.artifact_type,
+    file_path: artifact.file_path,
+    path: artifact.file_path,
+    asOf: artifact.generated_at,
+  };
+}
+
+function mapTraceSnapshotRef(snapshot: StrategySourceTraceRawSnapshotRef): SnapshotRef {
+  return {
+    snapshot_id: snapshot.snapshot_id,
+    dataDate: snapshot.data_date ?? null,
+    asOf: snapshot.created_at ?? null,
+    run_id: snapshot.run_id ?? null,
+    status: normalizeDataStatus(snapshot.data_status),
+    availability: normalizeDataAvailability(snapshot.data_status),
+    input_snapshot_ids: snapshot.input_snapshot_ids ?? [],
+  };
+}
+
+function mapStrategySourceTrace(strategyCardId: string, raw: StrategySourceTraceRawResponse): StrategySourceTraceViewModel {
+  return {
+    target_type: "strategy",
+    target_id: strategyCardId,
+    status: normalizeDataStatus(raw.data_status),
+    availability: normalizeDataAvailability(raw.data_status),
+    run_id: raw.run_id ?? null,
+    snapshot_id: raw.snapshot_id ?? null,
+    dataDate: raw.snapshot?.data_date ?? null,
+    asOf: raw.snapshot?.created_at ?? null,
+    source_refs: (raw.source_refs ?? []).map(mapTraceSourceRef),
+    artifact_refs: (raw.artifact_refs ?? []).map(mapTraceArtifactRef),
+    input_snapshots: (raw.input_snapshots ?? []).map(mapTraceSnapshotRef),
+    related_artifacts: (raw.related_artifacts ?? []).map(mapTraceArtifactRef),
+    snapshot: raw.snapshot ? mapTraceSnapshotRef(raw.snapshot) : null,
+    error_reason: null,
+  };
+}
+
+async function fetchOptionalJson<T>(path: string): Promise<T | null> {
+  try {
+    return await fetchJson<T>(path);
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.status === 404) {
+      return null;
+    }
+    throw cause;
+  }
+}
 
 function buildUnavailableStrategy(asset: string, reason: string): StrategyViewModel {
   return {
@@ -43,6 +121,7 @@ function buildUnavailableStrategy(asset: string, reason: string): StrategyViewMo
     playbook_matches: [],
     source_refs: [],
     artifact_refs: [],
+    source_trace: null,
     has_data: false,
     history: [],
     selected_strategy_card_id: null,
@@ -96,6 +175,19 @@ export async function fetchStrategyAssetSummaries(): Promise<StrategyAssetSummar
   } catch {
     return [];
   }
+}
+
+/** Fetch source-trace drilldown for a strategy card. Returns null when the trace endpoint has no row yet. */
+export async function fetchStrategySourceTraceByCardId(
+  strategyCardId: string,
+): Promise<StrategySourceTraceViewModel | null> {
+  const raw = await fetchOptionalJson<StrategySourceTraceRawResponse>(
+    `${STRATEGY_SOURCE_TRACE_PATH}/${encodeURIComponent(strategyCardId)}`,
+  );
+  if (!raw) {
+    return null;
+  }
+  return mapStrategySourceTrace(strategyCardId, raw);
 }
 
 /**

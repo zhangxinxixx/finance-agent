@@ -58,7 +58,7 @@ export function StrategyPanel({ strategy, strategyViewModel }: StrategyPanelProp
   const leadRisk = riskPoints[0] ?? watchlist[0] ?? "详情页查看风险点与观察列表";
 
   return (
-    <FACard title="今日综合分析摘要" eyebrow="Daily Composite" accent="brand" bodyClassName="space-y-4">
+    <FACard title="今日综合分析摘要" eyebrow="每日综合" accent="brand" bodyClassName="space-y-4">
       <FASectionHeader
         title="综合结论"
         description={summaryText}

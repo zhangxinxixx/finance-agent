@@ -11,7 +11,7 @@ import type {
   TaskRunViewModel,
 } from "@/types/agent-task";
 import { IOGrid } from "./AgentTaskIOPanels";
-import { LogPanel, StepSummaryCards, SummaryPanel } from "./AgentTaskSummaryPanels";
+import { EventTimelinePanel, LogPanel, StepSummaryCards, SummaryPanel } from "./AgentTaskSummaryPanels";
 import { ReviewPanel, TracePanel } from "./AgentTaskTraceReviewPanels";
 import {
   CATEGORY_META,
@@ -149,6 +149,7 @@ export function AgentTaskDetailContent({
       <div className="space-y-4">
         <SummaryPanel selectedRun={selectedRun} />
         <StepSummaryCards steps={selectedRun.steps} />
+        <EventTimelinePanel events={selectedRun.events} />
         <LogPanel logs={selectedRun.logs} />
       </div>
     );

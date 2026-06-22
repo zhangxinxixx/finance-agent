@@ -14,6 +14,7 @@ from apps.parsers.jin10.report_image_parser import (
     write_parse_artifacts,
 )
 from apps.parsers.jin10.qwen_vl_markdown import (
+    DashScopeChatCompletionClient,
     DashScopeVisionMarkdownClient,
     _image_to_data_url,
     _normalize_chart_bbox,
@@ -1419,6 +1420,56 @@ def test_image_to_data_url_rejects_unsupported_raw_image_format(tmp_path: Path):
         assert str(exc) == "image_not_decodable_or_unsupported_format"
     else:
         raise AssertionError("expected unsupported raw image payload to be rejected")
+
+
+def test_dashscope_chat_completion_client_posts_compatible_payload(monkeypatch):
+    requests: list[dict] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": "## 识别结果"}}]}
+
+    class FakeHttpClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        def __enter__(self) -> "FakeHttpClient":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, *, headers: dict, json: dict) -> FakeResponse:
+            requests.append({"url": url, "headers": headers, "json": json, "timeout": self.timeout})
+            return FakeResponse()
+
+    monkeypatch.setattr("apps.parsers.jin10.qwen_vl_markdown.httpx.Client", FakeHttpClient)
+
+    client = DashScopeChatCompletionClient(api_key="dashscope-key", base_url="https://dashscope.example/v1", timeout=12.5)
+    content = client.create(
+        model="qwen3-vl-plus",
+        messages=[{"role": "user", "content": [{"type": "text", "text": "识别"}]}],
+        temperature=0,
+        extra_body={"enable_thinking": False},
+    )
+
+    assert content == "## 识别结果"
+    assert requests == [
+        {
+            "url": "https://dashscope.example/v1/chat/completions",
+            "headers": {"Authorization": "Bearer dashscope-key", "Content-Type": "application/json"},
+            "json": {
+                "model": "qwen3-vl-plus",
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "识别"}]}],
+                "temperature": 0,
+                "enable_thinking": False,
+            },
+            "timeout": 12.5,
+        }
+    ]
 
 
 def test_recognize_page_layout_returns_unavailable_on_image_encoding_failure(monkeypatch, tmp_path: Path):

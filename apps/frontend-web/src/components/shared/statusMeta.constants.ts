@@ -7,6 +7,7 @@ export const EXPLICIT_STATUS_LABELS: Record<string, string> = {
   unavailable: "不可用",
   manual_required: "需人工处理",
   not_connected: "未连接",
+  not_required: "无需审查",
 };
 
 export const GENERIC_LABELS: Record<string, string> = {
@@ -83,6 +84,7 @@ export const DOMAIN_LABELS: Partial<Record<StatusDomain, Record<string, string>>
     contradicted: "有冲突",
     conflicted: "有冲突",
     needs_review: "待复核",
+    not_required: "无需审查",
     not_reviewed: "未审查",
     partial: "部分待补证",
     partially_supported: "部分支持",

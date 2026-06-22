@@ -2,7 +2,7 @@ import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { FAStatusTone } from "@/components/shared/FAStatusPill";
 import { getStatusLabel, getStatusTone } from "@/components/shared/statusMeta";
 import type { CMEOptionsResponse } from "@/types/cme-options";
-import { CME_META_TEXT, shortId } from "./cmeOptionsFormat";
+import { CME_META_TEXT, shortId, translateEvidence } from "./cmeOptionsFormat";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
 
 interface CMEOptionsRightColumnProps {
@@ -19,6 +19,28 @@ function reviewStatusLabel(status: string | null | undefined): string {
 
 function severityTone(severity: string | null | undefined): FAStatusTone {
   return getStatusTone(severity);
+}
+
+function synthesisStatusLabel(status: string | null | undefined) {
+  if (status === "success") return "通过";
+  if (status === "needs_review") return "需复核";
+  if (status === "failed") return "失败";
+  return status ?? "未知";
+}
+
+function biasLabel(bias: string | null | undefined) {
+  if (bias === "bullish") return "偏多";
+  if (bias === "bearish") return "偏空";
+  if (bias === "neutral") return "中性";
+  if (bias === "mixed") return "多空交织";
+  return bias || "中性";
+}
+
+function severityLabel(severity: string | null | undefined) {
+  if (severity === "high") return "高";
+  if (severity === "medium") return "中";
+  if (severity === "low") return "低";
+  return severity ?? "待定";
 }
 
 export function CMEOptionsRightColumn({ snapshot }: CMEOptionsRightColumnProps) {
@@ -52,22 +74,22 @@ export function CMEOptionsRightColumn({ snapshot }: CMEOptionsRightColumnProps) 
           ) : null}
           {synthesis?.synthesis_status ? (
             <FAStatusPill tone={synthesis.synthesis_status === "success" ? "up" : synthesis.synthesis_status === "needs_review" ? "warn" : "info"}>
-              综合 {synthesis.synthesis_status}
+              综合 {synthesisStatusLabel(synthesis.synthesis_status)}
             </FAStatusPill>
           ) : null}
-          {cmeAgent ? <FAStatusPill tone="neutral">{cmeAgent.bias || "neutral"}</FAStatusPill> : null}
+          {cmeAgent ? <FAStatusPill tone="neutral">{biasLabel(cmeAgent.bias)}</FAStatusPill> : null}
           {analysis?.pending_review_count ? (
             <FAStatusPill tone="warn">待复核 {analysis.pending_review_count}</FAStatusPill>
           ) : null}
         </div>
-        <div style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.7 }}>{primarySummary}</div>
+        <div style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.7 }}>{translateEvidence(primarySummary)}</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 8 }}>
           <div style={{ border: "1px solid var(--border-faint)", borderRadius: "var(--radius-md)", padding: "8px 10px", background: "var(--bg-panel)" }}>
-            <div style={{ fontSize: 9, color: CME_META_TEXT, marginBottom: 4 }}>run_id</div>
+            <div style={{ fontSize: 9, color: CME_META_TEXT, marginBottom: 4 }}>运行编号</div>
             <div className="fa-num" style={{ fontSize: 11, color: "var(--fg-2)", fontFamily: "var(--font-mono)" }}>{shortId(analysis?.run_id)}</div>
           </div>
           <div style={{ border: "1px solid var(--border-faint)", borderRadius: "var(--radius-md)", padding: "8px 10px", background: "var(--bg-panel)" }}>
-            <div style={{ fontSize: 9, color: CME_META_TEXT, marginBottom: 4 }}>snapshot_id</div>
+            <div style={{ fontSize: 9, color: CME_META_TEXT, marginBottom: 4 }}>快照编号</div>
             <div className="fa-num" style={{ fontSize: 11, color: "var(--fg-2)", fontFamily: "var(--font-mono)" }}>{shortId(analysis?.snapshot_id)}</div>
           </div>
         </div>
@@ -94,14 +116,14 @@ export function CMEOptionsRightColumn({ snapshot }: CMEOptionsRightColumnProps) 
               <div key={`${item.claim_id}-${item.verdict}`} style={{ border: "1px solid var(--border-faint)", borderRadius: "var(--radius-md)", padding: "8px 10px", background: "var(--bg-panel)" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <span className="fa-num" style={{ fontSize: 10, color: "var(--fg-2)", fontFamily: "var(--font-mono)" }}>{shortId(item.claim_id)}</span>
-                  <FAStatusPill tone={reviewStatusTone(item.verdict)}>{item.verdict}</FAStatusPill>
+                  <FAStatusPill tone={reviewStatusTone(item.verdict)}>{reviewStatusLabel(item.verdict)}</FAStatusPill>
                 </div>
-                <div style={{ marginTop: 6, fontSize: 10, color: "var(--fg-4)", lineHeight: 1.55 }}>{item.reason}</div>
+                <div style={{ marginTop: 6, fontSize: 10, color: "var(--fg-4)", lineHeight: 1.55 }}>{translateEvidence(item.reason)}</div>
               </div>
             ))}
           </div>
         ) : (
-          <div style={{ fontSize: 10, color: "var(--fg-5)" }}>当前未返回逐条 claim 审查结果。</div>
+          <div style={{ fontSize: 10, color: "var(--fg-5)" }}>当前未返回逐条断言审查结果。</div>
         )}
       </CMEOptionsSurface>
 
@@ -109,7 +131,7 @@ export function CMEOptionsRightColumn({ snapshot }: CMEOptionsRightColumnProps) 
         {keyPoints.length > 0 ? keyPoints.slice(0, 5).map((line) => (
           <div key={line} style={{ display: "flex", gap: 8 }}>
             <span style={{ color: CME_META_TEXT, flexShrink: 0 }}>•</span>
-            <div style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.6 }}>{line}</div>
+            <div style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.6 }}>{translateEvidence(line)}</div>
           </div>
         )) : (
           <div style={{ fontSize: 10, color: "var(--fg-5)" }}>当前未返回综合共识点。</div>
@@ -140,15 +162,15 @@ export function CMEOptionsRightColumn({ snapshot }: CMEOptionsRightColumnProps) 
           <div key={item.review_id} style={{ border: "1px solid var(--border-faint)", borderRadius: "var(--radius-md)", padding: "8px 10px", background: "var(--bg-panel)" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
               <span className="fa-num" style={{ fontSize: 10, color: "var(--fg-2)", fontFamily: "var(--font-mono)" }}>{shortId(item.claim_id || item.review_id)}</span>
-              <FAStatusPill tone={severityTone(item.severity)}>{item.severity}</FAStatusPill>
+              <FAStatusPill tone={severityTone(item.severity)}>{severityLabel(item.severity)}</FAStatusPill>
             </div>
-            <div style={{ marginTop: 6, fontSize: 10, color: "var(--fg-4)", lineHeight: 1.6 }}>{item.reason}</div>
+            <div style={{ marginTop: 6, fontSize: 10, color: "var(--fg-4)", lineHeight: 1.6 }}>{translateEvidence(item.reason)}</div>
           </div>
         )) : null}
         {reviewNotes.length > 0 ? reviewNotes.slice(0, 5).map((line) => (
           <div key={line} style={{ display: "flex", gap: 8 }}>
             <span style={{ color: CME_META_TEXT, flexShrink: 0 }}>•</span>
-            <div style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.6 }}>{line}</div>
+            <div style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.6 }}>{translateEvidence(line)}</div>
           </div>
         )) : (
           <div style={{ fontSize: 10, color: "var(--fg-5)" }}>当前没有待复核或降权说明。</div>

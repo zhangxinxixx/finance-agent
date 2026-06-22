@@ -3,6 +3,7 @@ import { FACard } from "@/components/shared/FACard";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { EventFlowBriefSummary, EventFlowDailyBrief } from "@/types/event-flow";
+import { formatEventFlowArtifactLabel } from "./eventFlowFormat";
 
 export function EventFlowDailyBriefCard({
   brief,
@@ -12,7 +13,7 @@ export function EventFlowDailyBriefCard({
   return (
     <FACard
       title="稳定日报"
-      eyebrow="Daily Brief"
+      eyebrow="每日简报"
       accent="brand"
       action={<FAStatusPill tone={brief.status === "available" ? "up" : brief.status === "empty" ? "warn" : "info"}>{brief.reportMode}</FAStatusPill>}
       bodyClassName="space-y-3"
@@ -55,9 +56,9 @@ export function EventFlowDailyBriefCard({
 
       <div className="flex flex-wrap gap-2">
         <FASourceTraceBadge source={`${brief.date}/${brief.runId}`} status="run" tone="info" />
-        {brief.artifactPath ? <FASourceTraceBadge source={brief.artifactPath} status="markdown" tone="dim" /> : null}
-        {brief.inputSnapshotPath ? <FASourceTraceBadge source={brief.inputSnapshotPath} status="snapshot" tone="dim" /> : null}
-        {brief.jsonPath ? <FASourceTraceBadge source={brief.jsonPath} status="json" tone="dim" /> : null}
+        {brief.artifactPath ? <FASourceTraceBadge source={formatEventFlowArtifactLabel(brief.artifactPath)} status="markdown" tone="dim" /> : null}
+        {brief.inputSnapshotPath ? <FASourceTraceBadge source={formatEventFlowArtifactLabel(brief.inputSnapshotPath)} status="snapshot" tone="dim" /> : null}
+        {brief.jsonPath ? <FASourceTraceBadge source={formatEventFlowArtifactLabel(brief.jsonPath)} status="json" tone="dim" /> : null}
       </div>
 
       {brief.sourceRefs.length > 0 ? (

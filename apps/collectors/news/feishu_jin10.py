@@ -56,12 +56,30 @@ def collect_feishu_jin10_messages(
     item_dicts: list[dict[str, Any]] = []
     warnings: list[str] = []
     page_token: str | None = None
+    raw_message_count = 0
 
     try:
         for page_index in range(max_pages):
             payload = client.list_chat_messages(chat_id=target_chat_id, page_size=page_size, page_token=page_token)
             if payload.get("code", 0) not in (0, None):
                 raise RuntimeError(f"Feishu code {payload.get('code')}: {payload.get('msg') or payload}")
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            retained_page_messages: list[tuple[FeishuMessageEnvelope, NewsRelevanceDecision, dict[str, Any]]] = []
+            for raw_message in data.get("items") or []:
+                if not isinstance(raw_message, dict):
+                    continue
+                raw_message_count += 1
+                envelope = parse_feishu_message(raw_message)
+                decision = evaluate_news_relevance(
+                    envelope.content,
+                    links=envelope.links,
+                    source_marker=envelope.source_marker,
+                )
+                if not _should_store_monitor_message(envelope=envelope, decision=decision):
+                    continue
+                retained_page_messages.append((envelope, decision, raw_message))
+                parsed_messages.append(_storage_message_dict(envelope=envelope, decision=decision))
+
             raw_path = archive_news_payload(
                 storage_root=storage_root,
                 layer="raw",
@@ -73,30 +91,13 @@ def collect_feishu_jin10_messages(
                     "chat_id": target_chat_id,
                     "page_index": page_index + 1,
                     "fetched_at": utc_now_iso(),
-                    "payload": payload,
+                    "raw_message_count": sum(1 for item in data.get("items") or [] if isinstance(item, dict)),
+                    "retained_message_count": len(retained_page_messages),
+                    "messages": [_storage_raw_message(message) for _, _, message in retained_page_messages],
                 },
             )
             raw_paths.append(raw_path)
-
-            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-            for raw_message in data.get("items") or []:
-                if not isinstance(raw_message, dict):
-                    continue
-                envelope = parse_feishu_message(raw_message)
-                decision = evaluate_news_relevance(
-                    envelope.content,
-                    links=envelope.links,
-                    source_marker=envelope.source_marker,
-                )
-                parsed_messages.append({
-                    "message": envelope.to_dict(),
-                    "looks_like_jin10": looks_like_jin10_message(envelope),
-                    "relevance_decision": decision.to_dict(),
-                })
-                if not looks_like_jin10_message(envelope):
-                    continue
-                if decision.decision not in {"candidate", "high_value"}:
-                    continue
+            for envelope, decision, _ in retained_page_messages:
                 item_dicts.append(_raw_item_dict(
                     envelope=envelope,
                     decision=decision,
@@ -111,20 +112,41 @@ def collect_feishu_jin10_messages(
                 break
     except Exception as exc:
         warning = f"{SOURCE_KEY}:request_failed: {type(exc).__name__}: {exc}"
+        parsed_path = None
+        items: list[RawNewsItem] = []
+        if item_dicts:
+            parsed_path = archive_news_payload(
+                storage_root=storage_root,
+                layer="parsed",
+                source_key=SOURCE_KEY,
+                retrieved_date=retrieved_date,
+                name="messages-partial",
+                payload={
+                    "source_key": SOURCE_KEY,
+                    "chat_id": target_chat_id,
+                    "retrieved_date": retrieved_date,
+                    "status": "partial",
+                    "raw_message_count": raw_message_count,
+                    "retained_message_count": len(parsed_messages),
+                    "messages": parsed_messages,
+                    "warning": warning,
+                },
+            )
+            items = [RawNewsItem(**{**item, "parsed_path": parsed_path}) for item in item_dicts]
         return NewsCollectionResult(
             source_key=SOURCE_KEY,
-            status="unavailable",
-            items=[],
+            status="partial" if items else "unavailable",
+            items=items,
             source_refs=[_source_ref(
                 chat_id=target_chat_id,
-                status="unavailable",
+                status="partial" if items else "unavailable",
                 reason_code="request_failed",
                 reason=f"{type(exc).__name__}: {exc}",
                 warning=warning,
                 raw_paths=raw_paths,
-                parsed_path=None,
-                raw_message_count=len(parsed_messages),
-                accepted_item_count=0,
+                parsed_path=parsed_path,
+                raw_message_count=raw_message_count,
+                accepted_item_count=len(items),
             )],
             unavailable_feeds=[target_chat_id],
             warnings=[warning],
@@ -143,8 +165,9 @@ def collect_feishu_jin10_messages(
             "source_key": SOURCE_KEY,
             "chat_id": target_chat_id,
             "retrieved_date": retrieved_date,
+            "raw_message_count": raw_message_count,
+            "retained_message_count": len(parsed_messages),
             "messages": parsed_messages,
-            "items": item_dicts,
         },
     )
     items = [RawNewsItem(**{**item, "parsed_path": parsed_path}) for item in item_dicts]
@@ -164,7 +187,7 @@ def collect_feishu_jin10_messages(
             warning=None if items else warnings[-1],
             raw_paths=raw_paths,
             parsed_path=parsed_path,
-            raw_message_count=len(parsed_messages),
+            raw_message_count=raw_message_count,
             accepted_item_count=len(items),
         )],
         unavailable_feeds=[] if items else [target_chat_id],
@@ -218,6 +241,32 @@ def _raw_item_dict(
             }],
         },
     }
+
+
+def _should_store_monitor_message(*, envelope: FeishuMessageEnvelope, decision: NewsRelevanceDecision) -> bool:
+    return looks_like_jin10_message(envelope) and decision.decision in {"candidate", "high_value"}
+
+
+def _storage_message_dict(*, envelope: FeishuMessageEnvelope, decision: NewsRelevanceDecision) -> dict[str, Any]:
+    title = _title_from_content(envelope.content)
+    summary = _summary_from_content(envelope.content)
+    return {
+        "message_id": envelope.message_id,
+        "chat_id": envelope.chat_id,
+        "sender_name": envelope.sender_name,
+        "message_type": envelope.message_type,
+        "published_at": envelope.published_at,
+        "title": title,
+        "summary": summary,
+        "links": envelope.links,
+        "primary_url": envelope.links[0] if envelope.links else None,
+        "source_marker": envelope.source_marker,
+        "filter_status": decision.decision,
+    }
+
+
+def _storage_raw_message(raw_message: dict[str, Any]) -> dict[str, Any]:
+    return dict(raw_message)
 
 
 def _title_from_content(content: str) -> str:

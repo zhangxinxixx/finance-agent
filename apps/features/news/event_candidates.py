@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,21 @@ EVENT_PRIORITY: dict[str, int] = {
     "key_level_watchlist": 60,
     "market_news_candidate": 10,
 }
+
+MAINLINE_EVENT_TYPES: set[str] = {
+    "hormuz_risk",
+    "oil_supply_shock",
+    "fed_hawkish",
+    "fed_dovish",
+    "gold_market_narrative",
+    "macro_watchlist",
+    "key_level_watchlist",
+    "yen_intervention_risk",
+    "silver_industrial_demand",
+}
+NEWS_RECENCY_WINDOW_DAYS = 14
+OFFICIAL_CALENDAR_PAST_WINDOW_DAYS = 1
+OFFICIAL_CALENDAR_FUTURE_WINDOW_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -124,6 +139,7 @@ def build_event_candidates(
 ) -> EventCandidateBundle:
     standard_items = [_standardize_item(item) for item in items]
     standard_items = _dedupe_raw_items(standard_items)
+    standard_items, stale_news_item_count = _filter_current_items(standard_items, as_of=as_of)
     grouped = _group_items(standard_items)
     event_candidates = [_build_event_candidate(group_items) for group_items in grouped.values()]
     event_candidates = sorted(event_candidates, key=_event_sort_key, reverse=True)
@@ -137,7 +153,11 @@ def build_event_candidates(
         "multi_source_count": sum(1 for event in event_candidates if event.verification_status == "multi_source"),
         "official_confirmed_count": sum(1 for event in event_candidates if event.verification_status == "official_confirmed"),
         "unverified_count": sum(1 for event in event_candidates if event.verification_status == "unverified"),
+        "stale_news_item_count": stale_news_item_count,
     }
+    warnings = []
+    if stale_news_item_count:
+        warnings.append(f"Filtered {stale_news_item_count} stale news items outside the current event window.")
     return EventCandidateBundle(
         as_of=as_of,
         raw_news_items=standard_items,
@@ -146,6 +166,7 @@ def build_event_candidates(
         source_mix=source_mix,
         data_quality=data_quality,
         source_refs=list(source_refs or []),
+        warnings=warnings,
     )
 
 
@@ -213,15 +234,53 @@ def _standardize_item(item: RawNewsItem | dict[str, Any]) -> StandardNewsItem:
 
 
 def _dedupe_raw_items(items: list[StandardNewsItem]) -> list[StandardNewsItem]:
-    seen: set[str] = set()
-    result: list[StandardNewsItem] = []
+    order: list[str] = []
+    by_key: dict[str, StandardNewsItem] = {}
     for item in items:
-        key = item.news_item_id
-        if key in seen:
+        key = _raw_item_dedupe_key(item)
+        existing = by_key.get(key)
+        if existing is None:
+            order.append(key)
+            by_key[key] = item
             continue
-        seen.add(key)
-        result.append(item)
-    return result
+        if _source_reliability(item.source_type) > _source_reliability(existing.source_type):
+            by_key[key] = item
+    return [by_key[key] for key in order]
+
+
+def _raw_item_dedupe_key(item: StandardNewsItem) -> str:
+    url = item.url.strip().lower()
+    title = item.normalized_title
+    if url and title:
+        return f"content:{url}|{title}"
+    return f"id:{item.news_item_id}"
+
+
+def _filter_current_items(items: list[StandardNewsItem], *, as_of: str) -> tuple[list[StandardNewsItem], int]:
+    anchor = _parse_iso_datetime(as_of)
+    if anchor is None:
+        return items, 0
+    result: list[StandardNewsItem] = []
+    stale_count = 0
+    for item in items:
+        if _is_current_item(item, as_of=anchor):
+            result.append(item)
+        else:
+            stale_count += 1
+    return result, stale_count
+
+
+def _is_current_item(item: StandardNewsItem, *, as_of: datetime) -> bool:
+    published_at = _parse_iso_datetime(item.published_at)
+    if published_at is None:
+        return True
+    if item.source_type == "official" or item.verification_status == "official_confirmed":
+        start = as_of - timedelta(days=OFFICIAL_CALENDAR_PAST_WINDOW_DAYS)
+        end = as_of + timedelta(days=OFFICIAL_CALENDAR_FUTURE_WINDOW_DAYS)
+        return start <= published_at <= end
+    start = as_of - timedelta(days=NEWS_RECENCY_WINDOW_DAYS)
+    end = as_of + timedelta(days=1)
+    return start <= published_at <= end
 
 
 def _group_items(items: list[StandardNewsItem]) -> dict[str, list[StandardNewsItem]]:
@@ -229,14 +288,14 @@ def _group_items(items: list[StandardNewsItem]) -> dict[str, list[StandardNewsIt
     for item in items:
         event_type = _canonical_event_type(item.event_type)
         time_bucket = _time_bucket(item.published_at)
-        group_key = _duplicate_group(event_type=event_type, normalized_title=item.normalized_title, time_bucket=time_bucket)
+        group_key = _group_key(event_type=event_type, normalized_title=item.normalized_title, time_bucket=time_bucket)
         grouped.setdefault(group_key, []).append(item)
     return grouped
 
 
 def _build_event_candidate(items: list[StandardNewsItem]) -> EventCandidate:
     canonical_type = _select_event_type(items)
-    duplicate_group = _duplicate_group(
+    duplicate_group = _group_key(
         event_type=canonical_type,
         normalized_title=items[0].normalized_title,
         time_bucket=_time_bucket(items[0].published_at),
@@ -255,12 +314,14 @@ def _build_event_candidate(items: list[StandardNewsItem]) -> EventCandidate:
         "independent_source_count": verification["independent_source_count"],
         "independent_domain_count": verification["independent_domain_count"],
         "authoritative_source_count": verification["authoritative_source_count"],
+        "grouping_strategy": "mainline" if _uses_mainline_grouping(canonical_type) else "title_time",
+        "merged_item_count": len(items),
     }
     return EventCandidate(
         event_id=_event_id(event_type=canonical_type, duplicate_group=duplicate_group),
         primary_news_item_id=primary.news_item_id,
         related_news_item_ids=sorted(item.news_item_id for item in items),
-        event_time=_event_time(items),
+        event_time=_event_time(items, event_type=canonical_type),
         event_type=canonical_type,
         event_status=_event_status(canonical_type),
         asset_tags=_asset_tags(canonical_type),
@@ -409,6 +470,45 @@ def _time_bucket(value: str | None) -> str:
     return parsed.isoformat()
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _uses_mainline_grouping(event_type: str) -> bool:
+    return event_type in MAINLINE_EVENT_TYPES
+
+
+def _group_key(*, event_type: str, normalized_title: str, time_bucket: str) -> str:
+    if _uses_mainline_grouping(event_type):
+        return _mainline_group(event_type=event_type, time_bucket=time_bucket)
+    return _duplicate_group(event_type=event_type, normalized_title=normalized_title, time_bucket=time_bucket)
+
+
+def _mainline_group(*, event_type: str, time_bucket: str) -> str:
+    week_bucket = _week_bucket(time_bucket)
+    digest = hashlib.sha256(f"{event_type}|{week_bucket}".encode("utf-8")).hexdigest()[:16]
+    return f"mainline:{event_type}:{digest}"
+
+
+def _week_bucket(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return "unknown"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    year, week, _ = parsed.astimezone(timezone.utc).isocalendar()
+    return f"{year}-W{week:02d}"
+
+
 def _duplicate_group(*, event_type: str, normalized_title: str, time_bucket: str) -> str:
     digest = hashlib.sha256(f"{event_type}|{normalized_title}|{time_bucket}".encode("utf-8")).hexdigest()[:16]
     return f"dupe:{event_type}:{digest}"
@@ -423,8 +523,10 @@ def _stable_item_id(*, source_key: str, title: str, url: str, published_at: obje
     return f"news:{source_key}:{digest}"
 
 
-def _event_time(items: list[StandardNewsItem]) -> str | None:
+def _event_time(items: list[StandardNewsItem], *, event_type: str) -> str | None:
     times = sorted(item.published_at for item in items if item.published_at)
+    if _uses_mainline_grouping(event_type):
+        return times[-1] if times else None
     return times[0] if times else None
 
 

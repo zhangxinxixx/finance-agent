@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import {
   ReportsRail,
   type ReportFilters,
@@ -7,6 +8,7 @@ import {
 import { ReportsKpiStrip } from "@/components/reports/ReportsKpiStrip";
 import {
   ReportsLibraryContent,
+  ReportsPagination,
   ReportsSummaryBar,
 } from "@/components/reports/ReportsPageSections";
 import {
@@ -15,7 +17,6 @@ import {
 } from "@/components/reports/ReportsToolbar";
 import { getReportDetailId, isSupportedReportType } from "@/components/reports/reportListMeta";
 import {
-  buildReportSummaryText,
   dedupeSupportedReports,
   filterReports,
   listAvailableReportDates,
@@ -26,7 +27,8 @@ import type { ReportIndexItem } from "@/types/reports";
 export function ReportsPage() {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
-  const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [currentPage, setCurrentPage] = useState(1);
   const [filters, setFilters] = useState<ReportFilters>({
     reportTypes: [],
     asset: null,
@@ -49,12 +51,38 @@ export function ReportsPage() {
     return filterReports(allReports, searchQuery, filters);
   }, [allReports, searchQuery, filters]);
 
+  const pageSize = useMemo(() => {
+    switch (viewMode) {
+      case "timeline":
+        return 10;
+      case "grid":
+        return 12;
+      case "list":
+      default:
+        return 14;
+    }
+  }, [viewMode]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredReports.length / pageSize));
+  const pagedReports = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredReports.slice(start, start + pageSize);
+  }, [filteredReports, currentPage, pageSize]);
+
   const availableDates = useMemo(
     () => listAvailableReportDates(dates),
     [dates],
   );
 
-  const reportSummaryText = buildReportSummaryText(filteredReports.length, allReports.length);
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, filters, viewMode]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   function resetFilters() {
     setFilters({
@@ -74,59 +102,50 @@ export function ReportsPage() {
   }
 
   return (
-    <div className="finance-page-shell" style={{ gap: 8 }}>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          flex: 1,
-          minHeight: 0,
-        }}
-      >
-        <ReportsKpiStrip reports={allReports} availableDates={availableDates} />
+    <FAPageScaffold
+      className="reports-page-shell"
+    >
+      <ReportsKpiStrip reports={allReports} availableDates={availableDates} />
 
-        <ReportsToolbar
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
+      <div className="fa-split-grid fa-split-grid--left reports-page-grid overflow-hidden">
+        <ReportsRail
+          reports={allReports}
+          filters={filters}
+          onFilterChange={setFilters}
+          railLoading={railLoading}
+          railError={railError}
         />
 
-        <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-          <ReportsRail
-            reports={allReports}
-            filters={filters}
-            onFilterChange={setFilters}
-            railLoading={railLoading}
-            railError={railError}
+        <main className="fa-scroll-column fa-chrome-band reports-main-panel p-1.5">
+          <ReportsToolbar
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
           />
 
-          <main
-            style={{
-              flex: 1,
-              overflowY: "auto",
-              padding: 6,
-              display: "flex",
-              flexDirection: "column",
-              minWidth: 0,
-            }}
-          >
-            <ReportsSummaryBar
-              reportSummaryText={reportSummaryText}
-              hasFilteredResults={filteredReports.length !== allReports.length}
-              onResetFilters={resetFilters}
-            />
+          <ReportsSummaryBar
+            hasFilteredResults={filteredReports.length !== allReports.length}
+            onResetFilters={resetFilters}
+          />
 
-            <ReportsLibraryContent
-              viewMode={viewMode}
-              filteredReports={filteredReports}
-              searchQuery={searchQuery}
-              onSelectReport={handleCardSelect}
-            />
-          </main>
-        </div>
+          <ReportsLibraryContent
+            viewMode={viewMode}
+            filteredReports={pagedReports}
+            searchQuery={searchQuery}
+            onSelectReport={handleCardSelect}
+          />
+
+          <ReportsPagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={filteredReports.length}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+          />
+        </main>
       </div>
-    </div>
+    </FAPageScaffold>
   );
 }
 

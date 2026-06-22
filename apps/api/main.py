@@ -121,7 +121,11 @@ from apps.api.services.daily_analysis_followup_service import (
 )
 from apps.api.services.daily_analysis_followup_task_service import create_daily_analysis_followup_tasks
 from apps.api.services.execution_event_api import get_run_events
-from apps.api.services.feishu_jin10_message_monitor_service import get_feishu_jin10_message_monitor
+from apps.api.services.feishu_jin10_message_monitor_service import (
+    get_feishu_jin10_message_monitor,
+    get_feishu_jin10_message_monitor_latest,
+    list_feishu_jin10_message_monitor_dates,
+)
 from apps.api.services.artifact_service import get_artifact_detail_response
 from apps.api.services.source_service import get_data_status_summary
 from apps.api.services.source_trace_service import (
@@ -133,12 +137,14 @@ from apps.api.services.source_trace_service import (
 from apps.api.services.report_service import (
     get_report_analysis_inputs,
     get_report_analysis,
+    get_report_artifact_asset_path,
     get_report_artifacts,
     get_report_detail,
     get_report_evidence,
     get_report_source,
     get_report_visual,
 )
+from apps.api.schemas.common import ArtifactType
 from apps.api.services.agent_output_service import build_agent_output_summary
 from apps.api.services._trace_refs import parse_source_refs
 from apps.api.services.scheduler_service import get_scheduler_overview
@@ -159,6 +165,8 @@ logger = logging.getLogger(__name__)
 
 _JIN10_FLASH_CACHE_PATH = Path("./storage/outputs/jin10/flash_cache.json")
 _JIN10_FLASH_CACHE_MAX_AGE_SECONDS = 60
+_JIN10_CALENDAR_CACHE_PATH = Path("./storage/outputs/jin10/calendar_cache.json")
+_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS = 18 * 60 * 60
 _PREMARKET_ACTIVE_TASK_STALE_AFTER = timedelta(
     hours=int(os.getenv("PREMARKET_ACTIVE_TASK_STALE_AFTER_HOURS", "6"))
 )
@@ -194,6 +202,30 @@ def _premarket_active_task_ref_time(task: TaskRun) -> datetime | None:
 def _cleanup_stale_active_premarket_tasks(db: Session, *, now: datetime | None = None) -> TaskRun | None:
     """Return the newest still-active premarket task, marking stale legacy rows along the way."""
     current_time = _normalize_utc(now) or datetime.now(timezone.utc)
+    active_task, stale_tasks = _classify_premarket_active_legacy_tasks(db, now=current_time)
+
+    for task in stale_tasks:
+        transition_task_run(
+            db,
+            task,
+            TaskStatus.stale,
+            source="api",
+            reason=f"active_timeout_exceeded:{_PREMARKET_ACTIVE_TASK_STALE_AFTER}",
+            error_message=task.error or "Legacy premarket task timed out before Dagster migration verification.",
+        )
+
+    if stale_tasks:
+        db.commit()
+    return active_task
+
+
+def _classify_premarket_active_legacy_tasks(
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> tuple[TaskRun | None, list[TaskRun]]:
+    """Return the newest active legacy premarket task plus stale rows, without mutating state."""
+    current_time = _normalize_utc(now) or datetime.now(timezone.utc)
     active_runs = (
         db.query(TaskRun)
         .filter(
@@ -204,27 +236,113 @@ def _cleanup_stale_active_premarket_tasks(db: Session, *, now: datetime | None =
         .all()
     )
 
-    stale_marked = False
+    stale_runs: list[TaskRun] = []
     for task in active_runs:
         ref_time = _premarket_active_task_ref_time(task)
         if ref_time is not None and current_time - ref_time > _PREMARKET_ACTIVE_TASK_STALE_AFTER:
-            transition_task_run(
-                db,
-                task,
-                TaskStatus.stale,
-                source="api",
-                reason=f"active_timeout_exceeded:{_PREMARKET_ACTIVE_TASK_STALE_AFTER}",
-                error_message=task.error or "Legacy premarket task timed out before Dagster migration verification.",
-            )
-            stale_marked = True
+            stale_runs.append(task)
             continue
-        if stale_marked:
-            db.commit()
-        return task
+        return task, stale_runs
 
-    if stale_marked:
-        db.commit()
-    return None
+    return None, stale_runs
+
+
+def _task_to_premarket_active_task_ref(task: TaskRun) -> PremarketActiveTaskRef:
+    return PremarketActiveTaskRef(
+        task_id=str(task.id),
+        status=task.status.value,
+        updated_at=_premarket_active_task_ref_time(task),
+    )
+
+
+def _source_readiness_block_count(source_readiness_summary: dict[str, Any] | None) -> int:
+    if not isinstance(source_readiness_summary, dict):
+        return 0
+    decision_counts = source_readiness_summary.get("decision_counts")
+    if not isinstance(decision_counts, dict):
+        return 0
+    try:
+        return max(int(decision_counts.get("blocked", 0) or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _source_readiness_block_message(source_readiness_summary: dict[str, Any] | None) -> str:
+    blocked_sources = source_readiness_summary.get("blocked_sources") if isinstance(source_readiness_summary, dict) else None
+    if isinstance(blocked_sources, list) and blocked_sources:
+        return f"Source readiness blocked premarket launch: {', '.join(str(source) for source in blocked_sources)}"
+    return "Source readiness blocked premarket launch"
+
+
+def _build_premarket_launch_preflight(force: bool = False) -> PremarketLaunchPreflightResponse:
+    readiness = pipeline_contract_service.build_premarket_pipeline_source_readiness()
+    source_readiness_summary = readiness.get("source_readiness_summary")
+    source_readiness_blocked = _source_readiness_block_count(source_readiness_summary) > 0
+
+    with SessionLocal() as session:
+        active_legacy_task, stale_legacy_tasks = _classify_premarket_active_legacy_tasks(session)
+
+    dagster_url = os.getenv("DAGSTER_GRAPHQL_URL", "http://127.0.0.1:3333/graphql")
+    dagster_check_error: str | None = None
+    active_dagster_run: dict[str, str] | None = None
+    try:
+        active_dagster_run = _find_active_dagster_premarket_run(dagster_url)
+    except Exception as exc:
+        dagster_check_error = str(exc)
+
+    blocking_reasons: list[str] = []
+    if active_legacy_task is not None:
+        blocking_reasons.append("legacy_active_task")
+    if active_dagster_run is not None:
+        blocking_reasons.append("dagster_active_run")
+    if source_readiness_blocked:
+        blocking_reasons.append("source_readiness_blocked")
+
+    return PremarketLaunchPreflightResponse(
+        force=force,
+        can_launch=(force or not blocking_reasons) and not source_readiness_blocked,
+        blocking_reasons=blocking_reasons,
+        stale_legacy_task_ids=[str(task.id) for task in stale_legacy_tasks],
+        active_legacy_task=(
+            None if active_legacy_task is None else _task_to_premarket_active_task_ref(active_legacy_task)
+        ),
+        active_dagster_run=(
+            None
+            if active_dagster_run is None
+            else PremarketDagsterRunRef(
+                run_id=active_dagster_run["run_id"],
+                status=active_dagster_run["status"],
+            )
+        ),
+        dagster_check_error=dagster_check_error,
+        source_readiness_summary=source_readiness_summary,
+    )
+
+
+def _premarket_launch_error_detail(
+    *,
+    message: str,
+    reason: str,
+    force: bool,
+    source_readiness_summary: dict[str, Any] | None = None,
+    active_legacy_task: PremarketActiveTaskRef | None = None,
+    active_dagster_run: PremarketDagsterRunRef | None = None,
+    dagster_check_error: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "message": message,
+        "reason": reason,
+        "force": force,
+        "blocking_reasons": [
+            reason
+        ]
+        if reason.startswith("dagster_") or reason.startswith("legacy_") or reason == "source_readiness_blocked"
+        else [],
+        "active_legacy_task": None if active_legacy_task is None else active_legacy_task.model_dump(mode="json"),
+        "active_dagster_run": None if active_dagster_run is None else active_dagster_run.model_dump(mode="json"),
+        "dagster_check_error": dagster_check_error,
+        "source_readiness_summary": source_readiness_summary,
+    }
 
 
 def _find_active_dagster_premarket_run(dagster_url: str) -> dict[str, str] | None:
@@ -472,6 +590,29 @@ class TaskCreateResponse(BaseModel):
     task_id: str
     name: str
     status: str
+    source_readiness_summary: dict[str, Any] | None = None
+
+
+class PremarketActiveTaskRef(BaseModel):
+    task_id: str
+    status: str
+    updated_at: datetime | None = None
+
+
+class PremarketDagsterRunRef(BaseModel):
+    run_id: str
+    status: str
+
+
+class PremarketLaunchPreflightResponse(BaseModel):
+    force: bool = False
+    can_launch: bool
+    blocking_reasons: list[str]
+    stale_legacy_task_ids: list[str] = []
+    active_legacy_task: PremarketActiveTaskRef | None = None
+    active_dagster_run: PremarketDagsterRunRef | None = None
+    dagster_check_error: str | None = None
+    source_readiness_summary: dict[str, Any] | None = None
 
 
 class StepOut(BaseModel):
@@ -545,6 +686,18 @@ def api_premarket_pipeline_contract() -> dict[str, Any]:
     return pipeline_contract_service.build_premarket_pipeline_contract()
 
 
+@app.get("/api/pipelines/premarket/readiness")
+def api_premarket_pipeline_readiness() -> dict[str, Any]:
+    """Return the current source-readiness view for the canonical premarket pipeline."""
+    return pipeline_contract_service.build_premarket_pipeline_source_readiness()
+
+
+@app.get("/api/tasks/premarket/preflight", response_model=PremarketLaunchPreflightResponse)
+def api_premarket_launch_preflight(force: bool = False) -> PremarketLaunchPreflightResponse:
+    """Return read-only launch preflight truth for the premarket task trigger."""
+    return _build_premarket_launch_preflight(force=force)
+
+
 @app.post("/tasks/premarket", response_model=TaskCreateResponse)
 @app.post("/api/tasks/premarket", response_model=TaskCreateResponse)
 def trigger_premarket(force: bool = False) -> TaskCreateResponse:
@@ -558,9 +711,16 @@ def trigger_premarket(force: bool = False) -> TaskCreateResponse:
         if not force:
             existing = _cleanup_stale_active_premarket_tasks(session)
             if existing:
+                readiness = pipeline_contract_service.build_premarket_pipeline_source_readiness()
                 raise HTTPException(
                     status_code=409,
-                    detail=f"已有进行中的 premarket 任务: {existing.id} (status={existing.status.value})",
+                    detail=_premarket_launch_error_detail(
+                        message=f"已有进行中的 premarket 任务: {existing.id} (status={existing.status.value})",
+                        reason="legacy_active_task",
+                        force=force,
+                        source_readiness_summary=readiness.get("source_readiness_summary"),
+                        active_legacy_task=_task_to_premarket_active_task_ref(existing),
+                    ),
                 )
 
     # Launch via Dagster GraphQL
@@ -572,13 +732,36 @@ def trigger_premarket(force: bool = False) -> TaskCreateResponse:
             logger.warning("Failed to check active Dagster premarket runs: %s", exc)
         else:
             if active_dagster_run:
+                readiness = pipeline_contract_service.build_premarket_pipeline_source_readiness()
                 raise HTTPException(
                     status_code=409,
-                    detail=(
-                        "Dagster 已有进行中的 premarket_job: "
-                        f"{active_dagster_run['run_id']} (status={active_dagster_run['status']})"
+                    detail=_premarket_launch_error_detail(
+                        message=(
+                            "Dagster 已有进行中的 premarket_job: "
+                            f"{active_dagster_run['run_id']} (status={active_dagster_run['status']})"
+                        ),
+                        reason="dagster_active_run",
+                        force=force,
+                        source_readiness_summary=readiness.get("source_readiness_summary"),
+                        active_dagster_run=PremarketDagsterRunRef(
+                            run_id=active_dagster_run["run_id"],
+                            status=active_dagster_run["status"],
+                        ),
                     ),
                 )
+
+    readiness = pipeline_contract_service.build_premarket_pipeline_source_readiness()
+    source_readiness_summary = readiness.get("source_readiness_summary")
+    if _source_readiness_block_count(source_readiness_summary) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=_premarket_launch_error_detail(
+                message=_source_readiness_block_message(source_readiness_summary),
+                reason="source_readiness_blocked",
+                force=force,
+                source_readiness_summary=source_readiness_summary,
+            ),
+        )
 
     mutation = """
         mutation LaunchRun($jobName: String!) {
@@ -613,11 +796,33 @@ def trigger_premarket(force: bool = False) -> TaskCreateResponse:
         result = data.get("data", {}).get("launchPipelineExecution", {})
         if "run" in result:
             run_id = result["run"]["runId"]
-            return TaskCreateResponse(task_id=run_id, name="premarket", status="running")
+            return TaskCreateResponse(
+                task_id=run_id,
+                name="premarket",
+                status="running",
+                source_readiness_summary=source_readiness_summary,
+            )
         error_msg = result.get("message", str(result))
-        raise HTTPException(status_code=500, detail=f"Dagster launch failed: {error_msg}")
+        raise HTTPException(
+            status_code=500,
+            detail=_premarket_launch_error_detail(
+                message=f"Dagster launch failed: {error_msg}",
+                reason="dagster_launch_failed",
+                force=force,
+                source_readiness_summary=source_readiness_summary,
+            ),
+        )
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Dagster unavailable: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail=_premarket_launch_error_detail(
+                message=f"Dagster unavailable: {exc}",
+                reason="dagster_unavailable",
+                force=force,
+                source_readiness_summary=source_readiness_summary,
+                dagster_check_error=str(exc),
+            ),
+        )
 
 
 @app.get("/tasks/{task_id}", response_model=TaskOut)
@@ -896,11 +1101,6 @@ def api_run_artifacts(run_id: str, db: Session = Depends(get_db)):
 @app.get("/api/artifacts/{artifact_id}", response_model=ArtifactDetailResponse)
 def api_artifact_detail(artifact_id: str, db: Session = Depends(get_db)) -> ArtifactDetailResponse:
     """返回单个 registry artifact 的上下文详情。"""
-    try:
-        uuid.UUID(artifact_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid artifact_id format")
-
     artifact = get_artifact_detail_response(db, artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
@@ -958,11 +1158,6 @@ def api_source_trace_by_strategy(strategy_card_id: str, db: Session = Depends(ge
 @app.get("/api/source-trace/by-artifact/{artifact_id}", response_model=SourceTraceResponse)
 def api_source_trace_by_artifact(artifact_id: str, db: Session = Depends(get_db)) -> SourceTraceResponse:
     """按 artifact_id 反查关联 snapshot/source/artifact 溯源视图。"""
-    try:
-        uuid.UUID(artifact_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid artifact_id format")
-
     trace = get_source_trace_by_artifact_id(db, artifact_id)
     if trace is None:
         raise HTTPException(status_code=404, detail="Source trace not found")
@@ -1678,6 +1873,21 @@ def api_create_daily_analysis_followup_tasks(
     return data
 
 
+@app.get("/api/news/feishu-jin10/messages/latest")
+def api_feishu_jin10_message_monitor_latest(db: Session = Depends(get_db)):
+    """返回最近一个有 Feishu 金十消息 parsed artifact 的日期监控视图。"""
+    data = get_feishu_jin10_message_monitor_latest(db=db)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Feishu Jin10 latest messages not found")
+    return data
+
+
+@app.get("/api/news/feishu-jin10/dates")
+def api_feishu_jin10_message_monitor_dates():
+    """返回有 Feishu 金十消息 parsed artifact 的日期列表。"""
+    return {"dates": list_feishu_jin10_message_monitor_dates()}
+
+
 @app.get("/api/news/feishu-jin10/messages")
 def api_feishu_jin10_message_monitor(date: str, db: Session = Depends(get_db)):
     """返回指定日期的 Feishu 金十消息采集与后续纳入状态清单。"""
@@ -1744,19 +1954,20 @@ def api_jin10_quotes_latest():
 @app.get("/api/jin10/calendar")
 def api_jin10_calendar():
     """返回 Jin10 经济日历（高影响力 + 未来事件）。"""
-    cache_path = Path("./storage/outputs/jin10/calendar_cache.json")
+    cache_path = _JIN10_CALENDAR_CACHE_PATH
     if not cache_path.exists():
-        try:
-            from apps.scheduler.jin10_refresh import refresh_jin10_calendar_cache
-
-            refresh_jin10_calendar_cache()
-        except Exception:
-            pass
+        _refresh_jin10_calendar_cache()
     if not cache_path.exists():
         return {"status": "unavailable", "events": [], "message": "Calendar data not available"}
     try:
         data = json.loads(cache_path.read_text(encoding="utf-8"))
-        return data
+        payload = _build_jin10_calendar_payload(data, cache_path)
+        if payload["freshness"]["reason"] == "no_upcoming_events":
+            _refresh_jin10_calendar_cache()
+            if cache_path.exists():
+                refreshed_data = json.loads(cache_path.read_text(encoding="utf-8"))
+                return _build_jin10_calendar_payload(refreshed_data, cache_path)
+        return payload
     except Exception as exc:
         return {"status": "error", "events": [], "message": str(exc)}
 
@@ -1787,6 +1998,119 @@ def _is_file_stale(path: Path, *, max_age_seconds: int) -> bool:
     except OSError:
         return True
     return age_seconds > max_age_seconds
+
+
+def _refresh_jin10_calendar_cache() -> None:
+    try:
+        from apps.scheduler.jin10_refresh import refresh_jin10_calendar_cache
+
+        refresh_jin10_calendar_cache()
+    except Exception:
+        pass
+
+
+def _parse_jin10_calendar_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    normalized = value.strip().replace("Z", "+00:00")
+    if "T" not in normalized and " " in normalized:
+        normalized = normalized.replace(" ", "T", 1)
+
+    candidates = [normalized]
+    if len(normalized) == 16:
+        candidates.append(f"{normalized}:00")
+
+    for candidate in candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _calendar_release_state(event: dict[str, Any]) -> str:
+    return "upcoming" if event.get("actual") in (None, "") else "released"
+
+
+def _normalize_jin10_calendar_event(event: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(event)
+    parsed_time = _parse_jin10_calendar_time(event.get("pub_time"))
+    if parsed_time is not None:
+        normalized["pub_time"] = parsed_time.isoformat(timespec="minutes")
+        normalized["event_date"] = parsed_time.date().isoformat()
+        normalized["_sort_ts"] = parsed_time.timestamp()
+    else:
+        normalized["event_date"] = None
+        normalized["_sort_ts"] = 0.0
+    normalized["release_state"] = _calendar_release_state(event)
+    normalized["is_high_impact"] = int(event.get("star") or 0) >= 4
+    return normalized
+
+
+def _calendar_event_sort_key(event: dict[str, Any]) -> tuple[int, float, int]:
+    sort_ts = float(event.get("_sort_ts") or 0.0)
+    star = int(event.get("star") or 0)
+    if event.get("release_state") == "upcoming":
+        return (0, sort_ts, -star)
+    return (1, -sort_ts, -star)
+
+
+def _calendar_cache_age_seconds(path: Path) -> int | None:
+    try:
+        return max(0, int(time.time() - path.stat().st_mtime))
+    except OSError:
+        return None
+
+
+def _build_jin10_calendar_payload(data: dict[str, Any], cache_path: Path) -> dict[str, Any]:
+    raw_events = data.get("events")
+    events = [_normalize_jin10_calendar_event(item) for item in raw_events if isinstance(item, dict)] if isinstance(raw_events, list) else []
+    events.sort(key=_calendar_event_sort_key)
+
+    upcoming_count = sum(1 for event in events if event.get("release_state") == "upcoming")
+    released_count = len(events) - upcoming_count
+    high_impact_count = sum(1 for event in events if event.get("is_high_impact"))
+    event_dates = [event.get("event_date") for event in events if isinstance(event.get("event_date"), str)]
+    earliest_event_date = min(event_dates) if event_dates else None
+    latest_event_date = max(event_dates) if event_dates else None
+    cache_age_seconds = _calendar_cache_age_seconds(cache_path)
+
+    stale_by_age = _is_file_stale(cache_path, max_age_seconds=_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS)
+    today_key = datetime.now(timezone.utc).date().isoformat()
+    stale_by_window = upcoming_count == 0 and latest_event_date is not None and latest_event_date < today_key
+    is_stale = stale_by_age or stale_by_window
+
+    freshness_reason = "fresh"
+    if stale_by_window:
+        freshness_reason = "no_upcoming_events"
+    elif stale_by_age:
+        freshness_reason = "cache_too_old"
+
+    for event in events:
+        event.pop("_sort_ts", None)
+
+    return {
+        "status": "stale" if is_stale else "ok",
+        "generated_at": data.get("generated_at"),
+        "events": events,
+        "stats": {
+            "total": len(events),
+            "upcoming": upcoming_count,
+            "released": released_count,
+            "high_impact": high_impact_count,
+            "earliest_event_date": earliest_event_date,
+            "latest_event_date": latest_event_date,
+        },
+        "freshness": {
+            "is_stale": is_stale,
+            "reason": freshness_reason,
+            "cache_age_seconds": cache_age_seconds,
+        },
+    }
 
 
 @app.get("/api/jin10/kline")
@@ -1951,6 +2275,14 @@ def api_report_analysis(report_id: str, db: Session = Depends(get_db)):
     if payload is None:
         raise HTTPException(status_code=404, detail="Report artifact not found")
     return payload
+
+
+@app.get("/api/reports/{report_id}/asset/{artifact_type}/{asset_path:path}")
+def api_report_artifact_asset(report_id: str, artifact_type: ArtifactType, asset_path: str, db: Session = Depends(get_db)):
+    path = get_report_artifact_asset_path(db, report_id, artifact_type, asset_path)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Report artifact asset not found")
+    return FileResponse(path)
 
 
 @app.get("/api/reports/{report_id}/visual")

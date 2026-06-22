@@ -88,7 +88,9 @@ def test_event_candidates_merge_multi_source_candidate_without_official_confirma
     assert set(event["asset_tags"]) == {"XAUUSD", "WTI", "Brent", "DXY"}
     assert "Middle East" in event["region_tags"]
     assert "Iran" in event["entities"]
-    assert event["duplicate_group"].startswith("dupe:hormuz_risk:")
+    assert event["duplicate_group"].startswith("mainline:hormuz_risk:")
+    assert event["data_quality"]["grouping_strategy"] == "mainline"
+    assert event["data_quality"]["merged_item_count"] == 3
 
     assert len(data["top_market_events"]) == 1
     assert data["top_market_events"][0]["verification_status"] == "multi_source"
@@ -190,6 +192,120 @@ def test_single_aggregator_item_stays_candidate_only() -> None:
     assert data["top_market_events"] == []
     assert data["data_quality"]["single_source_count"] == 1
     assert data["data_quality"]["official_confirmed_count"] == 0
+
+
+def test_ongoing_mainline_items_collapse_into_one_logical_event() -> None:
+    bundle = build_event_candidates(
+        [
+            _item(
+                source_key="reuters_public_news",
+                source_type="wire_public_candidate",
+                title="Iran warns Hormuz shipping could face new disruption",
+                url="https://www.reuters.com/world/hormuz-1",
+                domain="reuters.com",
+                event_type="hormuz_risk",
+                published_at="2026-06-10T08:15:00+00:00",
+            ),
+            _item(
+                source_key="google_news_rss",
+                source_type="aggregator",
+                title="Oil tankers reroute as Strait of Hormuz tension rises",
+                url="https://news.google.com/rss/articles/hormuz-2",
+                domain="example-news.com",
+                event_type="middle_east_escalation",
+                published_at="2026-06-10T12:45:00+00:00",
+            ),
+            _item(
+                source_key="jin10_feishu",
+                source_type="supplemental",
+                title="中东局势继续发酵，市场关注霍尔木兹海峡运输风险",
+                url="https://xnews.jin10.com/details/hormuz",
+                domain="xnews.jin10.com",
+                event_type="hormuz_risk",
+                published_at="2026-06-11T01:10:00+00:00",
+            ),
+        ],
+        as_of="2026-06-11T02:00:00+00:00",
+    )
+
+    data = bundle.to_dict()
+    assert len(data["event_candidates"]) == 1
+
+    event = data["event_candidates"][0]
+    assert event["event_type"] == "hormuz_risk"
+    assert event["duplicate_group"].startswith("mainline:hormuz_risk:")
+    assert event["event_time"] == "2026-06-11T01:10:00+00:00"
+    assert event["source_count"] == 3
+    assert event["data_quality"]["grouping_strategy"] == "mainline"
+    assert event["data_quality"]["merged_item_count"] == 3
+    assert event["verification_status"] == "multi_source"
+
+
+def test_stale_public_news_items_are_filtered_before_event_grouping() -> None:
+    bundle = build_event_candidates(
+        [
+            _item(
+                source_key="reuters_public_news",
+                source_type="wire_public_candidate",
+                title="BOJ comment from old archive mentions Fed inflation",
+                url="https://www.reuters.com/markets/archive-fed-boj",
+                domain="reuters.com",
+                event_type="fed_hawkish",
+                published_at="2022-03-16T07:00:00+00:00",
+            ),
+            _item(
+                source_key="google_news_rss",
+                source_type="aggregator",
+                title="Warsh says Fed inflation path remains restrictive",
+                url="https://www.reuters.com/markets/current-fed",
+                domain="reuters.com",
+                event_type="fed_hawkish",
+                published_at="2026-06-20T07:00:00+00:00",
+            ),
+        ],
+        as_of="2026-06-21T00:00:00+00:00",
+    )
+
+    data = bundle.to_dict()
+    assert len(data["raw_news_items"]) == 1
+    assert data["raw_news_items"][0]["title"] == "Warsh says Fed inflation path remains restrictive"
+    assert len(data["event_candidates"]) == 1
+    assert data["data_quality"]["stale_news_item_count"] == 1
+    assert data["warnings"] == ["Filtered 1 stale news items outside the current event window."]
+
+
+def test_cross_source_exact_same_public_article_is_deduped_before_grouping() -> None:
+    shared_url = "https://news.google.com/rss/articles/reuters-shared"
+    shared_title = "Brent set for weekly fall as ceasefire lowers risk premium"
+    bundle = build_event_candidates(
+        [
+            _item(
+                source_key="google_news_rss",
+                source_type="aggregator",
+                title=shared_title,
+                url=shared_url,
+                domain="reuters.com",
+                event_type="oil_supply_shock",
+                published_at="2026-06-20T07:00:00+00:00",
+            ),
+            _item(
+                source_key="reuters_public_news",
+                source_type="wire_public_candidate",
+                title=shared_title,
+                url=shared_url,
+                domain="reuters.com",
+                event_type="oil_supply_shock",
+                published_at="2026-06-20T07:00:00+00:00",
+            ),
+        ],
+        as_of="2026-06-21T00:00:00+00:00",
+    )
+
+    data = bundle.to_dict()
+    assert len(data["raw_news_items"]) == 1
+    assert data["raw_news_items"][0]["source_key"] == "reuters_public_news"
+    assert len(data["event_candidates"]) == 1
+    assert data["event_candidates"][0]["data_quality"]["merged_item_count"] == 1
 
 
 def test_official_release_enters_top_market_events_as_confirmed_scheduled_event() -> None:

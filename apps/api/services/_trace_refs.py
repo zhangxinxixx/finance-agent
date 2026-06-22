@@ -53,6 +53,7 @@ def parse_artifact_refs(raw: Any) -> list[ArtifactRef]:
                     artifact_id=str(item.get("artifact_id") or f"{file_path}:{index}"),
                     artifact_type=coerce_artifact_type(item.get("artifact_type"), str(file_path)),
                     file_path=str(file_path),
+                    storage_backend=item.get("storage_backend"),
                     version=item.get("version"),
                     generated_at=item.get("generated_at"),
                     sha256=item.get("sha256"),

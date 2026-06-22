@@ -115,6 +115,7 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
 
     _add_support_resistance(options, key_findings, risk_points, invalid_conditions)
     _add_gex(options, key_findings, risk_points, invalid_conditions)
+    expiry_structures = _add_expiry_structure_findings(options, key_findings)
     _add_iv_skew(options, key_findings)
     _add_block_pnt(options, key_findings)
     _add_expiration_summary(options, key_findings)
@@ -153,6 +154,8 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
         status = AgentStatus.PARTIAL
         key_findings.append("CME options data is present but directional signals are insufficient.")
 
+    score += _structure_score(expiry_structures)
+    confidence += _structure_confidence_bonus(expiry_structures)
     bias = _bias_from_score(score)
     confidence = _clamp(confidence + min(abs(score) * 0.05, 0.12), 0.0, 0.78 if status is AgentStatus.PARTIAL else 0.90)
 
@@ -168,7 +171,7 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
         risk_points=risk_points,
         watchlist=list(_WATCHLIST),
         invalid_conditions=invalid_conditions,
-        summary=_summary(bias, status, confidence),
+        summary=_summary(bias, status, confidence, options, expiry_structures),
         source_refs=source_refs,
         status=status,
         created_at=created_at,
@@ -241,6 +244,26 @@ def _add_gex(
         risk_points.append("Per-expiry GEX summaries are unavailable or incomplete.")
 
 
+def _add_expiry_structure_findings(options: dict[str, Any], key_findings: list[str]) -> list[dict[str, Any]]:
+    structures = _expiry_structures(options)
+    for item in structures[:2]:
+        expiry = item["expiry"]
+        structure_label = item["structure_label"]
+        net_gex = item["net_gex"]
+        gamma_zero = item["gamma_zero"]
+        f_value = item["f_value"]
+        phrase = f"{expiry} {structure_label}"
+        if net_gex is not None:
+            phrase += f"，NetGEX {net_gex / 1_000_000:.2f}M"
+        if f_value is not None and gamma_zero is not None:
+            relation = "低于" if f_value < gamma_zero else "高于" if f_value > gamma_zero else "贴近"
+            phrase += f"，F {f_value:g} {relation} Gamma Zero {gamma_zero:.1f}"
+        elif gamma_zero is not None:
+            phrase += f"，Gamma Zero {gamma_zero:.1f}"
+        key_findings.append(phrase + "。")
+    return structures
+
+
 def _add_iv_skew(options: dict[str, Any], key_findings: list[str]) -> None:
     by_expiry = _dict(_dict(options.get("gex")).get("by_expiry"))
     for expiry, data in by_expiry.items():
@@ -275,9 +298,24 @@ def _add_expiration_summary(options: dict[str, Any], key_findings: list[str]) ->
     expiries = _list(_dict(options.get("data_source")).get("expiries"))
     if expiries:
         key_findings.append("Expiration coverage: " + ", ".join(str(item) for item in expiries[:5]) + ".")
-    roll_signals = _list(options.get("roll_signals"))
+    roll_signals = _list_of_dicts(options.get("roll_signals"))
     if roll_signals:
-        key_findings.append(f"Expiration roll signals available: {len(roll_signals)}.")
+        parts: list[str] = []
+        for signal in roll_signals[:2]:
+            roll_type = _text(signal.get("roll_type"))
+            near = _text(signal.get("near_expiry"))
+            far = _text(signal.get("far_expiry"))
+            confidence = _to_float(signal.get("confidence"))
+            phrase = roll_type or "roll"
+            if near or far:
+                phrase += f" {near or '?'}->{far or '?'}"
+            if confidence is not None:
+                phrase += f" ({confidence:.2f})"
+            parts.append(phrase)
+        if parts:
+            key_findings.append("Expiration roll signals: " + "; ".join(parts) + ".")
+        else:
+            key_findings.append(f"Expiration roll signals available: {len(roll_signals)}.")
 
 
 def _source_status(options: dict[str, Any]) -> str:
@@ -342,7 +380,45 @@ def _bias_from_score(score: float) -> AgentBias:
     return AgentBias.NEUTRAL
 
 
-def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
+def _summary(
+    bias: AgentBias,
+    status: AgentStatus,
+    confidence: float,
+    options: dict[str, Any],
+    expiry_structures: list[dict[str, Any]],
+) -> str:
+    aggregate_gamma_zero = _aggregate_gamma_zero(options)
+    support, resistance = _support_resistance_levels(options)
+    source_status = _source_status(options).upper()
+    if expiry_structures:
+        phrases: list[str] = []
+        if aggregate_gamma_zero is not None:
+            phrases.append(f"跨月 Gamma Zero 约 {aggregate_gamma_zero:.1f}")
+        if len(expiry_structures) >= 2:
+            first = expiry_structures[0]
+            second = expiry_structures[1]
+            same_structure = first["structure_label"] == second["structure_label"]
+            same_side = first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"] and first["position_vs_gamma_zero"] != "unknown"
+            if same_structure and same_side:
+                relation = {"below": "均低于", "above": "均高于", "near": "均贴近"}.get(first["position_vs_gamma_zero"], "均围绕")
+                phrases.append(
+                    f"{first['expiry']} / {second['expiry']} {relation}各自零轴，且{first['structure_label']}"
+                )
+            else:
+                phrases.append(_summary_phrase_for_expiry(first))
+                phrases.append(_summary_phrase_for_expiry(second))
+        else:
+            phrases.append(_summary_phrase_for_expiry(expiry_structures[0]))
+        if support is not None or resistance is not None:
+            sr_parts: list[str] = []
+            if support is not None:
+                sr_parts.append(f"{support:g} 附近支撑")
+            if resistance is not None:
+                sr_parts.append(f"{resistance:g} 上方初阻")
+            phrases.append("、".join(sr_parts))
+        prefix = "CME 期权 PRELIM 只读结构" if source_status and source_status != "FINAL" else "CME 期权只读结构"
+        suffix = "，仍需等待 FINAL 确认" if status is AgentStatus.PARTIAL else ""
+        return f"{prefix}：{'；'.join(phrases)}；确信度 {confidence:.2f}{suffix}。"
     if status is AgentStatus.PARTIAL:
         return f"CME 期权只读视图 {bias.value}（输入不完整/临时）；确信度 {confidence:.2f}。"
     return f"CME 期权只读视图 {bias.value}；确信度 {confidence:.2f}。"
@@ -433,3 +509,128 @@ def _add_calibration_findings(
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
+
+
+def _aggregate_gamma_zero(options: dict[str, Any]) -> float | None:
+    aggregate = _dict(_dict(_dict(options.get("gex")).get("netgex_aggregate")))
+    gamma_zero = _dict(aggregate.get("gamma_zero"))
+    return _to_float(gamma_zero.get("price") or gamma_zero.get("level"))
+
+
+def _expiry_structures(options: dict[str, Any]) -> list[dict[str, Any]]:
+    by_expiry = _dict(_dict(options.get("gex")).get("by_expiry"))
+    expiry_order = {
+        str(expiry): index for index, expiry in enumerate(_list(_dict(options.get("data_source")).get("expiries")))
+    }
+    structures: list[dict[str, Any]] = []
+    for expiry, data in by_expiry.items():
+        summary = _dict(_dict(data).get("summary"))
+        if not summary:
+            continue
+        net_gex = _to_float(summary.get("net_gex") or summary.get("net_gex_total"))
+        call_gex = _to_float(summary.get("call_gex"))
+        put_gex = _to_float(summary.get("put_gex"))
+        gamma_zero = _to_float(summary.get("gamma_zero"))
+        f_value = _to_float(summary.get("f_value") or summary.get("f"))
+        structure_text = _text(summary.get("structure"))
+        structure_label = _structure_label(structure_text, net_gex, call_gex, put_gex)
+        if f_value is not None and gamma_zero is not None:
+            if abs(f_value - gamma_zero) <= max(abs(gamma_zero), 1.0) * 0.002:
+                position_vs_gamma_zero = "near"
+            elif f_value < gamma_zero:
+                position_vs_gamma_zero = "below"
+            else:
+                position_vs_gamma_zero = "above"
+        else:
+            position_vs_gamma_zero = "unknown"
+        structures.append(
+            {
+                "expiry": str(expiry),
+                "net_gex": net_gex,
+                "call_gex": call_gex,
+                "put_gex": put_gex,
+                "gamma_zero": gamma_zero,
+                "f_value": f_value,
+                "structure_label": structure_label,
+                "position_vs_gamma_zero": position_vs_gamma_zero,
+            }
+        )
+    structures.sort(key=lambda item: expiry_order.get(item["expiry"], len(expiry_order)))
+    return structures
+
+
+def _structure_label(
+    structure_text: str,
+    net_gex: float | None,
+    call_gex: float | None,
+    put_gex: float | None,
+) -> str:
+    lower = structure_text.lower()
+    if "put" in lower:
+        return "Put-GEX 主导"
+    if "call" in lower:
+        return "Call-GEX 主导"
+    if "pin" in lower or "balance" in lower or "rebalance" in lower:
+        return "双边再平衡"
+    if net_gex is not None:
+        if abs(net_gex) <= max(abs(call_gex or 0.0) + abs(put_gex or 0.0), 1.0) * 0.05:
+            return "双边再平衡"
+        if net_gex < 0:
+            return "Put-GEX 主导"
+        if net_gex > 0:
+            return "Call-GEX 主导"
+    return "结构待确认"
+
+
+def _structure_score(expiry_structures: list[dict[str, Any]]) -> float:
+    score = 0.0
+    for index, item in enumerate(expiry_structures[:2]):
+        weight = 1.0 if index == 0 else 0.85
+        label = item["structure_label"]
+        position = item["position_vs_gamma_zero"]
+        if "Put-GEX" in label:
+            score -= 0.28 * weight
+        elif "Call-GEX" in label:
+            score += 0.28 * weight
+        if position == "below":
+            score -= 0.14 * weight
+        elif position == "above":
+            score += 0.14 * weight
+    return score
+
+
+def _structure_confidence_bonus(expiry_structures: list[dict[str, Any]]) -> float:
+    if not expiry_structures:
+        return 0.0
+    bonus = 0.05
+    if len(expiry_structures) >= 2:
+        bonus += 0.04
+        first, second = expiry_structures[0], expiry_structures[1]
+        if first["structure_label"] == second["structure_label"]:
+            bonus += 0.04
+        if first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"] and first["position_vs_gamma_zero"] != "unknown":
+            bonus += 0.03
+    if all(item["gamma_zero"] is not None for item in expiry_structures[:2]):
+        bonus += 0.03
+    return bonus
+
+
+def _summary_phrase_for_expiry(item: dict[str, Any]) -> str:
+    expiry = item["expiry"]
+    label = item["structure_label"]
+    position = item["position_vs_gamma_zero"]
+    gamma_zero = item["gamma_zero"]
+    if position == "below" and gamma_zero is not None:
+        return f"{expiry} 当前低于 Gamma Zero {gamma_zero:.1f}，{label}"
+    if position == "above" and gamma_zero is not None:
+        return f"{expiry} 当前高于 Gamma Zero {gamma_zero:.1f}，{label}"
+    if gamma_zero is not None:
+        return f"{expiry} 围绕 Gamma Zero {gamma_zero:.1f}，{label}"
+    return f"{expiry} {label}"
+
+
+def _support_resistance_levels(options: dict[str, Any]) -> tuple[float | None, float | None]:
+    sr = _dict(options.get("support_resistance"))
+    support = _first_with_number(sr.get("support"), ("strike", "price", "level"))
+    resistance = _first_with_number(sr.get("resistance"), ("strike", "price", "level"))
+    return support, resistance

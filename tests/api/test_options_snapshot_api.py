@@ -126,7 +126,8 @@ def test_api_options_snapshot_returns_analysis_read_model(tmp_path: Path) -> Non
                     "has_data": True,
                 },
                 ensure_ascii=False,
-            )
+            ),
+            "storage/outputs/cme/2026-06-01/run-options-001/options_analysis.md": "# options analysis",
         },
     )
 
@@ -139,6 +140,14 @@ def test_api_options_snapshot_returns_analysis_read_model(tmp_path: Path) -> Non
     assert payload["trade_date"] == "2026-06-01"
     assert payload["run_id"] == "run-options-001"
     assert payload["snapshot_id"] == "options:2026-06-01:run-options-001"
+    assert payload["data_source"]["input_snapshot_ids"] == {
+        "options_analysis_snapshot": "options:2026-06-01:run-options-001",
+    }
+    source_trace_refs = {item["source_ref"] for item in payload["source_trace"]}
+    assert "https://example.test/cme.pdf" in source_trace_refs
+    assert "storage/outputs/cme/2026-06-01/run-options-001/options_analysis.json" in source_trace_refs
+    assert "storage/outputs/cme/2026-06-01/run-options-001/options_analysis.md" in source_trace_refs
+    assert any(ref.startswith("agent_output:") for ref in source_trace_refs)
 
     analysis = payload["analysis"]
     assert analysis["snapshot_id"] == "options:2026-06-01:run-options-001"

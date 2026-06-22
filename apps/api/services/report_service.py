@@ -15,6 +15,7 @@ from apps.api.schemas.report import ReportAnalysisAgentOutput, ReportAnalysisInp
 from apps.api.schemas.report import ReportArtifact as ReportArtifactSchema
 from apps.api.schemas.report import ReportDetail
 from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef
+from apps.api.services._report_lineage import resolve_report_lineage_context
 from apps.api.services._storage import _PROJECT_ROOT, _iso, _latest_asset_date_run, _try_db_session
 from apps.api.services._trace_refs import coerce_artifact_type, dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
 from apps.api.services.agent_output_service import build_agent_output_summary
@@ -39,7 +40,8 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
         item = query_report_detail(db, report_id)
         if item is not None:
             artifacts = query_report_artifacts(db, report_id)
-            return _build_report_detail_from_item(item, artifacts)
+            detail = _build_report_detail_from_item(item, artifacts)
+            return _enrich_report_detail_with_lineage_warnings(db, detail)
     except (OperationalError, ProgrammingError):
         pass
     return _build_legacy_report_detail(db, report_id)
@@ -79,8 +81,15 @@ def get_report_analysis_inputs(db: Session, report_id: str) -> ReportAnalysisInp
     if detail is None:
         return None
 
-    snapshot = _find_report_snapshot(db, detail)
-    agent_rows = _list_report_agent_outputs(db, detail, snapshot=snapshot)
+    lineage = resolve_report_lineage_context(
+        db,
+        report_id=detail.report_id,
+        report_run_id=detail.run_id,
+        report_snapshot_id=detail.snapshot_id,
+    )
+    snapshot = lineage.snapshot
+    detail_input_snapshot_ids = _normalize_snapshot_ids(detail.input_snapshot_ids)
+    agent_rows, used_run_id_lineage_fallback = _list_report_agent_outputs(db, detail, snapshot=snapshot)
     all_agent_outputs = [_build_report_agent_output(row) for row in agent_rows]
     fact_reviews = [
         item for item in all_agent_outputs if item.registry_id == "fact_review_agent" or item.role == "review_agent"
@@ -95,11 +104,13 @@ def get_report_analysis_inputs(db: Session, report_id: str) -> ReportAnalysisInp
         and item.role not in {"review_agent", "synthesis_agent"}
     ]
 
-    warnings = list(detail.warnings)
+    warnings = _merge_warning_items(detail.warnings, lineage.warnings)
     deterministic_inputs: list[ReportDeterministicInput] = []
     if snapshot is not None:
         deterministic_inputs.append(_build_analysis_snapshot_input(snapshot))
         deterministic_inputs.extend(_build_input_snapshot_items(db, snapshot.input_snapshot_ids, run_id=snapshot.run_id))
+    elif detail_input_snapshot_ids:
+        deterministic_inputs.extend(_build_input_snapshot_items(db, detail_input_snapshot_ids, run_id=detail.run_id))
     elif agent_rows:
         deterministic_inputs.extend(_build_agent_fallback_inputs(agent_rows))
         warnings.append(
@@ -122,6 +133,14 @@ def get_report_analysis_inputs(db: Session, report_id: str) -> ReportAnalysisInp
                 code="agent-outputs-unavailable",
                 message="No persisted agent_outputs found for this report",
                 hint="需重跑对应报告 Agent 才能在报告详情中展示分析输入链。",
+            )
+        )
+    elif used_run_id_lineage_fallback:
+        warnings.append(
+            WarningItem(
+                code="agent-outputs-lineage-fallback",
+                message="Some agent outputs were matched by run_id because snapshot-aligned rows were unavailable",
+                hint="报告血缘仍可展示，但应优先补齐与报告 snapshot_id 一致的 agent output 行。",
             )
         )
 
@@ -150,8 +169,8 @@ def get_report_analysis_inputs(db: Session, report_id: str) -> ReportAnalysisInp
         title=detail.title,
         asset=detail.asset,
         trade_date=detail.trade_date,
-        run_id=detail.run_id,
-        snapshot_id=detail.snapshot_id or (snapshot.snapshot_id if snapshot is not None else None),
+        run_id=lineage.resolved_run_id,
+        snapshot_id=lineage.resolved_snapshot_id,
         data_status=data_status,
         source_refs=source_refs,
         artifact_refs=artifact_refs,
@@ -171,19 +190,29 @@ def _build_report_artifact_payload(db: Session, report_id: str, artifact_type: A
     return _build_artifact_payload(artifact, report_id=detail.report_id)
 
 
-def _find_report_snapshot(db: Session, detail: ReportDetail) -> AnalysisSnapshot | None:
-    if detail.snapshot_id:
-        snapshot = db.scalar(select(AnalysisSnapshot).where(AnalysisSnapshot.snapshot_id == detail.snapshot_id))
-        if snapshot is not None:
-            return snapshot
-    if detail.run_id:
-        return db.scalar(
-            select(AnalysisSnapshot)
-            .where(AnalysisSnapshot.run_id == detail.run_id)
-            .order_by(AnalysisSnapshot.trade_date.desc(), AnalysisSnapshot.created_at.desc(), AnalysisSnapshot.id.desc())
-            .limit(1)
-        )
-    return None
+def get_report_artifact_asset_path(db: Session, report_id: str, artifact_type: ArtifactType, asset_path: str) -> Path | None:
+    detail = get_report_detail(db, report_id)
+    if detail is None:
+        return None
+    artifact = _pick_report_artifact(detail.artifacts, artifact_type)
+    if artifact is None:
+        return None
+    return _resolve_report_asset_path(artifact.file_path, asset_path)
+
+
+def _enrich_report_detail_with_lineage_warnings(db: Session, detail: ReportDetail) -> ReportDetail:
+    lineage = resolve_report_lineage_context(
+        db,
+        report_id=detail.report_id,
+        report_run_id=detail.run_id,
+        report_snapshot_id=detail.snapshot_id,
+    )
+    warnings = _merge_warning_items(detail.warnings, lineage.warnings)
+    normalized_run_id = lineage.resolved_run_id
+    normalized_snapshot_id = lineage.resolved_snapshot_id
+    if warnings == detail.warnings and normalized_run_id == detail.run_id and normalized_snapshot_id == detail.snapshot_id:
+        return detail
+    return detail.model_copy(update={"warnings": warnings, "run_id": normalized_run_id, "snapshot_id": normalized_snapshot_id})
 
 
 def _list_report_agent_outputs(
@@ -191,29 +220,41 @@ def _list_report_agent_outputs(
     detail: ReportDetail,
     *,
     snapshot: AnalysisSnapshot | None,
-) -> list[AgentOutput]:
-    conditions = []
+) -> tuple[list[AgentOutput], bool]:
     snapshot_id = snapshot.snapshot_id if snapshot is not None else detail.snapshot_id
     if snapshot_id:
-        conditions.append(AgentOutput.snapshot_id == snapshot_id)
-    candidate_run_ids = [value for value in {detail.run_id, detail.report_id} if value]
-    if candidate_run_ids:
-        conditions.append(AgentOutput.run_id.in_(candidate_run_ids))
-    if not conditions:
-        return []
-
-    rows = list(
-        db.scalars(
-            select(AgentOutput)
-            .where(or_(*conditions))
-            .order_by(AgentOutput.created_at.desc(), AgentOutput.agent_name.asc())
+        snapshot_rows = list(
+            db.scalars(
+                select(AgentOutput)
+                .where(AgentOutput.snapshot_id == snapshot_id)
+                .order_by(AgentOutput.created_at.desc(), AgentOutput.agent_name.asc())
+            )
         )
-    )
+    else:
+        snapshot_rows = []
+    candidate_run_ids = [value for value in {detail.run_id, detail.report_id} if value]
     latest_by_agent: dict[str, AgentOutput] = {}
-    for row in rows:
+    for row in snapshot_rows:
         if row.agent_name not in latest_by_agent:
             latest_by_agent[row.agent_name] = row
-    return list(latest_by_agent.values())
+
+    used_run_id_lineage_fallback = False
+    if candidate_run_ids:
+        fallback_rows = list(
+            db.scalars(
+                select(AgentOutput)
+                .where(AgentOutput.run_id.in_(candidate_run_ids))
+                .order_by(AgentOutput.created_at.desc(), AgentOutput.agent_name.asc())
+            )
+        )
+        for row in fallback_rows:
+            if row.agent_name in latest_by_agent:
+                continue
+            latest_by_agent[row.agent_name] = row
+            if snapshot_id and row.snapshot_id != snapshot_id:
+                used_run_id_lineage_fallback = True
+
+    return list(latest_by_agent.values()), used_run_id_lineage_fallback
 
 
 def _build_report_agent_output(row: AgentOutput) -> ReportAnalysisAgentOutput:
@@ -383,7 +424,7 @@ def _build_artifact_payload(artifact: ReportArtifactSchema | None, *, report_id:
     if path is None or not path.exists():
         return None
     content = _read_artifact_content(path, artifact.artifact_type)
-    return {
+    payload = {
         "report_id": report_id,
         "artifact_id": artifact.artifact_id,
         "artifact_type": artifact.artifact_type.value,
@@ -391,6 +432,9 @@ def _build_artifact_payload(artifact: ReportArtifactSchema | None, *, report_id:
         "path": artifact.file_path,
         "content": content,
     }
+    if artifact.artifact_type in {ArtifactType.source_md, ArtifactType.analysis_md}:
+        payload["asset_base_url"] = f"/api/reports/{report_id}/asset/{artifact.artifact_type.value}/"
+    return payload
 
 
 def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtifactModel]) -> ReportDetail:
@@ -424,10 +468,31 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
     )
 
 
+def _merge_warning_items(*warning_groups: list[WarningItem]) -> list[WarningItem]:
+    merged: list[WarningItem] = []
+    seen: set[tuple[str, str | None, str]] = set()
+    for group in warning_groups:
+        for warning in group:
+            key = (warning.code, warning.field, warning.message)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(warning)
+    return merged
+
+
 def _build_legacy_report_detail(db: Session, report_id: str) -> ReportDetail | None:
     legacy_final = _find_legacy_final_report(db, report_id)
     if legacy_final is not None:
         return _legacy_final_report_detail(legacy_final)
+
+    legacy_fs_final = _legacy_final_report_detail_from_filesystem(report_id)
+    if legacy_fs_final is not None:
+        return legacy_fs_final
+
+    legacy_macro = _legacy_macro_report_detail(report_id)
+    if legacy_macro is not None:
+        return legacy_macro
 
     legacy_jin10 = _legacy_jin10_report_detail(report_id)
     if legacy_jin10 is not None:
@@ -498,6 +563,76 @@ def _legacy_final_report_detail(row: FinalAnalysisResult) -> ReportDetail | None
         generated_at=row.updated_at or row.created_at,
         artifacts=artifacts,
         input_snapshot_ids=_normalize_snapshot_ids(row.input_snapshot_ids),
+        structured_payload=_load_structured_payload(artifacts),
+    )
+
+
+def _legacy_final_report_detail_from_filesystem(report_id: str) -> ReportDetail | None:
+    base = _find_run_dir(_PROJECT_ROOT / "storage" / "outputs" / "final_report" / "XAUUSD", report_id)
+    if base is None:
+        return None
+    trade_date, run_dir = base
+    artifacts = _artifact_schemas_from_paths(
+        report_id=report_id,
+        generated_at=None,
+        path_specs=[
+            (ArtifactType.analysis_md, run_dir / "final_report.md", True, "text/markdown"),
+            (ArtifactType.structured_json, run_dir / "structured_report.json", False, "application/json"),
+        ],
+    )
+    if not artifacts:
+        return None
+    return ReportDetail(
+        run_id=report_id,
+        snapshot_id=None,
+        data_status=DataStatus.partial if _missing_files(artifacts) else DataStatus.live,
+        artifact_refs=artifacts,
+        warnings=[],
+        report_id=report_id,
+        family="final_report_markdown",
+        title="XAUUSD 综合报告",
+        asset="XAUUSD",
+        trade_date=trade_date,
+        lifecycle_status=ReportLifecycleStatus.generated,
+        artifacts=artifacts,
+        structured_payload=_load_structured_payload(artifacts),
+    )
+
+
+def _legacy_macro_report_detail(report_id: str) -> ReportDetail | None:
+    macro_id = _strip_report_type_prefix(report_id, "macro_report")
+    base = _find_run_dir(_PROJECT_ROOT / "storage" / "outputs" / "macro", macro_id)
+    if base is None:
+        date_dir = _PROJECT_ROOT / "storage" / "outputs" / "macro" / macro_id
+        if date_dir.is_dir() and (date_dir / "macro_snapshot.md").exists():
+            base = (macro_id, date_dir)
+    if base is None:
+        return None
+    trade_date, run_dir = base
+    artifacts = _artifact_schemas_from_paths(
+        report_id=report_id,
+        generated_at=None,
+        path_specs=[
+            (ArtifactType.analysis_md, run_dir / "macro_snapshot.md", True, "text/markdown"),
+            (ArtifactType.structured_json, run_dir / "macro_snapshot.json", False, "application/json"),
+            (ArtifactType.structured_json, run_dir / "macro_conclusion.json", False, "application/json"),
+        ],
+    )
+    if not artifacts:
+        return None
+    return ReportDetail(
+        run_id=macro_id if run_dir.name != trade_date else None,
+        snapshot_id=None,
+        data_status=DataStatus.partial if _missing_files(artifacts) else DataStatus.live,
+        artifact_refs=artifacts,
+        warnings=[],
+        report_id=report_id,
+        family="macro_report",
+        title=f"XAUUSD 宏观数据报告（{trade_date}）",
+        asset="XAUUSD",
+        trade_date=trade_date,
+        lifecycle_status=ReportLifecycleStatus.generated,
+        artifacts=artifacts,
         structured_payload=_load_structured_payload(artifacts),
     )
 
@@ -879,6 +1014,11 @@ def _find_run_dir(base: Path, report_id: str) -> tuple[str, Path] | None:
     return None
 
 
+def _strip_report_type_prefix(report_id: str, report_type: str) -> str:
+    prefix = f"{report_type}:"
+    return report_id[len(prefix):] if report_id.startswith(prefix) else report_id
+
+
 def _resolve_report_path(file_path: str | Path) -> Path | None:
     raw_path = Path(file_path)
     if "://" in str(raw_path):
@@ -893,6 +1033,20 @@ def _resolve_report_path(file_path: str | Path) -> Path | None:
     except OSError:
         return None
     return resolved if any(resolved.is_relative_to(root) for root in allowed_roots) else None
+
+
+def _resolve_report_asset_path(file_path: str | Path, asset_path: str) -> Path | None:
+    artifact_path = _resolve_report_path(file_path)
+    if artifact_path is None:
+        return None
+    try:
+        candidate = (artifact_path.parent / asset_path).resolve()
+        parent = artifact_path.parent.resolve()
+    except OSError:
+        return None
+    if not candidate.is_relative_to(parent) or not candidate.exists() or not candidate.is_file():
+        return None
+    return candidate
 
 
 def _read_artifact_content(path: Path, artifact_type: ArtifactType) -> Any:
@@ -910,13 +1064,21 @@ def _report_quality_score(md_path: Path) -> tuple[int, float, str]:
     except Exception:
         return (-100, 0.0, md_path.parent.name)
     score = 0
+    if "# XAUUSD 相关报告" in content:
+        score += 120
+    if "# XAUUSD 盘前专业研究报告" in content:
+        score += 90
+    if "## 执行摘要" in content:
+        score += 25
+    if "## 分项证据链" in content:
+        score += 15
     if "# XAUUSD 盘前综合报告" in content:
-        score += 100
+        score += 70
     if "## 协调器总结" in content:
         score += 20
     if "## 数据口径" in content:
         score += 10
-    if "## CME 期权结构视图" in content:
+    if "## CME 期权结构视图" in content or "### CME 期权结构视图" in content:
         score += 10
     if "# XAUUSD Premarket Final Report" in content:
         score -= 40
@@ -1949,6 +2111,8 @@ def _collect_reports(base_rel: str, report_type: str, fmt: str, asset: str, md_f
                     "trade_date": date_dir.name,
                     "run_id": run_dir.name,
                     "report_id": run_dir.name,
+                    "family": _report_index_family(report_type),
+                    "title": _report_index_title(report_type, date_dir.name),
                     "format": fmt,
                     "available": available,
                 }
@@ -1963,6 +2127,8 @@ def _collect_reports(base_rel: str, report_type: str, fmt: str, asset: str, md_f
                     "trade_date": date_dir.name,
                     "run_id": None,
                     "report_id": date_dir.name,
+                    "family": _report_index_family(report_type),
+                    "title": _report_index_title(report_type, date_dir.name),
                     "format": fmt,
                     "available": True,
                 }
@@ -2014,6 +2180,8 @@ def _collect_reports_from_db(report_type: str, fmt: str, asset: str) -> list[dic
                     "trade_date": _iso(row.trade_date),
                     "run_id": row.run_id,
                     "report_id": report_id,
+                    "family": _report_index_family(report_type),
+                    "title": _report_index_title(report_type, _iso(row.trade_date)),
                     "format": fmt,
                     "available": available,
                 }
@@ -2146,6 +2314,8 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                         "trade_date": date_dir.name,
                         "run_id": None,
                         "report_id": date_dir.name,
+                        "family": _report_index_family("options_report"),
+                        "title": _report_index_title("options_report", date_dir.name),
                         "format": "json+markdown",
                         "available": available,
                     }
@@ -2173,6 +2343,8 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                         "trade_date": date_dir.name,
                         "run_id": run_dir.name,
                         "report_id": run_dir.name,
+                        "family": _report_index_family("options_report"),
+                        "title": _report_index_title("options_report", date_dir.name),
                         "format": "json+markdown",
                         "available": True,
                     }
@@ -2200,6 +2372,8 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                             "trade_date": date_dir.name,
                             "run_id": run_dir.name,
                             "report_id": run_dir.name,
+                            "family": _report_index_family("options_visual_report"),
+                            "title": _report_index_title("options_visual_report", date_dir.name),
                             "format": "json+html",
                             "available": True,
                         }
@@ -2215,12 +2389,58 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                 for run_dir in sorted(runs, reverse=True):
                     snap = run_dir / "macro_snapshot.md"
                     if snap.exists():
-                        reports.append({"type": "macro_report", "trade_date": date_dir.name, "run_id": run_dir.name, "format": "markdown", "available": True})
+                        reports.append(
+                            {
+                                "type": "macro_report",
+                                "trade_date": date_dir.name,
+                                "run_id": run_dir.name,
+                                "report_id": _typed_report_id("macro_report", run_dir.name),
+                                "family": _report_index_family("macro_report"),
+                                "title": _report_index_title("macro_report", date_dir.name),
+                                "format": "markdown",
+                                "available": True,
+                            }
+                        )
             else:
                 snap = date_dir / "macro_snapshot.md"
                 if snap.exists():
-                    reports.append({"type": "macro_report", "trade_date": date_dir.name, "run_id": None, "format": "markdown", "available": True})
+                    reports.append(
+                        {
+                            "type": "macro_report",
+                            "trade_date": date_dir.name,
+                            "run_id": None,
+                            "report_id": _typed_report_id("macro_report", date_dir.name),
+                            "family": _report_index_family("macro_report"),
+                            "title": _report_index_title("macro_report", date_dir.name),
+                            "format": "markdown",
+                            "available": True,
+                        }
+                    )
     return {"asset": asset, "reports": [r for r in reports if r.get("available", False)]}
+
+
+def _report_index_family(report_type: str) -> str:
+    return {
+        "final_report": "final_report_markdown",
+        "macro_report": "macro_report",
+        "strategy_card": "strategy_card",
+        "options_report": "options_report_markdown",
+        "options_visual_report": "cme_options_visual",
+    }.get(report_type, report_type)
+
+
+def _typed_report_id(report_type: str, raw_id: str) -> str:
+    return f"{report_type}:{raw_id}"
+
+
+def _report_index_title(report_type: str, trade_date: str) -> str:
+    return {
+        "final_report": f"XAUUSD 综合报告（{trade_date}）",
+        "macro_report": f"XAUUSD 宏观数据报告（{trade_date}）",
+        "strategy_card": f"XAUUSD 策略卡片（{trade_date}）",
+        "options_report": f"黄金期权结构报告（{trade_date}）",
+        "options_visual_report": f"黄金期权可视报告（{trade_date}）",
+    }.get(report_type, f"{report_type}（{trade_date}）")
 
 
 def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:

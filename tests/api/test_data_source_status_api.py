@@ -331,6 +331,91 @@ def test_data_service_exposes_readiness_and_gate_states() -> None:
     assert sources["blocked_source"]["gating_reason"] == "error_message"
 
 
+def test_data_source_status_index_returns_complete_rows_by_source_key() -> None:
+    """Helper should index the exact row objects returned by get_data_source_statuses()."""
+    from apps.api.services.source_service import get_data_source_status_index
+
+    payload = {
+        "sources": [
+            {
+                "source_key": "fred",
+                "source_name": "FRED",
+                "readiness_state": "ready",
+                "gate_state": "open",
+                "gating_reason": "analysis_ready",
+                "status": "ok",
+                "metadata": {"frontend_label": "FRED 官方宏观主源"},
+            }
+        ]
+    }
+
+    with patch("apps.api.services.source_service.get_data_source_statuses", return_value=payload):
+        result = get_data_source_status_index()
+
+    assert result == {"fred": payload["sources"][0]}
+    assert result["fred"]["readiness_state"] == "ready"
+    assert result["fred"]["gate_state"] == "open"
+    assert result["fred"]["gating_reason"] == "analysis_ready"
+
+
+def test_data_source_status_index_keeps_first_duplicate_source_key() -> None:
+    """Duplicate source_key entries must keep the first row for stable gating reads."""
+    from apps.api.services.source_service import get_data_source_status_index
+
+    payload = {
+        "sources": [
+            {
+                "source_key": "fred",
+                "source_name": "FRED",
+                "readiness_state": "ready",
+                "gate_state": "open",
+                "gating_reason": "analysis_ready",
+            },
+            {
+                "source_key": "fred",
+                "source_name": "FRED duplicate",
+                "readiness_state": "blocked",
+                "gate_state": "closed",
+                "gating_reason": "error_message",
+            },
+        ]
+    }
+
+    with patch("apps.api.services.source_service.get_data_source_statuses", return_value=payload):
+        result = get_data_source_status_index()
+
+    assert result["fred"] == payload["sources"][0]
+    assert result["fred"]["readiness_state"] == "ready"
+    assert result["fred"]["gate_state"] == "open"
+    assert result["fred"]["gating_reason"] == "analysis_ready"
+
+
+def test_data_source_status_index_allows_direct_field_reads() -> None:
+    """Callers should be able to read readiness, gate, and reason fields directly from the index."""
+    from apps.api.services.source_service import get_data_source_status_index
+
+    payload = {
+        "sources": [
+            {
+                "source_key": "jin10_news",
+                "source_name": "Jin10 News",
+                "readiness_state": "degraded",
+                "gate_state": "degraded",
+                "gating_reason": "status_partial",
+                "status": "partial",
+            }
+        ]
+    }
+
+    with patch("apps.api.services.source_service.get_data_source_statuses", return_value=payload):
+        result = get_data_source_status_index()
+
+    src = result["jin10_news"]
+    assert src["readiness_state"] == "degraded"
+    assert src["gate_state"] == "degraded"
+    assert src["gating_reason"] == "status_partial"
+
+
 def test_data_service_handles_empty_db() -> None:
     """When DB is available but has no records, return compatible sources list."""
     from apps.api.data_service import get_data_source_statuses

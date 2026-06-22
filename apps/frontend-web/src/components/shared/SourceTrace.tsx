@@ -1,9 +1,9 @@
 import type { SourceRef } from "@/types/common";
 import { compactSourceLabel, resolveSourceRefs, sourceRefPairs } from "@/lib/sourceRefs";
-import { getDataStatusLabel, normalizeDataStatus } from "@/lib/status";
 import { Database, FileText, Bot, ExternalLink } from "lucide-react";
 import { FAEmptyState } from "./FAEmptyState";
 import { FAStatusPill, type FAStatusTone } from "./FAStatusPill";
+import { getStatusMeta } from "./statusMeta";
 
 export interface LegacySourceTraceRecord {
   source_ref?: string | null;
@@ -53,28 +53,34 @@ function sourceIcon(source: SourceRef) {
   return <Database size={12} />;
 }
 
-function statusClass(status: SourceRef["status"]): string {
-  const normalized = normalizeDataStatus(status);
-  if (normalized === "available") return "text-[var(--up)]";
-  if (normalized === "partial") return "text-[var(--warn)]";
-  if (normalized === "error") return "text-[var(--down)]";
-  return "text-[var(--fg-5)]";
-}
-
-function statusTone(status: SourceRef["status"]): FAStatusTone {
-  const normalized = normalizeDataStatus(status);
-  if (normalized === "available") return "up";
-  if (normalized === "partial") return "warn";
-  if (normalized === "error") return "down";
-  return "dim";
-}
+const traceToneClass: Record<FAStatusTone, string> = {
+  up: "text-[var(--up)]",
+  down: "text-[var(--down)]",
+  warn: "text-[var(--warn)]",
+  info: "text-[var(--info)]",
+  dim: "text-[var(--fg-5)]",
+  neutral: "text-[var(--fg-4)]",
+};
 
 function displaySourceLabel(label: string): string {
+  if (label.toLowerCase().startsWith("agent_output:")) {
+    return "Agent 输出产物";
+  }
   const exact: Record<string, string> = {
+    "cme daily bulletin": "CME 每日公告",
     macro_latest: "宏观最新快照",
     source_api: "来源接口",
   };
   return exact[label.toLowerCase()] ?? label;
+}
+
+function displayTraceValue(label: string, value: string): string {
+  if (label === "source_ref" && value.toLowerCase().startsWith("agent_output:")) {
+    const parts = value.split(":");
+    const fileName = parts[parts.length - 1];
+    return fileName ? `Agent 输出产物 · ${fileName}` : "Agent 输出产物";
+  }
+  return value;
 }
 
 const SOURCE_PAIR_LABELS: Record<string, string> = {
@@ -99,14 +105,15 @@ export function SourceTrace({ sources, sourceRefs, compact = false, emptyText = 
   }
 
   return (
-    <div className={compact ? "space-y-1.5" : "space-y-2"}>
+    <div className={compact ? "space-y-1" : "space-y-2"}>
       {refs.map((source, index) => {
         const pairs = sourceRefPairs(source);
         const label = displaySourceLabel(compactSourceLabel(source));
+        const statusMeta = getStatusMeta(source.status, { domain: "source" });
         return (
           <article
             key={`${source.source_ref}-${source.snapshot_id ?? ""}-${source.run_id ?? ""}-${index}`}
-            className={`rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] ${compact ? "p-2" : "p-3"}`}
+            className={`rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] ${compact ? "px-2.5 py-2" : "p-3"}`}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-center gap-2">
@@ -116,8 +123,8 @@ export function SourceTrace({ sources, sourceRefs, compact = false, emptyText = 
                   <div className="text-[10px] text-[var(--fg-5)]">{source.trade_date ?? source.generated_at ?? "时间不可用"}</div>
                 </div>
               </div>
-              <FAStatusPill tone={statusTone(source.status)} dot={false}>
-                {getDataStatusLabel(source.status)}
+              <FAStatusPill status={source.status} domain="source" dot={false}>
+                {statusMeta.label}
               </FAStatusPill>
             </div>
 
@@ -126,7 +133,7 @@ export function SourceTrace({ sources, sourceRefs, compact = false, emptyText = 
                 {pairs.map((item) => (
                   <div key={`${item.label}-${item.value}`} className="flex items-center justify-between gap-3">
                     <span>{SOURCE_PAIR_LABELS[item.label] ?? item.label}</span>
-                    <span className="truncate font-mono text-[var(--fg-4)]">{item.value}</span>
+                    <span className="truncate font-mono text-[var(--fg-4)]">{displayTraceValue(item.label, item.value)}</span>
                   </div>
                 ))}
                 {source.provider ? (
@@ -138,10 +145,12 @@ export function SourceTrace({ sources, sourceRefs, compact = false, emptyText = 
               </div>
             ) : null}
 
-            <div className={`mt-3 flex items-center gap-1 text-[10px] ${statusClass(source.status)}`}>
-              <ExternalLink size={11} />
-              <span>可追溯</span>
-            </div>
+            {!compact ? (
+              <div className={`mt-3 flex items-center gap-1 text-[10px] ${traceToneClass[statusMeta.tone]}`}>
+                <ExternalLink size={11} />
+                <span>可追溯</span>
+              </div>
+            ) : null}
           </article>
         );
       })}

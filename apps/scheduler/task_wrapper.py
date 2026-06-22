@@ -14,23 +14,19 @@ from apps.runtime.task_recorder import TaskRecorder
 logger = logging.getLogger(__name__)
 
 # 最多每 N 秒记录一次同类刷新任务
-# kline / quotes / calendar / flash 为纯采集操作，不写 task_runs
+# 高频采集任务做限频采样，避免 task_runs 被 1 分钟级刷新刷满。
 _RECORD_INTERVAL_SECONDS: dict[str, int] = {
-    # "jin10_quotes": 300,   # 纯采集，不记录
-    # "jin10_kline": 120,     # 纯采集，不记录
-    # "jin10_calendar": 3600, # 纯采集，不记录
-    # "jin10_flash": 300,     # 纯采集，不记录
+    "jin10_quotes": 900,
+    "jin10_kline": 900,
+    "jin10_calendar": 3600,
+    "jin10_flash": 900,
 }
-
-_ALWAYS_SKIP_TASK_KEYS = {"jin10_quotes", "jin10_kline", "jin10_calendar", "jin10_flash"}
 
 _last_record_time: dict[str, float] = {}
 
 
 def _should_record(task_key: str) -> bool:
-    """纯采集操作不记录 task_runs。"""
-    if task_key in _ALWAYS_SKIP_TASK_KEYS:
-        return False
+    """按任务类型限频记录 task_runs。"""
     now = datetime.now(timezone.utc).timestamp()
     interval = _RECORD_INTERVAL_SECONDS.get(task_key, 300)
     if task_key in _last_record_time:

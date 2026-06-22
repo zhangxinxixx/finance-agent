@@ -1,9 +1,11 @@
-import { BookOpenText, ExternalLink } from "lucide-react";
+import { BookOpenText, ExternalLink, Link2 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { FACard } from "@/components/shared/FACard";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { formatDateTime } from "@/lib/date";
 import type { Jin10ArticleBrief, Jin10ArticleBriefBundle } from "@/types/event-flow";
+import { formatEventFlowArtifactLabel, translateEventFlowValue } from "./eventFlowFormat";
 import { articleBriefTone } from "./EventFlowSectionHelpers";
 
 export function Jin10ArticleBriefsPanel({
@@ -14,6 +16,7 @@ export function Jin10ArticleBriefsPanel({
   onOpenDetail?: (brief: Jin10ArticleBrief) => void;
 }) {
   const briefs = bundle.briefs.slice(0, 4);
+  const monitorHref = bundle.date ? `/feishu-monitor?date=${encodeURIComponent(bundle.date)}` : null;
   if (briefs.length === 0) {
     return null;
   }
@@ -21,14 +24,27 @@ export function Jin10ArticleBriefsPanel({
   return (
     <FACard
       title="金十重点文章"
-      eyebrow="Article Briefs"
+      eyebrow="文章摘要"
       accent="warn"
-      action={<FAStatusPill tone="info">{bundle.brief_count} 条</FAStatusPill>}
+      action={
+        <div className="flex flex-wrap items-center gap-1.5">
+          <FAStatusPill tone="info">{bundle.brief_count} 条</FAStatusPill>
+          {monitorHref ? (
+            <Link
+              to={monitorHref}
+              className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 text-[10px] font-semibold text-[var(--fg-4)] transition-colors hover:border-[var(--brand-gold)] hover:text-[var(--brand)]"
+            >
+              <Link2 size={11} />
+              查看飞书监控
+            </Link>
+          ) : null}
+        </div>
+      }
       bodyClassName="space-y-2"
     >
       <div className="flex flex-wrap gap-2">
         <FASourceTraceBadge source={formatDateTime(bundle.as_of ?? "")} status="updated_at" tone="info" />
-        <FASourceTraceBadge source={bundle.artifact_path} status="artifact" tone="dim" />
+        <FASourceTraceBadge source={formatEventFlowArtifactLabel(bundle.artifact_path)} status="artifact" tone="dim" />
       </div>
 
       <div className="space-y-2">
@@ -45,24 +61,36 @@ export function Jin10ArticleBriefsPanel({
               >
                 <div className="flex flex-wrap items-center gap-1.5">
                   <FAStatusPill tone={articleBriefTone(brief)}>{brief.display_bucket}</FAStatusPill>
-                  <FAStatusPill tone={brief.access_status === "readable" ? "up" : "warn"}>{brief.access_status}</FAStatusPill>
+                  <FAStatusPill tone={brief.access_status === "readable" ? "up" : "warn"}>{translateEventFlowValue(brief.access_status)}</FAStatusPill>
                 </div>
                 <div className="text-[12px] font-semibold leading-5 text-[var(--fg-1)]">{brief.headline}</div>
                 {onOpenDetail ? (
                   <div className="text-[10px] font-semibold text-[var(--brand-hover)]">打开事件详情</div>
                 ) : null}
               </button>
-              {brief.source_url ? (
-                <a
-                  href={brief.final_url ?? brief.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border)] text-[var(--fg-4)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--fg-2)]"
-                  title="打开来源链接"
-                >
-                  <ExternalLink size={13} />
-                </a>
-              ) : null}
+              <div className="flex shrink-0 items-center gap-1">
+                {monitorHref ? (
+                  <Link
+                    to={monitorHref}
+                    className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--border)] px-2 text-[9px] font-semibold text-[var(--fg-4)] transition-colors hover:border-[var(--brand-gold)] hover:text-[var(--brand)]"
+                    title="查看飞书监控"
+                  >
+                    <Link2 size={11} />
+                    监控
+                  </Link>
+                ) : null}
+                {brief.source_url ? (
+                  <a
+                    href={brief.final_url ?? brief.source_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border)] text-[var(--fg-4)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--fg-2)]"
+                    title="打开来源链接"
+                  >
+                    <ExternalLink size={13} />
+                  </a>
+                ) : null}
+              </div>
             </div>
 
             {brief.original_excerpt ? (

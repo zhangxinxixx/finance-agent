@@ -6,6 +6,8 @@ import {
   ReviewCenterLoadingState,
 } from "@/components/review-center/ReviewCenterPageStates";
 import { ReviewCard, ReviewCenterSummaryCard } from "@/components/review-center/ReviewCenterSections";
+import { FAPageIntro } from "@/components/shared/FAPageIntro";
+import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import {
   filterReviewItems,
   listReviewModules,
@@ -26,8 +28,22 @@ export function ReviewCenterPage() {
   }
 
   return (
-    <div className="finance-page-shell">
-      <div className="flex flex-col gap-4">
+    <FAPageScaffold
+      intro={(
+        <FAPageIntro
+          eyebrow="人工复核"
+          title="Review Center"
+          description="把待处理 review 统一收敛到一页：上方筛选，中央摘要，底部列表，降低跨模块来回定位问题的成本。"
+          meta={(
+            <>
+              <span className="text-[10px] text-[var(--fg-4)]">总数 {reviewCenter.total}</span>
+              <span className="text-[10px] text-[var(--fg-4)]">筛后 {filteredReviews.length}</span>
+              <span className="text-[10px] text-[var(--fg-4)]">状态 {status}</span>
+            </>
+          )}
+        />
+      )}
+      toolbar={(
         <ReviewCenterFilterBar
           status={status}
           onStatusChange={setStatus}
@@ -38,24 +54,25 @@ export function ReviewCenterPage() {
           onQueryChange={setQuery}
           onRefresh={reviewCenter.refetch}
         />
+      )}
+      bodyClassName="fa-page-stack"
+    >
+      {reviewCenter.isError ? <ReviewCenterErrorBanner message={reviewCenter.error?.message ?? "无法加载 /api/reviews"} /> : null}
 
-        {reviewCenter.isError ? <ReviewCenterErrorBanner message={reviewCenter.error?.message ?? "无法加载 /api/reviews"} /> : null}
+      <ReviewCenterSummaryCard
+        source={reviewCenter.source}
+        total={reviewCenter.total}
+        filteredCount={filteredReviews.length}
+      />
 
-        <ReviewCenterSummaryCard
-          source={reviewCenter.source}
-          total={reviewCenter.total}
-          filteredCount={filteredReviews.length}
-        />
-
-        {filteredReviews.length > 0 ? (
-          <div className="space-y-3">
-            {filteredReviews.map((review) => <ReviewCard key={review.review_id} review={review} />)}
-          </div>
-        ) : (
-          <ReviewCenterEmptyState />
-        )}
-      </div>
-    </div>
+      {filteredReviews.length > 0 ? (
+        <div className="space-y-3">
+          {filteredReviews.map((review) => <ReviewCard key={review.review_id} review={review} />)}
+        </div>
+      ) : (
+        <ReviewCenterEmptyState />
+      )}
+    </FAPageScaffold>
   );
 }
 

@@ -173,9 +173,9 @@ def test_write_final_report_creates_file_with_correct_content(tmp_path: Path) ->
     written_path = Path(result["paths"][0])
     assert written_path.exists()
     content = written_path.read_text(encoding="utf-8")
-    assert "# XAUUSD 盘前综合报告" in content
-    assert "snapshot_id: XAUUSD:2026-05-14:analysis" in content
-    assert "## 数据口径" in content
+    assert "# XAUUSD 相关报告" in content
+    assert "快照 ID: XAUUSD:2026-05-14:analysis" in content
+    assert "## 数据口径与血缘" in content
     assert "## 免责声明" in content
 
 

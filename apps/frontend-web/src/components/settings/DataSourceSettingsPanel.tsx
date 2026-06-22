@@ -118,7 +118,7 @@ export function DataSourceSettingsPanel({
   onResetSource,
 }: DataSourceSettingsPanelProps) {
   return (
-    <FACard title="接入与连接状态" eyebrow="Data Sources" accent="brand" bodyClassName="space-y-3">
+    <FACard title="接入与连接状态" eyebrow="数据源" accent="brand" bodyClassName="space-y-3">
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {sources.map((source) => (
           <SourceCard

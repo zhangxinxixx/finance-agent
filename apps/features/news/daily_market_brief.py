@@ -63,8 +63,17 @@ def build_daily_market_brief(
     ]
     asset_reactions = _asset_reactions(reaction_by_event_id)
     news_highlights = _news_highlights(confirmed_events=confirmed_events, unconfirmed_risks=unconfirmed_risks, candidate_events=candidate_events)
-    watchlist = _watchlist(candidate_events=candidate_events, next_7d_calendar=next_7d_calendar)
-    risk_points = _risk_points(unconfirmed_risks=unconfirmed_risks, watchlist=watchlist)
+    highlighted_event_ids = _event_ids(news_highlights)
+    watchlist = _watchlist(
+        candidate_events=candidate_events,
+        next_7d_calendar=next_7d_calendar,
+        exclude_event_ids=highlighted_event_ids,
+    )
+    reported_event_ids = highlighted_event_ids | _event_ids(watchlist)
+    risk_points = _risk_points(
+        unconfirmed_risks=[event for event in unconfirmed_risks if str(event.get("event_id") or "") not in reported_event_ids],
+        watchlist=watchlist,
+    )
     warnings = _warnings(events=events, next_7d_calendar=next_7d_calendar)
 
     return DailyMarketBrief(
@@ -256,7 +265,9 @@ def _watchlist(
     *,
     candidate_events: list[dict[str, Any]],
     next_7d_calendar: list[dict[str, Any]],
+    exclude_event_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
+    excluded = exclude_event_ids or set()
     calendar_items = [
         {
             "event_id": item.get("event_id"),
@@ -268,18 +279,44 @@ def _watchlist(
             "need_verification": False,
         }
         for item in next_7d_calendar
+        if str(item.get("event_id") or "") not in excluded
     ]
-    return [*candidate_events[:10], *calendar_items[:10]]
+    candidate_items = [
+        event
+        for event in candidate_events
+        if str(event.get("event_id") or "") not in excluded
+    ]
+    return [*candidate_items[:10], *calendar_items[:10]]
 
 
 def _risk_points(*, unconfirmed_risks: list[dict[str, Any]], watchlist: list[dict[str, Any]]) -> list[str]:
-    points = [
+    points = _dedupe_texts([
         f"{event.get('what_happened')} | {event.get('verification_status')} | {event.get('impact_path')}"
         for event in unconfirmed_risks[:5]
-    ]
+    ])
     if not points and watchlist:
         points.append("当前主要事件仍在观察清单中，等待多源确认或行情验证。")
     return points
+
+
+def _event_ids(events: list[dict[str, Any]]) -> set[str]:
+    return {
+        str(event.get("event_id") or "")
+        for event in events
+        if str(event.get("event_id") or "")
+    }
+
+
+def _dedupe_texts(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = " ".join(str(value or "").split())
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _market_mainline(

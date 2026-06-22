@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from apps.analysis.agents.synthesis import persist_synthesis_agent_output
 from database.models.analysis import AgentOutput, AnalysisBase
 from database.models.report import ensure_report_tables
 from database.queries.analysis import upsert_agent_output, upsert_analysis_snapshot
+from database.queries.analysis import upsert_final_analysis_result
 from database.queries.review import upsert_review_item
 from database.queries.report import upsert_report_artifact, upsert_report_item
 
@@ -164,6 +166,48 @@ def _seed_agent_outputs(session: Session) -> None:
 def _seed_fact_review_output(session: Session) -> None:
     rows = session.scalars(select(AgentOutput).where(AgentOutput.snapshot_id == "snap-std-001")).all()
     upsert_agent_output(session, build_fact_review_agent_output_payload(rows, snapshot_id="snap-std-001"))
+
+
+def _seed_legacy_final_report(session: Session) -> None:
+    upsert_final_analysis_result(
+        session,
+        payload={
+            "asset": "XAUUSD",
+            "trade_date": "2026-05-26",
+            "run_id": "run-legacy-001",
+            "snapshot_id": "snap-legacy-001",
+            "analysis_snapshot_db_id": None,
+            "final_bias": "bullish",
+            "confidence": 0.82,
+            "market_state": "trend_up",
+            "scenario_summary": "Legacy report",
+            "is_trade_instruction": False,
+            "input_snapshot_ids": {"analysis": "snap-legacy-001"},
+            "source_refs": [
+                {
+                    "source_id": "src-legacy-001",
+                    "source_name": "Coordinator",
+                    "source_type": "agent_output",
+                    "status": "generated",
+                }
+            ],
+            "source_agent_outputs": ["macro", "options"],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "strategy_card": None,
+            "run_summaries": {},
+            "payload": {"final": "report"},
+        },
+        paths={
+            "final_report_path": "storage/outputs/final_report/XAUUSD/2026-05-26/run-legacy-001/final_report.md",
+            "strategy_card_json_path": None,
+            "strategy_card_md_path": None,
+            "run_summary_path": "storage/outputs/run/2026-05-26/run-legacy-001/step_summaries.json",
+            "final_report_sha256": "legacysha",
+            "strategy_card_sha256": None,
+        },
+    )
 
 
 def test_report_analysis_inputs_returns_snapshot_and_agent_outputs(tmp_path: Path, monkeypatch) -> None:
@@ -387,3 +431,182 @@ def test_report_analysis_inputs_marks_missing_agent_outputs_as_partial(tmp_path:
     assert payload["fact_reviews"] == []
     assert payload["synthesis_outputs"] == []
     assert any(warning["code"] == "agent-outputs-unavailable" for warning in payload["warnings"])
+
+
+def test_report_analysis_inputs_uses_detail_lineage_when_snapshot_row_is_missing(tmp_path: Path, monkeypatch) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_legacy_final_report(session)
+        session.commit()
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/final_report/XAUUSD/2026-05-26/run-legacy-001/final_report.md": "# Final Report",
+            "storage/outputs/run/2026-05-26/run-legacy-001/step_summaries.json": json.dumps({"steps": []}),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_report_analysis_inputs("run-legacy-001", db=db).model_dump(mode="json")
+
+    assert payload["report_id"] == "run-legacy-001"
+    assert any(item["input_type"] == "input_snapshot" for item in payload["deterministic_inputs"])
+    assert not any(warning["code"] == "analysis-inputs-unavailable" for warning in payload["warnings"])
+
+
+def test_report_analysis_inputs_prefers_snapshot_matched_agent_output_over_same_run_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+    from database.queries.analysis import upsert_agent_output
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_standard_report(session)
+        _seed_standard_snapshot(session)
+        _seed_agent_outputs(session)
+        conflicting = upsert_agent_output(
+            session,
+            {
+                "snapshot_id": "snap-other-001",
+                "analysis_snapshot_db_id": None,
+                "asset": "XAUUSD",
+                "trade_date": "2026-05-26",
+                "run_id": "run-std-001",
+                "agent_name": "jin10_report_analysis_agent",
+                "module": "jin10",
+                "version": "1.0",
+                "status": "success",
+                "bias": "bearish",
+                "confidence": 0.11,
+                "input_snapshot_ids": {"jin10": "article-999999"},
+                "source_refs": [{"source_id": "src-jin10-wrong", "source_name": "Wrong Jin10", "source_type": "article", "status": "available"}],
+                "key_findings": ["错误 lineage"],
+                "risk_points": ["不应串入当前报告"],
+                "watchlist": ["3290"],
+                "invalid_conditions": ["与报告快照不一致"],
+                "summary": "Wrong fallback row.",
+                "payload": {"artifact_refs": ["storage/outputs/jin10/2026-05-26/run-std-001/wrong.md"]},
+            },
+        )
+        conflicting.created_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        session.commit()
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/reports/2026-05-26/report-std-001/source.md": "# Source",
+            "storage/outputs/reports/2026-05-26/report-std-001/analysis.md": "# Analysis",
+            "storage/outputs/reports/2026-05-26/report-std-001/visual.html": "<html></html>",
+            "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
+            "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")
+
+    jin10_output = next(item for item in payload["agent_outputs"] if item["agent_name"] == "jin10_report_analysis_agent")
+    assert jin10_output["snapshot_id"] == "snap-std-001"
+    assert jin10_output["summary"] == "Jin10 agent summary."
+    assert {item["source_id"] for item in jin10_output["source_refs"]} == {"src-jin10"}
+    assert not any(warning["code"] == "agent-outputs-lineage-fallback" for warning in payload["warnings"])
+
+
+def test_report_analysis_inputs_warns_when_agent_output_uses_run_id_lineage_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+    from database.queries.analysis import upsert_agent_output
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_standard_report(session)
+        _seed_standard_snapshot(session)
+        upsert_agent_output(
+            session,
+            {
+                "snapshot_id": "snap-fallback-001",
+                "analysis_snapshot_db_id": None,
+                "asset": "XAUUSD",
+                "trade_date": "2026-05-26",
+                "run_id": "run-std-001",
+                "agent_name": "macro_fallback_agent",
+                "module": "macro",
+                "version": "1.0",
+                "status": "success",
+                "bias": "neutral",
+                "confidence": 0.42,
+                "input_snapshot_ids": {"macro": "macro-raw-001"},
+                "source_refs": [{"source_id": "src-fallback", "source_name": "Fallback Macro", "source_type": "api", "status": "available"}],
+                "key_findings": ["只有 run_id 对得上"],
+                "risk_points": [],
+                "watchlist": [],
+                "invalid_conditions": [],
+                "summary": "Fallback output.",
+                "payload": {"artifact_refs": ["storage/outputs/macro/2026-05-26/run-std-001/fallback.md"]},
+            },
+        )
+        session.commit()
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/reports/2026-05-26/report-std-001/source.md": "# Source",
+            "storage/outputs/reports/2026-05-26/report-std-001/analysis.md": "# Analysis",
+            "storage/outputs/reports/2026-05-26/report-std-001/visual.html": "<html></html>",
+            "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
+            "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")
+
+    assert {item["agent_name"] for item in payload["agent_outputs"]} == {"macro_fallback_agent"}
+    assert payload["agent_outputs"][0]["snapshot_id"] == "snap-fallback-001"
+    assert any(warning["code"] == "agent-outputs-lineage-fallback" for warning in payload["warnings"])
+
+
+def test_report_analysis_inputs_warns_when_report_declared_snapshot_drifted(tmp_path: Path, monkeypatch) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+    from database.models.report import ReportItem
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_standard_report(session)
+        _seed_standard_snapshot(session)
+        _seed_agent_outputs(session)
+        report_item = session.get(ReportItem, "report-std-001")
+        report_item.snapshot_id = "snap-declared-999"
+        session.commit()
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/reports/2026-05-26/report-std-001/source.md": "# Source",
+            "storage/outputs/reports/2026-05-26/report-std-001/analysis.md": "# Analysis",
+            "storage/outputs/reports/2026-05-26/report-std-001/visual.html": "<html></html>",
+            "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
+            "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")
+
+    warning_codes = {item["code"] for item in payload["warnings"]}
+    assert "report-lineage-snapshot-mismatch" in warning_codes
+    assert payload["snapshot_id"] == "snap-std-001"
+    assert any(item["snapshot"]["snapshot_id"] == "snap-std-001" for item in payload["deterministic_inputs"] if item["snapshot"])

@@ -7,6 +7,7 @@ import {
 } from "@/components/market-monitor/MarketMonitorSections";
 import { textOrDash } from "@/components/market-monitor/format";
 import type { MarketMonitorHistoryResponse } from "@/adapters/marketMonitor";
+import type { Jin10CalendarEvent, Jin10CalendarFreshness, Jin10CalendarStats } from "@/hooks/useJin10Calendar";
 import type { MarketMonitorHistoryTimeframe } from "@/hooks/useMarketMonitor";
 import type { MarketMonitorMockFile, MarketMonitorSourceTraceItem } from "@/types/market-monitor";
 import type { MarketMonitorShape, MarketMonitorTab } from "./marketMonitorPageModel";
@@ -24,6 +25,13 @@ interface MarketMonitorPageContentProps {
   sourceTrace: MarketMonitorSourceTraceItem[];
   overviewSummary: string;
   historySummary: string | null;
+  calendarEvents: Jin10CalendarEvent[];
+  calendarGeneratedAt: string | null;
+  calendarStatus: string;
+  calendarStats: Jin10CalendarStats | null;
+  calendarFreshness: Jin10CalendarFreshness | null;
+  calendarIsLoading: boolean;
+  calendarIsError: boolean;
   realtimeRegime: MarketMonitorMockFile["realtime_regime"];
   primaryDriver: MarketMonitorMockFile["primary_driver"];
   agentMarketRegime: MarketMonitorMockFile["agent_market_regime"] | null;
@@ -45,6 +53,13 @@ export function MarketMonitorPageContent({
   sourceTrace,
   overviewSummary,
   historySummary,
+  calendarEvents,
+  calendarGeneratedAt,
+  calendarStatus,
+  calendarStats,
+  calendarFreshness,
+  calendarIsLoading,
+  calendarIsError,
   realtimeRegime,
   primaryDriver,
   agentMarketRegime,
@@ -100,6 +115,13 @@ export function MarketMonitorPageContent({
           sourceLabel={sourceLabel}
           latestDate={textOrDash(snapshot.latest_date)}
           historySummary={historySummary}
+          events={calendarEvents}
+          generatedAt={calendarGeneratedAt}
+          calendarStatus={calendarStatus}
+          calendarStats={calendarStats}
+          calendarFreshness={calendarFreshness}
+          eventsIsLoading={calendarIsLoading}
+          eventsIsError={calendarIsError}
           realtimeRegime={realtimeRegime}
           primaryDriver={primaryDriver}
           sourceTrace={sourceTrace}

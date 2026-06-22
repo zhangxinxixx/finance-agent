@@ -29,7 +29,7 @@ def test_jin10_flash_api_refreshes_stale_cache(monkeypatch, tmp_path):
             json.dumps(
                 {
                     "generated_at": "2026-06-13T11:50:23+00:00",
-                    "items": [{"id": "new", "time": "2026-06-13T19:38:55+08:00", "content": "new headline"}],
+                    "items": [{"id": "new", "time": "2026-06-13T19:38:55+08:00", "content": "new headline", "summary_zh": "新快讯摘要。"}],
                 }
             ),
             encoding="utf-8",
@@ -41,6 +41,7 @@ def test_jin10_flash_api_refreshes_stale_cache(monkeypatch, tmp_path):
 
     assert result["generated_at"] == "2026-06-13T11:50:23+00:00"
     assert result["items"][0]["id"] == "new"
+    assert result["items"][0]["summary_zh"] == "新快讯摘要。"
 
 
 def test_jin10_flash_api_keeps_fresh_cache(monkeypatch, tmp_path):

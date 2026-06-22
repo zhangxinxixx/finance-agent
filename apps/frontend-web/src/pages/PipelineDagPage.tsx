@@ -75,6 +75,29 @@ const STAGE_ICON_MAP: Record<string, typeof Database> = {
   output:    FileText,
 };
 
+const TASK_DISPLAY_LABELS: Record<string, string> = {
+  macro_collect: "宏观采集",
+  macro_feature: "宏观特征",
+  report_render: "报告产出",
+  cme_download: "CME 下载",
+  cme_parse: "CME 解析",
+  cme_ingest: "CME 入库",
+  option_wall: "期权墙计算",
+  options_analysis: "期权分析",
+  technical: "技术行情处理",
+  positioning: "持仓处理",
+  news_collect: "新闻采集",
+  news_feature: "新闻特征",
+  news_brief: "新闻摘要",
+  report_analysis: "报告分析",
+  flash_article_analysis: "快讯文章分析",
+  jin10_refresh_jin10_flash: "金十快讯刷新",
+  jin10_refresh_jin10_quotes: "金十行情刷新",
+  jin10_refresh_jin10_kline: "金十 K 线刷新",
+  jin10_refresh_jin10_calendar: "金十日历刷新",
+  premarket: "主流程",
+};
+
 type PremarketReadinessSummary = {
   decision_counts?: {
     ready?: number;
@@ -585,8 +608,23 @@ function formatRunClock(value: string | null | undefined): string {
   });
 }
 
+function formatRunDuration(startedAt: string | null | undefined, endedAt: string | null | undefined): string {
+  if (!startedAt || !endedAt) return "—";
+  const started = new Date(startedAt).getTime();
+  const ended = new Date(endedAt).getTime();
+  if (Number.isNaN(started) || Number.isNaN(ended) || ended < started) return "—";
+  return `${((ended - started) / 1000).toFixed(1)}s`;
+}
+
 function stageFromTask(run: SchedulerTaskRun): string {
   return run.current_stage || run.category || run.task_type || "task";
+}
+
+function formatTaskDisplayLabel(value: string | null | undefined): string {
+  if (!value) return "未标注";
+  if (value in STAGE_LABELS) return STAGE_LABELS[value as keyof typeof STAGE_LABELS];
+  if (value in TASK_DISPLAY_LABELS) return TASK_DISPLAY_LABELS[value];
+  return value.split("_").join(" ");
 }
 
 function matchTaskToNodeId(task: SchedulerTaskRun | null, nodes: DagNodeSpec[]): string | null {
@@ -637,7 +675,7 @@ function TopBar({
         调度中心
       </span>
       <span className="rounded-md border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 py-1 text-[9px] font-semibold text-[var(--fg-4)] shrink-0">
-        每日 DAG 运行视图
+        每日流程图运行视图
       </span>
 
       <div className="flex items-center gap-1 shrink-0">
@@ -744,7 +782,7 @@ function StageLegend({ counts }: { counts: Record<string, number> }) {
 // ═══════════════════════════════════════════════════════════════
 
 function JsonViewer({ data, maxDepth = 2 }: { data: unknown; maxDepth?: number }) {
-  if (data == null) return <span className="text-[8px] text-[var(--fg-5)]">null</span>;
+  if (data == null) return <span className="text-[8px] text-[var(--fg-5)]">空</span>;
   if (typeof data === "string") return <span className="text-[8px] font-mono text-[var(--fg-3)] break-all">{data}</span>;
   if (typeof data === "number" || typeof data === "boolean") return <span className="text-[8px] font-mono text-[var(--brand-gold)]">{String(data)}</span>;
 
@@ -758,7 +796,7 @@ function JsonViewer({ data, maxDepth = 2 }: { data: unknown; maxDepth?: number }
             <JsonViewer data={item} maxDepth={maxDepth - 1} />
           </div>
         ))}
-        {data.length > 10 && <div className="text-[7px] text-[var(--fg-5)]">...{data.length - 10} more</div>}
+        {data.length > 10 && <div className="text-[7px] text-[var(--fg-5)]">其余 {data.length - 10} 项</div>}
       </div>
     );
   }
@@ -775,12 +813,12 @@ function JsonViewer({ data, maxDepth = 2 }: { data: unknown; maxDepth?: number }
               <JsonViewer data={v} maxDepth={maxDepth - 1} />
             ) : (
               <span className="text-[8px] font-mono text-[var(--fg-3)] break-all">
-                {v == null ? "null" : typeof v === "string" ? v : JSON.stringify(v)}
+                {v == null ? "空" : typeof v === "string" ? v : JSON.stringify(v)}
               </span>
             )}
           </div>
         ))}
-        {entries.length > 15 && <div className="text-[7px] text-[var(--fg-5)]">...{entries.length - 15} more</div>}
+        {entries.length > 15 && <div className="text-[7px] text-[var(--fg-5)]">其余 {entries.length - 15} 项</div>}
       </div>
     );
   }
@@ -1035,7 +1073,7 @@ function LineageTab({ node }: { node: DagNodeSpec }) {
                   <span className="font-mono text-[var(--fg-3)]">{id.replace(/^(step|src|grp)::/, "")}</span>
                 </div>
               ))}
-              {node.upstream_ids.length > 5 && <div className="text-[7px] text-[var(--fg-5)]">...{node.upstream_ids.length - 5} more</div>}
+              {node.upstream_ids.length > 5 && <div className="text-[7px] text-[var(--fg-5)]">其余 {node.upstream_ids.length - 5} 项</div>}
             </div>
           </div>
         )}
@@ -1051,7 +1089,7 @@ function LineageTab({ node }: { node: DagNodeSpec }) {
                   <span className="font-mono text-[var(--fg-3)]">{id.replace(/^(step|src|grp)::/, "")}</span>
                 </div>
               ))}
-              {node.downstream_ids.length > 5 && <div className="text-[7px] text-[var(--fg-5)]">...{node.downstream_ids.length - 5} more</div>}
+              {node.downstream_ids.length > 5 && <div className="text-[7px] text-[var(--fg-5)]">其余 {node.downstream_ids.length - 5} 项</div>}
             </div>
           </div>
         )}
@@ -1170,19 +1208,26 @@ function DailyRunsPanel({
     <section className="min-h-0 rounded-tl-md border-r border-[var(--border)] bg-[var(--bg-card)]">
       <div className="flex items-center justify-between gap-3 border-b border-[var(--border-faint)] px-4 py-2">
         <div>
-          <div className="text-[10px] font-semibold text-[var(--fg-2)]">任务列表</div>
+          <div className="text-[10px] font-semibold text-[var(--fg-2)]">任务索引</div>
           <div className="text-[8px] text-[var(--fg-5)]">{tradeDate} · {tasks.length} 条运行记录</div>
         </div>
         <div className="rounded-full border border-white/8 bg-black/10 px-2.5 py-1 text-[7px] font-semibold uppercase tracking-[0.16em] text-[var(--fg-4)]">
-          Daily Runs
+          Run Index
         </div>
       </div>
 
-      <div className="max-h-[320px] overflow-auto">
+      <div className="max-h-[420px] overflow-auto">
         {tasks.length === 0 ? (
           <div className="px-4 py-10 text-[9px] text-[var(--fg-5)]">该日期暂无任务运行记录</div>
         ) : (
-          <div className="divide-y divide-[var(--border-faint)]">
+          <div>
+            <div className="sticky top-0 z-10 grid grid-cols-[56px_58px_minmax(0,1fr)] items-center gap-2 border-b border-[var(--border-faint)] bg-[rgba(8,15,24,0.94)] px-4 py-2 text-[7px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-6)] backdrop-blur-sm">
+              <span>时间</span>
+              <span>状态</span>
+              <span>任务</span>
+            </div>
+
+            <div className="divide-y divide-[var(--border-faint)]">
             {tasks.map((task) => {
               const active = task.run_id === selectedRunId;
               const status = task.status.toLowerCase();
@@ -1195,31 +1240,45 @@ function DailyRunsPanel({
                 <button
                   key={task.run_id}
                   onClick={() => onSelectRun(task.run_id)}
-                  className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--bg-card-inner)]"
-                  style={{ background: active ? "var(--bg-card-inner)" : "transparent" }}
+                  className="grid w-full grid-cols-[56px_58px_minmax(0,1fr)] items-start gap-2 px-4 py-2.5 text-left transition-colors hover:bg-[var(--bg-card-inner)]"
+                  style={{
+                    background: active ? "rgba(240,185,11,0.06)" : "transparent",
+                    boxShadow: active ? "inset 2px 0 0 var(--brand-gold)" : "none",
+                  }}
                 >
-                  <span className="mt-0.5 h-2 w-2 rounded-full shrink-0" style={{ background: accent }} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-[10px] font-semibold text-[var(--fg-2)]">{task.task_name}</span>
-                      <span className="rounded px-1.5 py-px text-[7px] font-semibold" style={{ background: "var(--bg-panel)", color: accent }}>
-                        {formatStatus(task.status)}
-                      </span>
-                    </div>
-                    <div className="mt-1 flex items-center gap-2 text-[8px] text-[var(--fg-5)]">
-                      <span>{stageFromTask(task)}</span>
+                  <div className="pt-0.5">
+                    <div className="font-mono text-[8px] text-[var(--fg-3)]">{formatRunClock(task.started_at)}</div>
+                  </div>
+
+                  <div className="flex items-center gap-1 pt-0.5">
+                    <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ background: accent }} />
+                    <span className="rounded px-1.5 py-px text-[7px] font-semibold" style={{ background: "var(--bg-panel)", color: accent }}>
+                      {formatStatus(task.status)}
+                    </span>
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="truncate text-[9px] font-semibold text-[var(--fg-2)]">{task.task_name}</div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[7px] text-[var(--fg-5)]">
+                      <span>{formatTaskDisplayLabel(stageFromTask(task))}</span>
                       <span>·</span>
-                      <span>{formatRunClock(task.started_at)}</span>
+                      <span>{formatTaskDisplayLabel(task.task_type)}</span>
                       <span>·</span>
-                      <span>{task.step_count} steps</span>
+                      <span>{task.step_count} 步</span>
                     </div>
                     {task.error_summary && (
-                      <div className="mt-1 truncate text-[8px] text-[var(--down)]">{task.error_summary}</div>
+                      <div className="mt-0.5 truncate text-[7px] text-[var(--down)]">{task.error_summary}</div>
+                    )}
+                    {active && (
+                      <div className="mt-1 text-[7px] font-mono uppercase tracking-[0.12em] text-[var(--brand-gold)]">
+                        selected
+                      </div>
                     )}
                   </div>
                 </button>
               );
             })}
+            </div>
           </div>
         )}
       </div>
@@ -1227,7 +1286,7 @@ function DailyRunsPanel({
   );
 }
 
-function RunLogPanel({
+function RunDetailPanel({
   tradeDate,
   selectedTask,
   detail,
@@ -1240,7 +1299,19 @@ function RunLogPanel({
   detailLoading: boolean;
   localRunLogs: RunLogEntry[];
 }) {
-  const entries: React.ComponentProps<typeof FARuntimeLog>["entries"] = useMemo(() => {
+  const [activeTab, setActiveTab] = useState<"events" | "overview" | "steps">("events");
+
+  useEffect(() => {
+    setActiveTab("events");
+  }, [selectedTask?.run_id]);
+
+  const eventRows = useMemo<Array<{
+    id: string;
+    time: string;
+    level: "debug" | "info" | "warn" | "error" | "success";
+    source: string;
+    message: string;
+  }>>(() => {
     if (detail?.events?.length) {
       return detail.events.map((event) => ({
         id: event.id,
@@ -1263,11 +1334,19 @@ function RunLogPanel({
     }));
   }, [detail, localRunLogs]);
 
+  const levelTone: Record<"debug" | "info" | "warn" | "error" | "success", string> = {
+    debug: "var(--fg-6)",
+    info: "var(--info)",
+    warn: "var(--warn)",
+    error: "var(--down)",
+    success: "var(--up)",
+  };
+
   return (
     <section className="min-h-0 rounded-tr-md bg-[var(--bg-card)]">
       <div className="flex items-center justify-between gap-3 border-b border-[var(--border-faint)] px-4 py-2">
         <div>
-          <div className="text-[10px] font-semibold text-[var(--fg-2)]">日志信息</div>
+          <div className="text-[10px] font-semibold text-[var(--fg-2)]">任务调度日志</div>
           <div className="text-[8px] text-[var(--fg-5)]">
             {selectedTask ? `${selectedTask.task_name} · ${tradeDate}` : `${tradeDate} · 最近运行记录`}
           </div>
@@ -1280,33 +1359,175 @@ function RunLogPanel({
         )}
       </div>
 
-      <div className="space-y-3 p-4">
+      <div className="flex items-center gap-1 border-b border-[var(--border-faint)] px-4 py-2">
+        {[
+          { key: "events", label: "事件" },
+          { key: "overview", label: "概览" },
+          { key: "steps", label: "步骤" },
+        ].map((tab) => {
+          const active = activeTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key as "events" | "overview" | "steps")}
+              className="rounded-md border px-2.5 py-1 text-[8px] font-semibold transition-colors"
+              style={{
+                borderColor: active ? "var(--brand-gold)" : "var(--border-faint)",
+                background: active ? "rgba(240,185,11,0.08)" : "var(--bg-panel)",
+                color: active ? "var(--fg-2)" : "var(--fg-5)",
+              }}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="overflow-auto p-4 max-h-[420px]">
         {detailLoading ? (
           <div className="flex items-center justify-center py-8 text-[9px] text-[var(--fg-5)]">
-            <Loader2 size={14} className="mr-2 animate-spin" /> 加载任务日志...
+            <Loader2 size={14} className="mr-2 animate-spin" /> 加载任务信息...
           </div>
         ) : (
           <>
-            {detail && (
-              <div className="grid grid-cols-4 gap-2 text-[8px]">
-                {[
-                  { label: "状态", value: formatStatus(detail.status) },
-                  { label: "步骤", value: String(detail.steps.length) },
-                  { label: "开始", value: formatRunClock(detail.started_at) },
-                  { label: "结束", value: formatRunClock(detail.ended_at) },
-                ].map((item) => (
-                  <div key={item.label} className="rounded border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-1.5">
-                    <div className="text-[7px] uppercase text-[var(--fg-6)]">{item.label}</div>
-                    <div className="mt-0.5 font-mono text-[var(--fg-2)]">{item.value}</div>
+            {activeTab === "overview" && selectedTask && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-[8px] xl:grid-cols-4">
+                  {[
+                    { label: "状态", value: formatStatus(detail?.status ?? selectedTask.status) },
+                    { label: "阶段", value: formatTaskDisplayLabel(stageFromTask(selectedTask)) },
+                    { label: "开始", value: formatRunClock(detail?.started_at ?? selectedTask.started_at) },
+                    { label: "结束", value: formatRunClock(detail?.ended_at ?? selectedTask.ended_at) },
+                    { label: "耗时", value: formatRunDuration(detail?.started_at ?? selectedTask.started_at, detail?.ended_at ?? selectedTask.ended_at) },
+                    { label: "步骤", value: String(detail?.steps.length ?? selectedTask.step_count) },
+                    { label: "类型", value: formatTaskDisplayLabel(selectedTask.task_type) },
+                    { label: "运行 ID", value: selectedTask.run_id.slice(0, 12) },
+                  ].map((item) => (
+                    <div key={item.label} className="rounded border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-1.5">
+                      <div className="text-[7px] uppercase text-[var(--fg-6)]">{item.label}</div>
+                      <div className="mt-0.5 truncate font-mono text-[var(--fg-2)]">{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {(detail?.error_summary || detail?.error || selectedTask.error_summary) && (
+                  <div className="rounded border border-[var(--down)]/20 bg-[var(--down)]/5 px-3 py-2 text-[8px] text-[var(--down)]">
+                    {detail?.error_summary || detail?.error || selectedTask.error_summary}
                   </div>
-                ))}
+                )}
               </div>
             )}
-            <FARuntimeLog
-              entries={entries}
-              emptyText={selectedTask ? "当前任务暂无事件日志" : "暂无运行日志"}
-              className="max-h-[260px] overflow-y-auto"
-            />
+
+            {activeTab === "steps" && (
+              <>
+                {detail?.steps && detail.steps.length > 0 ? (
+                  <div className="rounded border border-[var(--border-faint)] bg-[var(--bg-panel)]">
+                    <div className="flex items-center justify-between border-b border-[var(--border-faint)] px-3 py-2">
+                      <div className="text-[9px] font-semibold text-[var(--fg-2)]">执行步骤</div>
+                      <div className="text-[7px] tracking-[0.14em] text-[var(--fg-5)]">{detail.steps.length} 步</div>
+                    </div>
+                    <div className="divide-y divide-[var(--border-faint)]">
+                      {detail.steps.map((step, index) => {
+                        const status = step.status.toLowerCase();
+                        const accent =
+                          status === "success" ? "var(--up)" :
+                          status === "failed" ? "var(--down)" :
+                          status === "running" ? "var(--warn)" :
+                          "var(--fg-5)";
+                        return (
+                          <div key={step.step_id || `${step.name}-${index}`} className="grid grid-cols-[auto_minmax(0,1fr)_auto] gap-3 px-3 py-2.5">
+                            <span className="mt-1 h-2 w-2 rounded-full" style={{ background: accent }} />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="truncate text-[9px] font-semibold text-[var(--fg-2)]">{step.name || `步骤 ${index + 1}`}</span>
+                                <span className="rounded px-1.5 py-px text-[7px] font-semibold" style={{ background: "var(--bg-card)", color: accent }}>
+                                  {formatStatus(step.status)}
+                                </span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[8px] text-[var(--fg-5)]">
+                                <span>{step.stage ? formatTaskDisplayLabel(step.stage) : "阶段未标注"}</span>
+                                <span>·</span>
+                                <span>{formatRunClock(step.started_at)}</span>
+                                <span>·</span>
+                                <span>{step.duration_ms != null ? `${(step.duration_ms / 1000).toFixed(1)}s` : "—"}</span>
+                              </div>
+                              {step.error && (
+                                <div className="mt-1 line-clamp-2 text-[8px] text-[var(--down)]">{step.error}</div>
+                              )}
+                            </div>
+                            <div className="text-[8px] font-mono text-[var(--fg-6)]">#{step.step_order ?? index + 1}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded border border-dashed border-[var(--border)] px-4 py-8 text-center text-[8px] text-[var(--fg-5)]">
+                    当前任务暂无步骤明细
+                  </div>
+                )}
+              </>
+            )}
+
+            {activeTab === "events" && (
+              <div className="rounded border border-[var(--border-faint)] bg-[var(--bg-panel)]">
+                <div className="flex items-center justify-between border-b border-[var(--border-faint)] px-3 py-2">
+                  <div className="text-[9px] font-semibold text-[var(--fg-2)]">事件时间线</div>
+                  <div className="text-[7px] tracking-[0.14em] text-[var(--fg-5)]">{eventRows.length} 条事件</div>
+                </div>
+                <div className="p-3">
+                  {eventRows.length > 0 ? (
+                    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-terminal)] shadow-[inset_0_1px_0_var(--border-faint)]">
+                      <div className="grid grid-cols-[74px_minmax(0,1fr)] gap-3 border-b border-[var(--border-faint)] px-3 py-2 text-[7px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-6)]">
+                        <span>时间</span>
+                        <span>事件流</span>
+                      </div>
+                      <div className="max-h-[320px] overflow-y-auto">
+                        {eventRows.map((entry) => (
+                          <div
+                            key={entry.id}
+                            className="grid grid-cols-[74px_minmax(0,1fr)] gap-3 border-b border-[var(--border-faint)] px-3 py-2.5 last:border-b-0"
+                          >
+                            <div className="pt-0.5 font-mono text-[10px] text-[var(--fg-5)]">{entry.time}</div>
+                            <div className="min-w-0">
+                              <div className="flex items-start gap-2">
+                                <span className="mt-[5px] h-1.5 w-1.5 rounded-full shrink-0" style={{ background: levelTone[entry.level] }} />
+                                <div className="min-w-0 flex-1">
+                                  {entry.source ? (
+                                    <div className="mb-0.5 text-[7px] uppercase tracking-[0.12em] text-[var(--fg-6)]">
+                                      {entry.source}
+                                    </div>
+                                  ) : null}
+                                  <div className="break-words font-mono text-[10px] leading-relaxed text-[var(--fg-2)]">
+                                    {entry.message}
+                                  </div>
+                                </div>
+                                <div
+                                  className="shrink-0 rounded px-1.5 py-px text-[7px] font-semibold uppercase"
+                                  style={{ color: levelTone[entry.level], background: "rgba(255,255,255,0.04)" }}
+                                >
+                                  {entry.level}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded border border-dashed border-[var(--border)] px-4 py-8 text-center text-[8px] text-[var(--fg-5)]">
+                      {selectedTask ? "当前任务暂无事件日志" : "暂无运行日志"}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!selectedTask && (
+              <div className="rounded border border-dashed border-[var(--border)] px-4 py-6 text-center text-[8px] text-[var(--fg-5)]">
+                选择左侧任务后查看对应步骤、状态与事件时间线
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1427,8 +1648,7 @@ export function PipelineDagPage() {
   const load = useCallback(async () => {
     setLoading(true); setError(null); setSelectedNodeId(null);
     try {
-      const [graph, preflightData, overview] = await Promise.all([
-        fetchDagGraph(days),
+      const [preflightData, overview] = await Promise.all([
         fetchJson<PremarketLaunchPreflight>("/api/tasks/premarket/preflight").catch((preflightFetchError) => {
           setPreflightError(
             preflightFetchError instanceof Error ? preflightFetchError.message : "预检失败",
@@ -1437,14 +1657,21 @@ export function PipelineDagPage() {
         }),
         fetchSchedulerOverview(days),
       ]);
+      const latestTradeDate = [...new Set(
+        (overview.task_runs ?? [])
+          .map((run) => run.trade_date)
+          .filter((value): value is string => Boolean(value)),
+      )].sort().reverse()[0] ?? "";
+      const effectiveTradeDate = tradeDateFilter || latestTradeDate || undefined;
+      const graph = await fetchDagGraph(days, effectiveTradeDate);
       setDagData(graph);
       setPreflight(preflightData);
       setSchedulerOverview(overview);
       if (preflightData) setPreflightError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "加载 DAG 失败");
+      setError(e instanceof Error ? e.message : "加载流程图失败");
     } finally { setLoading(false); }
-  }, [days]);
+  }, [days, tradeDateFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1608,7 +1835,7 @@ export function PipelineDagPage() {
     setRunning(true); setRunMessage("启动中...");
     const startLog: RunLogEntry = {
       time: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-      type: "管线", content: "premarket 启动", status: "running", duration: "—",
+      type: "管线", content: "主流程启动", status: "running", duration: "—",
     };
     setRunLogs(prev => [startLog, ...prev]);
 
@@ -1684,7 +1911,7 @@ export function PipelineDagPage() {
 
   const runButtonTitle = useMemo(() => {
     if (running) return "运行中";
-    if (!preflight || preflight.can_launch) return "执行 premarket 运行";
+    if (!preflight || preflight.can_launch) return "执行主流程运行";
     return `预检阻塞: ${formatPreflightBlockingReasons(preflight.blocking_reasons)}`;
   }, [preflight, running]);
 
@@ -1728,6 +1955,21 @@ export function PipelineDagPage() {
     () => dailyRuns.find((run) => run.run_id === selectedRunId) ?? null,
     [dailyRuns, selectedRunId],
   );
+
+  const handleSelectRun = useCallback((runId: string) => {
+    setSelectedRunId(runId);
+    const task = dailyRuns.find((run) => run.run_id === runId) ?? null;
+    const matchedNodeId = matchTaskToNodeId(task, dagData?.nodes ?? []);
+    if (matchedNodeId) setSelectedNodeId(matchedNodeId);
+  }, [dailyRuns, dagData]);
+
+  useEffect(() => {
+    if (!selectedNodeId || !dagData || dailyRuns.length === 0) return;
+    const matchedTask = dailyRuns.find((run) => matchTaskToNodeId(run, dagData.nodes) === selectedNodeId);
+    if (matchedTask && matchedTask.run_id !== selectedRunId) {
+      setSelectedRunId(matchedTask.run_id);
+    }
+  }, [selectedNodeId, dagData, dailyRuns, selectedRunId]);
 
   const stageCounts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -1778,65 +2020,93 @@ export function PipelineDagPage() {
           layoutMessage={layoutMessage}
         />
 
-        <div className="flex-1 min-h-0">
-          <div className="flex h-full min-h-0">
-            <div className="dag-canvas-atmosphere flex-1 min-w-0 relative overflow-hidden" style={{ background: "linear-gradient(180deg, #06101a 0%, #09131e 38%, #0b1622 100%)" }}>
-              {loading && (
-                <div className="absolute inset-0 flex items-center justify-center z-20 bg-[var(--bg-panel)]/80">
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 size={24} className="animate-spin text-[var(--brand-gold)]" />
-                    <span className="text-[10px] text-[var(--fg-4)]">加载 DAG 运行图...</span>
+        <div className="flex flex-col">
+          <div
+            className="flex min-h-0 flex-none"
+            style={{ height: "calc(100vh - 176px)", minHeight: "calc(100vh - 176px)" }}
+          >
+            <div className="flex h-full min-h-0 flex-1">
+              <div className="dag-canvas-atmosphere flex-1 min-w-0 relative overflow-hidden" style={{ background: "linear-gradient(180deg, #06101a 0%, #09131e 38%, #0b1622 100%)" }}>
+                {loading && (
+                  <div className="absolute inset-0 flex items-center justify-center z-20 bg-[var(--bg-panel)]/80">
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 size={24} className="animate-spin text-[var(--brand-gold)]" />
+                      <span className="text-[10px] text-[var(--fg-4)]">加载流程图...</span>
+                    </div>
                   </div>
+                )}
+                {error && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-[var(--bg-panel)]/80">
+                    <XCircle size={28} className="text-[var(--down)] mb-2" />
+                    <span className="text-sm text-[var(--fg-3)]">{error}</span>
+                    <button onClick={load} className="mt-3 rounded-md border border-[var(--border)] px-4 py-1.5 text-[10px] text-[var(--fg-3)] hover:bg-[var(--bg-hover)]">重试</button>
+                  </div>
+                )}
+                {!loading && !error && (
+                  <>
+                    <FlowCanvas
+                      rfNodes={rfNodes}
+                      rfEdges={rfEdges}
+                      onNodesChange={onNodesChange}
+                      onEdgesChange={onEdgesChange}
+                      onNodeClick={handleNodeClick}
+                      onNodeMouseEnter={handleNodeMouseEnter}
+                      onNodeMouseLeave={handleNodeMouseLeave}
+                      onPaneClick={handlePaneClick}
+                    />
+                    <Panel position="top-right" className="!m-3 !rounded-[18px] !border !border-white/10 !bg-[rgba(6,12,20,0.68)] !px-3 !py-2 !shadow-[0_20px_50px_-34px_rgba(0,0,0,0.85)] !backdrop-blur-md">
+                      <div className="flex items-center gap-2 text-[7px] uppercase tracking-[0.16em] text-[var(--fg-5)]">
+                        {STAGE_ORDER.map((stage) => (
+                          <div key={stage} className="flex items-center gap-1 rounded-full border border-white/8 bg-white/5 px-2 py-1">
+                            <span className="h-1.5 w-1.5 rounded-full" style={{ background: STAGE_COLORS[stage] }} />
+                            <span>{STAGE_LABELS[stage]}</span>
+                            <span className="font-mono text-[var(--fg-3)]">{stageCounts[stage] ?? 0}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </Panel>
+                  </>
+                )}
+              </div>
+
+              <InspectorPanel
+                node={inspectorNode}
+                isLoading={detailLoading}
+                onClose={() => setSelectedNodeId(null)}
+                onFitNode={fitSelectedNode}
+              />
+            </div>
+          </div>
+
+          <div className="border-t border-[var(--border)] bg-[var(--bg-panel)]">
+            <div className="flex items-center justify-between gap-3 border-b border-[var(--border-faint)] px-4 py-2.5">
+              <div>
+                <div className="text-[10px] font-semibold text-[var(--fg-2)]">当日任务调度日志</div>
+                <div className="text-[8px] text-[var(--fg-5)]">
+                  {activeTradeDate || "最新日期"} · {dailyRuns.length} 条运行记录
                 </div>
-              )}
-              {error && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-[var(--bg-panel)]/80">
-                  <XCircle size={28} className="text-[var(--down)] mb-2" />
-                  <span className="text-sm text-[var(--fg-3)]">{error}</span>
-                  <button onClick={load} className="mt-3 rounded-md border border-[var(--border)] px-4 py-1.5 text-[10px] text-[var(--fg-3)] hover:bg-[var(--bg-hover)]">重试</button>
-                </div>
-              )}
-              {!loading && !error && (
-                <>
-                  <FlowCanvas
-                    rfNodes={rfNodes}
-                    rfEdges={rfEdges}
-                    onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
-                    onNodeClick={handleNodeClick}
-                    onNodeMouseEnter={handleNodeMouseEnter}
-                    onNodeMouseLeave={handleNodeMouseLeave}
-                    onPaneClick={handlePaneClick}
-                  />
-                  <Panel position="top-right" className="!m-3 !rounded-[18px] !border !border-white/10 !bg-[rgba(6,12,20,0.68)] !px-3 !py-2 !shadow-[0_20px_50px_-34px_rgba(0,0,0,0.85)] !backdrop-blur-md">
-                    <div className="flex items-center gap-2 text-[7px] uppercase tracking-[0.16em] text-[var(--fg-5)]">
-                      {STAGE_ORDER.map((stage) => (
-                        <div key={stage} className="flex items-center gap-1 rounded-full border border-white/8 bg-white/5 px-2 py-1">
-                          <span className="h-1.5 w-1.5 rounded-full" style={{ background: STAGE_COLORS[stage] }} />
-                          <span>{STAGE_LABELS[stage]}</span>
-                          <span className="font-mono text-[var(--fg-3)]">{stageCounts[stage] ?? 0}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </Panel>
-                  <Panel position="bottom-right" className="!m-3 !rounded-[18px] !border !border-white/10 !bg-[rgba(6,12,20,0.66)] !px-3 !py-2 !shadow-[0_20px_50px_-34px_rgba(0,0,0,0.85)] !backdrop-blur-md">
-                    <div className="text-[7px] uppercase tracking-[0.18em] text-[var(--fg-6)]">Daily runs</div>
-                    <div className="mt-1 flex items-center gap-3 text-[10px] text-[var(--fg-3)]">
-                      <span className="font-mono">{activeTradeDate || "latest"}</span>
-                      <span>{dailyRuns.length} runs</span>
-                      {selectedTask && <span className="max-w-[180px] truncate text-[var(--fg-5)]">{selectedTask.task_name}</span>}
-                    </div>
-                  </Panel>
-                </>
-              )}
+              </div>
+              <div className="rounded-full border border-white/8 bg-black/10 px-2.5 py-1 text-[7px] font-semibold uppercase tracking-[0.16em] text-[var(--fg-4)]">
+                调度控制台
+              </div>
             </div>
 
-            <InspectorPanel
-              node={inspectorNode}
-              isLoading={detailLoading}
-              onClose={() => setSelectedNodeId(null)}
-              onFitNode={fitSelectedNode}
+            <div className="grid min-h-[360px] grid-cols-[300px_minmax(0,1fr)]">
+            <DailyRunsPanel
+              tradeDate={activeTradeDate || "最新日期"}
+              tasks={dailyRuns}
+              selectedRunId={selectedRunId}
+              onSelectRun={handleSelectRun}
             />
+
+            <RunDetailPanel
+              tradeDate={activeTradeDate || "最新日期"}
+              selectedTask={selectedTask}
+              detail={selectedRunDetail}
+              detailLoading={runDetailLoading}
+              localRunLogs={dailyRunLogs}
+            />
+            </div>
           </div>
         </div>
       </div>

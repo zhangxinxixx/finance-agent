@@ -128,6 +128,26 @@ def _seed_legacy_final(session: Session) -> None:
     session.commit()
 
 
+def _seed_snapshot(session: Session, *, snapshot_id: str = "snap-std-001", run_id: str = "run-std-001") -> None:
+    from database.queries.analysis import upsert_analysis_snapshot
+
+    upsert_analysis_snapshot(
+        session,
+        payload={
+            "snapshot_id": snapshot_id,
+            "asset": "XAUUSD",
+            "trade_date": "2026-05-26",
+            "run_id": run_id,
+            "status": "success",
+            "input_snapshot_ids": {"macro": "macro-raw-001"},
+            "source_refs": [{"source_id": "src-snapshot", "source_name": "Snapshot Feed", "source_type": "api", "status": "available"}],
+            "macro": {"regime": "tightening"},
+            "payload": {"snapshot_id": snapshot_id},
+        },
+        artifact_path=f"storage/features/2026-05-26/{snapshot_id}/analysis_snapshot.json",
+    )
+
+
 def test_report_detail_returns_standard_four_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apps.api import main as api_main
     from apps.api.services import report_service
@@ -187,6 +207,111 @@ def test_report_subroutes_read_standard_source_and_analysis(tmp_path: Path, monk
     assert source_payload["content"].startswith("# Source")
     assert analysis_payload["content"].startswith("# Analysis")
     assert evidence_payload["content"]["sections"][0]["id"] == "s1"
+
+
+def test_artifact_detail_supports_standard_report_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_report(session)
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/reports/2026-05-26/report-std-001/source.md": "# Source\n\nBody",
+            "storage/outputs/reports/2026-05-26/report-std-001/analysis.md": "# Analysis\n\nView",
+            "storage/outputs/reports/2026-05-26/report-std-001/visual.html": "<html><body>visual</body></html>",
+            "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_artifact_detail("report-std-001:source", db=db).model_dump(mode="json")
+
+    assert payload["run_id"] == "run-std-001"
+    assert payload["snapshot_id"] == "snap-std-001"
+    assert payload["task_name"] == "report_artifact"
+    assert payload["stage"] == "report"
+    assert payload["artifact"]["artifact_id"] == "report-std-001:source"
+    assert payload["artifact"]["artifact_type"] == "source_md"
+    assert payload["artifact"]["file_path"] == "storage/outputs/reports/2026-05-26/report-std-001/source.md"
+    assert {item["artifact_id"] for item in payload["artifact_refs"]} == {
+        "report-std-001:source",
+        "report-std-001:analysis",
+        "report-std-001:visual",
+        "report-std-001:structured",
+    }
+    assert {item["source_id"] for item in payload["source_refs"]} == {"src-001"}
+    assert payload["metadata"]["report_id"] == "report-std-001"
+    assert payload["metadata"]["family"] == "macro"
+    assert payload["warnings"] == []
+
+
+def test_artifact_detail_warns_when_standard_report_lineage_drifted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+    from database.models.report import ReportItem
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_report(session)
+        _seed_snapshot(session)
+        report_item = session.get(ReportItem, "report-std-001")
+        report_item.snapshot_id = "snap-declared-999"
+        session.commit()
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/reports/2026-05-26/report-std-001/source.md": "# Source\n\nBody",
+            "storage/outputs/reports/2026-05-26/report-std-001/analysis.md": "# Analysis\n\nView",
+            "storage/outputs/reports/2026-05-26/report-std-001/visual.html": "<html><body>visual</body></html>",
+            "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_artifact_detail("report-std-001:source", db=db).model_dump(mode="json")
+
+    warning_codes = {item["code"] for item in payload["warnings"]}
+    assert "report-lineage-snapshot-mismatch" in warning_codes
+    assert payload["snapshot_id"] == "snap-std-001"
+
+
+def test_report_detail_warns_when_declared_snapshot_drifted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+    from database.models.report import ReportItem
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_report(session)
+        _seed_snapshot(session)
+        report_item = session.get(ReportItem, "report-std-001")
+        report_item.snapshot_id = "snap-declared-999"
+        session.commit()
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/reports/2026-05-26/report-std-001/source.md": "# Source\n\nBody",
+            "storage/outputs/reports/2026-05-26/report-std-001/analysis.md": "# Analysis\n\nView",
+            "storage/outputs/reports/2026-05-26/report-std-001/visual.html": "<html><body>visual</body></html>",
+            "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_report_detail("report-std-001", db=db).model_dump(mode="json")
+
+    warning_codes = {item["code"] for item in payload["warnings"]}
+    assert "report-lineage-snapshot-mismatch" in warning_codes
+    assert payload["snapshot_id"] == "snap-std-001"
 
 
 def test_report_detail_marks_missing_visual_partial_and_visual_route_404(
@@ -254,6 +379,60 @@ def test_report_detail_legacy_final_report_adapter_reads_markdown_and_structured
     assert "storage/outputs/final_report/XAUUSD/2026-05-26/run-legacy-001/structured_report.json" in artifact_paths
     assert analysis_payload["content"].startswith("# Legacy Final")
     assert evidence_payload["content"]["summary"] == "legacy"
+
+
+def test_report_detail_filesystem_final_report_adapter_reads_markdown_without_db_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/final_report/XAUUSD/2026-06-21/run-related/final_report.md": "# XAUUSD 相关报告\n\n## 综合报告",
+            "storage/outputs/final_report/XAUUSD/2026-06-21/run-related/structured_report.json": json.dumps(
+                {"sections": ["综合报告"]}
+            ),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    factory = _make_session_factory()
+
+    with factory() as db:
+        detail = api_main.api_report_detail("run-related", db=db).model_dump(mode="json")
+        analysis_payload = api_main.api_report_analysis("run-related", db=db)
+
+    assert detail["family"] == "final_report_markdown"
+    assert detail["title"] == "XAUUSD 综合报告"
+    assert detail["data_status"] == "live"
+    assert analysis_payload["content"].startswith("# XAUUSD 相关报告")
+
+
+def test_report_detail_macro_report_adapter_reads_macro_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/macro/2026-06-21/run-macro/macro_snapshot.md": "# XAUUSD 宏观数据报告\n\n## 核心宏观指标",
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    factory = _make_session_factory()
+
+    with factory() as db:
+        detail = api_main.api_report_detail("macro_report:run-macro", db=db).model_dump(mode="json")
+        analysis_payload = api_main.api_report_analysis("macro_report:run-macro", db=db)
+
+    assert detail["family"] == "macro_report"
+    assert detail["title"] == "XAUUSD 宏观数据报告（2026-06-21）"
+    assert detail["run_id"] == "run-macro"
+    assert detail["data_status"] == "live"
+    assert analysis_payload["content"].startswith("# XAUUSD 宏观数据报告")
 
 
 def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

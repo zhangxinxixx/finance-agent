@@ -17,7 +17,7 @@ interface FATabBarProps<TValue extends string = string> {
 
 export function FATabBar<TValue extends string = string>({ tabs, value, onChange, className = "", ariaLabel = "筛选项" }: FATabBarProps<TValue>) {
   return (
-    <div className={`inline-flex flex-wrap rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--bg-panel)] p-1 ${className}`} role="group" aria-label={ariaLabel}>
+    <div className={`inline-flex flex-wrap rounded-[var(--radius-lg)] border border-[var(--border-faint)] bg-[rgba(12,23,40,0.86)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)] ${className}`} role="group" aria-label={ariaLabel}>
       {tabs.map((tab) => {
         const active = tab.value === value;
         return (
@@ -27,9 +27,9 @@ export function FATabBar<TValue extends string = string>({ tabs, value, onChange
             aria-pressed={active}
             disabled={tab.disabled}
             onClick={() => onChange?.(tab.value)}
-            className={`inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] px-3 py-1.5 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`inline-flex items-center gap-1.5 rounded-[var(--radius-md)] px-3 py-1.5 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
               active
-                ? "border border-[var(--brand-dim)] bg-[var(--bg-active)] text-[var(--brand-hover)]"
+                ? "border border-[var(--brand-dim)] bg-[var(--bg-active)] text-[var(--brand-hover)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
                 : "border border-transparent text-[var(--fg-4)] hover:bg-[var(--bg-hover)] hover:text-[var(--fg-2)]"
             }`}
           >

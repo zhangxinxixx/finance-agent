@@ -4,10 +4,10 @@ export type EventFlowTabKey = "overview" | "live" | "timeline" | "impact" | "inp
 
 export const EVENT_FLOW_TABS: Array<{ value: EventFlowTabKey; label: string; count?: number }> = [
   { value: "overview", label: "总览" },
-  { value: "live", label: "当日快讯" },
-  { value: "timeline", label: "事件流" },
-  { value: "impact", label: "影响分析" },
-  { value: "inputs", label: "报告输入" },
+  { value: "live", label: "快讯" },
+  { value: "timeline", label: "时间线" },
+  { value: "impact", label: "影响" },
+  { value: "inputs", label: "输入" },
 ];
 
 export function isEventFlowTab(value: string | null): value is EventFlowTabKey {
@@ -19,11 +19,13 @@ export function EventFlowTabs({
   onChange,
   liveCount,
   timelineCount,
+  onOpenActiveEvent,
 }: {
   value: EventFlowTabKey;
   onChange: (value: EventFlowTabKey) => void;
   liveCount?: number;
   timelineCount?: number;
+  onOpenActiveEvent?: () => void;
 }) {
   const tabs = EVENT_FLOW_TABS.map((tab) => {
     if (tab.value === "live") return { ...tab, count: liveCount };
@@ -32,11 +34,14 @@ export function EventFlowTabs({
   });
 
   return (
-    <div className="flex items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2">
+    <div className="event-flow-tabs-strip">
       <FATabBar tabs={tabs} value={value} onChange={onChange} ariaLabel="事件流层级切换" />
-      <div className="hidden text-[10px] text-[var(--fg-5)] lg:block">
-        只读分层视图 · 来源、影响路径和行情验证均来自后端 read model
-      </div>
+      {onOpenActiveEvent ? (
+        <button type="button" onClick={onOpenActiveEvent} className="event-flow-active-anchor">
+          <span className="event-flow-selection-label">主线</span>
+          <span className="text-[11px] font-semibold text-[var(--brand-hover)]">查看详情</span>
+        </button>
+      ) : null}
     </div>
   );
 }

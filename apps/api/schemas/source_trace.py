@@ -26,6 +26,7 @@ class ArtifactRef(SchemaModel):
     artifact_id: str
     artifact_type: ArtifactType
     file_path: str
+    storage_backend: str | None = None
     version: str | None = None
     generated_at: datetime | None = None
     sha256: str | None = None

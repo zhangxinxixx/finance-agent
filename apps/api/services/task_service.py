@@ -21,6 +21,7 @@ from apps.api.services._trace_refs import (
     parse_artifact_refs,
     parse_source_refs,
 )
+from apps.runtime.artifact_storage import LOCAL_FS_STORAGE_BACKEND
 from apps.runtime.artifact_registry import list_run_artifacts
 from database.models.engine import SessionLocal
 from database.models.execution import RunArtifact
@@ -132,6 +133,8 @@ def get_task_run_artifacts(db: Session, run_id: str) -> dict[str, Any] | None:
             for step in run.steps
             for artifact in _step_artifact_refs(step)
         )
+    else:
+        artifacts = dedupe_artifact_refs(artifacts)
     return {
         "run_id": str(run.id),
         "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts],
@@ -309,6 +312,7 @@ def _run_artifact_refs(rows: list[RunArtifact]) -> list[ArtifactRef]:
             artifact_id=str(row.artifact_id),
             artifact_type=coerce_artifact_type(row.artifact_type, row.file_path),
             file_path=row.file_path,
+            storage_backend=row.storage_backend or LOCAL_FS_STORAGE_BACKEND,
             generated_at=row.created_at,
             sha256=row.sha256,
         )

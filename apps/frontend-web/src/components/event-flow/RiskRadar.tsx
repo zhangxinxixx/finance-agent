@@ -16,7 +16,7 @@ interface RiskRadarProps {
 export function RiskRadar({ radar }: RiskRadarProps) {
   if (radar.length === 0) {
     return (
-      <FACard title="当前风险雷达" eyebrow="Risk Radar" accent="brand">
+      <FACard title="当前风险雷达" eyebrow="风险雷达" accent="brand">
         <FAEmptyState title="暂无风险数据" description="当前没有风险雷达数据。" className="p-4" />
       </FACard>
     );
@@ -42,7 +42,7 @@ export function RiskRadar({ radar }: RiskRadarProps) {
           <Info size={11} className="text-[var(--fg-6)]" />
         </div>
       }
-      eyebrow="Risk Radar"
+      eyebrow="风险雷达"
       accent="brand"
       className="flex min-h-0 flex-1 flex-col"
       bodyClassName="flex min-h-0 flex-1 items-center justify-center"

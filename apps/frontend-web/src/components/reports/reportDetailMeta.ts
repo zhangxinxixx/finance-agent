@@ -1,4 +1,5 @@
 import type { FAStatusTone } from "@/components/shared/FAStatusPill";
+import { getStatusLabel } from "@/components/shared/statusMeta";
 import { getDataStatusTone } from "@/lib/status";
 import type { ReportAnalysisAgentOutputView, ReportDetailView } from "@/types/reports";
 
@@ -11,6 +12,16 @@ export function reportFamilyLabel(value: string | undefined): string {
   if (!value) return "-";
   if (value === "jin10_weekly_visual") return "Jin10 周报";
   if (value === "jin10_daily_visual") return "Jin10 日报";
+  return value;
+}
+
+export function reportTitleLabel(value: string | undefined): string {
+  if (!value) return "-";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "jin10 daily report") return "Jin10 日报";
+  if (normalized === "jin10 weekly report") return "Jin10 周报";
+  if (normalized === "daily report") return "日报";
+  if (normalized === "weekly report") return "周报";
   return value;
 }
 
@@ -40,6 +51,32 @@ export function factReviewLabel(status: string | null | undefined): string {
   if (value === "unavailable" || value === "unsupported" || value === "contradicted") return "审查有风险";
   if (value === "not_reviewed") return "未审查";
   return "审查状态未知";
+}
+
+export function reportLifecycleLabel(status: string | null | undefined): string {
+  return getStatusLabel(status, "report");
+}
+
+export function reviewStatusLabel(status: string | null | undefined): string {
+  const value = (status || "").toLowerCase();
+  if (value === "not_required") return "无需审查";
+  return getStatusLabel(status, "review");
+}
+
+export function biasLabel(value: string | null | undefined): string {
+  const normalized = (value || "").toLowerCase();
+  if (normalized === "bullish") return "偏多";
+  if (normalized === "bearish") return "偏空";
+  if (normalized === "mixed") return "混合";
+  if (normalized === "neutral") return "中性";
+  return value || "-";
+}
+
+export function generationModeLabel(value: string | null | undefined): string {
+  const normalized = (value || "").toLowerCase();
+  if (normalized === "rule" || normalized === "rule-based") return "规则生成";
+  if (normalized === "llm") return "模型生成";
+  return value || "-";
 }
 
 export function isSynthesisOutput(item: ReportAnalysisAgentOutputView): boolean {

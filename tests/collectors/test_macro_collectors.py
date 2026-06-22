@@ -35,6 +35,24 @@ def test_fred_payload_marks_symbol_unavailable_when_all_values_are_missing(tmp_p
     assert result.unavailable_symbols == ["DGS10"]
 
 
+def test_fred_payload_ignores_observations_after_retrieved_date(tmp_path: Path) -> None:
+    payload = {
+        "observations": [
+            {"date": "2026-06-18", "value": "3.65"},
+            {"date": "2026-06-22", "value": "3.70"},
+        ]
+    }
+    result = collect_fred_series_from_payload(
+        symbol="IORB",
+        payload=payload,
+        retrieved_date="2026-06-18",
+        storage_root=tmp_path,
+        source_url="fixture://fred/IORB",
+    )
+    assert [point.date for point in result.points] == ["2026-06-18"]
+    assert result.points[0].value == 3.65
+
+
 def test_fred_collector_falls_back_to_csv_when_no_api_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("FRED_API_KEY", raising=False)
     monkeypatch.delenv("SETTINGS_MASTER_KEY", raising=False)
@@ -46,6 +64,27 @@ def test_fred_collector_falls_back_to_csv_when_no_api_key(tmp_path: Path, monkey
     assert not result.unavailable_symbols
     assert len(result.points) == 3
     assert result.points[-1].value == 4.32
+
+
+def test_fred_collector_passes_retrieved_date_to_api_request(tmp_path: Path) -> None:
+    captured_params: dict[str, str] = {}
+
+    def fake_get(_url: str, *, params: dict[str, str]):
+        captured_params.update(params)
+        payload = {"observations": [{"date": "2026-06-18", "value": "4.49"}]}
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", "https://test/"))
+
+    with patch("httpx.Client.get", side_effect=fake_get):
+        result = collect_fred_series(
+            retrieved_date="2026-06-18",
+            storage_root=tmp_path,
+            symbols=("DGS10",),
+            api_key="test-key",
+        )
+
+    assert not result.unavailable_symbols
+    assert captured_params["observation_end"] == "2026-06-18"
+    assert result.points[-1].date == "2026-06-18"
 
 
 def test_fred_collector_marks_unavailable_when_csv_request_fails(tmp_path: Path, monkeypatch) -> None:

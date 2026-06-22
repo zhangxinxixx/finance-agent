@@ -14,9 +14,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-from apps.collectors.jin10.image_insights import analyze_report_images
-
-
 XNEWS_CATEGORY_URL = "https://xnews.jin10.com/category/{category_code}"
 SVIP_DETAIL_URL = "https://svip.jin10.com/news/{article_id}"
 DEFAULT_HEADERS = {
@@ -242,7 +239,7 @@ def write_external_report(
     report_dir = root / report.date / report.report_type / report.article_id
     report_dir.mkdir(parents=True, exist_ok=True)
     images = _download_report_images(report_dir, report.image_urls, client=client)
-    insights = image_insights if image_insights is not None else analyze_report_images(images)
+    insights = image_insights or []
     markdown = _render_report_markdown(report, images, insights)
     (report_dir / "report.md").write_text(markdown, encoding="utf-8")
     (report_dir / "detail.html").write_text(report.raw_html, encoding="utf-8")
@@ -308,16 +305,12 @@ def _render_report_markdown(
             lines.append(f"![{image['file']}](images/{image['file']})")
             insight = insight_map.get(image["file"])
             if insight is not None:
-                lines.extend(["", f"### 图表解析 {image['seq']}"])
                 status = insight.get("status")
                 if status == "ok":
-                    lines.append("")
+                    lines.extend(["", f"### 图表解析 {image['seq']}", ""])
                     lines.append(f"- 图表类型: {insight.get('chart_type') or 'unknown'}")
                     lines.append(f"- 识别文字: {insight.get('text') or 'unavailable'}")
                     lines.append(f"- 图表摘要: {insight.get('summary') or 'unavailable'}")
-                else:
-                    lines.append("")
-                    lines.append(f"- 图表解析: unavailable ({insight.get('reason') or 'unknown'})")
             lines.append("")
     return "\n".join(line for line in lines if line is not None).strip() + "\n"
 

@@ -1,15 +1,15 @@
 :root {
-  --bg-app: #091527;
-  --bg-panel: #0d1a2e;
-  --bg-card: #12213a;
-  --bg-card-inner: #16263f;
-  --bg-terminal: #050c17;
-  --bg-hover: rgba(109, 155, 255, 0.09);
-  --bg-active: rgba(76, 141, 255, 0.18);
+  --bg-app: #08111f;
+  --bg-panel: #0c1728;
+  --bg-card: #111f34;
+  --bg-card-inner: #15263d;
+  --bg-terminal: #050b14;
+  --bg-hover: rgba(143, 194, 255, 0.09);
+  --bg-active: rgba(79, 156, 249, 0.16);
 
-  --border: #263a5b;
-  --border-strong: #42618d;
-  --border-faint: rgba(255, 255, 255, 0.07);
+  --border: #233956;
+  --border-strong: #3b5e89;
+  --border-faint: rgba(199, 219, 255, 0.08);
 
   --fg-1: #f1f5f9;
   --fg-2: #e2e8f0;
@@ -18,13 +18,13 @@
   --fg-5: #90a6c4;
   --fg-6: #6b84a8;
 
-  --brand: #4c8dff;
-  --brand-hover: #79abff;
-  --brand-dim: rgba(76, 141, 255, 0.16);
-  --brand-cyan: #1bb8d8;
+  --brand: #4f9cf9;
+  --brand-hover: #8fc2ff;
+  --brand-dim: rgba(79, 156, 249, 0.16);
+  --brand-cyan: #2dd4bf;
   --brand-gold: #f0b90b;
   --brand-gold-dim: rgba(240, 185, 11, 0.14);
-  --brand-gradient: linear-gradient(135deg, #4c8dff, #1bb8d8);
+  --brand-gradient: linear-gradient(135deg, #4f9cf9, #2dd4bf);
 
   --up: #10b981;
   --up-soft: rgba(16, 185, 129, 0.12);
@@ -43,7 +43,7 @@
   --chart-2: #4c8dff;
   --chart-3: #10b981;
   --chart-4: #f05252;
-  --chart-5: #a78bfa;
+  --chart-5: #8b9cf6;
   --chart-6: #1bb8d8;
 
   --font-sans: "IBM Plex Sans", "SF Pro Display", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -94,7 +94,7 @@
   --radius-pill: 999px;
 
   --shadow-flat: 0 0 0 1px var(--border);
-  --shadow-card: 0 18px 40px rgba(1, 8, 18, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  --shadow-card: 0 16px 32px rgba(1, 8, 18, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.035);
   --shadow-popover: 0 18px 40px rgba(1, 8, 18, 0.52), 0 0 0 1px var(--border);
   --shadow-glow-up: 0 0 0 1px var(--up-border), 0 0 12px rgba(16, 185, 129, 0.15);
   --shadow-glow-down: 0 0 0 1px var(--down-border), 0 0 12px rgba(240, 82, 82, 0.15);
@@ -105,10 +105,13 @@
   --dur-base: 180ms;
   --dur-slow: 260ms;
 
-  --sidebar-w: 200px;
+  --sidebar-w: 208px;
   --header-h: 44px;
   --statusbar-h: 30px;
   --rightpanel-w: 300px;
+  --content-max-w: 1760px;
+  --content-pad-x: 14px;
+  --content-pad-y: 12px;
 
   --color-bg-root: var(--bg-app);
   --color-bg-surface: var(--bg-panel);

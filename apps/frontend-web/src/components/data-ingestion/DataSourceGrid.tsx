@@ -12,7 +12,7 @@ export function DataSourceGrid({ sources }: DataSourceGridProps) {
     <section className="space-y-3">
       <FASectionHeader
         title="数据源网格"
-        eyebrow="Source Registry"
+        eyebrow="数据源注册表"
         description="只读展示当前接入状态、回退关系、最近同步时间和页面级溯源，不触发真实同步任务。"
         action={<FAStatusPill tone="dim">{`${sources.length} sources`}</FAStatusPill>}
       />

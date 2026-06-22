@@ -349,6 +349,8 @@ def test_list_reports_index_full(tmp_path: Path):
     assert fr[0]["trade_date"] == "2026-05-14"
     assert fr[0]["run_id"] == "run-1"
     assert fr[0]["available"] is True
+    assert fr[0]["title"] == "XAUUSD 综合报告（2026-05-14）"
+    assert fr[0]["family"] == "final_report_markdown"
 
     # 验证 strategy_card
     sc = [r for r in reports if r["type"] == "strategy_card"]
@@ -356,6 +358,10 @@ def test_list_reports_index_full(tmp_path: Path):
     assert sc[0]["trade_date"] == "2026-05-14"
     assert sc[0]["run_id"] == "run-1"
     assert sc[0]["available"] is True
+
+    macro = [r for r in reports if r["type"] == "macro_report"]
+    assert macro[0]["title"] == "XAUUSD 宏观数据报告（2026-05-14）"
+    assert macro[0]["report_id"] == "macro_report:auto-v2"
 
 
 def test_get_options_snapshot_prefers_new_cme_output(tmp_path: Path):

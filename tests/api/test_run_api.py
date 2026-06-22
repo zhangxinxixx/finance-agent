@@ -22,6 +22,7 @@ from apps.api.main import (
 from apps.api.schemas.common import TaskStatus as ApiTaskStatus
 from apps.api.services.task_service import map_task_status_to_api
 from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
+from database.models.report import ensure_report_tables
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
 
 
@@ -33,6 +34,7 @@ def _make_session() -> tuple[Session, sessionmaker]:
     )
     ensure_task_tables(engine)
     ensure_execution_tables(engine)
+    ensure_report_tables(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     return factory(), factory
 
@@ -176,7 +178,114 @@ def test_get_run_artifacts_prefers_registry_rows_when_present() -> None:
 
     assert [item["file_path"] for item in payload["artifacts"]] == ["storage/features/macro/rollup.json"]
     assert payload["artifacts"][0]["artifact_type"] == "feature_json"
+    assert payload["artifacts"][0]["storage_backend"] == "local_fs"
     assert payload["artifacts"][0]["sha256"] == "sha-rollup-001"
+
+
+def test_run_detail_and_artifacts_dedupe_registry_lineage_by_file_path() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session, status=TaskStatus.success)
+    first_step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    second_step = TaskStep(
+        task_run_id=run.id,
+        name="macro_publish",
+        stage="renderer",
+        task_kind="renderer",
+        status=StepStatus.success,
+        started_at=datetime(2026, 5, 26, 8, 2, tzinfo=UTC),
+        finished_at=datetime(2026, 5, 26, 8, 2, 2, tzinfo=UTC),
+        duration_ms=2000,
+        output_refs=json.dumps(
+            [
+                {
+                    "artifact_id": "step-dup-output",
+                    "artifact_type": "feature_json",
+                    "file_path": "storage/features/macro/rollup.json",
+                }
+            ]
+        ),
+        artifact_refs=json.dumps(
+            [
+                {
+                    "artifact_id": "step-dup-artifact",
+                    "artifact_type": "feature_json",
+                    "file_path": "storage/features/macro/rollup.json",
+                }
+            ]
+        ),
+        output_ref="storage/features/macro/rollup.json",
+        source_refs=json.dumps(
+            [
+                {
+                    "source_id": "src-step-dup-002",
+                    "source_name": "FRED",
+                    "source_type": "api",
+                    "data_date": "2026-05-26",
+                }
+            ]
+        ),
+    )
+    session.add(second_step)
+    session.flush()
+    first_registry_row = RunArtifact(
+        run_id=run.id,
+        task_id=first_step.id,
+        artifact_type="feature_json",
+        file_path="storage/features/macro/rollup.json",
+        sha256="sha-keep-001",
+        source_refs=json.dumps(
+            [
+                {
+                    "source_id": "src-registry-keep",
+                    "source_name": "FRED",
+                    "source_type": "api",
+                    "data_date": "2026-05-26",
+                }
+            ]
+        ),
+    )
+    session.add(first_registry_row)
+    session.flush()
+    second_registry_row = RunArtifact(
+        run_id=run.id,
+        task_id=second_step.id,
+        artifact_type="feature_json",
+        file_path="storage/features/macro/rollup.json",
+        sha256="sha-drop-002",
+        source_refs=json.dumps(
+            [
+                {
+                    "source_id": "src-registry-drop",
+                    "source_name": "FRED",
+                    "source_type": "api",
+                    "data_date": "2026-05-26",
+                }
+            ]
+        ),
+    )
+    session.add(second_registry_row)
+    session.flush()
+    session.commit()
+
+    detail_payload = api_run_detail(str(run.id), db=session).model_dump(mode="json")
+    artifacts_payload = api_run_artifacts(str(run.id), db=session)
+
+    assert [item["file_path"] for item in artifacts_payload["artifacts"]] == ["storage/features/macro/rollup.json"]
+    assert artifacts_payload["artifacts"][0]["artifact_id"] == str(first_registry_row.artifact_id)
+    assert artifacts_payload["artifacts"][0]["sha256"] == "sha-keep-001"
+
+    matching_artifacts = [
+        item for item in detail_payload["artifact_refs"] if item["file_path"] == "storage/features/macro/rollup.json"
+    ]
+    assert len(matching_artifacts) == 1
+    assert matching_artifacts[0]["artifact_id"] == str(first_registry_row.artifact_id)
+    assert matching_artifacts[0]["sha256"] == "sha-keep-001"
+    assert {item["source_id"] for item in detail_payload["source_refs"]} == {
+        "src-001",
+        "src-registry-keep",
+        "src-registry-drop",
+        "src-step-dup-002",
+    }
 
 
 def test_get_artifact_detail_returns_registry_context() -> None:
@@ -222,11 +331,74 @@ def test_get_artifact_detail_returns_registry_context() -> None:
     assert payload["artifact"]["artifact_id"] == str(row.artifact_id)
     assert payload["artifact"]["artifact_type"] == "feature_json"
     assert payload["artifact"]["file_path"] == "storage/features/macro/rollup.json"
+    assert payload["artifact"]["storage_backend"] == "local_fs"
     assert payload["artifact_refs"][0]["artifact_id"] == str(row.artifact_id)
     assert any(item["artifact_id"] == "art-out-001" for item in payload["artifact_refs"])
     assert any(item["artifact_id"] == "art-visual-001" for item in payload["artifact_refs"])
     assert {item["source_id"] for item in payload["source_refs"]} == {"src-registry-001", "src-001"}
     assert payload["metadata"]["label"] == "macro rollup"
+
+
+def test_get_artifact_detail_falls_back_to_registry_metadata_snapshot_id() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session)
+    run.snapshot_id = None
+    step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    row = RunArtifact(
+        run_id=run.id,
+        task_id=step.id,
+        artifact_type="feature_json",
+        file_path="storage/features/macro/fallback.json",
+        sha256="sha-fallback-001",
+        metadata_json=json.dumps(
+            {
+                "artifact_id": "fallback-art-001",
+                "snapshot_id": "snap-metadata-001",
+            }
+        ),
+    )
+    session.add(row)
+    session.commit()
+
+    payload = api_artifact_detail(str(row.artifact_id), db=session).model_dump(mode="json")
+
+    assert payload["run_id"] == str(run.id)
+    assert payload["snapshot_id"] == "snap-metadata-001"
+    assert payload["metadata"]["snapshot_id"] == "snap-metadata-001"
+
+
+def test_get_artifact_detail_warns_when_registry_metadata_snapshot_drifted() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session)
+    step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    row = RunArtifact(
+        run_id=run.id,
+        task_id=step.id,
+        artifact_type="feature_json",
+        file_path="storage/features/macro/drift.json",
+        sha256="sha-drift-001",
+        metadata_json=json.dumps(
+            {
+                "artifact_id": "drift-art-001",
+                "snapshot_id": "snap-drift-001",
+                "input_snapshot_ids": {
+                    "analysis_snapshot": "snap-drift-001",
+                    "coordinator": "snap-drift-001",
+                },
+            }
+        ),
+    )
+    session.add(row)
+    session.commit()
+
+    payload = api_artifact_detail(str(row.artifact_id), db=session).model_dump(mode="json")
+
+    warning_codes = {item["code"] for item in payload["warnings"]}
+    assert payload["snapshot_id"] == "snap-001"
+    assert payload["metadata"]["snapshot_id"] == "snap-drift-001"
+    assert "artifact-lineage-snapshot-mismatch" in warning_codes
+    assert "artifact-lineage-analysis_snapshot-mismatch" in warning_codes
+    assert "artifact-lineage-coordinator-mismatch" in warning_codes
 
 
 def test_get_artifact_detail_raises_404_for_missing_registry_row() -> None:

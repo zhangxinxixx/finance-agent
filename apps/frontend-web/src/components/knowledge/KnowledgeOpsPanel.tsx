@@ -73,7 +73,7 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
 
       {/* Review Queue */}
       {reviewItems.length > 0 && (
-        <FACard title="复核 / 过期队列" eyebrow="Review" accent="warn" bodyClassName="space-y-2">
+        <FACard title="复核 / 过期队列" eyebrow="复核" accent="warn" bodyClassName="space-y-2">
           {reviewItems.map((item) => (
             <div key={item.id} className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-2.5">
               <div className="flex items-center justify-between gap-2">

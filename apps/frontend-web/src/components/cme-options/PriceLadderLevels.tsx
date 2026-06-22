@@ -20,14 +20,14 @@ export function buildPriceLadderLevels(
       strike: item.strike,
       label: "阻力",
       tone: "down" as const,
-      note: `WallScore ${item.wall_score.toFixed(2)}`,
+      note: `墙位评分 ${item.wall_score.toFixed(2)}`,
     })),
-    { strike: currentPrice, label: "当前F", tone: "info" as const, note: "现价参照", current: true },
+    { strike: currentPrice, label: "当前价", tone: "info" as const, note: "现价参照", current: true },
     ...supports.map((item) => ({
       strike: item.strike,
       label: "支撑",
       tone: "up" as const,
-      note: `WallScore ${item.wall_score.toFixed(2)}`,
+      note: `墙位评分 ${item.wall_score.toFixed(2)}`,
     })),
   ].sort((a, b) => b.strike - a.strike);
 }

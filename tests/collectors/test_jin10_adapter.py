@@ -18,6 +18,7 @@ from apps.collectors.jin10.adapter import (
     write_jin10_outputs,
 )
 from apps.parsers.jin10.report import build_parsed_index
+from database.models.execution import ExecutionEvent, ensure_execution_tables
 from database.models.analysis import AgentOutput, ensure_analysis_tables
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
 
@@ -29,6 +30,7 @@ def _session():
     engine = create_engine("sqlite:///:memory:", echo=False)
     ensure_analysis_tables(engine)
     ensure_task_tables(engine)
+    ensure_execution_tables(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
@@ -1150,9 +1152,13 @@ def test_persist_jin10_task_runs_updates_existing_run_quality_status(tmp_path):
     assert persisted[0]["status"] == "degraded"
     run = session.query(TaskRun).filter(TaskRun.task_type == "jin10_report").one()
     steps = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).order_by(TaskStep.step_order.asc()).all()
+    events = session.query(ExecutionEvent).filter(ExecutionEvent.run_id == run.id).all()
+    event_types = [event.event_type for event in events]
     assert run.status is TaskStatus.degraded
     assert steps[3].name == "agent_analysis"
     assert steps[3].status is StepStatus.blocked
     assert steps[4].name == "quality_audit"
     assert steps[4].status is StepStatus.blocked
     assert "non_daily_report_title" in (steps[4].error_json or "")
+    assert event_types.count("RUN_FINISHED") == 2
+    assert event_types.count("TASK_BLOCKED") == 2

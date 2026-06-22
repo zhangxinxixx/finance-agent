@@ -15,7 +15,7 @@ export function SourceTracePanel({ sourceTrace, dataSourceStatus, sourceRefs = [
   return (
     <SourceTracePanelFrame
       title="数据溯源"
-      eyebrow="Source Trace"
+      eyebrow="数据溯源"
       accent="info"
       sourceTrace={sourceTrace}
       sourceRefs={sourceRefs}

@@ -32,6 +32,9 @@ def collect_fred_series_from_payload(*, symbol: str, payload: dict, retrieved_da
     retrieved_at = retrieved_at or utc_now_iso()
     points: list[MacroPoint] = []
     for observation in payload.get("observations", []):
+        observation_date = str(observation.get("date") or "")
+        if not observation_date or observation_date > retrieved_date:
+            continue
         value = observation.get("value")
         if value in (None, "", "."):
             continue
@@ -41,7 +44,7 @@ def collect_fred_series_from_payload(*, symbol: str, payload: dict, retrieved_da
             continue
         if symbol in FRED_MILLIONS_TO_BILLIONS:
             numeric_value = round(numeric_value / 1000.0, 6)
-        points.append(MacroPoint(symbol=symbol, date=str(observation["date"]), value=numeric_value, source="fred", source_url=source_url, retrieved_at=retrieved_at, raw_path=raw_path))
+        points.append(MacroPoint(symbol=symbol, date=observation_date, value=numeric_value, source="fred", source_url=source_url, retrieved_at=retrieved_at, raw_path=raw_path))
     source_refs = [{"symbol": symbol, "source": "fred", "source_url": source_url, "raw_path": raw_path}]
     unavailable = [] if points else [symbol]
     return CollectorResult(points=points, unavailable_symbols=unavailable, source_refs=source_refs)
@@ -57,7 +60,7 @@ def collect_fred_series(*, retrieved_date: str, storage_root: Path, symbols: tup
         for symbol in symbols:
             try:
                 if api_key:
-                    payload = _fetch_fred_payload_with_retry(client, symbol=symbol, api_key=api_key)
+                    payload = _fetch_fred_payload_with_retry(client, symbol=symbol, api_key=api_key, retrieved_date=retrieved_date)
                     source_url = _safe_fred_source_url(symbol)
                 else:
                     payload = _fetch_fred_graph_csv_payload_with_retry(client, symbol=symbol, retrieved_date=retrieved_date)
@@ -73,11 +76,20 @@ def collect_fred_series(*, retrieved_date: str, storage_root: Path, symbols: tup
     return CollectorResult(points=all_points, unavailable_symbols=unavailable, source_refs=refs)
 
 
-def _fetch_fred_payload_with_retry(client, *, symbol: str, api_key: str, attempts: int = 3) -> dict:
+def _fetch_fred_payload_with_retry(client, *, symbol: str, api_key: str, retrieved_date: str, attempts: int = 3) -> dict:
     last_exc: Exception | None = None
     for attempt in range(attempts):
         try:
-            response = client.get(FRED_OBSERVATIONS_URL, params={"series_id": symbol, "api_key": api_key, "file_type": "json", "sort_order": "asc"})
+            response = client.get(
+                FRED_OBSERVATIONS_URL,
+                params={
+                    "series_id": symbol,
+                    "api_key": api_key,
+                    "file_type": "json",
+                    "sort_order": "asc",
+                    "observation_end": retrieved_date,
+                },
+            )
             response.raise_for_status()
             return response.json()
         except Exception as exc:

@@ -11,12 +11,12 @@ export function SourceTracePanel({ sourceTrace = [], sourceRefs = [] }: SourceTr
   return (
     <SourceTracePanelFrame
       title="数据来源与溯源"
-      eyebrow="Lineage"
+      eyebrow="溯源"
       accent="info"
       sourceTrace={sourceTrace}
       sourceRefs={sourceRefs}
       description="展示当前页面使用的来源记录、状态与可追溯引用。"
-      emptyDescription="当前日期没有可展示的 sourceTrace 记录。"
+      emptyDescription="当前日期没有可展示的溯源记录。"
     />
   );
 }

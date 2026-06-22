@@ -103,6 +103,117 @@ def test_prelim_source_uncertainty_reduces_confidence_or_records_risk_note():
     assert output.confidence < 0.75 or any("PRELIM" in note or "prelim" in note.lower() for note in notes)
 
 
+def test_summary_and_findings_reflect_gex_structure_near_far_and_prelim_risk():
+    snapshot = _available_snapshot()
+    options = _opt_data(snapshot)
+    options["data_source"]["status"] = "PRELIM"
+    options["data_source"]["expiries"] = ["JUL26", "AUG26"]
+    options["gex"]["netgex_aggregate"]["gamma_zero"] = {
+        "price": 4325.75455521114,
+        "method": "linear_interpolation",
+        "scope": "aggregate_across_expiries",
+    }
+    options["gex"]["by_expiry"] = {
+        "JUL26": {
+            "summary": {
+                "f_value": 4246.0,
+                "gamma_zero": 4307.834112709313,
+                "net_gex": -288_637_493.37,
+                "call_gex": 932_055_979.7,
+                "put_gex": 1_220_693_473.06,
+                "total_gex": 2_152_749_452.76,
+                "structure": "net_put_dominated",
+            },
+            "iv_skew": {"risk_reversal_25d": -0.12, "put_call_skew": 0.08},
+        },
+        "AUG26": {
+            "summary": {
+                "f_value": 4246.5,
+                "gamma_zero": 4373.638527425812,
+                "net_gex": -225_524_231.88,
+                "call_gex": 724_023_324.4,
+                "put_gex": 949_547_556.28,
+                "total_gex": 1_673_570_880.68,
+                "structure": "net_put_dominated",
+            },
+            "iv_skew": {"risk_reversal_25d": -0.08, "put_call_skew": 0.05},
+        },
+    }
+    options["support_resistance"] = {
+        "support": [{"strike": 4230, "wall_type": "support", "wall_score": 0.11}],
+        "resistance": [{"strike": 4265, "wall_type": "resistance", "wall_score": 0.11}],
+    }
+    options["wall_scores"] = [
+        {
+            "strike": 4400,
+            "expiry": "JUL26",
+            "side": "BOTH",
+            "wall_type": "active",
+            "wall_score": 0.63,
+            "dominant_side": "Call",
+            "net_gex_bias": 62_861_741.2,
+        },
+        {
+            "strike": 4000,
+            "expiry": "JUL26",
+            "side": "BOTH",
+            "wall_type": "active",
+            "wall_score": 0.54,
+            "dominant_side": "Put",
+            "net_gex_bias": -44_255_448.29,
+        },
+    ]
+    options["roll_signals"] = [
+        {
+            "roll_type": "put_roll_down",
+            "near_expiry": "JUL26",
+            "far_expiry": "AUG26",
+            "confidence": 0.18,
+        }
+    ]
+    options["calibration"] = {
+        "calculation_method": "proxy",
+        "oi_change_by_strike": {
+            "4000": {"total_oi_delta": 153.0},
+            "4400": {"total_oi_delta": -81.0},
+        },
+        "wall_score_delta_1d": {"4000": 0.11, "4400": -0.07},
+        "expiry_roll_signal": [
+            {
+                "roll_activity": "put_roll_down",
+                "near_month": "JUL26",
+                "next_month": "AUG26",
+                "roll_confidence": 0.42,
+            }
+        ],
+        "calibration_warnings": ["Only 2 dates available; calibration is limited."],
+    }
+    options["data_quality"]["categories"]["prelim_data"] = 4113
+    options["data_quality"]["warnings"] = [
+        "rows_missing_delta: 174 行",
+        "使用 Gamma Proxy 的 strike: 3 个",
+        "expiry_date_estimated_from_delivery_month",
+        "grid_skipped_rows_without_iv",
+    ]
+
+    output = analyze_cme_options(snapshot, created_at=datetime(2026, 6, 18, tzinfo=timezone.utc))
+
+    assert "Gamma Zero" in output.summary
+    assert "Put-GEX" in output.summary
+    assert "JUL26" in output.summary
+    assert "AUG26" in output.summary
+    assert "PRELIM" in output.summary
+    assert "4325" in output.summary or "4326" in output.summary
+    assert any("JUL26" in finding and "Put-GEX" in finding for finding in output.key_findings)
+    assert any("AUG26" in finding and "Put-GEX" in finding for finding in output.key_findings)
+    assert any(
+        phrase in finding
+        for phrase in ("Largest OI deltas", "Wall score changes", "Expiry roll")
+        for finding in output.key_findings
+    )
+    assert 0.3 <= output.confidence <= 0.7
+
+
 def test_missing_options_section_returns_unavailable_without_exception():
     output = analyze_cme_options(
         {

@@ -91,7 +91,7 @@ export function SentimentMetrics({ sentiment }: SentimentMetricsProps) {
           <span>市场情绪与定价概览</span>
         </div>
       }
-      eyebrow="Sentiment"
+      eyebrow="情绪"
       accent="brand"
     >
       {sentiment.length === 0 ? (

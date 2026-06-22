@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchEventFlowView } from "@/adapters/eventFlow";
+import { fetchEventFlowOverviewView, fetchEventFlowReportInputsView } from "@/adapters/eventFlow";
 import type { EventFlowViewModel } from "@/types/event-flow";
 
 interface EventFlowState {
@@ -23,9 +23,15 @@ export function useEventFlow(): EventFlowState {
       setIsLoading(true);
       setError(null);
       try {
-        const nextData = await fetchEventFlowView();
+        const nextData = await fetchEventFlowOverviewView();
         if (!cancelled) {
           setData(nextData);
+          setIsLoading(false);
+        }
+
+        const enrichedData = await fetchEventFlowReportInputsView(nextData);
+        if (!cancelled) {
+          setData(enrichedData);
         }
       } catch (cause) {
         if (!cancelled) {

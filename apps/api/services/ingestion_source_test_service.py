@@ -15,6 +15,8 @@ from apps.api.schemas.source_trace import ArtifactRef, SourceRef
 from apps.collectors.jin10.datacenter import fetch_datacenter_report
 from apps.collectors.jin10.mcp_client import Jin10MCPClient
 from apps.collectors.news.jin10_detail_fetcher import DEFAULT_JIN10_BROWSER_PROFILE
+from apps.runtime.artifact_registry import register_step_artifacts
+from apps.runtime.state_machine import transition_task_run, transition_task_step
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -62,6 +64,7 @@ def run_ingestion_source_test(
     source_ref = _source_ref(source_key, status=outcome.status, source_type=outcome.source_type)
     artifact_refs = _artifact_refs(raw_path=raw_path, parsed_path=parsed_path)
     _complete_audit(
+        db=db,
         run=run,
         step=step,
         request=request,
@@ -322,14 +325,12 @@ def _create_running_audit(
     source_key: str,
     request: DataSourceTestRequest,
 ) -> tuple[TaskRun, TaskStep]:
-    now = datetime.now(UTC)
     run = TaskRun(
         name=f"ingestion_source_test:{source_key}",
         task_type="ingestion_source_test",
-        status=TaskStatus.running,
+        status=TaskStatus.pending,
         current_stage="collector",
         progress=0.0,
-        started_at=now,
     )
     db.add(run)
     db.flush()
@@ -338,8 +339,7 @@ def _create_running_audit(
         name=f"source_probe:{source_key}",
         stage="collector",
         task_kind="source_probe",
-        status=StepStatus.running,
-        started_at=now,
+        status=StepStatus.pending,
         input_json=_json_dumps(
             {
                 "source_key": source_key,
@@ -354,11 +354,14 @@ def _create_running_audit(
     )
     db.add(step)
     db.flush()
+    transition_task_run(db, run, TaskStatus.running, source="ingestion_source_test", reason="probe_started")
+    transition_task_step(db, step, StepStatus.running, source="ingestion_source_test", reason="probe_started")
     return run, step
 
 
 def _complete_audit(
     *,
+    db: Session,
     run: TaskRun,
     step: TaskStep,
     request: DataSourceTestRequest,
@@ -369,13 +372,6 @@ def _complete_audit(
     raw_path: str,
     parsed_path: str,
 ) -> None:
-    now = datetime.now(UTC)
-    run.status = _task_status(outcome)
-    run.progress = 1.0
-    run.ended_at = now
-    run.error_summary = outcome.error_message
-    step.status = _step_status(outcome)
-    step.finished_at = now
     step.duration_ms = duration_ms
     step.source_refs = _json_dumps([source_ref.model_dump(mode="json", exclude_none=True)])
     step.output_refs = _json_dumps([artifact.model_dump(mode="json", exclude_none=True) for artifact in artifact_refs])
@@ -391,9 +387,36 @@ def _complete_audit(
             "audit_id": _audit_id(source_ref.source_id, request, str(run.id)),
         }
     )
-    step.error = outcome.error_message
-    step.error_type = outcome.error_type
-    step.blocked_reason = outcome.error_message if step.status == StepStatus.blocked else None
+    register_step_artifacts(
+        db,
+        run_id=str(run.id),
+        step=step,
+        output_refs=[artifact.model_dump(mode="json", exclude_none=True) for artifact in artifact_refs],
+        artifact_refs=[artifact.model_dump(mode="json", exclude_none=True) for artifact in artifact_refs],
+        output_ref=raw_path,
+        source_refs=[source_ref.model_dump(mode="json", exclude_none=True)],
+    )
+    target_step_status = _step_status(outcome)
+    transition_task_step(
+        db,
+        step,
+        target_step_status,
+        source="ingestion_source_test",
+        reason="probe_finished",
+        error_message=outcome.error_message,
+        error_type=outcome.error_type,
+        retryable=False,
+        blocked_reason=outcome.error_message if target_step_status == StepStatus.blocked else None,
+    )
+    transition_task_run(
+        db,
+        run,
+        _task_status(outcome),
+        source="ingestion_source_test",
+        reason="probe_finished",
+        error_message=outcome.error_message,
+        progress=1.0,
+    )
 
 
 def _archive_probe_payloads(*, source_key: str, run_id: str, outcome: _ProbeOutcome) -> tuple[str, str]:

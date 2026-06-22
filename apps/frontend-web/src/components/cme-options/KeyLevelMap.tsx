@@ -50,6 +50,22 @@ function highestOiStrike(wallScores: CMEOptionsWallScore[]) {
   })[0] ?? null;
 }
 
+function wallTypeLabel(wallType: CMEOptionsWallScore["wall_type"]) {
+  const labels: Record<CMEOptionsWallScore["wall_type"], string> = {
+    "Call Wall": "看涨压力墙",
+    "Put Wall": "看跌支撑墙",
+    "Balanced Wall": "均衡墙",
+    "Active Wall": "活跃墙",
+    "Pin Wall": "吸附墙",
+    "Static Wall": "静态墙",
+    "Turnover Wall": "换手墙",
+    "New Wall": "新增墙",
+    "Resistance Wall": "阻力墙",
+    "Support Wall": "支撑墙",
+  };
+  return labels[wallType] ?? wallType;
+}
+
 function LevelList({
   title,
   subtitle,
@@ -67,7 +83,7 @@ function LevelList({
   return (
     <FACard
       title={title}
-      eyebrow={tone === "call" ? "Call阻力" : "Put支撑"}
+      eyebrow={tone === "call" ? "看涨阻力" : "看跌支撑"}
       accent={tone === "call" ? "down" : "up"}
       action={<FAStatusPill tone={tone === "call" ? "down" : "up"}>{`${levels.length} 条`}</FAStatusPill>}
       className={`border ${borderClass}`}
@@ -105,38 +121,38 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
   const breakthroughStrike = breakthroughBase ? breakthroughBase.strike * 1.03 : null;
 
   return (
-    <FACard title="价位轨道" eyebrow="Level Rail" accent="brand" bodyClassName="space-y-4">
+    <FACard title="价位轨道" eyebrow="关键价位" accent="brand" bodyClassName="space-y-4">
       <p className="text-[11px] text-[var(--fg-4)]">基于当前支撑 / 阻力与墙位数据做轻量解释性展示。</p>
       <div className="grid gap-3 lg:grid-cols-3">
         <LevelList
-          title="上方 Call 压制区"
-          subtitle="Top 3 阻力位"
+          title="上方看涨压制区"
+          subtitle="前三个阻力位"
           levels={callLevels}
           tone="call"
         />
 
         <FACard
           title="Pin 位"
-          eyebrow="Reference Level"
+          eyebrow="参考价位"
           accent="info"
           action={<FAStatusPill tone="info">参考位</FAStatusPill>}
           bodyClassName="space-y-3"
         >
-          <p className="text-[11px] text-[var(--fg-4)]">由当前墙位中最高持仓 strike 推导。</p>
+          <p className="text-[11px] text-[var(--fg-4)]">由当前墙位中最高持仓行权价推导。</p>
           <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-3">
             {pinLevel ? (
               <>
                 <div className="fa-num text-2xl font-semibold tracking-tight text-[var(--fg-2)]">
                   {formatPrice(pinLevel.strike)}
                 </div>
-                <div className="mt-1 text-xs text-[var(--fg-4)]">最高 OI: {formatPrice(pinLevel.oi)}</div>
+                <div className="mt-1 text-xs text-[var(--fg-4)]">最高持仓：{formatPrice(pinLevel.oi)}</div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-[var(--fg-4)]">
                   <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 py-2">
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">wall_type</div>
-                    <div className="mt-0.5 font-medium text-[var(--fg-3)]">{pinLevel.wall_type}</div>
+                    <div className="text-[10px] font-semibold text-[var(--fg-5)]">墙型</div>
+                    <div className="mt-0.5 font-medium text-[var(--fg-3)]">{wallTypeLabel(pinLevel.wall_type)}</div>
                   </div>
                   <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 py-2">
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">wall_score</div>
+                    <div className="text-[10px] font-semibold text-[var(--fg-5)]">墙位评分</div>
                     <div className="mt-0.5 font-medium text-[var(--fg-3)]">
                       {formatScore(pinLevel.wall_score)}
                     </div>
@@ -144,23 +160,23 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
                 </div>
               </>
             ) : (
-              <div className="text-sm text-[var(--fg-4)]">当前没有可用于计算 Pin 位的 wallScores。</div>
+              <div className="text-sm text-[var(--fg-4)]">当前没有可用于计算 Pin 位的墙位数据。</div>
             )}
           </div>
         </FACard>
 
         <LevelList
-          title="下方 Put 支撑区"
-          subtitle="Top 3 支撑位"
+          title="下方看跌支撑区"
+          subtitle="前三个支撑位"
           levels={putLevels}
           tone="put"
         />
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <FAMetricCard label="breakthrough_base" value={breakthroughBase ? formatPrice(breakthroughBase.strike) : "—"} hint="基准阻力位" />
-        <FAMetricCard label="breakthrough_level" value={breakthroughStrike ? formatPrice(breakthroughStrike) : "—"} hint="最高阻力位上移 3%" />
-        <FAMetricCard label="formula" value="highest_resistance × 1.03" hint="解释性推导，不代表确定突破" />
+        <FAMetricCard label="突破基准" value={breakthroughBase ? formatPrice(breakthroughBase.strike) : "—"} hint="基准阻力位" />
+        <FAMetricCard label="突破门槛" value={breakthroughStrike ? formatPrice(breakthroughStrike) : "—"} hint="最高阻力位上移 3%" />
+        <FAMetricCard label="推导公式" value="最高阻力 × 1.03" hint="解释性推导，不代表确定突破" />
       </div>
     </FACard>
   );

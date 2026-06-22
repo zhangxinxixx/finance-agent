@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from apps.api.schemas.common import ArtifactType, DataStatus
 from apps.api.schemas.data_source import DataSourceActionRequest, DataSourceActionResponse, ManualUploadRequest
 from apps.api.schemas.source_trace import ArtifactRef, SourceRef
+from apps.runtime.artifact_registry import register_step_artifacts
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 
 
@@ -105,23 +106,34 @@ def _create_run(
     )
     db.add(run)
     db.flush()
-    db.add(
-        TaskStep(
-            task_run_id=run.id,
-            name=step_name,
-            stage=stage,
-            task_kind=task_kind,
-            status=step_status,
-            started_at=now,
-            source_refs=_dump_refs(source_refs),
-            input_refs=_dump_refs(input_refs),
-            output_refs=_dump_refs(output_refs),
-            error=error,
-            error_type="manual_required" if error else None,
-            retry_count=0,
-        )
+    step = TaskStep(
+        task_run_id=run.id,
+        name=step_name,
+        stage=stage,
+        task_kind=task_kind,
+        status=step_status,
+        started_at=now,
+        source_refs=_dump_refs(source_refs),
+        input_refs=_dump_refs(input_refs),
+        output_refs=_dump_refs(output_refs),
+        artifact_refs=_dump_refs(output_refs),
+        output_ref=output_refs[0].file_path if output_refs else None,
+        error=error,
+        error_type="manual_required" if error else None,
+        retry_count=0,
     )
+    db.add(step)
     db.flush()
+    if output_refs:
+        register_step_artifacts(
+            db,
+            run_id=str(run.id),
+            step=step,
+            output_refs=[ref.model_dump(mode="json", exclude_none=True) for ref in output_refs],
+            artifact_refs=[ref.model_dump(mode="json", exclude_none=True) for ref in output_refs],
+            output_ref=step.output_ref,
+            source_refs=[ref.model_dump(mode="json", exclude_none=True) for ref in source_refs],
+        )
     return run
 
 

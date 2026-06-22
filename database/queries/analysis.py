@@ -44,6 +44,87 @@ def _coerce_payload(payload: dict) -> dict:
     return dict(payload)
 
 
+def _raise_lineage_conflict(message: str) -> None:
+    raise ValueError(message)
+
+
+def _resolve_snapshot_for_lineage(session: Session, payload: dict[str, Any]) -> AnalysisSnapshot | None:
+    snapshot_db_id = payload.get("analysis_snapshot_db_id")
+    snapshot_id = payload.get("snapshot_id")
+    asset = payload.get("asset")
+    run_id = payload.get("run_id")
+    trade_date_raw = payload.get("trade_date")
+
+    resolved: AnalysisSnapshot | None = None
+
+    if snapshot_db_id:
+        resolved = session.get(AnalysisSnapshot, str(snapshot_db_id))
+
+    if snapshot_id:
+        snapshot_row = session.scalar(select(AnalysisSnapshot).where(AnalysisSnapshot.snapshot_id == str(snapshot_id)))
+        if snapshot_row is not None:
+            if resolved is not None and resolved.id != snapshot_row.id:
+                _raise_lineage_conflict(
+                    "analysis lineage conflict: "
+                    f"analysis_snapshot_db_id={snapshot_db_id} conflicts with snapshot_id={snapshot_id}"
+                )
+            resolved = snapshot_row
+
+    explicit_snapshot_ref = bool(snapshot_db_id or snapshot_id)
+    if resolved is None and not explicit_snapshot_ref and asset and run_id and trade_date_raw:
+        trade_date = _parse_iso_date(str(trade_date_raw))
+        resolved = session.scalar(
+            select(AnalysisSnapshot).where(
+                AnalysisSnapshot.asset == str(asset),
+                AnalysisSnapshot.trade_date == trade_date,
+                AnalysisSnapshot.run_id == str(run_id),
+            )
+        )
+
+    return resolved
+
+
+def _validate_snapshot_lineage(session: Session, payload: dict[str, Any], *, entity: str) -> AnalysisSnapshot | None:
+    snapshot = _resolve_snapshot_for_lineage(session, payload)
+    if snapshot is None:
+        return None
+
+    snapshot_db_id = payload.get("analysis_snapshot_db_id")
+    snapshot_id = payload.get("snapshot_id")
+    run_id = payload.get("run_id")
+    asset = payload.get("asset")
+    trade_date_raw = payload.get("trade_date")
+
+    if snapshot_db_id and snapshot.id != str(snapshot_db_id):
+        _raise_lineage_conflict(
+            f"{entity} lineage conflict: analysis_snapshot_db_id={snapshot_db_id} resolves to snapshot id={snapshot.id}"
+        )
+    if snapshot_id and snapshot.snapshot_id != str(snapshot_id):
+        _raise_lineage_conflict(
+            f"{entity} lineage conflict: snapshot_id={snapshot_id} resolves to AnalysisSnapshot("
+            f"snapshot_id={snapshot.snapshot_id}, run_id={snapshot.run_id})"
+        )
+    if run_id and snapshot.run_id != str(run_id):
+        _raise_lineage_conflict(
+            f"{entity} lineage conflict: run_id={run_id} resolves to AnalysisSnapshot("
+            f"snapshot_id={snapshot.snapshot_id}, run_id={snapshot.run_id})"
+        )
+    if asset and snapshot.asset != str(asset):
+        _raise_lineage_conflict(
+            f"{entity} lineage conflict: asset={asset} resolves to AnalysisSnapshot("
+            f"snapshot_id={snapshot.snapshot_id}, asset={snapshot.asset})"
+        )
+    if trade_date_raw:
+        trade_date = _parse_iso_date(str(trade_date_raw))
+        if snapshot.trade_date != trade_date:
+            _raise_lineage_conflict(
+                f"{entity} lineage conflict: trade_date={trade_date_raw} resolves to AnalysisSnapshot("
+                f"snapshot_id={snapshot.snapshot_id}, trade_date={snapshot.trade_date.isoformat()})"
+            )
+
+    return snapshot
+
+
 # ═══════════════════════════════════════════════════════════════════
 # AnalysisSnapshot
 # ═══════════════════════════════════════════════════════════════════
@@ -144,6 +225,8 @@ def upsert_agent_output(
       input_snapshot_ids, source_refs, key_findings, risk_points,
       watchlist, invalid_conditions, summary, payload
     """
+    _validate_snapshot_lineage(session, payload, entity="agent output")
+
     snapshot_id = payload["snapshot_id"]
     agent_name = payload["agent_name"]
     module = payload["module"]
@@ -268,6 +351,8 @@ def upsert_final_analysis_result(
       final_report_path, strategy_card_json_path, strategy_card_md_path,
       run_summary_path, final_report_sha256, strategy_card_sha256
     """
+    _validate_snapshot_lineage(session, payload, entity="final analysis")
+
     asset = payload["asset"]
     trade_date_val = _parse_iso_date(payload["trade_date"])
     run_id = payload["run_id"]

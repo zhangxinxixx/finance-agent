@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -13,6 +14,13 @@ from database.models.analysis import AnalysisBase
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
 _TRADE_DATE = "2026-05-14"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_source_gating():
+    """Keep C4 DB integration tests deterministic unless they opt into source gating explicitly."""
+    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+        yield
 
 
 def _make_db_session(tmp_path: Path):
@@ -362,7 +370,7 @@ def test_db_sink_files_still_written(tmp_path: Path) -> None:
 
     report_path = base / "final_report" / "XAUUSD" / _TRADE_DATE / run_id / "final_report.md"
     assert report_path.exists(), f"Missing: {report_path}"
-    assert "# XAUUSD 盘前综合报告" in report_path.read_text(encoding="utf-8")
+    assert "# XAUUSD 相关报告" in report_path.read_text(encoding="utf-8")
 
     # Strategy card — written to a directory based on build_strategy_card's trade_date
     # (which may differ from snapshot.trade_date due to _extract_as_of fallback)

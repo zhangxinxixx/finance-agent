@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { fetchFeishuJin10MessageMonitor } from "@/adapters/feishuMonitor";
 import type { FeishuMonitorMessage, FeishuMonitorResponse } from "@/types/feishu-monitor";
 import { DetailMetric } from "./DataIngestionDetailBlocks.shared";
@@ -18,6 +19,18 @@ function compactTime(value?: string | null): string {
   return parsed.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
+function compactDateTime(value?: string | null): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value.slice(0, 16);
+  return parsed.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function normalizeDate(value?: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -30,35 +43,47 @@ function normalizeDate(value?: string | null): string | null {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function messageTitle(message: FeishuMonitorMessage): string {
-  return (
-    message.accepted_item?.title?.trim() ||
-    message.article_brief?.headline?.trim() ||
-    message.content?.trim() ||
-    message.primary_url ||
-    message.message_id
-  );
-}
-
-function taskLabel(message: FeishuMonitorMessage): string {
-  const task = message.task;
-  if (!task) return "未建任务";
-  const blockedStep = task.steps.find((step) => step.blocked_reason || step.error_type);
-  return blockedStep?.blocked_reason || blockedStep?.error_type || task.current_stage || task.status || "已建任务";
+function normalizeStatus(value?: string | null): string {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 function statusTone(status: string | null | undefined): { border: string; bg: string; fg: string } {
-  const normalized = String(status ?? "").toLowerCase();
+  const normalized = normalizeStatus(status);
   if (normalized.includes("high") || normalized.includes("queued") || normalized.includes("success")) {
     return { border: "var(--up-border)", bg: "var(--up-soft)", fg: "var(--up)" };
   }
   if (normalized.includes("vip") || normalized.includes("blocked") || normalized.includes("partial")) {
     return { border: "var(--warn-border)", bg: "var(--warn-soft)", fg: "var(--warn)" };
   }
-  if (normalized.includes("fail") || normalized.includes("reject")) {
+  if (normalized.includes("fail")) {
     return { border: "var(--down-border)", bg: "var(--down-soft)", fg: "var(--down)" };
   }
   return { border: "var(--border)", bg: "var(--bg-card-inner)", fg: "var(--fg-4)" };
+}
+
+function messageTitle(message: FeishuMonitorMessage): string {
+  return message.title?.trim() || message.summary?.trim() || message.primary_url || message.message_id;
+}
+
+function messageSummary(message: FeishuMonitorMessage): string | null {
+  const title = messageTitle(message);
+  const summary = message.summary?.trim();
+  if (!summary || summary === title) return null;
+  return summary;
+}
+
+function taskLabel(message: FeishuMonitorMessage): string {
+  const task = message.task;
+  if (!task) return "未建任务";
+  return task.blocked_reason?.trim() || task.current_stage?.trim() || task.status?.trim() || "已建任务";
+}
+
+function taskRunId(message: FeishuMonitorMessage): string | null {
+  return message.task?.run_id?.trim() || null;
+}
+
+function sourceUrl(message: FeishuMonitorMessage): string | null {
+  return message.article_brief?.final_url?.trim() || message.primary_url?.trim() || null;
 }
 
 export function DataIngestionFeishuMessagesBlock({
@@ -93,7 +118,6 @@ export function DataIngestionFeishuMessagesBlock({
   }, [date]);
 
   const messages = useMemo(() => (payload?.messages ?? []).slice(0, 5), [payload]);
-  const warningCount = payload?.data_quality?.warning_count ?? payload?.data_quality?.warnings?.length ?? 0;
 
   return (
     <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-2">
@@ -102,9 +126,17 @@ export function DataIngestionFeishuMessagesBlock({
           <div className="text-[8px] font-semibold uppercase tracking-wider text-[var(--fg-6)]">Feishu / Jin10 明细</div>
           <div className="mt-0.5 truncate font-mono text-[8px] text-[var(--fg-5)]">date {date} · /api/news/feishu-jin10/messages</div>
         </div>
-        <span className="shrink-0 rounded-full border border-[var(--border)] px-1.5 py-px text-[8px] font-semibold uppercase text-[var(--fg-4)]">
-          {loading ? "loading" : payload?.status ?? "unknown"}
-        </span>
+        <div className="flex shrink-0 items-center gap-1">
+          <Link
+            to={`/feishu-monitor?date=${encodeURIComponent(date)}`}
+            className="rounded-full border border-[var(--border)] px-1.5 py-px text-[8px] font-semibold uppercase text-[var(--fg-4)] transition-colors hover:border-[var(--brand-gold)] hover:text-[var(--brand)]"
+          >
+            查看完整飞书监控
+          </Link>
+          <span className="rounded-full border border-[var(--border)] px-1.5 py-px text-[8px] font-semibold uppercase text-[var(--fg-4)]">
+            {loading ? "loading" : payload?.status ?? "unknown"}
+          </span>
+        </div>
       </div>
 
       {error ? (
@@ -113,18 +145,21 @@ export function DataIngestionFeishuMessagesBlock({
         </div>
       ) : null}
 
-      <div className="mt-2 grid grid-cols-3 gap-1.5">
+      <div className="mt-2 grid grid-cols-4 gap-1.5">
         <DetailMetric label="messages" value={loading ? "…" : String(payload?.message_count ?? 0)} mono />
-        <DetailMetric label="accepted" value={loading ? "…" : String(payload?.accepted_count ?? 0)} mono />
+        <DetailMetric label="high" value={loading ? "…" : String(payload?.high_value_count ?? 0)} mono />
         <DetailMetric label="triggered" value={loading ? "…" : String(payload?.triggered_count ?? 0)} mono />
-        <DetailMetric label="briefs" value={loading ? "…" : String(payload?.brief_count ?? 0)} mono />
-        <DetailMetric label="tasks" value={loading ? "…" : String(payload?.task_count ?? 0)} mono />
-        <DetailMetric label="warnings" value={loading ? "…" : String(warningCount)} mono />
+        <DetailMetric label="blocked" value={loading ? "…" : String(payload?.blocked_count ?? 0)} mono />
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <CompactField label="latest" value={loading ? "…" : compactDateTime(payload?.latest_published_at)} />
+        <CompactField label="as_of" value={loading ? "…" : compactDateTime(payload?.as_of)} />
       </div>
 
       {!loading && !error && messages.length === 0 ? (
         <div className="mt-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-1.5 text-[9px] leading-4 text-[var(--fg-5)]">
-          当天暂无 Feishu/Jin10 采集 artifact 或消息清单为空。
+          当天暂无飞书监控消息。
         </div>
       ) : null}
 
@@ -142,17 +177,24 @@ export function DataIngestionFeishuMessagesBlock({
 function FeishuMessageRow({ message }: { message: FeishuMonitorMessage }) {
   const filterTone = statusTone(message.filter_status);
   const accessTone = statusTone(message.article_brief?.access_status);
-  const trigger = message.trigger;
-  const articleBrief = message.article_brief;
+  const runId = taskRunId(message);
+  const url = sourceUrl(message);
+  const title = messageTitle(message);
+  const summary = messageSummary(message);
 
   return (
     <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-1.5">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="font-mono text-[8px] text-[var(--fg-6)]">{compactTime(message.published_at)}</div>
-          <div className="mt-0.5 line-clamp-2 text-[9px] font-medium leading-4 text-[var(--fg-2)]" title={messageTitle(message)}>
-            {messageTitle(message)}
+          <div className="mt-0.5 line-clamp-2 text-[9px] font-medium leading-4 text-[var(--fg-2)]" title={title}>
+            {title}
           </div>
+          {summary ? (
+            <div className="mt-0.5 line-clamp-2 text-[8px] leading-4 text-[var(--fg-4)]" title={summary}>
+              {summary}
+            </div>
+          ) : null}
         </div>
         <span
           className="shrink-0 rounded-full border px-1.5 py-px text-[8px] font-semibold"
@@ -162,10 +204,30 @@ function FeishuMessageRow({ message }: { message: FeishuMonitorMessage }) {
         </span>
       </div>
       <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-        <CompactField label="trigger" value={trigger ? `${trigger.priority ?? "—"} / ${trigger.status ?? "—"}` : "未触发"} />
-        <CompactField label="detail" value={articleBrief?.access_status ?? "无 brief"} tone={accessTone} />
-        <CompactField label="stage" value={taskLabel(message)} />
-        <CompactField label="brief" value={articleBrief?.display_bucket ?? articleBrief?.article_class ?? "—"} />
+        <CompactField label="trigger" value={message.trigger ? `${message.trigger.priority ?? "—"} / ${message.trigger.status ?? "—"}` : "未触发"} />
+        <CompactField label="brief" value={message.article_brief?.access_status ?? "无 brief"} tone={accessTone} />
+        <CompactField label="task" value={taskLabel(message)} />
+        <CompactField label="source" value={message.source_marker ?? "—"} />
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        {runId ? (
+          <Link
+            to={`/agent-tasks/${encodeURIComponent(runId)}`}
+            className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-1.5 py-px text-[8px] font-semibold text-[var(--brand)] transition-colors hover:border-[var(--brand-gold)]"
+          >
+            任务 {runId.slice(0, 8)}
+          </Link>
+        ) : null}
+        {url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-1.5 py-px text-[8px] font-semibold text-[var(--fg-3)] transition-colors hover:border-[var(--brand-gold)] hover:text-[var(--brand)]"
+          >
+            来源
+          </a>
+        ) : null}
       </div>
     </div>
   );

@@ -7,15 +7,23 @@ from apps.renderer.markdown.final_report import render_final_report_markdown
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
 _REQUIRED_SECTIONS = [
-    "# XAUUSD 盘前综合报告",
-    "## 数据口径",
-    "## 协调器总结",
-    "## 宏观流动性视图",
-    "## CME 期权结构视图",
-    "## 风险审计",
-    "## 宏观事件风险视图",
-    "## 无效条件",
-    "## 观察列表",
+    "# XAUUSD 相关报告",
+    "## 宏观数据报告",
+    "### 宏观数据主题",
+    "### 核心宏观指标",
+    "### 宏观结论",
+    "## 综合报告",
+    "### 报告主题",
+    "### 执行摘要",
+    "### 核心判断",
+    "### 分项证据链",
+    "#### 宏观流动性视图",
+    "#### CME 期权结构视图",
+    "#### 风险审计",
+    "### 情景推演",
+    "### 数据质量与限制",
+    "### 观察列表",
+    "## 数据口径与血缘",
     "## 数据来源",
     "## 免责声明",
 ]
@@ -30,6 +38,32 @@ def _snapshot() -> dict:
             "options": "cme-options:2026-05-14",
         },
         "metadata": {"symbol": "XAUUSD", "as_of": "2026-05-14", "unavailable_modules": []},
+        "snapshot_time": "2026-05-14T11:55:00+00:00",
+        "macro": {
+            "status": "available",
+            "data": {
+                "indicators": {
+                    "DXY": {
+                        "label": "DXY",
+                        "value": 99.2,
+                        "unit": "index",
+                        "date": "2026-05-14",
+                        "weekly_change": -0.4,
+                        "direction_note": "美元走弱，边际利多黄金",
+                    },
+                    "REAL_10Y": {
+                        "label": "10Y 实际利率",
+                        "value": 1.85,
+                        "unit": "%",
+                        "date": "2026-05-14",
+                        "daily_change": -0.03,
+                        "weekly_change": -0.08,
+                        "monthly_change": -0.12,
+                        "direction_note": "实际利率回落，估值压力缓和",
+                    },
+                }
+            },
+        },
         "source_refs": [{"source": "analysis_snapshot", "snapshot_id": "XAUUSD:2026-05-14:analysis"}],
     }
 
@@ -149,15 +183,22 @@ def test_render_final_report_markdown_contains_required_sections_lineage_and_sou
     assert markdown.strip()
     for section in _REQUIRED_SECTIONS:
         assert section in markdown
-    assert "snapshot_id: XAUUSD:2026-05-14:analysis" in markdown
+    assert "快照 ID: XAUUSD:2026-05-14:analysis" in markdown
     assert "analysis_snapshot: XAUUSD:2026-05-14:analysis" in markdown
     assert "macro: macro:2026-05-14" in markdown
     assert "options: cme-options:2026-05-14" in markdown
-    assert "source: analysis_snapshot" in markdown
-    assert "source: macro" in markdown
-    assert "source: options" in markdown
-    assert "source: risk" in markdown
-    assert "source: coordinator" in markdown
+    assert "来源分组摘要" in markdown
+    assert "analysis_snapshot: 1 条血缘明细" in markdown
+    assert "macro: 1 条血缘明细" in markdown
+    assert "options: 1 条血缘明细" in markdown
+    assert "risk: 1 条血缘明细" in markdown
+    assert "coordinator: 1 条血缘明细" in markdown
+    assert "XAUUSD 的核心主题" in markdown
+    assert "数据刷新时间: 2026-05-14T11:55:00+00:00" in markdown
+    assert "| 指标 | 最新值 | 日期 | 日变 | 周变 | 月变 | 解读 |" in markdown
+    assert "| DXY | 99.2 index | 2026-05-14 | - | -0.4 | - | 美元走弱，边际利多黄金 |" in markdown
+    assert "| 10Y 实际利率 | 1.85 % | 2026-05-14 | -0.03 | -0.08 | -0.12 | 实际利率回落，估值压力缓和 |" in markdown
+    assert "| 协调器总结 | 部分可用 | 偏多 | 0.61 |" in markdown
     assert "Bullish research view with constrained confidence." in markdown
     assert "Real yields fell" in markdown
     assert "Call wall near 4300" in markdown
@@ -175,7 +216,7 @@ def test_render_final_report_markdown_adds_structured_news_event_highlights():
         created_at=_CREATED_AT,
     )
 
-    assert "## 新闻与事件" in markdown
+    assert "#### 新闻与事件要点" in markdown
     assert "发生了什么: Consumer Price Index" in markdown
     assert "事实状态: official_confirmed" in markdown
     assert "影响路径: scheduled_macro_release_to_rates" in markdown
@@ -183,6 +224,33 @@ def test_render_final_report_markdown_adds_structured_news_event_highlights():
     assert "event_id: event:inflation_release:cpi" in markdown
     assert "Iran warns over Strait of Hormuz shipping" in markdown
     assert "single_source" in markdown
+
+
+def test_render_final_report_markdown_summarizes_large_source_refs_without_dumping_all():
+    snapshot = _snapshot()
+    snapshot["source_refs"] = [
+        {"source": "jin10_mcp", "method": f"news_search_{idx}", "raw_path": f"raw/{idx}.json"}
+        for idx in range(30)
+    ] + [
+        {"source": "fed_rss", "feed_key": f"feed_{idx}", "raw_path": f"fed/{idx}.json"}
+        for idx in range(10)
+    ]
+
+    markdown = render_final_report_markdown(
+        snapshot=snapshot,
+        macro_output=_macro(),
+        options_output=_options(),
+        risk_output=_risk(),
+        coordinator_output=_coordinator(),
+        created_at=_CREATED_AT,
+    )
+
+    assert "## 数据来源" in markdown
+    assert "来源分组摘要" in markdown
+    assert "jin10_mcp: 30 条血缘明细" in markdown
+    assert "fed_rss: 10 条血缘明细" in markdown
+    assert "共 40 条来源引用" not in markdown
+    assert "news_search_29" not in markdown
 
 
 def test_render_final_report_markdown_warns_on_partial_or_unavailable_outputs_without_fake_completeness():
@@ -208,7 +276,7 @@ def test_render_final_report_markdown_warns_on_partial_or_unavailable_outputs_wi
         created_at=_CREATED_AT,
     )
 
-    assert "### 告警" in markdown
+    assert "### 数据质量与限制" in markdown
     assert "options: unavailable" in markdown
     assert "CME options snapshot is missing." in markdown
     assert "No complete final view" in markdown
@@ -232,7 +300,8 @@ def test_render_final_report_markdown_accepts_dict_agent_outputs_and_does_not_mu
         created_at=_CREATED_AT,
     )
 
-    assert "## 协调器总结" in markdown
+    assert "### 执行摘要" in markdown
+    assert "| 协调器总结 |" in markdown
     assert (snapshot.copy(), macro.copy(), options.copy(), risk.copy(), coordinator.copy()) == before
 
 
@@ -246,7 +315,7 @@ def test_render_final_report_markdown_rejects_path_like_snapshot_without_file_re
         created_at=_CREATED_AT,
     )
 
-    assert "### 告警" in markdown
+    assert "### 数据质量与限制" in markdown
     assert "file/path reads are not allowed" in markdown
     assert "快照 ID: unavailable" in markdown
 

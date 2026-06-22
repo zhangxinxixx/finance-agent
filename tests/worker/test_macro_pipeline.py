@@ -27,6 +27,7 @@ from apps.worker.pipelines.macro import (
     run_macro_step,
 )
 from database.models.analysis import DataSourceStatus, ensure_analysis_tables
+from database.models.execution import ExecutionEvent, ensure_execution_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 
 
@@ -40,6 +41,7 @@ def _make_db_session(tmp_path: Path):
     engine = create_engine(f"sqlite:///{(tmp_path / 'test.db').as_posix()}", echo=False)
     Base.metadata.create_all(engine)
     ensure_analysis_tables(engine)
+    ensure_execution_tables(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
@@ -123,6 +125,13 @@ def _mock_jin10_mcp_collectors():
         patch("apps.collectors.jin10.kline.collect_kline", return_value=_make_empty_result()),
         patch("apps.collectors.jin10.articles.collect_articles", return_value=_make_empty_result()),
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_source_status_index():
+    """Keep worker integration tests deterministic unless a test opts into source gating explicitly."""
+    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
         yield
 
 
@@ -582,7 +591,8 @@ class TestStepRender:
         assert "source_refs" in json_content
 
         md_content = md_path.read_text()
-        assert "Macro Snapshot" in md_content
+        assert "XAUUSD 宏观数据报告" in md_content
+        assert "数据刷新时间: 2026-05-06" in md_content
         assert "指标 | 最新日期" in md_content
 
         conclusion_content = json.loads(conclusion_path.read_text())
@@ -732,6 +742,21 @@ class TestRunPremarketWithMacro:
         for step in task.steps:
             assert step.status == StepStatus.success
 
+        events = (
+            db.query(ExecutionEvent)
+            .filter(ExecutionEvent.run_id == task.id)
+            .order_by(ExecutionEvent.created_at.asc(), ExecutionEvent.event_type.asc())
+            .all()
+        )
+        event_types = [event.event_type for event in events]
+        assert "RUN_STARTED" in event_types
+        assert "RUN_FINISHED" in event_types
+        assert event_types.count("TASK_STARTED") == len(task.steps)
+        assert event_types.count("TASK_FINISHED") == len(task.steps)
+        assert {event.task_id for event in events if event.event_type == "TASK_FINISHED"} == {
+            step.id for step in task.steps
+        }
+
     def test_macro_failure_produces_partial_success(self, tmp_path):
         """A macro step failure produces partial_success when other steps succeed."""
         db = _make_db_session(tmp_path)
@@ -810,3 +835,161 @@ class TestRunPremarketWithMacro:
         assert steps_by_name["macro_collect"].status == StepStatus.success
         assert steps_by_name["macro_feature"].status == StepStatus.success
         assert steps_by_name["report_render"].status == StepStatus.success
+
+    def test_source_readiness_blocks_macro_pipeline_before_execution(self, tmp_path):
+        """Blocked source readiness should stop the macro pipeline before macro execution starts."""
+        db = _make_db_session(tmp_path)
+
+        task = TaskRun(name="premarket", status=TaskStatus.pending)
+        db.add(task)
+        db.flush()
+
+        for name in ["macro_collect", "macro_feature", "report_render", "cme_download"]:
+            db.add(TaskStep(task_run_id=task.id, name=name, status=StepStatus.pending))
+
+        db.commit()
+
+        macro_calls: list[str] = []
+
+        def mock_cme_step(step_name, state, **kwargs):
+            return {"step": step_name, "status": "success"}
+
+        def mock_macro_step(step_name, state, **kwargs):
+            macro_calls.append(step_name)
+            return {"step": step_name, "status": "success"}
+
+        source_status_index = {
+            "fred": {"readiness_state": "blocked", "error_message": "upstream blocked"},
+            "fed": {"readiness_state": "ready", "raw_ingested": True},
+            "treasury": {"readiness_state": "ready", "raw_ingested": True},
+            "dxy": {"readiness_state": "ready", "raw_ingested": True},
+            "cme_daily_bulletin": {"readiness_state": "ready", "raw_ingested": True},
+        }
+
+        with (
+            patch("apps.api.services.source_service.get_data_source_status_index", return_value=source_status_index),
+            patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_cme_step),
+            patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        ):
+            from apps.worker.runner import run_premarket
+
+            result = run_premarket(db, task.id, storage_root=tmp_path)
+
+        assert result == TaskStatus.partial_success
+        assert macro_calls == []
+
+        db.refresh(task)
+        steps_by_name = {s.name: s for s in task.steps}
+        assert steps_by_name["macro_collect"].status == StepStatus.blocked
+        assert "source readiness blocked: fred" in (steps_by_name["macro_collect"].blocked_reason or "")
+        assert steps_by_name["macro_feature"].status == StepStatus.blocked
+        assert steps_by_name["report_render"].status == StepStatus.blocked
+        assert steps_by_name["cme_download"].status == StepStatus.success
+        events = (
+            db.query(ExecutionEvent)
+            .filter(ExecutionEvent.run_id == task.id)
+            .order_by(ExecutionEvent.created_at.asc(), ExecutionEvent.event_type.asc())
+            .all()
+        )
+        event_types = [event.event_type for event in events]
+        assert "SOURCE_READINESS_EVALUATED" in event_types
+        assert "SOURCE_BLOCKED_TASK" in event_types
+
+    def test_source_readiness_blocks_macro_pipeline_when_required_source_not_configured(self, tmp_path):
+        """not_configured required sources should still trip the worker gate even without runtime signals."""
+        db = _make_db_session(tmp_path)
+
+        task = TaskRun(name="premarket", status=TaskStatus.pending)
+        db.add(task)
+        db.flush()
+
+        for name in ["macro_collect", "macro_feature", "report_render"]:
+            db.add(TaskStep(task_run_id=task.id, name=name, status=StepStatus.pending))
+
+        db.commit()
+
+        macro_calls: list[str] = []
+
+        def mock_macro_step(step_name, state, **kwargs):
+            macro_calls.append(step_name)
+            return {"step": step_name, "status": "success"}
+
+        source_status_index = {
+            "fred": {"readiness_state": "not_configured"},
+            "fed": {"readiness_state": "ready", "raw_ingested": True},
+            "treasury": {"readiness_state": "ready", "raw_ingested": True},
+            "dxy": {"readiness_state": "ready", "raw_ingested": True},
+        }
+
+        with (
+            patch("apps.api.services.source_service.get_data_source_status_index", return_value=source_status_index),
+            patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        ):
+            from apps.worker.runner import run_premarket
+
+            result = run_premarket(db, task.id, storage_root=tmp_path)
+
+        assert result == TaskStatus.blocked
+        assert macro_calls == []
+
+        db.refresh(task)
+        assert task.status == TaskStatus.blocked
+        steps_by_name = {s.name: s for s in task.steps}
+        assert steps_by_name["macro_collect"].status == StepStatus.blocked
+        assert "required_source_not_configured" in (steps_by_name["macro_collect"].blocked_reason or "")
+        assert steps_by_name["macro_feature"].status == StepStatus.blocked
+        assert steps_by_name["report_render"].status == StepStatus.blocked
+
+    def test_source_readiness_degraded_allowed_marks_run_degraded(self, tmp_path):
+        """Degraded-but-allowed source readiness should keep execution running and roll up to degraded."""
+        db = _make_db_session(tmp_path)
+
+        task = TaskRun(name="premarket", status=TaskStatus.pending)
+        db.add(task)
+        db.flush()
+
+        for name in ["macro_collect", "macro_feature", "report_render"]:
+            db.add(TaskStep(task_run_id=task.id, name=name, status=StepStatus.pending))
+
+        db.commit()
+
+        def mock_macro_step(step_name, state, **kwargs):
+            if step_name == "report_render":
+                state.snapshot_dict = {
+                    "as_of": "2026-05-06",
+                    "indicators": {
+                        "DXY": {"value": 101.50, "change_1w": -0.80, "unit": "index"},
+                    },
+                    "source_refs": [{"symbol": "DXY", "source": "tradingview"}],
+                }
+            return {"step": step_name, "status": "success"}
+
+        source_status_index = {
+            "fred": {"readiness_state": "degraded", "raw_ingested": True},
+            "fed": {"readiness_state": "ready", "raw_ingested": True},
+            "treasury": {"readiness_state": "ready", "raw_ingested": True},
+            "dxy": {"readiness_state": "ready", "raw_ingested": True},
+        }
+
+        with (
+            patch("apps.api.services.source_service.get_data_source_status_index", return_value=source_status_index),
+            patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        ):
+            from apps.worker.runner import run_premarket
+
+            result = run_premarket(db, task.id, storage_root=tmp_path)
+
+        assert result == TaskStatus.degraded
+
+        db.refresh(task)
+        assert task.status == TaskStatus.degraded
+        assert all(step.status == StepStatus.success for step in task.steps)
+        events = (
+            db.query(ExecutionEvent)
+            .filter(ExecutionEvent.run_id == task.id)
+            .order_by(ExecutionEvent.created_at.asc(), ExecutionEvent.event_type.asc())
+            .all()
+        )
+        event_types = [event.event_type for event in events]
+        assert "SOURCE_READINESS_EVALUATED" in event_types
+        assert "SOURCE_FALLBACK_USED" in event_types

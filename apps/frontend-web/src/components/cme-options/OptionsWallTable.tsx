@@ -18,7 +18,7 @@ interface OptionsWallTableProps {
 export function OptionsWallTable({ wallScores }: OptionsWallTableProps) {
   const [sortKey, setSortKey] = useState<OptionsWallSortKey>("wall_score");
   const [sortDirection, setSortDirection] = useState<OptionsWallSortDirection>("desc");
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
 
   const sortedWallScores = useMemo(
     () => sortWallRows(wallScores, sortKey, sortDirection),

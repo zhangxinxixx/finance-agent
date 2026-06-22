@@ -10,6 +10,7 @@ import type {
   EventFlowTimelineItem,
 } from "@/types/event-flow";
 import { EventChainAnalysis } from "./EventChainAnalysis";
+import { translateEventFlowValue } from "./eventFlowFormat";
 import { ImpactAssets } from "./ImpactAssets";
 import { RiskRadar } from "./RiskRadar";
 import { SentimentMetrics } from "./SentimentMetrics";
@@ -49,7 +50,7 @@ function marketValidationRows(events: EventFlowTimelineItem[]) {
     const validation = asRecord(event.market_validation);
     const snapshot = asRecord(event.market_snapshot ?? validation.market_snapshot);
     const confirmation = asRecord(validation.confirmation_summary);
-    const primaryWindow = stringifyValue(snapshot.primary_window) || "unavailable";
+    const primaryWindow = stringifyValue(snapshot.primary_window) || "未返回";
     const pricing = event.pricing ?? (stringifyValue(validation.pricing_status) || "未标注");
     const observedAssets = Array.isArray(snapshot.observed_assets) ? snapshot.observed_assets.map(String) : [];
     const missingAssets = Array.isArray(snapshot.missing_assets) ? snapshot.missing_assets.map(String) : [];
@@ -64,7 +65,7 @@ function marketValidationRows(events: EventFlowTimelineItem[]) {
       observedAssets,
       missingAssets,
       hasValidation,
-      verificationStatus: event.verification_status ?? "unavailable",
+      verificationStatus: translateEventFlowValue(event.verification_status ?? "unavailable"),
     }];
   });
 }
@@ -81,7 +82,7 @@ function MarketValidationSummary({ events }: { events: EventFlowTimelineItem[] }
           <span>行情验证摘要</span>
         </div>
       }
-      eyebrow="Market Validation"
+      eyebrow="市场验证"
       accent="warn"
       bodyClassName="space-y-3"
     >
@@ -90,15 +91,15 @@ function MarketValidationSummary({ events }: { events: EventFlowTimelineItem[] }
       ) : availableRows.length === 0 ? (
         <>
           <div className="rounded-[var(--radius-md)] border border-[rgba(245,158,11,0.18)] bg-[rgba(245,158,11,0.06)] p-3 text-[11px] leading-5 text-[var(--fg-2)]">
-            当前没有真实 `market_validation` 或 `market_snapshot` 数据。这里明确保留 unavailable 占位，不把缺失字段包装成市场结论。
+            当前没有真实的行情验证或行情快照数据。这里明确保留未返回占位，不把缺失字段包装成市场结论。
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
             {rows.slice(0, 3).map((row) => (
               <div key={row.id} className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
                 <div className="text-[11px] font-semibold text-[var(--fg-2)]">{row.title}</div>
-                <div className="mt-2 text-[10px] text-[var(--fg-4)]">pricing: {row.pricing}</div>
-                <div className="mt-1 text-[10px] text-[var(--fg-4)]">verification: {row.verificationStatus}</div>
-                <div className="mt-1 text-[10px] text-[var(--warn)]">market validation unavailable</div>
+                <div className="mt-2 text-[10px] text-[var(--fg-4)]">定价状态：{row.pricing}</div>
+                <div className="mt-1 text-[10px] text-[var(--fg-4)]">验证状态：{row.verificationStatus}</div>
+                <div className="mt-1 text-[10px] text-[var(--warn)]">行情验证数据未返回</div>
               </div>
             ))}
           </div>
@@ -138,8 +139,8 @@ function MarketValidationSummary({ events }: { events: EventFlowTimelineItem[] }
                   ))}
                 </div>
                 <div className="mt-3 grid gap-2 text-[10px] text-[var(--fg-4)] sm:grid-cols-2">
-                  <div>已观测资产：{row.observedAssets.length > 0 ? row.observedAssets.join(" / ") : "unavailable"}</div>
-                  <div>缺失资产：{row.missingAssets.length > 0 ? row.missingAssets.join(" / ") : "unavailable"}</div>
+                  <div>已观测资产：{row.observedAssets.length > 0 ? row.observedAssets.join(" / ") : "未返回"}</div>
+                  <div>缺失资产：{row.missingAssets.length > 0 ? row.missingAssets.join(" / ") : "未返回"}</div>
                 </div>
               </article>
             );
@@ -164,18 +165,18 @@ function SummaryTiles({
   const radarAverage = radar.length > 0
     ? Math.round(radar.reduce((sum, item) => sum + item.value, 0) / radar.length)
     : null;
-  const sentimentSummary = sentiment[0]?.label ?? "unavailable";
+  const sentimentSummary = sentiment[0]?.label ?? "未返回";
 
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
       {[
-        { icon: AlertTriangle, label: "重点事件", value: String(highImportanceCount), hint: "高重要性 timeline 事件" },
-        { icon: Activity, label: "情绪主指标", value: sentimentSummary, hint: "来自 sentiment 第一个指标" },
-        { icon: ShieldAlert, label: "风险均值", value: radarAverage === null ? "unavailable" : `${radarAverage}/100`, hint: "risk radar 平均值" },
-        { icon: Target, label: "待验证", value: String(watchCount), hint: "verification 含 needs_verification 的事件数" },
+        { icon: AlertTriangle, label: "重点事件", value: String(highImportanceCount), hint: "高重要性时间线事件" },
+        { icon: Activity, label: "情绪主指标", value: sentimentSummary, hint: "来自情绪面板的首要指标" },
+        { icon: ShieldAlert, label: "风险均值", value: radarAverage === null ? "未返回" : `${radarAverage}/100`, hint: "风险雷达平均值" },
+        { icon: Target, label: "待验证", value: String(watchCount), hint: "含待验证标记的事件数量" },
       ].map((item) => (
         <div key={item.label} className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">
+          <div className="flex items-center gap-2 text-[10px] font-semibold tracking-[0.04em] text-[var(--fg-5)]">
             <item.icon size={11} className="text-[var(--brand-hover)]" />
             <span>{item.label}</span>
           </div>
@@ -215,7 +216,7 @@ export function EventFlowImpactAnalysisPanel({
         <div className="space-y-4">
           <RiskRadar radar={radar} />
           {assetRows.length === 0 ? (
-            <FACard title="影响资产" eyebrow="Impact Assets" accent="brand">
+            <FACard title="影响资产" eyebrow="资产影响" accent="brand">
               <FAEmptyState title="暂无影响资产" description="timeline / table 均未返回可聚合资产。" className="py-6" />
             </FACard>
           ) : (

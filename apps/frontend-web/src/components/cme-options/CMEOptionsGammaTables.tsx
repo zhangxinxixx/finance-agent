@@ -11,16 +11,16 @@ export function GEXBreakdown({ snapshot, selectedExpiry }: { snapshot: CMEOption
   if (!data?.gex_top?.length) return null;
 
   return (
-    <CMEOptionsSurface title={`GEX 分布 · ${expiry}`}>
+    <CMEOptionsSurface title={`伽马敞口分布 · ${expiry}`}>
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)", color: CME_META_TEXT, fontSize: 10 }}>
               <th style={{ padding: "6px 10px", textAlign: "left" }}>行权价</th>
-              <th style={{ padding: "6px 10px", textAlign: "right" }}>总GEX</th>
-              <th style={{ padding: "6px 10px", textAlign: "right" }}>净GEX</th>
-              <th style={{ padding: "6px 10px", textAlign: "right" }}>Call GEX</th>
-              <th style={{ padding: "6px 10px", textAlign: "right" }}>Put GEX</th>
+              <th style={{ padding: "6px 10px", textAlign: "right" }}>总伽马</th>
+              <th style={{ padding: "6px 10px", textAlign: "right" }}>净伽马</th>
+              <th style={{ padding: "6px 10px", textAlign: "right" }}>看涨伽马</th>
+              <th style={{ padding: "6px 10px", textAlign: "right" }}>看跌伽马</th>
             </tr>
           </thead>
           <tbody>
@@ -45,16 +45,16 @@ export function IVSkewTable({ snapshot }: { snapshot: CMEOptionsResponse }) {
   if (expiries.length === 0) return null;
 
   return (
-    <CMEOptionsSurface title="IV Skew / 反推参数">
+    <CMEOptionsSurface title="波动率偏斜 / 反推参数">
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)", color: CME_META_TEXT, fontSize: 10 }}>
               <th style={{ padding: "5px 8px", textAlign: "left" }}>到期月</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>反推F</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>反推远期价</th>
               <th style={{ padding: "5px 8px", textAlign: "right" }}>剩余T</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>Gamma零</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>ATM IV</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>伽马零点</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>平值波动率</th>
               <th style={{ padding: "5px 8px", textAlign: "right" }}>25D偏度</th>
               <th style={{ padding: "5px 8px", textAlign: "right" }}>10D偏度</th>
             </tr>

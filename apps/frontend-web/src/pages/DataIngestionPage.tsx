@@ -12,7 +12,6 @@ import {
   DataIngestionErrorState,
   DataIngestionLoadingState,
 } from "@/components/data-ingestion/DataIngestionPageStates";
-import { DataFreshnessBar } from "@/components/data-ingestion/DataFreshnessBar";
 import {
   computePipelineStats,
   filterSourcesByStage,
@@ -28,6 +27,7 @@ import { PipelineRunsLog } from "@/components/data-ingestion/PipelineRunsLog";
 import { PipelineStageProgress } from "@/components/data-ingestion/PipelineStageProgress";
 import { SourcePipelineMatrix } from "@/components/data-ingestion/SourcePipelineMatrix";
 import { SourceStageDetailDrawer } from "@/components/data-ingestion/SourceStageDetailDrawer";
+import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 
 export function DataIngestionPage() {
   const ingestion = useDataIngestion();
@@ -68,6 +68,7 @@ export function DataIngestionPage() {
   const selectedSource = selectedSourceId ? sources.find((s) => s.id === selectedSourceId) ?? null : null;
   const pipelineStats = computePipelineStats(sources);
   const { globalDataDate, globalStaleness } = getGlobalDataFreshness(sources, systemStatus);
+  const degradedCount = sources.filter((source) => source.status !== "available").length;
 
   // Find source for drawer
   const drawerSource = stageDrawerSource ? sources.find((s) => s.id === stageDrawerSource) ?? null : null;
@@ -94,74 +95,63 @@ export function DataIngestionPage() {
   const filteredSources = filterSourcesByStage(sources, stageFilter);
 
   return (
-    <div className="finance-page-shell">
-      <div className="flex flex-col gap-2 min-h-0 flex-1">
-        {/* KPI Summary Bar */}
-        <IngestionSummaryBar
-          summary={vmSummary}
-          pipelineStats={pipelineStats}
-          lastRun={systemStatus?.latest_run_created_at?.slice(0, 16).replace("T", " ") ?? null}
+    <FAPageScaffold>
+      <IngestionSummaryBar
+        summary={vmSummary}
+        pipelineStats={pipelineStats}
+        degradedCount={degradedCount}
+        dataDate={globalDataDate}
+        stalenessDays={globalStaleness}
+        lastRun={systemStatus?.latest_run_created_at?.slice(0, 16).replace("T", " ") ?? null}
+        onRefresh={ingestion.refetch}
+      />
+
+      <CriticalAlertBanner sources={sources} />
+
+      <PipelineStageProgress
+        sources={sources}
+        onStageFilter={setStageFilter}
+        activeFilter={stageFilter}
+      />
+
+      <div className="fa-split-grid fa-split-grid--right data-ingestion-main-grid">
+        <SourcePipelineMatrix
+          sources={filteredSources}
+          selectedId={selectedSourceId}
+          onSelect={handleSourceSelect}
+          onStageClick={(sourceId, stageKey) => {
+            setStageDrawerSource(sourceId);
+            setStageDrawerKey(stageKey);
+          }}
         />
 
-        {/* Critical Alert */}
-        <CriticalAlertBanner sources={sources} />
-
-        {/* Data Freshness */}
-        <DataFreshnessBar dataDate={globalDataDate} stalenessDays={globalStaleness} />
-
-        {/* Pipeline Stage Progress */}
-        <PipelineStageProgress
-          sources={sources}
-          onStageFilter={setStageFilter}
-          activeFilter={stageFilter}
-        />
-
-        {/* Main content: Matrix + Right panel */}
-        <div
-          className="grid min-h-0 flex-1"
-          style={{ gridTemplateColumns: "minmax(0,1fr) 320px", gap: "8px" }}
-        >
-          {/* Matrix */}
-          <SourcePipelineMatrix
-            sources={filteredSources}
-            selectedId={selectedSourceId}
-            onSelect={handleSourceSelect}
-            onStageClick={(sourceId, stageKey) => {
-              setStageDrawerSource(sourceId);
-              setStageDrawerKey(stageKey);
+        <div className="fa-scroll-column data-ingestion-side-rail">
+          <SourceDetailPanel
+            source={selectedSource}
+            onRetry={(source) => {
+              void handleSourceRetry(source, `从数据源详情请求重试 ${source.label}`);
             }}
           />
-
-          {/* Right panel */}
-          <div className="flex flex-col gap-2.5 min-h-0 overflow-y-auto">
-            <SourceDetailPanel
-              source={selectedSource}
-              onRetry={(source) => {
-                void handleSourceRetry(source, `从数据源详情请求重试 ${source.label}`);
-              }}
-            />
-            <DataIngestionActionFeedback actionResult={actionResult} actionError={actionError} />
-            <IngestionActionsPanel
-              sources={sources}
-              onActionComplete={(result) => {
-                setActionError(null);
-                setActionResult(result);
-              }}
-              onActionError={(error) => {
-                setActionResult(null);
-                setActionError(error);
-              }}
-            />
-            <BlockingIssuesPanel
-              sources={sources}
-              systemStatus={systemStatus}
-            />
-            <PipelineRunsLog sources={sources} />
-          </div>
+          <DataIngestionActionFeedback actionResult={actionResult} actionError={actionError} />
+          <IngestionActionsPanel
+            sources={sources}
+            onActionComplete={(result) => {
+              setActionError(null);
+              setActionResult(result);
+            }}
+            onActionError={(error) => {
+              setActionResult(null);
+              setActionError(error);
+            }}
+          />
+          <BlockingIssuesPanel
+            sources={sources}
+            systemStatus={systemStatus}
+          />
+          <PipelineRunsLog sources={sources} />
         </div>
       </div>
 
-      {/* Stage Detail Drawer */}
       <SourceStageDetailDrawer
         source={drawerSource}
         stageKey={stageDrawerKey}
@@ -176,6 +166,6 @@ export function DataIngestionPage() {
           }
         }}
       />
-    </div>
+    </FAPageScaffold>
   );
 }

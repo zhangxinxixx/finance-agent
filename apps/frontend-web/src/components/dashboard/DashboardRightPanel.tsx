@@ -1,7 +1,7 @@
 import type { DashboardSummary } from "@/types/dashboard";
 import { ContextPanelShell } from "@/components/shared/ContextPanel";
 import { useJin10Calendar } from "@/hooks/useJin10Calendar";
-import { useJin10Flash } from "@/hooks/useJin10Flash";
+import { useEventFlowLiveFlash } from "@/hooks/useEventFlowLiveFlash";
 import { buildDashboardRightPanelModel } from "./DashboardRightPanelModel";
 import { EconomicCalendarSection, RealtimeFlashSection } from "./DashboardRightPanelSections";
 
@@ -11,9 +11,9 @@ interface DashboardRightPanelProps {
 
 export function DashboardRightPanel({ summary: _summary }: DashboardRightPanelProps) {
   const calendar = useJin10Calendar();
-  const flash = useJin10Flash(50);
+  const flash = useEventFlowLiveFlash(50);
 
-  const { sortedEvents, visibleEvents, visibleFlash, flashOverflowCount, eventOverflowCount } =
+  const { sortedEvents, visibleEvents, calendarMode, visibleFlash, flashOverflowCount, eventOverflowCount } =
     buildDashboardRightPanelModel({
       calendarEvents: calendar.data,
       flashItems: flash.data,
@@ -30,6 +30,7 @@ export function DashboardRightPanel({ summary: _summary }: DashboardRightPanelPr
       <EconomicCalendarSection
         events={sortedEvents}
         visibleEvents={visibleEvents}
+        mode={calendarMode}
         overflowCount={eventOverflowCount}
         isLoading={calendar.isLoading}
         isError={calendar.isError}

@@ -56,15 +56,25 @@ export function CompactKPICard({
 
   return (
     <article
-      className="relative flex flex-col overflow-hidden"
+      className="dashboard-kpi-card group relative flex flex-col overflow-hidden"
       style={{
-        background: "var(--bg-card)",
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius-md)",
-        padding: "10px 12px",
+        ["--kpi-accent" as string]: accentColor,
+        background:
+          "linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.012) 42%, rgba(255,255,255,0)), var(--bg-card)",
+        border: "1px solid var(--border-faint)",
+        borderRadius: "var(--radius-lg)",
+        padding: "11px 12px",
         gap: "5px",
       }}
     >
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-[1px] rounded-[calc(var(--radius-lg)-1px)]"
+        style={{
+          border: `1px solid ${accentColor}18`,
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.045)",
+        }}
+      />
       {/* Top accent bar with glow */}
       <div
         style={{
@@ -73,8 +83,8 @@ export function CompactKPICard({
           left: 0,
           right: 0,
           height: "2px",
-          background: accentColor,
-          boxShadow: `0 0 6px ${accentColor}80`,
+          background: `linear-gradient(90deg, ${accentColor}, transparent 78%)`,
+          boxShadow: `0 0 12px ${accentColor}70`,
         }}
       />
 

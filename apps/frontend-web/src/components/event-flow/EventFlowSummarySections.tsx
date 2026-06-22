@@ -6,6 +6,7 @@ import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { formatDateTime, getLatestTradeDate } from "@/lib/date";
 import type { EventFlowBriefSummary } from "@/types/event-flow";
 import { CountMetric } from "./EventFlowSectionHelpers";
+import { formatEventFlowArtifactLabel } from "./eventFlowFormat";
 
 export function EventFlowEmptyState({
   source,
@@ -16,7 +17,7 @@ export function EventFlowEmptyState({
 }) {
   return (
     <>
-      <FACard title="事件流" eyebrow="Event Flow" accent="brand" bodyClassName="space-y-2">
+      <FACard title="事件流" eyebrow="事件链路" accent="brand" bodyClassName="space-y-2">
         <div className="text-[12px] font-semibold text-[var(--fg-2)]">当前未返回可展示的事件流数据</div>
         <div className="text-[11px] leading-5 text-[var(--fg-4)]">页面保留读模型入口，等待 `daily_market_brief` 或 Jin10 snapshot 返回有效事件。</div>
         <div className="flex flex-wrap gap-2">
@@ -58,7 +59,7 @@ export function BriefSummaryStrip({
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1.7fr)_minmax(260px,0.9fr)]">
       <FACard
         title="新闻主线"
-        eyebrow="Daily Market Brief"
+        eyebrow="每日市场简报"
         accent="brand"
         action={<FAStatusPill tone="info">{source}</FAStatusPill>}
         bodyClassName="space-y-3"
@@ -74,7 +75,7 @@ export function BriefSummaryStrip({
         </div>
         <div className="flex flex-wrap gap-2">
           <FASourceTraceBadge source={formatDateTime(updatedAt)} status="updated_at" tone="info" />
-          {summary.artifactPath ? <FASourceTraceBadge source={summary.artifactPath} status="artifact" tone="dim" /> : null}
+          {summary.artifactPath ? <FASourceTraceBadge source={formatEventFlowArtifactLabel(summary.artifactPath)} status="artifact" tone="dim" /> : null}
           {sourceRefs.slice(0, 3).map((ref) => (
             <FASourceTraceBadge
               key={`${ref.source_ref ?? ref.label ?? "source-ref"}`}

@@ -1,70 +1,38 @@
-export type FeishuMonitorFilterStatus = "high_value" | "candidate" | "archive_only" | "reject" | "unknown" | string;
-
-export interface FeishuMonitorRelevance {
-  score?: number | null;
-  reasons: string[];
-  asset_tags: string[];
-  topic_tags: string[];
-  event_type_hint?: string | null;
-  need_detail_fetch: boolean;
-  need_verification: boolean;
-}
-
-export interface FeishuMonitorAcceptedItem {
-  source_key?: string | null;
-  title?: string | null;
-  url?: string | null;
-  domain?: string | null;
-  event_type?: string | null;
-  duplicate_key?: string | null;
-  verification_status?: string | null;
-}
+export type FeishuMonitorFilterStatus = "high_value" | "candidate" | string;
 
 export interface FeishuMonitorTrigger {
-  trigger_id?: string | null;
   run_id?: string | null;
   priority?: string | null;
   status?: string | null;
   event_type?: string | null;
-  reason_codes: string[];
-  suggested_actions: string[];
-  data_quality?: Record<string, unknown>;
-  artifact_path?: string | null;
 }
 
 export interface FeishuMonitorArticleBrief {
   brief_id?: string | null;
   run_id?: string | null;
+  headline?: string | null;
   article_class?: string | null;
   display_bucket?: string | null;
-  headline?: string | null;
   access_status?: string | null;
+  source_url?: string | null;
   final_url?: string | null;
+  original_excerpt?: string | null;
+  key_points?: string[];
   analysis_summary?: string | null;
-  detail_artifacts?: {
-    parsed_path?: string | null;
-    raw_html_path?: string | null;
-    image_asset_count?: number | null;
-    vlm_insight_count?: number | null;
-  };
-  data_quality?: Record<string, unknown>;
-  artifact_path?: string | null;
-}
-
-export interface FeishuMonitorTaskStep {
-  name?: string | null;
-  status?: string | null;
-  blocked_reason?: string | null;
-  error_type?: string | null;
+  asset_tags?: string[];
+  topic_tags?: string[];
+  suggested_actions?: string[];
+  source_refs?: Array<Record<string, unknown>>;
+  detail_artifacts?: Record<string, unknown> | null;
+  created_at?: string | null;
 }
 
 export interface FeishuMonitorTask {
   run_id?: string | null;
   status?: string | null;
   current_stage?: string | null;
-  progress?: number | null;
-  error_summary?: string | null;
-  steps: FeishuMonitorTaskStep[];
+  blocked?: boolean;
+  blocked_reason?: string | null;
 }
 
 export interface FeishuMonitorMessage {
@@ -73,28 +41,37 @@ export interface FeishuMonitorMessage {
   sender_name?: string | null;
   message_type?: string | null;
   published_at?: string | null;
-  content?: string | null;
+  title?: string | null;
+  summary?: string | null;
   links: string[];
   primary_url?: string | null;
   source_marker?: string | null;
-  looks_like_jin10: boolean;
   filter_status: FeishuMonitorFilterStatus;
-  relevance: FeishuMonitorRelevance;
-  accepted_item?: FeishuMonitorAcceptedItem | null;
+  content_kind?: "flash" | "article" | string;
+  report_tags?: string[];
   trigger?: FeishuMonitorTrigger | null;
   article_brief?: FeishuMonitorArticleBrief | null;
   task?: FeishuMonitorTask | null;
-  parsed_artifact_path?: string | null;
+  blocked?: boolean;
+  actionable?: boolean;
 }
 
 export interface FeishuMonitorResponse {
   status: "available" | "empty" | string;
   date: string;
+  as_of?: string | null;
+  latest_published_at?: string | null;
   message_count: number;
   accepted_count: number;
+  high_value_count?: number;
   triggered_count: number;
   brief_count: number;
   task_count: number;
+  status_counts?: Record<string, number>;
+  access_status_counts?: Record<string, number>;
+  task_status_counts?: Record<string, number>;
+  blocked_count?: number;
+  actionable_count?: number;
   source_refs: Array<Record<string, unknown>>;
   messages: FeishuMonitorMessage[];
   data_quality: {
@@ -103,6 +80,5 @@ export interface FeishuMonitorResponse {
     brief_url_count?: number;
     task_url_count?: number;
     warning_count?: number;
-    warnings?: string[];
   };
 }

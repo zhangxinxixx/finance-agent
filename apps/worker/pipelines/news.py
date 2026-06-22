@@ -93,23 +93,71 @@ def _step_collect(
 ) -> dict[str, Any]:
     retrieved_date = datetime.now(timezone.utc).date().isoformat()
     state.retrieved_date = retrieved_date
+    checkpoint_state = _load_collection_checkpoints(storage_root)
+    checkpoint_path = _collection_checkpoint_path(storage_root).relative_to(storage_root).as_posix()
+    skipped_duplicate_item_count = 0
+    collected_raw_news_item_count = 0
 
     for collector_name, collector in _collectors():
+        started_at = datetime.now(timezone.utc).isoformat()
         try:
             result = collector(retrieved_date=retrieved_date, storage_root=storage_root)
-            _merge_collection_result(state, result)
+            collected_raw_news_item_count += len(result.items)
+            accepted_items, skipped_count = _filter_checkpointed_items(
+                result.items,
+                _checkpoint_for_source(checkpoint_state, result.source_key),
+            )
+            skipped_duplicate_item_count += skipped_count
+            checkpointed_result = NewsCollectionResult(
+                source_key=result.source_key,
+                status=result.status,
+                items=accepted_items,
+                source_refs=result.source_refs,
+                unavailable_feeds=result.unavailable_feeds,
+                warnings=result.warnings,
+            )
+            _merge_collection_result(state, checkpointed_result)
+            ended_at = datetime.now(timezone.utc).isoformat()
+            _update_collection_checkpoint(
+                checkpoint_state,
+                collector_name=collector_name,
+                result=result,
+                started_at=started_at,
+                ended_at=ended_at,
+                accepted_item_count=len(accepted_items),
+                skipped_duplicate_item_count=skipped_count,
+            )
+            _save_collection_checkpoints(storage_root, checkpoint_state)
             state.collector_statuses.append({
                 "collector": collector_name,
                 "status": result.status,
-                "items": len(result.items),
+                "items": len(accepted_items),
+                "collected_items": len(result.items),
+                "skipped_duplicate_items": skipped_count,
                 "unavailable_feeds": len(result.unavailable_feeds),
                 "warnings": list(result.warnings),
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "checkpoint_path": checkpoint_path,
+                "high_watermark_published_at": _checkpoint_for_source(checkpoint_state, result.source_key).get("high_watermark_published_at"),
             })
         except Exception as exc:
+            ended_at = datetime.now(timezone.utc).isoformat()
+            _update_failed_collection_checkpoint(
+                checkpoint_state,
+                collector_name=collector_name,
+                started_at=started_at,
+                ended_at=ended_at,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            _save_collection_checkpoints(storage_root, checkpoint_state)
             state.collector_statuses.append({
                 "collector": collector_name,
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "checkpoint_path": checkpoint_path,
             })
 
     failed_or_unavailable = [
@@ -137,9 +185,12 @@ def _step_collect(
         "status": status,
         "retrieved_date": retrieved_date,
         "raw_news_item_count": len(state.raw_items),
+        "collected_raw_news_item_count": collected_raw_news_item_count,
+        "skipped_duplicate_item_count": skipped_duplicate_item_count,
         "collector_statuses": state.collector_statuses,
         "source_ref_count": len(state.source_refs),
         "artifact_path": diagnostics_path,
+        "collection_checkpoint_path": checkpoint_path,
     }
 
 
@@ -353,6 +404,147 @@ def _collectors() -> list[tuple[str, Callable[..., NewsCollectionResult]]]:
 def _merge_collection_result(state: NewsPipelineState, result: NewsCollectionResult) -> None:
     state.raw_items.extend(result.items)
     state.source_refs.extend(dict(ref) for ref in result.source_refs if isinstance(ref, dict))
+
+
+def _collection_checkpoint_path(storage_root: Path) -> Path:
+    return storage_root / "state" / "news_collection_checkpoints.json"
+
+
+def _load_collection_checkpoints(storage_root: Path) -> dict[str, Any]:
+    path = _collection_checkpoint_path(storage_root)
+    if not path.exists():
+        return {"version": 1, "updated_at": None, "sources": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "updated_at": None, "sources": {}}
+    if not isinstance(payload, dict):
+        return {"version": 1, "updated_at": None, "sources": {}}
+    sources = payload.get("sources")
+    if not isinstance(sources, dict):
+        payload["sources"] = {}
+    payload.setdefault("version", 1)
+    payload.setdefault("updated_at", None)
+    return payload
+
+
+def _save_collection_checkpoints(storage_root: Path, checkpoint_state: dict[str, Any]) -> None:
+    path = _collection_checkpoint_path(storage_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps(checkpoint_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _checkpoint_for_source(checkpoint_state: dict[str, Any], source_key: str) -> dict[str, Any]:
+    sources = checkpoint_state.setdefault("sources", {})
+    if not isinstance(sources, dict):
+        checkpoint_state["sources"] = {}
+        sources = checkpoint_state["sources"]
+    checkpoint = sources.setdefault(source_key, {})
+    if not isinstance(checkpoint, dict):
+        checkpoint = {}
+        sources[source_key] = checkpoint
+    checkpoint.setdefault("seen_duplicate_keys", [])
+    return checkpoint
+
+
+def _filter_checkpointed_items(items: list[RawNewsItem], checkpoint: dict[str, Any]) -> tuple[list[RawNewsItem], int]:
+    seen = {
+        str(key)
+        for key in checkpoint.get("seen_duplicate_keys", [])
+        if key
+    }
+    accepted: list[RawNewsItem] = []
+    skipped = 0
+    for item in items:
+        key = _news_item_checkpoint_key(item)
+        if key in seen:
+            skipped += 1
+            continue
+        accepted.append(item)
+    return accepted, skipped
+
+
+def _update_collection_checkpoint(
+    checkpoint_state: dict[str, Any],
+    *,
+    collector_name: str,
+    result: NewsCollectionResult,
+    started_at: str,
+    ended_at: str,
+    accepted_item_count: int,
+    skipped_duplicate_item_count: int,
+) -> None:
+    checkpoint = _checkpoint_for_source(checkpoint_state, result.source_key)
+    existing_seen = [
+        str(key)
+        for key in checkpoint.get("seen_duplicate_keys", [])
+        if key
+    ]
+    seen_keys = [*existing_seen, *[_news_item_checkpoint_key(item) for item in result.items]]
+    checkpoint.update({
+        "collector": collector_name,
+        "source_key": result.source_key,
+        "last_attempt_at": started_at,
+        "last_success_at": ended_at if result.status in {"success", "partial"} else checkpoint.get("last_success_at"),
+        "last_status": result.status,
+        "last_collected_item_count": len(result.items),
+        "last_accepted_item_count": accepted_item_count,
+        "last_skipped_duplicate_item_count": skipped_duplicate_item_count,
+        "last_source_ref_count": len(result.source_refs),
+        "high_watermark_published_at": _max_iso_datetime([
+            str(item.published_at)
+            for item in result.items
+            if item.published_at
+        ], fallback=checkpoint.get("high_watermark_published_at")),
+        "seen_duplicate_keys": _dedupe_keep_tail(seen_keys, limit=2000),
+        "error": None,
+    })
+
+
+def _update_failed_collection_checkpoint(
+    checkpoint_state: dict[str, Any],
+    *,
+    collector_name: str,
+    started_at: str,
+    ended_at: str,
+    error: str,
+) -> None:
+    checkpoint = _checkpoint_for_source(checkpoint_state, collector_name)
+    checkpoint.update({
+        "collector": collector_name,
+        "source_key": collector_name,
+        "last_attempt_at": started_at,
+        "last_status": "failed",
+        "last_failed_at": ended_at,
+        "error": error,
+    })
+
+
+def _news_item_checkpoint_key(item: RawNewsItem) -> str:
+    return str(item.duplicate_key or f"{item.source_key}|{item.url}|{item.title}|{item.published_at}")
+
+
+def _max_iso_datetime(values: list[str], *, fallback: Any = None) -> str | None:
+    candidates = [value for value in values if value]
+    if fallback:
+        candidates.append(str(fallback))
+    if not candidates:
+        return None
+    return max(candidates)
+
+
+def _dedupe_keep_tail(values: list[str], *, limit: int) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in reversed(values):
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+        if len(result) >= limit:
+            break
+    return list(reversed(result))
 
 
 def _archive_collection_diagnostics(

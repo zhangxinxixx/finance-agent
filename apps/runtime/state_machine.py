@@ -48,7 +48,7 @@ _ALLOWED_RUN_TRANSITIONS = {
 _ALLOWED_STEP_TRANSITIONS = {
     StepStatus.pending: {StepStatus.running, StepStatus.success, StepStatus.failed, StepStatus.skipped, StepStatus.blocked},
     StepStatus.running: {StepStatus.success, StepStatus.failed, StepStatus.skipped, StepStatus.blocked},
-    StepStatus.blocked: {StepStatus.running, StepStatus.success, StepStatus.failed, StepStatus.skipped},
+    StepStatus.blocked: {StepStatus.pending, StepStatus.running, StepStatus.success, StepStatus.failed, StepStatus.skipped},
     StepStatus.failed: {StepStatus.running},
 }
 
@@ -193,6 +193,9 @@ def transition_task_step(
             raise ValueError(f"Invalid task step transition: {from_status.value} -> {target.value}")
         step.status = target
 
+    if target == StepStatus.pending and from_status == StepStatus.blocked:
+        step.started_at = None
+        step.finished_at = None
     if target == StepStatus.running and step.started_at is None:
         step.started_at = _utc_now()
     if target in _TERMINAL_STEP_STATUSES:

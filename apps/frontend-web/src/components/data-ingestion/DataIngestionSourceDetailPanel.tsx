@@ -7,7 +7,7 @@ import {
   EvidencePathRow,
   SourceArtifactEvidenceBlock,
   SourceDetailMetricsGrid,
-  SourceDrilldownBlock,
+  SourceDrilldownBlockWithLinks,
   SourceIssueBlock,
   SourceLatestRawBlock,
   SourceModulesBlock,
@@ -28,6 +28,19 @@ const TESTABLE_SOURCE_IDS = new Set([
   "jin10_datacenter_reports",
   "jin10_svip_reports",
 ]);
+
+function normalizeMonitorDate(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const ymd = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (ymd) return ymd[1];
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const yyyy = String(parsed.getFullYear());
+  const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+  const dd = String(parsed.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 export function SourceDetailPanel({
   source,
@@ -133,6 +146,12 @@ function SourceDetailSections({
     .filter((item): item is { key: string; label: string; value: string } => item !== null)
     .slice(0, 6);
   const canRunSourceTest = TESTABLE_SOURCE_IDS.has(source.id);
+  const monitorHref = source.id === "jin10_feishu"
+    ? (() => {
+        const date = normalizeMonitorDate(source.latest_parsed_time ?? source.latest_raw_time ?? source.latest_update_time ?? null);
+        return date ? `/feishu-monitor?date=${encodeURIComponent(date)}` : "/feishu-monitor";
+      })()
+    : null;
 
   useEffect(() => {
     setTestResult(null);
@@ -226,7 +245,7 @@ function SourceDetailSections({
 
       {source.id === "jin10_feishu" ? <DataIngestionFeishuMessagesBlock preferredDate={feishuPreferredDate} /> : null}
 
-      <SourceDrilldownBlock lastRunId={source.last_run_id} />
+      <SourceDrilldownBlockWithLinks lastRunId={source.last_run_id} monitorHref={monitorHref} />
       <SourceRawAndStageRefsBlock rawArtifactRef={health?.rawArtifactRef} stageRefs={stageRefs} />
       <SourceRefsBlock sourceRefs={sourceRefs} />
       {canRunSourceTest ? (

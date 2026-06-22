@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -101,6 +102,177 @@ def test_build_overview_consumes_latest_daily_market_brief(tmp_path, monkeypatch
     assert result["brief_summary"]["data_quality"]["event_candidate_count"] >= 1
 
 
+def test_build_overview_dedupes_same_mainline_events_at_source(tmp_path):
+    brief_path = tmp_path / "storage" / "features" / "news" / "2026-06-21" / "run-news" / "daily_market_brief.json"
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    brief_path.write_text(
+        json.dumps(
+            {
+                "daily_market_brief": {
+                    "as_of": "2026-06-21T12:00:00+00:00",
+                    "market_mainline": {
+                        "primary_event_id": "confirmed:hormuz",
+                        "headline": "Hormuz risk is still repricing oil and gold.",
+                    },
+                    "candidate_events": [
+                        {
+                            "event_id": "candidate:hormuz",
+                            "event_time": "2026-06-21T09:00:00+00:00",
+                            "what_happened": "Iran says Hormuz reopening still depends on ceasefire implementation.",
+                            "event_type": "hormuz_risk",
+                            "risk_level": "medium",
+                            "affected_assets": ["XAUUSD", "WTI"],
+                            "source_refs": [{"source_ref": "jin10:flash:candidate", "label": "Jin10 candidate"}],
+                        }
+                    ],
+                    "confirmed_events": [
+                        {
+                            "event_id": "confirmed:hormuz",
+                            "event_time": "2026-06-21T10:00:00+00:00",
+                            "what_happened": "Hormuz risk remains unresolved after ceasefire headlines.",
+                            "event_type": "hormuz_risk",
+                            "risk_level": "high",
+                            "affected_assets": ["XAUUSD", "WTI"],
+                            "source_refs": [{"source_ref": "reuters:hormuz:confirmed", "label": "Reuters confirmed"}],
+                        }
+                    ],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_event_flow_overview()
+
+    assert len(result["events"]) == 1
+    event = result["events"][0]
+    assert event["id"] == "confirmed:hormuz"
+    assert event["kind"] == "confirmed_event"
+    assert event["risk_level"] == "high"
+    assert event["duplicate_count"] == 2
+    assert event["related_event_ids"] == ["confirmed:hormuz", "candidate:hormuz"]
+    assert {ref["source_ref"] for ref in event["source_refs"]} == {"reuters:hormuz:confirmed"}
+    assert result["brief_summary"]["market_mainline"]["primary_event_id"] == "confirmed:hormuz"
+
+
+def test_build_overview_can_use_mimo_translation_for_long_english_blocks(tmp_path, monkeypatch):
+    from apps.api.services import event_flow_service
+
+    event_flow_service._TRANSLATION_CACHE.clear()
+    event_flow_service._TRANSLATION_ATTEMPTS.clear()
+    brief_path = tmp_path / "storage" / "features" / "news" / "2026-06-12" / "run-news" / "daily_market_brief.json"
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    brief_path.write_text(
+        json.dumps(
+            {
+                "daily_market_brief": {
+                    "as_of": "2026-06-12T12:00:00+00:00",
+                    "market_mainline": {
+                        "headline": "The market is repricing Fed policy after inflation surprises and energy volatility.",
+                        "summary": (
+                            "The market is repricing Fed policy after inflation surprises and energy volatility. "
+                            "Gold is finding support from haven demand, but higher yields are still capping rebounds."
+                        ),
+                    },
+                    "report_inputs": {
+                        "news_highlights": [
+                            (
+                                "The market is repricing Fed policy after inflation surprises and energy volatility. "
+                                "Gold is finding support from haven demand, but higher yields are still capping rebounds."
+                            )
+                        ]
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EVENT_FLOW_TRANSLATION_PROVIDER", "mimo")
+    monkeypatch.setenv("EVENT_FLOW_TRANSLATION_MODEL", "mimo-v2.5")
+    monkeypatch.setattr(event_flow_service, "_TRANSLATION_MAX_CALLS_PER_WINDOW", 10)
+
+    def fake_chat_sync(*, messages, provider=None, model=None, **kwargs):
+        assert provider == "mimo"
+        assert model == "mimo-v2.5"
+        raw = messages[-1]["content"]
+        return SimpleNamespace(
+            content=f"中文翻译：{raw.split('.')[0]}。",
+            provider=provider,
+            model=model,
+        )
+
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+
+    overview = build_event_flow_overview()
+    report_inputs = build_event_flow_report_inputs()
+
+    assert overview["brief_summary"]["market_mainline"]["summary"].startswith("中文翻译：")
+    assert overview["brief_summary"]["report_inputs"]["news_highlights"][0].startswith("中文翻译：")
+    assert report_inputs["actionable_inputs"][0]["summary"].startswith("中文翻译：")
+
+
+def test_build_overview_disables_translation_temporarily_after_rate_limit(tmp_path, monkeypatch):
+    from apps.api.services import event_flow_service
+
+    event_flow_service._TRANSLATION_CACHE.clear()
+    event_flow_service._TRANSLATION_DISABLED_UNTIL.clear()
+    event_flow_service._TRANSLATION_ATTEMPTS.clear()
+    brief_path = tmp_path / "storage" / "features" / "news" / "2026-06-12" / "run-news" / "daily_market_brief.json"
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    brief_path.write_text(
+        json.dumps(
+            {
+                "daily_market_brief": {
+                    "as_of": "2026-06-12T12:00:00+00:00",
+                    "market_mainline": {
+                        "summary": (
+                            "The market is repricing Fed policy after inflation surprises and energy volatility. "
+                            "Gold is finding support from haven demand, but higher yields are still capping rebounds."
+                        ),
+                    },
+                    "report_inputs": {
+                        "news_highlights": [
+                            (
+                                "The market is repricing Fed policy after inflation surprises and energy volatility. "
+                                "Gold is finding support from haven demand, but higher yields are still capping rebounds."
+                            )
+                        ],
+                        "watchlist": [
+                            (
+                                "The market is repricing Fed policy after inflation surprises and energy volatility. "
+                                "Gold is finding support from haven demand, but higher yields are still capping rebounds."
+                            )
+                        ],
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EVENT_FLOW_TRANSLATION_PROVIDER", "mimo")
+    monkeypatch.setenv("EVENT_FLOW_TRANSLATION_MODEL", "mimo-v2.5")
+    monkeypatch.setattr(event_flow_service, "_TRANSLATION_MAX_CALLS_PER_WINDOW", 10)
+
+    calls = {"count": 0}
+
+    def fake_chat_sync(**kwargs):
+        calls["count"] += 1
+        raise RuntimeError("Error code: 429 - Too many requests")
+
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+
+    overview = build_event_flow_overview()
+    report_inputs = build_event_flow_report_inputs()
+
+    assert calls["count"] == 1
+    assert overview["brief_summary"]["market_mainline"]["summary"].startswith("The market is repricing Fed policy")
+    assert report_inputs["actionable_inputs"][0]["summary"].startswith("The market is repricing Fed policy")
+    assert event_flow_service._TRANSLATION_DISABLED_UNTIL
+
+
 def test_build_overview_passes_through_brief_event_market_context(tmp_path):
     brief_path = tmp_path / "storage" / "features" / "news" / "2026-06-12" / "run-news" / "daily_market_brief.json"
     brief_path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +320,7 @@ def test_build_overview_passes_through_brief_event_market_context(tmp_path):
     assert event["oil_impact"] == "neutral"
     assert event["market_validation"]["status"] == "validated"
     assert event["market_snapshot"] == {"XAUUSD": {"move_pct": -0.4}, "DXY": {"move_pct": 0.2}}
-    assert event["source_refs"] == [{"source_ref": "jin10:flash:1", "label": "Jin10 flash"}]
+    assert event.get("source_refs", []) == []
 
 
 def test_build_overview_keeps_candidate_events_when_confirmed_events_exceed_limit(tmp_path):
@@ -291,7 +463,7 @@ def test_build_overview_prefers_newer_triggers_over_stale_daily_market_brief(tmp
     assert result["source_refs"][0]["source_ref"] == "daily_analysis_triggers:2026-06-12/run-new"
 
 
-def test_build_overview_includes_latest_jin10_article_briefs(tmp_path):
+def test_build_overview_ignores_latest_jin10_article_briefs(tmp_path):
     path = tmp_path / "storage" / "features" / "news" / "2026-06-11" / "run-news" / "jin10_article_briefs.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -320,13 +492,12 @@ def test_build_overview_includes_latest_jin10_article_briefs(tmp_path):
 
     result = build_event_flow_overview()
 
-    assert result["status"] == "partial"
-    assert result["source"] == "jin10_article_briefs"
-    assert result["article_briefs"]["brief_count"] == 1
-    assert result["article_briefs"]["display_bucket_counts"] == {"重点分析": 1}
+    assert result["status"] == "unavailable"
+    assert result["source"] == "unavailable"
+    assert result["article_briefs"] is None
     assert result["daily_analysis_followups"]["queue_count"] == 1
     assert result["daily_analysis_followups"]["followups"][0]["action"] == "queue_daily_analysis"
-    assert result["source_refs"][0]["source_ref"] == "jin10_article_briefs:2026-06-11/run-news"
+    assert result["source_refs"] == []
 
 
 def test_build_overview_appends_trigger_source_ref_after_brief_refs(tmp_path):
@@ -403,11 +574,11 @@ def test_build_event_flow_briefs_read_model(tmp_path):
 
     result = build_event_flow_briefs()
 
-    assert result["status"] == "available"
-    assert result["source"] == "jin10_article_briefs"
-    assert result["brief_count"] == 1
-    assert result["briefs"][0]["brief_id"] == "brief:gold"
-    assert result["source_refs"][0]["source_ref"] == "jin10_article_briefs:2026-06-12/run-news"
+    assert result["status"] == "unavailable"
+    assert result["source"] == "unavailable"
+    assert result["brief_count"] == 0
+    assert result["briefs"] == []
+    assert result["source_refs"] == []
 
 
 def test_build_event_flow_events_and_detail_from_overview(tmp_path):
@@ -431,7 +602,29 @@ def test_build_event_flow_events_and_detail_from_overview(tmp_path):
                                 "status": "validated",
                                 "market_snapshot": {"XAUUSD": {"move_pct": -0.4}},
                             },
-                            "source_refs": [{"source_ref": "jin10:flash:1", "label": "Jin10 flash"}],
+                            "source_refs": [
+                                {
+                                    "source_ref": "jin10_feishu:oc_jin10:om_1",
+                                    "source": "jin10_feishu",
+                                    "source_type": "supplemental",
+                                    "title": "美联储鹰派表态带动美元和收益率上行",
+                                    "url": "https://xnews.jin10.com/details/1",
+                                    "domain": "xnews.jin10.com",
+                                    "published_at": "2026-06-12T10:58:00+00:00",
+                                    "raw_path": "raw/news/jin10_feishu/2026-06-12/messages-page-1.json",
+                                    "parsed_path": "parsed/news/jin10_feishu/2026-06-12/messages.json",
+                                },
+                                {
+                                    "source_ref": "reuters_public_news:fed:1",
+                                    "source": "reuters_public_news",
+                                    "title": "Fed speaker leaned hawkish",
+                                    "summary": "官员讲话强化高利率预期，美元和美债收益率同步走强。",
+                                    "importance": "high",
+                                    "classification_confidence": 0.93,
+                                    "url": "https://news.google.com/rss/articles/reuters-fed",
+                                    "published_at": "2026-06-12T11:00:00+00:00",
+                                },
+                            ],
                         }
                     ],
                 }
@@ -450,7 +643,11 @@ def test_build_event_flow_events_and_detail_from_overview(tmp_path):
     assert events["event_count"] == 1
     assert events["events"][0]["id"] == "evt:detail"
     assert detail["event"]["id"] == "evt:detail"
-    assert detail["source_refs"][0]["source_ref"] == "jin10:flash:1"
+    assert detail["source_refs"][0]["source_ref"] == "reuters_public_news:fed:1"
+    assert [item["source_label"] for item in detail["event"]["related_news_items"]] == ["路透快讯"]
+    assert detail["event"]["related_news_items"][0]["summary"] == "官员讲话强化高利率预期，美元和美债收益率同步走强。"
+    assert detail["event"]["related_news_items"][0]["importance"] == "high"
+    assert detail["event"]["related_news_items"][0]["confidence"] == 0.93
     assert impact["impact_path"] == ["rates", "dollar", "gold"]
     assert impact["gold_impact"] == "bearish"
     assert market_reaction["status"] == "validated"
@@ -519,7 +716,29 @@ def test_api_event_flow_split_read_models(tmp_path):
                                 "status": "validated",
                                 "market_snapshot": {"XAUUSD": {"move_pct": -0.4}},
                             },
-                            "source_refs": [{"source_ref": "jin10:flash:1", "label": "Jin10 flash"}],
+                            "source_refs": [
+                                {
+                                    "source_ref": "jin10_feishu:oc_jin10:om_1",
+                                    "source": "jin10_feishu",
+                                    "source_type": "supplemental",
+                                    "title": "美联储鹰派表态带动美元和收益率上行",
+                                    "url": "https://xnews.jin10.com/details/1",
+                                    "domain": "xnews.jin10.com",
+                                    "published_at": "2026-06-12T10:58:00+00:00",
+                                    "raw_path": "raw/news/jin10_feishu/2026-06-12/messages-page-1.json",
+                                    "parsed_path": "parsed/news/jin10_feishu/2026-06-12/messages.json",
+                                },
+                                {
+                                    "source_ref": "reuters_public_news:fed:1",
+                                    "source": "reuters_public_news",
+                                    "title": "Fed speaker leaned hawkish",
+                                    "summary": "官员讲话强化高利率预期，美元和美债收益率同步走强。",
+                                    "importance": "high",
+                                    "classification_confidence": 0.93,
+                                    "url": "https://news.google.com/rss/articles/reuters-fed",
+                                    "published_at": "2026-06-12T11:00:00+00:00",
+                                },
+                            ],
                         }
                     ],
                 }
@@ -564,11 +783,18 @@ def test_api_event_flow_split_read_models(tmp_path):
     inputs_resp = client.get("/api/events/report-inputs")
 
     assert briefs_resp.status_code == 200
-    assert briefs_resp.json()["brief_count"] == 1
+    assert briefs_resp.json()["brief_count"] == 0
     assert events_resp.status_code == 200
     assert events_resp.json()["event_count"] == 1
+    event = events_resp.json()["events"][0]
+    assert [item["source_label"] for item in event["related_news_items"]] == ["路透快讯"]
+    assert event["related_news_items"][0]["evaluation_role"] == "event_evidence"
+    assert event["related_news_items"][0]["summary"] == "官员讲话强化高利率预期，美元和美债收益率同步走强。"
+    assert event["related_news_items"][0]["importance"] == "high"
+    assert event["related_news_items"][0]["confidence"] == 0.93
     assert detail_resp.status_code == 200
     assert detail_resp.json()["event"]["id"] == "evt:detail"
+    assert detail_resp.json()["event"]["related_news_items"][0]["source"] == "reuters_public_news"
     assert impact_resp.status_code == 200
     assert impact_resp.json()["impact_path"] == ["rates", "dollar", "gold"]
     assert reaction_resp.status_code == 200

@@ -8,6 +8,7 @@ import type {
   ApiReviewItem,
   ApiReviewsResponse,
   ApiTaskArtifactRef,
+  ApiTaskRunEventsResponse,
   ApiTaskRunArtifactsResponse,
   ApiTaskRunLogsResponse,
   ApiTaskRunResponse,
@@ -17,6 +18,7 @@ import type {
   TaskLogViewModel,
   TaskReviewViewModel,
   TaskRunSummaryViewModel,
+  TaskRunEventViewModel,
   TaskRunViewModel,
   TaskStepViewModel,
   TaskRunStatus,
@@ -129,6 +131,16 @@ function mapTaskLogs(runId: string, logs: ApiTaskStepResponse[]): TaskLogViewMod
   });
 }
 
+function mapTaskEvent(event: ApiTaskRunEventsResponse["events"][number]): TaskRunEventViewModel {
+  return {
+    id: event.id,
+    created_at: event.created_at ?? null,
+    event_type: event.event_type,
+    task_id: event.task_id ?? null,
+    payload: event.payload ?? {},
+  };
+}
+
 function mapTaskRunSummary(run: ApiTaskRunResponse): TaskRunSummaryViewModel {
   const runId = run.run_id ?? run.task_id;
   return {
@@ -151,6 +163,7 @@ function mapTaskRunDetail(
   run: ApiTaskRunResponse,
   artifactsOverride?: ApiTaskRunArtifactsResponse | null,
   logsOverride?: ApiTaskRunLogsResponse | null,
+  eventsOverride?: ApiTaskRunEventsResponse | null,
 ): TaskRunViewModel {
   const runId = run.run_id ?? run.task_id;
   const artifactRefs = artifactsOverride?.artifacts?.length
@@ -158,6 +171,7 @@ function mapTaskRunDetail(
     : (run.artifact_refs ?? []).map(mapArtifactRef);
   const steps = (run.steps ?? []).map(mapTaskStep);
   const logs = mapTaskLogs(runId, logsOverride?.logs ?? run.steps ?? []);
+  const events = (eventsOverride?.events ?? []).map(mapTaskEvent);
 
   return {
     ...mapTaskRunSummary(run),
@@ -168,6 +182,7 @@ function mapTaskRunDetail(
     source_refs: (run.source_refs ?? []).map(mapSourceRef),
     artifact_refs: artifactRefs,
     steps,
+    events,
     logs,
     asOf: run.ended_at ?? run.started_at ?? null,
     dataDate: run.trading_date ?? null,
@@ -260,6 +275,10 @@ async function fetchRunArtifacts(runId: string): Promise<ApiTaskRunArtifactsResp
 
 async function fetchRunLogs(runId: string): Promise<ApiTaskRunLogsResponse | null> {
   return fetchOptionalJson<ApiTaskRunLogsResponse>(`${AGENT_RUNS_PATH}/${runId}/logs`);
+}
+
+async function fetchRunEvents(runId: string): Promise<ApiTaskRunEventsResponse | null> {
+  return fetchOptionalJson<ApiTaskRunEventsResponse>(`${AGENT_RUNS_PATH}/${runId}/events`);
 }
 
 async function fetchReviews(runId?: string | null): Promise<ApiReviewsResponse | null> {
@@ -365,9 +384,9 @@ function buildViewModel({
 export async function fetchAgentTasksView(selectedRunId?: string | null): Promise<AgentTasksViewModel> {
   try {
     const runs = (await fetchRunList()).filter(isTraceableRun);
-    const effectiveRunId = selectedRunId && runs.some((run) => (run.run_id ?? run.task_id) === selectedRunId)
-      ? selectedRunId
-      : (runs[0]?.run_id ?? runs[0]?.task_id ?? null);
+    const requestedRunId = selectedRunId?.trim() ? selectedRunId.trim() : null;
+    const fallbackRunId = runs[0]?.run_id ?? runs[0]?.task_id ?? null;
+    const effectiveRunId = requestedRunId ?? fallbackRunId;
     const [reviews, agentInspection] = await Promise.all([
       fetchReviews(effectiveRunId),
       fetchAgentInspection(effectiveRunId),
@@ -377,24 +396,27 @@ export async function fetchAgentTasksView(selectedRunId?: string | null): Promis
     let detailError: string | null = null;
 
     if (effectiveRunId) {
-      const [detail, artifacts, logs] = await Promise.all([
+      const [detail, artifacts, logs, events] = await Promise.all([
         fetchRunDetail(effectiveRunId),
         fetchRunArtifacts(effectiveRunId),
         fetchRunLogs(effectiveRunId),
+        fetchRunEvents(effectiveRunId),
       ]);
       const baseRun = detail ?? runs.find((run) => (run.run_id ?? run.task_id) === effectiveRunId) ?? null;
       if (baseRun) {
-        selectedRun = mapTaskRunDetail(baseRun, artifacts, logs);
+        selectedRun = mapTaskRunDetail(baseRun, artifacts, logs, events);
       } else {
         detailError = `run ${effectiveRunId} 不存在`;
       }
     }
 
+    const resolvedRunId = selectedRun?.run_id ?? (requestedRunId ? requestedRunId : fallbackRunId);
+
     return buildViewModel({
       source: "api",
       runs,
       selectedRun,
-      selectedRunId: effectiveRunId,
+      selectedRunId: resolvedRunId,
       reviews,
       agentInspection,
       detailError,
@@ -402,9 +424,9 @@ export async function fetchAgentTasksView(selectedRunId?: string | null): Promis
   } catch (cause) {
     const mock = await fetchMockFile();
     const runs = (mock.runs ?? []).filter(isTraceableRun);
-    const effectiveRunId = selectedRunId && runs.some((run) => (run.run_id ?? run.task_id) === selectedRunId)
-      ? selectedRunId
-      : (runs[0]?.run_id ?? runs[0]?.task_id ?? null);
+    const requestedRunId = selectedRunId?.trim() ? selectedRunId.trim() : null;
+    const fallbackRunId = runs[0]?.run_id ?? runs[0]?.task_id ?? null;
+    const effectiveRunId = requestedRunId ?? fallbackRunId;
     const baseRun = effectiveRunId
       ? runs.find((run) => (run.run_id ?? run.task_id) === effectiveRunId) ?? null
       : null;
@@ -413,14 +435,16 @@ export async function fetchAgentTasksView(selectedRunId?: string | null): Promis
           baseRun,
           effectiveRunId ? mock.run_artifacts?.[effectiveRunId] ?? null : null,
           effectiveRunId ? mock.run_logs?.[effectiveRunId] ?? null : null,
+          effectiveRunId ? mock.run_events?.[effectiveRunId] ?? null : null,
         )
       : null;
+    const resolvedRunId = selectedRun?.run_id ?? (requestedRunId ? requestedRunId : fallbackRunId);
 
     return buildViewModel({
       source: "mock",
       runs,
       selectedRun,
-      selectedRunId: effectiveRunId,
+      selectedRunId: resolvedRunId,
       reviews: mock.reviews ?? { reviews: [], total: 0 },
       agentInspection: null,
       detailError: cause instanceof Error ? cause.message : "Agent Tasks API 不可用，已回退 mock",

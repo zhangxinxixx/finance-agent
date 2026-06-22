@@ -59,7 +59,12 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     assert snapshot.source_refs["TGA"]["reason"] == "collector unavailable"
 
     markdown = render_macro_snapshot_markdown(snapshot)
+    assert "# XAUUSD 宏观数据报告" in markdown
+    assert "数据刷新时间: 2026-05-06" in markdown
+    assert "## 核心宏观指标" in markdown
     assert "指标 | 最新日期 | 最新值 | 1周变化 | 1月变化 | 方向解读" in markdown
+    assert "## 宏观数据限制" in markdown
+    assert "## 数据来源" in markdown
     assert "明确缺失" in markdown
     assert "10Y 实际利率" in markdown
     assert "DXY" in markdown

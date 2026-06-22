@@ -60,7 +60,7 @@ export function ImpactAssets({ table }: ImpactAssetsProps) {
           <span>影响资产</span>
         </div>
       }
-      eyebrow="Impact Assets"
+      eyebrow="资产影响"
       accent="brand"
     >
       {assets.length === 0 ? (

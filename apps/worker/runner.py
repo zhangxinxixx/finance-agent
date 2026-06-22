@@ -25,9 +25,14 @@ from sqlalchemy.orm import Session as DBSession
 
 from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
 from apps.output.artifacts import artifact_run_dir
-from apps.premarket import sort_premarket_steps
+from apps.premarket import (
+    evaluate_premarket_step_readiness,
+    get_premarket_step_contract,
+    sort_premarket_steps,
+)
+from apps.runtime.execution_event_bridge import emit_task_event
 from apps.runtime.artifact_registry import register_step_artifacts
-from apps.runtime.state_machine import derive_task_run_status, transition_task_run
+from apps.runtime.state_machine import derive_task_run_status, transition_task_run, transition_task_step
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
 # ── C4 agent pipeline imports (deterministic, no LLM / network / file reads) ──
@@ -121,10 +126,12 @@ def run_premarket(
     from apps.worker.pipelines.news import NewsPipelineState, run_news_step
 
     news_state = NewsPipelineState()
+    source_status_index = _load_premarket_source_status_index()
 
     ordered_steps = sort_premarket_steps(task.steps)
 
     had_failure = False
+    had_degraded_readiness = False
     had_partial_summary = False
     had_non_failed_step = False
 
@@ -142,37 +149,60 @@ def run_premarket(
         ).hexdigest()
         step.retry_count = 0
 
-        # ── T1.4: check upstream failure → block this step ──────────
-        if had_failure:
-            # Only block steps within the SAME pipeline as the failed step.
-            # CME and Macro pipelines are independent; "other" steps are never blocked.
-            step_pipeline = (
-                "cme" if step.name in CME_STEP_NAMES
-                else "macro" if step.name in MACRO_STEP_NAMES
-                else "news" if step.name in NEWS_STEP_NAMES
-                else None  # stub/other steps are never blocked by pipeline failures
+        # ── T1.4: check upstream failure/blocking → block this step ──────
+        # Only block steps within the SAME pipeline as the failed/blocked step.
+        # CME, Macro, and News pipelines are independent; "other" steps are never blocked here.
+        step_pipeline = (
+            "cme" if step.name in CME_STEP_NAMES
+            else "macro" if step.name in MACRO_STEP_NAMES
+            else "news" if step.name in NEWS_STEP_NAMES
+            else None
+        )
+        if step_pipeline is not None:
+            same_pipeline_blocked = any(
+                s.status in {StepStatus.failed, StepStatus.blocked}
+                and (
+                    "cme" if s.name in CME_STEP_NAMES
+                    else "macro" if s.name in MACRO_STEP_NAMES
+                    else "news" if s.name in NEWS_STEP_NAMES
+                    else None
+                ) == step_pipeline
+                for s in ordered_steps[:idx]
             )
-            if step_pipeline is not None:
-                same_pipeline_failed = any(
-                    s.status == StepStatus.failed
-                    and (
-                        "cme" if s.name in CME_STEP_NAMES
-                        else "macro" if s.name in MACRO_STEP_NAMES
-                        else "news" if s.name in NEWS_STEP_NAMES
-                        else None
-                    ) == step_pipeline
-                    for s in ordered_steps[:idx]
+            if same_pipeline_blocked:
+                transition_task_step(
+                    db,
+                    step,
+                    StepStatus.blocked,
+                    source="worker",
+                    reason="upstream_failed",
+                    retryable=False,
+                    blocked_reason="同管线内上游步骤失败或阻塞，跳过执行",
                 )
-                if same_pipeline_failed:
-                    step.status = StepStatus.blocked
-                    step.blocked_reason = "同管线内上游步骤失败，跳过执行"
-                    step.retryable = False
-                    step.finished_at = _now()
-                    db.commit()
-                    continue
+                db.commit()
+                continue
 
-        step.status = StepStatus.running
-        step.started_at = _now()
+        contract = get_premarket_step_contract(step.name)
+        if contract is not None and _should_apply_source_readiness_gate(contract, source_status_index):
+            readiness = evaluate_premarket_step_readiness(contract, source_status_index)
+            _emit_source_readiness_events(db, run_id=run_id, step=step, readiness=readiness)
+            if readiness.decision == "blocked":
+                transition_task_step(
+                    db,
+                    step,
+                    StepStatus.blocked,
+                    source="worker",
+                    reason="source_readiness_blocked",
+                    retryable=False,
+                    blocked_reason=_format_source_readiness_blocked_reason(readiness),
+                    error_type="data_unavailable",
+                )
+                db.commit()
+                continue
+            if readiness.decision == "degraded_allowed":
+                had_degraded_readiness = True
+
+        transition_task_step(db, step, StepStatus.running, source="worker", reason="step_started")
         db.commit()
 
         try:
@@ -222,7 +252,7 @@ def run_premarket(
                         step.output_ref = str(ref)
                         break
 
-            summary_status = _apply_step_summary_status(step, summary)
+            summary_status = _apply_step_summary_status(db, step, summary)
             if step.status in {StepStatus.success, StepStatus.skipped}:
                 _register_runner_step_artifacts(db, run_id=run_id, step=step, summary=summary)
             # ── T1.3: successful steps are not retryable ───────────
@@ -236,8 +266,6 @@ def run_premarket(
                 had_non_failed_step = True
         except Exception as exc:
             logger.exception("Step %s failed: %s", step.name, exc)
-            step.status = StepStatus.failed
-            step.error = str(exc)
             # ── P4-03: structured error payload ────────────────────
             step.error_json = json.dumps(
                 {
@@ -251,6 +279,16 @@ def run_premarket(
             step.error_type = _classify_error_type(exc)
             step.retryable = step.error_type in (
                 "network_timeout", "data_unavailable",
+            )
+            transition_task_step(
+                db,
+                step,
+                StepStatus.failed,
+                source="worker",
+                reason="step_exception",
+                error_message=str(exc),
+                error_type=step.error_type,
+                retryable=step.retryable,
             )
             had_failure = True
 
@@ -288,6 +326,20 @@ def run_premarket(
                 "status": "failed",
                 "error": str(db_exc),
             }
+        _register_run_support_artifacts(
+            db,
+            run_id=run_id,
+            steps=ordered_steps,
+            artifacts=[
+                {
+                    "artifact_id": f"{run_id}:analysis_snapshot",
+                    "artifact_type": "feature_json",
+                    "file_path": str(analysis_snapshot_path),
+                }
+            ],
+            source_refs=_coerce_lineage_source_refs(analysis_snapshot.get("source_refs")),
+            input_snapshot_ids=_coerce_lineage_input_snapshot_ids(analysis_snapshot.get("input_snapshot_ids")),
+        )
 
     # ── C4: agent pipeline (C3 agents → final report → strategy card) ──────────
     if analysis_snapshot is not None:
@@ -321,6 +373,7 @@ def run_premarket(
                 run_id=run_id,
                 steps=ordered_steps,
                 c4_outputs=c4_outputs,
+                analysis_snapshot=analysis_snapshot,
             )
         except Exception as exc:
             logger.exception("C4 agent pipeline failed")
@@ -335,18 +388,36 @@ def run_premarket(
 
     # Persist step summaries and run provenance as durable artifacts
     try:
-        _persist_step_summaries(
+        step_summaries_path = _persist_step_summaries(
             storage_root,
             run_id,
             cme_state.step_summaries,
             macro_state.step_summaries,
             news_state.step_summaries,
         )
+        _register_run_support_artifacts(
+            db,
+            run_id=run_id,
+            steps=ordered_steps,
+            artifacts=[
+                {
+                    "artifact_id": f"{run_id}:step_summaries",
+                    "artifact_type": "structured_json",
+                    "file_path": str(step_summaries_path),
+                }
+            ],
+            source_refs=_coerce_lineage_source_refs(analysis_snapshot.get("source_refs"))
+            if isinstance(analysis_snapshot, dict)
+            else None,
+            input_snapshot_ids=_coerce_lineage_input_snapshot_ids(analysis_snapshot.get("input_snapshot_ids"))
+            if isinstance(analysis_snapshot, dict)
+            else None,
+        )
     except Exception:
         logger.exception("Failed to write step summaries artifact")
 
     try:
-        _persist_run_provenance(
+        run_provenance_path = _persist_run_provenance(
             storage_root,
             run_id,
             cme_state,
@@ -354,12 +425,31 @@ def run_premarket(
             task_id=task_id,
             news_state=news_state,
         )
+        _register_run_support_artifacts(
+            db,
+            run_id=run_id,
+            steps=ordered_steps,
+            artifacts=[
+                {
+                    "artifact_id": f"{run_id}:run_provenance",
+                    "artifact_type": "structured_json",
+                    "file_path": str(run_provenance_path),
+                }
+            ],
+            source_refs=_coerce_lineage_source_refs(analysis_snapshot.get("source_refs"))
+            if isinstance(analysis_snapshot, dict)
+            else None,
+            input_snapshot_ids=_coerce_lineage_input_snapshot_ids(analysis_snapshot.get("input_snapshot_ids"))
+            if isinstance(analysis_snapshot, dict)
+            else None,
+        )
     except Exception:
         logger.exception("Failed to write run provenance artifact")
 
     final_status = derive_task_run_status(
         (step.status for step in ordered_steps),
         has_partial_signal=had_partial_summary,
+        has_degraded_signal=had_degraded_readiness,
     )
     if had_failure and not had_non_failed_step:
         final_status = TaskStatus.failed
@@ -368,6 +458,84 @@ def run_premarket(
     transition_task_run(db, task, final_status, source="worker", reason="step_rollup")
     db.commit()
     return final_status
+
+
+def _load_premarket_source_status_index() -> dict[str, dict[str, Any]]:
+    """Load source readiness facts once per run without hard-failing the worker."""
+    try:
+        from apps.api.services.source_service import get_data_source_status_index
+
+        return get_data_source_status_index()
+    except Exception:
+        logger.exception("Failed to load data source status index for premarket gating")
+        return {}
+
+
+def _should_apply_source_readiness_gate(
+    contract: Any,
+    source_status_index: dict[str, dict[str, Any]],
+) -> bool:
+    required_sources = tuple(getattr(contract, "required_sources", ()) or ())
+    if not required_sources:
+        return False
+
+    observed_rows = [
+        source_status_index[source_key]
+        for source_key in required_sources
+        if source_key in source_status_index
+    ]
+    if not observed_rows:
+        return False
+
+    return any(_source_row_has_runtime_signal(row) for row in observed_rows)
+
+
+def _source_row_has_runtime_signal(row: dict[str, Any]) -> bool:
+    return bool(
+        row.get("readiness_state")
+        or row.get("raw_ingested")
+        or row.get("parsed")
+        or row.get("analysis_ready")
+        or row.get("latest_health_at")
+        or row.get("latest_update_time")
+        or row.get("last_run_id")
+        or row.get("error_message")
+    )
+
+
+def _format_source_readiness_blocked_reason(readiness: Any) -> str:
+    blocked_sources = list(getattr(readiness, "blocked_sources", ()) or ())
+    gating_reason = str(getattr(readiness, "gating_reason", "") or "source_readiness_blocked")
+    if blocked_sources:
+        return f"source readiness blocked: {', '.join(blocked_sources)} ({gating_reason})"
+    return f"source readiness blocked ({gating_reason})"
+
+
+def _emit_source_readiness_events(
+    db: DBSession,
+    *,
+    run_id: str,
+    step: Any,
+    readiness: Any,
+) -> None:
+    payload = {
+        "decision": getattr(readiness, "decision", None),
+        "gating_reason": getattr(readiness, "gating_reason", None),
+        "required_sources": list(getattr(readiness, "required_sources", ()) or ()),
+        "degraded_sources": list(getattr(readiness, "degraded_sources", ()) or ()),
+        "blocked_sources": list(getattr(readiness, "blocked_sources", ()) or ()),
+        "step_name": getattr(step, "name", None),
+        "stage": getattr(step, "stage", None),
+        "task_kind": getattr(step, "task_kind", None),
+        "source": "worker",
+    }
+    emit_task_event(db, run_id, str(step.id), "SOURCE_READINESS_EVALUATED", payload)
+
+    decision = str(getattr(readiness, "decision", "") or "")
+    if decision == "blocked":
+        emit_task_event(db, run_id, str(step.id), "SOURCE_BLOCKED_TASK", payload)
+    elif decision == "degraded_allowed":
+        emit_task_event(db, run_id, str(step.id), "SOURCE_FALLBACK_USED", payload)
 
 
 def _classify_error_type(exc: Exception) -> str:
@@ -403,28 +571,41 @@ def _classify_error_type(exc: Exception) -> str:
     return "unknown"
 
 
-def _apply_step_summary_status(step, summary: dict[str, object] | None) -> str:
+def _apply_step_summary_status(db: DBSession, step, summary: dict[str, object] | None) -> str:
     """Map a pipeline summary status onto the persisted step status."""
     if summary is None:
-        step.status = StepStatus.success
         step.error = None
         step.retryable = False
+        transition_task_step(db, step, StepStatus.success, source="worker", reason="step_finished", retryable=False)
         return _STEP_STATUS_SUCCESS
 
     status = str(summary.get("status", _STEP_STATUS_SUCCESS))
     if status == _STEP_STATUS_SKIPPED:
-        step.status = StepStatus.skipped
         step.error = None
+        transition_task_step(db, step, StepStatus.skipped, source="worker", reason="step_skipped", retryable=False)
     elif status == _STEP_STATUS_FAILED:
-        step.status = StepStatus.failed
-        step.error = str(summary.get("error")) if summary.get("error") is not None else None
+        error_message = str(summary.get("error")) if summary.get("error") is not None else None
+        transition_task_step(
+            db,
+            step,
+            StepStatus.failed,
+            source="worker",
+            reason="step_failed",
+            error_message=error_message,
+        )
     elif status in {_STEP_STATUS_SUCCESS, _STEP_STATUS_PARTIAL_SUCCESS}:
-        step.status = StepStatus.success
         step.error = None
+        transition_task_step(db, step, StepStatus.success, source="worker", reason="step_finished", retryable=False)
     else:
         unknown_status = f"Unknown pipeline summary status: {status}"
-        step.status = StepStatus.failed
-        step.error = unknown_status
+        transition_task_step(
+            db,
+            step,
+            StepStatus.failed,
+            source="worker",
+            reason="unknown_step_status",
+            error_message=unknown_status,
+        )
         logger.warning("Step %s returned %s", getattr(step, "name", "<unknown>"), unknown_status)
         return _STEP_STATUS_FAILED
     return status
@@ -448,7 +629,10 @@ def _register_runner_step_artifacts(
         output_refs=output_refs if isinstance(output_refs, list) else None,
         artifact_refs=artifact_refs if isinstance(artifact_refs, list) else None,
         output_ref=step.output_ref,
-        source_refs=None,
+        source_refs=_coerce_lineage_source_refs(summary.get("source_refs")) if isinstance(summary, dict) else None,
+        input_snapshot_ids=_coerce_lineage_input_snapshot_ids(summary.get("input_snapshot_ids"))
+        if isinstance(summary, dict)
+        else None,
     )
 
 
@@ -458,6 +642,7 @@ def _register_c4_output_artifacts(
     run_id: str,
     steps: list[Any],
     c4_outputs: dict[str, Any],
+    analysis_snapshot: dict[str, Any] | None = None,
 ) -> None:
     report_step = next((step for step in steps if step.name == "report_render"), None)
     if report_step is None:
@@ -465,6 +650,7 @@ def _register_c4_output_artifacts(
 
     report_result = c4_outputs.get("report_result") if isinstance(c4_outputs, dict) else None
     card_result = c4_outputs.get("card_result") if isinstance(c4_outputs, dict) else None
+    card = c4_outputs.get("strategy_card") if isinstance(c4_outputs, dict) else None
 
     artifacts: list[dict[str, Any]] = []
     if isinstance(report_result, dict):
@@ -496,6 +682,15 @@ def _register_c4_output_artifacts(
     if not artifacts:
         return
 
+    source_refs = _merge_lineage_source_refs(
+        analysis_snapshot.get("source_refs") if isinstance(analysis_snapshot, dict) else None,
+        list(getattr(card, "source_refs", []) or []) if card is not None else None,
+    )
+    input_snapshot_ids = _merge_lineage_input_snapshot_ids(
+        analysis_snapshot.get("input_snapshot_ids") if isinstance(analysis_snapshot, dict) else None,
+        dict(getattr(card, "input_snapshot_ids", {}) or {}) if card is not None else None,
+    )
+
     register_step_artifacts(
         db,
         run_id=run_id,
@@ -503,8 +698,112 @@ def _register_c4_output_artifacts(
         output_refs=artifacts,
         artifact_refs=None,
         output_ref=None,
-        source_refs=None,
+        source_refs=source_refs,
+        input_snapshot_ids=input_snapshot_ids,
     )
+
+
+def _register_run_support_artifacts(
+    db: DBSession,
+    *,
+    run_id: str,
+    steps: list[Any],
+    artifacts: list[dict[str, Any]],
+    source_refs: list[dict[str, Any]] | None = None,
+    input_snapshot_ids: dict[str, Any] | None = None,
+) -> None:
+    """Register run support files without introducing a separate storage backend."""
+    if not artifacts:
+        return
+    step = next((item for item in steps if item.name == "report_render"), None)
+    if step is None and steps:
+        step = steps[-1]
+    if step is None:
+        return
+    register_step_artifacts(
+        db,
+        run_id=run_id,
+        step=step,
+        output_refs=artifacts,
+        artifact_refs=None,
+        output_ref=None,
+        source_refs=source_refs,
+        input_snapshot_ids=input_snapshot_ids,
+    )
+
+
+def _coerce_lineage_source_refs(raw: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(raw, list):
+        return None
+    refs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        normalized = dict(item)
+        identity = _first_lineage_ref_value(normalized, ("source_ref", "source_id", "source_name", "source", "source_key"))
+        trace_detail = _first_lineage_ref_value(
+            normalized,
+            (
+                "article_id",
+                "captured_at",
+                "data_date",
+                "endpoint",
+                "file_path",
+                "raw_path",
+                "ref",
+                "report_date",
+                "sha256",
+                "snapshot_id",
+                "source_ref",
+                "source_type",
+                "source_url",
+                "status",
+                "symbol",
+                "url",
+            ),
+        )
+        if identity is not None and trace_detail is None:
+            normalized["source_ref"] = identity
+        dedupe_key = json.dumps(normalized, ensure_ascii=False, sort_keys=True, default=str)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        refs.append(normalized)
+    return refs or None
+
+
+def _first_lineage_ref_value(ref: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = ref.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
+
+
+def _coerce_lineage_input_snapshot_ids(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    normalized = {str(key): value for key, value in raw.items() if str(key)}
+    return normalized or None
+
+
+def _merge_lineage_source_refs(*raw_groups: Any) -> list[dict[str, Any]] | None:
+    merged: list[dict[str, Any]] = []
+    for raw in raw_groups:
+        refs = _coerce_lineage_source_refs(raw)
+        if refs:
+            merged.extend(refs)
+    return _coerce_lineage_source_refs(merged)
+
+
+def _merge_lineage_input_snapshot_ids(*raw_payloads: Any) -> dict[str, Any] | None:
+    merged: dict[str, Any] = {}
+    for raw in raw_payloads:
+        payload = _coerce_lineage_input_snapshot_ids(raw)
+        if payload:
+            merged.update(payload)
+    return merged or None
 
 
 def _persist_analysis_snapshot(
@@ -1030,7 +1329,7 @@ def _persist_step_summaries(
     cme_summaries: dict[str, dict[str, Any]],
     macro_summaries: dict[str, dict[str, Any]],
     news_summaries: dict[str, dict[str, Any]] | None = None,
-) -> None:
+) -> Path:
     """Write combined step summaries JSON artifact."""
     all_steps: dict[str, dict[str, Any]] = {}
     all_steps.update(cme_summaries)
@@ -1057,6 +1356,7 @@ def _persist_step_summaries(
         encoding="utf-8",
     )
     logger.info("Wrote step summaries to %s", path)
+    return path
 
 
 def _persist_run_provenance(
@@ -1066,7 +1366,7 @@ def _persist_run_provenance(
     macro_state: object,  # MacroPipelineState
     task_id: uuid.UUID,
     news_state: object | None = None,
-) -> None:
+) -> Path:
     """Write cross-pipeline run provenance artifact."""
     out_dir = artifact_run_dir(
         storage_root,
@@ -1117,3 +1417,4 @@ def _persist_run_provenance(
         encoding="utf-8",
     )
     logger.info("Wrote run provenance to %s", path)
+    return path

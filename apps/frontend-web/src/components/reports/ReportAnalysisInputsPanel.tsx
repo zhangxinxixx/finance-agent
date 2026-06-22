@@ -1,12 +1,10 @@
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
-import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import type { ReportAnalysisInputsView } from "@/types/reports";
 import {
   ReportAnalysisDeterministicInputsSection,
   ReportAnalysisOutputSection,
   ReportAnalysisSummaryCards,
 } from "./ReportAnalysisInputSections";
-import { ReportTraceDrilldown } from "./ReportTraceDrilldown";
 
 export function ReportAnalysisInputsPanel({ model }: { model: ReportAnalysisInputsView | null }) {
   if (!model) {
@@ -19,34 +17,18 @@ export function ReportAnalysisInputsPanel({ model }: { model: ReportAnalysisInpu
   }
 
   return (
-    <div className="max-h-[calc(100vh-260px)] min-h-0 space-y-4 overflow-y-auto overflow-x-hidden pr-1">
-      <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="text-[12px] font-semibold text-[var(--fg-2)]">分析输入总览</div>
-            <div className="mt-1 text-[11px] text-[var(--fg-4)]">
-              当前视图聚合 analysis snapshot、deterministic inputs 与各阶段 agent output 的溯源信息。
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2 text-[11px] text-[var(--fg-4)]">
-            {model.source_endpoint ? <FASourceTraceBadge source={model.source_endpoint} status="api" tone="info" /> : null}
-            <FASourceTraceBadge source={model.run_id ?? "无 run_id"} status="run" tone="dim" />
-            <FASourceTraceBadge source={model.snapshot_id ?? "无 snapshot_id"} status="snapshot" tone="dim" />
-          </div>
-        </div>
-        <div className="mt-3 grid gap-2 text-[11px] text-[var(--fg-4)] md:grid-cols-2 xl:grid-cols-4">
-          <div>family：{model.family ?? "-"}</div>
-          <div>asset：{model.asset ?? "-"}</div>
-          <div>trade_date：{model.trade_date ?? "-"}</div>
-          <div>report_id：{model.report_id}</div>
-        </div>
-        <ReportTraceDrilldown
-          sourceRefs={model.source_refs}
-          artifactRefs={model.artifact_refs}
-          showPayload={false}
-          sourceTitle="本报告分析输入顶层数据源"
-          artifactTitle="本报告分析输入顶层产物"
-        />
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-2 text-[10px] text-[var(--fg-4)]">
+        <span className="text-[11px] font-semibold text-[var(--fg-2)]">分析输入</span>
+        <span className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card)] px-2 py-0.5">
+          家族 {model.family ?? "-"}
+        </span>
+        <span className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card)] px-2 py-0.5">
+          资产 {model.asset ?? "-"}
+        </span>
+        <span className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card)] px-2 py-0.5">
+          日期 {model.trade_date ?? "-"}
+        </span>
       </div>
 
       <ReportAnalysisSummaryCards model={model} />

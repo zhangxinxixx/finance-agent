@@ -45,6 +45,9 @@ async function fetchFromDagster(days: number): Promise<SchedulerOverviewResponse
         data_sources_ok: 0,
         data_sources_total: 0,
         artifacts_today: 0,
+        input_sources_connected: 0,
+        input_sources_data_only: 0,
+        input_sources_waiting: 0,
       },
       task_runs: recentRuns.map((r) => ({
         run_id: r.runId,
@@ -74,6 +77,8 @@ async function fetchFromDagster(days: number): Promise<SchedulerOverviewResponse
         next_run_at: null,
       })),
       artifacts_summary: { today_count: 0, recent_outputs: [] },
+      input_source_summary: { total: 0, connected: 0, data_only: 0, waiting: 0 },
+      input_source_matrix: [],
     };
   } catch {
     return null;
@@ -92,19 +97,15 @@ export function useSchedulerOverview(days: number = 7): UseSchedulerState {
       setIsLoading(true);
       setError(null);
       try {
-        // Try Dagster first
-        const dagsterData = await fetchFromDagster(days);
+        const result = await fetchSchedulerOverview(days);
         if (cancelled) return;
-
+        setData(result);
+      } catch (cause) {
+        if (cancelled) return;
+        const dagsterData = await fetchFromDagster(days);
         if (dagsterData) {
           setData(dagsterData);
-        } else {
-          // Fallback to legacy API
-          const result = await fetchSchedulerOverview(days);
-          if (!cancelled) setData(result);
-        }
-      } catch (cause) {
-        if (!cancelled) {
+        } else if (!cancelled) {
           setData(null);
           setError(cause instanceof Error ? cause : new Error("加载调度中心数据失败"));
         }

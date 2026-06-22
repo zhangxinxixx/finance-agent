@@ -3,13 +3,13 @@ import { Link } from "react-router-dom";
 import { ArrowRight, Calendar, Newspaper } from "lucide-react";
 import { ContextPanelSectionHeader } from "@/components/shared/ContextPanel";
 import type { Jin10CalendarEvent } from "@/hooks/useJin10Calendar";
-import type { Jin10FlashItem } from "@/hooks/useJin10Flash";
+import type { EventFlowLiveFlashItem } from "@/hooks/useEventFlowLiveFlash";
 import {
   calendarPanelValue,
-  compactPanelText,
   DashboardPanelCard,
   DashboardPanelEmptyState,
   DashboardPanelStack,
+  compactPanelText,
   formatPanelDate,
   formatPanelTime,
 } from "./DashboardRightPanelPrimitives";
@@ -26,13 +26,18 @@ function SectionActionLink({ to, children }: { to: string; children: ReactNode }
   );
 }
 
+function eventSignalText(item: EventFlowLiveFlashItem): string | null {
+  const tags = item.signal_tags?.filter(Boolean).slice(0, 2) ?? [];
+  return tags.length > 0 ? tags.join(" / ") : null;
+}
+
 export function RealtimeFlashSection({
   items,
   overflowCount,
   isLoading,
   isError,
 }: {
-  items: Jin10FlashItem[];
+  items: EventFlowLiveFlashItem[];
   overflowCount: number;
   isLoading: boolean;
   isError: boolean;
@@ -41,7 +46,7 @@ export function RealtimeFlashSection({
     <div>
       <ContextPanelSectionHeader
         icon={Newspaper}
-        title="实时重点事件 Top 3"
+        title="当日重点事件 Top 5"
         meta={items.length > 0 ? `Top ${items.length}` : isLoading ? "加载中" : "暂无"}
         className="mb-2"
       />
@@ -67,14 +72,19 @@ export function RealtimeFlashSection({
                   ) : null}
                 </div>
                 <div style={{ fontSize: 9.5, color: "var(--fg-2)", lineHeight: 1.5 }}>
-                  {compactPanelText(item.content, 112)}
+                  {compactPanelText(item.content, 56)}
                 </div>
+                {eventSignalText(item) ? (
+                  <div style={{ marginTop: 3, fontSize: 8, color: "var(--fg-5)", lineHeight: 1.3 }}>
+                    {eventSignalText(item)}
+                  </div>
+                ) : null}
               </DashboardPanelCard>
             );
           })
         ) : (
           <DashboardPanelEmptyState>
-            {isError ? "实时快讯加载失败" : isLoading ? "实时快讯加载中" : "暂无重点快讯"}
+            {isError ? "当日重点事件加载失败" : isLoading ? "当日重点事件加载中" : "暂无当日重点事件"}
           </DashboardPanelEmptyState>
         )}
       </DashboardPanelStack>
@@ -85,35 +95,47 @@ export function RealtimeFlashSection({
 export function EconomicCalendarSection({
   events,
   visibleEvents,
+  mode,
   overflowCount,
   isLoading,
   isError,
 }: {
   events: Jin10CalendarEvent[];
   visibleEvents: Jin10CalendarEvent[];
+  mode: "upcoming" | "recent";
   overflowCount: number;
   isLoading: boolean;
   isError: boolean;
 }) {
+  const metaText = events.length > 0
+    ? mode === "upcoming"
+      ? `未来7天 ${visibleEvents.length} / ${events.length}`
+      : `最近已公布 ${visibleEvents.length} / ${events.length}`
+    : isLoading
+      ? "加载中"
+      : "暂无";
+
   return (
     <div>
       <ContextPanelSectionHeader
         icon={Calendar}
-        title="高影响经济日历 Top 3"
-        meta={events.length > 0 ? `${visibleEvents.length} / ${events.length}` : isLoading ? "加载中" : "暂无"}
+        title="重点经济日历 Top 5"
+        meta={metaText}
         className="mb-2"
       />
       <div className="mb-2 flex items-center justify-end">
-        <SectionActionLink to="/market-monitor">{overflowCount > 0 ? `查看更多 ${overflowCount} 条` : "进入市场监控"}</SectionActionLink>
+        <SectionActionLink to="/market-monitor?tab=calendar">{overflowCount > 0 ? `查看更多 ${overflowCount} 条` : "进入市场监控"}</SectionActionLink>
       </div>
       <DashboardPanelStack>
         {events.length > 0 ? (
           visibleEvents.map((ev, i) => {
-            const isFuture = ev.actual === null;
+            const hasReleasedValue = ev.actual !== null && ev.actual !== "";
+            const isFuture = !hasReleasedValue;
             const stars = "★".repeat(Math.min(ev.star ?? 0, 4));
             const dateStr = formatPanelDate(ev.pub_time);
             const timeStr = formatPanelTime(ev.pub_time);
             const impactColor = ev.affect_txt === "利多" ? "var(--up)" : ev.affect_txt === "利空" ? "var(--down)" : "var(--fg-5)";
+            const statusLabel = isFuture ? "未公布" : (ev.affect_txt || "已公布");
             return (
               <DashboardPanelCard
                 key={`${ev.pub_time}-${ev.title}-${i}`}
@@ -123,17 +145,17 @@ export function EconomicCalendarSection({
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "42px 1fr 36px",
+                    gridTemplateColumns: "68px 1fr 42px",
                     gap: 6,
                     alignItems: "center",
                   }}
                 >
-                  <span className="fa-num" style={{ fontSize: 9, fontWeight: 600, color: "var(--fg-5)" }}>{dateStr}</span>
+                  <span className="fa-num" style={{ fontSize: 9, fontWeight: 600, color: "var(--fg-5)" }}>{dateStr} {timeStr}</span>
                   <span style={{ fontSize: 9.5, color: isFuture ? "var(--fg-2)" : "var(--fg-3)", fontWeight: isFuture ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {stars} {ev.title}
                   </span>
                   <span style={{ fontSize: 8, color: isFuture ? "#3b82f6" : impactColor, fontWeight: 600, textAlign: "center" }}>
-                    {isFuture ? timeStr : (ev.affect_txt || "—")}
+                    {statusLabel}
                   </span>
                 </div>
                 <div
@@ -155,7 +177,7 @@ export function EconomicCalendarSection({
           })
         ) : (
           <DashboardPanelEmptyState border="1px solid transparent" background="transparent">
-            {isError ? "日历加载失败" : isLoading ? "高影响日历加载中" : "暂无高影响日历事件"}
+            {isError ? "日历加载失败" : isLoading ? "重点日历加载中" : "暂无重点宏观事件"}
           </DashboardPanelEmptyState>
         )}
       </DashboardPanelStack>

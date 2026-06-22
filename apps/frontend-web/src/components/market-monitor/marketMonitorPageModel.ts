@@ -55,9 +55,9 @@ export function diagnosisText(status: MarketMonitorStatus) {
 
 export function buildMarketMonitorTabOptions() {
   return [
-    { value: "overview", label: "Overview" },
-    { value: "pricing-chain", label: "Pricing Chain" },
-    { value: "cross-asset", label: "Cross Asset" },
-    { value: "calendar", label: "Calendar / Events" },
+    { value: "overview", label: "总览" },
+    { value: "pricing-chain", label: "定价链" },
+    { value: "cross-asset", label: "跨资产" },
+    { value: "calendar", label: "日历 / 事件" },
   ] satisfies Array<{ value: MarketMonitorTab; label: string }>;
 }

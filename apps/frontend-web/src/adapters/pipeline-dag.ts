@@ -326,7 +326,7 @@ export function buildDagGraph(input: DagGraphInput): DagGraph {
 
 let _cachedTopology: DagsterGraphTopology | null = null;
 
-async function tryDagsterPath(): Promise<DagGraph | null> {
+async function tryDagsterPath(tradeDateFilter?: string): Promise<DagGraph | null> {
   try {
     // Fetch topology (cached)
     if (!_cachedTopology) {
@@ -335,12 +335,15 @@ async function tryDagsterPath(): Promise<DagGraph | null> {
     const topology = _cachedTopology;
     if (!topology || topology.ops.length === 0) return null;
 
-    // Fetch latest run for status
-    const runs = await fetchDagsterRuns("premarket_job", 1);
-    const latestRun = runs[0] ?? null;
-    const latestDetail = latestRun ? await fetchDagsterRunDetail(latestRun.runId) : null;
+    // Fetch recent runs and bind the graph to the selected trade date when possible.
+    const runs = await fetchDagsterRuns("premarket_job", 50);
+    const selectedRun = tradeDateFilter
+      ? runs.find((run) => run.tradeDate === tradeDateFilter) ?? null
+      : runs[0] ?? null;
+    if (tradeDateFilter && !selectedRun) return null;
+    const selectedDetail = selectedRun ? await fetchDagsterRunDetail(selectedRun.runId) : null;
 
-    return buildDagsterDagGraph(topology, runs, latestDetail);
+    return buildDagsterDagGraph(topology, selectedRun ? [selectedRun] : runs, selectedDetail);
   } catch {
     return null;
   }
@@ -348,7 +351,7 @@ async function tryDagsterPath(): Promise<DagGraph | null> {
 
 export async function fetchDagGraph(days: number, tradeDateFilter?: string): Promise<DagGraph> {
   // Try Dagster first
-  const dagsterGraph = await tryDagsterPath();
+  const dagsterGraph = await tryDagsterPath(tradeDateFilter);
   if (dagsterGraph) return dagsterGraph;
 
   // Fallback to legacy API

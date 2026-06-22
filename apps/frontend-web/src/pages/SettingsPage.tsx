@@ -3,6 +3,7 @@ import {
   SettingsPageContent,
   SettingsPageHeader,
 } from "@/components/settings/SettingsPageSections";
+import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import {
   SettingsPageErrorState,
   SettingsPageLoadingState,
@@ -49,7 +50,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="finance-page-shell">
+    <FAPageScaffold bodyClassName="fa-page-stack">
       <SettingsPageHeader source={data.source} activeTab={activeTab} onTabChange={setActiveTab} />
       <SettingsPageBanner banner={banner} />
       <SettingsPageContent
@@ -77,7 +78,7 @@ export function SettingsPage() {
         rollingBackAuditId={rollingBackAuditId}
         onRollbackHistoryEntry={handleRollbackHistoryEntry}
       />
-    </div>
+    </FAPageScaffold>
   );
 }
 

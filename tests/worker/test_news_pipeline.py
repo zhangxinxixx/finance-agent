@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -13,6 +14,13 @@ from apps.worker.pipelines.news import NewsPipelineState, run_news_step
 from database.models.analysis import MarketCandle, ensure_analysis_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 from tests.fixtures.news.replay import materialize_news_replay
+
+
+@pytest.fixture(autouse=True)
+def _isolate_source_gating():
+    """Keep news worker tests deterministic unless they explicitly opt into source gating."""
+    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+        yield
 
 
 class _FixedNewsDatetime(datetime):
@@ -93,7 +101,10 @@ def _fake_collectors():
 def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     state = NewsPipelineState()
 
-    with patch("apps.worker.pipelines.news._collectors", return_value=_fake_collectors()):
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=_fake_collectors()),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+    ):
         collect_summary = run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-news")
         feature_summary = run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-news")
         brief_summary = run_news_step("news_brief", state, storage_root=tmp_path, run_id="run-news")
@@ -136,6 +147,53 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     assert diagnostics_payload["latest_source_status_by_source_key"]["gdelt_news"]["source_refs"] == [
         {"source_ref": "gdelt:test", "source": "gdelt_news"}
     ]
+
+
+def test_news_pipeline_collect_checkpoint_skips_seen_items_on_rerun(tmp_path: Path) -> None:
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=_fake_collectors()),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+    ):
+        first_state = NewsPipelineState()
+        first_summary = run_news_step("news_collect", first_state, storage_root=tmp_path, run_id="run-news-1")
+
+        second_state = NewsPipelineState()
+        second_summary = run_news_step("news_collect", second_state, storage_root=tmp_path, run_id="run-news-2")
+
+    checkpoint_path = tmp_path / "state" / "news_collection_checkpoints.json"
+    checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+
+    assert first_summary["raw_news_item_count"] == 2
+    assert first_summary["collected_raw_news_item_count"] == 2
+    assert first_summary["skipped_duplicate_item_count"] == 0
+    assert second_summary["raw_news_item_count"] == 0
+    assert second_summary["collected_raw_news_item_count"] == 2
+    assert second_summary["skipped_duplicate_item_count"] == 2
+    assert second_summary["collection_checkpoint_path"] == "state/news_collection_checkpoints.json"
+    assert checkpoint_payload["sources"]["fed_rss"]["last_success_at"] == "2026-06-10T12:31:00+00:00"
+    assert checkpoint_payload["sources"]["gdelt_news"]["last_accepted_item_count"] == 0
+    assert checkpoint_payload["sources"]["gdelt_news"]["last_skipped_duplicate_item_count"] == 1
+
+
+def test_news_pipeline_collect_checkpoint_survives_later_collector_failure(tmp_path: Path) -> None:
+    def broken_collector(**kwargs):
+        raise RuntimeError("network disconnected")
+
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=[*_fake_collectors()[:1], ("broken_news", broken_collector)]),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+    ):
+        state = NewsPipelineState()
+        summary = run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-news")
+
+    checkpoint_payload = json.loads((tmp_path / "state" / "news_collection_checkpoints.json").read_text(encoding="utf-8"))
+
+    assert summary["status"] == "partial_success"
+    assert summary["raw_news_item_count"] == 1
+    assert checkpoint_payload["sources"]["fed_rss"]["last_status"] == "success"
+    assert checkpoint_payload["sources"]["fed_rss"]["last_success_at"] == "2026-06-10T12:31:00+00:00"
+    assert checkpoint_payload["sources"]["broken_news"]["last_status"] == "failed"
+    assert checkpoint_payload["sources"]["broken_news"]["error"] == "RuntimeError: network disconnected"
 
 
 def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp_path: Path) -> None:
@@ -332,6 +390,7 @@ def test_run_premarket_executes_news_steps_and_snapshot_contains_brief(tmp_path:
     with (
         patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
         patch("apps.worker.pipelines.news._collectors", return_value=_fake_collectors()),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
     ):
         from apps.worker.runner import run_premarket
 

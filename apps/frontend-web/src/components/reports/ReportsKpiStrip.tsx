@@ -20,52 +20,20 @@ export function ReportsKpiStrip({
   availableDates: string[];
 }) {
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(6, 1fr)",
-        gap: 8,
-        padding: "8px 10px",
-        borderBottom: "1px solid var(--border)",
-        flexShrink: 0,
-      }}
-    >
+    <div className="mb-1.5 grid gap-px overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-faint)] bg-[var(--border-faint)] sm:grid-cols-3 xl:grid-cols-6">
       {KPI_METRICS.map((kpi) => (
-        <div
-          key={kpi.key}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "8px 10px",
-            background: "var(--bg-card)",
-            border: "1px solid var(--border-faint)",
-            borderRadius: "var(--radius-lg)",
-          }}
-        >
-          <div>
-            <div
-              style={{
-                fontSize: 9,
-                color: "var(--fg-5)",
-                marginBottom: 2,
-                lineHeight: 1.3,
-              }}
-            >
-              {kpi.label}
-            </div>
-            <div
-              style={{
-                fontSize: 13,
-                fontWeight: 700,
-                color: kpi.color,
-                fontFamily: "var(--font-mono)",
-                fontVariantNumeric: "tabular-nums",
-                lineHeight: 1.2,
-              }}
-            >
+        <div key={kpi.key} className="bg-[var(--bg-card)] px-3 py-2">
+          <div className="text-[9px] font-semibold tracking-[0.08em] text-[var(--fg-5)]">
+            {kpi.label}
+          </div>
+          <div
+            className="mt-1 font-mono text-[12px] font-semibold leading-none"
+            style={{
+              color: kpi.color,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
               {kpi.getValue(reports, availableDates)}
-            </div>
           </div>
         </div>
       ))}

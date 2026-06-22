@@ -39,7 +39,7 @@ export function AppSidebar() {
         </div>
         <div className="min-w-0">
           <div className="sidebar-logo-text-zh">金融分析中台</div>
-          <div className="sidebar-logo-text-en">FinAnalytics Pro</div>
+          <div className="text-[9px] tracking-[0.06em] text-[var(--fg-5)]">研究工作台</div>
         </div>
       </div>
 
@@ -63,13 +63,13 @@ export function AppSidebar() {
 
       <div className="sidebar-bottom">
         <div className="flex items-center justify-between gap-2 text-[10px]">
-          <span className="text-finance-text-muted">工作站</span>
+          <span className="text-finance-text-muted">本地终端</span>
           <span className="inline-flex items-center gap-1 rounded-full border border-[var(--up-border)] bg-[var(--up-soft)] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--up)]">
             <span className="h-1.5 w-1.5 rounded-full bg-current" />
             在线
           </span>
         </div>
-        <div className="mt-1 text-[8px] tracking-[0.06em] text-[var(--fg-5)]">研究工作台终端</div>
+        <div className="mt-1 text-[8px] tracking-[0.06em] text-[var(--fg-5)]">当前会话已连接</div>
       </div>
     </aside>
   );

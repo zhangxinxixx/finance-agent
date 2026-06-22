@@ -30,10 +30,10 @@ export function PriceLadder({
 export function ChangeTable({ snapshot }: { snapshot: CMEOptionsResponse }) {
   const gex = snapshot.gex?.netgex_aggregate;
   const rows = [
-    { label: "Net GEX", value: formatNumber(gex?.net_gex), tone: "down" },
-    { label: "Gamma Zero", value: formatNumber(gex?.gamma_zero?.price, 1), tone: "up" },
-    { label: "Call OI", value: formatNumber(snapshot.wall_scores?.reduce((sum, wall) => sum + (wall.side === "CALL" ? wall.oi : 0), 0)), tone: "down" },
-    { label: "Put OI", value: formatNumber(snapshot.wall_scores?.reduce((sum, wall) => sum + (wall.side === "PUT" ? wall.oi : 0), 0)), tone: "up" },
+    { label: "净伽马", value: formatNumber(gex?.net_gex), tone: "down" },
+    { label: "伽马零点", value: formatNumber(gex?.gamma_zero?.price, 1), tone: "up" },
+    { label: "看涨持仓", value: formatNumber(snapshot.wall_scores?.reduce((sum, wall) => sum + (wall.side === "CALL" ? wall.oi : 0), 0)), tone: "down" },
+    { label: "看跌持仓", value: formatNumber(snapshot.wall_scores?.reduce((sum, wall) => sum + (wall.side === "PUT" ? wall.oi : 0), 0)), tone: "up" },
   ];
 
   return (
@@ -64,10 +64,11 @@ export function SkewPanel({ snapshot }: { snapshot: CMEOptionsResponse }) {
   const skewFindings = findings.filter((finding) => /skew|tail|iv/i.test(finding));
   const gex = snapshot.gex?.netgex_aggregate;
   const direction = gex?.net_gex_direction ?? "neutral";
+  const directionLabel = direction === "negative" ? "负伽马" : direction === "positive" ? "正伽马" : "中性";
 
   const rows = [
-    { label: "净 GEX 方向", value: direction, color: direction === "negative" ? "var(--down)" : direction === "positive" ? "var(--up)" : "var(--fg-1)" },
-    { label: "Gamma Zero", value: formatNumber(gex?.gamma_zero?.price, 1), color: "var(--brand-hover)" },
+    { label: "净伽马方向", value: directionLabel, color: direction === "negative" ? "var(--down)" : direction === "positive" ? "var(--up)" : "var(--fg-1)" },
+    { label: "伽马零点", value: formatNumber(gex?.gamma_zero?.price, 1), color: "var(--brand-hover)" },
     ...skewFindings.slice(0, 3).map((finding) => ({
       label: finding.length > 20 ? `${finding.slice(0, 20)}…` : finding,
       value: "",
@@ -76,7 +77,7 @@ export function SkewPanel({ snapshot }: { snapshot: CMEOptionsResponse }) {
   ];
 
   return (
-    <CMEOptionsSurface title="IV Skew / Tail Risk" bodyStyle={{ padding: "8px 12px" }}>
+    <CMEOptionsSurface title="波动率偏斜 / 尾部风险" bodyStyle={{ padding: "8px 12px" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {rows.map((row) => (
           <div key={row.label} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 10 }}>
@@ -99,17 +100,17 @@ export function ExposurePanel({ snapshot }: { snapshot: CMEOptionsResponse }) {
   if (expiries.length === 0) return null;
 
   return (
-    <CMEOptionsSurface title="敞口 (Delta / Vega / Theta)">
+    <CMEOptionsSurface title="敞口">
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)", color: CME_META_TEXT, fontSize: 10 }}>
               <th style={{ padding: "5px 8px", textAlign: "left" }}>到期月</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>净Delta</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>Call敞口</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>Put敞口</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>Vega</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>Theta/日</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>净方向敞口</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>看涨敞口</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>看跌敞口</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>波动敞口</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>时间损耗/日</th>
             </tr>
           </thead>
           <tbody>

@@ -39,23 +39,24 @@ export function useReports(): ReportsState {
       setRailLoading(true);
       setRailError(null);
 
-      try {
-        const [nextIndexData, nextDatesData] = await Promise.all([
+      const [indexResult, datesResult] = await Promise.allSettled([
           fetchReportsIndex(),
           fetchReportsDates(),
-        ]);
+      ]);
 
-        if (!cancelled) {
-          setIndexData(nextIndexData);
-          setDatesData(nextDatesData);
-          setRailLoading(false);
-        }
-      } catch (cause) {
-        if (!cancelled) {
-          const nextError = cause instanceof Error ? cause : new Error("加载报告索引失败");
-          setRailError(nextError);
-          setRailLoading(false);
-        }
+      if (cancelled) {
+        return;
+      }
+
+      if (indexResult.status === "fulfilled" && datesResult.status === "fulfilled") {
+        setIndexData(indexResult.value);
+        setDatesData(datesResult.value);
+        setRailLoading(false);
+      } else {
+        const cause = indexResult.status === "rejected" ? indexResult.reason : datesResult.status === "rejected" ? datesResult.reason : null;
+        const nextError = cause instanceof Error ? cause : new Error("加载报告索引失败");
+        setRailError(nextError);
+        setRailLoading(false);
       }
     }
 

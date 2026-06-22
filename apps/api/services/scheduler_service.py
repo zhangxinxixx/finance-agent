@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session, selectinload
 
+from apps.api.services.source_service import get_data_source_statuses
 from database.models.task import TaskRun
 
 
@@ -27,6 +28,15 @@ def _parse_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value))
     except (ValueError, TypeError):
         return None
+
+
+def _coerce_utc(value: Any) -> datetime | None:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 # ── Task Category Definitions ──
@@ -76,6 +86,43 @@ TASK_CATEGORIES = {
     },
 }
 
+_DEFAULT_SOURCE_TASK_PATTERNS: dict[str, tuple[str, ...]] = {
+    "macro": ("macro_collect", "macro_feature", "report_render"),
+    "cme": ("cme_download", "cme_parse", "cme_ingest", "option_wall", "options_analysis"),
+    "technical": ("technical", "jin10_refresh_jin10_quotes", "jin10_refresh_jin10_kline"),
+    "positioning": ("positioning",),
+    "reports": ("jin10_report", "report_analysis", "report_render"),
+    "news": ("news_collect", "news_feature", "news_brief", "report_analysis"),
+}
+
+_SOURCE_TASK_PATTERNS: dict[str, tuple[str, ...]] = {
+    "fred": ("fred", "macro_collect", "macro_feature", "report_render"),
+    "openbb_macro": ("openbb", "macro_collect", "macro_feature", "report_render"),
+    "fed": ("fed", "macro_collect", "macro_feature", "report_render"),
+    "treasury": ("treasury", "macro_collect", "macro_feature", "report_render"),
+    "dxy": ("dxy", "macro_collect", "macro_feature", "technical"),
+    "cme_daily_bulletin": ("cme_download", "cme_parse", "bulletin"),
+    "cme_options": ("cme_ingest", "option_wall", "options_analysis", "cme_options"),
+    "technical_yahoo": ("technical", "jin10_refresh_jin10_quotes", "jin10_refresh_jin10_kline"),
+    "positioning_cot": ("positioning", "cot"),
+    "jin10_news": ("news_collect", "news_feature", "news_brief", "jin10_report", "report_analysis", "flash_article_analysis"),
+    "jin10_flash": ("jin10_refresh_jin10_flash", "flash_article_analysis", "news_collect"),
+    "jin10_mcp_flash": ("jin10_refresh_jin10_flash", "flash_article_analysis", "news_collect"),
+    "jin10_mcp_calendar": ("jin10_refresh_jin10_calendar", "news_collect", "news_feature"),
+    "jin10_mcp_market": ("jin10_refresh_jin10_quotes", "jin10_refresh_jin10_kline", "technical"),
+    "jin10_xnews_public": ("jin10_report", "report_analysis", "news_feature"),
+    "jin10_datacenter_reports": ("jin10_report", "report_analysis", "macro_feature"),
+    "jin10_svip_reports": ("jin10_report", "report_analysis", "report_render"),
+    "jin10_feishu": ("feishu", "news_collect", "news_feature", "news_brief", "flash_article_analysis"),
+    "fed_rss": ("news_collect", "news_feature", "news_brief"),
+    "bls_calendar": ("news_collect", "news_feature"),
+    "bea_calendar": ("news_collect", "news_feature"),
+    "eia_energy": ("news_collect", "news_feature"),
+    "gdelt_news": ("news_collect", "news_feature", "news_brief"),
+    "google_news_rss": ("news_collect", "news_feature", "news_brief"),
+    "reuters_public_news": ("news_collect", "news_feature", "news_brief"),
+}
+
 
 def _classify_task(task_type: str | None) -> str:
     """根据 task_type 分类到标准类别。"""
@@ -108,6 +155,13 @@ def get_scheduler_overview(
         .limit(limit)
         .all()
     )
+    source_candidate_runs = (
+        db.query(TaskRun)
+        .options(selectinload(TaskRun.steps))
+        .order_by(TaskRun.created_at.desc())
+        .limit(max(limit * 8, 400))
+        .all()
+    )
 
     # 2. 统计
     stats = _build_task_stats(db, since, now)
@@ -127,13 +181,21 @@ def get_scheduler_overview(
 
     # 7. 快讯持久化统计
     flash_stats = _get_flash_stats()
+    input_source_matrix = _build_input_source_matrix(source_candidate_runs)
+    input_source_summary = _summarize_input_source_matrix(input_source_matrix)
 
     return {
         "generated_at": now.isoformat(),
         "period_days": days,
         "summary": {
             "total_runs": len(runs),
-            "today_runs": sum(1 for r in runs if r.created_at and r.created_at >= now.replace(hour=0, minute=0, second=0)),
+            "today_runs": sum(
+                1
+                for r in runs
+                if (
+                    created_at := _coerce_utc(r.created_at)
+                ) is not None and created_at >= now.replace(hour=0, minute=0, second=0, microsecond=0)
+            ),
             "success_count": stats["success"],
             "failed_count": stats["failed"],
             "running_count": stats["running"],
@@ -144,6 +206,9 @@ def get_scheduler_overview(
             "flash_total": flash_stats.get("total", 0),
             "flash_key_events": flash_stats.get("key_events", 0),
             "flash_unanalyzed": flash_stats.get("unanalyzed_key_events", 0),
+            "input_sources_connected": input_source_summary["connected"],
+            "input_sources_data_only": input_source_summary["data_only"],
+            "input_sources_waiting": input_source_summary["waiting"],
         },
         "task_runs": [_serialize_run(r) for r in runs],
         "category_stats": category_stats,
@@ -152,6 +217,8 @@ def get_scheduler_overview(
         "cron_jobs": cron_jobs,
         "artifacts_summary": artifacts_summary,
         "flash_stats": flash_stats,
+        "input_source_summary": input_source_summary,
+        "input_source_matrix": input_source_matrix,
     }
 
 
@@ -357,3 +424,192 @@ def _serialize_run(run: TaskRun) -> dict[str, Any]:
         "step_count": len(run.steps) if run.steps else 0,
         "snapshot_id": run.snapshot_id,
     }
+
+
+def _task_match_text(run: TaskRun) -> str:
+    parts = [
+        run.task_type or "",
+        run.name or "",
+        run.current_stage or "",
+    ]
+    return " ".join(parts).lower()
+
+
+def _step_match_text(run: TaskRun, step: Any) -> str:
+    parts = [
+        run.task_type or "",
+        run.name or "",
+        getattr(step, "name", "") or "",
+        getattr(step, "stage", "") or "",
+        getattr(step, "task_kind", "") or "",
+    ]
+    return " ".join(parts).lower()
+
+
+def _matched_task_labels(run: TaskRun, expected_task_types: list[str]) -> list[str]:
+    if not expected_task_types:
+        return []
+
+    matched_labels: list[str] = []
+    run_haystack = _task_match_text(run)
+    if any(pattern in run_haystack for pattern in expected_task_types):
+        for candidate in (run.task_type, run.name, run.current_stage):
+            label = str(candidate or "").strip()
+            if label:
+                matched_labels.append(label)
+                break
+
+    for step in run.steps or []:
+        haystack = _step_match_text(run, step)
+        if not any(pattern in haystack for pattern in expected_task_types):
+            continue
+        for candidate in (step.name, step.stage, step.task_kind):
+            label = str(candidate or "").strip()
+            if label and label not in matched_labels:
+                matched_labels.append(label)
+                break
+
+    return matched_labels
+
+
+def _expected_task_patterns(source: dict[str, Any]) -> tuple[str, ...]:
+    source_key = str(source.get("source_key") or "")
+    source_group = str(source.get("source_group") or "")
+    explicit = _SOURCE_TASK_PATTERNS.get(source_key)
+    if explicit:
+        return explicit
+    return _DEFAULT_SOURCE_TASK_PATTERNS.get(source_group, ())
+
+
+def _source_latest_update_time(source: dict[str, Any]) -> str | None:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    latest_raw_ref = metadata.get("latest_raw_ref") if isinstance(metadata.get("latest_raw_ref"), dict) else {}
+    candidates = [
+        source.get("latest_raw_time"),
+        source.get("latest_parsed_time"),
+        metadata.get("latest_artifact_mtime"),
+        latest_raw_ref.get("published_at"),
+        metadata.get("latest_health_at"),
+    ]
+    parsed = [dt for dt in (_coerce_utc(value) for value in candidates) if dt is not None]
+    if not parsed:
+        return None
+    latest = max(parsed)
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=timezone.utc)
+    return latest.isoformat()
+
+
+def _source_latest_artifact(source: dict[str, Any]) -> str | None:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    latest_raw_ref = metadata.get("latest_raw_ref") if isinstance(metadata.get("latest_raw_ref"), dict) else {}
+    for candidate in (
+        latest_raw_ref.get("path"),
+        latest_raw_ref.get("file_path"),
+        latest_raw_ref.get("url"),
+        metadata.get("latest_raw_url"),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    artifact_layers = metadata.get("artifact_layers")
+    if isinstance(artifact_layers, list):
+        for candidate in artifact_layers:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+    return None
+
+
+def _source_has_data_evidence(source: dict[str, Any], latest_update_time: str | None, latest_artifact: str | None) -> bool:
+    return bool(
+        source.get("raw_ingested")
+        or source.get("parsed")
+        or source.get("analysis_ready")
+        or latest_update_time
+        or latest_artifact
+    )
+
+
+def _build_input_source_matrix(candidate_runs: list[TaskRun]) -> list[dict[str, Any]]:
+    source_payload = get_data_source_statuses()
+    sources = source_payload.get("sources", [])
+    matrix: list[dict[str, Any]] = []
+
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        expected_task_types = list(_expected_task_patterns(source))
+        matched_runs: list[tuple[TaskRun, list[str]]] = []
+        for run in candidate_runs:
+            matched_labels = _matched_task_labels(run, expected_task_types)
+            if matched_labels:
+                matched_runs.append((run, matched_labels))
+        recent_task_types: list[str] = []
+        for _, labels in matched_runs:
+            for label in labels:
+                if label and label not in recent_task_types:
+                    recent_task_types.append(label)
+                if len(recent_task_types) >= 4:
+                    break
+            if len(recent_task_types) >= 4:
+                break
+
+        latest_task = matched_runs[0][0] if matched_runs else None
+        latest_update_time = _source_latest_update_time(source)
+        latest_artifact = _source_latest_artifact(source)
+        has_data_evidence = _source_has_data_evidence(source, latest_update_time, latest_artifact)
+        task_log_status = "connected" if latest_task else "data_only" if has_data_evidence else "waiting"
+
+        if task_log_status == "connected":
+            task_log_label = "任务与日志已接入"
+        elif task_log_status == "data_only":
+            task_log_label = "仅数据接入，缺任务日志"
+        else:
+            task_log_label = "等待接入"
+
+        notes_parts = [
+            str(source.get("gating_reason") or "").strip(),
+            str(metadata.get("notes") or "").strip(),
+        ]
+        notes = "；".join(part for part in notes_parts if part)
+
+        matrix.append(
+            {
+                "source_key": source.get("source_key"),
+                "source_label": metadata.get("frontend_label") or source.get("source_name") or source.get("source_key"),
+                "source_name": source.get("source_name"),
+                "source_group": source.get("source_group"),
+                "source_type": source.get("source_type"),
+                "access_method": source.get("access_method"),
+                "status": source.get("status"),
+                "health_state": source.get("health_state") or metadata.get("health_state"),
+                "readiness_state": source.get("readiness_state"),
+                "gate_state": source.get("gate_state"),
+                "gating_reason": source.get("gating_reason"),
+                "configured": bool(source.get("configured")),
+                "raw_ingested": bool(source.get("raw_ingested")),
+                "parsed": bool(source.get("parsed")),
+                "analysis_ready": bool(source.get("analysis_ready")),
+                "latest_update_time": latest_update_time,
+                "latest_artifact": latest_artifact,
+                "expected_task_types": expected_task_types,
+                "recent_task_types": recent_task_types,
+                "task_log_status": task_log_status,
+                "task_log_label": task_log_label,
+                "latest_task_run": _serialize_run(latest_task) if latest_task else None,
+                "polling_strategy": metadata.get("polling_strategy"),
+                "database_tables": metadata.get("database_tables"),
+                "notes": notes or None,
+            }
+        )
+
+    return matrix
+
+
+def _summarize_input_source_matrix(matrix: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {"total": len(matrix), "connected": 0, "data_only": 0, "waiting": 0}
+    for item in matrix:
+        status = str(item.get("task_log_status") or "")
+        if status in summary:
+            summary[status] += 1
+    return summary

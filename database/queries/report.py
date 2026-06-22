@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from database.models.analysis import AnalysisSnapshot, FinalAnalysisResult
 from database.models.report import ReportArtifact, ReportItem
 
 
@@ -26,8 +27,107 @@ def _parse_iso_datetime(value: str | datetime | None) -> datetime | None:
     return dt
 
 
+def _raise_lineage_conflict(message: str) -> None:
+    raise ValueError(message)
+
+
+def _find_analysis_snapshot_by_payload(session: Session, payload: dict[str, Any]) -> AnalysisSnapshot | None:
+    snapshot_id = payload.get("snapshot_id")
+    if snapshot_id:
+        snapshot = session.scalar(select(AnalysisSnapshot).where(AnalysisSnapshot.snapshot_id == snapshot_id))
+        if snapshot is not None:
+            return snapshot
+
+    run_id = payload.get("run_id")
+    if run_id:
+        return session.scalar(
+            select(AnalysisSnapshot)
+            .where(AnalysisSnapshot.run_id == run_id)
+            .order_by(
+                AnalysisSnapshot.trade_date.desc(),
+                AnalysisSnapshot.snapshot_time.desc().nullslast(),
+                AnalysisSnapshot.id.desc(),
+            )
+            .limit(1)
+        )
+    return None
+
+
+def _find_final_result_by_payload(session: Session, payload: dict[str, Any]) -> FinalAnalysisResult | None:
+    snapshot_id = payload.get("snapshot_id")
+    if snapshot_id:
+        final_result = session.scalar(
+            select(FinalAnalysisResult)
+            .where(FinalAnalysisResult.snapshot_id == snapshot_id)
+            .order_by(
+                FinalAnalysisResult.trade_date.desc(),
+                FinalAnalysisResult.id.desc(),
+            )
+            .limit(1)
+        )
+        if final_result is not None:
+            return final_result
+
+    run_id = payload.get("run_id")
+    if run_id is None:
+        return None
+
+    asset = payload.get("asset")
+    trade_date = _parse_iso_date(payload.get("trade_date"))
+    stmt = select(FinalAnalysisResult).where(FinalAnalysisResult.run_id == run_id)
+    if asset is not None and trade_date is not None:
+        stmt = stmt.where(FinalAnalysisResult.asset == str(asset), FinalAnalysisResult.trade_date == trade_date)
+    return session.scalar(
+        stmt.order_by(
+            FinalAnalysisResult.trade_date.desc(),
+            FinalAnalysisResult.id.desc(),
+        ).limit(1)
+    )
+
+
+def _validate_report_lineage(session: Session, payload: dict[str, Any]) -> None:
+    report_id = str(payload["report_id"])
+    run_id = payload.get("run_id")
+    snapshot_id = payload.get("snapshot_id")
+
+    if run_id is None and snapshot_id is None:
+        return
+
+    analysis_snapshot = _find_analysis_snapshot_by_payload(session, payload)
+    if analysis_snapshot is not None and snapshot_id and analysis_snapshot.snapshot_id != snapshot_id:
+        _raise_lineage_conflict(
+            "report lineage conflict: "
+            f"report_id={report_id} snapshot_id={snapshot_id} resolves to AnalysisSnapshot("
+            f"snapshot_id={analysis_snapshot.snapshot_id}, run_id={analysis_snapshot.run_id})"
+        )
+    if analysis_snapshot is not None and run_id and analysis_snapshot.run_id != run_id:
+        _raise_lineage_conflict(
+            "report lineage conflict: "
+            f"report_id={report_id} run_id={run_id} resolves to AnalysisSnapshot("
+            f"snapshot_id={analysis_snapshot.snapshot_id}, run_id={analysis_snapshot.run_id})"
+        )
+
+    final_result = _find_final_result_by_payload(session, payload)
+    if final_result is None:
+        return
+
+    if snapshot_id and final_result.snapshot_id != snapshot_id:
+        _raise_lineage_conflict(
+            "report lineage conflict: "
+            f"report_id={report_id} snapshot_id={snapshot_id} resolves to FinalAnalysisResult("
+            f"snapshot_id={final_result.snapshot_id}, run_id={final_result.run_id})"
+        )
+    if run_id and final_result.run_id != run_id:
+        _raise_lineage_conflict(
+            "report lineage conflict: "
+            f"report_id={report_id} run_id={run_id} resolves to FinalAnalysisResult("
+            f"snapshot_id={final_result.snapshot_id}, run_id={final_result.run_id})"
+        )
+
+
 def upsert_report_item(session: Session, payload: dict[str, Any]) -> ReportItem:
     report_id = str(payload["report_id"])
+    _validate_report_lineage(session, payload)
     existing = session.get(ReportItem, report_id)
     trade_date = _parse_iso_date(payload.get("trade_date"))
 

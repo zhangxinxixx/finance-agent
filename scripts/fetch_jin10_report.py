@@ -39,7 +39,14 @@ def _apply_report_type_override(report, report_type: str):
     return report
 
 
-_JIN10_NON_REPORT_SUFFIXES = ("黄金头条", "投行金评")
+_JIN10_NON_REPORT_MARKERS = ("黄金头条", "投行金评", "财料")
+
+
+def _is_applicable_daily_report(report) -> bool:
+    title = report.title or ""
+    if any(marker in title for marker in _JIN10_NON_REPORT_MARKERS):
+        return False
+    return report.category == "金银报告"
 
 
 def main() -> int:
@@ -84,7 +91,7 @@ def main() -> int:
             for entry in discovered:
                 candidate = _fetch_report(entry.article_id, args, client)
                 if args.report_type == "daily":
-                    if any(s in candidate.title for s in _JIN10_NON_REPORT_SUFFIXES):
+                    if not _is_applicable_daily_report(candidate):
                         continue
                 report = _apply_report_type_override(candidate, args.report_type)
                 break

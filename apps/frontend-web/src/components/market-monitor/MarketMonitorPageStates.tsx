@@ -16,7 +16,7 @@ export function MarketMonitorPageErrorState({
 }) {
   return (
     <ErrorState
-      title="Market Monitor 加载失败"
+      title="市场监控加载失败"
       message={message}
       onRetry={onRetry}
       retryLabel="重试"

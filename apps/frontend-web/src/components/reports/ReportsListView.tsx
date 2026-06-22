@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { ReportIndexItem } from "@/types/reports";
-import { canOpenReport, CATEGORY_MAP, matchesReportSearch, shortRunId } from "@/components/reports/reportListMeta";
+import { canOpenReport, CATEGORY_MAP, getReportTitle, inferAssetLabel, matchesReportSearch, shortRunId } from "@/components/reports/reportListMeta";
 import { handleSelectKeyDown } from "@/components/reports/reportLibraryViewCommon";
 
 export function ListView({
@@ -26,11 +26,11 @@ export function ListView({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "110px 1.8fr 1fr 1fr 90px 90px 70px",
-          padding: "8px 14px",
-          background: "var(--bg-panel)",
+          gridTemplateColumns: "88px minmax(0,2.5fr) 92px 72px 70px 92px 48px",
+          padding: "6px 9px",
+          background: "color-mix(in srgb, var(--bg-panel) 88%, transparent)",
           borderBottom: "1px solid var(--border)",
-          fontSize: 9,
+          fontSize: 8,
           fontWeight: 600,
           textTransform: "uppercase",
           color: "var(--fg-5)",
@@ -38,13 +38,13 @@ export function ListView({
           alignItems: "center",
         }}
       >
-        <span>类型</span>
+        <span>分类</span>
+        <span>报告</span>
         <span>日期</span>
-        <span>格式</span>
-        <span>Run ID</span>
-        <span>状态</span>
         <span>资产</span>
-        <span>操作</span>
+        <span>状态</span>
+        <span>Run</span>
+        <span>查看</span>
       </div>
       {filtered.map((item, idx) => {
         const cat = CATEGORY_MAP[item.type] ?? {
@@ -52,6 +52,8 @@ export function ListView({
           color: "#94a3b8",
         };
         const isOpenable = canOpenReport(item);
+        const assetLabel = inferAssetLabel(item);
+        const title = getReportTitle(item);
         return (
           <div
             key={`${item.type}-${item.trade_date}-${item.run_id ?? idx}`}
@@ -60,12 +62,12 @@ export function ListView({
             aria-label={isOpenable ? `查看${cat.label} ${item.trade_date || "未知日期"}报告` : undefined}
             style={{
               display: "grid",
-              gridTemplateColumns: "110px 1.8fr 1fr 1fr 90px 90px 70px",
-              padding: "10px 14px",
+              gridTemplateColumns: "88px minmax(0,2.5fr) 92px 72px 70px 92px 48px",
+              padding: "7px 9px",
               borderBottom: "1px solid var(--border-faint)",
               alignItems: "center",
-              gap: 10,
-              fontSize: 11,
+              gap: 6,
+              fontSize: 10,
               color: "var(--fg-3)",
               cursor: isOpenable ? "pointer" : "default",
               transition: "background 120ms",
@@ -87,7 +89,7 @@ export function ListView({
                 background: `${cat.color}1f`,
                 color: cat.color,
                 borderRadius: 2,
-                fontSize: 9,
+                fontSize: 8,
                 fontWeight: 600,
                 display: "inline-block",
                 width: "fit-content",
@@ -95,32 +97,44 @@ export function ListView({
             >
               {cat.label}
             </span>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9.5, color: "var(--fg-2)" }}>
+                {title}
+              </span>
+              <span style={{ display: "block", marginTop: 1, fontSize: 8, color: "var(--fg-5)" }}>
+                {item.format}
+              </span>
+            </span>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>
               {item.trade_date || "-"}
             </span>
-            <span style={{ fontSize: 10, color: "var(--fg-4)" }}>
-              {item.format}
-            </span>
             <span
               style={{
-                fontFamily: "var(--font-mono)",
                 fontSize: 9,
-                color: "var(--fg-5)",
+                color: "var(--fg-4)",
               }}
             >
-              {shortRunId(item.run_id)}
+              {assetLabel}
             </span>
             <span
               style={{
-                fontSize: 10,
+                fontSize: 9,
                 color: item.available ? "#10b981" : "#f59e0b",
               }}
             >
               {item.available ? "已发布" : "草稿"}
             </span>
-            <span style={{ fontSize: 10, color: "var(--fg-4)" }}>-</span>
-            <span style={{ fontSize: 10, color: "var(--fg-4)" }}>
-              {isOpenable ? "查看" : "-"}
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 8,
+                color: "var(--fg-5)",
+              }}
+            >
+              {shortRunId(item.run_id)}
+            </span>
+            <span style={{ fontSize: 9, color: "var(--fg-4)" }}>
+              {isOpenable ? "进入" : "-"}
             </span>
           </div>
         );

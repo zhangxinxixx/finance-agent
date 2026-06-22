@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { fetchStrategyAssetSummaries, fetchStrategyCardsOverview, fetchStrategyCardById } from "@/adapters/strategy";
+import {
+  fetchStrategyAssetSummaries,
+  fetchStrategyCardById,
+  fetchStrategyCardsOverview,
+  fetchStrategySourceTraceByCardId,
+} from "@/adapters/strategy";
 import type { StrategyAssetSummaryViewModel, StrategyViewModel } from "@/types/strategy";
 
 const DEFAULT_STRATEGY_ASSET = "XAUUSD";
@@ -11,6 +16,8 @@ interface StrategyState {
   error: Error | null;
   selectedStrategyCardId: string | null;
   isDetailLoading: boolean;
+  isTraceLoading: boolean;
+  traceError: Error | null;
   assetOptions: StrategyAssetSummaryViewModel[];
   selectStrategyCard: (id: string) => void;
   refetch: () => void;
@@ -22,6 +29,8 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
   const [error, setError] = useState<Error | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [isTraceLoading, setIsTraceLoading] = useState(false);
+  const [traceError, setTraceError] = useState<Error | null>(null);
   const [assetOptions, setAssetOptions] = useState<StrategyAssetSummaryViewModel[]>([]);
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -46,6 +55,8 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
       setIsLoading(true);
       setError(null);
       setIsDetailLoading(false);
+      setIsTraceLoading(false);
+      setTraceError(null);
       setData(null);
       setSelectedId(null);
       try {
@@ -78,6 +89,46 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
     };
   }, [asset, reloadToken]);
 
+  useEffect(() => {
+    if (!selectedId) {
+      setIsTraceLoading(false);
+      setTraceError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const requestedAsset = assetRef.current;
+
+    setIsTraceLoading(true);
+    setTraceError(null);
+
+    fetchStrategySourceTraceByCardId(selectedId)
+      .then((trace) => {
+        if (cancelled || !mountedRef.current || assetRef.current !== requestedAsset) return;
+        setData((prev) => {
+          if (!prev || prev.selected_strategy_card_id !== selectedId) return prev;
+          return {
+            ...prev,
+            source_trace: trace,
+          };
+        });
+      })
+      .catch((cause) => {
+        if (cancelled || !mountedRef.current || assetRef.current !== requestedAsset) return;
+        setTraceError(cause instanceof Error ? cause : new Error("加载策略溯源失败"));
+        setData((prev) => (prev ? { ...prev, source_trace: null } : prev));
+      })
+      .finally(() => {
+        if (!cancelled && mountedRef.current && assetRef.current === requestedAsset) {
+          setIsTraceLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
   // Select a specific strategy card by id
   const selectStrategyCard = useCallback(
     (id: string) => {
@@ -88,6 +139,8 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
       const requestedAsset = assetRef.current;
       setSelectedId(id);
       setIsDetailLoading(true);
+      setTraceError(null);
+      setData((prev) => (prev ? { ...prev, source_trace: null } : prev));
 
       fetchStrategyCardById(id, requestedAsset)
         .then((detail) => {
@@ -100,6 +153,7 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
                 history: prev.history,
                 selected_strategy_card_id: id,
                 source: detail.source,
+                source_trace: prev.source_trace ?? null,
               };
             });
           }
@@ -124,6 +178,8 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
     error,
     selectedStrategyCardId: selectedId,
     isDetailLoading,
+    isTraceLoading,
+    traceError,
     assetOptions,
     selectStrategyCard,
     refetch: () => setReloadToken((value) => value + 1),

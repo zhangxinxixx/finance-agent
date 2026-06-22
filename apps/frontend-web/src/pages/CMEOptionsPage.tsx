@@ -7,6 +7,7 @@ import {
   CMEOptionsLoadingShell,
   type CMEOptionsTab,
   renderCMEOptionsTabContent,
+  reportStatusLabel,
   reportStatusTone,
   reviewStatusLabel,
   reviewStatusTone,
@@ -16,6 +17,7 @@ import {
 import { FACard } from "../components/shared/FACard";
 import { FAEmptyState } from "../components/shared/FAEmptyState";
 import { FAFilterBar } from "../components/shared/FAFilterBar";
+import { FAPageScaffold } from "../components/shared/FAPageScaffold";
 import { FAStatusPill } from "../components/shared/FAStatusPill";
 import { FATabBar } from "../components/shared/FATabBar";
 import { ErrorState } from "../components/shared/ErrorState";
@@ -70,12 +72,13 @@ export function CMEOptionsPage() {
   const factReviewStatus = snapshot?.analysis?.fact_review_status;
   const expiryList = snapshot?.data_source?.expiries ?? [];
   const tabOptions = [
-    { value: "overview", label: "Overview" },
-    { value: "gex-gamma", label: "GEX / Gamma" },
-    { value: "wall-map", label: "Wall Map" },
-    { value: "scenario", label: "Scenario" },
-    { value: "data-trace", label: "Data Trace" },
+    { value: "overview", label: "总览" },
+    { value: "gex-gamma", label: "伽马敞口" },
+    { value: "wall-map", label: "墙位地图" },
+    { value: "scenario", label: "情景推演" },
+    { value: "data-trace", label: "数据溯源" },
   ] satisfies Array<{ value: CMEOptionsTab; label: string }>;
+  const pageShellClass = "finance-page-shell cme-options-page-shell";
 
   // Reset expiry when date changes or expiry list updates
   useEffect(() => {
@@ -85,91 +88,90 @@ export function CMEOptionsPage() {
   }, [expiryList, selectedExpiry]);
 
   if (isLoading && !snapshot && !isError) {
-    return <div className="finance-page-shell"><CMEOptionsLoadingShell /></div>;
+    return <div className={pageShellClass}><CMEOptionsLoadingShell /></div>;
   }
 
   if (isError) {
     return (
-      <div className="finance-page-shell">
-        <FACard title="期权结构" eyebrow="CME Options" accent="brand">
+      <div className={pageShellClass}>
+        <FACard title="期权结构" eyebrow="期权" accent="brand">
           <div className="flex items-center gap-1.5">
             <FAStatusPill tone={sourceTone(source)}>{sourceLabel(source)}</FAStatusPill>
           </div>
         </FACard>
-        <ErrorState title="加载 CME Options 失败" message={error?.message || "未知错误。请重试。"} onRetry={refetch} retryLabel="重试" />
+        <ErrorState title="加载期权结构失败" message={error?.message || "未知错误。请重试。"} onRetry={refetch} retryLabel="重试" />
       </div>
     );
   }
 
   if (isEmpty) {
     return (
-      <div className="finance-page-shell">
-        <FACard title="期权结构" eyebrow="CME Options" accent="brand">
+      <div className={pageShellClass}>
+        <FACard title="期权结构" eyebrow="期权" accent="brand">
           <div className="flex items-center gap-1.5">
             <FAStatusPill tone={sourceTone(source)}>{sourceLabel(source)}</FAStatusPill>
           </div>
         </FACard>
-        <FAEmptyState title="该日期无 CME 期权数据" description="请切换日期，或检查预处理 / premarket 输出是否可用。" />
+        <FAEmptyState title="该日期无期权数据" description="请切换日期，或检查预处理输出是否可用。" />
       </div>
     );
   }
 
   return (
-    <div className="finance-page-shell">
-      {/* Filter Bar */}
-      <FAFilterBar
-        left={
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <CMEOptionsIntentSummary snapshot={snapshot} />
-            <FAStatusPill tone={sourceTone(source)}>{sourceLabel(source)}</FAStatusPill>
-            {status ? <FAStatusPill tone={reportStatusTone(status)}>{status}</FAStatusPill> : null}
-            {factReviewStatus ? (
-              <FAStatusPill tone={reviewStatusTone(factReviewStatus)}>{reviewStatusLabel(factReviewStatus)}</FAStatusPill>
-            ) : null}
-          </div>
-        }
-        right={
-          <>
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[8px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">日期</span>
-              <select
-                value={selectedDate ?? ""}
-                onChange={(e) => setSelectedDate(e.target.value || undefined)}
-                className="flex h-[28px] min-w-[100px] cursor-pointer items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 text-[11px] text-[var(--fg-2)] transition-colors hover:border-[var(--border-strong)]"
-              >
-                {availableDates.map((d) => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
+    <FAPageScaffold
+      className={pageShellClass}
+      toolbar={(
+        <FAFilterBar
+          left={
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <FAStatusPill tone={sourceTone(source)}>{sourceLabel(source)}</FAStatusPill>
+              {status ? <FAStatusPill tone={reportStatusTone(status)}>{reportStatusLabel(status)}</FAStatusPill> : null}
+              {factReviewStatus ? (
+                <FAStatusPill tone={reviewStatusTone(factReviewStatus)}>{reviewStatusLabel(factReviewStatus)}</FAStatusPill>
+              ) : null}
+              <CMEOptionsIntentSummary snapshot={snapshot} />
+              <CMEOptionsKpiStrip snapshot={snapshot} />
             </div>
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[8px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">到期日</span>
-              <select
-                value={selectedExpiry ?? ""}
-                onChange={(e) => setSelectedExpiry(e.target.value || undefined)}
-                className="flex h-[28px] min-w-[120px] cursor-pointer items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 text-[11px] text-[var(--fg-2)] transition-colors hover:border-[var(--border-strong)]"
-              >
-                {expiryList.map((ex) => (
-                  <option key={ex} value={ex}>{ex}</option>
-                ))}
-              </select>
-            </div>
-          </>
-        }
-      />
-
-      {/* KPI Strip */}
-      <div style={{ flexShrink: 0, padding: "0 6px" }}>
-        <CMEOptionsKpiStrip snapshot={snapshot} wallScores={wallScores} />
+          }
+          right={
+            <>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[8px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">日期</span>
+                <select
+                  value={selectedDate ?? ""}
+                  onChange={(e) => setSelectedDate(e.target.value || undefined)}
+                  className="flex h-[28px] min-w-[100px] cursor-pointer items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 text-[11px] text-[var(--fg-2)] transition-colors hover:border-[var(--border-strong)]"
+                >
+                  {availableDates.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[8px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">到期日</span>
+                <select
+                  value={selectedExpiry ?? ""}
+                  onChange={(e) => setSelectedExpiry(e.target.value || undefined)}
+                  className="flex h-[28px] min-w-[120px] cursor-pointer items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 text-[11px] text-[var(--fg-2)] transition-colors hover:border-[var(--border-strong)]"
+                >
+                  {expiryList.map((ex) => (
+                    <option key={ex} value={ex}>{ex}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          }
+        />
+      )}
+      bodyClassName="fa-page-stack"
+    >
+      <div className="shrink-0 px-1">
+        <FATabBar value={activeTab} tabs={tabOptions} onChange={(value) => setActiveTab(value as CMEOptionsTab)} ariaLabel="期权结构视图切换" />
       </div>
 
-      <div style={{ flexShrink: 0, padding: "0 6px" }}>
-        <FATabBar value={activeTab} tabs={tabOptions} onChange={(value) => setActiveTab(value as CMEOptionsTab)} ariaLabel="CME Options 视图切换" />
-      </div>
-
-      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "0 6px 6px" }}>
+      <div className="px-1 pb-4">
         {snapshot ? renderCMEOptionsTabContent({ snapshot, activeTab, wallScores, selectedExpiry }) : null}
       </div>
-    </div>
+    </FAPageScaffold>
   );
 }

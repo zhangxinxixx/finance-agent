@@ -50,7 +50,13 @@ export interface CMEOptionsGEXTopItem {
 
 export interface CMEOptionsExpirySummary {
   forward_price?: number | null;
+  f_value?: number | null;
   gamma_zero?: number | null;
+  gamma_zero_method?: string | null;
+  net_gex?: number | null;
+  call_gex?: number | null;
+  put_gex?: number | null;
+  total_gex?: number | null;
   atm_iv?: number | null;
   time_to_expiry?: number | null;
   structure?: string | null;
@@ -64,6 +70,8 @@ export interface CMEOptionsIVSkew {
   call_10d_iv?: number | null;
   put_10d_iv?: number | null;
   skew_10d?: number | null;
+  tail_skew_10d?: number | null;
+  interpretation?: string | null;
 }
 
 export interface CMEOptionsGEXByExpiry {
@@ -94,6 +102,7 @@ export interface CMEOptionsExposure {
 // ── Roll signals ──
 
 export interface CMEOptionsRollSignal {
+  roll_type?: string | null;
   near_expiry: string;
   far_expiry: string;
   evidence: string[];
@@ -128,6 +137,11 @@ export interface CMEOptionsCalibration {
   } | null;
   calibration_warnings?: string[];
   source_refs?: string[];
+}
+
+export interface CMEOptionsDataQuality {
+  categories?: Record<string, number | null | undefined>;
+  warnings?: string[];
 }
 
 export interface CMEOptionsDataSource {
@@ -226,6 +240,19 @@ export interface CMEOptionsParameters {
   r_value?: number | null;
   p0?: number | null;
   p0_source?: string | null;
+  report_p0?: number | null;
+  report_p0_source?: string | null;
+  live_p0?: number | null;
+  live_p0_source?: string | null;
+  price_anchor_rule?: string | null;
+  model?: string | null;
+  used_real_gex?: boolean | null;
+  netgex_scope?: string | null;
+  analysis_range?: {
+    strike_min?: number | null;
+    strike_max?: number | null;
+    source?: string | null;
+  } | null;
 }
 
 export interface CMEOptionsSnapshot {
@@ -248,7 +275,7 @@ export interface CMEOptionsSnapshot {
   exposure?: CMEOptionsExposure | null;
   roll_signals?: CMEOptionsRollSignal[];
   normalization?: Record<string, unknown> | null;
-  data_quality?: Record<string, unknown> | null;
+  data_quality?: CMEOptionsDataQuality | null;
   audit?: Record<string, unknown> | null;
 }
 

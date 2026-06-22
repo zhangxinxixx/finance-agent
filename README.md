@@ -104,7 +104,8 @@ export no_proxy=127.0.0.1,localhost,::1
 
 ```text
 API health:  http://127.0.0.1:8000/health
-Dashboard:   http://127.0.0.1:8000/dashboard
+Frontend:    http://127.0.0.1:8080
+Dashboard:   http://127.0.0.1:8080/dashboard
 API docs:    http://127.0.0.1:8000/docs
 ```
 
@@ -118,7 +119,47 @@ API docs:    http://127.0.0.1:8000/docs
 ./start.sh stop --with-deps
 ```
 
-`scripts/local_stack_ctl.sh` 会在需要时构建 `apps/frontend-web/dist`，并通过 FastAPI 提供 `/dashboard` 兼容入口。
+默认 `./start.sh start` 会启动完整开发栈：
+
+- user-space PostgreSQL / Redis
+- FastAPI API（默认 `:8000`）
+- Vite 前端 dev server（默认 `:8080`）
+
+如需只构建前端静态产物并通过 FastAPI 兼容入口提供 `/dashboard`，使用：
+
+```bash
+./start.sh start --frontend=build
+```
+
+如需只启动后端，不管理前端：
+
+```bash
+./start.sh start --frontend=none
+```
+
+脚本支持 dry-run：
+
+```bash
+./start.sh start --dry-run
+```
+
+可选环境变量：
+
+```bash
+FINANCE_AGENT_API_PORT=8000
+FINANCE_AGENT_FRONTEND_PORT=8080
+FINANCE_AGENT_FRONTEND_MODE=dev
+FINANCE_AGENT_EVENT_FLOW_TRANSLATION_PROVIDER=mimo
+FINANCE_AGENT_EVENT_FLOW_TRANSLATION_MODEL=mimo-v2.5
+```
+
+如需让 Event Flow 页面在后端直接调用 `mimo` 把英文事件标题/摘要翻成中文，可这样启动：
+
+```bash
+FINANCE_AGENT_EVENT_FLOW_TRANSLATION_PROVIDER=mimo \
+FINANCE_AGENT_EVENT_FLOW_TRANSLATION_MODEL=mimo-v2.5 \
+./start.sh restart
+```
 
 ## 关键命令
 

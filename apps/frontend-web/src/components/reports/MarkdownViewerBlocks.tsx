@@ -81,17 +81,33 @@ function renderMarkdownBlock(block: MarkdownBlock, blockIndex: number, assetBase
   }
 }
 
-export function MarkdownFallbackPre({ content }: { content: string }) {
+export function MarkdownFallbackPre({
+  content,
+  className = "",
+}: {
+  content: string;
+  className?: string;
+}) {
   return (
-    <pre className="max-h-[calc(100vh-260px)] min-h-0 overflow-y-auto overflow-x-auto whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-card-inner)] p-4 font-mono text-[12px] leading-6 text-[var(--fg-4)]">
+    <pre
+      className={`max-h-[calc(100vh-260px)] min-h-0 overflow-y-auto overflow-x-auto whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-card-inner)] p-4 font-mono text-[12px] leading-6 text-[var(--fg-4)] ${className}`}
+    >
       {content}
     </pre>
   );
 }
 
-export function MarkdownBlockList({ blocks, assetBaseUrl }: { blocks: MarkdownBlock[]; assetBaseUrl?: string }) {
+export function MarkdownBlockList({
+  blocks,
+  assetBaseUrl,
+  className = "",
+}: {
+  blocks: MarkdownBlock[];
+  assetBaseUrl?: string;
+  className?: string;
+}) {
   return (
-    <div className="max-h-[calc(100vh-260px)] min-h-0 space-y-4 overflow-y-auto overflow-x-hidden pr-1 text-[13px] leading-7 text-[var(--fg-4)]">
+    <div className={`max-h-[calc(100vh-260px)] min-h-0 space-y-4 overflow-y-auto overflow-x-hidden pr-1 text-[13px] leading-7 text-[var(--fg-4)] ${className}`}>
       {blocks.map((block, blockIndex) => renderMarkdownBlock(block, blockIndex, assetBaseUrl))}
     </div>
   );

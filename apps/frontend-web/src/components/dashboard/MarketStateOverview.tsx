@@ -98,7 +98,7 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
   const primaryMetrics = [market.XAUUSD, market.DXY, market.US10Y, market.REAL_10Y].filter(Boolean);
 
   return (
-    <FACard title="今日综合判断卡" eyebrow="Judgment Banner" accent="warn" bodyClassName="space-y-4">
+    <FACard title="今日综合判断卡" eyebrow="判断看板" accent="warn" bodyClassName="space-y-4">
       <div className="grid gap-3 xl:grid-cols-[1.5fr_1fr_1fr_1.15fr]">
         <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
           <div className="grid gap-2">

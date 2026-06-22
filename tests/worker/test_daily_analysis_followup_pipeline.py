@@ -14,7 +14,7 @@ from apps.worker.pipelines.daily_analysis_followup import (
     run_pending_daily_analysis_followup_tasks,
 )
 from apps.collectors.news.jin10_detail_fetcher import Jin10DetailFetchResult
-from database.models.execution import RunArtifact, ensure_execution_tables
+from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 
 
@@ -95,6 +95,7 @@ def _seed_followup_run(
 
 def test_run_daily_analysis_followup_task_expands_auditable_steps(tmp_path: Path) -> None:
     session = _make_db_session(tmp_path)
+    ensure_execution_tables(session)
     run = _seed_followup_run(session)
 
     status = run_daily_analysis_followup_task(session, run.id, storage_root=tmp_path)
@@ -117,6 +118,14 @@ def test_run_daily_analysis_followup_task_expands_auditable_steps(tmp_path: Path
     assert detail_input["source_url"] == "https://xnews.jin10.com/details/1"
     assert steps[VIP_BROWSER_FALLBACK_STEP].status == StepStatus.blocked
     assert steps[DAILY_ANALYSIS_STEP].status == StepStatus.blocked
+
+    execution_events = session.query(ExecutionEvent).order_by(ExecutionEvent.created_at.asc()).all()
+    initial_step_events = [
+        json.loads(event.payload or "{}")
+        for event in execution_events
+        if event.event_type == "TASK_STATUS_CHANGED" and json.loads(event.payload or "{}").get("step_name") == "run_jin10_daily_analysis"
+    ]
+    assert any(item.get("from_status") == "pending" and item.get("to_status") == "success" for item in initial_step_events)
 
 
 def test_run_daily_analysis_followup_task_fetches_readable_detail_page(tmp_path: Path) -> None:
@@ -148,6 +157,7 @@ def test_run_daily_analysis_followup_task_fetches_readable_detail_page(tmp_path:
     session.refresh(run)
     assert run.current_stage == DAILY_ANALYSIS_STEP
     assert run.progress == 0.6
+    assert run.ended_at is None
     steps = {step.name: step for step in run.steps}
     detail_step = steps[DETAIL_FETCH_STEP]
     assert detail_step.status == StepStatus.success
@@ -162,6 +172,11 @@ def test_run_daily_analysis_followup_task_fetches_readable_detail_page(tmp_path:
     assert {artifact.artifact_type for artifact in run_artifacts} >= {"raw_file", "parsed_file", "chart_snapshot"}
     assert steps[VIP_BROWSER_FALLBACK_STEP].status == StepStatus.skipped
     assert steps[DAILY_ANALYSIS_STEP].status == StepStatus.pending
+
+    event_types = [event.event_type for event in session.query(ExecutionEvent).order_by(ExecutionEvent.created_at.asc())]
+    assert "RUN_STARTED" in event_types
+    assert "TASK_STARTED" in event_types
+    assert "TASK_FINISHED" in event_types
 
 
 def test_run_daily_analysis_followup_task_daily_analysis_archives_snapshot_from_readable_detail(
@@ -395,6 +410,7 @@ def test_run_daily_analysis_followup_task_vip_browser_fallback_routes_to_daily_a
     assert run.status == TaskStatus.pending
     assert run.current_stage == DAILY_ANALYSIS_STEP
     assert run.progress == 0.7
+    assert run.ended_at is None
     steps = {step.name: step for step in run.steps}
     fallback_step = steps[VIP_BROWSER_FALLBACK_STEP]
     assert fallback_step.status == StepStatus.success
@@ -596,6 +612,7 @@ def test_run_daily_analysis_followup_task_vip_browser_fallback_blocks_when_profi
     monkeypatch,
 ) -> None:
     session = _make_db_session(tmp_path)
+    ensure_execution_tables(session)
     missing_profile = tmp_path / "missing-profile"
     monkeypatch.setenv("JIN10_BROWSER_PROFILE", str(missing_profile))
     run = _seed_followup_run(session)
@@ -624,6 +641,20 @@ def test_run_daily_analysis_followup_task_vip_browser_fallback_blocks_when_profi
     assert steps[DAILY_ANALYSIS_STEP].status == StepStatus.pending
     assert steps[DAILY_ANALYSIS_STEP].blocked_reason is None
 
+    execution_events = session.query(ExecutionEvent).order_by(ExecutionEvent.created_at.asc()).all()
+    run_transitions = [
+        json.loads(event.payload or "{}")
+        for event in execution_events
+        if event.event_type == "RUN_STATUS_CHANGED"
+    ]
+    assert any(item.get("from_status") == "pending" and item.get("to_status") == "pending" and item.get("reason") == "vip_fallback_partial_snapshot" for item in run_transitions)
+    daily_analysis_transitions = [
+        json.loads(event.payload or "{}")
+        for event in execution_events
+        if event.event_type == "TASK_STATUS_CHANGED" and json.loads(event.payload or "{}").get("step_name") == DAILY_ANALYSIS_STEP
+    ]
+    assert any(item.get("from_status") == "blocked" and item.get("to_status") == "pending" and item.get("reason") == "step_requeued" for item in daily_analysis_transitions)
+
     status = run_daily_analysis_followup_task(session, run.id, storage_root=tmp_path)
 
     assert status == TaskStatus.success
@@ -635,6 +666,45 @@ def test_run_daily_analysis_followup_task_vip_browser_fallback_blocks_when_profi
     assert "vip_preview_only" in snapshot["quality_flags"]
     assert "vip_preview_only" in snapshot["risk_flags"]
     assert snapshot["key_articles"][0]["text_source"] == "preview"
+
+
+def test_run_daily_analysis_followup_task_requeues_blocked_analysis_step_via_state_machine(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    session = _make_db_session(tmp_path)
+    ensure_execution_tables(session)
+    missing_profile = tmp_path / "missing-profile"
+    monkeypatch.setenv("JIN10_BROWSER_PROFILE", str(missing_profile))
+    run = _seed_followup_run(session)
+    _route_run_to_vip_browser_fallback(session, run, storage_root=tmp_path)
+
+    status = run_daily_analysis_followup_task(session, run.id, storage_root=tmp_path)
+
+    assert status == TaskStatus.pending
+    session.refresh(run)
+    assert run.status == TaskStatus.pending
+    assert run.current_stage == DAILY_ANALYSIS_STEP
+    steps = {step.name: step for step in run.steps}
+    analysis_step = steps[DAILY_ANALYSIS_STEP]
+    assert analysis_step.status == StepStatus.pending
+    assert analysis_step.started_at is None
+    assert analysis_step.finished_at is None
+    assert analysis_step.blocked_reason is None
+
+    execution_events = session.query(ExecutionEvent).order_by(ExecutionEvent.created_at.asc()).all()
+    analysis_transitions = [
+        json.loads(event.payload or "{}")
+        for event in execution_events
+        if event.event_type == "TASK_STATUS_CHANGED"
+        and json.loads(event.payload or "{}").get("step_name") == DAILY_ANALYSIS_STEP
+    ]
+    assert any(
+        item.get("from_status") == "blocked"
+        and item.get("to_status") == "pending"
+        and item.get("reason") == "step_requeued"
+        for item in analysis_transitions
+    )
 
 
 def test_run_daily_analysis_followup_task_vip_browser_fallback_maps_fetcher_exception(

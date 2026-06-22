@@ -10,7 +10,11 @@ interface IngestionSummaryBarProps {
     consumerReady: number;
     total: number;
   };
+  degradedCount: number;
+  dataDate?: string | null;
+  stalenessDays?: number | null;
   lastRun?: string | null;
+  onRefresh?: () => void;
 }
 
 /** A single compact KPI card */
@@ -56,23 +60,67 @@ function KpiCard({
   );
 }
 
-export function IngestionSummaryBar({ summary, pipelineStats, lastRun }: IngestionSummaryBarProps) {
+export function IngestionSummaryBar({
+  summary,
+  pipelineStats,
+  degradedCount,
+  dataDate = null,
+  stalenessDays = null,
+  lastRun,
+  onRefresh,
+}: IngestionSummaryBarProps) {
   const total = pipelineStats.total;
+  const freshnessColor =
+    stalenessDays === null || stalenessDays === undefined
+      ? "var(--fg-5)"
+      : stalenessDays > 7
+        ? "var(--down)"
+        : stalenessDays > 2
+          ? "var(--warn)"
+          : "var(--up)";
+  const freshnessLabel =
+    stalenessDays === null || stalenessDays === undefined
+      ? "未标注"
+      : stalenessDays === 0
+        ? "今天"
+        : stalenessDays === 1
+          ? "1天前"
+          : `${stalenessDays}天前`;
 
   return (
-    <div className="flex items-center gap-2 shrink-0 flex-wrap">
-      {/* Title */}
-      <div className="flex flex-col mr-2">
+    <div className="data-ingestion-summary-bar flex items-center gap-2 shrink-0 flex-wrap">
+      <div className="mr-2 min-w-0 flex flex-1 flex-col">
         <span className="text-[14px] font-bold text-[var(--fg-1)]">数据接入运维台</span>
-        <span className="text-[9px] text-[var(--fg-5)]">
-          Data Ingestion Console · {total} sources
-          {lastRun ? ` · as of ${lastRun}` : ""}
-        </span>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-[var(--fg-5)]">
+          <span className="font-semibold text-[var(--fg-3)]">数据接入控制台</span>
+          <span className="text-[var(--fg-6)]">/</span>
+          <span>{total} 个数据源</span>
+          <span className="text-[var(--fg-6)]">/</span>
+          <span>{degradedCount} 个待处理项</span>
+          {dataDate ? (
+            <>
+              <span className="text-[var(--fg-6)]">/</span>
+              <span>数据日期</span>
+              <span className="fa-num font-semibold" style={{ color: freshnessColor }}>{dataDate}</span>
+              <span
+                className="rounded-full px-1.5 py-px text-[9px] font-semibold"
+                style={{ background: `${freshnessColor}18`, color: freshnessColor }}
+              >
+                {freshnessLabel}
+              </span>
+            </>
+          ) : null}
+          {lastRun ? (
+            <>
+              <span className="text-[var(--fg-6)]">/</span>
+              <span>最近运行</span>
+              <span className="fa-num text-[var(--fg-3)]">{lastRun}</span>
+            </>
+          ) : null}
+        </div>
       </div>
 
-      {/* KPI cards */}
       <div className="flex items-center gap-1.5 flex-wrap">
-        {/* Report availability */}
         {summary && (
           <KpiCard
             label="报告可用度"
@@ -83,35 +131,35 @@ export function IngestionSummaryBar({ summary, pipelineStats, lastRun }: Ingesti
           />
         )}
 
-        {/* LIVE */}
         {summary && (
-          <KpiCard label="LIVE" value={summary.available_count} icon={CheckCircle2} color="var(--up)" />
+          <KpiCard label="可用" value={summary.available_count} icon={CheckCircle2} color="var(--up)" />
         )}
 
-        {/* PARTIAL */}
         {summary && (
-          <KpiCard label="PARTIAL" value={summary.partial_count} icon={RefreshCw} color="var(--warn)" />
+          <KpiCard label="部分返回" value={summary.partial_count} icon={RefreshCw} color="var(--warn)" />
         )}
 
-        {/* Pipeline KPIs */}
-        <KpiCard label="Raw Ready" value={pipelineStats.rawReady} total={total} icon={Database} color="var(--brand)" />
-        <KpiCard label="Parse Ready" value={pipelineStats.parseReady} total={total} icon={Layers} color="var(--brand)" />
-        <KpiCard label="Snapshot" value={pipelineStats.snapshotReady} total={total} icon={Zap} color="var(--brand-cyan)" />
-        <KpiCard label="Consumer" value={pipelineStats.consumerReady} total={total} icon={CheckCircle2} color="var(--brand-cyan)" />
+        <KpiCard label="原始就绪" value={pipelineStats.rawReady} total={total} icon={Database} color="var(--brand)" />
+        <KpiCard label="解析就绪" value={pipelineStats.parseReady} total={total} icon={Layers} color="var(--brand)" />
+        <KpiCard label="快照就绪" value={pipelineStats.snapshotReady} total={total} icon={Zap} color="var(--brand-cyan)" />
+        <KpiCard label="消费就绪" value={pipelineStats.consumerReady} total={total} icon={CheckCircle2} color="var(--brand-cyan)" />
 
-        {/* Critical */}
         {summary && summary.error_count > 0 && (
-          <KpiCard label="CRITICAL" value={summary.error_count} icon={AlertTriangle} color="var(--down)" />
+          <KpiCard label="异常" value={summary.error_count} icon={AlertTriangle} color="var(--down)" />
         )}
       </div>
 
-      {/* Last run */}
-      {lastRun && (
-        <div className="ml-auto flex flex-col items-end shrink-0">
-          <span className="text-[8px] font-semibold uppercase tracking-wider text-[var(--fg-6)]">Last Run</span>
-          <span className="fa-num text-[11px] font-bold text-[var(--fg-3)]">{lastRun}</span>
-        </div>
-      )}
+      {onRefresh ? (
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="dashboard-command-button ml-auto"
+          title="刷新数据接入状态"
+        >
+          <RefreshCw size={13} />
+          <span>刷新</span>
+        </button>
+      ) : null}
     </div>
   );
 }

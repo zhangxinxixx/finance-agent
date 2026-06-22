@@ -56,6 +56,26 @@ export interface EventFlowTimelineItem {
   oil_impact?: string | null;
   market_validation?: Record<string, unknown>;
   market_snapshot?: Record<string, unknown>;
+  related_news_items?: EventFlowRelatedNewsItem[];
+}
+
+export interface EventFlowRelatedNewsItem {
+  news_item_id: string;
+  source_ref?: string | null;
+  source: string;
+  source_label: string;
+  source_type?: string | null;
+  title: string;
+  summary?: string | null;
+  importance?: string | null;
+  confidence?: number | null;
+  url?: string | null;
+  domain?: string | null;
+  published_at?: string | null;
+  raw_path?: string | null;
+  parsed_path?: string | null;
+  status?: string | null;
+  evaluation_role?: string | null;
 }
 
 export interface EventFlowChainStep {
@@ -99,6 +119,7 @@ export interface EventFlowTableRow {
   risk_level?: string | null;
   event_kind?: string | null;
   source_refs?: import("@/types/common").SourceRef[];
+  related_news_items?: EventFlowRelatedNewsItem[];
 }
 
 export interface EventFlowReportItem {
@@ -209,6 +230,36 @@ export interface Jin10ArticleBriefBundle {
   data_quality?: Record<string, unknown>;
 }
 
+export interface EventFlowProgressTrigger {
+  trigger_id: string;
+  trigger_type: string;
+  event_type: string;
+  priority: string;
+  status: string;
+  source_title: string;
+  evidence_text: string;
+  source_url: string;
+  created_at?: string | null;
+  published_at?: string | null;
+  source_domain?: string | null;
+  asset_tags: string[];
+  topic_tags: string[];
+  source_refs?: import("@/types/common").SourceRef[];
+  data_quality?: Record<string, unknown>;
+}
+
+export interface EventFlowProgressTriggerBundle {
+  status: "available" | "empty";
+  date: string;
+  run_id: string;
+  artifact_path: string;
+  as_of: string | null;
+  rule_version: string | null;
+  trigger_count: number;
+  triggers: EventFlowProgressTrigger[];
+  data_quality?: Record<string, unknown>;
+}
+
 export interface EventFlowActionRequest {
   action?: string;
   actor?: string;
@@ -248,6 +299,7 @@ export interface EventFlowViewModel {
   reports: EventFlowReportItem[];
   event_impact_summary?: EventImpactSummary | null;
   brief_summary?: EventFlowBriefSummary | null;
+  daily_analysis_triggers?: EventFlowProgressTriggerBundle | null;
   article_briefs?: Jin10ArticleBriefBundle | null;
   report_input_items?: EventFlowReportInputItem[];
   has_data: boolean;

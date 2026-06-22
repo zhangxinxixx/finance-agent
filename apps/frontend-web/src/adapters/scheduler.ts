@@ -53,6 +53,45 @@ export interface SchedulerOutputItem {
   size: number;
 }
 
+export interface SchedulerInputSourceSummary {
+  total: number;
+  connected: number;
+  data_only: number;
+  waiting: number;
+}
+
+export interface SchedulerInputSourceMatrixItem {
+  source_key: string;
+  source_label: string;
+  source_name: string;
+  source_group: string;
+  source_type: string;
+  access_method: string;
+  status: string | null;
+  health_state: string | null;
+  readiness_state: string | null;
+  gate_state: string | null;
+  gating_reason: string | null;
+  configured: boolean;
+  raw_ingested: boolean;
+  parsed: boolean;
+  analysis_ready: boolean;
+  latest_update_time: string | null;
+  latest_artifact: string | null;
+  expected_task_types: string[];
+  recent_task_types: string[];
+  task_log_status: "connected" | "data_only" | "waiting";
+  task_log_label: string;
+  latest_task_run: SchedulerTaskRun | null;
+  polling_strategy: {
+    mode?: string;
+    cadence?: string;
+    query?: string;
+  } | null;
+  database_tables: string[] | null;
+  notes: string | null;
+}
+
 export interface SchedulerOverviewResponse {
   generated_at: string;
   period_days: number;
@@ -66,6 +105,9 @@ export interface SchedulerOverviewResponse {
     data_sources_ok: number;
     data_sources_total: number;
     artifacts_today: number;
+    input_sources_connected?: number;
+    input_sources_data_only?: number;
+    input_sources_waiting?: number;
   };
   task_runs: SchedulerTaskRun[];
   category_stats: Record<string, SchedulerCategoryStat>;
@@ -81,6 +123,8 @@ export interface SchedulerOverviewResponse {
     today_count: number;
     recent_outputs: SchedulerOutputItem[];
   };
+  input_source_summary: SchedulerInputSourceSummary;
+  input_source_matrix: SchedulerInputSourceMatrixItem[];
 }
 
 // ── API ──
@@ -176,6 +220,15 @@ export interface RunStep {
   retry_count: number;
 }
 
+export interface RunEvent {
+  id: string;
+  run_id: string;
+  task_id: string | null;
+  event_type: string;
+  payload: Record<string, unknown>;
+  created_at: string | null;
+}
+
 export interface RunDetail {
   run_id: string;
   name: string;
@@ -187,27 +240,37 @@ export interface RunDetail {
   error_summary: string | null;
   started_at: string | null;
   ended_at: string | null;
+  events: RunEvent[];
   steps: RunStep[];
 }
 
 export async function fetchRunDetail(runId: string): Promise<RunDetail> {
-  // 并行拉取 detail + steps + artifacts
-  const [detail, stepsRes, artifacts] = await Promise.all([
+  // 并行拉取 detail + steps + artifacts + events
+  const [detail, stepsRes, artifacts, eventsRes] = await Promise.all([
     fetchJson<any>(`/api/runs/${runId}`),
     fetchJson<any>(`/api/runs/${runId}/steps`).catch(() => ({ steps: [] })),
     fetchJson<any>(`/api/runs/${runId}/artifacts`).catch(() => ({ artifacts: [] })),
+    fetchJson<any>(`/api/runs/${runId}/events`).catch(() => ({ events: [] })),
   ]);
   return {
     run_id: detail.run_id ?? runId,
     name: detail.name ?? detail.task_name ?? "",
     task_type: detail.task_type ?? "",
     status: detail.status ?? "",
-    trade_date: detail.trade_date ?? null,
+    trade_date: detail.trade_date ?? detail.trading_date ?? null,
     progress: detail.progress ?? null,
     error: detail.error ?? null,
     error_summary: detail.error_summary ?? null,
     started_at: detail.started_at ?? null,
     ended_at: detail.ended_at ?? null,
+    events: (eventsRes.events || []).map((event: any) => ({
+      id: String(event.id ?? ""),
+      run_id: String(event.run_id ?? runId),
+      task_id: event.task_id ? String(event.task_id) : null,
+      event_type: String(event.event_type ?? "UNKNOWN"),
+      payload: event.payload && typeof event.payload === "object" ? event.payload : {},
+      created_at: event.created_at ?? null,
+    })),
     steps: (stepsRes.steps || []).map((s: any) => ({
       ...s,
       artifact_refs: s.artifact_refs ?? artifacts.artifacts ?? null,

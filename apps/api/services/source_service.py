@@ -750,6 +750,16 @@ def _raw_ref_from_item(item: dict[str, Any]) -> dict[str, Any] | None:
             item.get("event_time"),
             item.get("time"),
         ),
+        "summary": _first_non_empty(
+            item.get("summary_zh"),
+            item.get("summary"),
+            item.get("analysis_summary"),
+            item.get("original_excerpt"),
+            item.get("evidence_text"),
+            item.get("filter_reason"),
+        ),
+        "importance": _first_non_empty(item.get("importance"), item.get("priority"), item.get("risk_level")),
+        "classification_confidence": item.get("classification_confidence"),
     }
 
 
@@ -912,6 +922,16 @@ def get_data_source_statuses() -> dict[str, Any]:
         finally:
             db.close()
     return {"sources": _merge_known_source_contract([])}
+
+
+def get_data_source_status_index() -> dict[str, dict[str, Any]]:
+    statuses = get_data_source_statuses()
+    index: dict[str, dict[str, Any]] = {}
+    for source in statuses.get("sources", []):
+        source_key = source.get("source_key")
+        if isinstance(source_key, str) and source_key not in index:
+            index[source_key] = source
+    return index
 
 
 def get_data_status_summary() -> dict[str, Any]:

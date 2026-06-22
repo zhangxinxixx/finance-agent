@@ -352,6 +352,43 @@ def test_upsert_agent_output_preserves_json_fields():
     assert result.invalid_conditions == []
 
 
+def test_upsert_agent_output_fails_fast_on_snapshot_run_mismatch():
+    """AgentOutput write should fail when snapshot_id resolves to a different run_id."""
+    from database.queries.analysis import upsert_agent_output, upsert_analysis_snapshot
+
+    session = _make_session()
+    artifact_path = "storage/features/snapshots/XAUUSD/2026-05-14/run-actual/premarket_snapshot.json"
+    snapshot_payload = dict(_SAMPLE_SNAPSHOT_PAYLOAD)
+    snapshot_payload["run_id"] = "run-actual"
+    upsert_analysis_snapshot(session, payload=snapshot_payload, artifact_path=artifact_path)
+
+    conflicting = dict(_SAMPLE_AGENT_OUTPUT_PAYLOAD)
+    conflicting["run_id"] = "run-conflict"
+
+    import pytest
+
+    with pytest.raises(ValueError, match="agent output lineage conflict"):
+        upsert_agent_output(session, payload=conflicting)
+
+
+def test_upsert_agent_output_accepts_consistent_snapshot_lineage():
+    """AgentOutput write remains valid when snapshot lineage is consistent."""
+    from database.queries.analysis import upsert_agent_output, upsert_analysis_snapshot
+
+    session = _make_session()
+    artifact_path = "storage/features/snapshots/XAUUSD/2026-05-14/run-001/premarket_snapshot.json"
+    snapshot = upsert_analysis_snapshot(session, payload=_SAMPLE_SNAPSHOT_PAYLOAD, artifact_path=artifact_path)
+
+    payload = dict(_SAMPLE_AGENT_OUTPUT_PAYLOAD)
+    payload["analysis_snapshot_db_id"] = snapshot.id
+
+    row = upsert_agent_output(session, payload=payload)
+    session.commit()
+
+    assert row.snapshot_id == _SAMPLE_SNAPSHOT_PAYLOAD["snapshot_id"]
+    assert row.run_id == _SAMPLE_SNAPSHOT_PAYLOAD["run_id"]
+
+
 # ═══════════════════════════════════════════════════════════════════
 # AgentOutput — query
 # ═══════════════════════════════════════════════════════════════════
@@ -525,6 +562,25 @@ def test_upsert_final_analysis_preserves_risk_and_watchlist():
     assert result.risk_points == [{"risk": "CPI surprise"}]
     assert result.watchlist == ["XAUUSD 2680 resistance"]
     assert result.invalid_conditions == []
+
+
+def test_upsert_final_analysis_fails_fast_on_snapshot_run_mismatch():
+    """FinalAnalysisResult write should fail when snapshot_id resolves to a different run_id."""
+    from database.queries.analysis import upsert_analysis_snapshot, upsert_final_analysis_result
+
+    session = _make_session()
+    artifact_path = "storage/features/snapshots/XAUUSD/2026-05-14/run-actual/premarket_snapshot.json"
+    snapshot_payload = dict(_SAMPLE_SNAPSHOT_PAYLOAD)
+    snapshot_payload["run_id"] = "run-actual"
+    upsert_analysis_snapshot(session, payload=snapshot_payload, artifact_path=artifact_path)
+
+    conflicting = dict(_SAMPLE_FINAL_PAYLOAD)
+    conflicting["run_id"] = "run-conflict"
+
+    import pytest
+
+    with pytest.raises(ValueError, match="final analysis lineage conflict"):
+        upsert_final_analysis_result(session, payload=conflicting, paths=_SAMPLE_FINAL_PATHS)
 
 
 # ═══════════════════════════════════════════════════════════════════

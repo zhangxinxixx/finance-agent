@@ -44,6 +44,13 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "options"
 SAMPLE_ROWS_PATH = FIXTURES / "sample_option_rows.json"
 
 
+@pytest.fixture(autouse=True)
+def _mock_source_status_index():
+    """Keep CME worker tests isolated from source gating unless a test opts in explicitly."""
+    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+        yield
+
+
 def _make_db_session(tmp_path: Path):
     """Create a SQLite session with all tables."""
     engine = create_engine(f"sqlite:///{(tmp_path / 'test.db').as_posix()}", echo=False)
@@ -881,6 +888,17 @@ class TestRunPremarket:
                 "step": step_name,
                 "status": "success",
                 "raw_path": "storage/raw/cme/daily_bulletin.pdf",
+                "input_snapshot_ids": {
+                    "parse_run_id": "parse-run-xyz-456",
+                    "raw_file_sha256": "sha-cme-001",
+                },
+                "source_refs": [
+                    {
+                        "source_id": "src-cme-runner-001",
+                        "source_name": "CME Bulletin",
+                        "source_type": "pdf",
+                    }
+                ],
             }
 
         with patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_run_cme_step):
@@ -890,8 +908,19 @@ class TestRunPremarket:
 
         assert result == TaskStatus.success
         artifacts = db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
-        assert [artifact.file_path for artifact in artifacts] == ["storage/raw/cme/daily_bulletin.pdf"]
-        assert artifacts[0].artifact_type == "raw_file"
+        artifacts_by_path = {artifact.file_path: artifact for artifact in artifacts}
+        assert artifacts_by_path["storage/raw/cme/daily_bulletin.pdf"].artifact_type == "raw_file"
+        raw_artifact_metadata = json.loads(artifacts_by_path["storage/raw/cme/daily_bulletin.pdf"].metadata_json or "{}")
+        assert raw_artifact_metadata["input_snapshot_ids"] == {
+            "parse_run_id": "parse-run-xyz-456",
+            "raw_file_sha256": "sha-cme-001",
+        }
+        assert json.loads(artifacts_by_path["storage/raw/cme/daily_bulletin.pdf"].source_refs or "[]")[0]["source_id"] == (
+            "src-cme-runner-001"
+        )
+        assert any(path.endswith("premarket_snapshot.json") for path in artifacts_by_path)
+        assert any(path.endswith("step_summaries.json") for path in artifacts_by_path)
+        assert any(path.endswith("run_provenance.json") for path in artifacts_by_path)
 
     def test_task_not_found_returns_failed(self, tmp_path):
         """Test that a non-existent task_id returns TaskStatus.failed."""

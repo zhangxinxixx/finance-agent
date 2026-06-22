@@ -14,6 +14,29 @@ import { LoadingSkeleton } from "@/components/shared/LoadingSkeleton";
 import { useAgentTasks } from "@/hooks/useAgentTasks";
 import { formatTradeDate } from "@/lib/date";
 import { compactId, formatPercent } from "@/lib/format";
+import type { TaskRunViewModel } from "@/types/agent-task";
+
+function normalizeMonitorDate(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const ymd = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (ymd) return ymd[1];
+  return null;
+}
+
+function resolveFeishuMonitorHref(selectedRun: TaskRunViewModel | null): string | null {
+  if (!selectedRun) return null;
+  const hasFeishuSource = (selectedRun.source_refs ?? []).some((ref: { source_ref?: string | null; label?: string | null }) => {
+    const raw = `${ref.source_ref ?? ""} ${ref.label ?? ""}`.toLowerCase();
+    return raw.includes("jin10_feishu") || raw.includes("飞书");
+  });
+  const taskType = String(selectedRun.task_type ?? "").toLowerCase();
+  if (!hasFeishuSource && !taskType.includes("daily_analysis_followup") && !taskType.includes("jin10")) {
+    return null;
+  }
+  const date = normalizeMonitorDate(selectedRun.dataDate ?? selectedRun.trading_date ?? null);
+  return date ? `/feishu-monitor?date=${encodeURIComponent(date)}` : "/feishu-monitor";
+}
 
 export function AgentTaskDetailPage() {
   const { runId } = useParams<{ runId: string }>();
@@ -35,6 +58,7 @@ export function AgentTaskDetailPage() {
     ],
     [selectedRun],
   );
+  const monitorHref = useMemo(() => resolveFeishuMonitorHref(selectedRun), [selectedRun]);
 
   useEffect(() => {
     setActiveTab("summary");
@@ -95,6 +119,7 @@ export function AgentTaskDetailPage() {
           source={agentTasks.data.source}
           metrics={metrics}
           onRefresh={agentTasks.refetch}
+          monitorHref={monitorHref}
         />
 
         {selectedRun.error_summary ? <FAWarningBanner title="运行异常" description={selectedRun.error_summary} tone="warn" /> : null}

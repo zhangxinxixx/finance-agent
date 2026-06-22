@@ -31,6 +31,7 @@ from apps.parsers.jin10.report import build_parsed_index
 from apps.parsers.jin10.report_image_parser import write_parse_artifacts
 from apps.renderer.html.jin10_daily import render_jin10_daily_html
 from apps.renderer.markdown.jin10_agent_analysis import render_jin10_agent_analysis_markdown
+from apps.runtime.state_machine import transition_task_run, transition_task_step
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 
 JIN10_CATEGORY_ALIASES: dict[str, list[str]] = {
@@ -339,7 +340,6 @@ def persist_jin10_task_runs(
                 .first()
             )
             if existing is not None:
-                existing.status = task_status
                 existing.current_stage = "agent" if quality_status == "accepted" else "quality_audit"
                 existing.error_summary = error_summary
                 existing_steps = (
@@ -350,31 +350,49 @@ def persist_jin10_task_runs(
                 )
                 for step in existing_steps:
                     if step.name == "agent_analysis":
-                        step.status = StepStatus.blocked if quality_status == "rejected" else StepStatus.success
-                        step.blocked_reason = "quality_audit rejected" if quality_status == "rejected" else None
+                        transition_task_step(
+                            session,
+                            step,
+                            StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
+                            source="jin10_adapter",
+                            blocked_reason="quality_audit rejected" if quality_status == "rejected" else None,
+                        )
                     if step.name == "quality_audit":
-                        step.status = StepStatus.blocked if quality_status == "rejected" else StepStatus.success
                         step.output_json = json.dumps(quality_audit, ensure_ascii=False)
                         step.error_json = json.dumps(quality_audit, ensure_ascii=False) if quality_status != "accepted" else None
-                        step.blocked_reason = "report rejected by quality audit" if quality_status == "rejected" else None
-                        break
-                else:
-                    session.add(
-                        TaskStep(
-                            task_run_id=existing.id,
-                            name="quality_audit",
-                            stage="quality",
-                            task_kind="validation",
-                            status=StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
-                            started_at=now,
-                            finished_at=now,
-                            duration_ms=0,
-                            step_order=5,
-                            output_json=json.dumps(quality_audit, ensure_ascii=False),
-                            error_json=json.dumps(quality_audit, ensure_ascii=False) if quality_status != "accepted" else None,
+                        transition_task_step(
+                            session,
+                            step,
+                            StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
+                            source="jin10_adapter",
                             blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
                         )
+                        break
+                else:
+                    quality_step = TaskStep(
+                        task_run_id=existing.id,
+                        name="quality_audit",
+                        stage="quality",
+                        task_kind="validation",
+                        status=StepStatus.pending,
+                        started_at=now,
+                        finished_at=now,
+                        duration_ms=0,
+                        step_order=5,
+                        output_json=json.dumps(quality_audit, ensure_ascii=False),
+                        error_json=json.dumps(quality_audit, ensure_ascii=False) if quality_status != "accepted" else None,
+                        blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
                     )
+                    session.add(quality_step)
+                    session.flush()
+                    transition_task_step(
+                        session,
+                        quality_step,
+                        StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
+                        source="jin10_adapter",
+                        blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
+                    )
+                transition_task_run(session, existing, task_status, source="jin10_adapter")
                 persisted.append({"task_run_id": str(existing.id), "run_id": run_id, "status": existing.status.value})
                 continue
 
@@ -382,7 +400,7 @@ def persist_jin10_task_runs(
                 name=f"jin10_report:{run_id}",
                 task_type="jin10_report",
                 workspace_id="jin10",
-                status=task_status,
+                status=TaskStatus.pending,
                 current_stage="agent" if quality_status == "accepted" else "quality_audit",
                 progress=1.0,
                 started_at=now,
@@ -427,89 +445,108 @@ def persist_jin10_task_runs(
             latency_ms = int((((report.get("agent_analysis_json") or {}).get("generated_from") or {}).get("latency_ms") or 0))
             agent_step_status = StepStatus.blocked if quality_status == "rejected" else StepStatus.success
 
-            session.add_all(
-                [
-                    TaskStep(
-                        task_run_id=task_run.id,
-                        name="external_ingest",
-                        stage="collector",
-                        task_kind="collector",
-                        status=StepStatus.success,
-                        started_at=now,
-                        finished_at=now,
-                        source_refs=source_refs,
-                        output_refs=raw_outputs,
-                        artifact_refs=raw_outputs,
-                        duration_ms=0,
-                        step_order=1,
-                    ),
-                    TaskStep(
-                        task_run_id=task_run.id,
-                        name="vlm_parse",
-                        stage="parser",
-                        task_kind="parser",
-                        status=StepStatus.success,
-                        started_at=now,
-                        finished_at=now,
-                        source_refs=source_refs,
-                        input_refs=raw_outputs,
-                        output_refs=parsed_outputs,
-                        artifact_refs=parsed_outputs,
-                        duration_ms=0,
-                        step_order=2,
-                    ),
-                    TaskStep(
-                        task_run_id=task_run.id,
-                        name="daily_analysis",
-                        stage="analysis",
-                        task_kind="analysis",
-                        status=StepStatus.success,
-                        started_at=now,
-                        finished_at=now,
-                        source_refs=source_refs,
-                        input_refs=parsed_outputs,
-                        output_refs=visual_outputs,
-                        artifact_refs=visual_outputs,
-                        duration_ms=0,
-                        step_order=3,
-                    ),
-                    TaskStep(
-                        task_run_id=task_run.id,
-                        name="agent_analysis",
-                        stage="agent",
-                        task_kind="agent",
-                        status=agent_step_status,
-                        started_at=now,
-                        finished_at=now,
-                        source_refs=source_refs,
-                        input_refs=visual_outputs,
-                        output_refs=agent_outputs,
-                        artifact_refs=agent_outputs,
-                        duration_ms=latency_ms,
-                        step_order=4,
-                        blocked_reason="quality_audit rejected" if quality_status == "rejected" else None,
-                    ),
-                    TaskStep(
-                        task_run_id=task_run.id,
-                        name="quality_audit",
-                        stage="quality",
-                        task_kind="validation",
-                        status=StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
-                        started_at=now,
-                        finished_at=now,
-                        source_refs=source_refs,
-                        input_refs=agent_outputs,
-                        output_refs=quality_output,
-                        artifact_refs=quality_output,
-                        duration_ms=0,
-                        step_order=5,
-                        output_json=json.dumps(quality_audit, ensure_ascii=False),
-                        error_json=json.dumps(quality_audit, ensure_ascii=False) if quality_status != "accepted" else None,
-                        blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
-                    ),
-                ]
-            )
+            steps = [
+                TaskStep(
+                    task_run_id=task_run.id,
+                    name="external_ingest",
+                    stage="collector",
+                    task_kind="collector",
+                    status=StepStatus.pending,
+                    started_at=now,
+                    finished_at=now,
+                    source_refs=source_refs,
+                    output_refs=raw_outputs,
+                    artifact_refs=raw_outputs,
+                    duration_ms=0,
+                    step_order=1,
+                ),
+                TaskStep(
+                    task_run_id=task_run.id,
+                    name="vlm_parse",
+                    stage="parser",
+                    task_kind="parser",
+                    status=StepStatus.pending,
+                    started_at=now,
+                    finished_at=now,
+                    source_refs=source_refs,
+                    input_refs=raw_outputs,
+                    output_refs=parsed_outputs,
+                    artifact_refs=parsed_outputs,
+                    duration_ms=0,
+                    step_order=2,
+                ),
+                TaskStep(
+                    task_run_id=task_run.id,
+                    name="daily_analysis",
+                    stage="analysis",
+                    task_kind="analysis",
+                    status=StepStatus.pending,
+                    started_at=now,
+                    finished_at=now,
+                    source_refs=source_refs,
+                    input_refs=parsed_outputs,
+                    output_refs=visual_outputs,
+                    artifact_refs=visual_outputs,
+                    duration_ms=0,
+                    step_order=3,
+                ),
+                TaskStep(
+                    task_run_id=task_run.id,
+                    name="agent_analysis",
+                    stage="agent",
+                    task_kind="agent",
+                    status=StepStatus.pending,
+                    started_at=now,
+                    finished_at=now,
+                    source_refs=source_refs,
+                    input_refs=visual_outputs,
+                    output_refs=agent_outputs,
+                    artifact_refs=agent_outputs,
+                    duration_ms=latency_ms,
+                    step_order=4,
+                ),
+                TaskStep(
+                    task_run_id=task_run.id,
+                    name="quality_audit",
+                    stage="quality",
+                    task_kind="validation",
+                    status=StepStatus.pending,
+                    started_at=now,
+                    finished_at=now,
+                    source_refs=source_refs,
+                    input_refs=agent_outputs,
+                    output_refs=quality_output,
+                    artifact_refs=quality_output,
+                    duration_ms=0,
+                    step_order=5,
+                    output_json=json.dumps(quality_audit, ensure_ascii=False),
+                    error_json=json.dumps(quality_audit, ensure_ascii=False) if quality_status != "accepted" else None,
+                    blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
+                ),
+            ]
+            session.add_all(steps)
             session.flush()
+            for step in steps:
+                if step.name == "agent_analysis":
+                    transition_task_step(
+                        session,
+                        step,
+                        agent_step_status,
+                        source="jin10_adapter",
+                        blocked_reason="quality_audit rejected" if quality_status == "rejected" else None,
+                    )
+                    continue
+                if step.name == "quality_audit":
+                    transition_task_step(
+                        session,
+                        step,
+                        StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
+                        source="jin10_adapter",
+                        blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
+                    )
+                    continue
+                transition_task_step(session, step, StepStatus.success, source="jin10_adapter")
+            transition_task_run(session, task_run, task_status, source="jin10_adapter")
             persisted.append({"task_run_id": str(task_run.id), "run_id": run_id, "status": task_run.status.value})
         if own_session:
             session.commit()
@@ -745,7 +782,6 @@ def _should_reparse_external_report(
             "欢迎点击查看",
             "更多金银信号和消息汇总",
             "来看今天最新的金银报告",
-            "missing_openai_api_key",
             "图表解析:unavailable",
         )
     ):

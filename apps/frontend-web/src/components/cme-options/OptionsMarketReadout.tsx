@@ -32,6 +32,12 @@ function sourceStatusTone(status: CMEOptionsDataSource["status"] | null | undefi
   return "dim";
 }
 
+function sourceStatusLabel(status: CMEOptionsDataSource["status"] | null | undefined) {
+  if (status === "FINAL") return "终版";
+  if (status === "PRELIM") return "预览";
+  return "未知";
+}
+
 function strongestBySide(wallScores: CMEOptionsWallScore[], side: "CALL" | "PUT") {
   return [...wallScores]
     .filter((wall) => wall.side === side)
@@ -57,14 +63,14 @@ export function OptionsMarketReadout({ dataSource, netGexAggregate, wallScores, 
     <FACard
       title="结构摘要"
       accent="brand"
-      action={<FAStatusPill tone={sourceStatusTone(dataSource.status)}>{dataSource.status}</FAStatusPill>}
+      action={<FAStatusPill tone={sourceStatusTone(dataSource.status)}>{sourceStatusLabel(dataSource.status)}</FAStatusPill>}
       bodyClassName="space-y-2"
     >
       <div className="grid gap-2 sm:grid-cols-2">
-        <FAMetricCard label="gamma_zero" value={formatPrice(gammaZero, 1)} hint="价格围绕该线切换 Gamma 环境" />
-        <FAMetricCard label="pin_wall" value={formatPrice(pinWall?.strike)} hint={`持仓 ${formatPrice(pinWall?.oi)} · 评分 ${formatScore(pinWall?.wall_score)}`} />
-        <FAMetricCard label="call_resistance" value={formatPrice(callWall?.strike)} hint={`评分 ${formatScore(callWall?.wall_score)} · 持仓 ${formatPrice(callWall?.oi)}`} trend="down" delta="上方压制" />
-        <FAMetricCard label="put_support" value={formatPrice(putWall?.strike)} hint={`评分 ${formatScore(putWall?.wall_score)} · 持仓 ${formatPrice(putWall?.oi)}`} trend="up" delta="下方支撑" />
+        <FAMetricCard label="伽马零点" value={formatPrice(gammaZero, 1)} hint="价格围绕该线切换伽马环境" />
+        <FAMetricCard label="吸附墙" value={formatPrice(pinWall?.strike)} hint={`持仓 ${formatPrice(pinWall?.oi)} · 评分 ${formatScore(pinWall?.wall_score)}`} />
+        <FAMetricCard label="看涨压制" value={formatPrice(callWall?.strike)} hint={`评分 ${formatScore(callWall?.wall_score)} · 持仓 ${formatPrice(callWall?.oi)}`} trend="down" delta="上方压制" />
+        <FAMetricCard label="看跌支撑" value={formatPrice(putWall?.strike)} hint={`评分 ${formatScore(putWall?.wall_score)} · 持仓 ${formatPrice(putWall?.oi)}`} trend="up" delta="下方支撑" />
       </div>
 
       {calibration.calibration_warnings?.[0] ? (

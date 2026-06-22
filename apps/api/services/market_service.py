@@ -49,28 +49,30 @@ def get_jin10_daily_report(date: str, run_id: str) -> dict[str, Any] | None:
 
 
 def get_jin10_weekly_report_latest() -> dict[str, Any] | None:
-    """查找最新周报：先查 storage/outputs/jin10，再查 ~/jin10-reports/"""
-    # 先查 storage 中的周报标记
+    """查找最新周报：合并 storage/outputs/jin10 与 ~/jin10-reports 后按日期取最新。"""
+    candidates: list[tuple[str, str, dict[str, Any]]] = []
+
     base = _PROJECT_ROOT / "storage" / "outputs" / "jin10"
     if base.exists():
-        for date_dir in sorted((d for d in base.iterdir() if d.is_dir()), reverse=True):
-            for run_dir in sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True):
+        for date_dir in (d for d in base.iterdir() if d.is_dir()):
+            for run_dir in (d for d in date_dir.iterdir() if d.is_dir()):
                 result = _load_jin10_daily_report(date_dir.name, run_dir.name)
                 if result is None:
                     continue
                 if _is_weekly_storage_report(result):
                     report_meta = _load_jin10_report_meta(date_dir.name, run_dir.name)
-                    return _merge_report_meta(result, report_meta) if report_meta else result
-    # 回退：直接查 ~/jin10-reports 中所有子目录找周报
+                    weekly = _merge_report_meta(result, report_meta) if report_meta else result
+                    candidates.append((str(weekly.get("date") or date_dir.name), str(weekly.get("article_id") or weekly.get("run_id") or run_dir.name), weekly))
+
     external = Path("~/jin10-reports").expanduser()
     if external.exists():
-        for date_dir in sorted((d for d in external.iterdir() if d.is_dir()), reverse=True):
-            for sub_dir in sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True):
-                for article_dir in sorted((d for d in sub_dir.iterdir() if d.is_dir()), reverse=True):
+        for date_dir in (d for d in external.iterdir() if d.is_dir()):
+            for sub_dir in (d for d in date_dir.iterdir() if d.is_dir()):
+                for article_dir in (d for d in sub_dir.iterdir() if d.is_dir()):
                     meta = _load_jin10_report_meta(date_dir.name, article_dir.name)
                     if meta and _is_explicit_jin10_weekly(meta):
                         content = _read_jin10_report_content(date_dir.name, article_dir.name)
-                        return {
+                        weekly = {
                             "article_id": meta.get("id"),
                             "date": meta.get("date"),
                             "title": meta.get("title"),
@@ -81,7 +83,11 @@ def get_jin10_weekly_report_latest() -> dict[str, Any] | None:
                             "content": content,
                             "format": "markdown",
                         }
-    return None
+                        candidates.append((str(weekly.get("date") or date_dir.name), str(weekly.get("article_id") or article_dir.name), weekly))
+
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (item[0], item[1]), reverse=True)[0][2]
 
 
 def _merge_report_meta(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:

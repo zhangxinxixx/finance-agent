@@ -17,6 +17,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,9 +27,136 @@ from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.agent_read_model import build_event_impact_agent_summary
 from apps.api.services.daily_analysis_followup_service import get_daily_analysis_followups_latest
 from apps.api.services.daily_analysis_trigger_service import get_daily_analysis_triggers_latest
-from apps.api.services.jin10_article_brief_service import get_jin10_article_briefs_latest
 
 logger = logging.getLogger(__name__)
+
+_TRANSLATION_CACHE: dict[tuple[str, str], str] = {}
+_TRANSLATION_DISABLED_UNTIL: dict[tuple[str, str], float] = {}
+_TRANSLATION_ATTEMPTS: dict[tuple[str, str], list[float]] = {}
+_TRANSLATION_WINDOW_SECONDS = 60
+_TRANSLATION_MAX_CALLS_PER_WINDOW = max(1, int(os.getenv("EVENT_FLOW_TRANSLATION_MAX_CALLS_PER_MINUTE", "2")))
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _has_chinese(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+
+def _looks_like_english_block(text: str) -> bool:
+    if not text or _has_chinese(text):
+        return False
+    letters = len(re.findall(r"[A-Za-z]", text))
+    return letters >= 24 and letters >= max(12, len(text) // 5)
+
+
+def _should_translate_long_english(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not _looks_like_english_block(normalized):
+        return False
+    return len(normalized) >= 72 or len(normalized.split()) >= 12
+
+
+def _translation_target() -> tuple[str, str] | None:
+    provider = os.getenv("EVENT_FLOW_TRANSLATION_PROVIDER", "").strip()
+    if not provider:
+        return None
+    model = os.getenv("EVENT_FLOW_TRANSLATION_MODEL", "").strip()
+    if provider == "mimo" and not model:
+        model = "mimo-v2.5"
+    return provider, model
+
+
+def _translation_cooldown_active(provider: str, model: str) -> bool:
+    disabled_until = _TRANSLATION_DISABLED_UNTIL.get((provider, model), 0.0)
+    return disabled_until > time.time()
+
+
+def _disable_translation_temporarily(provider: str, model: str, *, seconds: int = 120) -> None:
+    _TRANSLATION_DISABLED_UNTIL[(provider, model)] = time.time() + max(1, seconds)
+
+
+def _translation_budget_available(provider: str, model: str) -> bool:
+    now = time.time()
+    key = (provider, model)
+    recent = [stamp for stamp in _TRANSLATION_ATTEMPTS.get(key, []) if now - stamp < _TRANSLATION_WINDOW_SECONDS]
+    _TRANSLATION_ATTEMPTS[key] = recent
+    return len(recent) < _TRANSLATION_MAX_CALLS_PER_WINDOW
+
+
+def _mark_translation_attempt(provider: str, model: str) -> None:
+    key = (provider, model)
+    _TRANSLATION_ATTEMPTS.setdefault(key, []).append(time.time())
+
+
+def _should_translate_english(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if _should_translate_long_english(normalized):
+        return True
+    return False
+
+
+def _translate_english(text: Any, *, field: str) -> str:
+    normalized = _normalize_text(text)
+    if not _should_translate_english(normalized):
+        return normalized
+
+    cache_key = (field, normalized)
+    if cache_key in _TRANSLATION_CACHE:
+        return _TRANSLATION_CACHE[cache_key]
+
+    target = _translation_target()
+    if target is None:
+        return normalized
+
+    provider, model = target
+    if _translation_cooldown_active(provider, model):
+        return normalized
+    if not _translation_budget_available(provider, model):
+        return normalized
+    _mark_translation_attempt(provider, model)
+    try:
+        from apps.llm.gateway import chat_sync
+
+        response = chat_sync(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是金融事件翻译中枢。把用户给出的英文金融资讯翻译成简体中文。"
+                        "保留事实、时间、数字、机构、资产和方向，不扩写，不解释，不加前后缀，只输出中文结果。"
+                    ),
+                },
+                {"role": "user", "content": normalized},
+            ],
+            provider=provider,
+            model=model,
+            temperature=0.0,
+            max_tokens=min(2048, max(256, len(normalized) * 2)),
+        )
+    except Exception as exc:
+        logger.warning(
+            "event_flow mimo translation failed",
+            exc_info=True,
+            extra={"field": field, "provider": provider, "model": model},
+        )
+        last_error = str(exc)
+        if "429" in last_error or "Too many requests" in last_error:
+            _disable_translation_temporarily(provider, model)
+        _TRANSLATION_CACHE[cache_key] = normalized
+        return normalized
+
+    translated = _normalize_text(response.content)
+    if not translated or _should_translate_english(translated):
+        return normalized
+    _TRANSLATION_CACHE[cache_key] = translated
+    return translated
+
+
+def _translate_long_english(text: Any, *, field: str) -> str:
+    return _translate_english(text, field=field)
 
 
 def build_event_flow_overview() -> dict[str, Any]:
@@ -52,12 +182,12 @@ def build_event_flow_overview() -> dict[str, Any]:
         result["daily_analysis_followups"] = daily_analysis_followups
 
     daily_analysis_triggers = get_daily_analysis_triggers_latest(project_root=_PROJECT_ROOT)
+    daily_analysis_triggers = _merge_key_flash_triggers(daily_analysis_triggers)
     if daily_analysis_triggers:
         result["daily_analysis_triggers"] = daily_analysis_triggers
 
-    article_briefs = get_jin10_article_briefs_latest(project_root=_PROJECT_ROOT)
-    if article_briefs:
-        result["article_briefs"] = article_briefs
+    # Event Flow 暂不注入金十文章/报告摘要，避免报告中心内容在事件流每页重复展示。
+    article_briefs = None
 
     brief = _load_latest_daily_market_brief()
     if brief and not _has_newer_news_signal(
@@ -73,10 +203,8 @@ def build_event_flow_overview() -> dict[str, Any]:
         result["source_refs"] = _normalize_brief_source_refs(brief)
         if daily_analysis_triggers:
             result["source_refs"].append(_daily_analysis_triggers_source_ref(daily_analysis_triggers))
-        if article_briefs:
-            result["source_refs"].append(_article_briefs_source_ref(article_briefs))
         result["warnings"].extend(str(warning) for warning in brief.get("warnings", []) if warning)
-        return result
+        return _finalize_event_flow_result(result)
 
     if brief:
         result["warnings"].append("daily_market_brief is older than the latest Jin10 follow-up read model.")
@@ -85,7 +213,7 @@ def build_event_flow_overview() -> dict[str, Any]:
             daily_analysis_triggers=daily_analysis_triggers,
             article_briefs=article_briefs,
         )
-        return result
+        return _finalize_event_flow_result(result)
 
     # ── 尝试从 Jin10 快照提取事件数据 ──
     jin10 = _load_jin10_from_snapshot()
@@ -122,43 +250,17 @@ def build_event_flow_overview() -> dict[str, Any]:
         result["updated_at"] = daily_analysis_triggers.get("as_of")
         result["events"].extend(_normalize_daily_analysis_trigger_events(daily_analysis_triggers))
         result["source_refs"].append(_daily_analysis_triggers_source_ref(daily_analysis_triggers))
-        if article_briefs:
-            result["events"].extend(_normalize_article_brief_events(article_briefs))
-            result["source_refs"].append(_article_briefs_source_ref(article_briefs))
 
-    if article_briefs and not result["events"]:
-        result["status"] = "partial"
-        result["source"] = "jin10_article_briefs"
-        result["updated_at"] = article_briefs.get("as_of")
-        result["events"].extend(_normalize_article_brief_events(article_briefs))
-        result["source_refs"].append(_article_briefs_source_ref(article_briefs))
-
-    if not result["events"] and not article_briefs and not daily_analysis_triggers:
+    if not result["events"] and not daily_analysis_triggers:
         result["warnings"].append("Jin10 快讯/日历数据当前不可用，页面展示 mock 数据。")
 
-    return result
+    return _finalize_event_flow_result(result)
 
 
 def build_event_flow_briefs() -> dict[str, Any]:
-    """构建当日快讯 / 金十文章只读 read model。"""
+    """构建当日快讯只读 read model。"""
     overview = build_event_flow_overview()
-    article_briefs = overview.get("article_briefs") if isinstance(overview.get("article_briefs"), dict) else None
-    if article_briefs:
-        return {
-            "status": article_briefs.get("status") or overview.get("status") or "partial",
-            "source": "jin10_article_briefs",
-            "updated_at": article_briefs.get("as_of") or overview.get("updated_at"),
-            "date": article_briefs.get("date"),
-            "run_id": article_briefs.get("run_id"),
-            "artifact_path": article_briefs.get("artifact_path"),
-            "brief_count": int(article_briefs.get("brief_count") or len(article_briefs.get("briefs") or [])),
-            "briefs": article_briefs.get("briefs") if isinstance(article_briefs.get("briefs"), list) else [],
-            "source_refs": [_article_briefs_source_ref(article_briefs)],
-            "page_source_refs": overview.get("source_refs") if isinstance(overview.get("source_refs"), list) else [],
-            "warnings": overview.get("warnings") if isinstance(overview.get("warnings"), list) else [],
-        }
-
-    brief_events = [event for event in _overview_events(overview) if event.get("kind") in {"jin10_article_brief", "daily_analysis_trigger", "flash", "article"}]
+    brief_events = [event for event in _overview_events(overview) if event.get("kind") in {"daily_analysis_trigger", "flash", "article"}]
     return {
         "status": overview.get("status") or "unavailable",
         "source": overview.get("source") or "unavailable",
@@ -295,6 +397,242 @@ def _overview_events(overview: dict[str, Any]) -> list[dict[str, Any]]:
     return [event for event in events if isinstance(event, dict)] if isinstance(events, list) else []
 
 
+def _finalize_event_flow_result(result: dict[str, Any]) -> dict[str, Any]:
+    preferred_ids = set()
+    brief_summary = result.get("brief_summary") if isinstance(result.get("brief_summary"), dict) else {}
+    market_mainline = brief_summary.get("market_mainline") if isinstance(brief_summary.get("market_mainline"), dict) else {}
+    primary_event_id = str(market_mainline.get("primary_event_id") or "").strip()
+    if primary_event_id:
+        preferred_ids.add(primary_event_id)
+
+    events = _overview_events(result)
+    result["events"] = _dedupe_event_flow_events(events, preferred_ids=preferred_ids)
+    if primary_event_id and not any(event.get("id") == primary_event_id for event in result["events"]):
+        replacement = next(
+            (
+                event
+                for event in result["events"]
+                if primary_event_id in {str(item) for item in event.get("related_event_ids") or []}
+            ),
+            None,
+        )
+        if replacement is not None:
+            market_mainline["primary_event_id"] = replacement.get("id")
+    return result
+
+
+def _dedupe_event_flow_events(events: list[dict[str, Any]], *, preferred_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    preferred_ids = preferred_ids or set()
+    buckets: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    for event in events:
+        key = _event_dedupe_key(event)
+        if key not in buckets:
+            buckets[key] = dict(event)
+            order.append(key)
+            continue
+        buckets[key] = _merge_duplicate_event(buckets[key], event, preferred_ids=preferred_ids)
+
+    return sorted(
+        (buckets[key] for key in order),
+        key=_event_sort_key,
+        reverse=True,
+    )[:50]
+
+
+def _event_dedupe_key(event: dict[str, Any]) -> str:
+    kind = str(event.get("kind") or "").strip()
+    event_type = _normalize_event_key_text(event.get("event_type"))
+    assets = "|".join(sorted(_normalize_asset_key(asset) for asset in event.get("affected_assets") or [] if asset))
+    title = _normalize_event_key_text(event.get("title"))
+
+    if kind == "calendar":
+        return f"calendar:{title}:{_event_date_key(event.get('time'))}"
+    if event_type:
+        return f"event_type:{event_type}:assets:{assets or 'none'}"
+    if title:
+        return f"title:{title}"
+    return f"id:{event.get('id') or _stable_event_id('event', event.get('time'), event.get('source'))}"
+
+
+def _normalize_event_key_text(value: Any) -> str:
+    text = str(value or "").lower().strip()
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"[^\w\u4e00-\u9fff]+", "", text)
+    return text[:80]
+
+
+def _normalize_asset_key(value: Any) -> str:
+    return str(value or "").lower().strip().replace(" ", "")
+
+
+def _event_date_key(value: Any) -> str:
+    text = str(value or "").strip()
+    return text[:10] if len(text) >= 10 else text
+
+
+def _merge_duplicate_event(existing: dict[str, Any], incoming: dict[str, Any], *, preferred_ids: set[str]) -> dict[str, Any]:
+    if _event_rank(incoming, preferred_ids=preferred_ids) > _event_rank(existing, preferred_ids=preferred_ids):
+        primary = dict(incoming)
+        secondary = existing
+    else:
+        primary = dict(existing)
+        secondary = incoming
+
+    related_ids = _ordered_unique(
+        [
+            str(primary.get("id") or ""),
+            *(str(item) for item in primary.get("related_event_ids") or []),
+            str(secondary.get("id") or ""),
+            *(str(item) for item in secondary.get("related_event_ids") or []),
+        ]
+    )
+    source_refs = _merge_source_refs(
+        primary.get("source_refs") if isinstance(primary.get("source_refs"), list) else [],
+        secondary.get("source_refs") if isinstance(secondary.get("source_refs"), list) else [],
+    )
+    related_news_items = _merge_related_news_items(
+        primary.get("related_news_items") if isinstance(primary.get("related_news_items"), list) else [],
+        secondary.get("related_news_items") if isinstance(secondary.get("related_news_items"), list) else [],
+    )
+    affected_assets = _ordered_unique(
+        [
+            *(str(item) for item in primary.get("affected_assets") or [] if item),
+            *(str(item) for item in secondary.get("affected_assets") or [] if item),
+        ]
+    )
+
+    primary["related_event_ids"] = related_ids
+    primary["duplicate_count"] = max(1, int(primary.get("duplicate_count") or 1)) + max(1, int(secondary.get("duplicate_count") or 1))
+    if source_refs:
+        primary["source_refs"] = source_refs
+    if related_news_items:
+        primary["related_news_items"] = related_news_items
+    if affected_assets:
+        primary["affected_assets"] = affected_assets
+    for field in ("market_validation", "market_snapshot", "impact_path"):
+        if field not in primary and field in secondary:
+            primary[field] = secondary[field]
+    return primary
+
+
+def _event_rank(event: dict[str, Any], *, preferred_ids: set[str]) -> tuple[int, int, int, int, int, float]:
+    return (
+        1 if str(event.get("id") or "") in preferred_ids else 0,
+        _risk_rank(event.get("risk_level")),
+        _validation_rank(event),
+        _importance_rank(event.get("importance")),
+        _kind_rank(event.get("kind")),
+        _event_timestamp_rank(event.get("time")),
+    )
+
+
+def _event_sort_key(event: dict[str, Any]) -> tuple[int, int, int, int, float]:
+    return (
+        _risk_rank(event.get("risk_level")),
+        _validation_rank(event),
+        _importance_rank(event.get("importance")),
+        _kind_rank(event.get("kind")),
+        _event_timestamp_rank(event.get("time")),
+    )
+
+
+def _validation_rank(event: dict[str, Any]) -> int:
+    market_validation = event.get("market_validation")
+    if isinstance(market_validation, dict) and market_validation:
+        return 2
+    if event.get("market_snapshot") is not None:
+        return 1
+    return 0
+
+
+def _risk_rank(value: Any) -> int:
+    normalized = str(value or "").lower()
+    if normalized in {"high", "高"}:
+        return 3
+    if normalized in {"medium", "中"}:
+        return 2
+    if normalized in {"low", "低"}:
+        return 1
+    return 0
+
+
+def _importance_rank(value: Any) -> int:
+    normalized = str(value or "").lower()
+    if normalized in {"高", "high", "3"}:
+        return 3
+    if normalized in {"中", "medium", "2"}:
+        return 2
+    if normalized in {"低", "low", "1"}:
+        return 1
+    return 0
+
+
+def _kind_rank(value: Any) -> int:
+    return {
+        "confirmed_event": 5,
+        "daily_analysis_trigger": 4,
+        "candidate_event": 3,
+        "unconfirmed_risk": 2,
+        "jin10_article_brief": 1,
+        "article": 1,
+        "flash": 1,
+        "calendar": 0,
+    }.get(str(value or ""), 0)
+
+
+def _event_timestamp_rank(value: Any) -> float:
+    parsed = _parse_as_of(value)
+    return parsed.timestamp() if parsed is not None else 0.0
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _merge_source_refs(*groups: list[Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for ref in group:
+            if not isinstance(ref, dict):
+                continue
+            key = "|".join(str(ref.get(field) or "") for field in ("source_ref", "snapshot_id", "artifact_path", "path"))
+            if not key.strip("|"):
+                key = json.dumps(ref, sort_keys=True, ensure_ascii=False)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(dict(ref))
+    return refs
+
+
+def _merge_related_news_items(*groups: list[Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("news_item_id") or item.get("source_ref") or item.get("url") or item.get("title") or "").strip()
+            if not key:
+                key = json.dumps(item, sort_keys=True, ensure_ascii=False)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(dict(item))
+    return items[:20]
+
+
 def _find_event(overview: dict[str, Any], event_id: str) -> dict[str, Any] | None:
     for event in _overview_events(overview):
         if str(event.get("id")) == event_id:
@@ -397,10 +735,17 @@ def _parse_as_of(value: Any) -> datetime | None:
     return parsed
 
 
+def _date_from_timestamp(value: Any) -> str | None:
+    parsed = _parse_as_of(value)
+    if parsed is None:
+        return None
+    return parsed.date().isoformat()
+
+
 def _daily_analysis_triggers_source_ref(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "source_ref": f"daily_analysis_triggers:{payload.get('date')}/{payload.get('run_id')}",
-        "label": "Daily Analysis Triggers",
+        "label": "日度分析触发器",
         "status": payload.get("status") or "ok",
         "path": payload.get("artifact_path"),
     }
@@ -409,10 +754,129 @@ def _daily_analysis_triggers_source_ref(payload: dict[str, Any]) -> dict[str, An
 def _article_briefs_source_ref(article_briefs: dict[str, Any]) -> dict[str, Any]:
     return {
         "source_ref": f"jin10_article_briefs:{article_briefs.get('date')}/{article_briefs.get('run_id')}",
-        "label": "Jin10 Article Briefs",
+        "label": "金十文章简报",
         "status": article_briefs.get("status") or "ok",
         "path": article_briefs.get("artifact_path"),
     }
+
+
+def _flash_cache_path() -> Any:
+    return _PROJECT_ROOT / "storage" / "outputs" / "jin10" / "flash_cache.json"
+
+
+def _load_key_flash_items() -> tuple[list[dict[str, Any]], str | None]:
+    path = _flash_cache_path()
+    if not path.exists():
+        return [], None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("failed to read jin10 flash cache for event flow", exc_info=True, extra={"path": str(path)})
+        return [], None
+    if not isinstance(payload, dict):
+        return [], None
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    return [
+        item
+        for item in items
+        if isinstance(item, dict)
+        and item.get("is_key_event") is True
+        and str(item.get("importance") or "").lower() in {"high", "高"}
+    ], payload.get("generated_at")
+
+
+def _flash_source_ref(item: dict[str, Any], index: int) -> dict[str, Any]:
+    url = str(item.get("url") or "").strip()
+    source_ref = f"jin10_flash:{_stable_event_id('key_flash', url or item.get('content') or item.get('title') or index)}"
+    return {
+        "source_ref": source_ref,
+        "provider": "jin10_flash",
+        "label": "金十重点快讯",
+        "status": "ok",
+        "source_url": url or None,
+        "generated_at": item.get("time"),
+    }
+
+
+def _key_flash_trigger(item: dict[str, Any], index: int, *, generated_at: str | None) -> dict[str, Any]:
+    title = str(item.get("content") or item.get("title") or "").strip()
+    summary = str(item.get("summary_zh") or item.get("filter_reason") or title).strip()
+    source_ref = _flash_source_ref(item, index)
+    return {
+        "trigger_id": source_ref["source_ref"],
+        "trigger_type": "jin10_key_flash",
+        "event_type": "flash_news",
+        "priority": item.get("importance") or "medium",
+        "status": "available",
+        "source_key": "jin10_flash",
+        "source_title": title,
+        "evidence_text": summary,
+        "source_url": item.get("url") or "",
+        "created_at": item.get("time") or generated_at,
+        "published_at": item.get("time") or generated_at,
+        "asset_tags": item.get("signal_tags") if isinstance(item.get("signal_tags"), list) else [],
+        "topic_tags": ["重点快讯"],
+        "source_refs": [source_ref],
+        "data_quality": {
+            "origin": "jin10_flash_cache",
+            "classification_provider": item.get("classification_provider"),
+            "classification_model": item.get("classification_model"),
+            "classification_confidence": item.get("classification_confidence"),
+        },
+    }
+
+
+def _merge_key_flash_triggers(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    key_items, generated_at = _load_key_flash_items()
+    if not key_items:
+        return payload
+
+    base = dict(payload or {})
+    existing = [item for item in base.get("triggers", []) if isinstance(item, dict)] if isinstance(base.get("triggers"), list) else []
+    seen = {
+        str(item.get("source_url") or item.get("trigger_id") or item.get("source_title") or "").strip()
+        for item in existing
+    }
+    key_triggers: list[dict[str, Any]] = []
+    for index, item in enumerate(key_items):
+        trigger = _key_flash_trigger(item, index, generated_at=generated_at)
+        dedupe_key = str(trigger.get("source_url") or trigger.get("trigger_id") or trigger.get("source_title") or "").strip()
+        if dedupe_key and dedupe_key in seen:
+            continue
+        if dedupe_key:
+            seen.add(dedupe_key)
+        key_triggers.append(trigger)
+
+    triggers = existing + key_triggers
+    if not triggers:
+        return payload
+
+    priority_counts: dict[str, int] = {}
+    for item in triggers:
+        priority = str(item.get("priority") or "normal")
+        priority_counts[priority] = priority_counts.get(priority, 0) + 1
+
+    base.update({
+        "status": "available",
+        "date": base.get("date") or _date_from_timestamp(generated_at),
+        "run_id": base.get("run_id") or "jin10-flash-cache",
+        "artifact_path": base.get("artifact_path") or "storage/outputs/jin10/flash_cache.json",
+        "as_of": base.get("as_of") or generated_at,
+        "rule_version": base.get("rule_version") or "jin10-key-flash-cache-v1",
+        "trigger_count": len(triggers),
+        "priority_counts": priority_counts,
+        "source_key_counts": {
+            **(base.get("source_key_counts") if isinstance(base.get("source_key_counts"), dict) else {}),
+            "jin10_flash": len(key_triggers),
+        },
+        "triggers": triggers,
+        "data_quality": {
+            **(base.get("data_quality") if isinstance(base.get("data_quality"), dict) else {}),
+            "key_flash_count": len(key_triggers),
+            "source": "storage/outputs/jin10/flash_cache.json",
+        },
+    })
+    return base
 
 
 def _normalize_daily_analysis_trigger_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -425,7 +889,7 @@ def _normalize_daily_analysis_trigger_events(payload: dict[str, Any]) -> list[di
             "id": str(item.get("trigger_id") or item.get("source_event_id") or _stable_event_id("trigger", item.get("source_title"), item.get("evidence_text"))),
             "kind": "daily_analysis_trigger",
             "time": item.get("created_at") or payload.get("as_of"),
-            "title": str(item.get("source_title") or item.get("evidence_text") or item.get("event_type") or "")[:120],
+            "title": _translate_long_english(item.get("source_title") or item.get("evidence_text") or item.get("event_type") or "", field="trigger_title")[:120],
             "importance": _priority_importance(item.get("priority")),
             "pricing": "unpriced",
             "source": item.get("source_key") or "daily_analysis_triggers",
@@ -455,7 +919,7 @@ def _normalize_article_brief_events(payload: dict[str, Any]) -> list[dict[str, A
             "id": str(item.get("brief_id") or _stable_event_id("article_brief", item.get("headline"), item.get("final_url"))),
             "kind": "jin10_article_brief",
             "time": item.get("created_at") or payload.get("as_of"),
-            "title": str(item.get("headline") or item.get("analysis_summary") or "")[:120],
+            "title": _translate_long_english(item.get("headline") or item.get("analysis_summary") or "", field="article_brief_title")[:120],
             "importance": _article_brief_importance(item),
             "pricing": "unpriced",
             "source": "jin10_article_briefs",
@@ -486,9 +950,19 @@ def _article_brief_importance(item: dict[str, Any]) -> str:
 
 def _build_brief_summary(brief: dict[str, Any]) -> dict[str, Any]:
     artifact_ref = brief.get("_artifact_ref") if isinstance(brief.get("_artifact_ref"), dict) else {}
-    market_mainline = brief.get("market_mainline") if isinstance(brief.get("market_mainline"), dict) else {}
+    market_mainline = dict(brief.get("market_mainline")) if isinstance(brief.get("market_mainline"), dict) else {}
     data_quality = brief.get("data_quality") if isinstance(brief.get("data_quality"), dict) else {}
-    report_inputs = brief.get("report_inputs") if isinstance(brief.get("report_inputs"), dict) else {}
+    report_inputs = dict(brief.get("report_inputs")) if isinstance(brief.get("report_inputs"), dict) else {}
+    for key in ("headline", "summary"):
+        if key in market_mainline:
+            market_mainline[key] = _translate_long_english(market_mainline.get(key), field=f"market_mainline_{key}")
+    for list_key in ("news_highlights", "watchlist", "risk_points"):
+        values = report_inputs.get(list_key)
+        if isinstance(values, list):
+            report_inputs[list_key] = [
+                _translate_long_english(item, field=f"report_inputs_{list_key}") if isinstance(item, str) else item
+                for item in values
+            ]
     return {
         "artifact_ref": artifact_ref,
         "market_mainline": market_mainline,
@@ -533,8 +1007,8 @@ def _build_actionable_report_inputs(
                     "input_id": f"summary:{group_key}:{stable_key}",
                     "input_kind": "summary",
                     "group": display_group,
-                    "title": title,
-                    "summary": summary,
+                    "title": _translate_long_english(title, field=f"report_input_title_{group_key}"),
+                    "summary": _translate_long_english(summary, field=f"report_input_summary_{group_key}"),
                     "verification_status": None,
                     "access_status": None,
                     "artifact_path": None,
@@ -552,7 +1026,7 @@ def _build_actionable_report_inputs(
                 "input_id": f"followup:{followup_id}",
                 "input_kind": "followup",
                 "group": "待跟进分析",
-                "title": str(followup.get("source_title") or followup.get("title") or "未命名跟进项"),
+                "title": _translate_long_english(followup.get("source_title") or followup.get("title") or "未命名跟进项", field="followup_title"),
                 "summary": _followup_summary(followup),
                 "verification_status": _string_or_none((followup.get("data_quality") or {}).get("verification_status")),
                 "access_status": None,
@@ -572,7 +1046,7 @@ def _build_actionable_report_inputs(
                 "input_id": f"article_brief:{brief_id}",
                 "input_kind": "article_brief",
                 "group": "文章简报",
-                "title": str(brief.get("headline") or "未命名文章"),
+                "title": _translate_long_english(brief.get("headline") or "未命名文章", field="article_brief_input_title"),
                 "summary": _report_input_summary(brief, fallback=str(brief.get("analysis_summary") or brief.get("original_excerpt") or brief.get("headline") or "")),
                 "verification_status": _string_or_none((brief.get("data_quality") or {}).get("verification_status")),
                 "access_status": _string_or_none(brief.get("access_status")),
@@ -587,33 +1061,33 @@ def _build_actionable_report_inputs(
 
 def _report_input_title(value: Any) -> str:
     if isinstance(value, str):
-        return value.strip()
+        return _translate_long_english(value.strip(), field="report_input_title")
     if not isinstance(value, dict):
         return ""
     for key in ("title", "what_happened", "event_name", "summary", "event_type"):
         text = str(value.get(key) or "").strip()
         if text:
-            return text
+            return _translate_long_english(text, field="report_input_title")
     return ""
 
 
 def _report_input_summary(value: Any, *, fallback: str) -> str:
     if isinstance(value, str):
-        return value.strip() or fallback
+        return _translate_long_english(value.strip() or fallback, field="report_input_summary")
     if not isinstance(value, dict):
         return fallback
     for key in ("summary", "what_happened", "evidence_text", "title", "event_name", "event_type"):
         text = str(value.get(key) or "").strip()
         if text:
-            return text
-    return fallback
+            return _translate_long_english(text, field="report_input_summary")
+    return _translate_long_english(fallback, field="report_input_summary")
 
 
 def _followup_summary(followup: dict[str, Any]) -> str:
     for key in ("summary", "evidence_text", "headline", "title"):
         text = str(followup.get(key) or "").strip()
         if text:
-            return text
+            return _translate_long_english(text, field="followup_summary")
     return "暂无摘要"
 
 
@@ -659,20 +1133,26 @@ def _normalize_daily_market_brief_events(brief: dict[str, Any]) -> list[dict[str
     events: list[dict[str, Any]] = []
     for item in brief.get("candidate_events") or []:
         if isinstance(item, dict):
-            events.append(_normalize_brief_event(item, kind="candidate_event"))
+            event = _normalize_brief_event(item, kind="candidate_event")
+            if event is not None:
+                events.append(event)
     for item in brief.get("unconfirmed_risks") or []:
         if isinstance(item, dict):
-            events.append(_normalize_brief_event(item, kind="unconfirmed_risk"))
+            event = _normalize_brief_event(item, kind="unconfirmed_risk")
+            if event is not None:
+                events.append(event)
     for item in brief.get("confirmed_events") or []:
         if isinstance(item, dict):
-            events.append(_normalize_brief_event(item, kind="confirmed_event"))
+            event = _normalize_brief_event(item, kind="confirmed_event")
+            if event is not None:
+                events.append(event)
     for item in brief.get("next_7d_calendar") or []:
         if isinstance(item, dict):
             events.append({
                 "id": str(item.get("event_id") or _stable_event_id("calendar", item.get("event_name"), item.get("event_time"))),
                 "kind": "calendar",
                 "time": item.get("event_time"),
-                "title": str(item.get("event_name") or "")[:120],
+                "title": _translate_long_english(item.get("event_name") or "", field="calendar_title")[:120],
                 "importance": item.get("importance") or "中",
                 "pricing": "scheduled",
                 "source": item.get("source") or "official_calendar",
@@ -681,18 +1161,23 @@ def _normalize_daily_market_brief_events(brief: dict[str, Any]) -> list[dict[str
     return events[:50]
 
 
-def _normalize_brief_event(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
+def _normalize_brief_event(item: dict[str, Any], *, kind: str) -> dict[str, Any] | None:
+    source_refs = _filter_event_flow_source_refs(item.get("source_refs") if isinstance(item.get("source_refs"), list) else [])
+    source_label = _clean_event_flow_source_label(item.get("who_said") or item.get("source") or "daily_market_brief")
+    if not source_refs and source_label is None:
+        return None
     event = {
         "id": str(item.get("event_id") or _stable_event_id(kind, item.get("what_happened"), item.get("event_time"))),
         "kind": kind,
         "time": item.get("event_time"),
-        "title": str(item.get("what_happened") or item.get("event_type") or "")[:120],
+        "title": _translate_long_english(item.get("what_happened") or item.get("event_type") or "", field=f"{kind}_title")[:120],
         "importance": _brief_importance(item),
         "pricing": item.get("pricing_status") or "unknown",
-        "source": item.get("who_said") or "daily_market_brief",
+        "source": source_label or "daily_market_brief",
         "verification_status": item.get("verification_status"),
         "risk_level": item.get("risk_level"),
         "event_type": item.get("event_type"),
+        "related_news_items": _related_news_items_from_refs(source_refs),
     }
     passthrough_fields = (
         "affected_assets",
@@ -704,16 +1189,150 @@ def _normalize_brief_event(item: dict[str, Any], *, kind: str) -> dict[str, Any]
         "oil_impact",
         "market_validation",
         "market_snapshot",
-        "source_refs",
     )
     for field in passthrough_fields:
         if field in item:
             event[field] = item[field]
+    if source_refs:
+        event["source_refs"] = source_refs
 
     market_validation = item.get("market_validation")
     if "market_snapshot" not in event and isinstance(market_validation, dict) and "market_snapshot" in market_validation:
         event["market_snapshot"] = market_validation["market_snapshot"]
     return event
+
+
+def _clean_event_flow_source_label(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return "daily_market_brief"
+    parts = [
+        part.strip()
+        for part in re.split(r"\s*(?:\+|/|,|，|\|)\s*", text)
+        if part.strip()
+    ]
+    kept = [part for part in parts if not _is_jinshi_text(part)]
+    if kept:
+        return " + ".join(_ordered_unique(kept))
+    return None if _is_jinshi_text(text) else text
+
+
+def _related_news_items_from_refs(source_refs: list[Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in source_refs:
+        if not isinstance(ref, dict):
+            continue
+        item = _news_item_from_source_ref(ref)
+        if item is None:
+            continue
+        key = str(item.get("news_item_id") or item.get("source_ref") or item.get("url") or item.get("title") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    return items[:12]
+
+
+def _filter_event_flow_source_refs(source_refs: list[Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for ref in source_refs:
+        if not isinstance(ref, dict):
+            continue
+        if _is_jinshi_source_ref(ref):
+            continue
+        refs.append(dict(ref))
+    return refs
+
+
+def _is_jinshi_source_ref(ref: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(ref.get(field) or "")
+        for field in (
+            "source_ref",
+            "source",
+            "provider",
+            "label",
+            "url",
+            "source_url",
+            "domain",
+            "raw_path",
+            "parsed_path",
+            "path",
+        )
+    ).lower()
+    return _is_jinshi_text(text)
+
+
+def _is_jinshi_text(text: Any) -> bool:
+    normalized = str(text or "").lower()
+    return "jin10" in normalized or "xnews.jin10.com" in normalized or "flash.jin10.com" in normalized or "金十" in normalized
+
+
+def _news_item_from_source_ref(ref: dict[str, Any]) -> dict[str, Any] | None:
+    source_ref = str(ref.get("source_ref") or "").strip()
+    source = str(ref.get("source") or ref.get("provider") or "").strip()
+    title = _normalize_text(ref.get("title") or ref.get("label") or ref.get("summary"))
+    summary = _normalize_text(
+        ref.get("summary")
+        or ref.get("analysis_summary")
+        or ref.get("evidence_text")
+        or ref.get("filter_reason")
+    )
+    url = _normalize_text(ref.get("url") or ref.get("source_url"))
+    raw_path = _normalize_text(ref.get("raw_path"))
+    parsed_path = _normalize_text(ref.get("parsed_path"))
+    if not any((source_ref, source, title, url, raw_path, parsed_path)):
+        return None
+    published_at = _normalize_text(ref.get("published_at") or ref.get("event_time") or ref.get("as_of"))
+    source_type = _normalize_text(ref.get("source_type") or ref.get("provider_role"))
+    importance = _string_or_none(ref.get("importance") or ref.get("priority") or ref.get("risk_level"))
+    confidence = ref.get("classification_confidence")
+    try:
+        normalized_confidence = float(confidence) if confidence is not None else None
+    except (TypeError, ValueError):
+        normalized_confidence = None
+    return {
+        "news_item_id": source_ref or _stable_event_id("news_item", title, url, published_at),
+        "source_ref": source_ref or None,
+        "source": source or "unknown",
+        "source_label": _news_source_label(source or source_ref),
+        "source_type": source_type or None,
+        "title": _translate_long_english(title, field="related_news_title")[:180] if title else "",
+        "summary": _translate_long_english(summary, field="related_news_summary")[:240] if summary else None,
+        "importance": importance,
+        "confidence": normalized_confidence,
+        "url": url or None,
+        "domain": _normalize_text(ref.get("domain")) or None,
+        "published_at": published_at or None,
+        "raw_path": raw_path or None,
+        "parsed_path": parsed_path or None,
+        "status": _normalize_text(ref.get("status")) or "ok",
+        "evaluation_role": "event_evidence",
+    }
+
+
+def _news_source_label(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if "jin10_feishu" in normalized:
+        return "金十飞书快讯"
+    if "jin10" in normalized:
+        return "金十"
+    if "reuters_public" in normalized or "reuters" in normalized:
+        return "路透快讯"
+    if "google_news" in normalized:
+        return "Google 新闻"
+    if "gdelt" in normalized:
+        return "GDELT 新闻"
+    if "fed" in normalized:
+        return "美联储"
+    if "bls" in normalized:
+        return "美国劳工统计局"
+    if "bea" in normalized:
+        return "美国经济分析局"
+    if "eia" in normalized:
+        return "美国能源信息署"
+    return str(value or "来源未知")
 
 
 def _brief_importance(item: dict[str, Any]) -> str:
@@ -732,16 +1351,18 @@ def _normalize_brief_source_refs(brief: dict[str, Any]) -> list[dict[str, Any]]:
     if artifact_ref:
         refs.append({
             "source_ref": f"daily_market_brief:{artifact_ref.get('date')}/{artifact_ref.get('run_id')}",
-            "label": "Daily Market Brief",
+            "label": "日度市场简报",
             "status": "ok",
             "path": artifact_ref.get("path"),
         })
     for ref in brief.get("source_refs") or []:
         if not isinstance(ref, dict):
             continue
+        if _is_jinshi_source_ref(ref):
+            continue
         refs.append({
             "source_ref": str(ref.get("source_ref") or ref.get("path") or ref.get("source") or "daily_market_brief.source"),
-            "label": str(ref.get("label") or ref.get("source") or ref.get("asset_type") or "source_ref"),
+            "label": _translate_long_english(ref.get("label") or ref.get("source") or ref.get("asset_type") or "source_ref", field="brief_source_ref_label"),
             "status": str(ref.get("status") or "ok"),
             **({"path": ref.get("path")} if ref.get("path") else {}),
         })
@@ -775,7 +1396,7 @@ def _normalize_flashes(flashes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "id": str(f.get("id") or _stable_event_id("flash", f.get("content") or f.get("title"))),
             "kind": "flash",
             "time": f.get("time") or f.get("created_at"),
-            "title": (f.get("content") or f.get("title", ""))[:120],
+            "title": _translate_long_english(f.get("content") or f.get("title", ""), field="flash_title")[:120],
             "importance": _infer_importance(f),
             "pricing": "unknown",
             "source": "Jin10",
@@ -790,7 +1411,7 @@ def _normalize_calendar(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "id": str(item.get("id") or _stable_event_id("calendar", item.get("title") or item.get("name"))),
             "kind": "calendar",
             "time": item.get("time") or item.get("pub_time"),
-            "title": (item.get("title") or item.get("name", ""))[:120],
+            "title": _translate_long_english(item.get("title") or item.get("name", ""), field="jin10_calendar_title")[:120],
             "importance": item.get("importance") or item.get("star", "中"),
             "pricing": "unknown" if item.get("actual") is None else "priced",
             "source": "Jin10",
@@ -805,7 +1426,7 @@ def _normalize_articles(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "id": str(a.get("id") or a.get("article_id", "")),
             "kind": "article",
             "time": a.get("time") or a.get("created_at"),
-            "title": (a.get("title") or a.get("name", ""))[:120],
+            "title": _translate_long_english(a.get("title") or a.get("name", ""), field="jin10_article_title")[:120],
             "importance": "中",
             "pricing": "unknown",
             "source": "Jin10",

@@ -347,9 +347,11 @@ def test_get_strategy_card_latest_backfills_market_regime_from_analysis_snapshot
     from apps.api.data_service import get_strategy_card_latest
 
     session = _make_inmem_session()
-    snap = _upsert_analysis_snapshot(session)
+    snap = _upsert_analysis_snapshot(session, run_id="run-xau-1", snapshot_id="snap-xau-1")
     _upsert_final(
         session,
+        run_id="run-xau-1",
+        snapshot_id="snap-xau-1",
         analysis_snapshot_db_id=snap.id,
         strategy_card={"bias": "bullish", "confidence": 0.8, "asset": "XAUUSD"},
     )
@@ -881,7 +883,7 @@ def test_list_strategy_assets_falls_back_to_analysis_snapshot_regime(tmp_path: P
     from apps.api.data_service import list_strategy_assets
 
     session = _make_inmem_session()
-    snap = _upsert_analysis_snapshot(session)
+    snap = _upsert_analysis_snapshot(session, run_id="run-xau-1", snapshot_id="snap-xau-1")
     _upsert_final(
         session,
         asset="XAUUSD",

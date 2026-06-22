@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { MarketMonitorPageContent } from "@/components/market-monitor/MarketMonitorPageContent";
 import {
   MarketMonitorPageChrome,
@@ -6,6 +7,7 @@ import {
   MarketMonitorPageErrorState,
   MarketMonitorPageLoadingState,
 } from "@/components/market-monitor/MarketMonitorPageStates";
+import { useJin10Calendar } from "@/hooks/useJin10Calendar";
 import { useMarketMonitor } from "@/hooks/useMarketMonitor";
 import type {
   MarketMonitorMetric,
@@ -22,9 +24,20 @@ import {
 } from "@/components/market-monitor/marketMonitorPageModel";
 import { textOrDash } from "@/components/market-monitor/format";
 
+const MARKET_MONITOR_TABS: MarketMonitorTab[] = ["overview", "pricing-chain", "cross-asset", "calendar"];
+
+function parseMarketMonitorTab(value: string | null): MarketMonitorTab {
+  return value && MARKET_MONITOR_TABS.includes(value as MarketMonitorTab)
+    ? (value as MarketMonitorTab)
+    : "overview";
+}
+
 export function MarketMonitorPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = parseMarketMonitorTab(searchParams.get("tab"));
   const { data, history, historyTimeframe, setHistoryTimeframe, isLoading, isError, error, refetch } = useMarketMonitor();
-  const [activeTab, setActiveTab] = useState<MarketMonitorTab>("overview");
+  const calendar = useJin10Calendar();
+  const [activeTab, setActiveTab] = useState<MarketMonitorTab>(requestedTab);
   const snapshot = (data ?? {}) as MarketMonitorShape;
   const metrics = Array.isArray(snapshot.metrics) ? snapshot.metrics : [];
   const marketRegimes = (snapshot.market_regimes ?? {}) as MarketMonitorMockFile["market_regimes"];
@@ -44,19 +57,23 @@ export function MarketMonitorPage() {
     ?? `${diagnosisText(pageStatus)}。主页面只保留黄金核心定价链、市场阶段和关键过滤器，详细联动拆到下方分区。`;
   const tabOptions = useMemo(() => buildMarketMonitorTabOptions(), []);
 
+  useEffect(() => {
+    setActiveTab((current) => (current === requestedTab ? current : requestedTab));
+  }, [requestedTab]);
+
+  function handleTabChange(nextTab: MarketMonitorTab) {
+    setActiveTab(nextTab);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextTab === "overview") next.delete("tab");
+      else next.set("tab", nextTab);
+      return next;
+    }, { replace: true });
+  }
+
   return (
     <div className="finance-page-shell">
-      <div
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: 0,
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-          minWidth: 0,
-        }}
-      >
+      <div className="fa-layout-fill overflow-y-auto">
         {isLoading ? (
           <MarketMonitorPageLoadingState />
         ) : isError ? (
@@ -68,7 +85,7 @@ export function MarketMonitorPage() {
             <MarketMonitorPageChrome errorReason={snapshot.error_reason} source={snapshot.source} />
             <MarketMonitorPageContent
               activeTab={activeTab}
-              onTabChange={setActiveTab}
+              onTabChange={handleTabChange}
               tabOptions={tabOptions}
               pageStatusLabel={diagnosisText(pageStatus)}
               sourceLabel={sourceLabel}
@@ -79,6 +96,13 @@ export function MarketMonitorPage() {
               sourceTrace={sourceTrace}
               overviewSummary={overviewSummary}
               historySummary={historySummary}
+              calendarEvents={calendar.data}
+              calendarGeneratedAt={calendar.generatedAt}
+              calendarStatus={calendar.status}
+              calendarStats={calendar.stats}
+              calendarFreshness={calendar.freshness}
+              calendarIsLoading={calendar.isLoading}
+              calendarIsError={calendar.isError}
               realtimeRegime={realtimeRegime}
               primaryDriver={primaryDriver}
               agentMarketRegime={agentMarketRegime}

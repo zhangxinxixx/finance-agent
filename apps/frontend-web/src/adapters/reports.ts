@@ -61,6 +61,8 @@ const REPORT_TAB_ARTIFACT_TYPES: Record<ReportArtifactTabKey, string[]> = {
 const INFO_ONLY_WARNING_CODES = new Set([
   "legacy-report-adapter",
   "analysis-inputs-agent-fallback",
+  "analysis-inputs-unavailable",
+  "agent-outputs-unavailable",
 ]);
 
 function countWarnings(content: string): number {
@@ -204,6 +206,20 @@ function inferArtifactFormat(payload: ReportArtifactPayloadResponse): ReportForm
   return "text";
 }
 
+function normalizeArtifactContent(payload: ReportArtifactPayloadResponse): string {
+  if (typeof payload.content === "string") {
+    return payload.content;
+  }
+  if (payload.content == null) {
+    return "";
+  }
+  try {
+    return JSON.stringify(payload.content, null, 2);
+  } catch {
+    return String(payload.content);
+  }
+}
+
 async function fetchOptionalJson<T>(path: string): Promise<T | null> {
   try {
     return await fetchJson<T>(path);
@@ -229,8 +245,9 @@ async function fetchReportArtifactPayload(reportId: string, tab: ReportArtifactT
     artifact_type: payload.artifact_type,
     content_type: payload.content_type,
     format: inferArtifactFormat(payload),
-    content: payload.content,
+    content: normalizeArtifactContent(payload),
     path: payload.path,
+    asset_base_url: payload.asset_base_url ?? null,
     source_endpoint: sourceEndpoint,
   };
 }

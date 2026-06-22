@@ -42,11 +42,11 @@ export function ReportAgentOutputFeedbackForm({ item }: { item: ReportAnalysisAg
   }
 
   return (
-    <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-panel)] p-3">
+    <div className="rounded-[var(--radius-md)] bg-[var(--bg-panel)]">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-[11px] font-semibold text-[var(--fg-2)]">Prompt / 输出反馈</div>
-          <div className="mt-1 text-[10px] text-[var(--fg-5)]">针对本报告引用的 AgentOutput 追加反馈。</div>
+          <div className="text-[11px] font-semibold text-[var(--fg-2)]">输出反馈</div>
+          <div className="mt-1 text-[10px] text-[var(--fg-5)]">针对当前智能体输出追加反馈。</div>
         </div>
         {feedbackMessage ? (
           <FAStatusPill tone={feedbackMessage.tone === "info" ? "info" : "down"} className="text-[12px]">
@@ -74,13 +74,13 @@ export function ReportAgentOutputFeedbackForm({ item }: { item: ReportAnalysisAg
           aria-label="反馈类别"
         >
           <option value="prompt_quality" className="bg-[var(--bg-card)] text-[var(--fg-2)]">
-            prompt_quality
+            表达质量
           </option>
           <option value="analysis_error" className="bg-[var(--bg-card)] text-[var(--fg-2)]">
-            analysis_error
+            分析错误
           </option>
           <option value="missing_context" className="bg-[var(--bg-card)] text-[var(--fg-2)]">
-            missing_context
+            上下文缺失
           </option>
         </select>
         <input

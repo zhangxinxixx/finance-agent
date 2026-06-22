@@ -9,7 +9,17 @@ import { CMEOptionsSummary } from "./CMEOptionsSummary";
 import { DashboardRightPanel } from "./DashboardRightPanel";
 import { useDashboard } from "@/hooks/useDashboard";
 import { isWeekend, getLatestTradeDate } from "@/lib/date";
-import { Calendar } from "lucide-react";
+import { Calendar, RefreshCw } from "lucide-react";
+
+function dashboardBiasLabel(direction: string | null | undefined): string {
+  const value = (direction ?? "").toLowerCase();
+  if (value === "bullish" || value === "偏多" || value === "看多") return "偏多";
+  if (value === "bearish" || value === "偏空" || value === "看空") return "偏空";
+  if (value === "neutral-bullish") return "中性偏多";
+  if (value === "neutral-bearish") return "中性偏空";
+  if (value === "mixed") return "混合";
+  return "中性";
+}
 
 export function DashboardPage() {
   const dashboard = useDashboard();
@@ -42,12 +52,36 @@ export function DashboardPage() {
   const { cme_options: options } = summary;
   const agentSummary = summary.agent_summary;
   const kpiMetrics = buildDashboardKpiMetrics(summary);
+  const strategyDirection = dashboardBiasLabel(summary.strategy.direction);
+  const reportReadyCount = summary.latest_reports.filter((item) => item.status === "ready").length;
 
   return (
     <div className="finance-page-shell">
       <div className="dashboard-overview-grid">
         {/* Main content */}
         <div className="dashboard-overview-main">
+          <section className="dashboard-command-strip">
+            <div className="min-w-0">
+              <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-5)]">实时总览</div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-[var(--fg-4)]">
+                <span className="font-semibold text-[var(--fg-2)]">黄金分析驾驶舱</span>
+                <span className="text-[var(--fg-6)]">/</span>
+                <span>偏向 {strategyDirection}</span>
+                <span className="text-[var(--fg-6)]">/</span>
+                <span>{reportReadyCount} 份可读报告</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={dashboard.refetch}
+              className="dashboard-command-button"
+              title="刷新总览数据"
+            >
+              <RefreshCw size={13} />
+              <span>刷新</span>
+            </button>
+          </section>
+
           {/* Weekend mode banner */}
           {isWeekend() ? (
             <div

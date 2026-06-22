@@ -25,10 +25,28 @@ export function SourceArtifactEvidenceBlock({
 }
 
 export function SourceDrilldownBlock({ lastRunId }: { lastRunId: string | null | undefined }) {
+  return SourceDrilldownBlockWithLinks({ lastRunId });
+}
+
+export function SourceDrilldownBlockWithLinks({
+  lastRunId,
+  monitorHref,
+}: {
+  lastRunId: string | null | undefined;
+  monitorHref?: string | null;
+}) {
   return (
     <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-2">
       <div className="text-[8px] font-semibold uppercase tracking-wider text-[var(--fg-6)]">下钻入口</div>
       <div className="mt-1 flex flex-wrap gap-1.5">
+        {monitorHref ? (
+          <Link
+            to={monitorHref}
+            className="rounded-full border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 py-1 text-[9px] font-semibold text-[var(--fg-3)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--fg-1)]"
+          >
+            飞书监控
+          </Link>
+        ) : null}
         {lastRunId ? (
           <Link
             to={`/agent-tasks/${encodeURIComponent(lastRunId)}`}

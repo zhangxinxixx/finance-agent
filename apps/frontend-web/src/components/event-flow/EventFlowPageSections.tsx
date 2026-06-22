@@ -5,13 +5,32 @@ import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { formatDateTime, getLatestTradeDate } from "@/lib/date";
 import type { EventFlowBriefSummary } from "@/types/event-flow";
+import { formatEventFlowSourceLabel, translateEventFlowValue } from "./eventFlowFormat";
 
-export function FilterDropdown({ label, value }: { label: string; value: string }) {
+export function FilterDropdown({
+  label,
+  value,
+  compact = false,
+}: {
+  label: string;
+  value: string;
+  compact?: boolean;
+}) {
+  if (compact) {
+    return (
+      <button type="button" className="event-flow-filter-chip">
+        <span className="event-flow-filter-chip-label">{label}</span>
+        <span className="event-flow-filter-chip-value">{value}</span>
+        <span className="text-[8px] text-[var(--fg-5)]">&#9662;</span>
+      </button>
+    );
+  }
+
   return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-[8px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">{label}</span>
-      <div className="flex h-[28px] min-w-[80px] cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 transition-colors hover:border-[var(--border-strong)]">
-        <span className="flex-1 whitespace-nowrap text-[11px] text-[var(--fg-2)]">{value}</span>
+    <div className="event-flow-filter-item">
+      <span className="event-flow-filter-label">{label}</span>
+      <div className="event-flow-filter-box">
+        <span className="event-flow-filter-value">{value}</span>
         <span className="text-[8px] text-[var(--fg-5)]">&#9662;</span>
       </div>
     </div>
@@ -36,12 +55,12 @@ export function EventFlowEmptyState({
 }) {
   return (
     <>
-      <FACard title="事件流" eyebrow="Event Flow" accent="brand" bodyClassName="space-y-2">
+      <FACard title="事件流" eyebrow="事件链路" accent="brand" bodyClassName="space-y-2">
         <div className="text-[12px] font-semibold text-[var(--fg-2)]">当前未返回可展示的事件流数据</div>
-        <div className="text-[11px] leading-5 text-[var(--fg-4)]">页面保留读模型入口，等待 `daily_market_brief` 或 Jin10 snapshot 返回有效事件。</div>
+        <div className="text-[11px] leading-5 text-[var(--fg-4)]">当前主线仍在等待日报输入快照或金十事件快照返回有效事件。</div>
         <div className="flex flex-wrap gap-2">
           <FASourceTraceBadge source={formatDateTime(updatedAt)} status="updated_at" tone="info" />
-          <FASourceTraceBadge source={source} status="data_source" tone="dim" />
+          <FASourceTraceBadge source={formatEventFlowSourceLabel(source, 18).text} status="data_source" tone="dim" />
         </div>
       </FACard>
       <FAEmptyState title="暂无事件数据" description="当前返回结果为空，页面保留骨架。" />
@@ -57,7 +76,7 @@ export function EventFlowWeekendBanner() {
     >
       <Calendar size={12} color="#3b82f6" />
       <span className="text-[10px] font-medium text-[#3b82f6]">
-        周末模式 — 市场数据为最近交易日（{getLatestTradeDate()}），新闻事件实时更新中
+        周末模式：市场数据沿用最近交易日（{getLatestTradeDate()}），事件快讯继续实时更新
       </span>
     </div>
   );
@@ -75,12 +94,12 @@ export function BriefSummaryStrip({
   sourceRefs: Array<{ source_ref?: string | null; label?: string | null; status?: string | null }>;
 }) {
   return (
-    <div className="grid gap-3 xl:grid-cols-[minmax(0,1.7fr)_minmax(260px,0.9fr)]">
+    <div className="event-flow-summary-grid">
       <FACard
         title="新闻主线"
-        eyebrow="Daily Market Brief"
+        eyebrow="每日市场简报"
         accent="brand"
-        action={<FAStatusPill tone="info">{source}</FAStatusPill>}
+        className="event-flow-summary-card"
         bodyClassName="space-y-3"
       >
         <div className="space-y-1.5">
@@ -88,24 +107,23 @@ export function BriefSummaryStrip({
           <div className="text-[11px] leading-5 text-[var(--fg-3)]">{summary.summary}</div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {summary.verificationStatus ? <FAStatusPill tone="info">{summary.verificationStatus}</FAStatusPill> : null}
-          {summary.pricingStatus ? <FAStatusPill tone="warn">{summary.pricingStatus}</FAStatusPill> : null}
-          {summary.riskLevel ? <FAStatusPill tone={summary.riskLevel === "high" ? "down" : summary.riskLevel === "medium" ? "warn" : "up"}>{summary.riskLevel}</FAStatusPill> : null}
+          {summary.verificationStatus ? <FAStatusPill tone="info">{translateEventFlowValue(summary.verificationStatus)}</FAStatusPill> : null}
+          {summary.pricingStatus ? <FAStatusPill tone="warn">{translateEventFlowValue(summary.pricingStatus)}</FAStatusPill> : null}
+          {summary.riskLevel ? <FAStatusPill tone={summary.riskLevel === "high" ? "down" : summary.riskLevel === "medium" ? "warn" : "up"}>{translateEventFlowValue(summary.riskLevel)}</FAStatusPill> : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <FASourceTraceBadge source={formatDateTime(updatedAt)} status="updated_at" tone="info" />
-          {summary.artifactPath ? <FASourceTraceBadge source={summary.artifactPath} status="artifact" tone="dim" /> : null}
-          {sourceRefs.slice(0, 3).map((ref) => (
-            <FASourceTraceBadge
-              key={`${ref.source_ref ?? ref.label ?? "source-ref"}`}
-              source={ref.label ?? ref.source_ref ?? "source_ref"}
-              status={ref.status ?? "ok"}
-            />
-          ))}
+          <FAStatusPill tone="info">{formatEventFlowSourceLabel(source, 18).text}</FAStatusPill>
         </div>
       </FACard>
 
-      <FACard title="事件分层" eyebrow="Counts" accent="info" bodyClassName="grid grid-cols-2 gap-2">
+      <FACard
+        title="事件分层"
+        eyebrow="统计"
+        accent="info"
+        className="event-flow-summary-card"
+        bodyClassName="grid grid-cols-2 gap-2"
+      >
         <CountMetric label="已确认" value={summary.counts.confirmedEventCount} />
         <CountMetric label="候选事件" value={summary.counts.candidateEventCount} />
         <CountMetric label="待验证风险" value={summary.counts.unconfirmedRiskCount} />
@@ -132,7 +150,7 @@ export function EventImpactBanner({
       style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
     >
       <div className="flex items-center gap-2">
-        <span className="text-[10px] font-semibold text-[var(--fg-5)]">Agent 事件分析</span>
+        <span className="text-[10px] font-semibold text-[var(--fg-5)]">模型事件分析</span>
         <span className="text-[10px] font-mono text-[var(--fg-4)]">
           {summary.bias} · {(summary.confidence * 100).toFixed(0)}%
         </span>
@@ -153,13 +171,13 @@ export function EventFlowBriefInputsCard({
   summary: EventFlowBriefSummary;
 }) {
   return (
-    <FACard title="报告输入" eyebrow="Brief Inputs" accent="warn">
+    <FACard title="报告输入" eyebrow="输入摘要" accent="warn">
       <div className="space-y-3 text-[11px] text-[var(--fg-3)]">
         {summary.newsHighlights.length > 0 ? (
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">
               <FileText size={11} />
-              News Highlights
+              新闻要点
             </div>
             <ul className="space-y-1.5">
               {summary.newsHighlights.map((item, index) => (
@@ -175,7 +193,7 @@ export function EventFlowBriefInputsCard({
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">
               <SearchCheck size={11} />
-              Watchlist
+              观察列表
             </div>
             <ul className="space-y-1.5">
               {summary.watchlist.map((item, index) => (
@@ -191,7 +209,7 @@ export function EventFlowBriefInputsCard({
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">
               <ShieldAlert size={11} />
-              Risk Points
+              风险点
             </div>
             <ul className="space-y-1.5">
               {summary.riskPoints.map((item, index) => (
@@ -209,7 +227,7 @@ export function EventFlowBriefInputsCard({
 
 export function EventFlowDrilldownCard() {
   return (
-    <FACard title="详情下钻" eyebrow="Drilldown" accent="brand">
+    <FACard title="详情下钻" eyebrow="下钻" accent="brand">
       <div className="space-y-2 text-[11px] text-[var(--fg-4)]">
         <div>主页面只保留事件时间线、传导链、情绪概览与风险摘要。</div>
         <div>点击左侧事件进入详情页，查看事件事实、定价证据占位和相关资产。</div>

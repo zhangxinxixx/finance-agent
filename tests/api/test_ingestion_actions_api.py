@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.api.main import api_ingestion_manual_upload, api_ingestion_source_retry, api_run_detail
 from apps.api.schemas.data_source import DataSourceActionRequest, ManualUploadRequest
+from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.task import ensure_task_tables
 
 
@@ -18,6 +21,7 @@ def _make_session() -> Session:
         poolclass=StaticPool,
     )
     ensure_task_tables(engine)
+    ensure_execution_tables(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
@@ -70,3 +74,7 @@ def test_manual_upload_registers_raw_artifact_and_requires_followup() -> None:
     assert run["status"] == "needs_review"
     assert run["steps"][0]["status"] == "needs_review"
     assert run["steps"][0]["output_refs"][0]["sha256"] == "abc123"
+    artifacts = session.query(RunArtifact).filter(RunArtifact.run_id == uuid.UUID(run["run_id"])).all()
+    assert len(artifacts) == 1
+    assert artifacts[0].file_path == "storage/raw/manual/cme_bulletin/daily-bulletin.pdf"
+    assert artifacts[0].storage_backend == "local_fs"

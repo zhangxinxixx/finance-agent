@@ -38,15 +38,15 @@ const contextByPath: Record<
     ],
   },
   "/cme-options": {
-    title: "Structure Focus",
-    eyebrow: "CME Context",
+    title: "结构焦点",
+    eyebrow: "期权上下文",
     accent: "warn",
-    summary: "围绕墙位、Gamma Zero、关键位与数据层级组织，只读展示结构状态。",
+    summary: "围绕墙位、伽马零点、关键位与数据层级组织，只读展示结构状态。",
     metrics: [
-      { label: "gamma zero", value: "tracked" },
-      { label: "call wall", value: "tracked" },
-      { label: "put wall", value: "tracked" },
-      { label: "status", value: "FINAL / PRELIM" },
+      { label: "伽马零点", value: "已跟踪" },
+      { label: "看涨墙", value: "已跟踪" },
+      { label: "看跌墙", value: "已跟踪" },
+      { label: "数据状态", value: "终版 / 预览" },
     ],
   },
   "/reports": {
@@ -142,7 +142,7 @@ export function ContextRightPanel() {
         ))}
       </FACard>
 
-      <FACard title="Market Bias" eyebrow="Scenario Stack" accent="info" bodyClassName="space-y-2.5">
+      <FACard title="市场倾向" eyebrow="情景堆栈" accent="info" bodyClassName="space-y-2.5">
         <div className={`${CONTEXT_BOX_CLASS_NAME} text-[10px] leading-5 text-finance-text-muted`}>
           等待分析数据。运行盘前流水线后生成策略输出。
         </div>

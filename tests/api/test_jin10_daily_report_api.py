@@ -151,13 +151,47 @@ def test_weekly_report_reads_storage_rows_marked_weekly(tmp_path: Path):
             "storage/outputs/jin10/2026-05-07/weekly-run/daily_analysis.html": "<html>weekly</html>",
         },
     )
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
         latest = api_jin10_weekly_report_latest()
         exact = api_jin10_weekly_report(date="2026-05-07", run_id="weekly-run")
 
     assert latest["run_id"] == "weekly-run"
     assert latest["report_type"] == "weekly"
     assert exact["content"] == "<html>weekly</html>"
+
+
+def test_weekly_latest_prefers_newer_external_report_over_older_storage(tmp_path: Path):
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/jin10/2026-06-07/old-weekly/daily_analysis.json": json.dumps(
+                {
+                    "family": "jin10_daily_visual",
+                    "trade_date": "2026-06-07",
+                    "run_id": "old-weekly",
+                    "report_type": "weekly",
+                }
+            ),
+            "storage/outputs/jin10/2026-06-07/old-weekly/daily_analysis.html": "<html>old weekly</html>",
+            "jin10-reports/2026-06-14/weekly/221823/meta.json": json.dumps(
+                {
+                    "id": "221823",
+                    "date": "2026-06-14",
+                    "title": "黄金深度洗盘结束",
+                    "category": "黄金周报",
+                    "report_type": "weekly",
+                    "images": [],
+                }
+            ),
+            "jin10-reports/2026-06-14/weekly/221823/report.md": "# new weekly",
+        },
+    )
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+        latest = api_jin10_weekly_report_latest()
+
+    assert latest["article_id"] == "221823"
+    assert latest["date"] == "2026-06-14"
+    assert latest["content"] == "# new weekly"
 
 
 def test_api_jin10_daily_report_exact_404(tmp_path: Path):

@@ -15,11 +15,13 @@ export function AgentTaskDetailHero({
   source,
   metrics,
   onRefresh,
+  monitorHref,
 }: {
   selectedRun: TaskRunViewModel;
   source: string;
   metrics: Array<{ label: string; value: string | number; hint: string }>;
   onRefresh: () => void;
+  monitorHref?: string | null;
 }) {
   return (
     <FACard
@@ -34,6 +36,14 @@ export function AgentTaskDetailHero({
           >
             返回列表
           </Link>
+          {monitorHref ? (
+            <Link
+              to={monitorHref}
+              className="rounded-[var(--radius-md)] border border-[var(--border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--fg-3)]"
+            >
+              回到飞书监控
+            </Link>
+          ) : null}
           <button
             type="button"
             onClick={onRefresh}
@@ -109,7 +119,7 @@ export function AgentTaskSourceArtifacts({
 }) {
   return (
     <>
-      <FACard title="数据溯源" eyebrow="Source Trace" accent="brand">
+      <FACard title="数据溯源" eyebrow="来源链路" accent="brand">
         <div className="mb-3 text-[11px] text-[var(--fg-4)]">保留 source refs 与 artifact refs 的只读展示，便于回查 raw / parsed / output 位置。</div>
         <div className="max-h-[360px] overflow-y-auto pr-1">
           <SourceTrace sourceRefs={selectedRun.source_refs} emptyText="当前任务未返回来源引用" />

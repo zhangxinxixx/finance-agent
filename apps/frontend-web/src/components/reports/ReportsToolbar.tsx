@@ -16,34 +16,11 @@ export function ReportsToolbar({
   onViewModeChange,
 }: ReportsToolbarProps) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "6px 10px",
-        borderBottom: "1px solid var(--border)",
-        flexShrink: 0,
-      }}
-    >
-      {/* Search input */}
-      <div
-        style={{
-          position: "relative",
-          maxWidth: 360,
-          width: "100%",
-        }}
-      >
+    <div className="mb-1.5 flex flex-wrap items-center gap-2 rounded-[var(--radius-lg)] border border-[var(--border-faint)] bg-[var(--bg-card)] px-2.5 py-1.5">
+      <div className="relative min-w-[220px] flex-1">
         <Search
           size={11}
-          style={{
-            position: "absolute",
-            left: 10,
-            top: "50%",
-            transform: "translateY(-50%)",
-            color: "var(--fg-5)",
-            pointerEvents: "none",
-          }}
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--fg-5)]"
         />
         <input
           type="text"
@@ -51,40 +28,15 @@ export function ReportsToolbar({
           placeholder="搜索报告..."
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
-          style={{
-            width: "100%",
-            padding: "5px 10px 5px 28px",
-            background: "var(--bg-card-inner)",
-            border: "1px solid var(--border)",
-            borderRadius: 4,
-            fontSize: 11,
-            color: "var(--fg-2)",
-            outline: "none",
-            transition: "border-color 120ms",
-          }}
-          onFocus={(e) => {
-            e.currentTarget.style.borderColor = "var(--brand)";
-          }}
-          onBlur={(e) => {
-            e.currentTarget.style.borderColor = "var(--border)";
-          }}
+          className="h-8 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] pl-8 pr-3 text-[11px] text-[var(--fg-2)] outline-none transition-colors placeholder:text-[var(--fg-5)] focus:border-[var(--brand-border)]"
         />
       </div>
 
-      {/* View toggle */}
-      <div
-        style={{
-          display: "flex",
-          borderRadius: 4,
-          overflow: "hidden",
-          border: "1px solid var(--border)",
-          flexShrink: 0,
-        }}
-      >
+      <div className="flex shrink-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)]">
         {([
-          { mode: "grid" as ViewMode, icon: LayoutGrid, label: "Grid" },
-          { mode: "list" as ViewMode, icon: List, label: "List" },
-          { mode: "timeline" as ViewMode, icon: Clock, label: "Timeline" },
+          { mode: "grid" as ViewMode, icon: LayoutGrid, label: "网格" },
+          { mode: "list" as ViewMode, icon: List, label: "列表" },
+          { mode: "timeline" as ViewMode, icon: Clock, label: "时间线" },
         ]).map(({ mode, icon: Icon, label }) => (
           <button
             key={mode}
@@ -92,19 +44,12 @@ export function ReportsToolbar({
             aria-label={`切换到${label}视图`}
             aria-pressed={viewMode === mode}
             onClick={() => onViewModeChange(mode)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 4,
-              padding: "5px 10px",
-              fontSize: 10,
-              background: viewMode === mode ? "var(--brand-dim)" : "transparent",
-              color: viewMode === mode ? "var(--brand-hover)" : "var(--fg-4)",
-              border: "none",
-              cursor: "pointer",
-              transition: "all 120ms",
-            }}
+            title={label}
+            className={`inline-flex h-8 w-9 items-center justify-center border-r border-[var(--border)] text-[10px] transition-colors last:border-r-0 ${
+              viewMode === mode
+                ? "bg-[var(--brand-soft)] text-[var(--brand)]"
+                : "text-[var(--fg-4)] hover:bg-[var(--bg-panel)] hover:text-[var(--fg-2)]"
+            }`}
           >
             <Icon size={11} />
           </button>

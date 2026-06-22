@@ -70,6 +70,7 @@ class RunArtifact(ExecutionBase):
     task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     artifact_type: Mapped[str] = mapped_column(String(64), nullable=False)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_backend: Mapped[str] = mapped_column(String(32), nullable=False, server_default="local_fs")
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_refs: Mapped[str | None] = mapped_column(Text, nullable=True, doc="JSON-encoded source refs")
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True, doc="JSON-encoded artifact metadata")
@@ -106,6 +107,8 @@ def _ensure_execution_columns(bind: Engine | Connection) -> None:
 
     if "run_artifacts" in existing:
         columns = existing["run_artifacts"]
+        if "storage_backend" not in columns:
+            ddl.append("ALTER TABLE run_artifacts ADD COLUMN storage_backend VARCHAR(32) DEFAULT 'local_fs'")
         if "sha256" not in columns:
             ddl.append("ALTER TABLE run_artifacts ADD COLUMN sha256 VARCHAR(64)")
         if "source_refs" not in columns:

@@ -562,6 +562,7 @@ def classify_jin10_flash_item_fallback(item: dict[str, Any]) -> dict[str, Any]:
             "is_key_event": False,
             "importance": "normal",
             "signal_tags": [],
+            "summary_zh": "",
             "filter_reason": "empty_content",
             "classification_provider": "fallback_rule",
             "classification_model": "",
@@ -590,6 +591,7 @@ def classify_jin10_flash_item_fallback(item: dict[str, Any]) -> dict[str, Any]:
             "is_key_event": False,
             "importance": "normal",
             "signal_tags": signal_tags,
+            "summary_zh": "",
             "filter_reason": "low_signal_followup",
             "classification_provider": "fallback_rule",
             "classification_model": "",
@@ -602,6 +604,7 @@ def classify_jin10_flash_item_fallback(item: dict[str, Any]) -> dict[str, Any]:
         "is_key_event": is_key_event,
         "importance": importance,
         "signal_tags": signal_tags,
+        "summary_zh": "",
         "filter_reason": "key_event" if is_key_event else "no_market_signal",
         "classification_provider": "fallback_rule",
         "classification_model": "",
@@ -667,6 +670,10 @@ def _coerce_flash_confidence(value: Any) -> float:
     return max(0.0, min(confidence, 1.0))
 
 
+def _coerce_flash_summary(value: Any) -> str:
+    return str(value or "").strip()[:80]
+
+
 _FLASH_CONTENT_TYPES = {"flash", "article", "report", "calendar"}
 
 
@@ -712,6 +719,7 @@ def _parse_flash_classifier_response(content: str, item_count: int) -> dict[int,
             "is_key_event": is_key_event,
             "importance": _coerce_flash_importance(raw.get("importance"), is_key_event=is_key_event),
             "signal_tags": _coerce_flash_tags(raw.get("signal_tags")),
+            "summary_zh": _coerce_flash_summary(raw.get("summary_zh")),
             "filter_reason": str(raw.get("filter_reason") or ("key_event" if is_key_event else "no_market_signal"))[:200],
             "classification_confidence": _coerce_flash_confidence(raw.get("confidence")),
             "content_type": _coerce_flash_content_type(raw.get("content_type")),
