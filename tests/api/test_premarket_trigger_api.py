@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import importlib
 
 import httpx
 import pytest
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import apps.api.main as api_main
+from apps.api.services import premarket_launch_service
 from database.models.task import TaskRun, TaskStatus, ensure_task_tables
 
 
@@ -32,6 +34,37 @@ class _FakeDagsterResponse:
 
     def json(self) -> dict:
         return self._payload
+
+
+def test_premarket_routes_delegate_to_launch_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    launch_service = importlib.import_module("apps.api.services.premarket_launch_service")
+    calls: list[tuple[str, bool]] = []
+
+    def _fake_preflight(*, force: bool = False, **_kwargs):
+        calls.append(("preflight", force))
+        return api_main.PremarketLaunchPreflightResponse(
+            force=force,
+            can_launch=True,
+            blocking_reasons=[],
+        )
+
+    def _fake_launch(*, force: bool = False, **_kwargs):
+        calls.append(("launch", force))
+        return api_main.TaskCreateResponse(
+            task_id="delegated-run-001",
+            name="premarket",
+            status="running",
+        )
+
+    monkeypatch.setattr(launch_service, "build_premarket_launch_preflight", _fake_preflight)
+    monkeypatch.setattr(launch_service, "trigger_premarket_launch", _fake_launch)
+
+    preflight = api_main.api_premarket_launch_preflight(force=True)
+    launched = api_main.trigger_premarket(force=True)
+
+    assert preflight.can_launch is True
+    assert launched.task_id == "delegated-run-001"
+    assert calls == [("preflight", True), ("launch", True)]
 
 
 def test_trigger_premarket_marks_stale_legacy_run_and_launches(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -227,7 +260,7 @@ def test_premarket_preflight_ignores_stale_legacy_run_and_keeps_it_read_only(
             },
         },
     )
-    monkeypatch.setattr(api_main, "_find_active_dagster_premarket_run", lambda _url: None)
+    monkeypatch.setattr(premarket_launch_service, "find_active_dagster_premarket_run", lambda _url: None)
 
     resp = api_main.api_premarket_launch_preflight()
 
@@ -265,7 +298,7 @@ def test_premarket_preflight_reports_active_legacy_task_blocker(monkeypatch: pyt
         "build_premarket_pipeline_source_readiness",
         lambda: {"step_order": [], "steps": [], "source_readiness_summary": {"decision_counts": {}}},
     )
-    monkeypatch.setattr(api_main, "_find_active_dagster_premarket_run", lambda _url: None)
+    monkeypatch.setattr(premarket_launch_service, "find_active_dagster_premarket_run", lambda _url: None)
 
     resp = api_main.api_premarket_launch_preflight()
 
@@ -298,7 +331,7 @@ def test_premarket_preflight_blocks_when_source_readiness_is_blocked(
             },
         },
     )
-    monkeypatch.setattr(api_main, "_find_active_dagster_premarket_run", lambda _url: None)
+    monkeypatch.setattr(premarket_launch_service, "find_active_dagster_premarket_run", lambda _url: None)
 
     resp = api_main.api_premarket_launch_preflight()
 
@@ -325,8 +358,8 @@ def test_premarket_preflight_force_true_keeps_blockers_visible_but_allows_launch
         lambda: {"step_order": [], "steps": [], "source_readiness_summary": {"decision_counts": {}}},
     )
     monkeypatch.setattr(
-        api_main,
-        "_find_active_dagster_premarket_run",
+        premarket_launch_service,
+        "find_active_dagster_premarket_run",
         lambda _url: {"run_id": "dagster-active-001", "status": "STARTED"},
     )
 
@@ -359,7 +392,7 @@ def test_trigger_premarket_blocks_when_source_readiness_is_blocked(monkeypatch: 
             },
         },
     )
-    monkeypatch.setattr(api_main, "_find_active_dagster_premarket_run", lambda _url: None)
+    monkeypatch.setattr(premarket_launch_service, "find_active_dagster_premarket_run", lambda _url: None)
 
     def _unexpected_launch(*args, **kwargs):
         raise AssertionError("launchPipelineExecution should not run when source readiness is blocked")
