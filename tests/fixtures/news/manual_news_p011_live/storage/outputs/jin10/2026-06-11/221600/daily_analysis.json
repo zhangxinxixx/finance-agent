@@ -1,0 +1,31 @@
+{
+  "article_id": "221600",
+  "document_id": "jin10-2026-06-11-221600",
+  "run_id": "221600",
+  "title": "金十速递：美国5月CPI报告全文-金十数据VIP",
+  "trade_date": "2026-06-11",
+  "report_type": "daily",
+  "core_conclusion": "解析已完成，但CPI与Fed催化剂仍待验证。",
+  "logic_chains": [
+    {
+      "summary": "CPI and Fed catalysts determine the next gold direction."
+    }
+  ],
+  "quality_audit": {
+    "status": "needs_review",
+    "reasons": [
+      {
+        "code": "evidence_insufficient",
+        "message": "no stable prices, key sentences, levels, or logic chain extracted"
+      }
+    ]
+  },
+  "source_refs": [
+    {
+      "source": "jin10_external",
+      "asset_type": "report_md",
+      "path": "outputs/jin10/2026-06-11/221600/report.md",
+      "source_url": "https://svip.jin10.com/news/221600"
+    }
+  ]
+}

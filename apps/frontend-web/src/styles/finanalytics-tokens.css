@@ -1,0 +1,136 @@
+:root {
+  --bg-app: #08111f;
+  --bg-panel: #0c1728;
+  --bg-card: #111f34;
+  --bg-card-inner: #15263d;
+  --bg-terminal: #050b14;
+  --bg-hover: rgba(143, 194, 255, 0.09);
+  --bg-active: rgba(79, 156, 249, 0.16);
+
+  --border: #233956;
+  --border-strong: #3b5e89;
+  --border-faint: rgba(199, 219, 255, 0.08);
+
+  --fg-1: #f1f5f9;
+  --fg-2: #e2e8f0;
+  --fg-3: #a7b6cc;
+  --fg-4: #a8bad5;
+  --fg-5: #90a6c4;
+  --fg-6: #6b84a8;
+
+  --brand: #4f9cf9;
+  --brand-hover: #8fc2ff;
+  --brand-dim: rgba(79, 156, 249, 0.16);
+  --brand-cyan: #2dd4bf;
+  --brand-gold: #f0b90b;
+  --brand-gold-dim: rgba(240, 185, 11, 0.14);
+  --brand-gradient: linear-gradient(135deg, #4f9cf9, #2dd4bf);
+
+  --up: #10b981;
+  --up-soft: rgba(16, 185, 129, 0.12);
+  --up-border: rgba(16, 185, 129, 0.25);
+  --down: #f05252;
+  --down-soft: rgba(240, 82, 82, 0.12);
+  --down-border: rgba(240, 82, 82, 0.28);
+  --warn: #f59e0b;
+  --warn-soft: rgba(245, 158, 11, 0.1);
+  --warn-border: rgba(245, 158, 11, 0.25);
+  --info: #06b6d4;
+  --info-soft: rgba(6, 182, 212, 0.1);
+  --info-border: rgba(6, 182, 212, 0.25);
+
+  --chart-1: #f59e0b;
+  --chart-2: #4c8dff;
+  --chart-3: #10b981;
+  --chart-4: #f05252;
+  --chart-5: #8b9cf6;
+  --chart-6: #1bb8d8;
+
+  --font-sans: "IBM Plex Sans", "SF Pro Display", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  --text-9: 9px;
+  --text-10: 10px;
+  --text-11: 11px;
+  --text-12: 12px;
+  --text-13: 13px;
+  --text-14: 14px;
+  --text-16: 16px;
+  --text-18: 18px;
+  --text-22: 22px;
+  --text-28: 28px;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  --lh-tight: 1.1;
+  --lh-snug: 1.3;
+  --lh-base: 1.5;
+
+  --track-tight: -0.02em;
+  --track-normal: 0;
+  --track-wide: 0.04em;
+  --track-wider: 0.08em;
+
+  --space-0: 0;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-8: 16px;
+  --space-10: 20px;
+  --space-12: 24px;
+  --space-16: 32px;
+
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-pill: 999px;
+
+  --shadow-flat: 0 0 0 1px var(--border);
+  --shadow-card: 0 16px 32px rgba(1, 8, 18, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  --shadow-popover: 0 18px 40px rgba(1, 8, 18, 0.52), 0 0 0 1px var(--border);
+  --shadow-glow-up: 0 0 0 1px var(--up-border), 0 0 12px rgba(16, 185, 129, 0.15);
+  --shadow-glow-down: 0 0 0 1px var(--down-border), 0 0 12px rgba(240, 82, 82, 0.15);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 260ms;
+
+  --sidebar-w: 208px;
+  --header-h: 44px;
+  --statusbar-h: 30px;
+  --rightpanel-w: 300px;
+  --content-max-w: 1760px;
+  --content-pad-x: 14px;
+  --content-pad-y: 12px;
+
+  --color-bg-root: var(--bg-app);
+  --color-bg-surface: var(--bg-panel);
+  --color-bg-card: var(--bg-card);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-subtle: rgba(18, 33, 58, 0.78);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-faint);
+  --color-text-primary: var(--fg-1);
+  --color-text-secondary: var(--fg-3);
+  --color-text-tertiary: var(--fg-4);
+  --color-text-muted: var(--fg-5);
+  --color-accent: var(--brand);
+  --color-accent-soft: var(--brand-hover);
+  --color-accent-gold: var(--brand-gold);
+  --color-gold-subtle: var(--brand-gold-dim);
+  --color-cyan: var(--brand-cyan);
+  --color-purple: var(--chart-5);
+  --color-bullish: var(--up);
+  --color-bearish: var(--down);
+  --color-warning: var(--warn);
+}

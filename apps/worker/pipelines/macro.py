@@ -1,0 +1,910 @@
+"""Macro worker pipeline — collect → feature → render.
+
+Chains the existing macro collector, feature, and analysis modules into
+the premarket worker flow.  Each step is dispatched by name via
+``run_macro_step``.
+
+Produces durable artifacts under run-partitioned paths:
+- ``storage/features/macro/<date>/<run_id>/macro_snapshot.json`` — structured MacroSnapshot dict
+- ``storage/outputs/macro/<date>/<run_id>/macro_snapshot.md``   — human-readable Markdown table
+
+Never fabricates data; missing sources flow through as
+``unavailable_symbols`` in the output.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from apps.analysis.macro.conclusion import build_macro_conclusion
+from apps.analysis.macro.full_report import render_macro_full_report_markdown
+from apps.analysis.macro.summary import render_macro_snapshot_markdown
+from apps.data_layer.models import DualSourceResult
+from apps.data_layer.service import MacroDataService
+from apps.features.macro.snapshot import MacroIndicator, MacroSnapshot, build_macro_snapshot
+from apps.output.artifacts import artifact_run_dir
+from apps.parsers.macro.models import MacroPoint
+from database.queries.data_source_status import upsert_data_source_status
+
+# ---------------------------------------------------------------------------
+# Step names that belong to the macro pipeline
+# ---------------------------------------------------------------------------
+
+MACRO_STEPS = {"macro_collect", "macro_feature", "report_render"}
+
+_MARKET_PROXY_SYMBOL_MAP = {
+    "DX-Y.NYB": "DXY",
+}
+
+
+# ---------------------------------------------------------------------------
+# Pipeline state — threaded through each step
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MacroPipelineState:
+    """Holds intermediate results for the macro pipeline."""
+
+    all_points: list[MacroPoint] = field(default_factory=list)
+    all_unavailable: list[str] = field(default_factory=list)
+    all_source_refs: list[dict[str, str]] = field(default_factory=list)
+    as_of: str = ""
+    snapshot_dict: dict[str, Any] | None = None
+    conclusion_dict: dict[str, Any] | None = None
+    report_md: str | None = None
+    full_report_md: str | None = None
+    step_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
+
+
+def run_macro_step(
+    step_name: str,
+    state: MacroPipelineState,
+    *,
+    storage_root: Path = Path("./storage"),
+    run_id: str | None = None,
+    db_session: Session | None = None,
+) -> dict[str, Any]:
+    """Execute a single macro pipeline step and update *state*.
+
+    Returns a summary dict for the step (suitable for task logging).
+
+    Raises on failure; the caller is responsible for marking the task step
+    as failed.
+    """
+    dispatch = {
+        "macro_collect": _step_collect,
+        "macro_feature": _step_feature,
+        "report_render": _step_render,
+    }
+
+    fn = dispatch.get(step_name)
+    if fn is None:
+        raise ValueError(f"Unknown macro step: {step_name!r}")
+
+    summary = fn(state, storage_root=storage_root, run_id=run_id, db_session=db_session)
+    state.step_summaries[step_name] = summary
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Individual step implementations
+# ---------------------------------------------------------------------------
+
+
+def _step_collect(
+    state: MacroPipelineState,
+    *,
+    storage_root: Path,
+    run_id: str | None,
+    db_session: Session | None,
+) -> dict[str, Any]:
+    """Step 1: Collect macro data from FRED, Fed, and Treasury sources.
+
+    Merges all CollectorResults into the shared state.  Individual collector
+    failures are non-fatal — the symbol is added to unavailable and the
+    remaining collectors continue.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    state.as_of = today
+
+    all_points: list[MacroPoint] = []
+    all_unavailable: list[str] = []
+    all_refs: list[dict[str, str]] = []
+    collector_statuses: list[dict[str, Any]] = []
+
+    # --- FRED ---
+    try:
+        from apps.collectors.fred.collector import collect_fred_series
+
+        fred_result = collect_fred_series(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(fred_result.points)
+        all_unavailable.extend(fred_result.unavailable_symbols)
+        all_refs.extend(fred_result.source_refs)
+        collector_statuses.append({
+            "collector": "fred",
+            "status": "success",
+            "points": len(fred_result.points),
+            "unavailable": len(fred_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "fred",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    # --- Fed ---
+    try:
+        from apps.collectors.fed.collector import collect_fed_series
+
+        fed_result = collect_fed_series(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(fed_result.points)
+        all_unavailable.extend(fed_result.unavailable_symbols)
+        all_refs.extend(fed_result.source_refs)
+        collector_statuses.append({
+            "collector": "fed",
+            "status": "success",
+            "points": len(fed_result.points),
+            "unavailable": len(fed_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "fed",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    # --- Treasury ---
+    try:
+        from apps.collectors.treasury.collector import collect_treasury_series
+
+        treasury_result = collect_treasury_series(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(treasury_result.points)
+        all_unavailable.extend(treasury_result.unavailable_symbols)
+        all_refs.extend(treasury_result.source_refs)
+        collector_statuses.append({
+            "collector": "treasury",
+            "status": "success",
+            "points": len(treasury_result.points),
+            "unavailable": len(treasury_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "treasury",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    # --- DXY / TradingView ---
+    try:
+        from apps.collectors.dxy.collector import collect_dxy_series
+
+        dxy_result = collect_dxy_series(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(dxy_result.points)
+        all_unavailable.extend(dxy_result.unavailable_symbols)
+        all_refs.extend(dxy_result.source_refs)
+        collector_statuses.append({
+            "collector": "dxy",
+            "status": "success",
+            "points": len(dxy_result.points),
+            "unavailable": len(dxy_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "dxy",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    # --- Technical / XAUUSD price ---
+    try:
+        from apps.collectors.technical.collector import collect_technical
+
+        tech_result = collect_technical(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(tech_result.points)
+        all_unavailable.extend(tech_result.unavailable_symbols)
+        all_refs.extend(tech_result.source_refs)
+        collector_statuses.append({
+            "collector": "technical",
+            "status": "success",
+            "points": len(tech_result.points),
+            "unavailable": len(tech_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "technical",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    # --- Positioning / CFTC COT ---
+    try:
+        from apps.collectors.positioning.collector import collect_positioning_cot
+
+        pos_result = collect_positioning_cot(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(pos_result.points)
+        all_unavailable.extend(pos_result.unavailable_symbols)
+        all_refs.extend(pos_result.source_refs)
+        collector_statuses.append({
+            "collector": "positioning",
+            "status": "success",
+            "points": len(pos_result.points),
+            "unavailable": len(pos_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "positioning",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    # --- News / Jin10 MCP ---
+    try:
+        from apps.collectors.news.collector import collect_news
+
+        news_result = collect_news(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(news_result.points)
+        all_unavailable.extend(news_result.unavailable_symbols)
+        all_refs.extend(news_result.source_refs)
+        collector_statuses.append({
+            "collector": "news",
+            "status": "success",
+            "points": len(news_result.points),
+            "unavailable": len(news_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "news",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    # --- Jin10 Quotes / MCP (real-time prices) ---
+    try:
+        from apps.collectors.jin10.quotes import collect_quotes
+
+        quotes_result = collect_quotes(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(quotes_result.points)
+        all_unavailable.extend(quotes_result.unavailable_symbols)
+        all_refs.extend(quotes_result.source_refs)
+        collector_statuses.append({
+            "collector": "jin10_quotes",
+            "status": "success",
+            "points": len(quotes_result.points),
+            "unavailable": len(quotes_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "jin10_quotes",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    # --- Jin10 K-line / MCP ---
+    try:
+        from apps.collectors.jin10.kline import collect_kline
+
+        kline_result = collect_kline(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(kline_result.points)
+        all_unavailable.extend(kline_result.unavailable_symbols)
+        all_refs.extend(kline_result.source_refs)
+        collector_statuses.append({
+            "collector": "jin10_kline",
+            "status": "success",
+            "points": len(kline_result.points),
+            "unavailable": len(kline_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "jin10_kline",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    # --- Jin10 Articles / MCP ---
+    try:
+        from apps.collectors.jin10.articles import collect_articles
+
+        articles_result = collect_articles(
+            retrieved_date=today,
+            storage_root=storage_root,
+        )
+        all_points.extend(articles_result.points)
+        all_unavailable.extend(articles_result.unavailable_symbols)
+        all_refs.extend(articles_result.source_refs)
+        collector_statuses.append({
+            "collector": "jin10_articles",
+            "status": "success",
+            "points": len(articles_result.points),
+            "unavailable": len(articles_result.unavailable_symbols),
+        })
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "jin10_articles",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    data_service = MacroDataService(storage_root=storage_root)
+
+    try:
+        fred_fallback = data_service.collect_fred_rates(retrieved_date=today)
+        collector_statuses.append(
+            _merge_data_layer_result(
+                result=fred_fallback,
+                collector_name="data_layer_fred_rates",
+                all_points=all_points,
+                all_unavailable=all_unavailable,
+                all_refs=all_refs,
+            )
+        )
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "data_layer_fred_rates",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    try:
+        market_fallback = data_service.collect_market_prices(retrieved_date=today)
+        collector_statuses.append(
+            _merge_data_layer_result(
+                result=market_fallback,
+                collector_name="data_layer_market_prices",
+                all_points=all_points,
+                all_unavailable=all_unavailable,
+                all_refs=all_refs,
+                symbol_aliases=_MARKET_PROXY_SYMBOL_MAP,
+            )
+        )
+    except Exception as exc:
+        collector_statuses.append({
+            "collector": "data_layer_market_prices",
+            "status": "failed",
+            "error": str(exc),
+        })
+
+    state.all_points = all_points
+    state.all_unavailable = list(dict.fromkeys(all_unavailable))
+    state.all_source_refs = all_refs
+
+    data_source_status_upserts = 0
+    if db_session is not None:
+        data_source_status_upserts = _upsert_macro_data_source_statuses(
+            db_session,
+            collector_statuses=collector_statuses,
+            as_of=today,
+            run_id=run_id,
+        )
+
+    return {
+        "step": "macro_collect",
+        "status": "success",
+        "as_of": today,
+        "total_points": len(all_points),
+        "total_unavailable": len(state.all_unavailable),
+        "collectors": collector_statuses,
+        "data_source_status_upserts": data_source_status_upserts,
+    }
+
+
+_MACRO_STATUS_CONTRACTS: dict[str, dict[str, Any]] = {
+    "fred": {
+        "source_name": "FRED",
+        "source_group": "macro",
+        "source_type": "api",
+        "access_method": "fred_api",
+        "metadata": {
+            "provider_role": "official_primary",
+            "fallback_for": [],
+            "fallback_sources": ["openbb_macro", "jin10_news"],
+            "frontend_label": "FRED 官方宏观主源",
+            "notes": "官方宏观时间序列主源；异常时由 OpenBB 补充，并由 Jin10 提供事件/快讯上下文。",
+        },
+    },
+    "fed": {
+        "source_name": "Federal Reserve",
+        "source_group": "macro",
+        "source_type": "api",
+        "access_method": "fed_prates_json",
+        "metadata": {
+            "provider_role": "official_primary",
+            "fallback_for": [],
+            "fallback_sources": ["openbb_macro", "jin10_news"],
+            "frontend_label": "Federal Reserve 官方源",
+        },
+    },
+    "treasury": {
+        "source_name": "US Treasury",
+        "source_group": "macro",
+        "source_type": "api",
+        "access_method": "treasury_fiscaldata",
+        "metadata": {
+            "provider_role": "official_primary",
+            "fallback_for": [],
+            "fallback_sources": ["openbb_macro", "jin10_news"],
+            "frontend_label": "US Treasury 官方源",
+        },
+    },
+    "dxy": {
+        "source_name": "DXY Index",
+        "source_group": "macro",
+        "source_type": "api",
+        "access_method": "tradingview_or_cnbc",
+        "metadata": {
+            "provider_role": "official_primary",
+            "fallback_for": [],
+            "fallback_sources": ["openbb_macro", "jin10_news"],
+            "frontend_label": "DXY 主行情源",
+        },
+    },
+    "openbb_macro": {
+        "source_name": "OpenBB Macro/Market",
+        "source_group": "macro",
+        "source_type": "api",
+        "access_method": "openbb_data_layer",
+        "metadata": {
+            "provider_role": "fallback",
+            "fallback_for": ["fred", "fed", "treasury", "dxy"],
+            "fallback_sources": [],
+            "frontend_label": "OpenBB 宏观/市场补充源",
+            "notes": "补充或回退宏观/市场数据；未写入原始/解析工件时不得视为已入库。",
+        },
+    },
+    "technical_yahoo": {
+        "source_name": "Jin10 XAUUSD Quote / Yahoo Technical",
+        "source_group": "technical",
+        "source_type": "api",
+        "access_method": "jin10_mcp+yahoo_finance",
+        "metadata": {
+            "provider_role": "supplemental",
+            "fallback_for": ["openbb_macro"],
+            "fallback_sources": ["jin10_news"],
+            "frontend_label": "Jin10 黄金实时/技术补充源",
+            "notes": "黄金现货价格优先使用 Jin10 XAUUSD 实时报价；Yahoo Finance 仅作为技术指标兜底。",
+        },
+    },
+    "positioning_cot": {
+        "source_name": "COT Positioning",
+        "source_group": "positioning",
+        "source_type": "api",
+        "access_method": "cftc_api",
+        "metadata": {
+            "provider_role": "official_primary",
+            "fallback_for": [],
+            "fallback_sources": [],
+            "frontend_label": "COT 官方持仓源",
+        },
+    },
+    "jin10_news": {
+        "source_name": "Jin10 News",
+        "source_group": "news",
+        "source_type": "scraper",
+        "access_method": "jin10_mcp",
+        "metadata": {
+            "provider_role": "supplemental",
+            "fallback_for": ["fred", "fed", "treasury", "dxy", "openbb_macro"],
+            "fallback_sources": [],
+            "frontend_label": "Jin10 新闻/日历补充源",
+            "notes": "提供快讯、日历、事件上下文；不应被前端当作官方宏观时间序列主源。",
+        },
+    },
+}
+
+_COLLECTOR_TO_SOURCE_KEY = {
+    "fred": "fred",
+    "fed": "fed",
+    "treasury": "treasury",
+    "dxy": "dxy",
+    "technical": "technical_yahoo",
+    "positioning": "positioning_cot",
+    "news": "jin10_news",
+}
+
+
+def _upsert_macro_data_source_statuses(
+    db_session: Session,
+    *,
+    collector_statuses: list[dict[str, Any]],
+    as_of: str,
+    run_id: str | None,
+) -> int:
+    """Persist macro collector status rows for the Data Ingestion page."""
+    now = datetime.now(timezone.utc)
+    by_collector = {item.get("collector"): item for item in collector_statuses}
+    upserted = 0
+
+    for collector_name, source_key in _COLLECTOR_TO_SOURCE_KEY.items():
+        status = by_collector.get(collector_name, {"collector": collector_name, "status": "not_connected"})
+        upsert_data_source_status(
+            db_session,
+            _build_source_status_payload(
+                source_key,
+                status,
+                now=now,
+                as_of=as_of,
+                run_id=run_id,
+            ),
+        )
+        upserted += 1
+
+    openbb_statuses = [
+        by_collector.get("data_layer_fred_rates", {"collector": "data_layer_fred_rates", "status": "not_connected"}),
+        by_collector.get("data_layer_market_prices", {"collector": "data_layer_market_prices", "status": "not_connected"}),
+    ]
+    upsert_data_source_status(
+        db_session,
+        _build_openbb_source_status_payload(
+            openbb_statuses,
+            now=now,
+            as_of=as_of,
+            run_id=run_id,
+        ),
+    )
+    upserted += 1
+    return upserted
+
+
+def _build_source_status_payload(
+    source_key: str,
+    collector_status: dict[str, Any],
+    *,
+    now: datetime,
+    as_of: str,
+    run_id: str | None,
+) -> dict[str, Any]:
+    contract = _MACRO_STATUS_CONTRACTS[source_key]
+    status = _collector_status_to_source_status(collector_status)
+    points = int(collector_status.get("points") or 0)
+    unavailable = int(collector_status.get("unavailable") or 0)
+    error = collector_status.get("error")
+    has_raw = points > 0
+    is_failed = status == "failed"
+    metadata = {
+        **contract["metadata"],
+        "collector": collector_status.get("collector"),
+        "collector_status": collector_status.get("status"),
+        "collector_points": points,
+        "collector_unavailable": unavailable,
+        "as_of": as_of,
+    }
+    return {
+        "source_key": source_key,
+        "source_name": contract["source_name"],
+        "source_group": contract["source_group"],
+        "source_type": contract["source_type"],
+        "access_method": contract["access_method"],
+        "configured": True,
+        "raw_ingested": has_raw,
+        "parsed": has_raw,
+        "analysis_ready": has_raw and not is_failed,
+        "latest_raw_time": now if has_raw else None,
+        "latest_parsed_time": now if has_raw else None,
+        "latest_snapshot_id": run_id,
+        "row_count": points,
+        "status": status,
+        "error_message": str(error) if error else None,
+        "last_run_id": run_id,
+        "next_run_time": None,
+        "source_metadata": metadata,
+    }
+
+
+def _build_openbb_source_status_payload(
+    statuses: list[dict[str, Any]],
+    *,
+    now: datetime,
+    as_of: str,
+    run_id: str | None,
+) -> dict[str, Any]:
+    contract = _MACRO_STATUS_CONTRACTS["openbb_macro"]
+    points = sum(int(item.get("added_points") or 0) for item in statuses)
+    unavailable = sum(int(item.get("unavailable") or 0) for item in statuses)
+    failed = [item for item in statuses if item.get("status") == "failed"]
+    attempted = any(item.get("status") not in {None, "not_connected"} for item in statuses)
+    usable_attempt = any(item.get("status") in {"success", "partial", "skipped"} for item in statuses)
+    has_raw = points > 0
+    if failed and len(failed) == len(statuses):
+        status = "failed"
+    elif has_raw and unavailable:
+        status = "partial"
+    elif has_raw:
+        status = "ok"
+    elif attempted:
+        status = "partial"
+    else:
+        status = "not_connected"
+    metadata = {
+        **contract["metadata"],
+        "collector_statuses": statuses,
+        "collector_points": points,
+        "collector_unavailable": unavailable,
+        "as_of": as_of,
+    }
+    return {
+        "source_key": "openbb_macro",
+        "source_name": contract["source_name"],
+        "source_group": contract["source_group"],
+        "source_type": contract["source_type"],
+        "access_method": contract["access_method"],
+        "configured": has_raw or usable_attempt,
+        "raw_ingested": has_raw,
+        "parsed": has_raw,
+        "analysis_ready": has_raw,
+        "latest_raw_time": now if has_raw else None,
+        "latest_parsed_time": now if has_raw else None,
+        "latest_snapshot_id": run_id,
+        "row_count": points,
+        "status": status,
+        "error_message": "; ".join(str(item.get("error")) for item in failed if item.get("error")) or None,
+        "last_run_id": run_id,
+        "next_run_time": None,
+        "source_metadata": metadata,
+    }
+
+
+def _collector_status_to_source_status(collector_status: dict[str, Any]) -> str:
+    status = collector_status.get("status")
+    if status == "failed":
+        return "failed"
+    points = int(collector_status.get("points") or 0)
+    unavailable = int(collector_status.get("unavailable") or 0)
+    if points and unavailable:
+        return "partial"
+    if points:
+        return "ok"
+    if unavailable:
+        return "partial"
+    if status in {"success", "skipped"}:
+        return "ok"
+    return "not_connected"
+
+
+def _merge_data_layer_result(
+    *,
+    result: DualSourceResult,
+    collector_name: str,
+    all_points: list[MacroPoint],
+    all_unavailable: list[str],
+    all_refs: list[dict[str, str]],
+    symbol_aliases: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    symbol_aliases = symbol_aliases or {}
+    existing_symbols = {point.symbol for point in all_points}
+    transformed_points = [
+        _canonicalize_macro_point(point, symbol_aliases=symbol_aliases)
+        for point in result.points
+    ]
+
+    points_to_add: list[MacroPoint] = []
+    duplicate_points = 0
+    for point in transformed_points:
+        if point.symbol in existing_symbols:
+            duplicate_points += 1
+            continue
+        points_to_add.append(point)
+        existing_symbols.add(point.symbol)
+
+    if points_to_add:
+        all_points.extend(points_to_add)
+        resolved_symbols = {point.symbol for point in points_to_add}
+        all_unavailable[:] = [symbol for symbol in all_unavailable if symbol not in resolved_symbols]
+
+    for symbol in result.unavailable_symbols:
+        canonical_symbol = symbol_aliases.get(symbol, symbol)
+        if canonical_symbol not in existing_symbols:
+            all_unavailable.append(canonical_symbol)
+
+    all_refs.extend(result.source_refs)
+
+    status = "success"
+    if points_to_add and result.unavailable_symbols:
+        status = "partial"
+    elif result.unavailable_symbols:
+        status = "partial"
+    elif not points_to_add:
+        status = "skipped"
+
+    return {
+        "collector": collector_name,
+        "status": status,
+        "source_used": result.source_used,
+        "points": len(result.points),
+        "added_points": len(points_to_add),
+        "duplicate_points": duplicate_points,
+        "unavailable": len(result.unavailable_symbols),
+        "warnings": list(result.warnings),
+    }
+
+
+def _canonicalize_macro_point(
+    point: MacroPoint,
+    *,
+    symbol_aliases: dict[str, str],
+) -> MacroPoint:
+    canonical_symbol = symbol_aliases.get(point.symbol)
+    if canonical_symbol is None:
+        return point
+    return MacroPoint(
+        symbol=canonical_symbol,
+        date=point.date,
+        value=point.value,
+        source=point.source,
+        source_url=point.source_url,
+        retrieved_at=point.retrieved_at,
+        raw_path=point.raw_path,
+    )
+
+
+def _step_feature(
+    state: MacroPipelineState,
+    *,
+    storage_root: Path,
+    run_id: str | None,
+    db_session: Session | None,
+) -> dict[str, Any]:
+    """Step 2: Build macro snapshot from collected data points.
+
+    Calls ``build_macro_snapshot`` which computes indicators, spreads, and
+    direction notes.  Markers ``unavailable_symbols`` and ``source_refs``
+    are preserved from the collect step.
+    """
+    if not state.as_of:
+        raise RuntimeError("macro_feature requires macro_collect to have completed first")
+
+    snapshot = build_macro_snapshot(
+        [p.to_dict() for p in state.all_points],
+        as_of=state.as_of,
+        unavailable_symbols=state.all_unavailable,
+        source_refs=state.all_source_refs,
+    )
+
+    state.snapshot_dict = snapshot.to_dict()
+    return {
+        "step": "macro_feature",
+        "status": "success",
+        "as_of": state.as_of,
+        "indicator_count": len(snapshot.indicators),
+        "unavailable_count": len(snapshot.unavailable_symbols),
+    }
+
+
+def _step_render(
+    state: MacroPipelineState,
+    *,
+    storage_root: Path,
+    run_id: str | None,
+    db_session: Session | None,
+) -> dict[str, Any]:
+    """Step 3: Render macro snapshot to JSON and Markdown artifacts.
+
+    Writes ``storage/features/macro/<date>/<run_id>/macro_snapshot.json`` and
+    ``storage/outputs/macro/<date>/<run_id>/macro_snapshot.md``.
+    """
+    if state.snapshot_dict is None:
+        raise RuntimeError("report_render requires macro_feature to have completed first")
+
+    # Reconstruct MacroSnapshot from dict for the Markdown renderer
+    snapshot = _snapshot_from_dict(state.snapshot_dict)
+    conclusion = build_macro_conclusion(snapshot)
+    report_md = render_macro_snapshot_markdown(snapshot)
+    full_report_md = render_macro_full_report_markdown(snapshot, conclusion)
+    state.conclusion_dict = conclusion.to_dict()
+    state.report_md = report_md
+    state.full_report_md = full_report_md
+
+    features_dir = artifact_run_dir(
+        storage_root,
+        layer="features",
+        domain="macro",
+        date=state.as_of,
+        run_id=run_id,
+    )
+    outputs_dir = artifact_run_dir(
+        storage_root,
+        layer="outputs",
+        domain="macro",
+        date=state.as_of,
+        run_id=run_id,
+    )
+    features_dir.mkdir(parents=True, exist_ok=True)
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    json_path = features_dir / "macro_snapshot.json"
+    json_path.write_text(
+        json.dumps(state.snapshot_dict, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    md_path = outputs_dir / "macro_snapshot.md"
+    md_path.write_text(report_md, encoding="utf-8")
+
+    conclusion_path = features_dir / "macro_conclusion.json"
+    conclusion_path.write_text(
+        json.dumps(state.conclusion_dict, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    full_md_path = outputs_dir / "macro_full_report.md"
+    full_md_path.write_text(full_report_md, encoding="utf-8")
+
+    return {
+        "step": "report_render",
+        "status": "success",
+        "as_of": state.as_of,
+        "json_path": str(json_path),
+        "md_path": str(md_path),
+        "conclusion_path": str(conclusion_path),
+        "full_md_path": str(full_md_path),
+        "source_refs_count": len(state.all_source_refs),
+        "unavailable_count": len(state.all_unavailable),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_from_dict(data: dict[str, Any]) -> MacroSnapshot:
+    """Reconstruct a MacroSnapshot from its dict representation."""
+
+    indicators: dict[str, MacroIndicator] = {}
+    for symbol, ind_dict in data.get("indicators", {}).items():
+        indicators[symbol] = MacroIndicator(
+            symbol=ind_dict["symbol"],
+            date=ind_dict["date"],
+            value=ind_dict["value"],
+            daily_change=ind_dict.get("daily_change"),
+            weekly_change=ind_dict.get("weekly_change"),
+            monthly_change=ind_dict.get("monthly_change"),
+            label=ind_dict.get("label", ""),
+            unit=ind_dict.get("unit", ""),
+            direction_note=ind_dict.get("direction_note", ""),
+        )
+
+    return MacroSnapshot(
+        as_of=data["as_of"],
+        indicators=indicators,
+        unavailable_symbols=data.get("unavailable_symbols", []),
+        source_refs=data.get("source_refs", {}),
+    )

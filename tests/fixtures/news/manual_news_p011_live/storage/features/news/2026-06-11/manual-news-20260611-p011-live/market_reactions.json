@@ -1,0 +1,26 @@
+{
+  "retrieved_date": "2026-06-11",
+  "run_id": "manual-news-20260611-p011-live",
+  "market_reactions": [
+    {
+      "event_id": "event:macro_watchlist:fixture",
+      "status": "available",
+      "pricing_status": "unpriced",
+      "confirmation_summary": {
+        "confirmed_count": 0,
+        "contradicted_count": 0,
+        "observed_count": 2
+      },
+      "windows": {
+        "30m": {
+          "XAUUSD": {
+            "pct_change": -2.5,
+            "direction": "down",
+            "threshold_hit": true
+          }
+        }
+      },
+      "warnings": []
+    }
+  ]
+}

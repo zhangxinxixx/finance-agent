@@ -1,0 +1,13 @@
+{
+  "as_of": "2026-06-11T07:16:00+00:00",
+  "raw_news_items": [],
+  "event_candidates": [],
+  "top_market_events": [],
+  "source_mix": {
+    "official": 1,
+    "supplemental": 2
+  },
+  "data_quality": {
+    "event_candidate_count": 3
+  }
+}

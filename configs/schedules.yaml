@@ -1,0 +1,23 @@
+# 任务调度配置
+# Phase 1 先用手动触发，定时任务可后续启用
+
+schedules:
+  premarket:
+    name: "盘前研究"
+    trigger: manual
+    cron: null
+    steps:
+      - macro_collect
+      - macro_feature
+      - cme_download
+      - cme_parse
+      - option_wall
+      - report_render
+      - strategy_card
+
+  postmarket:
+    name: "盘后复盘"
+    trigger: manual
+    cron: null
+    enabled: false
+    note: Phase 7 复盘模块再启用

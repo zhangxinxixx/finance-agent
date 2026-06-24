@@ -1,0 +1,25 @@
+flowchart LR
+  Frontend["前端主线<br/>apps/frontend-web / Vite React TS"] --> API["后端 API<br/>apps/api/main.py / FastAPI"]
+  API --> Services["业务服务层<br/>apps/api/services<br/>读模型 / 动作入口"]
+  API --> Scheduler["调度器<br/>apps/scheduler<br/>线程 + APScheduler"]
+  Scheduler --> Worker["任务执行器<br/>apps/worker/runner.py<br/>盘前流水线"]
+
+  Worker --> Collectors["采集器<br/>apps/collectors"]
+  Collectors --> Raw["原始归档<br/>storage/raw"]
+  Worker --> Parsers["解析器<br/>apps/parsers"]
+  Parsers --> Parsed["解析结果<br/>storage/parsed"]
+  Worker --> Features["特征计算<br/>apps/features"]
+  Features --> FeatureStore["特征存储<br/>storage/features"]
+  Worker --> Analysis["分析层<br/>apps/analysis<br/>快照 + Agent 输出"]
+  Analysis --> Renderer["报告渲染<br/>apps/renderer"]
+  Renderer --> Output["输出落盘<br/>apps/output"]
+  Output --> Outputs["报告产物<br/>storage/outputs"]
+
+  Services --> DB[(数据库<br/>PostgreSQL / SQLite 兼容模型)]
+  Worker --> DB
+  Analysis --> DB
+  Services --> Storage["文件产物<br/>storage"]
+  Storage --> Raw
+  Storage --> Parsed
+  Storage --> FeatureStore
+  Storage --> Outputs

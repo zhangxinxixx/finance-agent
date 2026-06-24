@@ -1,0 +1,13 @@
+{
+  "retrieved_date": "2026-06-11",
+  "run_id": "manual-news-20260611-p011-live",
+  "rule_version": "news-impact-rules-v1",
+  "impact_assessments": [
+    {
+      "event_id": "event:fomc_statement:0b5e408a21ddbdf7",
+      "impact_path": "strong_data_to_higher_for_longer",
+      "pricing_status": "partially_priced",
+      "risk_level": "medium"
+    }
+  ]
+}

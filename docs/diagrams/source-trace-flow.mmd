@@ -1,0 +1,10 @@
+flowchart LR
+  RawFile["原始文件<br/>raw_file / storage/raw"] --> ParsedFile["解析文件<br/>parsed_file / storage/parsed"]
+  ParsedFile --> FeatureSnapshot["特征快照<br/>feature_snapshot / storage/features"]
+  FeatureSnapshot --> AnalysisSnapshot["分析快照<br/>analysis_snapshot / analysis_snapshots"]
+  AnalysisSnapshot --> AgentOutput["Agent 输出<br/>agent_output / agent_outputs"]
+  AgentOutput --> ReportArtifact["报告产物<br/>report_artifact / report_artifacts"]
+  AgentOutput --> StrategyCard["策略卡片<br/>strategy_card / /api/strategy-cards"]
+  ReportArtifact --> SourceTrace["报告溯源 API<br/>/api/source-trace/by-report/{report_id}"]
+  StrategyCard --> StrategyTrace["策略溯源 API<br/>/api/source-trace/by-strategy/{strategy_card_id}"]
+  AnalysisSnapshot --> SnapshotTrace["快照溯源 API<br/>/api/source-trace/{snapshot_id}"]

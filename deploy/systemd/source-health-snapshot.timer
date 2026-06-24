@@ -1,0 +1,10 @@
+[Unit]
+Description=Record Finance Agent data source health snapshot every day
+
+[Timer]
+OnCalendar=*-*-* 10:05:00
+Persistent=true
+Unit=source-health-snapshot.service
+
+[Install]
+WantedBy=timers.target

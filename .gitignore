@@ -1,0 +1,99 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.egg
+dist/
+build/
+*.whl
+.venv/
+venv/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.local/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej
+*.tmp
+*.temp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Storage raw data (large files)
+storage/raw/*
+!storage/raw/.gitkeep
+storage/parsed/*
+!storage/parsed/.gitkeep
+storage/features/*
+!storage/features/.gitkeep
+storage/outputs/*
+!storage/outputs/.gitkeep
+storage/logs/*
+!storage/logs/.gitkeep
+logs/
+
+# Test fixtures can be committed, but not large PDFs over 5MB
+tests/fixtures/**/*.pdf
+!tests/fixtures/cme/.gitkeep
+
+# Database
+*.db
+*.sqlite3
+
+# Redis dump
+dump.rdb
+
+# Playwright
+playwright-report/
+test-results/
+output/playwright-mcp/
+
+# Local runtime evidence / scratch output at repo root
+/output/
+
+# Legacy root-level parsed scratch dir (canonical path is storage/parsed/)
+/parsed/
+
+# Local worker checkpoint state
+/storage/state/*
+!/storage/state/.gitkeep
+
+# CodeGraph local index
+.codegraph/
+
+# Local worktrees
+.worktrees/
+
+# Local generated market/archive artifacts
+/raw/
+storage/archive/
+
+# Local run staging and spike scripts
+scripts/spikes/
+
+# Local Dagster dev runs
+.tmp_dagster_home*/
+
+# Local frontend design/build scratch
+apps/frontend-web/dist-check/
+apps/frontend-web/public/design_ref.png
+
+# Local planning / prototype docs
+docs/archive/

@@ -1,0 +1,187 @@
+{
+  "default_source_group": "macro",
+  "summary": {
+    "generated_at": "2026-05-17T07:10:00Z",
+    "source_count": 6,
+    "configured_count": 6,
+    "raw_ingested_count": 5,
+    "parsed_count": 5,
+    "analysis_ready_count": 4,
+    "status_counts": {
+      "ok": 4,
+      "warn": 1,
+      "error": 1,
+      "unavailable": 0
+    },
+    "source_groups": [
+      {
+        "group": "macro",
+        "count": 3
+      },
+      {
+        "group": "cme",
+        "count": 2
+      },
+      {
+        "group": "reference",
+        "count": 1
+      }
+    ],
+    "pipeline": {
+      "configured": "done",
+      "raw_ingested": "running",
+      "parsed": "running",
+      "analysis_ready": "pending"
+    },
+    "source_trace": [
+      {
+        "name": "FRED API",
+        "trade_date": "2026-05-17",
+        "file": "mocks/data-ingestion.json",
+        "snapshot_id": "macro-fred-20260517",
+        "source_ref": "GET /api/data-sources/status#fred_api",
+        "endpoint": "GET /api/data-sources/status",
+        "latest_raw_time": "2026-05-17T06:00:00Z",
+        "latest_parsed_time": "2026-05-17T06:01:00Z",
+        "status": "ok"
+      },
+      {
+        "name": "CME Daily Bulletin",
+        "trade_date": "2026-05-17",
+        "file": "mocks/data-ingestion.json",
+        "snapshot_id": "cme-bulletin-20260517",
+        "source_ref": "GET /api/data-sources/status#cme_bulletin",
+        "endpoint": "GET /api/data-sources/status",
+        "latest_raw_time": "2026-05-17T02:30:00Z",
+        "latest_parsed_time": "2026-05-17T02:31:00Z",
+        "status": "ok"
+      }
+    ]
+  },
+  "statuses": {
+    "generated_at": "2026-05-17T07:10:00Z",
+    "last_refresh_at": "2026-05-17T07:12:00Z",
+    "sources": [
+      {
+        "source_key": "fred_api",
+        "source_name": "FRED API",
+        "source_group": "macro",
+        "source_type": "api",
+        "endpoint": "https://api.stlouisfed.org/fred/series/observations",
+        "configured": true,
+        "raw_ingested": true,
+        "parsed": true,
+        "analysis_ready": true,
+        "latest_raw_time": "2026-05-17T06:00:00Z",
+        "latest_parsed_time": "2026-05-17T06:01:00Z",
+        "row_count": 2847,
+        "status": "ok",
+        "error_message": null,
+        "source_refs": [
+          "GET /api/data-sources/status#fred_api"
+        ],
+        "snapshot_id": "macro-fred-20260517"
+      },
+      {
+        "source_key": "cme_bulletin",
+        "source_name": "CME Daily Bulletin",
+        "source_group": "cme",
+        "source_type": "pdf",
+        "endpoint": "https://www.cmegroup.com/market-data/daily-bulletin.html",
+        "configured": true,
+        "raw_ingested": true,
+        "parsed": true,
+        "analysis_ready": true,
+        "latest_raw_time": "2026-05-17T02:30:00Z",
+        "latest_parsed_time": "2026-05-17T02:31:00Z",
+        "row_count": 12480,
+        "status": "ok",
+        "error_message": null,
+        "source_refs": [
+          "GET /api/data-sources/status#cme_bulletin"
+        ],
+        "snapshot_id": "cme-bulletin-20260517"
+      },
+      {
+        "source_key": "treasury_gov",
+        "source_name": "Treasury.gov",
+        "source_group": "reference",
+        "source_type": "scrape",
+        "endpoint": "https://home.treasury.gov/",
+        "configured": true,
+        "raw_ingested": false,
+        "parsed": false,
+        "analysis_ready": false,
+        "latest_raw_time": null,
+        "latest_parsed_time": null,
+        "row_count": 0,
+        "status": "error",
+        "error_message": "TLS certificate expired (2026-05-15)",
+        "source_refs": [
+          "GET /api/data-sources/status#treasury_gov"
+        ],
+        "snapshot_id": null
+      },
+      {
+        "source_key": "fed_fomc",
+        "source_name": "Federal Reserve FOMC",
+        "source_group": "macro",
+        "source_type": "webhook",
+        "endpoint": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        "configured": true,
+        "raw_ingested": true,
+        "parsed": true,
+        "analysis_ready": true,
+        "latest_raw_time": "2026-05-16T20:00:00Z",
+        "latest_parsed_time": "2026-05-16T20:02:00Z",
+        "row_count": 18,
+        "status": "ok",
+        "error_message": null,
+        "source_refs": [
+          "GET /api/data-sources/status#fed_fomc"
+        ],
+        "snapshot_id": "fed-fomc-20260516"
+      },
+      {
+        "source_key": "cme_options",
+        "source_name": "CME Options",
+        "source_group": "cme",
+        "source_type": "pdf",
+        "endpoint": "https://www.cmegroup.com/markets/metals/precious/gold.quotes.html",
+        "configured": true,
+        "raw_ingested": true,
+        "parsed": false,
+        "analysis_ready": false,
+        "latest_raw_time": "2026-05-17T02:45:00Z",
+        "latest_parsed_time": null,
+        "row_count": 9064,
+        "status": "warn",
+        "error_message": "Waiting for FINAL bulletin, current file still PRELIM",
+        "source_refs": [
+          "GET /api/data-sources/status#cme_options"
+        ],
+        "snapshot_id": "cme-options-20260517"
+      },
+      {
+        "source_key": "news_calendar",
+        "source_name": "News Calendar",
+        "source_group": "reference",
+        "source_type": "api",
+        "endpoint": "https://example.invalid/api/news-calendar",
+        "configured": true,
+        "raw_ingested": true,
+        "parsed": true,
+        "analysis_ready": false,
+        "latest_raw_time": "2026-05-17T05:00:00Z",
+        "latest_parsed_time": "2026-05-17T05:04:00Z",
+        "row_count": 82,
+        "status": "unavailable",
+        "error_message": "Upstream API returned 503",
+        "source_refs": [
+          "GET /api/data-sources/status#news_calendar"
+        ],
+        "snapshot_id": null
+      }
+    ]
+  }
+}

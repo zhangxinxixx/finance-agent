@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Finance Agent Jin10 daily scheduler every day
+
+[Timer]
+OnCalendar=*-*-* 09:50:00
+Persistent=true
+Unit=jin10-daily-scheduler.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,146 @@
+{
+  "status": "available",
+  "asset": "XAUUSD",
+  "sample_size": 0,
+  "unavailable_reason": null,
+  "updated_at": "2026-05-28T06:30:00Z",
+  "trade_date": "2026-05-28",
+  "hero": {
+    "status": "available",
+    "bias": "黄金在 Pin 位上方仍保持建设性，宏观背景偏多，下方支撑带稳定。",
+    "direction": "bullish",
+    "confidence": 0.72,
+    "market_regime": "range-to-upside",
+    "trade_date": "2026-05-28",
+    "run_id": "550e8400-e29b-41d4-a716-446655440099",
+    "snapshot_id": "snapshot-strategy-20260528",
+    "source_refs": [
+      {
+        "source_ref": "analysis.strategy.card",
+        "label": "策略 Agent 输出",
+        "trade_date": "2026-05-28",
+        "run_id": "550e8400-e29b-41d4-a716-446655440099",
+        "status": "ok"
+      }
+    ]
+  },
+  "scenario": {
+    "main_scenario": "XAUUSD 在 3300–3340 区间整理后向上突破，目标 3375。",
+    "alternative_scenarios": [
+      "若 DXY 反弹且 US10Y 重新上行，金价可能回测 3200 支撑。",
+      "地缘事件升级推动避险买盘，直接冲击 3400。"
+    ],
+    "key_levels": {
+      "resistance": [3300, 3340, 3375],
+      "support": [3200, 3180, 3155]
+    },
+    "trigger_conditions": [
+      "XAUUSD 重新站上并守住 3330",
+      "DXY 继续走低，同时 US10Y 保持在 4.45% 下方",
+      "Pin 位附近 Net GEX 维持正值"
+    ],
+    "invalidation_conditions": [
+      "XAUUSD 收盘跌破 3200",
+      "US02Y 与 US10Y 同步上行重新定价",
+      "流动性面板变为不可用或数据陈旧"
+    ],
+    "confirmation_conditions": [
+      "日线收盘站稳 3340 上方",
+      "CME OI 数据确认多头增仓"
+    ],
+    "risk_points": [
+      "3300 上方阻力墙可能压制第一波上冲",
+      "TGA 增加可能短期抽紧流动性",
+      "CME 期权数据在 FINAL 公告前仍为 PRELIM"
+    ]
+  },
+  "module_signals": [
+    {
+      "module": "market",
+      "label": "宏观面板",
+      "status": "available",
+      "summary": "通胀降温稳定，流动性中性偏支撑",
+      "source_refs": [
+        { "source_ref": "macro.fred.latest", "label": "FRED 宏观快照", "status": "ok" }
+      ]
+    },
+    {
+      "module": "cme",
+      "label": "CME 期权",
+      "status": "partial",
+      "summary": "期权结构维持中性偏多，上方阻力较近但下方支撑密集",
+      "source_refs": [
+        { "source_ref": "cme.daily_bulletin.gc", "label": "CME Daily Bulletin", "status": "warn" }
+      ]
+    },
+    {
+      "module": "event",
+      "label": "事件流",
+      "status": "available",
+      "summary": "高冲击事件数量 8，Risk Sentiment 62/100",
+      "source_refs": [
+        { "source_ref": "events.timeline", "label": "事件时间线", "status": "ok" }
+      ]
+    },
+    {
+      "module": "knowledge",
+      "label": "知识库",
+      "status": "unavailable",
+      "summary": "知识库同步中",
+      "source_refs": []
+    }
+  ],
+  "playbook_matches": [
+    {
+      "playbook_id": "pb-range-breakout-long",
+      "title": "区间突破做多",
+      "match_score": 0.78,
+      "rule_id": "rule-001",
+      "source_refs": [
+        { "source_ref": "playbook.range_breakout", "label": "Playbook: 区间突破" }
+      ]
+    },
+    {
+      "playbook_id": "pb-pullback-buy",
+      "title": "回调买入",
+      "match_score": 0.65,
+      "source_refs": [
+        { "source_ref": "playbook.pullback_buy", "label": "Playbook: 回调买入" }
+      ]
+    }
+  ],
+  "source_refs": [
+    {
+      "source_ref": "analysis.strategy.card",
+      "label": "策略卡片",
+      "trade_date": "2026-05-28",
+      "run_id": "550e8400-e29b-41d4-a716-446655440099",
+      "status": "ok"
+    },
+    {
+      "source_ref": "macro.fred.latest",
+      "label": "FRED 宏观快照",
+      "trade_date": "2026-05-28",
+      "status": "ok"
+    },
+    {
+      "source_ref": "cme.daily_bulletin.gc",
+      "label": "CME Daily Bulletin",
+      "trade_date": "2026-05-28",
+      "status": "warn"
+    }
+  ],
+  "artifact_refs": [
+    {
+      "artifact_type": "report",
+      "family": "strategy",
+      "title": "策略卡片",
+      "format": "json",
+      "run_id": "550e8400-e29b-41d4-a716-446655440099",
+      "status": "available"
+    }
+  ],
+  "has_data": true,
+  "history": [],
+  "selected_strategy_card_id": null
+}

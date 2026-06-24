@@ -1,0 +1,35 @@
+{
+  "article_id": "221600",
+  "document_id": "jin10-2026-06-11-221600",
+  "run_id": "221600",
+  "report_type": "daily",
+  "title": "金十速递：美国5月CPI报告全文-金十数据VIP",
+  "trade_date": "2026-06-11",
+  "source_url": "https://svip.jin10.com/news/221600",
+  "article_markdown": "# 金十速递：美国5月CPI报告全文\n6月11日CPI前，黄金进入方向抉择态，等待CPI与Fed催化剂确认。若4270站稳则看修复反弹，否则维持谨慎。",
+  "generated_from": {
+    "article_context": {
+      "key_sentences": [
+        "CPI前，黄金进入方向抉择态，等待CPI与Fed催化剂确认。",
+        "若4270站稳则看修复反弹。"
+      ]
+    }
+  },
+  "quality_audit": {
+    "status": "needs_review",
+    "reasons": [
+      {
+        "code": "evidence_insufficient",
+        "message": "no stable prices, key sentences, levels, or logic chain extracted"
+      }
+    ]
+  },
+  "source_refs": [
+    {
+      "source": "jin10_external",
+      "asset_type": "report_md",
+      "path": "outputs/jin10/2026-06-11/221600/report.md",
+      "source_url": "https://svip.jin10.com/news/221600"
+    }
+  ]
+}

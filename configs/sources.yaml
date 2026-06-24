@@ -1,0 +1,40 @@
+# 数据源配置
+# 每个 source 有 id、type、official_level、enabled、fetch_mode
+
+sources:
+  fred:
+    id: fred
+    type: api
+    official_level: S
+    enabled: true
+    fetch_mode: rest
+    base_url: https://api.stlouisfed.org/fred/series/observations
+    series:
+      - T10YIE   # 10Y breakeven inflation
+      - DGS10    # 10Y Treasury yield
+      - DFII10   # 10Y TIPS real yield (fallback)
+
+  treasury:
+    id: treasury
+    type: api
+    official_level: S
+    enabled: true
+    fetch_mode: rest
+    base_url: https://api.fiscaldata.treasury.gov/services/api/fiscal_service
+
+  cme_bulletin:
+    id: cme_bulletin
+    type: pdf_download
+    official_level: A
+    enabled: true
+    fetch_mode: http
+    base_url: https://www.cmegroup.com
+    schedule: daily
+
+  tradingview:
+    id: tradingview
+    type: browser_screenshot
+    official_level: C
+    enabled: false
+    fetch_mode: cdp
+    note: P1，暂不进入 MVP 主链

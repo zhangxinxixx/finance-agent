@@ -1,0 +1,27 @@
+{
+  "source_key": "jin10_report_events",
+  "status": "partial",
+  "items": [
+    {
+      "event_type": "macro_watchlist",
+      "verification_status": "single_source"
+    },
+    {
+      "event_type": "gold_market_narrative",
+      "verification_status": "single_source"
+    }
+  ],
+  "source_refs": [
+    {
+      "source": "jin10_report_events",
+      "path": "outputs/jin10/2026-06-11/221600/raw_article_report.json"
+    }
+  ],
+  "data_quality": {
+    "event_count": 2,
+    "quality_audit_status": "needs_review"
+  },
+  "warnings": [
+    "Jin10 report quality_audit.status=needs_review."
+  ]
+}
