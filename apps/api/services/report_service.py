@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from apps.api.schemas.common import ArtifactType, DataStatus, ReportLifecycleStatus, WarningItem
 from apps.api.schemas.report import ReportAnalysisAgentOutput, ReportAnalysisInputs, ReportDeterministicInput
@@ -20,6 +22,7 @@ from apps.api.services._storage import _PROJECT_ROOT, _iso, _latest_asset_date_r
 from apps.api.services._trace_refs import coerce_artifact_type, dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
 from apps.api.services.agent_output_service import build_agent_output_summary
 from apps.analysis.macro.regime import classify_macro_regime
+from apps.renderer.contracts import MacroEventFollowupStructuredPayload
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
 from database.models.report import ReportArtifact as ReportArtifactModel
 from database.models.report import ReportItem
@@ -33,6 +36,33 @@ _STANDARD_ARTIFACT_TYPES = {
     ArtifactType.visual_html,
     ArtifactType.structured_json,
 }
+
+
+def _mtime_to_iso_utc(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+
+
+def _generated_at_from_paths(*paths: Path | None) -> str | None:
+    latest_mtime: float | None = None
+    for path in paths:
+        if path is None or not path.exists():
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        latest_mtime = mtime if latest_mtime is None else max(latest_mtime, mtime)
+    if latest_mtime is None:
+        return None
+    return _mtime_to_iso_utc(latest_mtime)
+
+
+def _generated_at_from_datetime(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    return None
 
 
 def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
@@ -496,6 +526,10 @@ def _build_legacy_report_detail(db: Session, report_id: str) -> ReportDetail | N
     if legacy_macro is not None:
         return legacy_macro
 
+    legacy_macro_followup = _legacy_macro_event_followup_detail(report_id)
+    if legacy_macro_followup is not None:
+        return legacy_macro_followup
+
     legacy_jin10 = _legacy_jin10_report_detail(report_id)
     if legacy_jin10 is not None:
         return legacy_jin10
@@ -636,6 +670,50 @@ def _legacy_macro_report_detail(report_id: str) -> ReportDetail | None:
         lifecycle_status=ReportLifecycleStatus.generated,
         artifacts=artifacts,
         structured_payload=_load_structured_payload(artifacts),
+    )
+
+
+def _legacy_macro_event_followup_detail(report_id: str) -> ReportDetail | None:
+    followup_id = _strip_report_type_prefix(report_id, "macro_event_followup")
+    followup_date: str | None = None
+    followup_run_id = followup_id
+    if ":" in followup_id:
+        followup_date, followup_run_id = followup_id.split(":", 1)
+
+    if followup_date:
+        run_dir = _PROJECT_ROOT / "storage" / "outputs" / "macro_event_followup" / "XAUUSD" / followup_date / followup_run_id
+        base = (followup_date, run_dir) if run_dir.is_dir() else None
+    else:
+        base = _find_run_dir(_PROJECT_ROOT / "storage" / "outputs" / "macro_event_followup" / "XAUUSD", followup_run_id)
+    if base is None:
+        return None
+    trade_date, run_dir = base
+    artifacts = _artifact_schemas_from_paths(
+        report_id=report_id,
+        generated_at=None,
+        path_specs=[
+            (ArtifactType.source_md, run_dir / "source.md", True, "text/markdown"),
+            (ArtifactType.analysis_md, run_dir / "analysis.md", False, "text/markdown"),
+            (ArtifactType.structured_json, run_dir / "report_structured.json", False, "application/json"),
+        ],
+    )
+    if not artifacts:
+        return None
+    payload = _load_macro_event_followup_payload(run_dir)
+    return ReportDetail(
+        run_id=followup_run_id,
+        snapshot_id=None,
+        data_status=DataStatus.partial if _missing_standard_artifacts(artifacts) or _missing_files(artifacts) else DataStatus.live,
+        artifact_refs=artifacts,
+        warnings=[WarningItem(code="legacy-report-adapter", message="Legacy macro event follow-up report adapted to report detail")],
+        report_id=report_id,
+        family=_report_index_family("macro_event_followup"),
+        title=_report_index_title("macro_event_followup", trade_date),
+        asset="XAUUSD",
+        trade_date=trade_date,
+        lifecycle_status=ReportLifecycleStatus.generated,
+        artifacts=artifacts,
+        structured_payload=payload.model_dump(mode="json") if payload is not None else _load_structured_payload(artifacts),
     )
 
 
@@ -2123,6 +2201,11 @@ def _collect_reports(base_rel: str, report_type: str, fmt: str, asset: str, md_f
             if not run_dir.is_dir():
                 continue
             available = (run_dir / md_filename).exists() if md_filename else (run_dir / "strategy_card.json").exists()
+            generated_at = (
+                _generated_at_from_paths(run_dir / md_filename)
+                if md_filename
+                else _generated_at_from_paths(run_dir / "strategy_card.json", run_dir / "strategy_card.md")
+            )
             results.append(
                 {
                     "type": report_type,
@@ -2133,6 +2216,7 @@ def _collect_reports(base_rel: str, report_type: str, fmt: str, asset: str, md_f
                     "title": _report_index_title(report_type, date_dir.name),
                     "format": fmt,
                     "available": available,
+                    "generated_at": generated_at,
                 }
             )
     if results:
@@ -2149,6 +2233,7 @@ def _collect_reports(base_rel: str, report_type: str, fmt: str, asset: str, md_f
                     "title": _report_index_title(report_type, date_dir.name),
                     "format": fmt,
                     "available": True,
+                    "generated_at": _generated_at_from_paths(date_dir / md_filename),
                 }
             )
     return results
@@ -2202,6 +2287,8 @@ def _collect_reports_from_db(report_type: str, fmt: str, asset: str) -> list[dic
                     "title": _report_index_title(report_type, _iso(row.trade_date)),
                     "format": fmt,
                     "available": available,
+                    "generated_at": _generated_at_from_datetime(getattr(row, "updated_at", None))
+                    or _generated_at_from_datetime(getattr(row, "created_at", None)),
                 }
             )
     except Exception:
@@ -2321,6 +2408,14 @@ def _collect_jin10_reports() -> list[dict[str, Any]]:
                     ),
                     "format": "json+html",
                     "available": (run_dir / "daily_analysis.json").exists() and (run_dir / "daily_analysis.html").exists(),
+                    "generated_at": _generated_at_from_paths(
+                        run_dir / "daily_analysis.json",
+                        run_dir / "daily_analysis.html",
+                        run_dir / "agent_analysis_report.json",
+                        run_dir / "agent_analysis_report.md",
+                        run_dir / "raw_article_report.json",
+                        run_dir / "raw_article_report.md",
+                    ),
                     "status": _jin10_report_status(quality_audit),
                 }
                 if quality_audit is not None:
@@ -2357,6 +2452,7 @@ def _collect_jin10_external_weekly_reports(seen: set[tuple[str, str]] | None = N
                     "title": meta.get("title"),
                     "format": "markdown",
                     "available": report_md.exists(),
+                    "generated_at": _generated_at_from_paths(report_md, article_dir / "meta.json"),
                 }
             )
     return results
@@ -2419,6 +2515,10 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                         "title": _report_index_title("options_report", date_dir.name),
                         "format": "json+markdown",
                         "available": available,
+                        "generated_at": _generated_at_from_paths(
+                            date_dir / "options_analysis.json",
+                            date_dir / "options_analysis.md",
+                        ),
                     }
                 )
 
@@ -2448,6 +2548,11 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                         "title": _report_index_title("options_report", date_dir.name),
                         "format": "json+markdown",
                         "available": True,
+                        "generated_at": _generated_at_from_paths(
+                            run_dir / "options_analysis_agent_report.md",
+                            run_dir / "options_analysis.md",
+                            run_dir / "options_analysis.json",
+                        ),
                     }
                 )
 
@@ -2477,6 +2582,12 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                             "title": _report_index_title("options_visual_report", date_dir.name),
                             "format": "json+html",
                             "available": True,
+                            "generated_at": _generated_at_from_paths(
+                                run_dir / "options_visual_report.html",
+                                run_dir / "options_analysis_agent_report.md",
+                                run_dir / "options_analysis.md",
+                                run_dir / "options_analysis.json",
+                            ),
                         }
                     )
 
@@ -2500,6 +2611,7 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                                 "title": _report_index_title("macro_report", date_dir.name),
                                 "format": "markdown",
                                 "available": True,
+                                "generated_at": _generated_at_from_paths(snap),
                             }
                         )
             else:
@@ -2515,8 +2627,39 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                             "title": _report_index_title("macro_report", date_dir.name),
                             "format": "markdown",
                             "available": True,
+                            "generated_at": _generated_at_from_paths(snap),
                         }
                     )
+    followup_base = _PROJECT_ROOT / "storage" / "outputs" / "macro_event_followup" / asset
+    if followup_base.exists():
+        for date_dir in sorted((item for item in followup_base.iterdir() if item.is_dir()), reverse=True):
+            for run_dir in sorted((run for run in date_dir.iterdir() if run.is_dir()), reverse=True):
+                payload = _load_macro_event_followup_payload(run_dir)
+                available = payload is not None and all(
+                    (run_dir / filename).exists() for filename in ("source.md", "analysis.md", "report_structured.json")
+                )
+                if not available:
+                    continue
+                impact_assessment = payload.impact_assessment if isinstance(payload.impact_assessment, dict) else {}
+                reports.append(
+                    {
+                        "type": "macro_event_followup",
+                        "trade_date": date_dir.name,
+                        "run_id": run_dir.name,
+                        "report_id": _typed_report_id("macro_event_followup", f"{date_dir.name}:{run_dir.name}"),
+                        "family": _report_index_family("macro_event_followup"),
+                        "title": _report_index_title("macro_event_followup", date_dir.name),
+                        "format": "markdown+json",
+                        "available": True,
+                        "anchor_trade_date": payload.anchor_trade_date,
+                        "summary": impact_assessment.get("summary"),
+                        "generated_at": _generated_at_from_paths(
+                            run_dir / "source.md",
+                            run_dir / "analysis.md",
+                            run_dir / "report_structured.json",
+                        ),
+                    }
+                )
     reports = _dedupe_reports_index_items(reports)
     reports.sort(key=lambda x: (x["trade_date"], x.get("run_id") or "", x["type"]), reverse=True)
     return {"asset": asset, "reports": [r for r in reports if r.get("available", False)]}
@@ -2526,6 +2669,7 @@ def _report_index_family(report_type: str) -> str:
     return {
         "final_report": "final_report_markdown",
         "macro_report": "macro_report",
+        "macro_event_followup": "macro_event_followup_supplement",
         "strategy_card": "strategy_card",
         "options_report": "options_report_markdown",
         "options_visual_report": "cme_options_visual",
@@ -2540,10 +2684,21 @@ def _report_index_title(report_type: str, trade_date: str) -> str:
     return {
         "final_report": f"XAUUSD 综合报告（{trade_date}）",
         "macro_report": f"XAUUSD 宏观数据报告（{trade_date}）",
+        "macro_event_followup": f"XAUUSD 宏观事件跟进补充（{trade_date}）",
         "strategy_card": f"XAUUSD 策略卡片（{trade_date}）",
         "options_report": f"黄金期权结构报告（{trade_date}）",
         "options_visual_report": f"黄金期权可视报告（{trade_date}）",
     }.get(report_type, f"{report_type}（{trade_date}）")
+
+
+def _load_macro_event_followup_payload(run_dir: Path) -> MacroEventFollowupStructuredPayload | None:
+    payload = _read_optional_json(run_dir / "report_structured.json")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return MacroEventFollowupStructuredPayload.model_validate(payload)
+    except ValidationError:
+        return None
 
 
 def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:

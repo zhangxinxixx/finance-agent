@@ -160,6 +160,8 @@ export interface ReportItem {
   title: string;
   trade_date: string;
   run_id: string | null;
+  type?: string | null;
+  family?: string | null;
   url?: string | null;
   status: DashboardReportStatus;
   quality_audit?: {

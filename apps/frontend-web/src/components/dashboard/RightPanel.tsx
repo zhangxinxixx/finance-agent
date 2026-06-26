@@ -117,7 +117,10 @@ export function RightPanel({ summary, viewModel }: RightPanelProps) {
             <div key={`${report.title}-${report.trade_date}`} className="flex items-center justify-between gap-2 border-b border-white/[0.04] pb-1.5 last:border-b-0 last:pb-0">
               <div className="min-w-0">
                 <div className="truncate text-[11px] font-medium text-[var(--fg-2)]">{report.title}</div>
-                <div className="mt-0.5 text-[9px] text-[var(--fg-5)]">{report.trade_date}</div>
+                <div className="mt-0.5 text-[9px] text-[var(--fg-5)]">
+                  {report.trade_date}
+                  {report.family === "macro_event_followup_supplement" ? " · 补充分析" : ""}
+                </div>
               </div>
               <FAStatusPill
                 tone={report.status === "ready" ? "up" : report.status === "pending" ? "warn" : "down"}

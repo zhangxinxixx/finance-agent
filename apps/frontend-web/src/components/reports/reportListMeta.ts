@@ -1,4 +1,5 @@
 import type { ReportIndexItem, ReportType } from "@/types/reports";
+import { formatDateTime } from "@/lib/date";
 
 export const SUPPORTED_REPORT_TYPES = [
   "final_report",
@@ -43,6 +44,11 @@ export function isSupportedReportType(value: string): value is SupportedReportTy
 export function shortRunId(value: string | null | undefined): string {
   if (!value) return "-";
   return value.length <= 12 ? value : `${value.slice(0, 8)}...${value.slice(-4)}`;
+}
+
+export function formatGeneratedAt(value: string | null | undefined): string {
+  if (!value) return "—";
+  return formatDateTime(value);
 }
 
 export function canOpenReport(item: ReportIndexItem): boolean {

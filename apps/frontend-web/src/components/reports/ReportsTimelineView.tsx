@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { ReportIndexItem } from "@/types/reports";
-import { canOpenReport, CATEGORY_MAP, DOT_COLORS, matchesReportSearch, shortRunId } from "@/components/reports/reportListMeta";
+import { canOpenReport, CATEGORY_MAP, DOT_COLORS, formatGeneratedAt, getReportTitle, matchesReportSearch, shortRunId } from "@/components/reports/reportListMeta";
 import { handleSelectKeyDown } from "@/components/reports/reportLibraryViewCommon";
 
 export function TimelineView({
@@ -23,6 +23,7 @@ export function TimelineView({
         };
         const dotColor = DOT_COLORS[item.type] ?? "#94a3b8";
         const isOpenable = canOpenReport(item);
+        const generatedAtLabel = formatGeneratedAt(item.generated_at);
         return (
           <div
             key={`${item.type}-${item.trade_date}-${item.run_id ?? idx}`}
@@ -111,7 +112,7 @@ export function TimelineView({
                 </span>
               </div>
               <div style={{ fontSize: 11, color: "var(--fg-2)", fontWeight: 500 }}>
-                {cat.label} - {item.trade_date}
+                {getReportTitle(item)}
               </div>
               <div
                 style={{
@@ -121,7 +122,7 @@ export function TimelineView({
                   fontFamily: "var(--font-mono)",
                 }}
               >
-                {shortRunId(item.run_id)}
+                {shortRunId(item.run_id)} · 生成 {generatedAtLabel}
               </div>
             </div>
           </div>

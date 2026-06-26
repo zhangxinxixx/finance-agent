@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from apps.analysis.agents import AgentBias, AgentOutput, AgentStatus
 from apps.analysis.agents.macro_liquidity import analyze_macro_liquidity
+from apps.analysis.agents.registry import get_agent_registry
 
 
 def _available_snapshot() -> dict:
@@ -62,6 +63,8 @@ def test_available_macro_returns_schema_valid_agent_output__uses_conftest_fixtur
     assert output.bias is AgentBias.BULLISH
     assert 0.0 <= output.confidence <= 1.0
     assert output.created_at == fixed_utc_now
+    assert "只读视图" not in output.summary
+    assert "结论偏" in output.summary
     assert any("real yield" in finding.lower() for finding in output.key_findings)
     assert "DXY" in output.watchlist
 
@@ -164,6 +167,22 @@ def test_regime_key_findings_appear_in_output():
     assert len(regime_findings) >= 1, f"Expected regime key_finding in: {output.key_findings}"
     finding = regime_findings[0]
     assert "macro regime" in finding.lower()
+
+
+def test_macro_summary_reads_like_research_conclusion():
+    snapshot = _available_snapshot()
+    output = analyze_macro_liquidity(snapshot)
+
+    assert "确信度" in output.summary
+    assert "当前数据更支持这一方向" in output.summary
+    assert "只读视图" not in output.summary
+
+
+def test_macro_liquidity_registry_prompts_as_llm() -> None:
+    agent = get_agent_registry("macro_liquidity_agent")
+    assert agent is not None
+    assert agent["prompt"]["kind"] == "llm"
+    assert "宏观流动性分析" in agent["prompt"]["template"]
 
 
 def test_agent_output_regime_fields_present_in_dict_form():

@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from apps.analysis.agents import AgentBias, AgentOutput
 from apps.analysis.strategy.schemas import StrategyCardOutput
-from apps.renderer.contracts import FinalReportOutput, ReportSection
+from apps.renderer.contracts import FinalReportOutput, MacroEventFollowupStructuredPayload, ReportSection
 from tests.fixtures.c4_agent_outputs import coordinator_output_payload
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
@@ -65,6 +65,35 @@ def _strategy_card_payload() -> dict:
     }
 
 
+def _macro_event_followup_payload() -> dict:
+    return {
+        "report_type": "macro_event_followup",
+        "trade_date": "2026-05-17",
+        "anchor_trade_date": "2026-05-16",
+        "anchor_report_refs": [
+            {"report_id": "final_report:run-2026-05-16", "family": "final_report_markdown"},
+            {"report_id": "strategy_card:run-2026-05-16", "family": "strategy_card"},
+        ],
+        "new_macro_events": [
+            {"event_id": "evt-fed-001", "headline": "Fed official signaled patience", "source_refs": []}
+        ],
+        "impact_assessment": {
+            "stance": "reinforce",
+            "summary": "Weekend macro headlines reinforce the prior bullish gold stance.",
+        },
+        "watch_items": [
+            {"item": "Monitor Monday DXY gap", "horizon": "next_open"}
+        ],
+        "revision_risk": {
+            "status": "monitor",
+            "reason": "No event has invalidated the prior conclusion yet.",
+        },
+        "source_refs": [
+            {"source_type": "report", "ref": "final_report:run-2026-05-16"}
+        ],
+    }
+
+
 def test_final_report_contract_accepts_required_fields_and_serializes_to_json():
     report = FinalReportOutput.model_validate(_final_report_payload())
 
@@ -100,6 +129,20 @@ def test_strategy_card_contract_is_explicitly_not_trade_instruction():
     assert card.model_dump(mode="json")["is_trade_instruction"] is False
 
 
+def test_macro_event_followup_contract_accepts_required_fields_and_serializes_to_json():
+    payload = MacroEventFollowupStructuredPayload.model_validate(_macro_event_followup_payload())
+
+    assert payload.report_type == "macro_event_followup"
+    assert payload.trade_date == "2026-05-17"
+    assert payload.anchor_trade_date == "2026-05-16"
+    assert payload.anchor_report_refs[0]["report_id"] == "final_report:run-2026-05-16"
+    assert payload.impact_assessment["stance"] == "reinforce"
+    assert payload.revision_risk["status"] == "monitor"
+    dumped = payload.model_dump(mode="json")
+    assert dumped["watch_items"][0]["item"] == "Monitor Monday DXY gap"
+    assert dumped["source_refs"][0]["ref"] == "final_report:run-2026-05-16"
+
+
 @pytest.mark.parametrize(
     ("model_factory", "payload_factory", "field"),
     [
@@ -111,6 +154,14 @@ def test_strategy_card_contract_is_explicitly_not_trade_instruction():
         (StrategyCardOutput, _strategy_card_payload, "source_refs"),
         (StrategyCardOutput, _strategy_card_payload, "input_snapshot_ids"),
         (StrategyCardOutput, _strategy_card_payload, "is_trade_instruction"),
+        (MacroEventFollowupStructuredPayload, _macro_event_followup_payload, "trade_date"),
+        (MacroEventFollowupStructuredPayload, _macro_event_followup_payload, "anchor_trade_date"),
+        (MacroEventFollowupStructuredPayload, _macro_event_followup_payload, "anchor_report_refs"),
+        (MacroEventFollowupStructuredPayload, _macro_event_followup_payload, "new_macro_events"),
+        (MacroEventFollowupStructuredPayload, _macro_event_followup_payload, "impact_assessment"),
+        (MacroEventFollowupStructuredPayload, _macro_event_followup_payload, "watch_items"),
+        (MacroEventFollowupStructuredPayload, _macro_event_followup_payload, "revision_risk"),
+        (MacroEventFollowupStructuredPayload, _macro_event_followup_payload, "source_refs"),
     ],
 )
 def test_output_contracts_validate_required_fields(model_factory, payload_factory, field: str):

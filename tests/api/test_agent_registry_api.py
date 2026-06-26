@@ -8,11 +8,17 @@ def test_api_agents_registry_returns_prompt_templates() -> None:
     agents = {item["agent_id"]: item for item in response["agents"]}
 
     assert response["source"] == "agent_registry"
+    assert "macro_liquidity_agent" in agents
     assert "jin10_report_analysis_agent" in agents
+    assert "macro_event_followup_agent" in agents
     assert "cme_options_agent" in agents
     assert "jin10_flash_semantic_filter_agent" in agents
+    assert agents["macro_liquidity_agent"]["prompt"]["template"]
+    assert agents["macro_liquidity_agent"]["prompt"]["kind"] == "llm"
     assert agents["jin10_report_analysis_agent"]["prompt"]["template"]
     assert agents["cme_options_agent"]["prompt"]["template"]
+    assert agents["macro_event_followup_agent"]["prompt"]["template"]
+    assert agents["macro_event_followup_agent"]["prompt"]["kind"] == "llm"
     flash_prompt = agents["jin10_flash_semantic_filter_agent"]["prompt"]
     assert flash_prompt["template"]["messages"]
     assert "flash_items_json" in flash_prompt["template"]["variables"]

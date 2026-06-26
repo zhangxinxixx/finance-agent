@@ -102,3 +102,25 @@ class StructuredReportOutput(BaseModel):
     sections: list[StructuredReportSection] = Field(min_length=1)
     source_refs: list[dict[str, Any]] = Field(default_factory=list)
     risk_disclosures: list[str] = Field(default_factory=list)
+
+
+class MacroEventFollowupStructuredPayload(BaseModel):
+    """Structured payload for non-trading-day macro event follow-up reports."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_type: str = Field(default="macro_event_followup")
+    trade_date: str
+    anchor_trade_date: str
+    anchor_report_refs: list[dict[str, Any]]
+    new_macro_events: list[dict[str, Any]]
+    impact_assessment: dict[str, Any]
+    watch_items: list[dict[str, Any]]
+    revision_risk: dict[str, Any]
+    source_refs: list[dict[str, Any]]
+
+    @model_validator(mode="after")
+    def _require_followup_type(self) -> MacroEventFollowupStructuredPayload:
+        if self.report_type != "macro_event_followup":
+            raise ValueError("report_type must be macro_event_followup")
+        return self

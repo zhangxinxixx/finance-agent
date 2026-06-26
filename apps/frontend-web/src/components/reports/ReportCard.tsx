@@ -2,6 +2,7 @@ import type { ReportIndexItem } from "@/types/reports";
 import {
   canOpenReport,
   CATEGORY_MAP,
+  formatGeneratedAt,
   getReportTitle,
   inferAssetLabel,
   shortRunId,
@@ -27,6 +28,7 @@ export function ReportCard({
   const runLabel = shortRunId(item.run_id);
   const statusLabel = item.available ? "已发布" : "草稿";
   const statusColor = item.available ? "#10b981" : "#f59e0b";
+  const generatedAtLabel = formatGeneratedAt(item.generated_at);
   const isOpenable = canOpenReport(item);
   const assetLabel = inferAssetLabel(item);
   const highlightMatch = searchQuery && `${cat.label} ${dateLabel}`.toLowerCase().includes(searchQuery.toLowerCase());
@@ -99,6 +101,7 @@ export function ReportCard({
         {[
           { label: "资产", value: assetLabel, color: cat.color },
           { label: "日期", value: dateLabel, color: "var(--fg-2)" },
+          { label: "生成", value: generatedAtLabel, color: "var(--fg-2)" },
           { label: "绑定", value: item.run_id ? "Snapshot" : "未绑定", color: item.run_id ? "#60a5fa" : "var(--fg-5)" },
         ].map((metric) => (
           <div key={metric.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>

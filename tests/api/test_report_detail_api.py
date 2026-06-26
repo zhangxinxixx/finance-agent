@@ -11,6 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from apps.worker.pipelines.macro_event_followup import generate_macro_event_followup
 from database.models.analysis import ensure_analysis_tables
 from database.models.task import ensure_task_tables
 
@@ -438,6 +439,150 @@ def test_report_detail_macro_report_adapter_reads_macro_snapshot(
     assert detail["run_id"] == "run-macro"
     assert detail["data_status"] == "live"
     assert analysis_payload["content"].startswith("# XAUUSD 宏观数据报告")
+
+
+def test_report_detail_macro_event_followup_adapter_uses_trade_date_scoped_report_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/macro_event_followup/XAUUSD/2026-05-17/run-shared/source.md": "# Source\n\n2026-05-17",
+            "storage/outputs/macro_event_followup/XAUUSD/2026-05-17/run-shared/analysis.md": "# Analysis\n\nLatest day",
+            "storage/outputs/macro_event_followup/XAUUSD/2026-05-17/run-shared/report_structured.json": json.dumps(
+                {
+                    "report_type": "macro_event_followup",
+                    "trade_date": "2026-05-17",
+                    "anchor_trade_date": "2026-05-16",
+                    "anchor_report_refs": [{"report_id": "final_report:run-2026-05-16"}],
+                    "new_macro_events": [{"headline": "Latest weekend event"}],
+                    "impact_assessment": {"stance": "reinforce", "summary": "Latest summary"},
+                    "watch_items": [{"item": "Watch Monday open"}],
+                    "revision_risk": {"status": "monitor"},
+                    "source_refs": [{"source_type": "report", "ref": "final_report:run-2026-05-16"}],
+                }
+            ),
+            "storage/outputs/macro_event_followup/XAUUSD/2026-05-16/run-shared/source.md": "# Source\n\n2026-05-16",
+            "storage/outputs/macro_event_followup/XAUUSD/2026-05-16/run-shared/analysis.md": "# Analysis\n\nOlder day",
+            "storage/outputs/macro_event_followup/XAUUSD/2026-05-16/run-shared/report_structured.json": json.dumps(
+                {
+                    "report_type": "macro_event_followup",
+                    "trade_date": "2026-05-16",
+                    "anchor_trade_date": "2026-05-15",
+                    "anchor_report_refs": [{"report_id": "final_report:run-2026-05-15"}],
+                    "new_macro_events": [{"headline": "Older weekend event"}],
+                    "impact_assessment": {"stance": "monitor", "summary": "Older summary"},
+                    "watch_items": [{"item": "Watch prior open"}],
+                    "revision_risk": {"status": "low"},
+                    "source_refs": [{"source_type": "report", "ref": "final_report:run-2026-05-15"}],
+                }
+            ),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    factory = _make_session_factory()
+
+    with factory() as db:
+        detail = api_main.api_report_detail("macro_event_followup:2026-05-16:run-shared", db=db).model_dump(mode="json")
+
+    assert detail["report_id"] == "macro_event_followup:2026-05-16:run-shared"
+    assert detail["trade_date"] == "2026-05-16"
+    assert detail["run_id"] == "run-shared"
+    assert detail["structured_payload"]["trade_date"] == "2026-05-16"
+    assert detail["structured_payload"]["impact_assessment"]["summary"] == "Older summary"
+
+
+def test_report_detail_reads_generated_macro_event_followup_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/final_report/XAUUSD/2026-06-20/run-anchor/final_report.md": "# Final Report\n",
+            "storage/outputs/strategy_card/XAUUSD/2026-06-20/run-anchor/strategy_card.json": "{}",
+            "storage/features/news/2026-06-21/run-news/daily_market_brief.json": json.dumps(
+                {
+                    "daily_market_brief": {
+                        "market_mainline": {"status": "available", "summary": "Weekend macro updates keep gold sensitive to Fed repricing."},
+                        "confirmed_events": [
+                            {
+                                "event_type": "fed_hawkish",
+                                "what_happened": "Fed speaker stayed hawkish.",
+                                "source_refs": [{"source": "jin10", "source_ref": "evt:1"}],
+                            }
+                        ],
+                        "candidate_events": [],
+                        "unconfirmed_risks": [],
+                        "source_refs": [{"source": "jin10", "source_ref": "brief:1"}],
+                    }
+                }
+            ),
+            "storage/features/news/2026-06-21/run-news/daily_analysis_triggers.json": json.dumps(
+                {
+                    "as_of": "2026-06-21T10:00:00+00:00",
+                    "trigger_count": 1,
+                    "triggers": [
+                        {
+                            "trigger_id": "trigger-1",
+                            "priority": "high",
+                            "source_title": "Weekend Fed repricing",
+                            "source_url": "https://xnews.jin10.com/details/trigger-1",
+                            "event_type": "fed_hawkish",
+                            "suggested_actions": ["run_jin10_daily_analysis"],
+                            "source_refs": [{"source": "jin10", "source_ref": "trigger:1"}],
+                        }
+                    ],
+                    "data_quality": {},
+                }
+            ),
+            "storage/features/news/2026-06-21/run-news/jin10_article_briefs.json": json.dumps(
+                {
+                    "as_of": "2026-06-21T10:05:00+00:00",
+                    "brief_count": 1,
+                    "briefs": [
+                        {
+                            "brief_id": "brief-1",
+                            "article_class": "gold_macro_market_reference",
+                            "headline": "Gold weekend brief",
+                            "source_url": "https://xnews.jin10.com/details/brief-1",
+                            "access_status": "readable",
+                            "analysis_summary": "Weekend macro headlines reinforce the prior gold thesis.",
+                            "original_excerpt": "Weekend macro headlines reinforce the prior gold thesis.",
+                            "key_points": ["Fed path still restrictive"],
+                            "suggested_actions": ["queue_daily_analysis"],
+                            "source_refs": [{"source": "jin10", "source_ref": "brief:generated"}],
+                        }
+                    ],
+                    "data_quality": {},
+                }
+            ),
+        },
+    )
+    generate_macro_event_followup(
+        trade_date="2026-06-21",
+        asset="XAUUSD",
+        storage_root=tmp_path / "storage",
+        run_id="run-generated",
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    factory = _make_session_factory()
+
+    with factory() as db:
+        detail = api_main.api_report_detail("macro_event_followup:2026-06-21:run-generated", db=db).model_dump(mode="json")
+
+    assert detail["report_id"] == "macro_event_followup:2026-06-21:run-generated"
+    assert detail["trade_date"] == "2026-06-21"
+    assert detail["run_id"] == "run-generated"
+    assert detail["structured_payload"]["anchor_trade_date"] == "2026-06-20"
+    assert detail["structured_payload"]["impact_assessment"]["summary"] == (
+        "Fed speaker stayed hawkish. | Weekend Fed repricing | Weekend macro headlines reinforce the prior gold thesis."
+    )
 
 
 def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
