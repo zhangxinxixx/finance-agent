@@ -146,6 +146,17 @@ def test_report_type_for_raw_report_distinguishes_weekly_category() -> None:
     assert _report_type_for_raw_report({"category": "黄金周报", "title": "期权市场发出信号"}) == "weekly"
 
 
+def test_category_301_recognized_as_point_report() -> None:
+    from apps.collectors.jin10.adapter import JIN10_CATEGORY_ALIASES, JIN10_CATEGORY_NAMES
+
+    assert "301" in JIN10_CATEGORY_ALIASES
+    assert "点位报告" in JIN10_CATEGORY_ALIASES["301"]
+    assert JIN10_CATEGORY_NAMES["301"] == "点位报告"
+    # Category 301 should NOT be in JIN10_REPORT_TYPE_BY_CATEGORY (not daily/weekly)
+    from apps.collectors.jin10.adapter import JIN10_REPORT_TYPE_BY_CATEGORY
+    assert "301" not in JIN10_REPORT_TYPE_BY_CATEGORY
+
+
 def test_build_jin10_outputs_dedupes_weekly_alias_directories_by_article_id(tmp_path, monkeypatch):
     def fake_build_parsed_index(raw):
         return {"reports": [], "artifacts": {}, **{key: raw[key] for key in ("source", "as_of", "source_refs", "unavailable_symbols")}}

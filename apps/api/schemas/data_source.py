@@ -53,6 +53,7 @@ class DataSourceActionResponse(TraceableResponse):
 
 class DataSourceTestRequest(DataSourceActionRequest):
     limit: int = Field(default=5, ge=1, le=20)
+    slug: str | None = None
 
 
 class DataSourceTestResponse(TraceableResponse):

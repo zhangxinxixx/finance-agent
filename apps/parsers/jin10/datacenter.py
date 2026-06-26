@@ -212,3 +212,40 @@ def _coerce_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def datacenter_report_input_summary(
+    parsed: Jin10DatacenterParsedReport,
+    *,
+    source_refs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Convert parsed datacenter report into a report input summary dict.
+
+    The summary is suitable for inclusion in daily_market_brief.report_inputs
+    or final report input sections. It never claims to be an official source.
+    """
+    data = parsed.to_dict()
+    latest_row = data["rows"][0] if data["rows"] else {}
+    latest_values = {
+        str(v.get("kind")): str(v.get("value"))
+        for v in latest_row.get("values", [])
+        if isinstance(v, dict)
+    }
+    return {
+        "source_key": "jin10_datacenter_reports",
+        "slug": data["slug"],
+        "report_name": data["report_name"],
+        "as_of": data.get("as_of"),
+        "status": data["status"],
+        "provider_role": "supplemental_source",
+        "verification_status": "single_source",
+        "official_primary": False,
+        "latest_values": latest_values,
+        "row_count": len(data["rows"]),
+        "types": data.get("types", []),
+        "kinds": data.get("kinds", []),
+        "source_refs": list(source_refs or data.get("source_refs", [])),
+        "warnings": [
+            "Jin10 datacenter data is supplemental only; official facts must be confirmed by FRED/CFTC/CME/BLS.",
+        ],
+    }

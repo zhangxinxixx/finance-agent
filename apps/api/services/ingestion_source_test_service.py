@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from apps.api.schemas.common import ArtifactType, DataStatus
 from apps.api.schemas.data_source import DataSourceTestRequest, DataSourceTestResponse
 from apps.api.schemas.source_trace import ArtifactRef, SourceRef
-from apps.collectors.jin10.datacenter import fetch_datacenter_report
+from apps.collectors.jin10.datacenter import DEFAULT_DATACENTER_SLUGS, fetch_datacenter_report
 from apps.collectors.jin10.mcp_client import Jin10MCPClient
 from apps.collectors.news.jin10_detail_fetcher import DEFAULT_JIN10_BROWSER_PROFILE
 from apps.runtime.artifact_registry import register_step_artifacts
@@ -55,7 +55,7 @@ def run_ingestion_source_test(
     started = time.perf_counter()
 
     try:
-        outcome = _run_probe(source_key=source_key, limit=request.limit, run_id=str(run.id))
+        outcome = _run_probe(source_key=source_key, limit=request.limit, run_id=str(run.id), slug=request.slug)
     except Exception as exc:  # pragma: no cover - exercised by integration/runtime failures
         outcome = _failure_outcome(source_key=source_key, exc=exc)
 
@@ -94,7 +94,7 @@ def run_ingestion_source_test(
     )
 
 
-def _run_probe(*, source_key: str, limit: int, run_id: str) -> _ProbeOutcome:
+def _run_probe(*, source_key: str, limit: int, run_id: str, slug: str | None = None) -> _ProbeOutcome:
     if source_key not in _SUPPORTED_SOURCE_KEYS:
         return _ProbeOutcome(
             status="unsupported",
@@ -118,7 +118,7 @@ def _run_probe(*, source_key: str, limit: int, run_id: str) -> _ProbeOutcome:
     if source_key == "jin10_xnews_public":
         return _probe_xnews_public(limit=limit)
     if source_key == "jin10_datacenter_reports":
-        return _probe_datacenter(run_id=run_id)
+        return _probe_datacenter(run_id=run_id, slug=slug)
     return _probe_svip_profile()
 
 
@@ -258,11 +258,27 @@ def _probe_xnews_public(*, limit: int) -> _ProbeOutcome:
     )
 
 
-def _probe_datacenter(*, run_id: str) -> _ProbeOutcome:
+def _probe_datacenter(*, run_id: str, slug: str | None = None) -> _ProbeOutcome:
+    target_slug = slug or _DEFAULT_DATACENTER_SLUG
+    if target_slug not in DEFAULT_DATACENTER_SLUGS:
+        return _ProbeOutcome(
+            status="unsupported_slug",
+            data_status=DataStatus.unavailable,
+            summary={
+                "reason_code": "unsupported_slug",
+                "reason": f"{target_slug} is not in the allowed datacenter slug registry",
+                "allowed_slugs": list(DEFAULT_DATACENTER_SLUGS),
+            },
+            preview=[],
+            raw_payload={"slug": target_slug, "status": "unsupported_slug"},
+            source_type="structured",
+            error_message=f"unsupported slug: {target_slug}",
+            error_type="unsupported_slug",
+        )
     retrieved_date = datetime.now(UTC).date().isoformat()
     probe_storage_root = _PROJECT_ROOT / "storage" / "probes" / "ingestion" / retrieved_date / "jin10_datacenter_reports" / run_id
     result = fetch_datacenter_report(
-        slug=_DEFAULT_DATACENTER_SLUG,
+        slug=target_slug,
         storage_root=probe_storage_root,
         retrieved_date=retrieved_date,
     )
@@ -273,7 +289,7 @@ def _probe_datacenter(*, run_id: str) -> _ProbeOutcome:
         status=status,
         data_status=data_status,
         summary={
-            "slug": payload.get("slug") or _DEFAULT_DATACENTER_SLUG,
+            "slug": payload.get("slug") or target_slug,
             "reason_code": status,
             "reason": payload.get("error_message"),
             "raw_html_path": payload.get("raw_html_path"),
