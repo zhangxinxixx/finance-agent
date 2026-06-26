@@ -41,6 +41,14 @@ def _fetch_detail_page(**kwargs: Any) -> Jin10DetailFetchResult:
     return fetch_jin10_detail_page(**kwargs)
 
 
+def _analysis_as_of(retrieved_date: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(f"{retrieved_date}T23:59:59+00:00")
+    except ValueError:
+        return datetime.now(timezone.utc).isoformat()
+    return parsed.isoformat()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Pull Jin10 messages from a dedicated Feishu chat and fetch accepted detail links."
@@ -264,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         page_size=args.page_size,
         max_pages=args.max_pages,
     )
-    as_of = datetime.now(timezone.utc).isoformat()
+    as_of = _analysis_as_of(args.retrieved_date)
     event_bundle = build_event_candidates(
         collection.items,
         as_of=as_of,

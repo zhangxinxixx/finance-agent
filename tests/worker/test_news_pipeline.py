@@ -351,7 +351,10 @@ def test_news_pipeline_feature_step_writes_jin10_daily_analysis_triggers(tmp_pat
             source_refs=[{"source": "jin10_feishu", "source_ref": "jin10_feishu:chat_fixture"}],
         )
 
-    with patch("apps.worker.pipelines.news._collectors", return_value=[("jin10_feishu", jin10_collector)]):
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=[("jin10_feishu", jin10_collector)]),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+    ):
         run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-news")
         feature_summary = run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-news")
         run_news_step("news_brief", state, storage_root=tmp_path, run_id="run-news")
