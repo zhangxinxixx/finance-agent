@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from apps.api.schemas.common import ArtifactType, DataStatus
+from apps.api.schemas.common import ArtifactType, DataStatus, WarningItem
 from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef, SourceRef, SourceTraceResponse
 from apps.api.services._lineage_warnings import merge_warning_items
 from apps.api.services._report_lineage import resolve_report_lineage_context
@@ -133,7 +133,7 @@ def get_source_trace_by_artifact_id(db: Session, artifact_id: str) -> SourceTrac
     trace = get_source_trace_by_report_id(db, report_artifact.report_id) if report_item is not None else None
     artifact_ref = _build_report_artifacts([report_artifact])[0]
     source_refs = parse_source_refs(report_item.source_refs) if report_item is not None else []
-    warnings = trace.warnings if trace is not None else []
+    warnings = merge_warning_items(trace.warnings if trace is not None else [], _missing_file_warnings(report_artifact.file_path))
 
     if trace is None:
         return SourceTraceResponse(
@@ -151,6 +151,7 @@ def get_source_trace_by_artifact_id(db: Session, artifact_id: str) -> SourceTrac
             "source_refs": dedupe_source_refs([*trace.source_refs, *source_refs]),
             "artifact_refs": dedupe_artifact_refs([*trace.artifact_refs, artifact_ref]),
             "related_artifacts": dedupe_artifact_refs([*trace.related_artifacts, artifact_ref]),
+            "warnings": warnings,
         }
     )
 
@@ -167,6 +168,20 @@ def _find_final_for_snapshot(db: Session, snapshot: AnalysisSnapshot) -> FinalAn
         .order_by(FinalAnalysisResult.trade_date.desc(), FinalAnalysisResult.id.desc())
         .limit(1)
     )
+
+
+def _missing_file_warnings(file_path: str) -> list[WarningItem]:
+    path = Path(file_path)
+    resolved = path if path.is_absolute() else _PROJECT_ROOT / path
+    if resolved.is_file():
+        return []
+    return [
+        WarningItem(
+            code="artifact-missing-file",
+            message=f"Registered artifact file is missing: {file_path}",
+            field=file_path,
+        )
+    ]
 
 
 def _find_snapshot_for_final(db: Session, final_result: FinalAnalysisResult) -> AnalysisSnapshot | None:

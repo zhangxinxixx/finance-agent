@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.artifact import ArtifactDetailResponse
+from apps.api.schemas.common import WarningItem
 from apps.api.schemas.source_trace import ArtifactRef
 from apps.api.services._lineage_warnings import build_artifact_lineage_warnings
 from apps.api.services._report_lineage import resolve_report_lineage_context
+from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services._trace_refs import (
     artifact_ref_from_path,
     coerce_artifact_type,
@@ -47,13 +50,16 @@ def _build_registry_artifact_detail(db: Session, row: RunArtifact) -> ArtifactDe
     step = db.query(TaskStep).filter(TaskStep.id == row.task_id).first() if row.task_id else None
     metadata = _parse_metadata(row.metadata_json)
     artifact_input_snapshot_ids = metadata.get("input_snapshot_ids")
-    warnings = build_artifact_lineage_warnings(
+    warnings = [
+        *build_artifact_lineage_warnings(
         artifact_id=str(row.artifact_id),
         run_id=str(row.run_id) if row.run_id else None,
         run_snapshot_id=run.snapshot_id if run is not None else None,
         artifact_snapshot_id=metadata.get("snapshot_id") if isinstance(metadata.get("snapshot_id"), str) else None,
         artifact_input_snapshot_ids=artifact_input_snapshot_ids if isinstance(artifact_input_snapshot_ids, dict) else None,
-    )
+        ),
+        *_missing_file_warnings(row.file_path),
+    ]
 
     artifact = ArtifactRef(
         artifact_id=str(row.artifact_id),
@@ -132,7 +138,10 @@ def _build_report_artifact_detail(db: Session, report_artifact: ReportArtifact) 
             "title": report_item.title,
             "lifecycle_status": report_item.lifecycle_status,
         }
-    warnings = lineage.warnings if lineage is not None else []
+    warnings = [
+        *(lineage.warnings if lineage is not None else []),
+        *_missing_file_warnings(report_artifact.file_path),
+    ]
 
     return ArtifactDetailResponse(
         run_id=lineage.resolved_run_id if lineage is not None else report_item.run_id if report_item is not None else None,
@@ -156,6 +165,24 @@ def _parse_metadata(raw: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _missing_file_warnings(file_path: str) -> list[WarningItem]:
+    path = _resolve_registered_artifact_path(file_path)
+    if path.is_file():
+        return []
+    return [
+        WarningItem(
+            code="artifact-missing-file",
+            message=f"Registered artifact file is missing: {file_path}",
+            field=file_path,
+        )
+    ]
+
+
+def _resolve_registered_artifact_path(file_path: str) -> Path:
+    path = Path(file_path)
+    return path if path.is_absolute() else _PROJECT_ROOT / path
 
 
 def _build_related_artifacts(current: ArtifactRef, *, step: TaskStep | None) -> list[ArtifactRef]:

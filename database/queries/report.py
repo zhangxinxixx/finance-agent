@@ -261,6 +261,7 @@ def upsert_report_artifact(session: Session, payload: dict[str, Any]) -> ReportA
     artifact_id = str(payload["artifact_id"])
     existing = session.get(ReportArtifact, artifact_id)
     _validate_report_artifact_parent(session, payload, existing)
+    _validate_report_source_refs(payload.get("source_refs"))
     generated_at = _parse_iso_datetime(payload.get("generated_at"))
 
     if existing is None:
@@ -275,6 +276,7 @@ def upsert_report_artifact(session: Session, payload: dict[str, Any]) -> ReportA
     existing.report_id = str(payload["report_id"])
     existing.artifact_type = str(payload["artifact_type"])
     existing.file_path = str(payload["file_path"])
+    existing.storage_backend = str(payload.get("storage_backend") or "local_fs")
     existing.version = payload.get("version")
     existing.model_name = payload.get("model_name")
     existing.template_version = payload.get("template_version")
@@ -282,8 +284,11 @@ def upsert_report_artifact(session: Session, payload: dict[str, Any]) -> ReportA
     existing.status = str(payload.get("status") or "generated")
     existing.sha256 = payload.get("sha256")
     existing.content_type = payload.get("content_type")
+    existing.byte_size = _parse_optional_int(payload.get("byte_size"))
     existing.is_primary = bool(payload.get("is_primary", False))
+    existing.source_refs = list(payload.get("source_refs") or [])
     metadata_payload = payload.get("metadata")
+    existing.artifact_metadata = dict(metadata_payload or {})
     existing.metadata_text = None if metadata_payload is None else str(metadata_payload)
     session.flush()
     return existing
@@ -305,3 +310,12 @@ def get_report_artifacts(session: Session, report_id: str) -> list[ReportArtifac
             )
         )
     )
+
+
+def _parse_optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

@@ -433,7 +433,7 @@ def test_run_artifact_round_trips_through_run_detail_artifact_detail_and_source_
     assert artifact_detail["run_id"] == run_id
     assert artifact_detail["snapshot_id"] == "snap-e2e-001"
     assert artifact_detail["artifact"]["artifact_id"] == artifact_id
-    assert artifact_detail["warnings"] == []
+    assert {item["code"] for item in artifact_detail["warnings"]} == {"artifact-missing-file"}
 
     assert source_trace["run_id"] == run_id
     assert source_trace["snapshot_id"] == "snap-e2e-001"
@@ -450,7 +450,7 @@ def test_run_artifact_round_trips_through_run_detail_artifact_detail_and_source_
     }
     assert any(item["artifact_id"] == artifact_id for item in source_trace["artifact_refs"])
     assert any(item["artifact_id"] == artifact_id for item in source_trace["related_artifacts"])
-    assert source_trace["warnings"] == []
+    assert {item["code"] for item in source_trace["warnings"]} == {"artifact-missing-file"}
 
 
 def test_get_source_trace_by_artifact_falls_back_to_registry_metadata_snapshot_id() -> None:
@@ -581,6 +581,7 @@ def test_get_source_trace_by_artifact_bridges_standard_report_artifact_to_report
     artifact_paths = {item["file_path"] for item in payload["artifact_refs"]}
     assert "storage/outputs/reports/2026-05-26/report-std-001/source.md" in artifact_paths
     assert "storage/features/snapshots/XAUUSD/2026-05-26/run-001/premarket_snapshot.json" in artifact_paths
+    assert {item["code"] for item in payload["warnings"]} == {"artifact-missing-file"}
 
 
 def test_source_trace_missing_snapshot_and_report_return_404() -> None:

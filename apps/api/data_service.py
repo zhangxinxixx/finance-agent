@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from apps.api.services import _storage
-from apps.api.services import dashboard_service, macro_service, market_service, options_service, report_service, source_service, task_service
+from apps.api.services import artifact_service, dashboard_service, macro_service, market_service, options_service, report_service, source_service, task_service
 
 _PROJECT_ROOT = _storage._PROJECT_ROOT
 _try_db_session = _storage._try_db_session
@@ -16,6 +16,7 @@ def _sync_project_root() -> None:
     _storage._PROJECT_ROOT = _PROJECT_ROOT
     options_service._PROJECT_ROOT = _PROJECT_ROOT
     macro_service._PROJECT_ROOT = _PROJECT_ROOT
+    artifact_service._PROJECT_ROOT = _PROJECT_ROOT
     report_service._PROJECT_ROOT = _PROJECT_ROOT
     source_service._PROJECT_ROOT = _PROJECT_ROOT
     market_service._PROJECT_ROOT = _PROJECT_ROOT

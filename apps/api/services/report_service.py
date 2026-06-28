@@ -444,7 +444,9 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
     if not schema_artifacts:
         data_status = DataStatus.unavailable
         warnings.append(WarningItem(code="report-artifacts-missing", message="No report artifacts registered"))
-    elif _missing_standard_artifacts(schema_artifacts) or _missing_files(schema_artifacts):
+    else:
+        warnings.extend(_missing_file_warnings(schema_artifacts))
+    if schema_artifacts and (_missing_standard_artifacts(schema_artifacts) or _missing_files(schema_artifacts)):
         if data_status == DataStatus.live:
             data_status = DataStatus.partial
         warnings.append(WarningItem(code="report-artifacts-partial", message="Standard report artifacts are incomplete"))
@@ -965,6 +967,22 @@ def _missing_standard_artifacts(artifacts: list[ReportArtifactSchema]) -> bool:
 
 def _missing_files(artifacts: list[ReportArtifactSchema]) -> bool:
     return any((path := _resolve_report_path(artifact.file_path)) is None or not path.exists() for artifact in artifacts)
+
+
+def _missing_file_warnings(artifacts: list[ReportArtifactSchema]) -> list[WarningItem]:
+    warnings: list[WarningItem] = []
+    for artifact in artifacts:
+        path = _resolve_report_path(artifact.file_path)
+        if path is not None and path.exists():
+            continue
+        warnings.append(
+            WarningItem(
+                code="report-artifact-missing-file",
+                message=f"Registered report artifact file is missing: {artifact.file_path}",
+                field=artifact.file_path,
+            )
+        )
+    return warnings
 
 
 def _load_structured_payload(artifacts: list[ReportArtifactSchema]) -> dict | None:
@@ -2193,6 +2211,88 @@ def _collect_reports_from_db(report_type: str, fmt: str, asset: str) -> list[dic
     return results
 
 
+def _infer_registry_report_format(artifacts: list[ReportArtifactModel]) -> str:
+    artifact_types = {artifact.artifact_type for artifact in artifacts}
+    has_markdown = bool(artifact_types & {ArtifactType.source_md, ArtifactType.analysis_md})
+    has_json = ArtifactType.structured_json in artifact_types
+    has_html = ArtifactType.visual_html in artifact_types
+    if has_markdown and has_json:
+        return "markdown+json"
+    if has_html and has_json:
+        return "json+html"
+    if has_markdown:
+        return "markdown"
+    if has_json:
+        return "json"
+    return "registry"
+
+
+def _generated_at_from_artifacts(artifacts: list[ReportArtifactModel]) -> str | None:
+    latest_dt: datetime | None = None
+    for artifact in artifacts:
+        for candidate in (artifact.generated_at, artifact.updated_at, artifact.created_at):
+            if isinstance(candidate, datetime):
+                normalized = candidate.astimezone(timezone.utc)
+                latest_dt = normalized if latest_dt is None else max(latest_dt, normalized)
+                break
+    return latest_dt.isoformat() if latest_dt is not None else None
+
+
+def _collect_registered_reports_from_db(asset: str) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    db = _try_db_session()
+    if db is None:
+        return results
+    try:
+        rows = db.scalars(
+            select(ReportItem)
+            .where(or_(ReportItem.asset == asset, ReportItem.asset.is_(None)))
+            .order_by(ReportItem.trade_date.desc(), ReportItem.updated_at.desc(), ReportItem.created_at.desc())
+        ).all()
+        for item in rows:
+            artifacts = list(item.artifacts or [])
+            report_type = str(item.report_type or item.family or "").strip()
+            if not report_type:
+                continue
+            trade_date = _iso(item.trade_date)
+            results.append(
+                {
+                    "type": report_type,
+                    "trade_date": trade_date,
+                    "run_id": item.run_id,
+                    "report_id": item.report_id,
+                    "family": item.family,
+                    "title": item.title or _report_index_title(report_type, trade_date),
+                    "format": _infer_registry_report_format(artifacts),
+                    "available": bool(artifacts),
+                    "generated_at": _generated_at_from_artifacts(artifacts)
+                    or _generated_at_from_datetime(item.updated_at)
+                    or _generated_at_from_datetime(item.created_at),
+                }
+            )
+    except Exception:
+        return []
+    finally:
+        db.close()
+    return results
+
+
+def _dedupe_reports_index_items(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in reports:
+        report_id = str(item.get("report_id") or "").strip()
+        report_type = str(item.get("type") or "").strip()
+        run_id = str(item.get("run_id") or "").strip()
+        trade_date = str(item.get("trade_date") or "").strip()
+        key = (report_type, f"{trade_date}:{run_id}") if run_id else (report_type, report_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _collect_jin10_reports() -> list[dict[str, Any]]:
     base = _PROJECT_ROOT / "storage" / "outputs" / "jin10"
     results: list[dict[str, Any]] = []
@@ -2299,6 +2399,7 @@ def _is_explicit_jin10_weekly(meta: dict[str, Any]) -> bool:
 
 def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
     reports: list[dict[str, Any]] = []
+    reports.extend(_collect_registered_reports_from_db(asset))
     reports.extend(_collect_reports_from_db("final_report", "markdown", asset) or _collect_reports("final_report", "final_report", "markdown", asset, "final_report.md"))
     reports.extend(_collect_reports_from_db("strategy_card", "json+markdown", asset) or _collect_reports("strategy_card", "strategy_card", "json+markdown", asset))
     reports.extend(_collect_jin10_reports())
@@ -2416,6 +2517,8 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                             "available": True,
                         }
                     )
+    reports = _dedupe_reports_index_items(reports)
+    reports.sort(key=lambda x: (x["trade_date"], x.get("run_id") or "", x["type"]), reverse=True)
     return {"asset": asset, "reports": [r for r in reports if r.get("available", False)]}
 
 

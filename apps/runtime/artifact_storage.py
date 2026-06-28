@@ -32,6 +32,12 @@ class LocalFileSystemArtifactStorage:
             return None
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
+    def read_text(self, file_path: str) -> str:
+        return self.resolve(file_path).read_text(encoding="utf-8")
+
+    def open_bytes(self, file_path: str) -> bytes:
+        return self.resolve(file_path).read_bytes()
+
 
 def get_artifact_storage(backend_name: str | None = None) -> LocalFileSystemArtifactStorage:
     """Return the configured artifact storage backend.

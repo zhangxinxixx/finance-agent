@@ -211,6 +211,7 @@ def test_report_subroutes_read_standard_source_and_analysis(tmp_path: Path, monk
 
 def test_artifact_detail_supports_standard_report_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apps.api import main as api_main
+    from apps.api.services import artifact_service
     from apps.api.services import report_service
 
     factory = _make_session_factory()
@@ -227,6 +228,7 @@ def test_artifact_detail_supports_standard_report_artifact(tmp_path: Path, monke
         },
     )
     monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(artifact_service, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_artifact_detail("report-std-001:source", db=db).model_dump(mode="json")
@@ -337,6 +339,9 @@ def test_report_detail_marks_missing_visual_partial_and_visual_route_404(
     with factory() as db:
         detail = api_main.api_report_detail("report-std-001", db=db).model_dump(mode="json")
     assert detail["data_status"] == "partial"
+    missing_warnings = [warning for warning in detail["warnings"] if warning["code"] == "report-artifact-missing-file"]
+    assert missing_warnings
+    assert missing_warnings[0]["field"] == "storage/outputs/reports/2026-05-26/report-std-001/visual.html"
 
     with factory() as db:
         with pytest.raises(HTTPException) as exc:

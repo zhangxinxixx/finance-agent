@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import mimetypes
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,8 +33,11 @@ from apps.parsers.jin10.report import build_parsed_index
 from apps.parsers.jin10.report_image_parser import write_parse_artifacts
 from apps.renderer.html.jin10_daily import render_jin10_daily_html
 from apps.renderer.markdown.jin10_agent_analysis import render_jin10_agent_analysis_markdown
+from apps.runtime.artifact_registry import register_step_artifacts
 from apps.runtime.state_machine import transition_task_run, transition_task_step
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
+
+logger = logging.getLogger(__name__)
 
 JIN10_CATEGORY_ALIASES: dict[str, list[str]] = {
     "270": ["金银报告", "报告", "daily"],
@@ -313,13 +318,13 @@ def persist_jin10_task_runs(
 ) -> list[dict[str, Any]]:
     from database.models.engine import SessionLocal
     from database.models.task import ensure_task_tables
-
     own_session = session is None
     if own_session:
         session = SessionLocal()
 
     assert session is not None
     ensure_task_tables(session)
+    storage_root_path = Path(storage_root)
     persisted: list[dict[str, Any]] = []
     try:
         for report in outputs.get("daily_reports", []):
@@ -391,6 +396,13 @@ def persist_jin10_task_runs(
                         StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
                         source="jin10_adapter",
                         blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
+                    )
+                for step in existing_steps:
+                    _register_jin10_step_artifacts(
+                        session,
+                        run_id=str(existing.id),
+                        step=step,
+                        storage_root=storage_root_path,
                     )
                 transition_task_run(session, existing, task_status, source="jin10_adapter")
                 persisted.append({"task_run_id": str(existing.id), "run_id": run_id, "status": existing.status.value})
@@ -546,6 +558,20 @@ def persist_jin10_task_runs(
                     )
                     continue
                 transition_task_step(session, step, StepStatus.success, source="jin10_adapter")
+                _register_jin10_step_artifacts(
+                    session,
+                    run_id=str(task_run.id),
+                    step=step,
+                    storage_root=storage_root_path,
+                )
+            for step in steps:
+                if step.name in {"agent_analysis", "quality_audit"}:
+                    _register_jin10_step_artifacts(
+                        session,
+                        run_id=str(task_run.id),
+                        step=step,
+                        storage_root=storage_root_path,
+                    )
             transition_task_run(session, task_run, task_status, source="jin10_adapter")
             persisted.append({"task_run_id": str(task_run.id), "run_id": run_id, "status": task_run.status.value})
         if own_session:
@@ -562,6 +588,78 @@ def _task_ref(artifact_id: str, artifact_type: str, file_path: str) -> dict[str,
 
 def _dump_task_refs(refs: list[dict[str, Any]]) -> str:
     return json.dumps(refs, ensure_ascii=True)
+
+
+def _load_task_refs(raw_refs: str | None) -> list[dict[str, Any]]:
+    if not raw_refs:
+        return []
+    try:
+        parsed = json.loads(raw_refs)
+    except json.JSONDecodeError:
+        return []
+    return [dict(item) for item in parsed if isinstance(item, dict)]
+
+
+def _resolve_storage_ref_path(file_path: str, storage_root: Path) -> Path:
+    candidate = Path(file_path)
+    if candidate.is_absolute():
+        return candidate
+    if candidate.parts and candidate.parts[0] == "storage":
+        return storage_root.joinpath(*candidate.parts[1:])
+    return storage_root / candidate
+
+
+def _enrich_task_ref(ref: dict[str, Any], storage_root: Path) -> dict[str, Any]:
+    enriched = dict(ref)
+    file_path = str(ref.get("file_path") or "").strip()
+    if not file_path:
+        return enriched
+    resolved = _resolve_storage_ref_path(file_path, storage_root)
+    if not resolved.is_file():
+        return enriched
+    content_type, _ = mimetypes.guess_type(resolved.name)
+    if content_type and not enriched.get("content_type"):
+        enriched["content_type"] = content_type
+    if enriched.get("byte_size") is None:
+        enriched["byte_size"] = resolved.stat().st_size
+    if not enriched.get("sha256"):
+        enriched["sha256"] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    return enriched
+
+
+def _register_jin10_step_artifacts(
+    session: Any,
+    *,
+    run_id: str,
+    step: TaskStep,
+    storage_root: Path,
+) -> None:
+    try:
+        output_refs = [_enrich_task_ref(ref, storage_root) for ref in _load_task_refs(step.output_refs)]
+        artifact_refs = [_enrich_task_ref(ref, storage_root) for ref in _load_task_refs(step.artifact_refs)]
+        source_refs = [ref for ref in _load_task_refs(step.source_refs) if _artifact_source_ref_usable(ref)]
+        register_step_artifacts(
+            session,
+            run_id=run_id,
+            step=step,
+            output_refs=output_refs,
+            artifact_refs=artifact_refs,
+            source_refs=source_refs or None,
+        )
+    except Exception as exc:
+        logger.warning("Failed to register Jin10 step artifacts: run_id=%s step=%s error=%s", run_id, step.name, exc)
+        return
+
+
+def _artifact_source_ref_usable(ref: dict[str, Any]) -> bool:
+    if not isinstance(ref, dict):
+        return False
+    has_identity = any(str(ref.get(key) or "").strip() for key in ("source_id", "source_name", "source", "source_key", "source_ref"))
+    has_trace = any(
+        str(ref.get(key) or "").strip()
+        for key in ("article_id", "captured_at", "data_date", "endpoint", "file_path", "raw_path", "ref", "report_date", "sha256", "snapshot_id", "source_ref", "source_type", "source_url", "status", "symbol", "url")
+    )
+    return has_identity and has_trace
 
 
 def _jin10_task_source_refs(raw_json: dict[str, Any]) -> list[dict[str, Any]]:

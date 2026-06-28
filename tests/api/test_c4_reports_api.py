@@ -7,6 +7,9 @@ from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from apps.api.data_service import (
     _latest_asset_date_run,
@@ -24,6 +27,9 @@ from apps.api.data_service import (
     list_unified_dates,
 )
 from apps.api.main import app, api_strategy_card_detail, api_strategy_cards_latest
+from database.models.analysis import ensure_analysis_tables
+from database.models.report import ensure_report_tables
+from database.queries.report import upsert_report_artifact, upsert_report_item
 
 client = TestClient(app)
 
@@ -44,6 +50,17 @@ def _make_tree(root: Path, files: dict[str, str | None]) -> None:
         else:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
+
+
+def _make_report_session():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    ensure_analysis_tables(engine)
+    ensure_report_tables(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
 # ── _latest_asset_date_run ──

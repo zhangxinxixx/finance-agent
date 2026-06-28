@@ -18,7 +18,7 @@ from apps.collectors.jin10.adapter import (
     write_jin10_outputs,
 )
 from apps.parsers.jin10.report import build_parsed_index
-from database.models.execution import ExecutionEvent, ensure_execution_tables
+from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.analysis import AgentOutput, ensure_analysis_tables
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
 
@@ -1079,6 +1079,25 @@ def test_persist_jin10_task_runs_creates_agent_task_visible_run(tmp_path):
     assert any("agent_analysis_report.md" in (step.output_refs or "") for step in steps)
     assert run.status is TaskStatus.success
     assert steps[-1].status is StepStatus.success
+
+
+def test_persist_jin10_task_runs_registers_run_artifacts_when_execution_tables_exist(tmp_path):
+    outputs = build_jin10_outputs(external_root=FIXTURE_ROOT, date="2026-05-06", category="270")
+    outputs["daily_reports"][0]["quality_audit"] = {"status": "accepted", "reasons": []}
+    write_jin10_outputs(outputs, storage_root=tmp_path)
+    session = _session()
+
+    persist_jin10_task_runs(outputs, storage_root=tmp_path, session=session)
+    session.commit()
+
+    artifacts = session.scalars(select(RunArtifact).order_by(RunArtifact.file_path.asc())).all()
+
+    assert artifacts
+    agent_report = next(row for row in artifacts if row.file_path.endswith("/agent_analysis_report.md"))
+    report_path = tmp_path / "outputs" / "jin10" / "2026-05-06" / "218330" / "agent_analysis_report.md"
+    assert agent_report.artifact_type == "analysis_md"
+    assert agent_report.content_type == "text/markdown"
+    assert agent_report.byte_size == report_path.stat().st_size
 
 
 def test_report_quality_audit_rejects_non_daily_report_title() -> None:

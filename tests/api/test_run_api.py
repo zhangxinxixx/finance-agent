@@ -367,6 +367,27 @@ def test_get_artifact_detail_falls_back_to_registry_metadata_snapshot_id() -> No
     assert payload["metadata"]["snapshot_id"] == "snap-metadata-001"
 
 
+def test_get_artifact_detail_warns_when_registry_file_is_missing() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session)
+    step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    row = RunArtifact(
+        run_id=run.id,
+        task_id=step.id,
+        artifact_type="feature_json",
+        file_path="storage/features/macro/missing.json",
+        sha256="sha-missing-001",
+    )
+    session.add(row)
+    session.commit()
+
+    payload = api_artifact_detail(str(row.artifact_id), db=session).model_dump(mode="json")
+
+    missing_warnings = [warning for warning in payload["warnings"] if warning["code"] == "artifact-missing-file"]
+    assert missing_warnings
+    assert missing_warnings[0]["field"] == "storage/features/macro/missing.json"
+
+
 def test_get_artifact_detail_warns_when_registry_metadata_snapshot_drifted() -> None:
     session, _ = _make_session()
     run = _seed_run(session)

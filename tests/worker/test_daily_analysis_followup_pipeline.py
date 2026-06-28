@@ -24,6 +24,16 @@ def _make_db_session(tmp_path: Path) -> Session:
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
+def _write_artifact_file(base: Path, relative_path: str, content: str | bytes) -> str:
+    target = base / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, bytes):
+        target.write_bytes(content)
+    else:
+        target.write_text(content, encoding="utf-8")
+    return target.as_posix()
+
+
 def _seed_followup_run(
     session: Session,
     *,
@@ -134,6 +144,22 @@ def test_run_daily_analysis_followup_task_fetches_readable_detail_page(tmp_path:
     run = _seed_followup_run(session)
     run_daily_analysis_followup_task(session, run.id, storage_root=tmp_path)
 
+    raw_html_path = _write_artifact_file(
+        tmp_path,
+        "raw/news/jin10_detail_pages/2026-06-12/detail.html",
+        "<html><body>黄金日报</body></html>",
+    )
+    parsed_path = _write_artifact_file(
+        tmp_path,
+        "parsed/news/jin10_detail_pages/2026-06-12/detail.json",
+        json.dumps({"title": "黄金日报"}, ensure_ascii=False),
+    )
+    image_path = _write_artifact_file(
+        tmp_path,
+        "raw/news/jin10_detail_pages/2026-06-12/images/01.png",
+        b"\x89PNG\r\n\x1a\nfakepng",
+    )
+
     def fake_fetcher(**kwargs):
         assert kwargs["url"] == "https://xnews.jin10.com/details/1"
         assert kwargs["storage_root"] == tmp_path
@@ -145,9 +171,9 @@ def test_run_daily_analysis_followup_task_fetches_readable_detail_page(tmp_path:
             access_status="readable",
             title="黄金日报",
             raw_text="黄金和美联储主线仍需重点跟进。",
-            raw_html_path="raw/news/jin10_detail_pages/2026-06-12/detail.html",
-            parsed_path="parsed/news/jin10_detail_pages/2026-06-12/detail.json",
-            image_assets=[{"path": "raw/news/jin10_detail_pages/2026-06-12/images/01.png"}],
+            raw_html_path=raw_html_path,
+            parsed_path=parsed_path,
+            image_assets=[{"path": image_path}],
             fetched_at="2026-06-12T00:00:00+00:00",
         )
 
@@ -170,6 +196,13 @@ def test_run_daily_analysis_followup_task_fetches_readable_detail_page(tmp_path:
     assert any(item.get("source_name") == "jin10_detail_pages" for item in source_refs)
     run_artifacts = session.query(RunArtifact).filter(RunArtifact.run_id == run.id).all()
     assert {artifact.artifact_type for artifact in run_artifacts} >= {"raw_file", "parsed_file", "chart_snapshot"}
+    artifact_by_type = {artifact.artifact_type: artifact for artifact in run_artifacts}
+    assert artifact_by_type["raw_file"].content_type == "text/html"
+    assert artifact_by_type["raw_file"].byte_size == len("<html><body>黄金日报</body></html>".encode("utf-8"))
+    assert artifact_by_type["parsed_file"].content_type == "application/json"
+    assert artifact_by_type["parsed_file"].byte_size == len(json.dumps({"title": "黄金日报"}, ensure_ascii=False).encode("utf-8"))
+    assert artifact_by_type["chart_snapshot"].content_type == "image/png"
+    assert artifact_by_type["chart_snapshot"].byte_size == len(b"\x89PNG\r\n\x1a\nfakepng")
     assert steps[VIP_BROWSER_FALLBACK_STEP].status == StepStatus.skipped
     assert steps[DAILY_ANALYSIS_STEP].status == StepStatus.pending
 
@@ -459,11 +492,16 @@ def test_run_daily_analysis_followup_task_daily_analysis_registers_snapshot_arti
 
     assert status == TaskStatus.success
     run_artifacts = session.query(RunArtifact).filter(RunArtifact.run_id == run.id).all()
-    assert any(
-        artifact.artifact_type == "feature_json"
-        and artifact.file_path == "features/news/2026-06-12/run-news/daily_brief_input_snapshot.json"
+    snapshot_artifact = next(
+        artifact
         for artifact in run_artifacts
+        if artifact.artifact_type == "feature_json"
+        and artifact.file_path == "features/news/2026-06-12/run-news/daily_brief_input_snapshot.json"
     )
+    assert snapshot_artifact.content_type == "application/json"
+    assert snapshot_artifact.byte_size == (
+        tmp_path / "features/news/2026-06-12/run-news/daily_brief_input_snapshot.json"
+    ).stat().st_size
 
 
 def test_run_daily_analysis_followup_task_vip_browser_fallback_keeps_logged_in_vip_text_readable(

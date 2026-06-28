@@ -10,6 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database.models.execution import RunArtifact, ensure_execution_tables
+from database.models.report import ReportArtifact, ReportItem, ensure_report_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
@@ -248,6 +249,24 @@ def test_c4_pipeline_no_overwrite_history(tmp_path: Path) -> None:
         )
 
 
+def test_enrich_runner_artifact_metadata_skips_inferred_fields_for_missing_file() -> None:
+    from apps.worker.runner import _enrich_runner_artifact_metadata
+
+    artifact = {
+        "artifact_id": "run-1:missing",
+        "artifact_type": "structured_json",
+        "file_path": "/tmp/does-not-exist/premarket_snapshot.json",
+        "label": "keep-me",
+    }
+
+    enriched = _enrich_runner_artifact_metadata(artifact)
+
+    assert enriched == artifact
+    assert "content_type" not in enriched
+    assert "byte_size" not in enriched
+    assert "generated_at" not in enriched
+
+
 def test_c4_pipeline_no_llm_no_network_calls(tmp_path: Path) -> None:
     """C4 agents are deterministic rule-based post-processors — no LLM, no network."""
     from apps.worker.runner import _run_c4_agent_pipeline
@@ -446,11 +465,126 @@ def test_run_premarket_with_c4_writes_all_artifacts(tmp_path: Path) -> None:
     assert "strategy_card" in summaries["steps"]
 
     run_artifacts = db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
-    artifact_paths = {artifact.file_path for artifact in run_artifacts}
-    assert str(report_path) in artifact_paths
-    assert str(sc_json_candidates[0]) in artifact_paths
-    assert str(sc_md_candidates[0]) in artifact_paths
+    artifacts_by_path = {artifact.file_path: artifact for artifact in run_artifacts}
+    assert str(report_path) in artifacts_by_path
+    assert str(sc_json_candidates[0]) in artifacts_by_path
+    assert str(sc_md_candidates[0]) in artifacts_by_path
+    report_artifact = artifacts_by_path[str(report_path)]
+    strategy_card_json_artifact = artifacts_by_path[str(sc_json_candidates[0])]
+    strategy_card_md_artifact = artifacts_by_path[str(sc_md_candidates[0])]
+    assert report_artifact.content_type == "text/markdown"
+    assert report_artifact.byte_size == report_path.stat().st_size
+    assert strategy_card_json_artifact.content_type == "application/json"
+    assert strategy_card_json_artifact.byte_size == sc_json_candidates[0].stat().st_size
+    assert strategy_card_md_artifact.content_type == "text/markdown"
+    assert strategy_card_md_artifact.byte_size == sc_md_candidates[0].stat().st_size
     assert any(artifact.artifact_type == "analysis_md" for artifact in run_artifacts)
+
+
+def test_run_premarket_with_c4_registers_report_registry_entries(tmp_path: Path) -> None:
+    """Full premarket run should register final report + strategy card into report registry."""
+    db = _make_db_session(tmp_path)
+    ensure_execution_tables(db)
+    ensure_report_tables(db)
+    task = _make_task_with_steps(
+        db,
+        [
+            "macro_collect",
+            "macro_feature",
+            "report_render",
+            "cme_download",
+            "cme_parse",
+            "cme_ingest",
+            "option_wall",
+        ],
+    )
+
+    def mock_cme_step(step_name, state, **kwargs):
+        if step_name == "option_wall":
+            state.snapshot_dict = {
+                "trade_date": _TRADE_DATE,
+                "wall_scores": [{"strike": 3300, "wall_score": 0.82, "wall_type": "put", "side": "support"}],
+                "support_resistance": {
+                    "support": [{"strike": 3250, "score": 0.7}],
+                    "resistance": [{"strike": 3400, "score": 0.6}],
+                },
+                "intent": {"type": "supportive", "score": 0.65},
+                "gex": {
+                    "netgex_aggregate": {"gamma_zero": {"price": 3350}},
+                    "by_expiry": {"2026-06": {"summary": {"net_gex": 2500, "dominant_side": "positive"}, "iv_skew": {"risk_reversal_25d": 0.15}}},
+                },
+                "walls": {"block_pnt_walls": [{"strike": 3320, "block": 120, "pnt": 80}]},
+                "data_source": {"status": "FINAL", "input_snapshot_ids": {"raw_file_sha256": "abc123"}, "expiries": ["2026-06", "2026-07"]},
+                "data_quality": {"categories": {"prelim_data": 0}, "warnings": []},
+            }
+        return {"step": step_name, "status": "success"}
+
+    def mock_macro_step(step_name, state, **kwargs):
+        if step_name == "report_render":
+            state.snapshot_dict = {
+                "as_of": _TRADE_DATE,
+                "indicators": {
+                    "DXY": {"value": 101.50, "change_1w": -0.80, "unit": "index"},
+                    "DGS10": {"value": 4.42, "change_1w": -0.12, "unit": "percent"},
+                    "T10YIE": {"value": 2.15, "change_1w": -0.03, "unit": "percent"},
+                    "RRPONTSYD": {"value": 180.5, "change_1w": -12.3, "unit": "billions_usd"},
+                    "TGA": {"value": 720.1, "change_1w": 45.2, "unit": "billions_usd"},
+                    "SOFR": {"value": 4.33, "change_1w": 0.0, "unit": "percent"},
+                    "EFFR": {"value": 4.33, "unit": "percent"},
+                    "IORB": {"value": 4.40, "unit": "percent"},
+                },
+                "source_refs": [{"symbol": "DGS10", "source": "fred"}],
+            }
+        return {"step": step_name, "status": "success"}
+
+    with (
+        patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_cme_step),
+        patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+    ):
+        from apps.worker.runner import run_premarket
+
+        result = run_premarket(db, task.id, storage_root=tmp_path)
+
+    assert result == TaskStatus.success
+
+    run_id = str(task.id)
+    final_report_id = f"final_report:{run_id}"
+    strategy_card_id = f"strategy_card:{run_id}"
+
+    report_items = {
+        row.report_id: row
+        for row in db.query(ReportItem).filter(ReportItem.run_id == run_id).all()
+    }
+    assert set(report_items) >= {final_report_id, strategy_card_id}
+
+    final_report_item = report_items[final_report_id]
+    strategy_card_item = report_items[strategy_card_id]
+    assert final_report_item.family == "final_report_markdown"
+    assert strategy_card_item.family == "strategy_card"
+    assert final_report_item.trade_date.isoformat() == _TRADE_DATE
+    assert strategy_card_item.trade_date.isoformat() == _TRADE_DATE
+    assert final_report_item.snapshot_id == strategy_card_item.snapshot_id
+    assert final_report_item.source_refs
+    assert strategy_card_item.source_refs
+
+    report_artifacts = db.query(ReportArtifact).filter(ReportArtifact.report_id.in_([final_report_id, strategy_card_id])).all()
+    artifacts_by_report = {}
+    for artifact in report_artifacts:
+        artifacts_by_report.setdefault(artifact.report_id, []).append(artifact)
+
+    assert {artifact.artifact_type for artifact in artifacts_by_report[final_report_id]} == {"analysis_md", "structured_json"}
+    assert {artifact.artifact_type for artifact in artifacts_by_report[strategy_card_id]} == {"analysis_md", "structured_json"}
+
+    primary_artifacts = {artifact.report_id: artifact for artifact in report_artifacts if artifact.is_primary}
+    assert primary_artifacts[final_report_id].content_type == "text/markdown"
+    assert primary_artifacts[strategy_card_id].content_type == "application/json"
+
+    for artifact in report_artifacts:
+        assert artifact.storage_backend == "local_fs"
+        assert artifact.sha256
+        assert artifact.byte_size is not None
+        assert artifact.generated_at is not None
+        assert artifact.source_refs
 
 
 def test_run_premarket_c4_not_triggered_when_snapshot_fails(tmp_path: Path) -> None:
