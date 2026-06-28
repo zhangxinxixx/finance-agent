@@ -144,6 +144,48 @@ def test_ingestion_source_test_returns_datacenter_schema_changed(monkeypatch, tm
     assert response.preview == []
 
 
+def test_ingestion_source_test_runs_datacenter_with_specific_slug(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+
+    captured_slugs: list[str] = []
+
+    def _fake_fetch(*, slug: str, **kwargs):
+        captured_slugs.append(slug)
+        result = _DatacenterFetchResult(slug=slug, status="ok")
+        return result
+
+    monkeypatch.setattr(
+        "apps.api.services.ingestion_source_test_service.fetch_datacenter_report",
+        _fake_fetch,
+    )
+
+    response = main.api_ingestion_source_test(
+        "jin10_datacenter_reports",
+        body=DataSourceTestRequest(actor="codex", reason="nonfarm probe", request_id="probe-nfp", slug="dc_nonfarm_payrolls"),
+        db=session,
+    )
+
+    assert response.status == "ok"
+    assert captured_slugs == ["dc_nonfarm_payrolls"]
+    assert response.summary["slug"] == "dc_nonfarm_payrolls"
+
+
+def test_ingestion_source_test_rejects_unsupported_datacenter_slug(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+
+    response = main.api_ingestion_source_test(
+        "jin10_datacenter_reports",
+        body=DataSourceTestRequest(actor="codex", reason="bad slug", request_id="probe-bad", slug="dc_unknown_slug"),
+        db=session,
+    )
+
+    assert response.status == "unsupported_slug"
+    assert response.data_status == "unavailable"
+    assert "not in the allowed datacenter slug registry" in response.summary["reason"]
+
+
 def test_ingestion_source_test_does_not_auto_fetch_svip_reports(monkeypatch, tmp_path: Path) -> None:
     session = _make_session()
     monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)

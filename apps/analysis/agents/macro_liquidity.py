@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+from apps.analysis.agents.macro_liquidity_prompt import build_macro_liquidity_prompt_template
 from apps.analysis.macro.regime import classify_macro_regime
 
 _AGENT_NAME = "macro_liquidity_agent"
 _MODULE = "macro"
 _VERSION = "1.0"
+_SYSTEM_PROMPT = "你是一位专业的宏观流动性研究员。只输出 Markdown 正文。"
+_PROMPT_VERSION = "macro_liquidity_agent_v1"
 
 _DXY_KEYS = ("DXY", "dxy")
 _REAL_YIELD_KEYS = ("REAL_YIELD_10Y", "real_yield_10y", "US10Y_REAL", "10Y_REAL_YIELD")
 _NOMINAL_YIELD_KEYS = ("US10Y", "DGS10", "10Y", "10Y_NOMINAL_YIELD")
 _BREAKEVEN_KEYS = ("T10YIE", "10Y_BREAKEVEN")
+_WATCHLIST = ["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "SOFR", "EFFR", "IORB"]
 _LIQUIDITY_GROUPS = {
     "ON RRP": ("RRPONTSYD", "ON_RRP", "ON_RRP_USAGE"),
     "TGA": ("TGA",),
@@ -28,26 +34,15 @@ def analyze_macro_liquidity(snapshot: dict[str, Any], *, created_at: datetime | 
 
     created_at = created_at or datetime.now(timezone.utc)
     if not isinstance(snapshot, dict):
-        return AgentOutput(
-            version=_VERSION,
-            agent_name=_AGENT_NAME,
-            module=_MODULE,
+        return _build_unavailable_output(
             snapshot_id="unknown",
             input_snapshot_ids={},
-            bias=AgentBias.UNAVAILABLE,
-            confidence=0.0,
-            key_findings=[],
-            risk_points=["宏观流动性输入必须是已加载的快照字典。"],
-            watchlist=["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "SOFR", "EFFR", "IORB"],
-            invalid_conditions=["非字典输入被拒绝；文件/路径读取不在范围内。"],
-            summary="Macro liquidity input is unavailable; no read-only conclusion was generated.",
             source_refs=[],
-            status=AgentStatus.UNAVAILABLE,
             created_at=created_at,
-            market_phase="unavailable",
-            regime_drivers=None,
-            data_category=DataCategory.CONFIRMED_DATA,
+            invalid_reason="非字典输入被拒绝；文件/路径读取不在范围内。",
+            risk_point="宏观流动性输入必须是已加载的快照字典。",
         )
+
     snapshot_id = str(snapshot.get("snapshot_id") or "unknown")
     input_snapshot_ids = _input_snapshot_ids(snapshot)
     source_refs = _source_refs(snapshot)
@@ -55,32 +50,320 @@ def analyze_macro_liquidity(snapshot: dict[str, Any], *, created_at: datetime | 
 
     if not isinstance(macro, dict) or macro.get("status") != "available":
         reason = "macro section is missing" if not isinstance(macro, dict) else f"macro status is {macro.get('status')!r}"
-        return AgentOutput(
-            version=_VERSION,
-            agent_name=_AGENT_NAME,
-            module=_MODULE,
+        return _build_unavailable_output(
             snapshot_id=snapshot_id,
             input_snapshot_ids=input_snapshot_ids,
-            bias=AgentBias.UNAVAILABLE,
-            confidence=0.0,
-            key_findings=[],
-            risk_points=["宏观流动性输入不可用。"],
-            watchlist=["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "SOFR", "EFFR", "IORB"],
-            invalid_conditions=[reason],
-            summary="Macro liquidity input is unavailable; no read-only conclusion was generated.",
             source_refs=source_refs,
-            status=AgentStatus.UNAVAILABLE,
             created_at=created_at,
-            market_phase="unavailable",
-            regime_drivers=None,
-            data_category=DataCategory.CONFIRMED_DATA,
+            invalid_reason=reason,
+            risk_point="宏观流动性输入不可用。",
         )
 
-    data_any = macro.get("data")
-    data: dict[str, Any] = data_any if isinstance(data_any, dict) else {}
-    indicators_any = data.get("indicators")
-    indicators: dict[str, Any] = indicators_any if isinstance(indicators_any, dict) else {}
+    data = _macro_data(snapshot)
+    indicators = _indicators(snapshot)
 
+    deterministic = _build_deterministic_output(
+        snapshot_id=snapshot_id,
+        input_snapshot_ids=input_snapshot_ids,
+        source_refs=source_refs,
+        created_at=created_at,
+        snapshot=snapshot,
+        indicators=indicators,
+        data=data,
+    )
+    llm_result = invoke_macro_liquidity_llm(snapshot, deterministic_output=deterministic)
+    return _merge_macro_liquidity_output(snapshot, deterministic, llm_result)
+
+
+def invoke_macro_liquidity_llm(
+    snapshot: dict[str, Any],
+    *,
+    deterministic_output: AgentOutput | None = None,
+) -> dict[str, Any]:
+    from apps.llm.gateway import chat_sync
+
+    if _should_skip_live_llm():
+        return {
+            "markdown": "",
+            "model": None,
+            "provider": None,
+            "latency_ms": None,
+            "tokens": None,
+            "prompt_version": _PROMPT_VERSION,
+            "skipped": True,
+        }
+
+    prompt = build_macro_liquidity_prompt(snapshot, deterministic_output=deterministic_output)
+    response = chat_sync(
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.3,
+        max_tokens=4096,
+        max_retries=0,
+    )
+    return {
+        "markdown": _parse_markdown(response.content),
+        "model": response.model,
+        "provider": response.provider,
+        "latency_ms": response.latency_ms,
+        "tokens": response.usage,
+        "prompt_version": _PROMPT_VERSION,
+        "skipped": False,
+    }
+
+
+def build_macro_liquidity_prompt(
+    snapshot: dict[str, Any],
+    *,
+    deterministic_output: AgentOutput | None = None,
+) -> str:
+    payload = build_macro_liquidity_structured_payload(snapshot, deterministic_output=deterministic_output)
+    return (
+        f"{build_macro_liquidity_prompt_template()}\n\n"
+        "=== 结构化输入 ===\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+    )
+
+
+def build_macro_liquidity_structured_payload(
+    snapshot: dict[str, Any],
+    *,
+    deterministic_output: AgentOutput | None = None,
+) -> dict[str, Any]:
+    deterministic_output = deterministic_output or _build_deterministic_output(
+        snapshot_id=str(snapshot.get("snapshot_id") or "unknown"),
+        input_snapshot_ids=_input_snapshot_ids(snapshot),
+        source_refs=_source_refs(snapshot),
+        created_at=datetime.now(timezone.utc),
+        snapshot=snapshot,
+        indicators=_indicators(snapshot),
+        data=_macro_data(snapshot),
+    )
+    macro = snapshot.get("macro") if isinstance(snapshot.get("macro"), dict) else {}
+    data = macro.get("data") if isinstance(macro.get("data"), dict) else {}
+    indicators = data.get("indicators") if isinstance(data.get("indicators"), dict) else {}
+    return {
+        "report_type": "macro_liquidity",
+        "snapshot_id": str(snapshot.get("snapshot_id") or "unknown"),
+        "trade_date": _trade_date(snapshot),
+        "input_snapshot_ids": _input_snapshot_ids(snapshot),
+        "source_refs": _source_refs(snapshot),
+        "status": str(deterministic_output.status.value),
+        "bias": str(deterministic_output.bias.value),
+        "confidence": float(deterministic_output.confidence),
+        "market_phase": deterministic_output.market_phase,
+        "regime_drivers": deterministic_output.regime_drivers,
+        "macro_status": str(macro.get("status") or "unavailable"),
+        "indicators": _compact_indicators(indicators),
+        "key_findings": list(deterministic_output.key_findings),
+        "risk_points": list(deterministic_output.risk_points),
+        "watchlist": list(deterministic_output.watchlist),
+        "invalid_conditions": list(deterministic_output.invalid_conditions),
+        "summary": deterministic_output.summary,
+        "data_category": str(deterministic_output.data_category.value) if deterministic_output.data_category else None,
+        "existing_frame": {
+            "real_yield": _indicator_snapshot(indicators, _REAL_YIELD_KEYS),
+            "dxy": _indicator_snapshot(indicators, _DXY_KEYS),
+            "liquidity": {
+                name: _indicator_snapshot(indicators, keys) for name, keys in _LIQUIDITY_GROUPS.items()
+            },
+        },
+    }
+
+
+def _merge_macro_liquidity_output(
+    snapshot: dict[str, Any],
+    deterministic: AgentOutput,
+    llm_result: dict[str, Any],
+) -> AgentOutput:
+    markdown = str(llm_result.get("markdown") or "").strip()
+    prompt_version = llm_result.get("prompt_version")
+    generated_by = "llm" if markdown else "rule"
+    payload = {
+        "generated_by": generated_by,
+        "prompt_version": prompt_version,
+        "prompt_messages": deterministic_prompt_messages(snapshot, deterministic) if markdown else [],
+        "input_payload": deterministic_input_payload(snapshot) if markdown else {},
+        "llm_raw_output": markdown or None,
+        "narrative_md": markdown or deterministic.summary,
+        "data_category": "external_opinion" if markdown else str(deterministic.data_category.value),
+        "deterministic_output": deterministic.model_dump(mode="json"),
+    }
+    return deterministic.model_copy(
+        update={
+            "summary": _extract_summary(markdown) or deterministic.summary,
+            "key_findings": _extract_bullets(markdown) or deterministic.key_findings,
+            "risk_points": _extract_risk_points(markdown) or deterministic.risk_points,
+            "watchlist": _extract_watchlist(markdown) or deterministic.watchlist,
+            "invalid_conditions": _extract_invalid_conditions(markdown) or deterministic.invalid_conditions,
+            "data_category": DataCategory.EXTERNAL_OPINION if markdown else deterministic.data_category,
+            "llm_model": llm_result.get("model"),
+            "llm_provider": llm_result.get("provider"),
+            "llm_usage": llm_result.get("tokens"),
+            "llm_latency_ms": llm_result.get("latency_ms"),
+            "prompt_messages": payload["prompt_messages"] or None,
+            "input_payload": payload["input_payload"] or None,
+            "llm_raw_output": payload["llm_raw_output"],
+        }
+    )
+
+
+def _build_unavailable_output(
+    *,
+    snapshot_id: str,
+    input_snapshot_ids: dict[str, Any],
+    source_refs: list[dict[str, Any]],
+    created_at: datetime,
+    invalid_reason: str,
+    risk_point: str,
+) -> AgentOutput:
+    return AgentOutput(
+        version=_VERSION,
+        agent_name=_AGENT_NAME,
+        module=_MODULE,
+        snapshot_id=snapshot_id,
+        input_snapshot_ids=input_snapshot_ids,
+        bias=AgentBias.UNAVAILABLE,
+        confidence=0.0,
+        key_findings=[],
+        risk_points=[risk_point],
+        watchlist=list(_WATCHLIST),
+        invalid_conditions=[invalid_reason],
+        summary="Macro liquidity input is unavailable; no read-only conclusion was generated.",
+        source_refs=source_refs,
+        status=AgentStatus.UNAVAILABLE,
+        created_at=created_at,
+        market_phase="unavailable",
+        regime_drivers=None,
+        data_category=DataCategory.CONFIRMED_DATA,
+    )
+
+
+def _input_snapshot_ids(snapshot: dict[str, Any]) -> dict[str, Any]:
+    value = snapshot.get("input_snapshot_ids")
+    ids = dict(value) if isinstance(value, dict) else {}
+    snapshot_id = snapshot.get("snapshot_id")
+    if snapshot_id is not None:
+        ids.setdefault("analysis_snapshot", snapshot_id)
+    return ids
+
+
+def _trade_date(snapshot: dict[str, Any]) -> str:
+    return str(snapshot.get("trade_date") or _macro_data(snapshot).get("as_of") or "")
+
+
+def _source_refs(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for candidate in (snapshot.get("source_refs"), _macro_data(snapshot).get("source_refs")):
+        if isinstance(candidate, list):
+            refs.extend(dict(item) for item in candidate if isinstance(item, dict))
+    return refs
+
+
+def _macro_data(snapshot: dict[str, Any]) -> dict[str, Any]:
+    macro = snapshot.get("macro")
+    if not isinstance(macro, dict):
+        return {}
+    data = macro.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _indicators(snapshot: dict[str, Any]) -> dict[str, Any]:
+    indicators = _macro_data(snapshot).get("indicators")
+    return indicators if isinstance(indicators, dict) else {}
+
+
+def _compact_indicators(indicators: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key in ("DGS10", "T10YIE", "REAL_YIELD_10Y", "DXY", "TGA", "RRPONTSYD", "SOFR", "EFFR", "IORB"):
+        item = _indicator_snapshot(indicators, (key,))
+        if item is not None:
+            result[key] = item
+    return result
+
+
+def _indicator_snapshot(indicators: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any] | None:
+    item = _first_indicator(indicators, keys)
+    if item is None:
+        return None
+    return {
+        "value": item.get("value") or item.get("latest") or item.get("level"),
+        "change": item.get("change_1w") or item.get("weekly_change") or item.get("delta_1w") or item.get("change"),
+        "unit": item.get("unit"),
+        "updated_at": item.get("updated_at") or item.get("as_of"),
+    }
+
+
+def _parse_markdown(text: str) -> str:
+    markdown = text.strip()
+    if markdown.startswith("```"):
+        lines = markdown.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        markdown = "\n".join(lines).strip()
+    return markdown
+
+
+def _extract_summary(markdown: str) -> str:
+    for line in markdown.splitlines():
+        if line.strip() and not line.startswith("#") and not line.startswith("-"):
+            return line.strip()
+    return ""
+
+
+def _extract_bullets(markdown: str) -> list[str]:
+    return [line[2:].strip() for line in markdown.splitlines() if line.startswith("- ")]
+
+
+def _extract_risk_points(markdown: str) -> list[str]:
+    return _section_bullets(markdown, ("当前风险与失效条件", "风险与失效条件"))
+
+
+def _extract_watchlist(markdown: str) -> list[str]:
+    return _section_bullets(markdown, ("下一步观察", "下一步"))
+
+
+def _extract_invalid_conditions(markdown: str) -> list[str]:
+    section = _section_lines(markdown, ("当前风险与失效条件", "风险与失效条件"))
+    if section:
+        return section
+    return []
+
+
+def _section_lines(markdown: str, titles: tuple[str, ...]) -> list[str]:
+    lines = markdown.splitlines()
+    collecting = False
+    result: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## ") and any(title in stripped for title in titles):
+            collecting = True
+            continue
+        if collecting and stripped.startswith("## "):
+            break
+        if collecting and stripped:
+            result.append(stripped)
+    return result
+
+
+def _section_bullets(markdown: str, titles: tuple[str, ...]) -> list[str]:
+    return [line[2:].strip() for line in _section_lines(markdown, titles) if line.startswith("- ")]
+
+
+def _build_deterministic_output(
+    *,
+    snapshot_id: str,
+    input_snapshot_ids: dict[str, Any],
+    source_refs: list[dict[str, Any]],
+    created_at: datetime,
+    snapshot: dict[str, Any],
+    indicators: dict[str, Any],
+    data: dict[str, Any],
+) -> AgentOutput:
     key_findings: list[str] = []
     risk_points: list[str] = []
     invalid_conditions: list[str] = []
@@ -151,7 +434,6 @@ def analyze_macro_liquidity(snapshot: dict[str, Any], *, created_at: datetime | 
         key_findings.append("Macro data is present but directional signals are insufficient.")
     confidence = _clamp(confidence + min(abs(score) * 0.08, 0.16), 0.0, 0.85 if status is AgentStatus.PARTIAL else 0.92)
 
-    # ── P4-05: classify macro regime ─────────────────────────────────
     regime = classify_macro_regime(indicators) if indicators else None
     if regime and regime["market_phase"] != "unavailable":
         mp = regime["market_phase"]
@@ -175,36 +457,28 @@ def analyze_macro_liquidity(snapshot: dict[str, Any], *, created_at: datetime | 
         source_refs=source_refs,
         status=status,
         created_at=created_at,
-        # ── P4-05: regime fields ──
         market_phase=regime.get("market_phase", "unavailable") if regime else "unavailable",
         regime_drivers=regime if regime else None,
         data_category=DataCategory.CONFIRMED_DATA,
     )
 
 
-def _input_snapshot_ids(snapshot: dict[str, Any]) -> dict[str, Any]:
-    value = snapshot.get("input_snapshot_ids")
-    ids = dict(value) if isinstance(value, dict) else {}
-    snapshot_id = snapshot.get("snapshot_id")
-    if snapshot_id is not None:
-        ids.setdefault("analysis_snapshot", snapshot_id)
-    return ids
+def deterministic_input_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return build_macro_liquidity_structured_payload(snapshot, deterministic_output=None)
 
 
-def _source_refs(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    refs: list[dict[str, Any]] = []
-    for candidate in (snapshot.get("source_refs"), _macro_data(snapshot).get("source_refs")):
-        if isinstance(candidate, list):
-            refs.extend(dict(item) for item in candidate if isinstance(item, dict))
-    return refs
-
-
-def _macro_data(snapshot: dict[str, Any]) -> dict[str, Any]:
-    macro = snapshot.get("macro")
-    if not isinstance(macro, dict):
-        return {}
-    data = macro.get("data")
-    return data if isinstance(data, dict) else {}
+def deterministic_prompt_messages(snapshot: dict[str, Any], deterministic: AgentOutput) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"{build_macro_liquidity_prompt_template()}\n\n"
+                "=== 结构化输入 ===\n"
+                f"{json.dumps(deterministic_input_payload(snapshot), ensure_ascii=False, indent=2)}\n"
+            ),
+        },
+    ]
 
 
 def _first_indicator(indicators: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any] | None:
@@ -252,8 +526,26 @@ def _bias_from_score(score: int) -> AgentBias:
 
 def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
     if status is AgentStatus.PARTIAL:
-        return f"宏观流动性只读视图 {bias.value}（输入不完整）；确信度 {confidence:.2f}。"
-    return f"宏观流动性只读视图 {bias.value}；确信度 {confidence:.2f}。"
+        return f"宏观流动性结论偏{_bias_cn(bias)}，但关键输入仍不完整；当前确信度 {confidence:.2f}。"
+    return f"宏观流动性结论偏{_bias_cn(bias)}，当前数据更支持这一方向；确信度 {confidence:.2f}。"
+
+
+def _bias_cn(bias: AgentBias) -> str:
+    if bias is AgentBias.BULLISH:
+        return "多"
+    if bias is AgentBias.BEARISH:
+        return "空"
+    if bias is AgentBias.MIXED:
+        return "中性偏分化"
+    if bias is AgentBias.UNAVAILABLE:
+        return "不可用"
+    return "中性"
+
+
+def _should_skip_live_llm() -> bool:
+    if os.getenv("FINANCE_AGENT_FORCE_LIVE_LLM", "").strip().lower() in {"1", "true", "yes"}:
+        return False
+    return "PYTEST_CURRENT_TEST" in os.environ
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:

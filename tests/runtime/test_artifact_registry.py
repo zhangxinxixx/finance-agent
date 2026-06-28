@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from apps.runtime.artifact_storage import LocalFileSystemArtifactStorage
 from apps.runtime.artifact_registry import register_step_artifacts
 from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.task import StepStatus, TaskRun, TaskStep, TaskStatus, ensure_task_tables
@@ -23,6 +24,17 @@ def _make_session():
     ensure_execution_tables(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     return factory()
+
+
+def test_local_artifact_storage_reads_text_and_bytes(tmp_path) -> None:
+    storage = LocalFileSystemArtifactStorage(root=tmp_path)
+    relative_path = "storage/test-artifact-storage/local-read.txt"
+    artifact_path = storage.resolve(relative_path)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text("slice2-read", encoding="utf-8")
+
+    assert storage.read_text(relative_path) == "slice2-read"
+    assert storage.open_bytes(relative_path) == b"slice2-read"
 
 
 def test_register_step_artifacts_rejects_mismatched_run_id() -> None:
@@ -304,6 +316,49 @@ def test_register_step_artifacts_accepts_matching_run_id() -> None:
     }
     assert metadata["lineage_kind"] == "source_input"
     assert metadata["lineage_status"] == "run_bound"
+
+
+def test_register_step_artifacts_persists_structured_registry_metadata() -> None:
+    session = _make_session()
+    run = TaskRun(name="premarket", status=TaskStatus.pending, snapshot_id="snap-registry-001")
+    session.add(run)
+    session.flush()
+    step = TaskStep(task_run_id=run.id, name="render_report", status=StepStatus.success)
+    session.add(step)
+    session.flush()
+
+    register_step_artifacts(
+        session,
+        run_id=str(run.id),
+        step=step,
+        output_refs=[
+            {
+                "artifact_id": "art-structured-registry-001",
+                "artifact_type": "analysis_md",
+                "file_path": "storage/outputs/final_report/report.md",
+                "storage_backend": "local_fs",
+                "sha256": "a" * 64,
+                "content_type": "text/markdown",
+                "byte_size": 2048,
+                "generated_at": "2026-05-26T10:00:00+00:00",
+            }
+        ],
+        source_refs=[{"source_id": "src-report-001", "source_name": "analysis_snapshot", "source_type": "snapshot", "snapshot_id": "snap-registry-001"}],
+        input_snapshot_ids={"analysis_snapshot": "snap-registry-001"},
+    )
+    session.commit()
+
+    saved = session.query(RunArtifact).one()
+    assert saved.content_type == "text/markdown"
+    assert saved.byte_size == 2048
+    assert saved.generated_at.isoformat() == "2026-05-26T10:00:00"
+    assert saved.source_refs_data == [
+        {"source_id": "src-report-001", "source_name": "analysis_snapshot", "source_type": "snapshot", "snapshot_id": "snap-registry-001"}
+    ]
+    assert saved.artifact_metadata["artifact_id"] == "art-structured-registry-001"
+    assert saved.artifact_metadata["input_snapshot_ids"] == {"analysis_snapshot": "snap-registry-001"}
+    assert json.loads(saved.source_refs or "[]") == saved.source_refs_data
+    assert json.loads(saved.metadata_json or "{}") == saved.artifact_metadata
 
 
 def test_register_step_artifacts_marks_structured_json_as_snapshot_bound() -> None:

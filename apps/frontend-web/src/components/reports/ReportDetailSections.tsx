@@ -62,6 +62,10 @@ export function ReportDetailHero({
   const familyLabel = reportFamilyLabel(data.meta.family);
   const titleLabel = reportTitleLabel(data.meta.title);
   const showFamilyLabel = Boolean(familyLabel && titleLabel && familyLabel !== titleLabel);
+  const anchorTradeDate =
+    typeof data.structured_payload?.anchor_trade_date === "string" ? data.structured_payload.anchor_trade_date : null;
+  const isSupplementalReport =
+    data.meta.family === "macro_event_followup_supplement" || String(data.meta.title ?? "").includes("宏观事件跟进补充");
   const originalUrl = pickOriginalUrl(data);
 
   return (
@@ -126,6 +130,19 @@ export function ReportDetailHero({
             <InlineMetaItem key={metric.label} label={metric.label} value={metric.value} />
           ))}
         </div>
+
+        {anchorTradeDate ? (
+          <div className="flex flex-wrap items-center gap-2 text-[9px] text-[var(--fg-4)]">
+            <span className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5">
+              锚定日期 {anchorTradeDate}
+            </span>
+            {isSupplementalReport ? (
+              <span className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-bg)] px-2 py-0.5 text-[var(--warn)]">
+                补充分析
+              </span>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="grid gap-1.5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
           <div className="min-w-0">

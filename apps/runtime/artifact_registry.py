@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import inspect
@@ -204,7 +205,7 @@ def register_step_artifacts(
     persisted: list[RunArtifact] = []
     seen: set[tuple[str, str]] = set()
 
-    for artifact in _collect_artifacts(
+    for artifact, raw_artifact in _collect_artifacts(
         output_refs=output_refs,
         artifact_refs=artifact_refs,
         output_ref=output_ref,
@@ -241,16 +242,18 @@ def register_step_artifacts(
             file_path=artifact.file_path,
             storage_backend=artifact.storage_backend or storage.backend_name,
             sha256=artifact.sha256 or storage.compute_sha256(artifact.file_path),
+            content_type=_optional_str(raw_artifact.get("content_type")),
+            byte_size=_optional_int(raw_artifact.get("byte_size")),
+            generated_at=_parse_datetime(raw_artifact.get("generated_at")) or artifact.generated_at,
+            source_refs_data=list(source_refs or []),
             source_refs=json.dumps(source_refs, ensure_ascii=False) if source_refs else None,
-            metadata_json=json.dumps(
-                _build_artifact_metadata(
-                    run=run,
-                    artifact=artifact,
-                    input_snapshot_ids=input_snapshot_ids,
-                ),
-                ensure_ascii=False,
-            ),
         )
+        row.artifact_metadata = _build_artifact_metadata(
+            run=run,
+            artifact=artifact,
+            input_snapshot_ids=input_snapshot_ids,
+        )
+        row.metadata_json = json.dumps(row.artifact_metadata, ensure_ascii=False)
         db.add(row)
         persisted.append(row)
 
@@ -286,8 +289,8 @@ def _collect_artifacts(
     output_refs: list[dict[str, Any]] | None,
     artifact_refs: list[dict[str, Any]] | None,
     output_ref: str | None,
-) -> list[ArtifactRef]:
-    artifacts: list[ArtifactRef] = []
+) -> list[tuple[ArtifactRef, dict[str, Any]]]:
+    artifacts: list[tuple[ArtifactRef, dict[str, Any]]] = []
     for refs in (output_refs, artifact_refs):
         for item in refs or []:
             if not isinstance(item, dict):
@@ -296,25 +299,31 @@ def _collect_artifacts(
             if not file_path:
                 continue
             artifacts.append(
-                ArtifactRef(
-                    artifact_id=str(item.get("artifact_id") or f"{file_path}:{len(artifacts)}"),
-                    artifact_type=_coerce_artifact_type(item.get("artifact_type"), file_path),
-                    file_path=file_path,
-                    version=item.get("version"),
-                    generated_at=item.get("generated_at"),
-                    storage_backend=item.get("storage_backend"),
-                    sha256=item.get("sha256"),
+                (
+                    ArtifactRef(
+                        artifact_id=str(item.get("artifact_id") or f"{file_path}:{len(artifacts)}"),
+                        artifact_type=_coerce_artifact_type(item.get("artifact_type"), file_path),
+                        file_path=file_path,
+                        version=item.get("version"),
+                        generated_at=item.get("generated_at"),
+                        storage_backend=item.get("storage_backend"),
+                        sha256=item.get("sha256"),
+                    ),
+                    item,
                 )
             )
 
     if output_ref:
         artifacts.append(
-            ArtifactRef(
-                artifact_id=f"{step_key(output_ref)}:output_ref",
-                artifact_type=_coerce_artifact_type("output_ref", output_ref),
-                file_path=output_ref,
-                storage_backend=get_artifact_storage().backend_name,
-                sha256=get_artifact_storage().compute_sha256(output_ref),
+            (
+                ArtifactRef(
+                    artifact_id=f"{step_key(output_ref)}:output_ref",
+                    artifact_type=_coerce_artifact_type("output_ref", output_ref),
+                    file_path=output_ref,
+                    storage_backend=get_artifact_storage().backend_name,
+                    sha256=get_artifact_storage().compute_sha256(output_ref),
+                ),
+                {},
             )
         )
     return artifacts
@@ -351,3 +360,33 @@ def _coerce_artifact_type(raw_type: str | ArtifactType | None, file_path: str) -
 
 def step_key(file_path: str) -> str:
     return hashlib.sha1(file_path.encode("utf-8")).hexdigest()[:12]
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed

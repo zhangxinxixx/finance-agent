@@ -436,6 +436,15 @@ def get_market_monitor_overview() -> dict[str, Any]:
     effr = indicators.get("EFFR", {})
     iorb = indicators.get("IORB", {})
 
+    if xau.get("price") is None:
+        latest_xau_candle = _latest_market_candle(asset="XAUUSD", timeframe="1d")
+        if latest_xau_candle is not None:
+            xau = {
+                **xau,
+                "price": latest_xau_candle["close"],
+                "source": "market_candles_latest",
+            }
+
     metrics = [
         metric_item("XAUUSD", "XAUUSD", xau.get("price"), "USD/oz", xau.get("change_pct"), None, "ok" if xau.get("price") is not None else "unavailable", xau.get("source", "")),
         metric_item("DXY", "DXY", dxy.get("value"), dxy.get("unit", "index"), dxy.get("weekly_change"), dxy.get("monthly_change"), "ok" if dxy.get("value") is not None else "unavailable", dxy.get("direction_note", "")),
@@ -764,6 +773,25 @@ def _build_coverage_note(gap_dates: list[str]) -> str | None:
     preview = ", ".join(gap_dates[:3])
     suffix = " ..." if len(gap_dates) > 3 else ""
     return f"daily source gap dates: {preview}{suffix}"
+
+
+def _latest_market_candle(*, asset: str, timeframe: str) -> dict[str, Any] | None:
+    try:
+        session_factory = _market_session_factory()
+        with session_factory() as session:
+            ensure_analysis_tables(session)
+            rows = list_market_candles(session, asset=asset, timeframe=timeframe, limit=1)
+    except Exception as exc:
+        logger.debug("Market candle fallback unavailable for %s %s: %s", asset, timeframe, exc)
+        return None
+    if not rows:
+        return None
+    row = rows[-1]
+    return {
+        "open_time": _row_value(row, "open_time"),
+        "close": _row_value(row, "close"),
+        "source": _row_value(row, "source") if hasattr(row, "source") or isinstance(row, dict) and "source" in row else None,
+    }
 
 
 def _market_session_factory():

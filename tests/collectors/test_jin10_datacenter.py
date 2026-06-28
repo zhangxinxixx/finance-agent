@@ -3,12 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from apps.collectors.jin10.datacenter import fetch_datacenter_report
-from apps.parsers.jin10.datacenter import parse_datacenter_js
+from apps.collectors.jin10.datacenter import DEFAULT_DATACENTER_SLUGS, fetch_datacenter_report
+from apps.parsers.jin10.datacenter import datacenter_report_input_summary, parse_datacenter_js
 
 
 ETF_GOLD_JS = """
 var dataCenter_data = {"types":["黄金"],"kinds":["总库存(吨)","增持/减持(吨)","总价值(美元)"],"list":[{"date":"20200216","dataTime":"2020-02-16 08:01:03","datas":{"黄金":["923.99","0.00","46971717887.17"]}}],"minNo":4268,"maxNo":4270,"md5":"2b538ad24c22c4803ed9db17faee6717"};
+"""
+
+NONFARM_JS = """
+var dataCenter_data = {"types":["美国非农"],"kinds":["前值(万人)","预期(万人)","公布值(万人)"],"list":[{"date":"20260606","dataTime":"2026-06-06 20:30:00","datas":{"美国非农":["18.5","13.0","13.9"]}}],"minNo":100,"maxNo":102,"md5":"abc123"};
+"""
+
+CFTC_NC_JS = """
+var dataCenter_data = {"types":["欧元","日元","英镑"],"kinds":["多头","空头","净多头","净空头"],"list":[{"date":"20260610","dataTime":"2026-06-10 00:00:00","datas":{"欧元":["210000","180000","30000","0"],"日元":["95000","120000","0","25000"],"英镑":["50000","45000","5000","0"]}}],"minNo":200,"maxNo":202,"md5":"def456"};
 """
 
 
@@ -113,3 +121,121 @@ def test_fetch_datacenter_report_discovers_latest_js_and_archives_raw_files(tmp_
         "https://datacenter.jin10.com/reportType/dc_etf_gold",
         "https://cdn.jin10.com/dc/reports/dc_etf_gold_latest.js?20260613",
     ]
+
+
+def test_default_slugs_registry_contains_three_pilot_slugs() -> None:
+    assert "dc_etf_gold" in DEFAULT_DATACENTER_SLUGS
+    assert "dc_nonfarm_payrolls" in DEFAULT_DATACENTER_SLUGS
+    assert "dc_cftc_nc_report" in DEFAULT_DATACENTER_SLUGS
+    assert len(DEFAULT_DATACENTER_SLUGS) == 3
+
+
+def test_parse_datacenter_js_normalizes_nonfarm_payrolls_rows() -> None:
+    parsed = parse_datacenter_js(
+        NONFARM_JS,
+        slug="dc_nonfarm_payrolls",
+        report_name="美国非农就业报告",
+    )
+
+    data = parsed.to_dict()
+    assert data["status"] == "ok"
+    assert data["slug"] == "dc_nonfarm_payrolls"
+    assert data["types"] == ["美国非农"]
+    assert data["kinds"] == ["前值(万人)", "预期(万人)", "公布值(万人)"]
+    assert len(data["rows"]) == 1
+    assert data["rows"][0]["values"][0] == {"type": "美国非农", "kind": "前值(万人)", "value": "18.5"}
+
+
+def test_parse_datacenter_js_normalizes_cftc_nc_report_rows() -> None:
+    parsed = parse_datacenter_js(
+        CFTC_NC_JS,
+        slug="dc_cftc_nc_report",
+        report_name="CFTC 外汇非商业持仓报告",
+    )
+
+    data = parsed.to_dict()
+    assert data["status"] == "ok"
+    assert data["slug"] == "dc_cftc_nc_report"
+    assert data["types"] == ["欧元", "日元", "英镑"]
+    assert len(data["rows"]) == 1
+    values = data["rows"][0]["values"]
+    assert len(values) == 12  # 3 types * 4 kinds
+    assert values[0] == {"type": "欧元", "kind": "多头", "value": "210000"}
+
+
+def test_fetch_datacenter_report_handles_nonfarm_payrolls(tmp_path: Path) -> None:
+    html = """
+    <html><head><title>美国非农就业报告</title></head>
+    <body>
+      <script>var nameType='dc_nonfarm_payrolls';</script>
+      <script src="//cdn.jin10.com/dc/reports/dc_nonfarm_payrolls_latest.js?20260613"></script>
+    </body></html>
+    """
+    client = _FakeClient(html=html, js=NONFARM_JS)
+
+    result = fetch_datacenter_report(
+        slug="dc_nonfarm_payrolls",
+        storage_root=tmp_path,
+        retrieved_date="2026-06-13",
+        client=client,
+    )
+
+    data = result.to_dict()
+    assert data["status"] == "ok"
+    assert data["slug"] == "dc_nonfarm_payrolls"
+    assert data["raw_html_path"] == "raw/jin10/datacenter/2026-06-13/dc_nonfarm_payrolls/shell.html"
+
+
+def test_fetch_datacenter_report_handles_cftc_nc_report(tmp_path: Path) -> None:
+    html = """
+    <html><head><title>CFTC 外汇非商业持仓报告</title></head>
+    <body>
+      <script>var nameType='dc_cftc_nc_report';</script>
+      <script src="//cdn.jin10.com/dc/reports/dc_cftc_nc_report_latest.js?20260613"></script>
+    </body></html>
+    """
+    client = _FakeClient(html=html, js=CFTC_NC_JS)
+
+    result = fetch_datacenter_report(
+        slug="dc_cftc_nc_report",
+        storage_root=tmp_path,
+        retrieved_date="2026-06-13",
+        client=client,
+    )
+
+    data = result.to_dict()
+    assert data["status"] == "ok"
+    assert data["slug"] == "dc_cftc_nc_report"
+    assert data["raw_html_path"] == "raw/jin10/datacenter/2026-06-13/dc_cftc_nc_report/shell.html"
+
+
+def test_datacenter_report_input_summary_marks_supplemental_source() -> None:
+    parsed = parse_datacenter_js(
+        ETF_GOLD_JS,
+        slug="dc_etf_gold",
+        report_name="黄金ETF持仓报告",
+        source_refs=[{"source_key": "jin10_datacenter_reports", "raw_path": "raw.js"}],
+    )
+
+    summary = datacenter_report_input_summary(parsed)
+
+    assert summary["source_key"] == "jin10_datacenter_reports"
+    assert summary["slug"] == "dc_etf_gold"
+    assert summary["report_name"] == "黄金ETF持仓报告"
+    assert summary["provider_role"] == "supplemental_source"
+    assert summary["verification_status"] == "single_source"
+    assert summary["official_primary"] is False
+    assert summary["status"] == "ok"
+    assert summary["as_of"] == "2020-02-16 08:01:03"
+    assert summary["row_count"] == 1
+    assert summary["latest_values"]["总库存(吨)"] == "923.99"
+    assert "official facts must be confirmed" in summary["warnings"][0]
+
+
+def test_datacenter_report_input_summary_includes_source_refs() -> None:
+    parsed = parse_datacenter_js(ETF_GOLD_JS, slug="dc_etf_gold")
+    custom_refs = [{"source_key": "custom", "status": "ok"}]
+
+    summary = datacenter_report_input_summary(parsed, source_refs=custom_refs)
+
+    assert summary["source_refs"] == custom_refs

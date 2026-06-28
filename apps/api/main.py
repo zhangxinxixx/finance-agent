@@ -1,5 +1,4 @@
 """FastAPI 入口。"""
-
 from __future__ import annotations
 
 import json
@@ -9,55 +8,21 @@ import socket
 import sys
 import time
 import tomllib
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import func, desc
+from sqlalchemy import desc
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
-from apps.api.schemas.data_source import (
-    DataSourceActionRequest,
-    DataSourceActionResponse,
-    DataSourceTestRequest,
-    DataSourceTestResponse,
-    ManualUploadRequest,
-)
-from apps.api.schemas.event_flow import EventFlowActionRequest, EventFlowActionResponse, EventFlowBriefLinkRequest
-from apps.api.schemas.review import ReviewActionRequest, ReviewItem
-from apps.api.schemas.settings import (
-    SettingsActionResponse,
-    SettingsHistoryResponse,
-    SettingsPreferencesResetRequest,
-    SettingsPreferencesUpdateRequest,
-    SettingsRollbackRequest,
-    SettingsSecretResetRequest,
-    SettingsSecretUpdateRequest,
-    SettingsSourceResetRequest,
-    SettingsSourceUpdateRequest,
-)
 from apps.api.schemas.agent import (
-    PromptFeedbackCreate,
-    PromptVersionActivate,
     PromptVersionCreate,
 )
-from apps.api.schemas.playbook import (
-    PlaybookTemplateCreateRequest,
-    PlaybookTemplateDetailResponse,
-    PlaybookTemplateListResponse,
-    PlaybookTemplateVersion,
-)
-from apps.api.schemas.artifact import ArtifactDetailResponse
-from apps.api.schemas.strategy import StrategyAssetListResponse
-from apps.api.schemas.source_trace import SourceTraceResponse
-from apps.api.schemas.report import ReportAnalysisInputs, ReportArtifact, ReportDetail
-from apps.api.schemas.task_run import TaskRunResponse
 from apps.analysis.memory import build_automation_memory_context
 from apps.premarket import PREMARKET_STEP_ORDER, sort_premarket_steps
 from apps.api.data_service import (
@@ -99,9 +64,7 @@ from apps.api.services import (
     ingestion_source_test_service,
     pipeline_contract_service,
     playbook_service,
-    review_service,
     settings_service,
-    task_service,
 )
 from apps.api.services.jin10_article_brief_service import (
     get_jin10_article_briefs,
@@ -120,24 +83,45 @@ from apps.api.services.daily_analysis_followup_service import (
     get_daily_analysis_followups_latest,
 )
 from apps.api.services.daily_analysis_followup_task_service import create_daily_analysis_followup_tasks
-from apps.api.services.execution_event_api import get_run_events
 from apps.api.services.feishu_jin10_message_monitor_service import (
     get_feishu_jin10_message_monitor,
     get_feishu_jin10_message_monitor_latest,
     list_feishu_jin10_message_monitor_dates,
 )
-from apps.api.services.artifact_service import get_artifact_detail_response
+from apps.api.routes import data_source_routes
+from apps.api.routes import (
+    agent_analysis_read_routes,
+    agent_analysis_run_routes,
+    agent_governance_read_routes,
+    agent_governance_write_routes,
+    event_flow_routes,
+    execution_read_routes,
+    frontend_compat_routes,
+    health_routes,
+    jin10_market_routes,
+    jin10_report_routes,
+    knowledge_routes,
+    macro_routes,
+    market_monitor_routes,
+    market_odds_routes,
+    news_routes,
+    operations_routes,
+    options_routes,
+    premarket_routes,
+    playbook_routes,
+    reports_routes,
+    review_routes,
+    settings_read_routes,
+    settings_write_routes,
+    source_trace_routes,
+    strategy_report_routes,
+    system_status_routes,
+)
 from apps.api.services.source_service import (
     get_data_source_health_latest,
     get_data_source_history,
     get_data_sources_registry,
     get_data_status_summary,
-)
-from apps.api.services.source_trace_service import (
-    get_source_trace_by_artifact_id,
-    get_source_trace_by_report_id,
-    get_source_trace_by_snapshot_id,
-    get_source_trace_by_strategy_card_id,
 )
 from apps.api.services.report_service import (
     get_report_analysis_inputs,
@@ -149,7 +133,6 @@ from apps.api.services.report_service import (
     get_report_source,
     get_report_visual,
 )
-from apps.api.schemas.common import ArtifactType
 from apps.api.services.agent_output_service import build_agent_output_summary
 from apps.api.services._trace_refs import parse_source_refs
 from apps.api.services.scheduler_service import get_scheduler_overview
@@ -158,7 +141,7 @@ from apps.runtime.state_machine import (
     map_dagster_status_to_task_status,
     transition_task_run,
 )
-from database.models.engine import SessionLocal, get_db
+from database.models.engine import SessionLocal
 from database.models.analysis import ensure_analysis_tables
 from database.models.execution import ensure_execution_tables
 from database.models.report import ensure_report_tables
@@ -562,6 +545,284 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="finance-agent", version="0.1.0", lifespan=lifespan)
+app.include_router(health_routes.router)
+app.include_router(execution_read_routes.router)
+app.include_router(data_source_routes.router)
+app.include_router(review_routes.router)
+app.include_router(source_trace_routes.router)
+app.include_router(strategy_report_routes.router)
+app.include_router(market_monitor_routes.router)
+app.include_router(reports_routes.router)
+app.include_router(market_odds_routes.router)
+app.include_router(operations_routes.router)
+app.include_router(macro_routes.router)
+app.include_router(options_routes.router)
+app.include_router(event_flow_routes.router)
+app.include_router(playbook_routes.router)
+app.include_router(knowledge_routes.router)
+app.include_router(settings_read_routes.router)
+app.include_router(settings_write_routes.router)
+app.include_router(jin10_report_routes.router)
+app.include_router(news_routes.router)
+app.include_router(jin10_market_routes.router)
+app.include_router(premarket_routes.router)
+app.include_router(agent_governance_read_routes.router)
+app.include_router(agent_governance_write_routes.router)
+app.include_router(frontend_compat_routes.router)
+app.include_router(system_status_routes.router)
+app.include_router(agent_analysis_read_routes.router)
+app.include_router(agent_analysis_run_routes.router)
+
+# Re-export modularized handlers so existing direct-import tests and local tools stay compatible.
+api_runs = execution_read_routes.api_runs
+api_run_detail = execution_read_routes.api_run_detail
+api_run_steps = execution_read_routes.api_run_steps
+api_run_logs = execution_read_routes.api_run_logs
+api_run_artifacts = execution_read_routes.api_run_artifacts
+api_artifact_detail = execution_read_routes.api_artifact_detail
+api_run_events = execution_read_routes.api_run_events
+api_source_trace_by_report = source_trace_routes.api_source_trace_by_report
+api_source_trace_by_strategy = source_trace_routes.api_source_trace_by_strategy
+api_source_trace_by_artifact = source_trace_routes.api_source_trace_by_artifact
+api_source_trace_detail = source_trace_routes.api_source_trace_detail
+api_data_sources_status = data_source_routes.api_data_sources_status
+api_data_sources_registry = data_source_routes.api_data_sources_registry
+api_data_status_summary = data_source_routes.api_data_status_summary
+api_data_source_health_latest = data_source_routes.api_data_source_health_latest
+api_data_source_health = data_source_routes.api_data_source_health
+api_data_source_history = data_source_routes.api_data_source_history
+api_ingestion_source_retry = data_source_routes.api_ingestion_source_retry
+api_ingestion_source_test = data_source_routes.api_ingestion_source_test
+api_ingestion_manual_upload = data_source_routes.api_ingestion_manual_upload
+api_reviews = review_routes.api_reviews
+api_review_detail = review_routes.api_review_detail
+api_review_approve = review_routes.api_review_approve
+api_review_reject = review_routes.api_review_reject
+api_review_rerun = review_routes.api_review_rerun
+api_review_use_fallback = review_routes.api_review_use_fallback
+api_final_report_latest = strategy_report_routes.api_final_report_latest
+api_final_report = strategy_report_routes.api_final_report
+api_strategy_card_latest = strategy_report_routes.api_strategy_card_latest
+api_strategy_card = strategy_report_routes.api_strategy_card
+api_strategy_cards = strategy_report_routes.api_strategy_cards
+api_strategy_card_assets = strategy_report_routes.api_strategy_card_assets
+api_strategy_cards_latest = strategy_report_routes.api_strategy_cards_latest
+api_strategy_card_detail = strategy_report_routes.api_strategy_card_detail
+api_market_tickers = market_monitor_routes.api_market_tickers
+api_market_monitor = market_monitor_routes.api_market_monitor
+api_market_monitor_history = market_monitor_routes.api_market_monitor_history
+api_reports_index = reports_routes.api_reports_index
+api_reports_dates = reports_routes.api_reports_dates
+api_report_detail = reports_routes.api_report_detail
+api_report_artifacts = reports_routes.api_report_artifacts
+api_report_source = reports_routes.api_report_source
+api_report_analysis = reports_routes.api_report_analysis
+api_report_artifact_asset = reports_routes.api_report_artifact_asset
+api_report_visual = reports_routes.api_report_visual
+api_report_evidence = reports_routes.api_report_evidence
+api_report_analysis_inputs = reports_routes.api_report_analysis_inputs
+api_market_odds_snapshot = market_odds_routes.api_market_odds_snapshot
+api_market_odds_report = market_odds_routes.api_market_odds_report
+api_tasks = operations_routes.api_tasks
+api_scheduler_overview = operations_routes.api_scheduler_overview
+api_run_all_collectors = operations_routes.api_run_all_collectors
+api_dashboard_summary = operations_routes.api_dashboard_summary
+api_macro_latest = macro_routes.api_macro_latest
+api_macro_report = macro_routes.api_macro_report
+api_options_snapshot = options_routes.api_options_snapshot
+api_options_report = options_routes.api_options_report
+api_options_dates = options_routes.api_options_dates
+api_options_visual_report_latest = options_routes.api_options_visual_report_latest
+api_options_visual_report = options_routes.api_options_visual_report
+api_event_flow_overview = event_flow_routes.api_event_flow_overview
+api_event_flow_briefs = event_flow_routes.api_event_flow_briefs
+api_event_flow_events = event_flow_routes.api_event_flow_events
+api_event_flow_report_inputs = event_flow_routes.api_event_flow_report_inputs
+api_event_flow_event_detail = event_flow_routes.api_event_flow_event_detail
+api_event_flow_event_impact = event_flow_routes.api_event_flow_event_impact
+api_event_flow_event_market_reaction = event_flow_routes.api_event_flow_event_market_reaction
+api_event_flow_brief_link = event_flow_routes.api_event_flow_brief_link
+api_event_flow_brief_ignore = event_flow_routes.api_event_flow_brief_ignore
+api_event_flow_report_input_include = event_flow_routes.api_event_flow_report_input_include
+api_event_flow_report_input_exclude = event_flow_routes.api_event_flow_report_input_exclude
+api_event_flow_event_review = event_flow_routes.api_event_flow_event_review
+api_create_playbook = playbook_routes.api_create_playbook
+api_playbooks = playbook_routes.api_playbooks
+api_playbook_detail = playbook_routes.api_playbook_detail
+api_playbook_versions = playbook_routes.api_playbook_versions
+api_knowledge_items = knowledge_routes.api_knowledge_items
+api_knowledge_item = knowledge_routes.api_knowledge_item
+api_settings_status = settings_read_routes.api_settings_status
+api_settings_history = settings_read_routes.api_settings_history
+api_settings_update_preferences = settings_write_routes.api_settings_update_preferences
+api_settings_reset_preferences = settings_write_routes.api_settings_reset_preferences
+api_settings_update_source = settings_write_routes.api_settings_update_source
+api_settings_reset_source = settings_write_routes.api_settings_reset_source
+api_settings_update_secret = settings_write_routes.api_settings_update_secret
+api_settings_reset_secret = settings_write_routes.api_settings_reset_secret
+api_settings_rollback_history_event = settings_write_routes.api_settings_rollback_history_event
+api_jin10_daily_report_latest = jin10_report_routes.api_jin10_daily_report_latest
+api_jin10_daily_report = jin10_report_routes.api_jin10_daily_report
+api_jin10_weekly_report_latest = jin10_report_routes.api_jin10_weekly_report_latest
+api_jin10_weekly_report = jin10_report_routes.api_jin10_weekly_report
+api_jin10_report_bundle_latest = jin10_report_routes.api_jin10_report_bundle_latest
+api_jin10_report_bundle = jin10_report_routes.api_jin10_report_bundle
+api_jin10_report_bundle_asset = jin10_report_routes.api_jin10_report_bundle_asset
+api_jin10_article_briefs_latest = jin10_report_routes.api_jin10_article_briefs_latest
+api_jin10_article_briefs = jin10_report_routes.api_jin10_article_briefs
+api_daily_analysis_triggers_latest = news_routes.api_daily_analysis_triggers_latest
+api_daily_analysis_triggers = news_routes.api_daily_analysis_triggers
+api_daily_brief_latest = news_routes.api_daily_brief_latest
+api_daily_brief = news_routes.api_daily_brief
+api_daily_analysis_followups_latest = news_routes.api_daily_analysis_followups_latest
+api_daily_analysis_followups = news_routes.api_daily_analysis_followups
+api_create_daily_analysis_followup_tasks = news_routes.api_create_daily_analysis_followup_tasks
+api_feishu_jin10_message_monitor_latest = news_routes.api_feishu_jin10_message_monitor_latest
+api_feishu_jin10_message_monitor_dates = news_routes.api_feishu_jin10_message_monitor_dates
+api_feishu_jin10_message_monitor = news_routes.api_feishu_jin10_message_monitor
+api_jin10_quotes_latest = jin10_market_routes.api_jin10_quotes_latest
+api_jin10_calendar = jin10_market_routes.api_jin10_calendar
+api_jin10_flash = jin10_market_routes.api_jin10_flash
+api_jin10_kline = jin10_market_routes.api_jin10_kline
+api_premarket_pipeline_contract = premarket_routes.api_premarket_pipeline_contract
+api_premarket_pipeline_readiness = premarket_routes.api_premarket_pipeline_readiness
+api_premarket_launch_preflight = premarket_routes.api_premarket_launch_preflight
+trigger_premarket = premarket_routes.trigger_premarket
+get_task = premarket_routes.get_task
+get_task_logs = premarket_routes.get_task_logs
+health = health_routes.health
+api_memory_context = health_routes.api_memory_context
+api_agents_registry = agent_governance_read_routes.api_agents_registry
+api_agent_registry_detail = agent_governance_read_routes.api_agent_registry_detail
+api_prompt_versions_list = agent_governance_read_routes.api_prompt_versions_list
+api_prompt_versions_by_agent = agent_governance_read_routes.api_prompt_versions_by_agent
+api_prompt_versions_active = agent_governance_read_routes.api_prompt_versions_active
+api_prompt_versions_create = agent_governance_write_routes.api_prompt_versions_create
+api_prompt_versions_activate = agent_governance_write_routes.api_prompt_versions_activate
+api_prompt_feedback_create = agent_governance_write_routes.api_prompt_feedback_create
+api_prompt_feedback_by_agent = agent_governance_write_routes.api_prompt_feedback_by_agent
+api_prompt_feedback_list = agent_governance_write_routes.api_prompt_feedback_list
+api_agent_analysis_latest = agent_analysis_read_routes.api_agent_analysis_latest
+api_agent_analysis_by_date = agent_analysis_read_routes.api_agent_analysis_by_date
+api_agent_analysis_inspect = agent_analysis_read_routes.api_agent_analysis_inspect
+api_agent_analysis_synthesis_latest = agent_analysis_read_routes.api_agent_analysis_synthesis_latest
+api_run_agent_analysis = agent_analysis_run_routes.api_run_agent_analysis
+serve_frontend_asset = frontend_compat_routes.serve_frontend_asset
+serve_frontend_favicon = frontend_compat_routes.serve_frontend_favicon
+serve_dashboard = frontend_compat_routes.serve_dashboard
+serve_dashboard_analysis = frontend_compat_routes.serve_dashboard_analysis
+serve_data_ingestion = frontend_compat_routes.serve_data_ingestion
+serve_data_sources_subpath = frontend_compat_routes.serve_data_sources_subpath
+serve_market_monitor = frontend_compat_routes.serve_market_monitor
+serve_cme_options = frontend_compat_routes.serve_cme_options
+serve_reports = frontend_compat_routes.serve_reports
+serve_reports_subpath = frontend_compat_routes.serve_reports_subpath
+serve_event_flow = frontend_compat_routes.serve_event_flow
+serve_event_flow_subpath = frontend_compat_routes.serve_event_flow_subpath
+serve_knowledge_base = frontend_compat_routes.serve_knowledge_base
+serve_agent_tasks = frontend_compat_routes.serve_agent_tasks
+serve_scheduler = frontend_compat_routes.serve_scheduler
+serve_scheduler_subpath = frontend_compat_routes.serve_scheduler_subpath
+serve_agent_tasks_subpath = frontend_compat_routes.serve_agent_tasks_subpath
+serve_review_center = frontend_compat_routes.serve_review_center
+serve_settings = frontend_compat_routes.serve_settings
+serve_settings_audit = frontend_compat_routes.serve_settings_audit
+system_status = system_status_routes.system_status
+
+# Keep these globals explicit so modular route handlers and legacy tests can patch via apps.api.main.
+_HEALTH_ROUTE_DEPENDENCIES = (
+    build_automation_memory_context,
+)
+_DATA_SOURCE_ROUTE_DEPENDENCIES = (
+    get_data_source_statuses,
+    get_data_source_health_latest,
+    get_data_source_history,
+    get_data_sources_registry,
+    get_data_status_summary,
+    ingestion_action_service,
+    ingestion_source_test_service,
+)
+_STRATEGY_REPORT_ROUTE_DEPENDENCIES = (
+    get_final_report_latest,
+    get_final_report,
+    get_strategy_card_latest,
+    get_strategy_card,
+    list_strategy_cards,
+    list_strategy_assets,
+    get_strategy_card_read_model_latest,
+    get_strategy_card_by_id,
+)
+_MARKET_MONITOR_ROUTE_DEPENDENCIES = (
+    get_market_tickers,
+    get_market_monitor_overview,
+    get_market_monitor_history,
+)
+_REPORT_ROUTE_DEPENDENCIES = (
+    list_reports_index,
+    list_unified_dates,
+    get_report_detail,
+    get_report_artifacts,
+    get_report_source,
+    get_report_analysis,
+    get_report_artifact_asset_path,
+    get_report_visual,
+    get_report_evidence,
+    get_report_analysis_inputs,
+)
+_MARKET_ODDS_ROUTE_DEPENDENCIES = (
+    get_market_odds_snapshot,
+    get_market_odds_report,
+)
+_OPERATIONS_ROUTE_DEPENDENCIES = (
+    list_recent_tasks,
+    get_scheduler_overview,
+    get_dashboard_summary,
+)
+_MACRO_ROUTE_DEPENDENCIES = (
+    get_macro_latest,
+    get_macro_report_md,
+)
+_OPTIONS_ROUTE_DEPENDENCIES = (
+    get_options_snapshot,
+    get_options_report_md,
+    list_options_report_dates,
+    get_options_visual_report_html,
+)
+_EVENT_FLOW_ROUTE_DEPENDENCIES = (
+    event_flow_action_service,
+)
+_PLAYBOOK_ROUTE_DEPENDENCIES = (
+    playbook_service,
+)
+_SETTINGS_READ_ROUTE_DEPENDENCIES = (
+    settings_service,
+)
+_SETTINGS_WRITE_ROUTE_DEPENDENCIES = (
+    settings_service,
+)
+_JIN10_REPORT_ROUTE_DEPENDENCIES = (
+    get_jin10_daily_report_latest,
+    get_jin10_daily_report,
+    get_jin10_weekly_report_latest,
+    get_jin10_weekly_report,
+    get_jin10_report_bundle_latest,
+    get_jin10_report_bundle,
+    get_jin10_report_bundle_asset_path,
+    get_jin10_article_briefs_latest,
+    get_jin10_article_briefs,
+)
+_NEWS_ROUTE_DEPENDENCIES = (
+    get_daily_analysis_triggers_latest,
+    get_daily_analysis_triggers,
+    get_daily_brief_latest,
+    get_daily_brief,
+    get_daily_analysis_followups_latest,
+    get_daily_analysis_followups,
+    create_daily_analysis_followup_tasks,
+    get_feishu_jin10_message_monitor_latest,
+    list_feishu_jin10_message_monitor_dates,
+    get_feishu_jin10_message_monitor,
+)
 
 
 @app.middleware("http")
@@ -661,210 +922,7 @@ class MemoryContextResponse(BaseModel):
 # ---- Routes ----
 
 
-@app.get("/health")
-@app.get("/api/health")
-def health() -> dict:
-    return {"status": "ok"}
-
-
-@app.get("/api/memory/context", response_model=MemoryContextResponse)
-def api_memory_context(task: str) -> MemoryContextResponse:
-    """按任务描述预取长期记忆上下文。"""
-    try:
-        context = build_automation_memory_context(task)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-
-    return MemoryContextResponse(
-        task=task,
-        context=context,
-        source="automation_mem0_adapter",
-    )
-
-
 PREMARKET_STEPS = PREMARKET_STEP_ORDER
-
-
-@app.get("/api/pipelines/premarket/contract")
-def api_premarket_pipeline_contract() -> dict[str, Any]:
-    """Return the read-only canonical premarket step topology contract."""
-    return pipeline_contract_service.build_premarket_pipeline_contract()
-
-
-@app.get("/api/pipelines/premarket/readiness")
-def api_premarket_pipeline_readiness() -> dict[str, Any]:
-    """Return the current source-readiness view for the canonical premarket pipeline."""
-    return pipeline_contract_service.build_premarket_pipeline_source_readiness()
-
-
-@app.get("/api/tasks/premarket/preflight", response_model=PremarketLaunchPreflightResponse)
-def api_premarket_launch_preflight(force: bool = False) -> PremarketLaunchPreflightResponse:
-    """Return read-only launch preflight truth for the premarket task trigger."""
-    return _build_premarket_launch_preflight(force=force)
-
-
-@app.post("/tasks/premarket", response_model=TaskCreateResponse)
-@app.post("/api/tasks/premarket", response_model=TaskCreateResponse)
-def trigger_premarket(force: bool = False) -> TaskCreateResponse:
-    """触发盘前主链 — 通过 Dagster GraphQL launchRun。
-
-    默认拒绝重复触发（已有 pending/running 的 premarket 任务时返回 409）。
-    force=True 可跳过锁检查。
-    """
-    # Check for existing running tasks (legacy DB check for backward compat)
-    with SessionLocal() as session:
-        if not force:
-            existing = _cleanup_stale_active_premarket_tasks(session)
-            if existing:
-                readiness = pipeline_contract_service.build_premarket_pipeline_source_readiness()
-                raise HTTPException(
-                    status_code=409,
-                    detail=_premarket_launch_error_detail(
-                        message=f"已有进行中的 premarket 任务: {existing.id} (status={existing.status.value})",
-                        reason="legacy_active_task",
-                        force=force,
-                        source_readiness_summary=readiness.get("source_readiness_summary"),
-                        active_legacy_task=_task_to_premarket_active_task_ref(existing),
-                    ),
-                )
-
-    # Launch via Dagster GraphQL
-    dagster_url = os.getenv("DAGSTER_GRAPHQL_URL", "http://127.0.0.1:3333/graphql")
-    if not force:
-        try:
-            active_dagster_run = _find_active_dagster_premarket_run(dagster_url)
-        except Exception as exc:
-            logger.warning("Failed to check active Dagster premarket runs: %s", exc)
-        else:
-            if active_dagster_run:
-                readiness = pipeline_contract_service.build_premarket_pipeline_source_readiness()
-                raise HTTPException(
-                    status_code=409,
-                    detail=_premarket_launch_error_detail(
-                        message=(
-                            "Dagster 已有进行中的 premarket_job: "
-                            f"{active_dagster_run['run_id']} (status={active_dagster_run['status']})"
-                        ),
-                        reason="dagster_active_run",
-                        force=force,
-                        source_readiness_summary=readiness.get("source_readiness_summary"),
-                        active_dagster_run=PremarketDagsterRunRef(
-                            run_id=active_dagster_run["run_id"],
-                            status=active_dagster_run["status"],
-                        ),
-                    ),
-                )
-
-    readiness = pipeline_contract_service.build_premarket_pipeline_source_readiness()
-    source_readiness_summary = readiness.get("source_readiness_summary")
-    if _source_readiness_block_count(source_readiness_summary) > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=_premarket_launch_error_detail(
-                message=_source_readiness_block_message(source_readiness_summary),
-                reason="source_readiness_blocked",
-                force=force,
-                source_readiness_summary=source_readiness_summary,
-            ),
-        )
-
-    mutation = """
-        mutation LaunchRun($jobName: String!) {
-            launchPipelineExecution(
-                executionParams: {
-                    selector: {
-                        pipelineName: $jobName
-                        repositoryName: "__repository__"
-                        repositoryLocationName: "dagster_finance.definitions"
-                    }
-                    mode: "default"
-                }
-            ) {
-                ... on LaunchRunSuccess {
-                    run { runId status }
-                }
-                ... on PythonError { message }
-                ... on RunConfigValidationInvalid { errors { message } }
-            }
-        }
-    """
-    try:
-        import httpx
-
-        resp = httpx.post(
-            dagster_url,
-            json={"query": mutation, "variables": {"jobName": "premarket_job"}},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        result = data.get("data", {}).get("launchPipelineExecution", {})
-        if "run" in result:
-            run_id = result["run"]["runId"]
-            return TaskCreateResponse(
-                task_id=run_id,
-                name="premarket",
-                status="running",
-                source_readiness_summary=source_readiness_summary,
-            )
-        error_msg = result.get("message", str(result))
-        raise HTTPException(
-            status_code=500,
-            detail=_premarket_launch_error_detail(
-                message=f"Dagster launch failed: {error_msg}",
-                reason="dagster_launch_failed",
-                force=force,
-                source_readiness_summary=source_readiness_summary,
-            ),
-        )
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=_premarket_launch_error_detail(
-                message=f"Dagster unavailable: {exc}",
-                reason="dagster_unavailable",
-                force=force,
-                source_readiness_summary=source_readiness_summary,
-                dagster_check_error=str(exc),
-            ),
-        )
-
-
-@app.get("/tasks/{task_id}", response_model=TaskOut)
-@app.get("/api/tasks/{task_id}", response_model=TaskOut)
-def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskOut:
-    """查询任务状态。"""
-    try:
-        tid = uuid.UUID(task_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid task_id format")
-
-    if _database_reachable():
-        task = db.get(TaskRun, tid)
-        if task:
-            steps = [_step_to_out(s) for s in sort_premarket_steps(task.steps)]
-
-            return TaskOut(
-                id=str(task.id),
-                name=task.name,
-                status=task.status.value,
-                error=task.error,
-                trade_date=task.trade_date,
-                created_at=task.created_at,
-                updated_at=task.updated_at,
-                steps=steps,
-            )
-
-    dagster_url = os.getenv("DAGSTER_GRAPHQL_URL", "http://127.0.0.1:3333/graphql")
-    try:
-        dagster_task = _get_dagster_task_view(task_id, dagster_url)
-    except Exception as exc:
-        logger.warning("Failed to query Dagster task view for %s: %s", task_id, exc)
-    else:
-        if dagster_task is not None:
-            return dagster_task
-
-    raise HTTPException(status_code=404, detail="Task not found")
 
 
 def _step_to_out(s: TaskStep) -> StepOut:
@@ -944,984 +1002,28 @@ def _database_reachable(timeout: float = 0.2) -> bool:
         return True
 
 
-@app.get("/tasks/{task_id}/logs", response_model=list[StepOut])
-@app.get("/api/tasks/{task_id}/logs", response_model=list[StepOut])
-def get_task_logs(task_id: str, db: Session = Depends(get_db)) -> list[StepOut]:
-    """查询任务步骤日志。"""
-    try:
-        tid = uuid.UUID(task_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid task_id format")
-
-    if not _database_reachable():
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    task = db.get(TaskRun, tid)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    return [_step_to_out(s) for s in sort_premarket_steps(task.steps)]
+_PREMARKET_ROUTE_DEPENDENCIES = (
+    pipeline_contract_service,
+    SessionLocal,
+    _cleanup_stale_active_premarket_tasks,
+    _premarket_launch_error_detail,
+    _task_to_premarket_active_task_ref,
+    _find_active_dagster_premarket_run,
+    _source_readiness_block_count,
+    _source_readiness_block_message,
+    _database_reachable,
+    _get_dagster_task_view,
+    _step_to_out,
+    sort_premarket_steps,
+)
 
 
 # ---- Dashboard Routes (只读) ----
 
-# ── API: Options ──
-
-
-@app.get("/api/options/snapshot")
-def api_options_snapshot(date: str | None = None, db: Session = Depends(get_db)):
-    """返回 CME 期权分析 JSON snapshot。不传 date 则返回最新。"""
-    data = get_options_snapshot(date, db=db)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Options snapshot not found")
-    return data
-
-
-@app.get("/api/options/report")
-def api_options_report(date: str | None = None):
-    """返回 CME 期权分析 Markdown 报告原文。"""
-    md = get_options_report_md(date)
-    if md is None:
-        raise HTTPException(status_code=404, detail="Options report not found")
-    return {"content": md, "format": "markdown"}
-
-
-@app.get("/api/options/dates")
-def api_options_dates():
-    """列出所有已生成报告的日期。"""
-    return {"dates": list_options_report_dates()}
-
-
-@app.get("/api/options/visual-report/latest")
-def api_options_visual_report_latest():
-    """返回最新 CME visual report HTML。"""
-    data = get_options_visual_report_html()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Options visual report not found")
-    return data
-
-
-@app.get("/api/options/visual-report")
-def api_options_visual_report(date: str | None = None, run_id: str | None = None):
-    """按日期/run_id 返回 CME visual report HTML。"""
-    data = get_options_visual_report_html(date, run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Options visual report not found")
-    return data
-
-
-# ── API: Macro ──
-
-
-@app.get("/api/macro/latest")
-def api_macro_latest():
-    """返回最新宏观指标 JSON snapshot。"""
-    data = get_macro_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Macro snapshot not found")
-    return data
-
-
-@app.get("/api/macro/report")
-def api_macro_report(date: str | None = None):
-    """返回宏观指标 Markdown 报告。"""
-    md = get_macro_report_md(date)
-    if md is None:
-        raise HTTPException(status_code=404, detail="Macro report not found")
-    return {"content": md, "format": "markdown"}
-
-
-# ── API: Tasks ──
-
-
-@app.get("/api/tasks")
-def api_tasks(limit: int = 20):
-    """列出最近的任务。"""
-    return {"tasks": list_recent_tasks(min(limit, 100))}
-
-
-@app.get("/api/runs")
-def api_runs(limit: int = 20, db: Session = Depends(get_db)):
-    """列出最近的任务运行，供 Agent Tasks Run 控制台读取。"""
-    runs = task_service.list_task_runs(db, limit=min(limit, 100))
-    return {"runs": [run.model_dump(mode="json") for run in runs]}
-
-
-@app.get("/api/runs/{run_id}", response_model=TaskRunResponse)
-def api_run_detail(run_id: str, db: Session = Depends(get_db)) -> TaskRunResponse:
-    """按 run_id 返回单次运行详情。"""
-    try:
-        uuid.UUID(run_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid run_id format")
-
-    run = task_service.get_task_run_response(db, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return run
-
-
-@app.get("/api/runs/{run_id}/steps")
-def api_run_steps(run_id: str, db: Session = Depends(get_db)):
-    """返回某次运行的步骤详情。"""
-    try:
-        uuid.UUID(run_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid run_id format")
-
-    steps = task_service.get_task_run_steps(db, run_id)
-    if steps is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return {"run_id": run_id, "steps": [step.model_dump(mode="json") for step in steps]}
-
-
-@app.get("/api/runs/{run_id}/logs")
-def api_run_logs(run_id: str, db: Session = Depends(get_db)):
-    """返回某次运行的步骤日志兼容结构。"""
-    try:
-        uuid.UUID(run_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid run_id format")
-
-    logs = task_service.get_task_run_logs(db, run_id)
-    if logs is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return logs
-
-
-@app.get("/api/runs/{run_id}/artifacts")
-def api_run_artifacts(run_id: str, db: Session = Depends(get_db)):
-    """聚合某次运行的输出产物引用。"""
-    try:
-        uuid.UUID(run_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid run_id format")
-
-    artifacts = task_service.get_task_run_artifacts(db, run_id)
-    if artifacts is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return artifacts
-
-
-@app.get("/api/artifacts/{artifact_id}", response_model=ArtifactDetailResponse)
-def api_artifact_detail(artifact_id: str, db: Session = Depends(get_db)) -> ArtifactDetailResponse:
-    """返回单个 registry artifact 的上下文详情。"""
-    artifact = get_artifact_detail_response(db, artifact_id)
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
-    return artifact
-
-
-@app.get("/api/runs/{run_id}/events")
-def api_run_events(run_id: str, db: Session = Depends(get_db)):
-    """返回某次运行的执行事件时间线。"""
-    try:
-        uuid.UUID(run_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid run_id format")
-
-    run = task_service.get_task_run(db, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return get_run_events(db, run_id)
-
-
-# ── API: Scheduler Center ──
-
-
-@app.get("/api/scheduler/overview")
-def api_scheduler_overview(days: int = 7, limit: int = 50, db: Session = Depends(get_db)):
-    """调度中心全景视图：任务运行、数据源状态、产出物。"""
-    return get_scheduler_overview(db, days=min(days, 90), limit=min(limit, 200))
-
-
-@app.post("/api/scheduler/run-all-collectors")
-def api_run_all_collectors():
-    """手动触发全部数据采集器（异步）。采集结果写入 task_runs。"""
-    from apps.api.services.collector_trigger import run_all_collectors_async
-    return run_all_collectors_async()
-
-
-@app.get("/api/source-trace/by-report/{report_id}", response_model=SourceTraceResponse)
-def api_source_trace_by_report(report_id: str, db: Session = Depends(get_db)) -> SourceTraceResponse:
-    """按 report_id 反查 snapshot/run/artifact 溯源视图。"""
-    trace = get_source_trace_by_report_id(db, report_id)
-    if trace is None:
-        raise HTTPException(status_code=404, detail="Source trace not found")
-    return trace
-
-
-@app.get("/api/source-trace/by-strategy/{strategy_card_id}", response_model=SourceTraceResponse)
-def api_source_trace_by_strategy(strategy_card_id: str, db: Session = Depends(get_db)) -> SourceTraceResponse:
-    """按 strategy_card_id 反查关联 run/snapshot/source/artifact。"""
-    trace = get_source_trace_by_strategy_card_id(db, strategy_card_id)
-    if trace is None:
-        raise HTTPException(status_code=404, detail="Source trace not found")
-    return trace
-
-
-@app.get("/api/source-trace/by-artifact/{artifact_id}", response_model=SourceTraceResponse)
-def api_source_trace_by_artifact(artifact_id: str, db: Session = Depends(get_db)) -> SourceTraceResponse:
-    """按 artifact_id 反查关联 snapshot/source/artifact 溯源视图。"""
-    trace = get_source_trace_by_artifact_id(db, artifact_id)
-    if trace is None:
-        raise HTTPException(status_code=404, detail="Source trace not found")
-    return trace
-
-
-@app.get("/api/source-trace/{snapshot_id}", response_model=SourceTraceResponse)
-def api_source_trace_detail(snapshot_id: str, db: Session = Depends(get_db)) -> SourceTraceResponse:
-    """按 snapshot_id 返回 Phase 3 source trace 只读溯源视图。"""
-    trace = get_source_trace_by_snapshot_id(db, snapshot_id)
-    if trace is None:
-        raise HTTPException(status_code=404, detail="Source trace not found")
-    return trace
-
-
-# ── API: Dashboard Summary ──
-
-
-@app.get("/api/dashboard/summary")
-def api_dashboard_summary():
-    """返回 Dashboard 聚合摘要。"""
-    return get_dashboard_summary()
-
-
-@app.get("/api/data-sources/status")
-def api_data_sources_status():
-    """返回数据源 configured/raw/parsed/analysis_ready 四层状态。"""
-    return get_data_source_statuses()
-
-
-@app.get("/api/data-sources/registry")
-def api_data_sources_registry():
-    """返回统一数据源 registry 契约。"""
-    return get_data_sources_registry()
-
-
-@app.get("/api/data-status/summary")
-def api_data_status_summary():
-    """返回全局数据状态摘要，供前端 DataStatusBar 使用。"""
-    return get_data_status_summary()
-
-
-@app.get("/api/data-sources/health/latest")
-def api_data_source_health_latest():
-    """返回最新派生数据源健康快照。"""
-    return get_data_source_health_latest()
-
-
-@app.get("/api/data-sources/health")
-def api_data_source_health(date: str | None = None, db: Session = Depends(get_db)):
-    """返回指定日期的数据源健康快照；当前实现基于最新状态派生。"""
-    return get_data_source_health_latest(date=date, db=db)
-
-
-@app.get("/api/data-sources/{source_key}/history")
-def api_data_source_history(source_key: str, limit: int = 30, db: Session = Depends(get_db)):
-    """返回单个数据源的每日健康历史。"""
-    return get_data_source_history(source_key, db=db, limit=limit)
-
-
-# ── API: Data Ingestion Actions ──
-
-
-@app.post("/api/ingestion/sources/{source_key}/retry", response_model=DataSourceActionResponse)
-def api_ingestion_source_retry(
-    source_key: str,
-    body: DataSourceActionRequest | None = None,
-    db: Session = Depends(get_db),
-) -> DataSourceActionResponse:
-    """登记数据源重试请求，返回可追踪 task_run。"""
-    return ingestion_action_service.create_ingestion_retry(db, source_key, body)
-
-
-@app.post("/api/ingestion/sources/{source_key}/test", response_model=DataSourceTestResponse)
-def api_ingestion_source_test(
-    source_key: str,
-    body: DataSourceTestRequest | None = None,
-    db: Session = Depends(get_db),
-) -> DataSourceTestResponse:
-    """执行轻量数据源 probe，返回页面预览并写入 probe 审计。"""
-    return ingestion_source_test_service.run_ingestion_source_test(db, source_key, body)
-
-
-@app.post("/api/ingestion/manual-upload", response_model=DataSourceActionResponse)
-def api_ingestion_manual_upload(
-    body: ManualUploadRequest,
-    db: Session = Depends(get_db),
-) -> DataSourceActionResponse:
-    """登记手工上传 raw/staging artifact；解析后续必须回主链。"""
-    return ingestion_action_service.register_manual_upload(db, body)
-
-
 # ── API: Review Queue ──
 
 
-@app.get("/api/reviews")
-def api_reviews(
-    status: str | None = None,
-    source_module: str | None = None,
-    run_id: str | None = None,
-    limit: int = 100,
-    db: Session = Depends(get_db),
-):
-    """列出待人工复核项，供 Review Center / Agent Tasks 读取。"""
-    reviews = review_service.list_review_item_responses(
-        db,
-        status=status,
-        source_module=source_module,
-        run_id=run_id,
-        limit=min(limit, 200),
-    )
-    return {"reviews": [item.model_dump(mode="json") for item in reviews], "total": len(reviews)}
-
-
-@app.get("/api/reviews/{review_id}", response_model=ReviewItem)
-def api_review_detail(review_id: str, db: Session = Depends(get_db)) -> ReviewItem:
-    item = review_service.get_review_item_response(db, review_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Review item not found")
-    return item
-
-
-@app.post("/api/reviews/{review_id}/approve", response_model=ReviewItem)
-def api_review_approve(
-    review_id: str,
-    body: ReviewActionRequest | None = None,
-    db: Session = Depends(get_db),
-) -> ReviewItem:
-    return _resolve_review(review_id, status="approved", action="approve", body=body, db=db)
-
-
-@app.post("/api/reviews/{review_id}/reject", response_model=ReviewItem)
-def api_review_reject(
-    review_id: str,
-    body: ReviewActionRequest | None = None,
-    db: Session = Depends(get_db),
-) -> ReviewItem:
-    return _resolve_review(review_id, status="rejected", action="reject", body=body, db=db)
-
-
-@app.post("/api/reviews/{review_id}/rerun", response_model=ReviewItem)
-def api_review_rerun(
-    review_id: str,
-    body: ReviewActionRequest | None = None,
-    db: Session = Depends(get_db),
-) -> ReviewItem:
-    return _resolve_review(review_id, status="rerun", action="rerun", body=body, db=db)
-
-
-@app.post("/api/reviews/{review_id}/use-fallback", response_model=ReviewItem)
-def api_review_use_fallback(
-    review_id: str,
-    body: ReviewActionRequest | None = None,
-    db: Session = Depends(get_db),
-) -> ReviewItem:
-    return _resolve_review(review_id, status="approved", action="use_fallback", body=body, db=db)
-
-
-def _resolve_review(
-    review_id: str,
-    *,
-    status: str,
-    action: str,
-    body: ReviewActionRequest | None,
-    db: Session,
-) -> ReviewItem:
-    try:
-        item = review_service.resolve_review_item(
-            db,
-            review_id,
-            status=status,
-            resolution_action=action,
-            resolution_note=(body.reason or body.note) if body else None,
-            resolution_actor=body.actor if body else None,
-            resolution_request_id=body.request_id if body else None,
-            expected_status=body.expected_status if body else None,
-        )
-    except review_service.ReviewStatusConflictError as exc:
-        raise HTTPException(status_code=409, detail="Review item status conflict") from exc
-    if item is None:
-        raise HTTPException(status_code=404, detail="Review item not found")
-    return item
-
-
-# ── API: Market Tickers ──
-
-
-@app.get("/api/market/tickers")
-def api_market_tickers():
-    """返回市场指标实时快照（XAUUSD/DXY/宏观指标）。"""
-    return get_market_tickers()
-
-
-@app.get("/api/market/monitor")
-def api_market_monitor():
-    """返回市场监控页只读聚合视图。"""
-    return get_market_monitor_overview()
-
-
-@app.get("/api/market/monitor/history")
-def api_market_monitor_history(limit: int = 30, timeframe: str = "1M"):
-    """返回市场监控页历史序列。"""
-    return get_market_monitor_history(limit=limit, timeframe=timeframe)
-
-
-# ── API: C4 Final Report ──
-
-
-@app.get("/api/final-report/latest")
-def api_final_report_latest():
-    """返回最新的 final_report.md 内容。"""
-    data = get_final_report_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Final report not found")
-    return data
-
-
-@app.get("/api/final-report")
-def api_final_report(date: str, run_id: str):
-    """按日期和 run_id 返回 final_report.md 内容。"""
-    data = get_final_report(date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Final report not found")
-    return data
-
-
-# ── API: C4 Strategy Card ──
-
-
-@app.get("/api/strategy-card/latest")
-def api_strategy_card_latest():
-    """返回最新的 strategy_card.json + strategy_card.md。"""
-    data = get_strategy_card_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Strategy card not found")
-    return data
-
-
-@app.get("/api/strategy-card")
-def api_strategy_card(date: str, run_id: str):
-    """按日期和 run_id 返回 strategy_card.json + strategy_card.md。"""
-    data = get_strategy_card(date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Strategy card not found")
-    return data
-
-
-# ── API: Strategy Cards (read model) ──
-
-
-@app.get("/api/strategy-cards")
-def api_strategy_cards(asset: str = "XAUUSD", limit: int = 20):
-    """返回策略卡摘要列表，按最新日期排序。"""
-    return list_strategy_cards(asset=asset, limit=limit)
-
-
-@app.get("/api/strategy-cards/assets", response_model=StrategyAssetListResponse)
-def api_strategy_card_assets() -> StrategyAssetListResponse:
-    """返回可用于策略校准的资产列表与样本规模。"""
-    return list_strategy_assets()
-
-
-@app.get("/api/strategy-cards/latest")
-def api_strategy_cards_latest(asset: str = "XAUUSD"):
-    """返回最新策略卡详情（复数 read model）。"""
-    data = get_strategy_card_read_model_latest(asset=asset)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Strategy card not found")
-    return data
-
-
-@app.get("/api/strategy-cards/{strategy_card_id}")
-def api_strategy_card_detail(strategy_card_id: str, asset: str = "XAUUSD"):
-    """按 strategy_card_id / run_id / snapshot_id 返回策略卡详情。"""
-    data = get_strategy_card_by_id(strategy_card_id, asset=asset)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Strategy card not found")
-    return data
-
-
-# ── Event Flow ──
-
-
-@app.get("/api/events/flow/overview")
-def api_event_flow_overview():
-    """返回事件流只读 overview（Jin10 快讯 + 财经日历 + 文章）。"""
-    from apps.api.services.event_flow_service import build_event_flow_overview
-
-    return build_event_flow_overview()
-
-
-@app.get("/api/events/briefs")
-def api_event_flow_briefs():
-    """返回事件流当日快讯 / 金十文章只读 read model。"""
-    from apps.api.services.event_flow_service import build_event_flow_briefs
-
-    return build_event_flow_briefs()
-
-
-@app.get("/api/events")
-def api_event_flow_events():
-    """返回事件流事件列表只读 read model。"""
-    from apps.api.services.event_flow_service import build_event_flow_events
-
-    return build_event_flow_events()
-
-
-@app.get("/api/events/report-inputs")
-def api_event_flow_report_inputs():
-    """返回事件流报告输入只读 read model。"""
-    from apps.api.services.event_flow_service import build_event_flow_report_inputs
-
-    return build_event_flow_report_inputs()
-
-
-@app.get("/api/events/{event_id}")
-def api_event_flow_event_detail(event_id: str):
-    """返回单条事件详情 read model。"""
-    from apps.api.services.event_flow_service import build_event_flow_event_detail
-
-    data = build_event_flow_event_detail(event_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Event not found")
-    return data
-
-
-@app.get("/api/events/{event_id}/impact")
-def api_event_flow_event_impact(event_id: str):
-    """返回单条事件影响分析 read model。"""
-    from apps.api.services.event_flow_service import build_event_flow_impact
-
-    data = build_event_flow_impact(event_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Event not found")
-    return data
-
-
-@app.get("/api/events/{event_id}/market-reaction")
-def api_event_flow_event_market_reaction(event_id: str):
-    """返回单条事件行情反应 read model。"""
-    from apps.api.services.event_flow_service import build_event_flow_market_reaction
-
-    data = build_event_flow_market_reaction(event_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Event not found")
-    return data
-
-
-@app.post("/api/events/briefs/{brief_id}/link", response_model=EventFlowActionResponse)
-def api_event_flow_brief_link(
-    brief_id: str,
-    body: EventFlowBriefLinkRequest,
-    db: Session = Depends(get_db),
-) -> EventFlowActionResponse:
-    """登记 brief -> event 归并请求。"""
-    return event_flow_action_service.register_brief_link(db, brief_id, body)
-
-
-@app.post("/api/events/briefs/{brief_id}/ignore", response_model=EventFlowActionResponse)
-def api_event_flow_brief_ignore(
-    brief_id: str,
-    body: EventFlowActionRequest,
-    db: Session = Depends(get_db),
-) -> EventFlowActionResponse:
-    """登记 brief 忽略请求。"""
-    return event_flow_action_service.register_brief_ignore(db, brief_id, body)
-
-
-@app.post("/api/events/report-inputs/{input_id}/include", response_model=EventFlowActionResponse)
-def api_event_flow_report_input_include(
-    input_id: str,
-    body: EventFlowActionRequest,
-    db: Session = Depends(get_db),
-) -> EventFlowActionResponse:
-    """登记 report input 纳入请求。"""
-    return event_flow_action_service.register_report_input_include(db, input_id, body)
-
-
-@app.post("/api/events/report-inputs/{input_id}/exclude", response_model=EventFlowActionResponse)
-def api_event_flow_report_input_exclude(
-    input_id: str,
-    body: EventFlowActionRequest,
-    db: Session = Depends(get_db),
-) -> EventFlowActionResponse:
-    """登记 report input 排除请求。"""
-    return event_flow_action_service.register_report_input_exclude(db, input_id, body)
-
-
-@app.post("/api/events/{event_id}/review", response_model=EventFlowActionResponse)
-def api_event_flow_event_review(
-    event_id: str,
-    body: EventFlowActionRequest,
-    db: Session = Depends(get_db),
-) -> EventFlowActionResponse:
-    """登记单事件人工复核请求。"""
-    return event_flow_action_service.register_event_review(db, event_id, body)
-
-
-# ── Knowledge Base ──
-
-
-@app.get("/api/knowledge/items")
-def api_knowledge_items():
-    """返回知识库只读列表。"""
-    from apps.api.services.knowledge_service import build_knowledge_items
-
-    return build_knowledge_items()
-
-
-@app.get("/api/knowledge/items/{item_id}")
-def api_knowledge_item(item_id: str):
-    """返回单条知识详情。"""
-    from apps.api.services.knowledge_service import build_knowledge_item
-
-    data = build_knowledge_item(item_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Knowledge item not found")
-    return data
-
-
-# ── Playbook Registry ──
-
-
-@app.post("/api/playbooks", response_model=PlaybookTemplateVersion)
-def api_create_playbook(
-    body: PlaybookTemplateCreateRequest,
-    db: Session = Depends(get_db),
-) -> PlaybookTemplateVersion:
-    """登记新的 Playbook 模板版本。"""
-    try:
-        return playbook_service.create_playbook_template(db, body)
-    except playbook_service.PlaybookConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.get("/api/playbooks", response_model=PlaybookTemplateListResponse)
-def api_playbooks(db: Session = Depends(get_db)) -> PlaybookTemplateListResponse:
-    """返回 Playbook 模板最新版本列表。"""
-    return playbook_service.list_playbook_templates(db)
-
-
-@app.get("/api/playbooks/{playbook_id}", response_model=PlaybookTemplateDetailResponse)
-def api_playbook_detail(playbook_id: str, db: Session = Depends(get_db)) -> PlaybookTemplateDetailResponse:
-    """返回单个 Playbook 模板族的最新版本和历史版本。"""
-    data = playbook_service.get_playbook_template_detail(db, playbook_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Playbook template not found")
-    return data
-
-
-@app.get("/api/playbooks/{playbook_id}/versions", response_model=PlaybookTemplateListResponse)
-def api_playbook_versions(playbook_id: str, db: Session = Depends(get_db)) -> PlaybookTemplateListResponse:
-    """返回单个 Playbook 模板族的版本列表。"""
-    versions = playbook_service.list_playbook_template_versions(db, playbook_id)
-    return PlaybookTemplateListResponse(items=versions, total=len(versions))
-
-
 # ── Settings ──
-
-
-@app.get("/api/settings/status")
-def api_settings_status(db: Session = Depends(get_db)):
-    """返回配置状态概览（密钥已脱敏）。"""
-    return settings_service.build_settings_status(db=db)
-
-
-@app.post("/api/settings/preferences", response_model=SettingsActionResponse)
-def api_settings_update_preferences(
-    body: SettingsPreferencesUpdateRequest,
-    db: Session = Depends(get_db),
-) -> SettingsActionResponse:
-    """写入非敏感全局偏好配置。"""
-    try:
-        return settings_service.update_preferences(db, body)
-    except settings_service.SettingsValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/settings/preferences/reset", response_model=SettingsActionResponse)
-def api_settings_reset_preferences(
-    body: SettingsPreferencesResetRequest,
-    db: Session = Depends(get_db),
-) -> SettingsActionResponse:
-    """将指定全局偏好回退为默认值。"""
-    try:
-        return settings_service.reset_preferences(db, body)
-    except settings_service.SettingsValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/settings/sources/{source_key}", response_model=SettingsActionResponse)
-def api_settings_update_source(
-    source_key: str,
-    body: SettingsSourceUpdateRequest,
-    db: Session = Depends(get_db),
-) -> SettingsActionResponse:
-    """写入数据源 enable/disable 请求，不改变 runtime connectivity 检测。"""
-    try:
-        return settings_service.update_source_enabled(db, source_key, body)
-    except settings_service.SettingsSourceNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Settings source not found") from exc
-
-
-@app.post("/api/settings/sources/{source_key}/reset", response_model=SettingsActionResponse)
-def api_settings_reset_source(
-    source_key: str,
-    body: SettingsSourceResetRequest,
-    db: Session = Depends(get_db),
-) -> SettingsActionResponse:
-    """清除数据源 enable/disable overlay，回退到默认检测值。"""
-    try:
-        return settings_service.reset_source_enabled(db, source_key, body)
-    except settings_service.SettingsSourceNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Settings source not found") from exc
-    except settings_service.SettingsValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/settings/secrets/{source_key}", response_model=SettingsActionResponse)
-def api_settings_update_secret(
-    source_key: str,
-    body: SettingsSecretUpdateRequest,
-    db: Session = Depends(get_db),
-) -> SettingsActionResponse:
-    """写入加密 secret storage，仅回显 masked/configured 元数据。"""
-    try:
-        return settings_service.update_secret(db, source_key, body)
-    except settings_service.SettingsSourceNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Settings source not found") from exc
-    except settings_service.SettingsValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except settings_service.SettingsSecretStorageNotConfiguredError as exc:
-        raise HTTPException(status_code=503, detail="Settings secret storage is not configured") from exc
-
-
-@app.post("/api/settings/secrets/{source_key}/reset", response_model=SettingsActionResponse)
-def api_settings_reset_secret(
-    source_key: str,
-    body: SettingsSecretResetRequest,
-    db: Session = Depends(get_db),
-) -> SettingsActionResponse:
-    """清除加密 secret storage 中保存的密钥。"""
-    try:
-        return settings_service.reset_secret(db, source_key, body)
-    except settings_service.SettingsSourceNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Settings source not found") from exc
-    except settings_service.SettingsValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/settings/history", response_model=SettingsHistoryResponse)
-def api_settings_history(
-    limit: int = 50,
-    setting_key: str | None = None,
-    source_key: str | None = None,
-    scope: str | None = None,
-    action: str | None = None,
-    actor: str | None = None,
-    q: str | None = None,
-    days: int | None = None,
-    db: Session = Depends(get_db),
-) -> SettingsHistoryResponse:
-    """返回 Settings 最近配置变更历史。"""
-    return settings_service.build_settings_history(
-        db,
-        limit=limit,
-        setting_key=setting_key,
-        source_key=source_key,
-        scope=scope,
-        action=action,
-        actor=actor,
-        q=q,
-        days=days,
-    )
-
-
-@app.post("/api/settings/history/{audit_id}/rollback", response_model=SettingsActionResponse)
-def api_settings_rollback_history_event(
-    audit_id: str,
-    body: SettingsRollbackRequest,
-    db: Session = Depends(get_db),
-) -> SettingsActionResponse:
-    """按历史 audit_id 回滚非敏感设置。"""
-    try:
-        return settings_service.rollback_settings_event(db, audit_id, body)
-    except settings_service.SettingsHistoryEventNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Settings history event not found") from exc
-    except settings_service.SettingsValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/jin10/daily-report/latest")
-def api_jin10_daily_report_latest():
-    """返回最新的 Jin10 黄金每日报告。"""
-    data = get_jin10_daily_report_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Jin10 daily report not found")
-    return data
-
-
-@app.get("/api/jin10/daily-report")
-def api_jin10_daily_report(date: str, run_id: str):
-    """按日期和 run_id 返回 Jin10 黄金每日报告。"""
-    data = get_jin10_daily_report(date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Jin10 daily report not found")
-    return data
-
-
-@app.get("/api/jin10/weekly-report/latest")
-def api_jin10_weekly_report_latest():
-    """返回最新的 Jin10 黄金周报。"""
-    data = get_jin10_weekly_report_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Jin10 weekly report not found")
-    return data
-
-
-@app.get("/api/jin10/weekly-report")
-def api_jin10_weekly_report(date: str, run_id: str):
-    """按日期和 run_id 返回 Jin10 黄金周报。"""
-    data = get_jin10_weekly_report(date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Jin10 weekly report not found")
-    return data
-
-
-@app.get("/api/jin10/report-bundle/latest")
-def api_jin10_report_bundle_latest():
-    """返回最新的 Jin10 报告 bundle，默认优先 Agent 分析。"""
-    data = get_jin10_report_bundle_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Jin10 report bundle not found")
-    return data
-
-
-@app.get("/api/jin10/report-bundle")
-def api_jin10_report_bundle(date: str, run_id: str):
-    """按日期和 run_id 返回 Jin10 报告 bundle。"""
-    data = get_jin10_report_bundle(date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Jin10 report bundle not found")
-    return data
-
-
-@app.get("/api/jin10/report-bundle/{date}/{run_id}/asset/{asset_path:path}")
-def api_jin10_report_bundle_asset(date: str, run_id: str, asset_path: str):
-    """返回 Jin10 bundle 下的相对资源文件（图表、图片等）。"""
-    path = get_jin10_report_bundle_asset_path(date=date, run_id=run_id, asset_path=asset_path)
-    if path is None:
-        raise HTTPException(status_code=404, detail="Jin10 report asset not found")
-    return FileResponse(path)
-
-
-@app.get("/api/jin10/article-briefs/latest")
-def api_jin10_article_briefs_latest():
-    """返回最新的 Jin10 文章小快讯 read model。"""
-    data = get_jin10_article_briefs_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Jin10 article briefs not found")
-    return data
-
-
-@app.get("/api/jin10/article-briefs")
-def api_jin10_article_briefs(date: str, run_id: str):
-    """按日期和 run_id 返回 Jin10 文章小快讯 read model。"""
-    data = get_jin10_article_briefs(date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Jin10 article briefs not found")
-    return data
-
-
-@app.get("/api/news/daily-analysis-triggers/latest")
-def api_daily_analysis_triggers_latest():
-    """返回最新的 daily analysis triggers read model。"""
-    data = get_daily_analysis_triggers_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Daily analysis triggers not found")
-    return data
-
-
-@app.get("/api/news/daily-analysis-triggers")
-def api_daily_analysis_triggers(date: str, run_id: str):
-    """按日期和 run_id 返回 daily analysis triggers read model。"""
-    data = get_daily_analysis_triggers(date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Daily analysis triggers not found")
-    return data
-
-
-@app.get("/api/news/daily-brief/latest")
-def api_daily_brief_latest():
-    """返回最新的稳定日报 read model。"""
-    data = get_daily_brief_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Daily brief not found")
-    return data
-
-
-@app.get("/api/news/daily-brief")
-def api_daily_brief(date: str, run_id: str):
-    """按日期和 run_id 返回稳定日报 read model。"""
-    data = get_daily_brief(date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Daily brief not found")
-    return data
-
-
-@app.get("/api/news/daily-analysis-followups/latest")
-def api_daily_analysis_followups_latest():
-    """返回最新的 daily analysis follow-up queue read model。"""
-    data = get_daily_analysis_followups_latest()
-    if data is None:
-        raise HTTPException(status_code=404, detail="Daily analysis followups not found")
-    return data
-
-
-@app.get("/api/news/daily-analysis-followups")
-def api_daily_analysis_followups(date: str, run_id: str):
-    """按日期和 run_id 返回 daily analysis follow-up queue read model。"""
-    data = get_daily_analysis_followups(date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Daily analysis followups not found")
-    return data
-
-
-@app.post("/api/news/daily-analysis-followups/tasks")
-def api_create_daily_analysis_followup_tasks(
-    date: str | None = None,
-    run_id: str | None = None,
-    db: Session = Depends(get_db),
-):
-    """把 daily analysis follow-up queue 映射为 pending task rows。"""
-    data = create_daily_analysis_followup_tasks(db, date=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Daily analysis followups not found")
-    return data
-
-
-@app.get("/api/news/feishu-jin10/messages/latest")
-def api_feishu_jin10_message_monitor_latest(db: Session = Depends(get_db)):
-    """返回最近一个有 Feishu 金十消息 parsed artifact 的日期监控视图。"""
-    data = get_feishu_jin10_message_monitor_latest(db=db)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Feishu Jin10 latest messages not found")
-    return data
-
-
-@app.get("/api/news/feishu-jin10/dates")
-def api_feishu_jin10_message_monitor_dates():
-    """返回有 Feishu 金十消息 parsed artifact 的日期列表。"""
-    return {"dates": list_feishu_jin10_message_monitor_dates()}
-
-
-@app.get("/api/news/feishu-jin10/messages")
-def api_feishu_jin10_message_monitor(date: str, db: Session = Depends(get_db)):
-    """返回指定日期的 Feishu 金十消息采集与后续纳入状态清单。"""
-    data = get_feishu_jin10_message_monitor(date=date, db=db)
-    return data
 
 
 # ── API: Jin10 MCP Quotes & Snapshot ──
@@ -1935,90 +1037,6 @@ def _jin10_unavailable(reason: str) -> dict:
         "counts": {},
         "kline_codes": [],
     }
-
-
-@app.get("/api/jin10/quotes/latest")
-def api_jin10_quotes_latest():
-    """返回最新的金十实时报价快照（来自 Analysis Snapshot 的 jin10 分区）。
-
-    从最新的 premarket_snapshot.json 中提取 jin10 字段，
-    包含实时行情报价、快讯/文章计数、K 线代码等。
-    """
-    import json
-
-    storage_root = Path("./storage")
-    snap_dir = storage_root / "features" / "snapshots" / "XAUUSD"
-    if not snap_dir.exists():
-        return _jin10_unavailable("No snapshots directory found")
-
-    # Find latest date directory
-    date_dirs = sorted(
-        [d for d in snap_dir.iterdir() if d.is_dir()],
-        reverse=True,
-    )
-    if not date_dirs:
-        return _jin10_unavailable("No snapshot dates found")
-
-    # Find latest run_id directory
-    for date_dir in date_dirs:
-        run_dirs = sorted(
-            [d for d in date_dir.iterdir() if d.is_dir()],
-            reverse=True,
-        )
-        for run_dir in run_dirs:
-            snap_path = run_dir / "premarket_snapshot.json"
-            if not snap_path.exists():
-                continue
-            try:
-                snap = json.loads(snap_path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            jin10_section = snap.get("jin10")
-            if jin10_section:
-                return jin10_section
-
-    return _jin10_unavailable("Jin10 section not yet populated in analysis snapshot.")
-
-
-@app.get("/api/jin10/calendar")
-def api_jin10_calendar():
-    """返回 Jin10 经济日历（高影响力 + 未来事件）。"""
-    cache_path = _JIN10_CALENDAR_CACHE_PATH
-    if not cache_path.exists():
-        _refresh_jin10_calendar_cache()
-    if not cache_path.exists():
-        return {"status": "unavailable", "events": [], "message": "Calendar data not available"}
-    try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-        payload = _build_jin10_calendar_payload(data, cache_path)
-        if payload["freshness"]["reason"] == "no_upcoming_events":
-            _refresh_jin10_calendar_cache()
-            if cache_path.exists():
-                refreshed_data = json.loads(cache_path.read_text(encoding="utf-8"))
-                return _build_jin10_calendar_payload(refreshed_data, cache_path)
-        return payload
-    except Exception as exc:
-        return {"status": "error", "events": [], "message": str(exc)}
-
-
-@app.get("/api/jin10/flash")
-def api_jin10_flash():
-    """返回 Jin10 最新快讯。"""
-    cache_path = _JIN10_FLASH_CACHE_PATH
-    if not cache_path.exists() or _is_file_stale(cache_path, max_age_seconds=_JIN10_FLASH_CACHE_MAX_AGE_SECONDS):
-        try:
-            from apps.scheduler.jin10_refresh import refresh_jin10_flash_cache
-
-            refresh_jin10_flash_cache()
-        except Exception:
-            pass
-    if not cache_path.exists():
-        return {"status": "unavailable", "items": [], "message": "Flash news not available"}
-    try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-        return data
-    except Exception as exc:
-        return {"status": "error", "items": [], "message": str(exc)}
 
 
 def _is_file_stale(path: Path, *, max_age_seconds: int) -> bool:
@@ -2142,56 +1160,6 @@ def _build_jin10_calendar_payload(data: dict[str, Any], cache_path: Path) -> dic
     }
 
 
-@app.get("/api/jin10/kline")
-def api_jin10_kline(
-    symbol: str = "XAUUSD",
-    timeframe: str = "1m",
-    limit: int = 200,
-):
-    """返回 Jin10 K 线数据（从 market_candles 表读取），支持多周期聚合。"""
-    from database.models.engine import SessionLocal
-    from database.queries.market import list_market_candles
-
-    VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "4h", "1D"}
-    if timeframe not in VALID_TIMEFRAMES:
-        timeframe = "1m"
-
-    if limit < 1 or limit > 1000:
-        limit = max(1, min(limit, 1000))
-
-    try:
-        with SessionLocal() as session:
-            # 默认用 Jin10 MCP 实时现货，不足时回退 Yahoo 期货
-            kline_source = "jin10_mcp_kline_1m"
-            if timeframe == "1m":
-                rows = list_market_candles(session, asset=symbol, timeframe="1m", limit=limit, source=kline_source)
-                if not rows:
-                    rows = list_market_candles(session, asset=symbol, timeframe="1m", limit=limit, source="yahoo_finance_1m")
-                candles = [_candle_to_dict(row) for row in rows]
-            else:
-                # 聚合：先用现货，不足再用期货
-                fetch_limit = _aggregation_fetch_limit(timeframe, limit)
-                rows = list_market_candles(session, asset=symbol, timeframe="1m", limit=fetch_limit, source=kline_source)
-                if not rows:
-                    rows = list_market_candles(session, asset=symbol, timeframe="1m", limit=fetch_limit, source="yahoo_finance_1m")
-                candles = _aggregate_candles(rows, timeframe)[-limit:]
-
-            return {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "count": len(candles),
-                "candles": candles,
-            }
-    except Exception as exc:
-        return {
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "count": 0,
-            "candles": [],
-            "error": str(exc),
-        }
-
-
 def _candle_to_dict(row) -> dict:
     return {
         "time": row.open_time.isoformat() if row.open_time else "",
@@ -2258,146 +1226,7 @@ def _aggregate_candles(rows: list, timeframe: str) -> list[dict]:
     return result
 
 
-# ── API: Reports Index ──
-
-
-@app.get("/api/reports/index")
-def api_reports_index():
-    """返回所有报告类型的索引列表。"""
-    return list_reports_index()
-
-
-@app.get("/api/reports/dates")
-def api_reports_dates():
-    """返回所有可用 trade_date 及其模块覆盖。"""
-    return list_unified_dates()
-
-
-@app.get("/api/reports/{report_id}", response_model=ReportDetail)
-def api_report_detail(report_id: str, db: Session = Depends(get_db)) -> ReportDetail:
-    """返回标准报告详情；优先读新 report tables，其次走 legacy adapter。"""
-    detail = get_report_detail(db, report_id)
-    if detail is None:
-        raise HTTPException(status_code=404, detail="Report not found")
-    return detail
-
-
-@app.get("/api/reports/{report_id}/artifacts", response_model=list[ReportArtifact])
-def api_report_artifacts(report_id: str, db: Session = Depends(get_db)) -> list[ReportArtifact]:
-    artifacts = get_report_artifacts(db, report_id)
-    if artifacts is None:
-        raise HTTPException(status_code=404, detail="Report not found")
-    return artifacts
-
-
-@app.get("/api/reports/{report_id}/source")
-def api_report_source(report_id: str, db: Session = Depends(get_db)):
-    payload = get_report_source(db, report_id)
-    if payload is None:
-        raise HTTPException(status_code=404, detail="Report artifact not found")
-    return payload
-
-
-@app.get("/api/reports/{report_id}/analysis")
-def api_report_analysis(report_id: str, db: Session = Depends(get_db)):
-    payload = get_report_analysis(db, report_id)
-    if payload is None:
-        raise HTTPException(status_code=404, detail="Report artifact not found")
-    return payload
-
-
-@app.get("/api/reports/{report_id}/asset/{artifact_type}/{asset_path:path}")
-def api_report_artifact_asset(report_id: str, artifact_type: ArtifactType, asset_path: str, db: Session = Depends(get_db)):
-    path = get_report_artifact_asset_path(db, report_id, artifact_type, asset_path)
-    if path is None:
-        raise HTTPException(status_code=404, detail="Report artifact asset not found")
-    return FileResponse(path)
-
-
-@app.get("/api/reports/{report_id}/visual")
-def api_report_visual(report_id: str, db: Session = Depends(get_db)):
-    payload = get_report_visual(db, report_id)
-    if payload is None:
-        raise HTTPException(status_code=404, detail="Report artifact not found")
-    return payload
-
-
-@app.get("/api/reports/{report_id}/evidence")
-def api_report_evidence(report_id: str, db: Session = Depends(get_db)):
-    payload = get_report_evidence(db, report_id)
-    if payload is None:
-        raise HTTPException(status_code=404, detail="Report artifact not found")
-    return payload
-
-
-@app.get("/api/reports/{report_id}/analysis-inputs", response_model=ReportAnalysisInputs)
-def api_report_analysis_inputs(report_id: str, db: Session = Depends(get_db)):
-    payload = get_report_analysis_inputs(db, report_id)
-    if payload is None:
-        raise HTTPException(status_code=404, detail="Report analysis inputs not found")
-    return payload
-
-
-# ── API: Market Odds (P4-09) ──
-
-
-@app.get("/api/market-odds/snapshot")
-def api_market_odds_snapshot(date: str | None = None, run_id: str | None = None):
-    """返回 market_odds section from analysis snapshot."""
-    data = get_market_odds_snapshot(date_str=date, run_id=run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail="Market odds snapshot not found")
-    return data
-
-
-@app.get("/api/market-odds/report")
-def api_market_odds_report(date: str | None = None, run_id: str | None = None):
-    """返回 market_odds 结构化报告摘要。无数据时返回 unavailable 状态而非 404."""
-    return get_market_odds_report(date_str=date, run_id=run_id)
-
-
 # ── Agent Analysis unified endpoint ──
-
-
-@app.get("/api/agent-analysis/latest")
-def api_agent_analysis_latest():
-    """返回最新日期的全部 agent 分析结果。
-
-    从 agent_outputs 表读取，按 agent_name 分组返回。
-    如果某 agent 无数据则返回 unavailable 状态。
-    """
-    from database.models.analysis import AgentOutput
-    from database.models.engine import SessionLocal
-
-    with SessionLocal() as db:
-        # Find latest trade_date
-        latest_date = db.query(func.max(AgentOutput.trade_date)).scalar()
-        if not latest_date:
-            return _empty_agent_analysis()
-
-        return _build_agent_analysis_response(db, latest_date)
-
-
-@app.get("/api/agents/registry")
-def api_agents_registry():
-    """返回 Agent 注册表与可审查 Prompt 模板。
-
-    该接口只用于配置治理、Prompt 复核和开发调试；业务页面仍应消费页面级 read model。
-    """
-    from apps.analysis.agents.registry import build_agent_registry_response
-
-    return build_agent_registry_response()
-
-
-@app.get("/api/agents/registry/{agent_id}")
-def api_agent_registry_detail(agent_id: str):
-    """返回单个 Agent 的注册信息与 Prompt 模板。"""
-    from apps.analysis.agents.registry import get_agent_registry
-
-    agent = get_agent_registry(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail=f"Agent registry entry not found: {agent_id}")
-    return agent
 
 
 # ── P2-11 Prompt Versions API ──
@@ -2416,293 +1245,6 @@ def _validate_prompt_version_create_payload(payload: PromptVersionCreate) -> Non
     kind = payload.prompt_kind or "llm"
     if kind not in _PROMPT_KINDS:
         raise HTTPException(status_code=400, detail=f"Invalid prompt kind: {kind}")
-
-
-@app.get("/api/agents/prompts")
-def api_prompt_versions_list(agent_id: str | None = None, status: str | None = None, db: Session = Depends(get_db)):
-    """列出 prompt 版本记录。
-
-    可选过滤：agent_id（按 Agent 筛选）、status（active/draft/deprecated）。
-    """
-    from database.models.analysis import PromptVersion
-
-    query = db.query(PromptVersion).order_by(desc(PromptVersion.created_at))
-    if agent_id:
-        query = query.filter(PromptVersion.agent_id == agent_id)
-    if status:
-        query = query.filter(PromptVersion.status == status)
-
-    rows = query.all()
-    return {
-        "source": "prompt_versions",
-        "count": len(rows),
-        "versions": [_prompt_version_item(r) for r in rows],
-    }
-
-
-@app.get("/api/agents/prompts/{agent_id}")
-def api_prompt_versions_by_agent(agent_id: str, db: Session = Depends(get_db)):
-    """返回某个 Agent 的所有 prompt 版本记录。"""
-    from database.models.analysis import PromptVersion
-
-    rows = (
-        db.query(PromptVersion)
-        .filter(PromptVersion.agent_id == agent_id)
-        .order_by(desc(PromptVersion.created_at))
-        .all()
-    )
-    if not rows:
-        # fallback to registry for metadata
-        from apps.analysis.agents.registry import get_agent_registry
-
-        agent = get_agent_registry(agent_id)
-        if agent is None:
-            raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
-        return {
-            "agent_id": agent_id,
-            "name": agent["name"],
-            "source": "prompt_versions",
-            "count": 0,
-            "versions": [],
-            "note": "尚无持久化 prompt 版本，将在首次运行后自动落库。",
-        }
-
-    return {
-        "agent_id": agent_id,
-        "name": rows[0].agent_id,
-        "source": "prompt_versions",
-        "count": len(rows),
-        "versions": [_prompt_version_item(r) for r in rows],
-    }
-
-
-@app.get("/api/agents/prompts/{agent_id}/active")
-def api_prompt_versions_active(agent_id: str, db: Session = Depends(get_db)):
-    """返回某个 Agent 当前激活的 prompt 版本。"""
-    from database.models.analysis import PromptVersion
-
-    row = (
-        db.query(PromptVersion)
-        .filter(PromptVersion.agent_id == agent_id, PromptVersion.status == "active", PromptVersion.enabled.is_(True))
-        .order_by(desc(PromptVersion.created_at))
-        .first()
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"No active prompt version for agent: {agent_id}")
-    return _prompt_version_item(row)
-
-
-@app.post("/api/agents/prompts/{agent_id}")
-def api_prompt_versions_create(
-    agent_id: str,
-    payload: PromptVersionCreate,
-    db: Session = Depends(get_db),
-):
-    """为某个 Agent 创建新 prompt 版本。
-
-    新版本默认 status=draft；旧 active 版本不会被自动禁用。
-    """
-    import hashlib  # noqa: E402
-    import json  # noqa: E402
-
-    from database.models.analysis import PromptVersion
-
-    # Validate agent exists
-    from apps.analysis.agents.registry import get_agent_registry
-
-    agent = get_agent_registry(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
-    _validate_prompt_version_create_payload(payload)
-
-    template_raw = json.dumps(payload.prompt_template, sort_keys=True, ensure_ascii=False)
-    sha = hashlib.sha256(template_raw.encode()).hexdigest()
-
-    # Determine next version label
-    latest = (
-        db.query(PromptVersion)
-        .filter(PromptVersion.agent_id == agent_id)
-        .order_by(desc(PromptVersion.created_at))
-        .first()
-    )
-    if latest and latest.version.startswith("v"):
-        try:
-            latest_num = int(latest.version[1:])
-            next_version = f"v{latest_num + 1}"
-        except ValueError:
-            next_version = "v2"
-    else:
-        next_version = "v1"
-
-    pv = PromptVersion(
-        id=str(uuid.uuid4()),
-        agent_id=agent_id,
-        version=next_version,
-        prompt_kind=payload.prompt_kind or "llm",
-        prompt_source=payload.prompt_source,
-        prompt_template=payload.prompt_template,
-        prompt_sha256=sha,
-        status=payload.status or "draft",
-        enabled=payload.enabled if payload.enabled is not None else True,
-        model_routing=payload.model_routing,
-        change_note=payload.change_note,
-        created_by=payload.created_by,
-        request_id=payload.request_id,
-    )
-    db.add(pv)
-    db.commit()
-    db.refresh(pv)
-    return _prompt_version_item(pv)
-
-
-@app.patch("/api/agents/prompts/{agent_id}/activate")
-def api_prompt_versions_activate(
-    agent_id: str,
-    payload: PromptVersionActivate,
-    db: Session = Depends(get_db),
-):
-    """激活某个 Agent 的指定版本，同时停用该 Agent 所有其他版本。"""
-    from database.models.analysis import PromptVersion
-
-    target = (
-        db.query(PromptVersion)
-        .filter(PromptVersion.agent_id == agent_id, PromptVersion.version == payload.version)
-        .first()
-    )
-    if target is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Version not found: {agent_id} {payload.version}",
-        )
-
-    # Deactivate all versions for this agent, then activate the target
-    db.query(PromptVersion).filter(PromptVersion.agent_id == agent_id).update(
-        {"status": "deprecated" if PromptVersion.status != "deprecated" else "deprecated"},
-    )
-    target.status = "active"
-    target.enabled = True
-    if payload.reason:
-        target.change_note = (target.change_note or "") + f"\n激活: {payload.reason}"
-    db.commit()
-    db.refresh(target)
-    return _prompt_version_item(target)
-
-
-# ── P2-11 Prompt Feedback API ──
-
-
-@app.post("/api/agents/feedback")
-def api_prompt_feedback_create(payload: PromptFeedbackCreate, db: Session = Depends(get_db)):
-    """提交人工反馈（P2-11）。
-
-    反馈永远是追加记录，不修改历史 AgentOutput。
-    严重反馈可自动创建 ReviewItem 进行跟踪。
-    """
-    from database.models.analysis import PromptFeedback
-
-    feedback = PromptFeedback(
-        id=str(uuid.uuid4()),
-        feedback_id=f"fb-{uuid.uuid4().hex[:12]}",
-        agent_output_id=payload.agent_output_id,
-        agent_id=payload.agent_id,
-        prompt_version_id=payload.prompt_version_id,
-        run_id=payload.run_id,
-        rating=payload.rating,
-        category=payload.category or "prompt_quality",
-        comment=payload.comment,
-        suggested_changes=payload.suggested_changes,
-        status="open",
-        submitted_by=payload.submitted_by,
-        request_id=payload.request_id,
-    )
-    db.add(feedback)
-
-    # Auto-create ReviewItem for severe feedback
-    review_item: dict[str, Any] | None = None
-    severe_categories = {"analysis_error", "missing_context"}
-    if payload.category in severe_categories and payload.agent_output_id:
-        from database.models.analysis import ReviewItem as _ReviewItem
-
-        review = _ReviewItem(
-            id=str(uuid.uuid4()),
-            review_id=f"rv-{uuid.uuid4().hex[:12]}",
-            run_id=payload.run_id,
-            source_module="prompt_feedback",
-            agent_output_id=payload.agent_output_id,
-            severity="warning",
-            reason=f"[{payload.category}] {payload.comment or '(无评注)'}",
-            impact_modules=[],
-            impact_report_ids=[],
-            source_refs=[],
-            evidence_refs=[],
-            suggested_action="请人工审查反馈并决定是否需要调整 Prompt 或重新运行分析。",
-            status="pending",
-        )
-        db.add(review)
-        db.flush()
-        feedback.review_item_id = review.review_id
-        review_item = {
-            "review_id": review.review_id,
-            "status": review.status,
-            "severity": review.severity,
-        }
-
-    db.commit()
-    db.refresh(feedback)
-
-    result = _prompt_feedback_item(feedback)
-    if review_item:
-        result["review_item"] = review_item
-    return result
-
-
-@app.get("/api/agents/feedback/{agent_id}")
-def api_prompt_feedback_by_agent(
-    agent_id: str,
-    status: str | None = None,
-    limit: int = 50,
-    db: Session = Depends(get_db),
-):
-    """按 Agent 查询反馈记录。"""
-    from database.models.analysis import PromptFeedback
-
-    query = db.query(PromptFeedback).filter(PromptFeedback.agent_id == agent_id)
-    if status:
-        query = query.filter(PromptFeedback.status == status)
-    query = query.order_by(desc(PromptFeedback.created_at)).limit(limit)
-
-    rows = query.all()
-    return {
-        "agent_id": agent_id,
-        "source": "prompt_feedback",
-        "count": len(rows),
-        "feedback": [_prompt_feedback_item(r) for r in rows],
-    }
-
-
-@app.get("/api/agents/feedback")
-def api_prompt_feedback_list(
-    agent_id: str | None = None,
-    status: str | None = None,
-    limit: int = 50,
-    db: Session = Depends(get_db),
-):
-    """列出所有反馈记录，可选按 agent/status 过滤。"""
-    from database.models.analysis import PromptFeedback
-
-    query = db.query(PromptFeedback)
-    if agent_id:
-        query = query.filter(PromptFeedback.agent_id == agent_id)
-    if status:
-        query = query.filter(PromptFeedback.status == status)
-    query = query.order_by(desc(PromptFeedback.created_at)).limit(limit)
-
-    rows = query.all()
-    return {
-        "source": "prompt_feedback",
-        "count": len(rows),
-        "feedback": [_prompt_feedback_item(r) for r in rows],
-    }
 
 
 def _prompt_version_item(row) -> dict[str, Any]:
@@ -2724,6 +1266,11 @@ def _prompt_version_item(row) -> dict[str, Any]:
     }
 
 
+_AGENT_GOVERNANCE_READ_ROUTE_DEPENDENCIES = (
+    _prompt_version_item,
+)
+
+
 def _prompt_feedback_item(row) -> dict[str, Any]:
     return {
         "feedback_id": row.feedback_id,
@@ -2741,29 +1288,6 @@ def _prompt_feedback_item(row) -> dict[str, Any]:
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
-
-
-@app.get("/api/agent-analysis")
-def api_agent_analysis_by_date(date: str | None = None, run_id: str | None = None):
-    """按日期返回 agent 分析结果。"""
-    from database.models.analysis import AgentOutput
-    from database.models.engine import SessionLocal
-
-    with SessionLocal() as db:
-        if date:
-            from datetime import date as date_type
-
-            try:
-                target_date = date_type.fromisoformat(date)
-            except ValueError:
-                raise HTTPException(status_code=400, detail=f"Invalid date format: {date}")
-        else:
-            latest = db.query(func.max(AgentOutput.trade_date)).scalar()
-            if not latest:
-                return _empty_agent_analysis()
-            target_date = latest
-
-        return _build_agent_analysis_response(db, target_date, run_id=run_id)
 
 
 def _build_agent_analysis_response(db, target_date, run_id: str | None = None):
@@ -2811,42 +1335,6 @@ def _build_agent_analysis_response(db, target_date, run_id: str | None = None):
             "summary_raw": final_summary_raw,
         },
     }
-
-
-@app.get("/api/agent-analysis/inspect")
-def api_agent_analysis_inspect(
-    date: str | None = None,
-    run_id: str | None = None,
-):
-    """返回 Agent 分析的 prompt/input/output 只读检查视图。
-
-    该接口面向 Agent Tasks / 审计 / 人工纠偏，不作为业务页面 read model。
-    历史 AgentOutput 若未记录 prompt，会显式返回 prompt.available=false。
-    """
-    from database.models.analysis import AgentOutput
-    from database.models.engine import SessionLocal
-
-    with SessionLocal() as db:
-        if date:
-            from datetime import date as date_type
-
-            try:
-                target_date = date_type.fromisoformat(date)
-            except ValueError:
-                raise HTTPException(status_code=400, detail=f"Invalid date format: {date}")
-        else:
-            latest = db.query(func.max(AgentOutput.trade_date)).scalar()
-            if not latest:
-                return {
-                    "trade_date": None,
-                    "run_id": run_id,
-                    "snapshot_id": None,
-                    "agents": [],
-                    "source": "agent_outputs",
-                }
-            target_date = latest
-
-        return _build_agent_analysis_inspection(db, target_date, run_id=run_id)
 
 
 def _build_agent_analysis_inspection(db, target_date, run_id: str | None = None) -> dict[str, Any]:
@@ -2993,49 +1481,6 @@ def _empty_agent_analysis():
         "agents": {},
         "final": {"bias": "neutral", "confidence": 0.0, "summary": "", "summary_zh": "", "summary_raw": ""},
     }
-
-
-@app.get("/api/agent-analysis/synthesis/latest")
-def api_agent_analysis_synthesis_latest(
-    date: str | None = None,
-    run_id: str | None = None,
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    from database.models.analysis import AgentOutput
-
-    query = (
-        db.query(AgentOutput).filter(AgentOutput.agent_name == "synthesis_agent").order_by(desc(AgentOutput.created_at))
-    )
-    if run_id:
-        query = query.filter(AgentOutput.run_id == run_id)
-    if date:
-        query = query.filter(AgentOutput.trade_date == date)
-
-    row = query.first()
-    if row is None:
-        raise HTTPException(status_code=404, detail="No synthesis agent output found")
-    return build_agent_output_summary(row)
-
-
-@app.post("/api/agent-analysis/run")
-def api_run_agent_analysis(
-    agent: str = "all",
-    date: str | None = None,
-    force: bool = False,
-):
-    """手动触发 agent 分析。
-
-    agent: "market_regime" | "event_impact" | "jin10_daily" | "cme_options" | "all"
-    """
-
-    target_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    if agent in ("market_regime", "all"):
-        _run_market_regime_async(target_date)
-    if agent in ("event_impact", "all"):
-        _run_event_impact_async(target_date)
-
-    return {"status": "dispatched", "agent": agent, "date": target_date}
 
 
 def _run_market_regime_async(target_date: str):
@@ -3264,160 +1709,8 @@ def _resolve_frontend_root_asset(asset_name: str) -> Path | None:
     return None
 
 
-@app.get("/assets/{asset_path:path}")
-def serve_frontend_asset(asset_path: str) -> FileResponse:
-    asset = _resolve_frontend_asset(asset_path)
-    if asset is None:
-        raise HTTPException(status_code=404, detail="Frontend asset not found")
-    return FileResponse(asset)
-
-
-@app.get("/favicon.svg")
-def serve_frontend_favicon() -> FileResponse:
-    asset = _resolve_frontend_root_asset("favicon.svg")
-    if asset is None:
-        raise HTTPException(status_code=404, detail="Frontend favicon not found")
-    return FileResponse(asset, media_type="image/svg+xml")
-
-
-@app.get("/dashboard")
-def serve_dashboard():
-    """本地稳定模式优先直接提供前端构建产物；dist 缺失时回退到 Vite。"""
-    return _serve_frontend_entry("/dashboard")
-
-
-@app.get("/dashboard/analysis")
-def serve_dashboard_analysis():
-    return _serve_frontend_entry("/dashboard/analysis")
-
-
-@app.get("/data-ingestion")
-def serve_data_ingestion():
-    return _serve_frontend_entry("/data-ingestion")
-
-
-@app.get("/data-sources/{path:path}")
-def serve_data_sources_subpath(path: str):
-    return _serve_frontend_entry(f"/data-sources/{path}")
-
-
-@app.get("/market-monitor")
-def serve_market_monitor():
-    return _serve_frontend_entry("/market-monitor")
-
-
-@app.get("/cme-options")
-def serve_cme_options():
-    return _serve_frontend_entry("/cme-options")
-
-
-@app.get("/reports")
-def serve_reports():
-    return _serve_frontend_entry("/reports")
-
-
-@app.get("/reports/{path:path}")
-def serve_reports_subpath(path: str):
-    return _serve_frontend_entry(f"/reports/{path}")
-
-
-@app.get("/event-flow")
-def serve_event_flow():
-    return _serve_frontend_entry("/event-flow")
-
-
-@app.get("/event-flow/{path:path}")
-def serve_event_flow_subpath(path: str):
-    return _serve_frontend_entry(f"/event-flow/{path}")
-
-
-@app.get("/knowledge-base")
-def serve_knowledge_base():
-    return _serve_frontend_entry("/knowledge-base")
-
-
-@app.get("/agent-tasks")
-def serve_agent_tasks():
-    return _serve_frontend_entry("/scheduler")
-
-
-@app.get("/scheduler")
-def serve_scheduler():
-    return _serve_frontend_entry("/scheduler")
-
-
-@app.get("/scheduler/{path:path}")
-def serve_scheduler_subpath(path: str):
-    return _serve_frontend_entry(f"/scheduler/{path}")
-
-
-@app.get("/agent-tasks/{path:path}")
-def serve_agent_tasks_subpath(path: str):
-    return _serve_frontend_entry(f"/agent-tasks/{path}")
-
-
-@app.get("/review-center")
-def serve_review_center():
-    return _serve_frontend_entry("/review-center")
-
-
-@app.get("/settings")
-def serve_settings():
-    return _serve_frontend_entry("/settings")
-
-
-@app.get("/settings/audit")
-def serve_settings_audit():
-    return _serve_frontend_entry("/settings/audit")
-
-
-@app.get("/dashboard/system-status")
-def system_status(db: Session = Depends(get_db)) -> dict:
-    """返回轻量系统状态摘要（MVP 静态状态，非实时生产监控）。
-
-    DB 可用时尝试列出最近 5 条任务；不可用时 recent_tasks 为空且 db_available=false。
-    """
-    recent_tasks: list[dict] = []
-    db_available = False
-    if _database_reachable():
-        try:
-            tasks = db.query(TaskRun).order_by(TaskRun.created_at.desc()).limit(5).all()
-            recent_tasks = [
-                {
-                    "id": str(t.id),
-                    "name": t.name,
-                    "status": t.status.value,
-                    "created_at": t.created_at.isoformat() if t.created_at else None,
-                }
-                for t in tasks
-            ]
-            db_available = True
-        except Exception:
-            db_available = False
-
-    return {
-        "service": "finance-agent",
-        "version": _get_version(),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "db_available": db_available,
-        "recent_tasks": recent_tasks,
-        "phases": _get_phases(),
-        "production_chain": [
-            "api",
-            "scheduler",
-            "worker",
-            "collectors",
-            "parsers",
-            "features",
-            "analysis",
-            "renderer",
-            "output",
-        ],
-        "limitations": {
-            "mvp_readonly": True,
-            "no_realtime_monitoring": True,
-            "no_raw_file_access_from_frontend": True,
-            "no_auto_trading": True,
-            "status_from_project_docs": True,
-        },
-    }
+_FRONTEND_COMPAT_ROUTE_DEPENDENCIES = (
+    _serve_frontend_entry,
+    _resolve_frontend_asset,
+    _resolve_frontend_root_asset,
+)

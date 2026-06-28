@@ -146,3 +146,52 @@ def test_dashboard_summary_marks_composite_partial_when_newer_jin10_is_degraded(
     assert any("newer Jin10 reports are degraded" in warning for warning in data["warnings"])
     assert data["agent_summary"]["synthesis"] is None
     assert data["agent_summary"]["synthesis_gate"]["run_id"] == "221592"
+
+
+def test_dashboard_summary_exposes_latest_macro_event_followup_without_replacing_formal_composite_date(monkeypatch):
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_options_snapshot", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_market_tickers", lambda: {"sources": [], "tickers": {}, "generated_at": None})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_macro_latest", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_recent_tasks", lambda _limit=5: [])
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.list_reports_index",
+        lambda: {
+            "reports": [
+                {
+                    "type": "final_report",
+                    "trade_date": "2026-06-13",
+                    "run_id": "final-run",
+                    "report_id": "final-run",
+                    "available": True,
+                },
+                {
+                    "type": "strategy_card",
+                    "trade_date": "2026-06-13",
+                    "run_id": "strategy-run",
+                    "report_id": "strategy-run",
+                    "available": True,
+                },
+                {
+                    "type": "macro_event_followup",
+                    "trade_date": "2026-06-14",
+                    "anchor_trade_date": "2026-06-13",
+                    "run_id": "followup-run",
+                    "report_id": "macro_event_followup:2026-06-14:followup-run",
+                    "family": "macro_event_followup_supplement",
+                    "title": "XAUUSD 宏观事件跟进补充（2026-06-14）",
+                    "summary": "Weekend events reinforce the prior composite view.",
+                    "available": True,
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_data_source_statuses", lambda: {"sources": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.build_dashboard_agent_summary", lambda: {"coordinator": None, "synthesis": None})
+
+    data = get_dashboard_summary()
+
+    assert data["composite_analysis"]["trade_date"] == "2026-06-13"
+    assert data["composite_analysis"]["latest_report_date"] == "2026-06-14"
+    assert data["latest_reports"][0]["type"] == "macro_event_followup"
+    assert data["latest_reports"][0]["anchor_trade_date"] == "2026-06-13"
+    assert data["latest_reports"][0]["summary"] == "Weekend events reinforce the prior composite view."

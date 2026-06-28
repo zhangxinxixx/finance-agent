@@ -15,10 +15,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, String, Text, func, inspect, text
+from sqlalchemy import DateTime, Index, Integer, String, Text, func, inspect, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from database.models.analysis import JSONB_COMPAT
 
 
 class ExecutionBase(DeclarativeBase):
@@ -72,6 +74,11 @@ class RunArtifact(ExecutionBase):
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     storage_backend: Mapped[str] = mapped_column(String(32), nullable=False, server_default="local_fs")
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_refs_data: Mapped[list | None] = mapped_column(JSONB_COMPAT, nullable=True)
+    artifact_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
     source_refs: Mapped[str | None] = mapped_column(Text, nullable=True, doc="JSON-encoded source refs")
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True, doc="JSON-encoded artifact metadata")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -91,6 +98,7 @@ def ensure_execution_tables(bind_or_session) -> None:
 def _ensure_execution_columns(bind: Engine | Connection) -> None:
     """Add backward-compatible columns that create_all cannot add to existing tables."""
     inspector = inspect(bind)
+    json_type = "JSONB" if bind.dialect.name == "postgresql" else "JSON"
     existing = {
         table: {column["name"] for column in inspector.get_columns(table)}
         for table in ("execution_events", "run_artifacts")
@@ -111,6 +119,16 @@ def _ensure_execution_columns(bind: Engine | Connection) -> None:
             ddl.append("ALTER TABLE run_artifacts ADD COLUMN storage_backend VARCHAR(32) DEFAULT 'local_fs'")
         if "sha256" not in columns:
             ddl.append("ALTER TABLE run_artifacts ADD COLUMN sha256 VARCHAR(64)")
+        if "content_type" not in columns:
+            ddl.append("ALTER TABLE run_artifacts ADD COLUMN content_type VARCHAR(128)")
+        if "byte_size" not in columns:
+            ddl.append("ALTER TABLE run_artifacts ADD COLUMN byte_size INTEGER")
+        if "generated_at" not in columns:
+            ddl.append("ALTER TABLE run_artifacts ADD COLUMN generated_at TIMESTAMP")
+        if "source_refs_data" not in columns:
+            ddl.append(f"ALTER TABLE run_artifacts ADD COLUMN source_refs_data {json_type}")
+        if "metadata" not in columns:
+            ddl.append(f"ALTER TABLE run_artifacts ADD COLUMN metadata {json_type}")
         if "source_refs" not in columns:
             ddl.append("ALTER TABLE run_artifacts ADD COLUMN source_refs TEXT")
         if "metadata_json" not in columns:

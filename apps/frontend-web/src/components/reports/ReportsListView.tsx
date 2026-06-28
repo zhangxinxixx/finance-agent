@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { ReportIndexItem } from "@/types/reports";
-import { canOpenReport, CATEGORY_MAP, getReportTitle, inferAssetLabel, matchesReportSearch, shortRunId } from "@/components/reports/reportListMeta";
+import { canOpenReport, CATEGORY_MAP, formatGeneratedAt, getReportTitle, inferAssetLabel, matchesReportSearch, shortRunId } from "@/components/reports/reportListMeta";
 import { handleSelectKeyDown } from "@/components/reports/reportLibraryViewCommon";
 
 export function ListView({
@@ -26,7 +26,7 @@ export function ListView({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "88px minmax(0,2.5fr) 92px 72px 70px 92px 48px",
+          gridTemplateColumns: "88px minmax(0,2.3fr) 92px 132px 72px 70px 92px 48px",
           padding: "6px 9px",
           background: "color-mix(in srgb, var(--bg-panel) 88%, transparent)",
           borderBottom: "1px solid var(--border)",
@@ -41,6 +41,7 @@ export function ListView({
         <span>分类</span>
         <span>报告</span>
         <span>日期</span>
+        <span>生成</span>
         <span>资产</span>
         <span>状态</span>
         <span>Run</span>
@@ -54,6 +55,7 @@ export function ListView({
         const isOpenable = canOpenReport(item);
         const assetLabel = inferAssetLabel(item);
         const title = getReportTitle(item);
+        const generatedAtLabel = formatGeneratedAt(item.generated_at);
         return (
           <div
             key={`${item.type}-${item.trade_date}-${item.run_id ?? idx}`}
@@ -62,7 +64,7 @@ export function ListView({
             aria-label={isOpenable ? `查看${cat.label} ${item.trade_date || "未知日期"}报告` : undefined}
             style={{
               display: "grid",
-              gridTemplateColumns: "88px minmax(0,2.5fr) 92px 72px 70px 92px 48px",
+              gridTemplateColumns: "88px minmax(0,2.3fr) 92px 132px 72px 70px 92px 48px",
               padding: "7px 9px",
               borderBottom: "1px solid var(--border-faint)",
               alignItems: "center",
@@ -107,6 +109,9 @@ export function ListView({
             </span>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>
               {item.trade_date || "-"}
+            </span>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--fg-4)" }}>
+              {generatedAtLabel}
             </span>
             <span
               style={{

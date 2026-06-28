@@ -30,6 +30,7 @@ from apps.premarket import (
     get_premarket_step_contract,
     sort_premarket_steps,
 )
+from apps.runtime.artifact_storage import get_artifact_storage
 from apps.runtime.execution_event_bridge import emit_task_event
 from apps.runtime.artifact_registry import register_step_artifacts
 from apps.runtime.state_machine import derive_task_run_status, transition_task_run, transition_task_step
@@ -49,18 +50,28 @@ from apps.renderer.markdown.final_report import render_final_report_markdown, bu
 
 # ── DB persistence imports ────────────────────────────────────────────────
 from database.models.analysis import ensure_analysis_tables
+from database.models.report import ensure_report_tables
 from database.models.task import ensure_task_tables
 from database.queries.analysis import (
     upsert_analysis_snapshot,
     upsert_agent_output,
     upsert_final_analysis_result,
 )
+from database.queries.report import upsert_report_artifact, upsert_report_item
 
 logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+_ARTIFACT_CONTENT_TYPES = {
+    ".md": "text/markdown",
+    ".json": "application/json",
+    ".html": "text/html",
+    ".pdf": "application/pdf",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +121,12 @@ def run_premarket(
         ensure_task_tables(db)
     except Exception:
         logger.exception("Failed to ensure task tables — continuing without new columns")
+
+    # Ensure report tables exist (idempotent, additive sink for new report registry)
+    try:
+        ensure_report_tables(db)
+    except Exception:
+        logger.exception("Failed to ensure report tables — continuing without report registry sink")
 
     # Shared CME pipeline state for this task run
     from apps.worker.pipelines.cme import CmePipelineState, run_cme_step
@@ -375,6 +392,20 @@ def run_premarket(
                 c4_outputs=c4_outputs,
                 analysis_snapshot=analysis_snapshot,
             )
+            try:
+                _register_c4_report_registry_entries(
+                    db,
+                    run_id=run_id,
+                    c4_outputs=c4_outputs,
+                    analysis_snapshot=analysis_snapshot,
+                )
+            except Exception as db_exc:
+                logger.exception("Report registry persist of C4 outputs failed (file artifacts are safe)")
+                macro_state.step_summaries["db_persist_c4_report_registry"] = {
+                    "step": "db_persist_c4_report_registry",
+                    "status": "failed",
+                    "error": str(db_exc),
+                }
         except Exception as exc:
             logger.exception("C4 agent pipeline failed")
             had_failure = True
@@ -660,11 +691,13 @@ def _register_c4_output_artifacts(
                 if not isinstance(path, str):
                     continue
                 artifacts.append(
-                    {
+                    _enrich_runner_artifact_metadata(
+                        {
                         "artifact_id": f"{run_id}:final_report:{index}",
                         "artifact_type": "analysis_md" if path.endswith(".md") else "structured_json",
                         "file_path": path,
-                    }
+                        }
+                    )
                 )
     if isinstance(card_result, dict):
         card_paths = card_result.get("paths")
@@ -673,11 +706,13 @@ def _register_c4_output_artifacts(
                 if not isinstance(path, str):
                     continue
                 artifacts.append(
-                    {
+                    _enrich_runner_artifact_metadata(
+                        {
                         "artifact_id": f"{run_id}:strategy_card:{index}",
                         "artifact_type": "analysis_md" if path.endswith(".md") else "structured_json",
                         "file_path": path,
-                    }
+                        }
+                    )
                 )
     if not artifacts:
         return
@@ -715,6 +750,7 @@ def _register_run_support_artifacts(
     """Register run support files without introducing a separate storage backend."""
     if not artifacts:
         return
+    enriched_artifacts = [_enrich_runner_artifact_metadata(artifact) for artifact in artifacts]
     step = next((item for item in steps if item.name == "report_render"), None)
     if step is None and steps:
         step = steps[-1]
@@ -724,12 +760,132 @@ def _register_run_support_artifacts(
         db,
         run_id=run_id,
         step=step,
-        output_refs=artifacts,
+        output_refs=enriched_artifacts,
         artifact_refs=None,
         output_ref=None,
         source_refs=source_refs,
         input_snapshot_ids=input_snapshot_ids,
     )
+
+
+def _register_c4_report_registry_entries(
+    db: DBSession,
+    *,
+    run_id: str,
+    c4_outputs: dict[str, Any],
+    analysis_snapshot: dict[str, Any] | None = None,
+) -> None:
+    report_result = c4_outputs.get("report_result") if isinstance(c4_outputs, dict) else None
+    card_result = c4_outputs.get("card_result") if isinstance(c4_outputs, dict) else None
+    card = c4_outputs.get("strategy_card") if isinstance(c4_outputs, dict) else None
+
+    snapshot_id = analysis_snapshot.get("snapshot_id") if isinstance(analysis_snapshot, dict) else None
+    trade_date = analysis_snapshot.get("trade_date") if isinstance(analysis_snapshot, dict) else None
+    asset = analysis_snapshot.get("asset", "XAUUSD") if isinstance(analysis_snapshot, dict) else "XAUUSD"
+    source_refs = _merge_lineage_source_refs(
+        analysis_snapshot.get("source_refs") if isinstance(analysis_snapshot, dict) else None,
+        list(getattr(card, "source_refs", []) or []) if card is not None else None,
+    ) or []
+    input_snapshot_ids = _merge_lineage_input_snapshot_ids(
+        analysis_snapshot.get("input_snapshot_ids") if isinstance(analysis_snapshot, dict) else None,
+        dict(getattr(card, "input_snapshot_ids", {}) or {}) if card is not None else None,
+    ) or {}
+
+    report_specs = [
+        {
+            "report_id": f"final_report:{run_id}",
+            "family": "final_report_markdown",
+            "report_type": "final_report",
+            "title": f"{asset} 综合报告（{trade_date}）" if trade_date else f"{asset} 综合报告",
+            "paths": report_result.get("paths") if isinstance(report_result, dict) else None,
+            "primary_name": "final_report.md",
+            "metadata": {
+                "input_snapshot_ids": input_snapshot_ids,
+                "writer": "run_premarket",
+            },
+        },
+        {
+            "report_id": f"strategy_card:{run_id}",
+            "family": "strategy_card",
+            "report_type": "strategy_card",
+            "title": f"{asset} 策略卡片（{trade_date}）" if trade_date else f"{asset} 策略卡片",
+            "paths": card_result.get("paths") if isinstance(card_result, dict) else None,
+            "primary_name": "strategy_card.json",
+            "metadata": {
+                "input_snapshot_ids": input_snapshot_ids,
+                "writer": "run_premarket",
+                "strategy_card_id": getattr(card, "strategy_card_id", None),
+            },
+        },
+    ]
+
+    with db.begin_nested():
+        for spec in report_specs:
+            raw_paths = spec.get("paths")
+            if not isinstance(raw_paths, list):
+                continue
+            existing_paths = [Path(path) for path in raw_paths if isinstance(path, str) and path]
+            existing_paths = [path for path in existing_paths if path.exists()]
+            if not existing_paths:
+                continue
+
+            upsert_report_item(
+                db,
+                {
+                    "report_id": spec["report_id"],
+                    "family": spec["family"],
+                    "report_type": spec["report_type"],
+                    "title": spec["title"],
+                    "asset": asset,
+                    "trade_date": trade_date,
+                    "run_id": run_id,
+                    "snapshot_id": snapshot_id,
+                    "data_status": "live",
+                    "lifecycle_status": "generated",
+                    "source_refs": source_refs,
+                    "metadata": spec["metadata"],
+                },
+            )
+
+            for index, path in enumerate(existing_paths):
+                artifact = _enrich_runner_artifact_metadata(
+                    {
+                        "artifact_id": f"{spec['report_id']}:{index}",
+                        "artifact_type": "analysis_md" if path.suffix.lower() == ".md" else "structured_json",
+                        "file_path": str(path),
+                    }
+                )
+                artifact["sha256"] = get_artifact_storage().compute_sha256(str(path))
+                artifact["storage_backend"] = "local_fs"
+                artifact["report_id"] = spec["report_id"]
+                artifact["source_refs"] = source_refs
+                artifact["metadata"] = {
+                    "run_id": run_id,
+                    "snapshot_id": snapshot_id,
+                    "input_snapshot_ids": input_snapshot_ids,
+                }
+                artifact["is_primary"] = path.name == spec["primary_name"]
+                upsert_report_artifact(db, artifact)
+        db.flush()
+
+
+def _enrich_runner_artifact_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(artifact)
+    file_path = enriched.get("file_path")
+    if not isinstance(file_path, str) or not file_path:
+        return enriched
+
+    path = Path(file_path)
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return enriched
+
+    suffix = path.suffix.lower()
+    enriched.setdefault("content_type", _ARTIFACT_CONTENT_TYPES.get(suffix, "application/octet-stream"))
+    enriched.setdefault("byte_size", stat_result.st_size)
+    enriched.setdefault("generated_at", datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc).isoformat())
+    return enriched
 
 
 def _coerce_lineage_source_refs(raw: Any) -> list[dict[str, Any]] | None:

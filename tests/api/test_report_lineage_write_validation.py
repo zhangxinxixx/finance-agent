@@ -235,6 +235,56 @@ def test_report_artifact_write_fails_fast_when_existing_artifact_moves_reports()
             )
 
 
+def test_report_artifact_write_persists_storage_and_structured_metadata() -> None:
+    from database.queries.report import upsert_report_artifact
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _upsert_report(
+            session,
+            source_refs=[
+                {
+                    "source_id": "src-report-001",
+                    "source_name": "Jin10",
+                    "source_type": "report",
+                    "file_path": "storage/raw/jin10/2026-05-26/raw.json",
+                }
+            ],
+        )
+
+        artifact = upsert_report_artifact(
+            session,
+            {
+                "artifact_id": "report-std-001:analysis",
+                "report_id": "report-std-001",
+                "artifact_type": "analysis_md",
+                "file_path": "storage/outputs/reports/2026-05-26/report-std-001/analysis.md",
+                "storage_backend": "local_fs",
+                "status": "generated",
+                "content_type": "text/markdown",
+                "byte_size": 4096,
+                "sha256": "b" * 64,
+                "is_primary": True,
+                "source_refs": [
+                    {
+                        "source_id": "src-report-001",
+                        "source_name": "Jin10",
+                        "source_type": "report",
+                        "file_path": "storage/raw/jin10/2026-05-26/raw.json",
+                    }
+                ],
+                "metadata": {"template_version": "v1", "quality_status": "accepted"},
+            },
+        )
+        session.commit()
+
+    assert artifact.storage_backend == "local_fs"
+    assert artifact.byte_size == 4096
+    assert artifact.source_refs[0]["source_id"] == "src-report-001"
+    assert artifact.artifact_metadata == {"template_version": "v1", "quality_status": "accepted"}
+    assert artifact.metadata_text == "{'template_version': 'v1', 'quality_status': 'accepted'}"
+
+
 def test_report_write_fails_fast_when_source_ref_missing_identity() -> None:
     factory = _make_session_factory()
     with factory() as session:

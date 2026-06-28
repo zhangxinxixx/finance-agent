@@ -136,7 +136,9 @@ export function DashboardAnalysisPanel({ summary, viewModel, agentSynthesis }: D
         status: trace.status,
         snapshotId: trace.snapshot_id,
       }));
-  const readyReport = summary.latest_reports.find((report) => report.status === "ready" && report.url);
+  const readyReport = summary.latest_reports.find(
+    (report) => report.status === "ready" && report.url && report.family !== "macro_event_followup_supplement",
+  );
   const reportTarget = dashboardReportTarget(readyReport?.url);
 
   return (

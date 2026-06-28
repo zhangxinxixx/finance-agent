@@ -5,6 +5,7 @@ import json
 import os
 import re
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -21,7 +22,7 @@ DETAIL_FETCH_STEP = "detail_fetch"
 VIP_BROWSER_FALLBACK_STEP = "vip_browser_fallback"
 DAILY_ANALYSIS_STEP = "daily_analysis"
 PLAN_VERSION = "daily-analysis-followup-plan-v1"
-DEFAULT_JIN10_BROWSER_PROFILE = Path(os.getenv("JIN10_BROWSER_PROFILE")).expanduser() if os.getenv("JIN10_BROWSER_PROFILE") else None
+DEFAULT_JIN10_BROWSER_PROFILE = None
 VIP_BROWSER_FALLBACK_SOURCE_KEY = "jin10_vip_browser_fallback"
 VIP_FALLBACK_PARTIAL_SNAPSHOT_ERRORS = {
     "login_required",
@@ -258,7 +259,7 @@ def _run_detail_fetch_stage(
     detail_step.output_refs = _dump_json(_detail_artifact_refs(result_payload))
     detail_step.artifact_refs = detail_step.output_refs
     detail_step.source_refs = _dump_json(_merge_source_refs(detail_step.source_refs, _detail_source_ref(source_url, result_payload)))
-    _register_step_artifacts(db, run=run, step=detail_step)
+    _register_step_artifacts(db, run=run, step=detail_step, storage_root=storage_root)
     detail_step.finished_at = _now()
     detail_step.retryable = False
 
@@ -440,7 +441,7 @@ def _run_vip_browser_fallback_stage(
     fallback_step.source_refs = _dump_json(
         _merge_source_refs(fallback_step.source_refs, _vip_browser_source_ref(source_url, result_payload))
     )
-    _register_step_artifacts(db, run=run, step=fallback_step)
+    _register_step_artifacts(db, run=run, step=fallback_step, storage_root=storage_root)
     fallback_step.finished_at = _now()
     fallback_step.retryable = False
 
@@ -581,7 +582,7 @@ def _run_daily_analysis_stage(
     analysis_step.artifact_refs = analysis_step.output_refs
     analysis_step.source_refs = _dump_json(snapshot["source_refs"])
     analysis_step.input_refs = _dump_json(snapshot["input_refs"])
-    _register_step_artifacts(db, run=run, step=analysis_step)
+    _register_step_artifacts(db, run=run, step=analysis_step, storage_root=storage_root)
     analysis_step.finished_at = _now()
     analysis_step.retryable = False
     analysis_step.error = None
@@ -939,13 +940,17 @@ def _ensure_step(
     return step
 
 
-def _register_step_artifacts(db: Session, *, run: TaskRun, step: TaskStep) -> None:
+def _register_step_artifacts(db: Session, *, run: TaskRun, step: TaskStep, storage_root: Path) -> None:
+    output_refs = _parse_json(step.output_refs)
+    artifact_refs = _parse_json(step.artifact_refs)
+    enriched_output_refs = _enrich_artifact_refs_for_registry(storage_root=storage_root, refs=output_refs)
+    enriched_artifact_refs = _enrich_artifact_refs_for_registry(storage_root=storage_root, refs=artifact_refs)
     register_step_artifacts(
         db,
         run_id=str(run.id),
         step=step,
-        output_refs=_parse_json(step.output_refs) if isinstance(_parse_json(step.output_refs), list) else None,
-        artifact_refs=_parse_json(step.artifact_refs) if isinstance(_parse_json(step.artifact_refs), list) else None,
+        output_refs=enriched_output_refs,
+        artifact_refs=enriched_artifact_refs,
         output_ref=step.output_ref,
         source_refs=_parse_json(step.source_refs) if isinstance(_parse_json(step.source_refs), list) else None,
     )
@@ -1355,6 +1360,47 @@ def _parse_json(raw: str | None) -> Any:
 
 def _dump_json(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _enrich_artifact_refs_for_registry(*, storage_root: Path, refs: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(refs, list):
+        return None
+
+    enriched: list[dict[str, Any]] = []
+    for item in refs:
+        if not isinstance(item, dict):
+            continue
+        enriched_item = deepcopy(item)
+        file_path = str(enriched_item.get("file_path") or "").strip()
+        if file_path:
+            file = _resolve_artifact_file(storage_root=storage_root, file_path=file_path)
+            if file.is_file():
+                enriched_item.setdefault("content_type", _guess_content_type(file))
+                enriched_item.setdefault("byte_size", file.stat().st_size)
+        enriched.append(enriched_item)
+    return enriched
+
+
+def _resolve_artifact_file(*, storage_root: Path, file_path: str) -> Path:
+    path = Path(file_path)
+    if path.is_absolute():
+        return path
+    return storage_root / path
+
+
+def _guess_content_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        return "application/json"
+    if suffix == ".html":
+        return "text/html"
+    if suffix == ".md":
+        return "text/markdown"
+    if suffix == ".png":
+        return "image/png"
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    return "application/octet-stream"
 
 
 def _sha256(raw: str) -> str:

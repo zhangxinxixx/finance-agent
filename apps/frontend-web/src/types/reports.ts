@@ -9,6 +9,7 @@ export interface ReportIndexItem {
   type: ReportType;
   trade_date: string;
   run_id: string | null;
+  generated_at?: string | null;
   report_id?: string | null;
   family?: string | null;
   title?: string | null;

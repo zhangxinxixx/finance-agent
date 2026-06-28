@@ -11,8 +11,8 @@ from apps.premarket import PREMARKET_STEP_ORDER
 
 # 如果没有 DATABASE_URL 则跳过（CI / 无 DB 环境）
 requires_db = pytest.mark.skipif(
-    not os.getenv("DATABASE_URL"),
-    reason="DATABASE_URL not set; requires PostgreSQL",
+    os.getenv("FINANCE_AGENT_RUN_DB_TESTS") != "1",
+    reason="set FINANCE_AGENT_RUN_DB_TESTS=1 to run legacy PostgreSQL task API tests",
 )
 
 client = TestClient(app)

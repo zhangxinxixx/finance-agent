@@ -662,7 +662,8 @@ function buildDashboardViewModel(
   const status = mergeDataStatus(modules.map((module) => module.status));
   const strategyCardView = buildDashboardStrategyCard(summary, sourceRefs);
   const latestReports: ReportMeta[] = summary.latest_reports.map((report) => ({
-    type: "dashboard_latest_report",
+    type: report.type ?? "dashboard_latest_report",
+    ...(report.family ? { family: report.family } : {}),
     title: report.title,
     trade_date: report.trade_date,
     run_id: report.run_id ?? undefined,

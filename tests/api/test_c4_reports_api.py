@@ -7,6 +7,9 @@ from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from apps.api.data_service import (
     _latest_asset_date_run,
@@ -24,6 +27,9 @@ from apps.api.data_service import (
     list_unified_dates,
 )
 from apps.api.main import app, api_strategy_card_detail, api_strategy_cards_latest
+from apps.worker.pipelines.macro_event_followup import generate_macro_event_followup
+from database.models.analysis import ensure_analysis_tables
+from database.models.report import ensure_report_tables
 
 client = TestClient(app)
 
@@ -44,6 +50,17 @@ def _make_tree(root: Path, files: dict[str, str | None]) -> None:
         else:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
+
+
+def _make_report_session():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    ensure_analysis_tables(engine)
+    ensure_report_tables(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
 # ── _latest_asset_date_run ──
@@ -331,6 +348,25 @@ def test_list_reports_index_full(tmp_path: Path):
         "storage/outputs/strategy_card/XAUUSD/2026-05-14/run-1/strategy_card.md": "sc",
         "storage/outputs/cme_options/2026-05-07/options_analysis.json": "{}",
         "storage/outputs/macro/2026-05-14/auto-v2/macro_snapshot.md": "macro",
+        "storage/outputs/macro_event_followup/XAUUSD/2026-05-17/run-followup/source.md": "# source",
+        "storage/outputs/macro_event_followup/XAUUSD/2026-05-17/run-followup/analysis.md": "# analysis",
+        "storage/outputs/macro_event_followup/XAUUSD/2026-05-17/run-followup/report_structured.json": json.dumps({
+            "report_type": "macro_event_followup",
+            "trade_date": "2026-05-17",
+            "anchor_trade_date": "2026-05-16",
+            "anchor_report_refs": [
+                {"report_id": "final_report:run-2026-05-16"},
+                {"report_id": "strategy_card:run-2026-05-16"},
+            ],
+            "new_macro_events": [{"headline": "Fed official signaled patience"}],
+            "impact_assessment": {
+                "stance": "reinforce",
+                "summary": "Weekend headlines reinforce the prior bullish stance.",
+            },
+            "watch_items": [{"item": "Monitor Monday DXY gap"}],
+            "revision_risk": {"status": "monitor"},
+            "source_refs": [{"source_type": "report", "ref": "final_report:run-2026-05-16"}],
+        }),
     })
     with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
         index = list_reports_index()
@@ -342,6 +378,7 @@ def test_list_reports_index_full(tmp_path: Path):
     assert "strategy_card" in types
     assert "options_report" in types
     assert "macro_report" in types
+    assert "macro_event_followup" in types
 
     # 验证 final_report
     fr = [r for r in reports if r["type"] == "final_report"]
@@ -351,6 +388,7 @@ def test_list_reports_index_full(tmp_path: Path):
     assert fr[0]["available"] is True
     assert fr[0]["title"] == "XAUUSD 综合报告（2026-05-14）"
     assert fr[0]["family"] == "final_report_markdown"
+    assert isinstance(fr[0]["generated_at"], str)
 
     # 验证 strategy_card
     sc = [r for r in reports if r["type"] == "strategy_card"]
@@ -358,10 +396,23 @@ def test_list_reports_index_full(tmp_path: Path):
     assert sc[0]["trade_date"] == "2026-05-14"
     assert sc[0]["run_id"] == "run-1"
     assert sc[0]["available"] is True
+    assert isinstance(sc[0]["generated_at"], str)
 
     macro = [r for r in reports if r["type"] == "macro_report"]
     assert macro[0]["title"] == "XAUUSD 宏观数据报告（2026-05-14）"
     assert macro[0]["report_id"] == "macro_report:auto-v2"
+    assert isinstance(macro[0]["generated_at"], str)
+
+    followup = [r for r in reports if r["type"] == "macro_event_followup"]
+    assert len(followup) == 1
+    assert followup[0]["trade_date"] == "2026-05-17"
+    assert followup[0]["run_id"] == "run-followup"
+    assert followup[0]["report_id"] == "macro_event_followup:2026-05-17:run-followup"
+    assert followup[0]["family"] == "macro_event_followup_supplement"
+    assert followup[0]["title"] == "XAUUSD 宏观事件跟进补充（2026-05-17）"
+    assert followup[0]["anchor_trade_date"] == "2026-05-16"
+    assert followup[0]["summary"] == "Weekend headlines reinforce the prior bullish stance."
+    assert isinstance(followup[0]["generated_at"], str)
 
 
 def test_get_options_snapshot_prefers_new_cme_output(tmp_path: Path):
@@ -742,3 +793,90 @@ def test_api_reports_index_200(tmp_path: Path):
     data = resp.json()
     assert data["asset"] == "XAUUSD"
     assert len(data["reports"]) >= 2
+    assert all(isinstance(item.get("generated_at"), str) for item in data["reports"])
+
+
+def test_api_reports_index_exposes_macro_event_followup_as_supplemental_report(tmp_path: Path):
+    _make_tree(tmp_path, {
+        "storage/outputs/macro_event_followup/XAUUSD/2026-05-17/run-followup/source.md": "# source",
+        "storage/outputs/macro_event_followup/XAUUSD/2026-05-17/run-followup/analysis.md": "# analysis",
+        "storage/outputs/macro_event_followup/XAUUSD/2026-05-17/run-followup/report_structured.json": json.dumps({
+            "report_type": "macro_event_followup",
+            "trade_date": "2026-05-17",
+            "anchor_trade_date": "2026-05-16",
+            "anchor_report_refs": [{"report_id": "final_report:run-2026-05-16"}],
+            "new_macro_events": [{"headline": "Fed official signaled patience"}],
+            "impact_assessment": {"stance": "reinforce", "summary": "Supplement keeps formal view intact."},
+            "watch_items": [{"item": "Monitor Monday DXY gap"}],
+            "revision_risk": {"status": "monitor"},
+            "source_refs": [{"source_type": "report", "ref": "final_report:run-2026-05-16"}],
+        }),
+    })
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        resp = client.get("/api/reports/index")
+    assert resp.status_code == 200
+    [item] = [report for report in resp.json()["reports"] if report["type"] == "macro_event_followup"]
+    assert item["family"] == "macro_event_followup_supplement"
+    assert item["report_id"] == "macro_event_followup:2026-05-17:run-followup"
+    assert item["anchor_trade_date"] == "2026-05-16"
+    assert item["summary"] == "Supplement keeps formal view intact."
+
+
+def test_api_reports_index_reads_generated_macro_event_followup_artifacts(tmp_path: Path):
+    _make_tree(tmp_path, {
+        "storage/outputs/final_report/XAUUSD/2026-06-20/run-anchor/final_report.md": "# Final Report\n",
+        "storage/outputs/strategy_card/XAUUSD/2026-06-20/run-anchor/strategy_card.json": "{}",
+        "storage/features/news/2026-06-21/run-news/daily_market_brief.json": json.dumps({
+            "daily_market_brief": {
+                "market_mainline": {"status": "available", "summary": "Weekend macro updates keep gold sensitive to Fed repricing."},
+                "confirmed_events": [{"event_type": "fed_hawkish", "what_happened": "Fed speaker stayed hawkish.", "source_refs": [{"source": "jin10", "source_ref": "evt:1"}]}],
+                "candidate_events": [],
+                "unconfirmed_risks": [],
+                "source_refs": [{"source": "jin10", "source_ref": "brief:1"}],
+            }
+        }),
+        "storage/features/news/2026-06-21/run-news/daily_analysis_triggers.json": json.dumps({
+            "as_of": "2026-06-21T10:00:00+00:00",
+            "trigger_count": 1,
+            "triggers": [{
+                "trigger_id": "trigger-1",
+                "priority": "high",
+                "source_title": "Weekend Fed repricing",
+                "source_url": "https://xnews.jin10.com/details/trigger-1",
+                "event_type": "fed_hawkish",
+                "suggested_actions": ["run_jin10_daily_analysis"],
+                "source_refs": [{"source": "jin10", "source_ref": "trigger:1"}],
+            }],
+            "data_quality": {},
+        }),
+        "storage/features/news/2026-06-21/run-news/jin10_article_briefs.json": json.dumps({
+            "as_of": "2026-06-21T10:05:00+00:00",
+            "brief_count": 1,
+            "briefs": [{
+                "brief_id": "brief-1",
+                "article_class": "gold_macro_market_reference",
+                "headline": "Gold weekend brief",
+                "source_url": "https://xnews.jin10.com/details/brief-1",
+                "access_status": "readable",
+                "analysis_summary": "Weekend macro headlines reinforce the prior gold thesis.",
+                "original_excerpt": "Weekend macro headlines reinforce the prior gold thesis.",
+                "key_points": ["Fed path still restrictive"],
+                "suggested_actions": ["queue_daily_analysis"],
+                "source_refs": [{"source": "jin10", "source_ref": "brief:generated"}],
+            }],
+            "data_quality": {},
+        }),
+    })
+    generate_macro_event_followup(
+        trade_date="2026-06-21",
+        asset="XAUUSD",
+        storage_root=tmp_path / "storage",
+        run_id="run-generated",
+    )
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        resp = client.get("/api/reports/index")
+    assert resp.status_code == 200
+    [item] = [report for report in resp.json()["reports"] if report["type"] == "macro_event_followup"]
+    assert item["report_id"] == "macro_event_followup:2026-06-21:run-generated"
+    assert item["anchor_trade_date"] == "2026-06-20"
+    assert item["summary"] == "Fed speaker stayed hawkish. | Weekend Fed repricing | Weekend macro headlines reinforce the prior gold thesis."

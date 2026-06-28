@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 from apps.api.main import api_market_monitor
 from apps.api.main import app
-from apps.api.services.market_service import get_market_monitor_history
+from apps.api.services.market_service import get_market_monitor_history, get_market_monitor_overview
 from database.models.analysis import ensure_analysis_tables
 from database.queries.market import upsert_market_candle
 from sqlalchemy import create_engine
@@ -51,6 +51,45 @@ def test_market_monitor_history_route_is_registered():
     payload = response.json()
     assert payload["timeframe"] == "1D"
     assert "series" in payload
+
+
+def test_market_monitor_overview_uses_latest_candle_when_tickers_missing(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with session_factory() as session:
+        ensure_analysis_tables(session)
+        upsert_market_candle(
+            session,
+            asset="XAUUSD",
+            timeframe="1d",
+            open_time=datetime(2026, 6, 4, 0, 0, tzinfo=UTC),
+            open=3350.0,
+            high=3360.0,
+            low=3348.0,
+            close=3358.5,
+            source="yahoo_finance_gc_f",
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        "apps.api.services.market_service.get_market_tickers",
+        lambda: {
+            "generated_at": "2026-06-05T00:00:00+00:00",
+            "sources": ["jin10_mcp_error"],
+            "tickers": {},
+            "market_regime": {"regime": "neutral", "confidence": 0.0, "available": False},
+            "primary_driver": {"driver": "data_insufficient", "secondary": None, "confidence": 0.0},
+        },
+    )
+    monkeypatch.setattr("apps.api.services.market_service.get_macro_latest", lambda: None)
+    monkeypatch.setattr("apps.api.services.market_service._market_session_factory", lambda: session_factory)
+
+    data = get_market_monitor_overview()
+
+    xauusd = next(item for item in data["metrics"] if item["key"] == "XAUUSD")
+    assert xauusd["latest_value"] == 3358.5
+    assert xauusd["status"] == "ok"
+    assert xauusd["interpretation"] == "market_candles_latest"
 
 
 def test_market_monitor_history_1d_returns_intraday_metadata(monkeypatch):

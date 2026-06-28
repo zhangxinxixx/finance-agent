@@ -3,12 +3,19 @@
 Run once to migrate the 4 registered agents' prompts into prompt_versions as v1.
 Idempotent — skips if a version already exists for an agent.
 """
+# ruff: noqa: E402
 
 from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import uuid
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from database.models.analysis import PromptVersion, ensure_analysis_tables
 from database.models.engine import SessionLocal

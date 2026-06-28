@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from apps.analysis.agents.fact_review import build_fact_review_prompt_template
+from apps.analysis.agents.macro_event_followup_prompt import build_macro_event_followup_prompt_template
+from apps.analysis.agents.macro_liquidity_prompt import build_macro_liquidity_prompt_template
 from apps.analysis.agents.jin10_flash_semantic_filter import (
     AGENT_ID as JIN10_FLASH_SEMANTIC_FILTER_AGENT_ID,
     PROMPT_SOURCE as JIN10_FLASH_SEMANTIC_FILTER_PROMPT_SOURCE,
@@ -29,6 +31,12 @@ _RUNTIME_AGENT_META: dict[str, dict[str, Any]] = {
     "macro_liquidity_agent": {
         "display_name": "宏观流动性",
         "role": "domain_agent",
+        "registry_id": "macro_liquidity_agent",
+    },
+    "macro_event_followup_agent": {
+        "display_name": "宏观事件跟进补充",
+        "role": "report_agent",
+        "registry_id": "macro_event_followup_agent",
     },
     "cme_options_agent": {
         "display_name": "期权结构",
@@ -246,6 +254,24 @@ def list_agent_registry() -> list[dict[str, Any]]:
             },
         },
         {
+            "agent_id": "macro_liquidity_agent",
+            "name": "宏观流动性 Agent",
+            "agent_type": "domain_agent",
+            "priority": "P0",
+            "status": "active_prompt",
+            "status_label": "可调提示词",
+            "description": "基于已加载的宏观快照，生成面向人阅读的流动性研究结论。",
+            "input_sections": ["macro"],
+            "output_targets": ["Report Detail 分析输入", "Dashboard 宏观流动性摘要"],
+            "source_module": "apps.analysis.agents.macro_liquidity",
+            "runtime_agent_names": ["macro_liquidity_agent"],
+            "prompt": {
+                "kind": "llm",
+                "source": "apps/analysis/agents/macro_liquidity_prompt.py::build_macro_liquidity_prompt_template",
+                "template": build_macro_liquidity_prompt_template(),
+            },
+        },
+        {
             "agent_id": "cme_options_agent",
             "name": "期权结构分析 Agent",
             "agent_type": "domain_agent",
@@ -279,6 +305,24 @@ def list_agent_registry() -> list[dict[str, Any]]:
                 "kind": "rule",
                 "source": "apps/analysis/agents/fact_review.py::build_fact_review_prompt_template",
                 "template": build_fact_review_prompt_template(),
+            },
+        },
+        {
+            "agent_id": "macro_event_followup_agent",
+            "name": "宏观事件跟进补充 Agent",
+            "agent_type": "report_agent",
+            "priority": "P1",
+            "status": "active_prompt",
+            "status_label": "可调提示词",
+            "description": "基于非交易日跟进结构化输入，生成面向人阅读的补充分析报告。",
+            "input_sections": ["macro_event_followup"],
+            "output_targets": ["Report Detail 补充分析", "Reports 综合摘要"],
+            "source_module": "apps.analysis.agents.macro_event_followup",
+            "runtime_agent_names": ["macro_event_followup_agent"],
+            "prompt": {
+                "kind": "llm",
+                "source": "apps.analysis.agents.macro_event_followup::build_macro_event_followup_prompt",
+                "template": build_macro_event_followup_prompt_template(),
             },
         },
         {

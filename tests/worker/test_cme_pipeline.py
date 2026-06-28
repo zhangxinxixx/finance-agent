@@ -918,9 +918,15 @@ class TestRunPremarket:
         assert json.loads(artifacts_by_path["storage/raw/cme/daily_bulletin.pdf"].source_refs or "[]")[0]["source_id"] == (
             "src-cme-runner-001"
         )
-        assert any(path.endswith("premarket_snapshot.json") for path in artifacts_by_path)
-        assert any(path.endswith("step_summaries.json") for path in artifacts_by_path)
-        assert any(path.endswith("run_provenance.json") for path in artifacts_by_path)
+        premarket_snapshot_path = next(path for path in artifacts_by_path if path.endswith("premarket_snapshot.json"))
+        step_summaries_path = next(path for path in artifacts_by_path if path.endswith("step_summaries.json"))
+        run_provenance_path = next(path for path in artifacts_by_path if path.endswith("run_provenance.json"))
+        assert artifacts_by_path[premarket_snapshot_path].content_type == "application/json"
+        assert artifacts_by_path[premarket_snapshot_path].byte_size == Path(premarket_snapshot_path).stat().st_size
+        assert artifacts_by_path[step_summaries_path].content_type == "application/json"
+        assert artifacts_by_path[step_summaries_path].byte_size == Path(step_summaries_path).stat().st_size
+        assert artifacts_by_path[run_provenance_path].content_type == "application/json"
+        assert artifacts_by_path[run_provenance_path].byte_size == Path(run_provenance_path).stat().st_size
 
     def test_task_not_found_returns_failed(self, tmp_path):
         """Test that a non-existent task_id returns TaskStatus.failed."""
