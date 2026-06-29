@@ -6,11 +6,11 @@ Wraps the C3 agents, coordinator, and strategy card builder.
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-import uuid
 
 from dagster import Config, op
 from pydantic import ValidationError
-from sqlalchemy.orm import Session
+
+from dagster_finance.ops.artifact_registration import register_dagster_output_artifacts
 
 
 class AgentConfig(Config):
@@ -184,7 +184,6 @@ def strategy_card_op(
     result = write_strategy_card(storage_root=storage, card=card)
     _register_strategy_card_artifacts(
         context,
-        db=context.resources.db_session,
         result=result,
         card=card,
         snapshot=snapshot,
@@ -196,7 +195,6 @@ def strategy_card_op(
 def _register_strategy_card_artifacts(
     context,
     *,
-    db: Session,
     result: dict[str, Any],
     card: Any,
     snapshot: dict[str, Any],
@@ -205,81 +203,18 @@ def _register_strategy_card_artifacts(
     if not isinstance(paths, list) or not paths:
         return
 
-    try:
-        run_uuid = uuid.UUID(str(context.run_id))
-    except ValueError:
-        context.log.warning("Skipping strategy card RunArtifact registration: invalid run_id=%s", context.run_id)
-        return
-
-    from apps.runtime.artifact_registry import register_step_artifacts
-    from database.models.execution import ensure_execution_tables
-    from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
-
-    ensure_task_tables(db)
-    ensure_execution_tables(db)
-
-    snapshot_id = _optional_str(snapshot.get("snapshot_id"))
-    run = db.get(TaskRun, run_uuid)
-    if run is None:
-        run = TaskRun(
-            id=run_uuid,
-            name="premarket_job",
-            task_type="premarket",
-            status=TaskStatus.running,
-            trade_date=_optional_str(snapshot.get("trade_date")),
-            snapshot_id=snapshot_id,
-        )
-        db.add(run)
-        db.flush()
-    elif snapshot_id and not run.snapshot_id:
-        run.snapshot_id = snapshot_id
-
-    step = (
-        db.query(TaskStep)
-        .filter(TaskStep.task_run_id == run_uuid, TaskStep.name == "strategy_card")
-        .first()
-    )
-    if step is None:
-        step = TaskStep(
-            task_run_id=run_uuid,
-            name="strategy_card",
-            stage="c4",
-            task_kind="agent",
-            status=StepStatus.success,
-        )
-        db.add(step)
-        db.flush()
-    else:
-        step.status = StepStatus.success
-
-    output_refs = [
-        {
-            "artifact_id": f"{run_uuid}:strategy_card:{index}",
-            "artifact_type": _artifact_type_for_path(path),
-            "file_path": str(path),
-        }
-        for index, path in enumerate(paths)
-        if isinstance(path, str) and path
-    ]
-    if not output_refs:
-        return
-
-    register_step_artifacts(
-        db,
-        run_id=str(run_uuid),
-        step=step,
-        output_refs=output_refs,
+    register_dagster_output_artifacts(
+        context,
+        db=context.resources.db_session,
+        paths=paths,
+        step_name="strategy_card",
+        stage="c4",
+        task_kind="agent",
         source_refs=_strategy_card_source_refs(card=card, snapshot=snapshot),
         input_snapshot_ids=_strategy_card_input_snapshot_ids(card=card, snapshot=snapshot),
+        snapshot_id=_optional_str(snapshot.get("snapshot_id")),
+        trade_date=_optional_str(snapshot.get("trade_date")),
     )
-    db.commit()
-
-
-def _artifact_type_for_path(path: str) -> str:
-    suffix = Path(path).suffix.lower()
-    if suffix == ".md":
-        return "analysis_md"
-    return "structured_json"
 
 
 def _strategy_card_source_refs(*, card: Any, snapshot: dict[str, Any]) -> list[dict[str, Any]] | None:
