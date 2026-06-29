@@ -6,9 +6,11 @@ Wraps the C3 agents, coordinator, and strategy card builder.
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import uuid
 
 from dagster import Config, op
 from pydantic import ValidationError
+from sqlalchemy.orm import Session
 
 
 class AgentConfig(Config):
@@ -180,5 +182,153 @@ def strategy_card_op(
         created_at=created_at,
     )
     result = write_strategy_card(storage_root=storage, card=card)
+    _register_strategy_card_artifacts(
+        context,
+        db=context.resources.db_session,
+        result=result,
+        card=card,
+        snapshot=snapshot,
+    )
     context.log.info("Strategy card built")
     return result
+
+
+def _register_strategy_card_artifacts(
+    context,
+    *,
+    db: Session,
+    result: dict[str, Any],
+    card: Any,
+    snapshot: dict[str, Any],
+) -> None:
+    paths = result.get("paths") if isinstance(result, dict) else None
+    if not isinstance(paths, list) or not paths:
+        return
+
+    try:
+        run_uuid = uuid.UUID(str(context.run_id))
+    except ValueError:
+        context.log.warning("Skipping strategy card RunArtifact registration: invalid run_id=%s", context.run_id)
+        return
+
+    from apps.runtime.artifact_registry import register_step_artifacts
+    from database.models.execution import ensure_execution_tables
+    from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
+
+    ensure_task_tables(db)
+    ensure_execution_tables(db)
+
+    snapshot_id = _optional_str(snapshot.get("snapshot_id"))
+    run = db.get(TaskRun, run_uuid)
+    if run is None:
+        run = TaskRun(
+            id=run_uuid,
+            name="premarket_job",
+            task_type="premarket",
+            status=TaskStatus.running,
+            trade_date=_optional_str(snapshot.get("trade_date")),
+            snapshot_id=snapshot_id,
+        )
+        db.add(run)
+        db.flush()
+    elif snapshot_id and not run.snapshot_id:
+        run.snapshot_id = snapshot_id
+
+    step = (
+        db.query(TaskStep)
+        .filter(TaskStep.task_run_id == run_uuid, TaskStep.name == "strategy_card")
+        .first()
+    )
+    if step is None:
+        step = TaskStep(
+            task_run_id=run_uuid,
+            name="strategy_card",
+            stage="c4",
+            task_kind="agent",
+            status=StepStatus.success,
+        )
+        db.add(step)
+        db.flush()
+    else:
+        step.status = StepStatus.success
+
+    output_refs = [
+        {
+            "artifact_id": f"{run_uuid}:strategy_card:{index}",
+            "artifact_type": _artifact_type_for_path(path),
+            "file_path": str(path),
+        }
+        for index, path in enumerate(paths)
+        if isinstance(path, str) and path
+    ]
+    if not output_refs:
+        return
+
+    register_step_artifacts(
+        db,
+        run_id=str(run_uuid),
+        step=step,
+        output_refs=output_refs,
+        source_refs=_strategy_card_source_refs(card=card, snapshot=snapshot),
+        input_snapshot_ids=_strategy_card_input_snapshot_ids(card=card, snapshot=snapshot),
+    )
+    db.commit()
+
+
+def _artifact_type_for_path(path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix == ".md":
+        return "analysis_md"
+    return "structured_json"
+
+
+def _strategy_card_source_refs(*, card: Any, snapshot: dict[str, Any]) -> list[dict[str, Any]] | None:
+    refs: list[dict[str, Any]] = []
+    refs.extend(ref for ref in snapshot.get("source_refs", []) if isinstance(ref, dict))
+    refs.extend(
+        _normalize_strategy_card_source_ref(ref)
+        for ref in getattr(card, "source_refs", [])
+        if isinstance(ref, dict)
+    )
+    return _dedupe_dicts(refs)
+
+
+def _strategy_card_input_snapshot_ids(*, card: Any, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    merged: dict[str, Any] = {}
+    snapshot_ids = snapshot.get("input_snapshot_ids")
+    if isinstance(snapshot_ids, dict):
+        merged.update({str(key): value for key, value in snapshot_ids.items() if str(key)})
+    card_ids = getattr(card, "input_snapshot_ids", None)
+    if isinstance(card_ids, dict):
+        merged["strategy_card_input_snapshot_ids"] = {
+            str(key): value for key, value in card_ids.items() if str(key)
+        }
+    return merged or None
+
+
+def _normalize_strategy_card_source_ref(ref: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(ref)
+    source = normalized.pop("source", None)
+    if source is not None:
+        normalized["source_ref"] = str(source)
+    return normalized
+
+
+def _dedupe_dicts(refs: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for ref in refs:
+        normalized = {str(key): value for key, value in ref.items() if value is not None}
+        key = tuple(sorted((str(item_key), str(item_value)) for item_key, item_value in normalized.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped or None
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
