@@ -5,6 +5,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from apps.api.services._storage import _PROJECT_ROOT, _latest_date_dir, _try_db_session
+from apps.api.services.source_models import (
+    SourceDefinition,
+    SourceHealth,
+    SourceTier,
+    source_tier_from_definition,
+)
+
 
 _KNOWN_SOURCE_DEFS: list[dict[str, Any]] = [
     {"source_key": "fred", "source_name": "FRED", "source_group": "macro", "source_type": "api", "access_method": "fred_api", "metadata": {"provider_role": "official_primary", "fallback_for": [], "fallback_sources": ["openbb_macro", "jin10_news"], "frontend_label": "FRED 官方宏观主源", "notes": "官方宏观时间序列主源；异常时由 OpenBB 补充，并由 Jin10 提供事件/快讯上下文。"}},
@@ -35,6 +42,12 @@ _KNOWN_SOURCE_DEFS: list[dict[str, Any]] = [
 ]
 
 _KNOWN_SOURCE_INDEX: dict[str, dict[str, Any]] = {src["source_key"]: src for src in _KNOWN_SOURCE_DEFS}
+_KNOWN_SOURCE_DEFINITIONS: list[SourceDefinition] = [
+    SourceDefinition.from_mapping(src) for src in _KNOWN_SOURCE_DEFS
+]
+_KNOWN_SOURCE_DEFINITION_INDEX: dict[str, SourceDefinition] = {
+    src.source_key: src for src in _KNOWN_SOURCE_DEFINITIONS
+}
 _NEWS_SOURCE_STORAGE_DIRS: dict[str, str] = {
     "fed_rss": "fed_rss",
     "bls_calendar": "bls",
@@ -441,12 +454,18 @@ def _latest_news_feature_artifacts() -> dict[str, Any]:
 
 def _normalize_source_metadata(source_key: str, metadata: Any, *, source_name: str | None = None) -> dict[str, Any]:
     source_def = _KNOWN_SOURCE_INDEX.get(source_key, {})
-    contract = source_def.get("metadata") or {}
+    definition = _KNOWN_SOURCE_DEFINITION_INDEX.get(source_key)
+    contract = definition.governance_metadata() if definition is not None else source_def.get("metadata") or {}
     normalized = dict(metadata) if isinstance(metadata, dict) else {}
     if source_name and "frontend_label" not in normalized and not contract.get("frontend_label"):
         normalized["frontend_label"] = source_name
     normalized = {**normalized, **contract}
     normalized["provider_role"] = normalized.get("provider_role") or "derived"
+    if "source_tier" not in normalized:
+        normalized["source_tier"] = source_tier_from_definition(
+            {"source_key": source_key, "source_group": source_def.get("source_group")},
+            normalized,
+        ).value
     normalized["fallback_for"] = normalized.get("fallback_for") if isinstance(normalized.get("fallback_for"), list) else []
     normalized["fallback_sources"] = normalized.get("fallback_sources") if isinstance(normalized.get("fallback_sources"), list) else []
     if source_name and "frontend_label" not in normalized:
@@ -1042,16 +1061,19 @@ def get_data_source_history(source_key: str, *, db: Any, limit: int = 30) -> dic
 def _source_registry_entry(source_def: dict[str, Any]) -> dict[str, Any]:
     source_key = str(source_def.get("source_key") or "")
     source_group = str(source_def.get("source_group") or "unknown")
+    definition = _KNOWN_SOURCE_DEFINITION_INDEX.get(source_key) or SourceDefinition.from_mapping(source_def)
     observability = _SOURCE_OBSERVABILITY.get(source_key, {})
     polling_strategy = observability.get("polling_strategy") if isinstance(observability, dict) else {}
     if not isinstance(polling_strategy, dict):
         polling_strategy = {}
     mode = str(polling_strategy.get("mode") or "")
     ttl = _FRESHNESS_MODE_TTLS.get(mode)
-    metadata = source_def.get("metadata") if isinstance(source_def.get("metadata"), dict) else {}
+    metadata = definition.governance_metadata()
     return {
         "source_key": source_key,
         "source_name": source_def.get("source_name") or source_key,
+        "source_tier": definition.source_tier.value,
+        "provider_role": definition.provider_role,
         "domain": source_group,
         "provider": source_def.get("source_name") or source_key,
         "source_type": source_def.get("source_type"),
@@ -1113,6 +1135,113 @@ def _source_layer_status(*, done: bool, configured: bool, status: str) -> str:
     return "pending"
 
 
+def _source_tier_for_source(source: dict[str, Any]) -> SourceTier:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    source_tier = str(metadata.get("source_tier") or "").strip()
+    if source_tier:
+        try:
+            return SourceTier(source_tier)
+        except ValueError:
+            pass
+
+    source_key = str(source.get("source_key") or "")
+    definition = _KNOWN_SOURCE_DEFINITION_INDEX.get(source_key)
+    if definition is not None:
+        return definition.source_tier
+    return source_tier_from_definition(
+        {
+            "source_key": source_key,
+            "source_group": source.get("source_group"),
+            "source_type": source.get("source_type"),
+        },
+        metadata,
+    )
+
+
+def _source_staleness_seconds(source: dict[str, Any], as_of_dt: datetime) -> int | None:
+    latest_dt = _parse_datetime(source.get("latest_update_time"))
+    if latest_dt is None:
+        return None
+    return max(0, int((as_of_dt - latest_dt).total_seconds()))
+
+
+def _source_freshness_score(source: dict[str, Any], *, staleness_seconds: int | None) -> float:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    freshness_status = str(source.get("freshness_status") or metadata.get("freshness_status") or "unknown").lower()
+    if freshness_status == "fresh":
+        return 1.0
+    if freshness_status == "manual":
+        return 0.6
+    if freshness_status == "stale":
+        return 0.0
+    if freshness_status == "not_applicable":
+        return 0.0
+    return 0.25 if staleness_seconds is not None else 0.0
+
+
+def _source_quality_score(source: dict[str, Any], *, freshness_score: float) -> float:
+    status = str(source.get("status") or "").strip().lower()
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    health_state = str(source.get("health_state") or metadata.get("health_state") or "").strip().lower()
+    readiness_state = str(source.get("readiness_state") or metadata.get("readiness_state") or "").strip().lower()
+
+    quality = 0.0
+    for key in ("configured", "raw_ingested", "parsed", "analysis_ready"):
+        if source.get(key):
+            quality += 0.2
+    quality += 0.2 * freshness_score
+
+    if readiness_state == "degraded":
+        quality = min(quality, 0.75)
+    elif readiness_state in {"blocked", "not_configured"}:
+        quality = min(quality, 0.25)
+
+    if health_state == "cooldown":
+        quality = min(quality, 0.55)
+    if status in {"partial", "stale", "warn", "rate_limited"}:
+        quality = min(quality, 0.75)
+    if status in {"error", "failed"}:
+        quality = min(quality, 0.2)
+    if status in {"not_connected", "unavailable"}:
+        quality = min(quality, 0.25)
+
+    return round(max(0.0, min(1.0, quality)), 3)
+
+
+def _source_last_success_at(source: dict[str, Any]) -> str | None:
+    status = str(source.get("status") or "").strip().lower()
+    has_data = bool(source.get("raw_ingested") or source.get("parsed") or source.get("analysis_ready"))
+    if status in {"ok", "partial", "stale", "warn", "rate_limited"} and has_data:
+        return _first_non_empty(source.get("latest_update_time"), source.get("latest_health_at"))
+    return None
+
+
+def _source_last_failure_at(source: dict[str, Any]) -> str | None:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    status = str(source.get("status") or "").strip().lower()
+    health_state = str(source.get("health_state") or metadata.get("health_state") or "").strip().lower()
+    error_message = str(source.get("error_message") or "").strip()
+    if error_message or status in {"error", "failed", "not_connected", "unavailable"} or health_state in {"unavailable", "cooldown"}:
+        return _first_non_empty(source.get("latest_health_at"), metadata.get("latest_health_at"), source.get("latest_update_time"))
+    return None
+
+
+def _source_health(source: dict[str, Any], *, as_of_dt: datetime) -> SourceHealth:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    staleness_seconds = _source_staleness_seconds(source, as_of_dt)
+    freshness_score = _source_freshness_score(source, staleness_seconds=staleness_seconds)
+    return SourceHealth(
+        source_key=str(source.get("source_key") or ""),
+        source_tier=_source_tier_for_source(source),
+        freshness_score=freshness_score,
+        staleness_seconds=staleness_seconds,
+        quality_score=_source_quality_score(source, freshness_score=freshness_score),
+        readiness_state=str(source.get("readiness_state") or metadata.get("readiness_state") or "blocked"),
+        last_success_at=_source_last_success_at(source),
+        last_failure_at=_source_last_failure_at(source),
+    )
+
+
 def _source_health_data_status(source: dict[str, Any]) -> str:
     status = str(source.get("status") or "not_connected").lower()
     freshness_status = str(source.get("freshness_status") or source.get("metadata", {}).get("freshness_status") or "").lower()
@@ -1158,6 +1287,7 @@ def get_data_source_health_latest(date: str | None = None, db: Any | None = None
         freshness_status = str(source.get("freshness_status") or metadata.get("freshness_status") or "unknown")
         freshness_reason = str(source.get("freshness_reason") or metadata.get("freshness_reason") or "unknown")
         data_status = _source_health_data_status(source)
+        source_health = _source_health(source, as_of_dt=as_of_dt)
 
         if data_status == "live":
             live_count += 1
@@ -1174,6 +1304,7 @@ def get_data_source_health_latest(date: str | None = None, db: Any | None = None
                 "source_name": source_name,
                 "source_group": source.get("source_group"),
                 "provider_role": metadata.get("provider_role"),
+                **source_health.to_payload(),
                 "latest_data_date": source.get("latest_update_time"),
                 "latest_health_at": source.get("latest_health_at") or metadata.get("latest_health_at"),
                 "health_state": source.get("health_state") or metadata.get("health_state") or "unavailable",
@@ -1184,7 +1315,6 @@ def get_data_source_health_latest(date: str | None = None, db: Any | None = None
                 "feature_status": _source_layer_status(done=feature_ready, configured=configured, status=status),
                 "analysis_status": _source_layer_status(done=analysis_ready, configured=configured, status=status),
                 "data_status": data_status,
-                "readiness_state": source.get("readiness_state") or metadata.get("readiness_state"),
                 "gate_state": source.get("gate_state") or metadata.get("gate_state"),
                 "gating_reason": source.get("gating_reason") or metadata.get("gating_reason"),
                 "last_run_id": source.get("last_run_id"),
