@@ -321,4 +321,10 @@ def _run_artifact_refs(rows: list[RunArtifact]) -> list[ArtifactRef]:
 
 
 def _run_artifact_source_refs(rows: list[RunArtifact]) -> list[SourceRef]:
-    return dedupe_source_refs(source for row in rows for source in parse_source_refs(row.source_refs))
+    return dedupe_source_refs(source for row in rows for source in _parse_run_artifact_source_refs(row))
+
+
+def _parse_run_artifact_source_refs(row: RunArtifact) -> list[SourceRef]:
+    if row.source_refs_data:
+        return parse_source_refs(row.source_refs_data)
+    return parse_source_refs(row.source_refs)

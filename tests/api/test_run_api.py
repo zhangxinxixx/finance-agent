@@ -477,6 +477,39 @@ def test_run_list_and_detail_include_registry_artifact_and_source_refs() -> None
         assert any(item["artifact_id"] == "art-out-001" for item in payload["artifact_refs"])
 
 
+def test_run_detail_reads_structured_registry_source_refs_without_legacy_text() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session, status=TaskStatus.success)
+    step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    registry_row = RunArtifact(
+        run_id=run.id,
+        task_id=step.id,
+        artifact_type="feature_json",
+        file_path="storage/features/macro/structured-source-refs.json",
+        sha256="sha-structured-source-refs",
+        source_refs_data=[
+            {
+                "source_id": "src-structured-001",
+                "source_name": "FRED",
+                "source_type": "api",
+                "data_date": "2026-05-26",
+                "endpoint": "https://api.stlouisfed.org/fred/series/observations",
+            }
+        ],
+        source_refs=None,
+    )
+    session.add(registry_row)
+    session.commit()
+
+    detail_payload = api_run_detail(str(run.id), db=session).model_dump(mode="json")
+    artifact_payload = api_artifact_detail(str(registry_row.artifact_id), db=session).model_dump(mode="json")
+
+    assert any(item["source_id"] == "src-structured-001" for item in detail_payload["source_refs"])
+    assert any(item["source_id"] == "src-structured-001" for item in artifact_payload["source_refs"])
+    structured_source = next(item for item in artifact_payload["source_refs"] if item["source_id"] == "src-structured-001")
+    assert structured_source["endpoint"] == "https://api.stlouisfed.org/fred/series/observations"
+
+
 def test_get_run_events_returns_sorted_timeline() -> None:
     session, _ = _make_session()
     run = _seed_run(session, status=TaskStatus.success)
