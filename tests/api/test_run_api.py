@@ -281,11 +281,17 @@ def test_run_detail_and_artifacts_dedupe_registry_lineage_by_file_path() -> None
     assert matching_artifacts[0]["artifact_id"] == str(first_registry_row.artifact_id)
     assert matching_artifacts[0]["sha256"] == "sha-keep-001"
     assert {item["source_id"] for item in detail_payload["source_refs"]} == {
-        "src-001",
         "src-registry-keep",
         "src-registry-drop",
-        "src-step-dup-002",
     }
+
+    steps_payload = api_run_steps(str(run.id), db=session)
+    step_sources = {
+        source["source_id"]
+        for step_payload in steps_payload["steps"]
+        for source in step_payload["source_refs"]
+    }
+    assert {"src-001", "src-step-dup-002"}.issubset(step_sources)
 
 
 def test_get_artifact_detail_returns_registry_context() -> None:
@@ -474,7 +480,10 @@ def test_run_list_and_detail_include_registry_artifact_and_source_refs() -> None
         assert any(item["artifact_id"] == str(registry_row.artifact_id) for item in payload["artifact_refs"])
         assert any(item["file_path"] == "storage/features/macro/rollup.json" for item in payload["artifact_refs"])
         assert any(item["source_id"] == "src-registry-001" for item in payload["source_refs"])
-        assert any(item["artifact_id"] == "art-out-001" for item in payload["artifact_refs"])
+        assert all(item["artifact_id"] != "art-out-001" for item in payload["artifact_refs"])
+
+    step_payload = api_run_steps(str(run.id), db=session)["steps"][0]
+    assert any(item["artifact_id"] == "art-out-001" for item in step_payload["artifact_refs"])
 
 
 def test_run_detail_reads_structured_registry_source_refs_without_legacy_text() -> None:
@@ -508,6 +517,41 @@ def test_run_detail_reads_structured_registry_source_refs_without_legacy_text() 
     assert any(item["source_id"] == "src-structured-001" for item in artifact_payload["source_refs"])
     structured_source = next(item for item in artifact_payload["source_refs"] if item["source_id"] == "src-structured-001")
     assert structured_source["endpoint"] == "https://api.stlouisfed.org/fred/series/observations"
+
+
+def test_run_detail_prefers_registry_lineage_over_step_implicit_refs() -> None:
+    session, _ = _make_session()
+    run = _seed_run(session, status=TaskStatus.success)
+    step = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).one()
+    registry_row = RunArtifact(
+        run_id=run.id,
+        task_id=step.id,
+        artifact_type="feature_json",
+        file_path="storage/features/macro/registry-authoritative.json",
+        sha256="sha-registry-authoritative",
+        source_refs_data=[
+            {
+                "source_id": "src-registry-authoritative",
+                "source_name": "FRED",
+                "source_type": "api",
+                "data_date": "2026-05-26",
+            }
+        ],
+        source_refs=None,
+    )
+    session.add(registry_row)
+    session.commit()
+
+    detail_payload = api_run_detail(str(run.id), db=session).model_dump(mode="json")
+    list_payload = api_runs(db=session)["runs"][0]
+
+    for payload in (detail_payload, list_payload):
+        assert [item["artifact_id"] for item in payload["artifact_refs"]] == [str(registry_row.artifact_id)]
+        assert [item["source_id"] for item in payload["source_refs"]] == ["src-registry-authoritative"]
+
+    step_payload = api_run_steps(str(run.id), db=session)["steps"][0]
+    assert any(item["artifact_id"] == "art-out-001" for item in step_payload["artifact_refs"])
+    assert any(item["source_id"] == "src-001" for item in step_payload["source_refs"])
 
 
 def test_get_run_events_returns_sorted_timeline() -> None:

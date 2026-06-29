@@ -146,6 +146,12 @@ def build_task_run_response(db: Session, run: TaskRun) -> TaskRunResponse:
     run_artifacts = _list_run_artifact_rows(db, run.id)
     run_artifact_refs = _run_artifact_refs(run_artifacts)
     run_artifact_source_refs = _run_artifact_source_refs(run_artifacts)
+    if run_artifacts:
+        source_refs = dedupe_source_refs(run_artifact_source_refs)
+        artifact_refs = dedupe_artifact_refs(run_artifact_refs)
+    else:
+        source_refs = dedupe_source_refs(source for step in run.steps for source in parse_source_refs(step.source_refs))
+        artifact_refs = dedupe_artifact_refs(artifact for step in run.steps for artifact in _step_artifact_refs(step))
     started_at = run.started_at or _first_non_null(step.started_at for step in run.steps)
     ended_at = run.ended_at or _last_non_null(step.finished_at for step in run.steps)
     return TaskRunResponse(
@@ -165,18 +171,8 @@ def build_task_run_response(db: Session, run: TaskRun) -> TaskRunResponse:
         token_out=run.token_out,
         final_result_id=run.final_result_id,
         error_summary=run.error_summary or run.error,
-        source_refs=dedupe_source_refs(
-            [
-                *run_artifact_source_refs,
-                *(source for step in run.steps for source in parse_source_refs(step.source_refs)),
-            ]
-        ),
-        artifact_refs=dedupe_artifact_refs(
-            [
-                *run_artifact_refs,
-                *(artifact for step in run.steps for artifact in _step_artifact_refs(step)),
-            ]
-        ),
+        source_refs=source_refs,
+        artifact_refs=artifact_refs,
         steps=steps,
     )
 
