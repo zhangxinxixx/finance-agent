@@ -3,18 +3,29 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import uuid
 from pathlib import Path
 
 _logger = logging.getLogger(__name__)
+ENABLE_LEGACY_PREMARKET_WORKER_ENV = "FINANCE_AGENT_ENABLE_LEGACY_PREMARKET_WORKER"
+
+
+class LegacyPremarketDispatchDisabled(RuntimeError):
+    """Raised when production code tries to dispatch the legacy premarket worker."""
 
 
 def dispatch_premarket_task(task_id: uuid.UUID, *, storage_root: Path = Path("./storage")) -> None:
-    """在后台线程执行 premarket pipeline，不阻塞 API 响应。
+    """Compatibility-only legacy premarket dispatch.
 
-    后续升级 Celery/APScheduler 时只需替换此函数内部，接口不变。
+    Production premarket execution is Dagster `premarket_job`. This local
+    worker path remains available only when explicitly enabled for debug runs.
     """
+    if os.getenv(ENABLE_LEGACY_PREMARKET_WORKER_ENV) != "1":
+        raise LegacyPremarketDispatchDisabled(
+            "Legacy premarket worker dispatch is disabled; use Dagster premarket_job via API launch."
+        )
 
     def _run() -> None:
         from apps.worker.runner import run_premarket

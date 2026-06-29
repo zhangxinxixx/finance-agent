@@ -33,8 +33,14 @@ def api_premarket_pipeline_readiness():
 def api_premarket_launch_preflight(force: bool = False):
     """Return read-only launch preflight truth for the premarket task trigger."""
     from apps.api import main as api_main
+    from apps.api.services import premarket_launch_service
 
-    return api_main._build_premarket_launch_preflight(force=force)
+    return premarket_launch_service.build_premarket_launch_preflight(
+        force=force,
+        session_factory=api_main.SessionLocal,
+        readiness_builder=api_main.pipeline_contract_service.build_premarket_pipeline_source_readiness,
+        find_active_dagster_run=premarket_launch_service.find_active_dagster_premarket_run,
+    )
 
 
 @router.post("/tasks/premarket")
@@ -42,122 +48,14 @@ def api_premarket_launch_preflight(force: bool = False):
 def trigger_premarket(force: bool = False):
     """触发盘前主链 — 通过 Dagster GraphQL launchRun。"""
     from apps.api import main as api_main
+    from apps.api.services import premarket_launch_service
 
-    with api_main.SessionLocal() as session:
-        if not force:
-            existing = api_main._cleanup_stale_active_premarket_tasks(session)
-            if existing:
-                readiness = api_main.pipeline_contract_service.build_premarket_pipeline_source_readiness()
-                raise HTTPException(
-                    status_code=409,
-                    detail=api_main._premarket_launch_error_detail(
-                        message=f"已有进行中的 premarket 任务: {existing.id} (status={existing.status.value})",
-                        reason="legacy_active_task",
-                        force=force,
-                        source_readiness_summary=readiness.get("source_readiness_summary"),
-                        active_legacy_task=api_main._task_to_premarket_active_task_ref(existing),
-                    ),
-                )
-
-    dagster_url = os.getenv("DAGSTER_GRAPHQL_URL", "http://127.0.0.1:3333/graphql")
-    if not force:
-        try:
-            active_dagster_run = api_main._find_active_dagster_premarket_run(dagster_url)
-        except Exception as exc:
-            api_main.logger.warning("Failed to check active Dagster premarket runs: %s", exc)
-        else:
-            if active_dagster_run:
-                readiness = api_main.pipeline_contract_service.build_premarket_pipeline_source_readiness()
-                raise HTTPException(
-                    status_code=409,
-                    detail=api_main._premarket_launch_error_detail(
-                        message=(
-                            "Dagster 已有进行中的 premarket_job: "
-                            f"{active_dagster_run['run_id']} (status={active_dagster_run['status']})"
-                        ),
-                        reason="dagster_active_run",
-                        force=force,
-                        source_readiness_summary=readiness.get("source_readiness_summary"),
-                        active_dagster_run=api_main.PremarketDagsterRunRef(
-                            run_id=active_dagster_run["run_id"],
-                            status=active_dagster_run["status"],
-                        ),
-                    ),
-                )
-
-    readiness = api_main.pipeline_contract_service.build_premarket_pipeline_source_readiness()
-    source_readiness_summary = readiness.get("source_readiness_summary")
-    if api_main._source_readiness_block_count(source_readiness_summary) > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=api_main._premarket_launch_error_detail(
-                message=api_main._source_readiness_block_message(source_readiness_summary),
-                reason="source_readiness_blocked",
-                force=force,
-                source_readiness_summary=source_readiness_summary,
-            ),
-        )
-
-    mutation = """
-        mutation LaunchRun($jobName: String!) {
-            launchPipelineExecution(
-                executionParams: {
-                    selector: {
-                        pipelineName: $jobName
-                        repositoryName: "__repository__"
-                        repositoryLocationName: "dagster_finance.definitions"
-                    }
-                    mode: "default"
-                }
-            ) {
-                ... on LaunchRunSuccess {
-                    run { runId status }
-                }
-                ... on PythonError { message }
-                ... on RunConfigValidationInvalid { errors { message } }
-            }
-        }
-    """
-    try:
-        import httpx
-
-        resp = httpx.post(
-            dagster_url,
-            json={"query": mutation, "variables": {"jobName": "premarket_job"}},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        result = data.get("data", {}).get("launchPipelineExecution", {})
-        if "run" in result:
-            run_id = result["run"]["runId"]
-            return api_main.TaskCreateResponse(
-                task_id=run_id,
-                name="premarket",
-                status="running",
-                source_readiness_summary=source_readiness_summary,
-            )
-        error_msg = result.get("message", str(result))
-        raise HTTPException(
-            status_code=500,
-            detail=api_main._premarket_launch_error_detail(
-                message=f"Dagster launch failed: {error_msg}",
-                reason="dagster_launch_failed",
-                force=force,
-                source_readiness_summary=source_readiness_summary,
-            ),
-        )
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=api_main._premarket_launch_error_detail(
-                message=f"Dagster unavailable: {exc}",
-                reason="dagster_unavailable",
-                force=force,
-                source_readiness_summary=source_readiness_summary,
-                dagster_check_error=str(exc),
-            ),
-        )
+    return premarket_launch_service.trigger_premarket_launch(
+        force=force,
+        session_factory=api_main.SessionLocal,
+        readiness_builder=api_main.pipeline_contract_service.build_premarket_pipeline_source_readiness,
+        find_active_dagster_run=premarket_launch_service.find_active_dagster_premarket_run,
+    )
 
 
 @router.get("/tasks/{task_id}")
