@@ -31,6 +31,7 @@ StepStage = Literal["collect", "parse", "ingest", "feature", "output", "summary"
 StepType = Literal["collector", "parser", "ingestor", "feature", "renderer", "summary"]
 BlockedScope = Literal["macro", "cme", "news", "none"]
 PremarketStepDecision = Literal["ready", "degraded_allowed", "blocked"]
+StepCriticality = Literal["critical", "important", "optional"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,10 @@ class PremarketStepContract:
     required_sources: tuple[str, ...] = ()
     fallback_policy: str = "none"
     blocked_scope: BlockedScope = "none"
+    criticality: StepCriticality = "optional"
+    freshness_sla_seconds: int | None = None
+    quality_weight: float = 0.0
+    expected_artifact_types: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-friendly representation."""
@@ -59,6 +64,10 @@ class PremarketStepContract:
             "required_sources": list(self.required_sources),
             "fallback_policy": self.fallback_policy,
             "blocked_scope": self.blocked_scope,
+            "criticality": self.criticality,
+            "freshness_sla_seconds": self.freshness_sla_seconds,
+            "quality_weight": self.quality_weight,
+            "expected_artifact_types": list(self.expected_artifact_types),
         }
 
 
@@ -83,6 +92,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("fred", "fed", "treasury", "dxy"),
         fallback_policy="openbb_macro_or_stale_allowed",
         blocked_scope="macro",
+        criticality="critical",
+        freshness_sla_seconds=3600,
+        quality_weight=0.20,
+        expected_artifact_types=("macro_snapshot",),
     ),
     "macro_feature": PremarketStepContract(
         name="macro_feature",
@@ -94,6 +107,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("fred", "fed", "treasury", "dxy"),
         fallback_policy="stale_allowed_1d",
         blocked_scope="macro",
+        criticality="critical",
+        freshness_sla_seconds=3600,
+        quality_weight=0.20,
+        expected_artifact_types=("macro_feature_snapshot",),
     ),
     "cme_download": PremarketStepContract(
         name="cme_download",
@@ -104,6 +121,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("cme_daily_bulletin",),
         fallback_policy="block_if_unavailable",
         blocked_scope="cme",
+        criticality="critical",
+        freshness_sla_seconds=86400,
+        quality_weight=0.12,
+        expected_artifact_types=("cme_daily_bulletin_pdf",),
     ),
     "cme_parse": PremarketStepContract(
         name="cme_parse",
@@ -115,6 +136,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("cme_daily_bulletin",),
         fallback_policy="block_if_unavailable",
         blocked_scope="cme",
+        criticality="critical",
+        freshness_sla_seconds=86400,
+        quality_weight=0.12,
+        expected_artifact_types=("cme_parsed_data",),
     ),
     "cme_ingest": PremarketStepContract(
         name="cme_ingest",
@@ -126,6 +151,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("cme_daily_bulletin",),
         fallback_policy="block_if_unavailable",
         blocked_scope="cme",
+        criticality="critical",
+        freshness_sla_seconds=86400,
+        quality_weight=0.12,
+        expected_artifact_types=("cme_options_snapshot",),
     ),
     "option_wall": PremarketStepContract(
         name="option_wall",
@@ -137,6 +166,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("cme_options",),
         fallback_policy="stale_allowed_1d",
         blocked_scope="cme",
+        criticality="important",
+        freshness_sla_seconds=86400,
+        quality_weight=0.10,
+        expected_artifact_types=("option_wall_analysis",),
     ),
     "report_render": PremarketStepContract(
         name="report_render",
@@ -148,6 +181,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("fred", "fed", "treasury", "dxy"),
         fallback_policy="degraded_allowed",
         blocked_scope="macro",
+        criticality="important",
+        freshness_sla_seconds=3600,
+        quality_weight=0.05,
+        expected_artifact_types=("daily_report_markdown",),
     ),
     "news_collect": PremarketStepContract(
         name="news_collect",
@@ -158,6 +195,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("jin10_news", "jin10_flash", "jin10_mcp_calendar"),
         fallback_policy="degraded_allowed",
         blocked_scope="news",
+        criticality="optional",
+        freshness_sla_seconds=1800,
+        quality_weight=0.03,
+        expected_artifact_types=("jin10_news_raw", "jin10_flash_cache", "jin10_calendar_cache"),
     ),
     "news_feature": PremarketStepContract(
         name="news_feature",
@@ -169,6 +210,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("jin10_news",),
         fallback_policy="degraded_allowed",
         blocked_scope="news",
+        criticality="optional",
+        freshness_sla_seconds=1800,
+        quality_weight=0.03,
+        expected_artifact_types=("news_feature_snapshot",),
     ),
     "news_brief": PremarketStepContract(
         name="news_brief",
@@ -180,6 +225,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=("jin10_news",),
         fallback_policy="degraded_allowed",
         blocked_scope="news",
+        criticality="optional",
+        freshness_sla_seconds=1800,
+        quality_weight=0.03,
+        expected_artifact_types=("daily_market_brief",),
     ),
     "strategy_card": PremarketStepContract(
         name="strategy_card",
@@ -191,6 +240,10 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         required_sources=(),
         fallback_policy="depends_on_upstream_status",
         blocked_scope="none",
+        criticality="important",
+        freshness_sla_seconds=None,
+        quality_weight=0.00,
+        expected_artifact_types=("strategy_card_markdown",),
     ),
 }
 
