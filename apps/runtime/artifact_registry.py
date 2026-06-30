@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from apps.api.schemas.common import ArtifactType
 from apps.api.schemas.source_trace import ArtifactRef
 from apps.runtime.artifact_storage import LOCAL_FS_STORAGE_BACKEND, get_artifact_storage
+from apps.runtime.execution_event_bridge import emit_task_event
 from database.models.execution import RunArtifact
 from database.models.task import TaskRun, TaskStep
 
@@ -255,11 +256,40 @@ def register_step_artifacts(
         )
         row.metadata_json = json.dumps(row.artifact_metadata, ensure_ascii=False)
         db.add(row)
+        db.flush()
         persisted.append(row)
+        _emit_artifact_registered_event(db, run_id=str(run_uuid), step=step, artifact=row)
 
     if persisted:
         db.flush()
     return persisted
+
+
+def _emit_artifact_registered_event(
+    db: Session,
+    *,
+    run_id: str,
+    step: TaskStep,
+    artifact: RunArtifact,
+) -> None:
+    metadata = artifact.artifact_metadata or {}
+    emit_task_event(
+        db,
+        run_id,
+        str(step.id),
+        "ARTIFACT_REGISTERED",
+        {
+            "artifact_id": str(artifact.artifact_id),
+            "artifact_type": artifact.artifact_type,
+            "file_path": artifact.file_path,
+            "storage_backend": artifact.storage_backend,
+            "sha256": artifact.sha256,
+            "lineage_kind": metadata.get("lineage_kind"),
+            "lineage_status": metadata.get("lineage_status"),
+            "input_snapshot_ids": metadata.get("input_snapshot_ids") or {},
+            "source_ref_count": len(artifact.source_refs_data or []),
+        },
+    )
 
 
 def list_run_artifacts(db: Session, run_id: str) -> list[ArtifactRef]:

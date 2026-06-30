@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from apps.runtime.artifact_storage import LocalFileSystemArtifactStorage
 from apps.runtime.artifact_registry import register_step_artifacts
-from database.models.execution import RunArtifact, ensure_execution_tables
+from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.task import StepStatus, TaskRun, TaskStep, TaskStatus, ensure_task_tables
 
 
@@ -432,3 +432,50 @@ def test_register_step_artifacts_keeps_raw_file_non_snapshot_inputs_compatible()
         "raw_file_sha256": "raw-sha-abc",
         "parse_run_id": "parse-run-001",
     }
+
+
+def test_register_step_artifacts_emits_standard_artifact_registered_event() -> None:
+    session = _make_session()
+    run = TaskRun(name="premarket", status=TaskStatus.pending, snapshot_id="snap-registry-001")
+    session.add(run)
+    session.flush()
+    step = TaskStep(task_run_id=run.id, name="report_render", status=StepStatus.success)
+    session.add(step)
+    session.flush()
+
+    register_step_artifacts(
+        session,
+        run_id=str(run.id),
+        step=step,
+        output_refs=[
+            {
+                "artifact_id": "art-event-001",
+                "artifact_type": "analysis_md",
+                "file_path": "storage/outputs/final_report/event-report.md",
+                "sha256": "event123",
+            }
+        ],
+        source_refs=[
+            {
+                "source_id": "src-event-001",
+                "source_name": "analysis_snapshot",
+                "source_type": "snapshot",
+                "snapshot_id": "snap-registry-001",
+            }
+        ],
+        input_snapshot_ids={"analysis_snapshot": "snap-registry-001"},
+    )
+    session.commit()
+
+    event = session.query(ExecutionEvent).one()
+    payload = json.loads(event.payload or "{}")
+    saved = session.query(RunArtifact).one()
+    assert event.run_id == run.id
+    assert event.task_id == step.id
+    assert event.event_type == "ARTIFACT_REGISTERED"
+    assert payload["artifact_id"] == str(saved.artifact_id)
+    assert payload["artifact_type"] == "analysis_md"
+    assert payload["file_path"] == "storage/outputs/final_report/event-report.md"
+    assert payload["lineage_kind"] == "snapshot_bound"
+    assert payload["lineage_status"] == "bound"
+    assert payload["input_snapshot_ids"] == {"analysis_snapshot": "snap-registry-001"}
