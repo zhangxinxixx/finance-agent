@@ -143,6 +143,23 @@ def merge_analysis_snapshot_op(
     return snapshot
 
 
+@op(
+    tags={"pipeline": "premarket", "step": "market_state"},
+)
+def build_market_state_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Build MarketState as the typed decision-input layer."""
+    from apps.analysis.state import build_market_state
+
+    context.log.info("Building MarketState from analysis snapshot")
+    market_state = build_market_state(snapshot)
+    context.log.info(
+        "MarketState built: snapshot_id=%s coverage=%.3f",
+        market_state.snapshot_id,
+        market_state.data_completeness.coverage_ratio,
+    )
+    return market_state.model_dump(mode="json")
+
+
 # ── C4 agent sub-pipeline ───────────────────────────────────────
 
 @graph(
@@ -184,6 +201,7 @@ def premarket_graph():
 
     # Merge into unified snapshot
     snapshot = merge_analysis_snapshot_op(macro_state, cme_state, news_state)
+    build_market_state_op(snapshot)
 
     # C4 agent pipeline
     c4_agent_pipeline(snapshot)
