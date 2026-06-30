@@ -100,6 +100,8 @@ def _artifact_type_for_path(path: str, *, json_artifact_type: str) -> str:
     suffix = Path(path).suffix.lower()
     if suffix == ".md":
         return "analysis_md"
+    if suffix == ".html":
+        return "visual_html"
     return json_artifact_type
 
 

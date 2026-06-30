@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import json
+import uuid
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from apps.collectors.cme.downloader import CmeRawFile
+from apps.worker.pipelines.cme import CmePipelineState
+from dagster_finance.ops.cme import CmeConfig, option_wall_op
+from database.models.execution import RunArtifact, ensure_execution_tables
+from database.models.task import TaskRun, TaskStatus, ensure_task_tables
+from database.queries.cme import CmeIngestResult
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "options"
+SAMPLE_ROWS_PATH = FIXTURES / "sample_option_rows.json"
+
+
+def _make_session():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    ensure_task_tables(engine)
+    ensure_execution_tables(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    return factory()
+
+
+def _option_rows() -> list[MagicMock]:
+    rows = []
+    for row_data in json.loads(SAMPLE_ROWS_PATH.read_text(encoding="utf-8"))[:5]:
+        row = MagicMock()
+        for key, value in row_data.items():
+            setattr(row, key, value)
+        rows.append(row)
+    return rows
+
+
+def _cme_state() -> CmePipelineState:
+    return CmePipelineState(
+        raw_file=CmeRawFile(
+            source="cme",
+            section="Section64_Metals_Option_Products.pdf",
+            source_url="https://www.cmegroup.com/daily_bulletin/current/Section64_Metals_Option_Products.pdf",
+            raw_path="raw/cme/daily_bulletin/2026-05-06/section64.pdf",
+            sha256="abc123",
+            report_date="2026-05-06",
+            bytes=1024,
+            retrieved_at="2026-05-06T12:00:00+00:00",
+            date_source="fixture",
+        ),
+        ingest_result=CmeIngestResult(
+            raw_file_id="raw-file-1",
+            report_date="2026-05-06",
+            inserted_rows=5,
+            existing_rows=0,
+            total_rows=5,
+            warnings_count=0,
+            detail_rows_count=5,
+            summary_rows_count=0,
+            parse_run_id="parse-run-1",
+            sha256="abc123",
+        ),
+    )
+
+
+def test_option_wall_op_registers_cme_option_artifacts_in_run_artifact_registry(tmp_path) -> None:
+    session = _make_session()
+    run_id = uuid.uuid4()
+    session.add(
+        TaskRun(
+            id=run_id,
+            name="premarket_job",
+            task_type="premarket",
+            status=TaskStatus.running,
+            snapshot_id="cme-options:2026-05-06",
+            trade_date="2026-05-06",
+        )
+    )
+    session.commit()
+    context = SimpleNamespace(
+        run_id=str(run_id),
+        resources=SimpleNamespace(db_session=session),
+        log=SimpleNamespace(info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None),
+    )
+
+    with (
+        patch("apps.worker.pipelines.cme.get_cme_option_rows", return_value=_option_rows()),
+        patch("apps.worker.pipelines.cme.get_available_cme_trade_dates", return_value=[]),
+    ):
+        option_wall_op.compute_fn.decorated_fn(
+            context,
+            _cme_state(),
+            CmeConfig(storage_root=str(tmp_path)),
+        )
+
+    artifacts = session.query(RunArtifact).order_by(RunArtifact.file_path.asc()).all()
+    assert {artifact.run_id for artifact in artifacts} == {run_id}
+    assert {Path(artifact.file_path).name for artifact in artifacts} == {
+        "options_analysis.json",
+        "options_analysis.md",
+        "options_visual_report.html",
+        "options_visual_report.json",
+    }
+    assert {artifact.artifact_type for artifact in artifacts} == {"analysis_md", "feature_json", "visual_html"}
+    assert all(artifact.source_refs_data for artifact in artifacts)
+    assert all(artifact.artifact_metadata["input_snapshot_ids"]["parse_run_id"] == "parse-run-1" for artifact in artifacts)
