@@ -87,6 +87,7 @@ def coordinate_agent_outputs(
 
     input_snapshot_ids = _input_snapshot_ids(snapshot, prior_outputs)
     source_refs = _source_refs(snapshot, prior_outputs)
+    evidence_items = _evidence_items(prior_outputs)
     unavailable_modules = _unavailable_modules(snapshot)
 
     key_findings: list[str] = []
@@ -161,6 +162,10 @@ def coordinate_agent_outputs(
     if status is AgentStatus.UNAVAILABLE:
         key_findings = []
         confidence = 0.0
+    elif evidence_items:
+        key_findings.append(
+            f"Coordinator used structured evidence from {len(evidence_items)} upstream factors."
+        )
     elif not key_findings:
         key_findings.append("协调员收到前置输出但方向性发现不足。")
 
@@ -181,6 +186,7 @@ def coordinate_agent_outputs(
         status=status,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
+        evidence_items=evidence_items,
     )
 
 
@@ -225,6 +231,19 @@ def _source_refs(snapshot: dict[str, Any], outputs: list[AgentOutput]) -> list[d
     for output in outputs:
         refs.extend(dict(item) for item in output.source_refs if isinstance(item, dict))
     return _dedupe_refs(refs)
+
+
+def _evidence_items(outputs: list[AgentOutput]):
+    items = []
+    seen: set[str] = set()
+    for output in outputs:
+        for item in output.evidence_items:
+            key = json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(item)
+    return items
 
 
 def _dedupe_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
