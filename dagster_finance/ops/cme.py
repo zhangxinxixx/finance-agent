@@ -4,6 +4,7 @@ Wraps existing step functions from apps.worker.pipelines.cme.
 """
 
 from pathlib import Path
+from typing import Any
 
 from dagster import Config, Out, Output, op
 
@@ -37,6 +38,19 @@ def cme_download_op(context, state: CmePipelineState, config: CmeConfig) -> CmeP
         "cme_download", state,
         db=context.resources.db_session, storage_root=storage, run_id=run_id,
     )
+    if summary.get("status") == "success":
+        register_dagster_output_artifacts(
+            context,
+            db=context.resources.db_session,
+            paths=[summary.get("raw_path")],
+            step_name="cme_download",
+            stage="cme",
+            task_kind="collect",
+            source_refs=_cme_source_refs(state),
+            input_snapshot_ids={"raw_file_sha256": summary.get("sha256")},
+            trade_date=summary.get("report_date"),
+            json_artifact_type="raw_file",
+        )
     context.log.info(f"cme_download done: {summary.get('status', 'ok')}")
     return state
 
@@ -53,6 +67,19 @@ def cme_parse_op(context, state: CmePipelineState, config: CmeConfig) -> CmePipe
         "cme_parse", state,
         db=context.resources.db_session, storage_root=storage, run_id=run_id,
     )
+    if summary.get("status") == "success":
+        register_dagster_output_artifacts(
+            context,
+            db=context.resources.db_session,
+            paths=[summary.get("parsed_path")],
+            step_name="cme_parse",
+            stage="cme",
+            task_kind="parse",
+            source_refs=_cme_source_refs(state),
+            input_snapshot_ids=_cme_parse_input_snapshot_ids(state),
+            trade_date=summary.get("trade_date"),
+            json_artifact_type="parsed_file",
+        )
     context.log.info(f"cme_parse done: {summary.get('status', 'ok')}")
     return state
 
@@ -69,6 +96,19 @@ def cme_ingest_op(context, state: CmePipelineState, config: CmeConfig) -> CmePip
         "cme_ingest", state,
         storage_root=storage, run_id=run_id, db=context.resources.db_session,
     )
+    if summary.get("status") == "success":
+        register_dagster_output_artifacts(
+            context,
+            db=context.resources.db_session,
+            paths=[summary.get("summary_path")],
+            step_name="cme_ingest",
+            stage="cme",
+            task_kind="ingest",
+            source_refs=_cme_source_refs(state),
+            input_snapshot_ids=_cme_ingest_input_snapshot_ids(state),
+            trade_date=summary.get("report_date"),
+            json_artifact_type="feature_json",
+        )
     context.log.info(f"cme_ingest done: {summary.get('status', 'ok')}")
     return state
 
@@ -109,6 +149,10 @@ def option_wall_op(context, state: CmePipelineState, config: CmeConfig) -> CmePi
 
 
 def _option_wall_source_refs(state: CmePipelineState) -> list[dict[str, str]]:
+    return _cme_source_refs(state)
+
+
+def _cme_source_refs(state: CmePipelineState) -> list[dict[str, str]]:
     if state.raw_file is None:
         return []
     return [
@@ -120,3 +164,18 @@ def _option_wall_source_refs(state: CmePipelineState) -> list[dict[str, str]]:
             "report_date": state.raw_file.report_date,
         }
     ]
+
+
+def _cme_parse_input_snapshot_ids(state: CmePipelineState) -> dict[str, Any]:
+    if state.raw_file is None:
+        return {}
+    return {"raw_file_sha256": state.raw_file.sha256}
+
+
+def _cme_ingest_input_snapshot_ids(state: CmePipelineState) -> dict[str, Any]:
+    input_ids = _cme_parse_input_snapshot_ids(state)
+    if state.ingest_result is not None and state.ingest_result.parse_run_id:
+        input_ids["parse_run_id"] = state.ingest_result.parse_run_id
+    if state.ingest_result is not None and state.ingest_result.raw_file_id:
+        input_ids["raw_file_id"] = state.ingest_result.raw_file_id
+    return input_ids
