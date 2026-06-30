@@ -69,6 +69,24 @@ def test_available_macro_returns_schema_valid_agent_output__uses_conftest_fixtur
     assert "DXY" in output.watchlist
 
 
+def test_available_macro_emits_structured_evidence_items():
+    output = analyze_macro_liquidity(_available_snapshot(), created_at=datetime(2026, 5, 14, tzinfo=timezone.utc))
+
+    evidence_by_factor = {item.factor: item for item in output.evidence_items}
+
+    assert {"real_yield_pressure", "dollar_pressure", "liquidity_condition"} <= set(evidence_by_factor)
+    real_yield = evidence_by_factor["real_yield_pressure"]
+    assert real_yield.direction == "bullish"
+    assert 0.0 <= real_yield.strength <= 1.0
+    assert 0.0 <= real_yield.confidence <= 1.0
+    assert real_yield.source_refs
+    assert real_yield.data_category == "confirmed_data"
+
+    dollar = evidence_by_factor["dollar_pressure"]
+    assert dollar.direction == "bullish"
+    assert dollar.source_tier == "market"
+
+
 def test_missing_dxy_lowers_confidence_and_records_risk_or_invalid_condition():
     snapshot = _available_snapshot()
     del snapshot["macro"]["data"]["indicators"]["DXY"]

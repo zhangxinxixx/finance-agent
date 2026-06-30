@@ -7,6 +7,7 @@ from typing import Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
 from apps.analysis.agents.macro_liquidity_prompt import build_macro_liquidity_prompt_template
+from apps.analysis.evidence import EvidenceItem
 from apps.analysis.macro.regime import classify_macro_regime
 
 _AGENT_NAME = "macro_liquidity_agent"
@@ -460,6 +461,7 @@ def _build_deterministic_output(
         market_phase=regime.get("market_phase", "unavailable") if regime else "unavailable",
         regime_drivers=regime if regime else None,
         data_category=DataCategory.CONFIRMED_DATA,
+        evidence_items=_macro_evidence_items(indicators, source_refs),
     )
 
 
@@ -487,6 +489,90 @@ def _first_indicator(indicators: dict[str, Any], keys: tuple[str, ...]) -> dict[
         if isinstance(item, dict):
             return item
     return None
+
+
+def _macro_evidence_items(indicators: dict[str, Any], source_refs: list[dict[str, Any]]) -> list[EvidenceItem]:
+    items: list[EvidenceItem] = []
+
+    real_change = _first_change(indicators, _REAL_YIELD_KEYS)
+    real_value = _first_value(indicators, _REAL_YIELD_KEYS)
+    if real_change is not None or real_value is not None:
+        items.append(
+            EvidenceItem(
+                factor="real_yield_pressure",
+                direction=_direction_from_change(real_change, bullish_when_falling=True),
+                strength=_strength_from_change(real_change, fallback_value=real_value),
+                confidence=0.78 if real_change is not None else 0.55,
+                freshness=1.0,
+                source_tier="official",
+                source_refs=_refs_for_symbols(source_refs, ("REAL_YIELD_10Y", "DGS10", "T10YIE")),
+                data_category=DataCategory.CONFIRMED_DATA.value,
+                invalidation_hint="Real yields reverse higher." if real_change is not None and real_change < 0 else None,
+                notes="10Y real-yield direction derived from macro indicators.",
+            )
+        )
+
+    dxy_change = _first_change(indicators, _DXY_KEYS)
+    dxy_value = _first_value(indicators, _DXY_KEYS)
+    if dxy_change is not None or dxy_value is not None:
+        items.append(
+            EvidenceItem(
+                factor="dollar_pressure",
+                direction=_direction_from_change(dxy_change, bullish_when_falling=True),
+                strength=_strength_from_change(dxy_change, fallback_value=dxy_value),
+                confidence=0.74 if dxy_change is not None else 0.52,
+                freshness=1.0,
+                source_tier="market",
+                source_refs=_refs_for_symbols(source_refs, _DXY_KEYS),
+                data_category=DataCategory.CONFIRMED_DATA.value,
+                invalidation_hint="DXY turns higher." if dxy_change is not None and dxy_change < 0 else None,
+                notes="Dollar direction is a primary macro pressure input for gold.",
+            )
+        )
+
+    present_liquidity = [name for name, keys in _LIQUIDITY_GROUPS.items() if _first_indicator(indicators, keys) is not None]
+    if present_liquidity:
+        items.append(
+            EvidenceItem(
+                factor="liquidity_condition",
+                direction="neutral",
+                strength=round(len(present_liquidity) / len(_LIQUIDITY_GROUPS), 2),
+                confidence=0.6,
+                freshness=1.0,
+                source_tier="official",
+                source_refs=_refs_for_symbols(source_refs, tuple(key for keys in _LIQUIDITY_GROUPS.values() for key in keys)),
+                data_category=DataCategory.CONFIRMED_DATA.value,
+                notes="Liquidity evidence reflects availability and cross-check coverage of core liquidity indicators.",
+            )
+        )
+
+    return items
+
+
+def _direction_from_change(change: float | None, *, bullish_when_falling: bool) -> str:
+    if change is None or change == 0:
+        return "neutral"
+    if change < 0:
+        return "bullish" if bullish_when_falling else "bearish"
+    return "bearish" if bullish_when_falling else "bullish"
+
+
+def _strength_from_change(change: float | None, *, fallback_value: float | None) -> float:
+    if change is not None:
+        return _clamp(abs(change) / 1.0, 0.1, 1.0)
+    if fallback_value is not None:
+        return 0.35
+    return 0.0
+
+
+def _refs_for_symbols(source_refs: list[dict[str, Any]], symbols: tuple[str, ...]) -> list[dict[str, Any]]:
+    symbol_set = {symbol.upper() for symbol in symbols}
+    matched = [
+        dict(ref)
+        for ref in source_refs
+        if str(ref.get("symbol") or "").upper() in symbol_set
+    ]
+    return matched or [dict(ref) for ref in source_refs]
 
 
 def _first_value(indicators: dict[str, Any], keys: tuple[str, ...]) -> float | None:
