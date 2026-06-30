@@ -11,6 +11,7 @@ from dagster import Config, op
 from pydantic import ValidationError
 
 from dagster_finance.ops.artifact_registration import register_dagster_output_artifacts
+from apps.runtime.execution_event_bridge import emit_task_event
 
 
 class AgentConfig(Config):
@@ -182,12 +183,13 @@ def strategy_card_op(
         created_at=created_at,
     )
     result = write_strategy_card(storage_root=storage, card=card)
-    _register_strategy_card_artifacts(
+    task_id = _register_strategy_card_artifacts(
         context,
         result=result,
         card=card,
         snapshot=snapshot,
     )
+    _emit_strategy_card_timeline_events(context, task_id=task_id, result=result, card=card, snapshot=snapshot)
     context.log.info("Strategy card built")
     return result
 
@@ -198,12 +200,12 @@ def _register_strategy_card_artifacts(
     result: dict[str, Any],
     card: Any,
     snapshot: dict[str, Any],
-) -> None:
+) -> str | None:
     paths = result.get("paths") if isinstance(result, dict) else None
     if not isinstance(paths, list) or not paths:
-        return
+        return None
 
-    register_dagster_output_artifacts(
+    return register_dagster_output_artifacts(
         context,
         db=context.resources.db_session,
         paths=paths,
@@ -215,6 +217,53 @@ def _register_strategy_card_artifacts(
         snapshot_id=_optional_str(snapshot.get("snapshot_id")),
         trade_date=_optional_str(snapshot.get("trade_date")),
     )
+
+
+def _emit_strategy_card_timeline_events(
+    context,
+    *,
+    task_id: str | None,
+    result: dict[str, Any],
+    card: Any,
+    snapshot: dict[str, Any],
+) -> None:
+    if not task_id:
+        return
+    paths = result.get("paths") if isinstance(result, dict) else []
+    output_artifacts = [Path(path).name for path in paths if isinstance(path, str) and path]
+    db = context.resources.db_session
+    emit_task_event(
+        db,
+        run_id=str(context.run_id),
+        task_id=task_id,
+        event_type="AGENT_EXECUTED",
+        payload={
+            "agent_name": "strategy_card_agent",
+            "module": "strategy",
+            "status": "success",
+            "snapshot_id": _optional_str(snapshot.get("snapshot_id")),
+            "output_artifacts": output_artifacts,
+        },
+    )
+    emit_task_event(
+        db,
+        run_id=str(context.run_id),
+        task_id=task_id,
+        event_type="DECISION_COMPUTED",
+        payload={
+            "decision_type": "strategy_card",
+            "asset": getattr(card, "asset", None),
+            "trade_date": getattr(card, "trade_date", None),
+            "bias": getattr(getattr(card, "bias", None), "value", getattr(card, "bias", None)),
+            "confidence": getattr(card, "confidence", None),
+            "is_trade_instruction": getattr(card, "is_trade_instruction", None),
+        },
+    )
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        context.log.warning("Skipping strategy card timeline event commit: %s", exc)
 
 
 def _strategy_card_source_refs(*, card: Any, snapshot: dict[str, Any]) -> list[dict[str, Any]] | None:

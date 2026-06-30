@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
 from dagster_finance.ops.agents import strategy_card_op
-from database.models.execution import RunArtifact, ensure_execution_tables
+from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.task import TaskRun, TaskStatus, ensure_task_tables
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
@@ -122,3 +123,60 @@ def test_strategy_card_op_registers_written_artifacts(tmp_path, monkeypatch) -> 
     assert {artifact.run_id for artifact in artifacts} == {run.id}
     assert all(artifact.source_refs_data for artifact in artifacts)
     assert all(artifact.artifact_metadata["input_snapshot_ids"]["analysis_snapshot"] == run.snapshot_id for artifact in artifacts)
+
+
+def test_strategy_card_op_emits_agent_and_decision_timeline_events(tmp_path, monkeypatch) -> None:
+    session = _make_session()
+    run_id = uuid.uuid4()
+    run = TaskRun(
+        id=run_id,
+        name="premarket_job",
+        task_type="premarket",
+        status=TaskStatus.running,
+        snapshot_id="XAUUSD:2026-05-14:analysis",
+    )
+    session.add(run)
+    session.commit()
+
+    coordinator_output = _agent_output(module="coordinator", agent_name="coordinator_agent")
+    risk_output = _agent_output(module="risk", agent_name="risk_agent")
+    context = SimpleNamespace(
+        run_id=str(run_id),
+        resources=SimpleNamespace(db_session=session),
+        log=SimpleNamespace(info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None),
+    )
+
+    monkeypatch.chdir(tmp_path)
+    strategy_card_op.compute_fn.decorated_fn(
+        context,
+        snapshot=_snapshot(),
+        coordinator_output=coordinator_output.model_dump(mode="json"),
+        risk_output=risk_output.model_dump(mode="json"),
+    )
+
+    events = session.query(ExecutionEvent).filter(ExecutionEvent.run_id == run_id).all()
+    standard_events = {
+        event.event_type: (event.task_id, json.loads(event.payload))
+        for event in events
+        if event.event_type in {"AGENT_EXECUTED", "DECISION_COMPUTED"}
+    }
+
+    assert set(standard_events) == {"AGENT_EXECUTED", "DECISION_COMPUTED"}
+    agent_task_id, agent_payload = standard_events["AGENT_EXECUTED"]
+    decision_task_id, decision_payload = standard_events["DECISION_COMPUTED"]
+    assert agent_task_id == decision_task_id
+    assert agent_payload == {
+        "agent_name": "strategy_card_agent",
+        "module": "strategy",
+        "status": "success",
+        "snapshot_id": "XAUUSD:2026-05-14:analysis",
+        "output_artifacts": ["strategy_card.json", "strategy_card.md"],
+    }
+    assert decision_payload == {
+        "decision_type": "strategy_card",
+        "asset": "XAUUSD",
+        "trade_date": "2026-05-14",
+        "bias": "bullish",
+        "confidence": 0.7,
+        "is_trade_instruction": False,
+    }
