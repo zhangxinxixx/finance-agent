@@ -22,7 +22,7 @@ def register_dagster_output_artifacts(
     snapshot_id: str | None = None,
     trade_date: str | None = None,
     json_artifact_type: str = "structured_json",
-) -> None:
+) -> str | None:
     """Register artifacts written by a Dagster op into the canonical registry."""
     output_refs = [
         {
@@ -34,13 +34,13 @@ def register_dagster_output_artifacts(
         if isinstance(path, str) and path
     ]
     if not output_refs:
-        return
+        return None
 
     try:
         run_uuid = uuid.UUID(str(context.run_id))
     except ValueError:
         context.log.warning("Skipping RunArtifact registration for %s: invalid run_id=%s", step_name, context.run_id)
-        return
+        return None
 
     from apps.runtime.artifact_registry import register_step_artifacts
     from database.models.execution import ensure_execution_tables
@@ -94,6 +94,7 @@ def register_dagster_output_artifacts(
         input_snapshot_ids=input_snapshot_ids,
     )
     db.commit()
+    return str(step.id)
 
 
 def _artifact_type_for_path(path: str, *, json_artifact_type: str) -> str:

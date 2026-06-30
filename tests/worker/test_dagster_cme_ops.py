@@ -14,7 +14,7 @@ from apps.collectors.cme.downloader import CmeRawFile
 from apps.parsers.cme.pdf_parser import CmePdfDetailRow, CmePdfParseResult, CmePdfSummaryRow
 from apps.worker.pipelines.cme import CmePipelineState
 from dagster_finance.ops.cme import CmeConfig, cme_download_op, cme_ingest_op, cme_parse_op, option_wall_op
-from database.models.execution import RunArtifact, ensure_execution_tables
+from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.task import TaskRun, TaskStatus, ensure_task_tables
 from database.queries.cme import CmeIngestResult
 
@@ -235,3 +235,76 @@ def test_cme_dagster_download_parse_ingest_ops_register_written_artifacts(tmp_pa
     assert artifacts_by_name["section64.pdf"].artifact_metadata["lineage_kind"] == "source_input"
     assert artifacts_by_name["cme_parse_result.json"].artifact_metadata["input_snapshot_ids"]["raw_file_sha256"] == "abc123"
     assert artifacts_by_name["cme_ingest_summary.json"].artifact_metadata["input_snapshot_ids"]["parse_run_id"] == "parse-run-1"
+
+
+def test_cme_dagster_download_parse_ingest_ops_emit_standard_timeline_events(tmp_path) -> None:
+    session = _make_session()
+    run_id = uuid.uuid4()
+    session.add(
+        TaskRun(
+            id=run_id,
+            name="premarket_job",
+            task_type="premarket",
+            status=TaskStatus.running,
+            trade_date="2026-05-06",
+        )
+    )
+    session.commit()
+    context = SimpleNamespace(
+        run_id=str(run_id),
+        resources=SimpleNamespace(db_session=session),
+        log=SimpleNamespace(info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None),
+    )
+
+    with (
+        patch("apps.worker.pipelines.cme.download_cme_pdf", return_value=_raw_file(tmp_path)),
+        patch("apps.worker.pipelines.cme.parse_pg64_pdf", return_value=_parse_result()),
+        patch(
+            "apps.worker.pipelines.cme.ingest_cme_parse_result",
+            return_value=CmeIngestResult(
+                raw_file_id="raw-file-1",
+                report_date="2026-05-06",
+                inserted_rows=1,
+                existing_rows=0,
+                total_rows=1,
+                warnings_count=0,
+                detail_rows_count=1,
+                summary_rows_count=1,
+                parse_run_id="parse-run-1",
+                sha256="abc123",
+            ),
+        ),
+    ):
+        state = cme_download_op.compute_fn.decorated_fn(context, CmePipelineState(), CmeConfig(storage_root=str(tmp_path)))
+        state = cme_parse_op.compute_fn.decorated_fn(context, state, CmeConfig(storage_root=str(tmp_path)))
+        cme_ingest_op.compute_fn.decorated_fn(context, state, CmeConfig(storage_root=str(tmp_path)))
+
+    events = session.query(ExecutionEvent).filter(ExecutionEvent.run_id == run_id).all()
+    standard_events = {
+        event.event_type: json.loads(event.payload)
+        for event in events
+        if event.event_type in {"SOURCE_COLLECTED", "DATA_PARSED", "FEATURE_COMPUTED"}
+    }
+
+    assert set(standard_events) == {"SOURCE_COLLECTED", "DATA_PARSED", "FEATURE_COMPUTED"}
+    assert standard_events["SOURCE_COLLECTED"] == {
+        "source": "cme_daily_bulletin",
+        "raw_path": "raw/cme/daily_bulletin/2026-05-06/section64.pdf",
+        "report_date": "2026-05-06",
+        "sha256": "abc123",
+    }
+    assert standard_events["DATA_PARSED"] == {
+        "source": "cme_daily_bulletin",
+        "parsed_path": str(tmp_path / "parsed" / "cme" / "2026-05-06" / str(run_id) / "cme_parse_result.json"),
+        "trade_date": "2026-05-06",
+        "detail_rows": 1,
+        "summary_rows": 1,
+    }
+    assert standard_events["FEATURE_COMPUTED"] == {
+        "source": "cme_daily_bulletin",
+        "summary_path": str(tmp_path / "outputs" / "cme" / "2026-05-06" / str(run_id) / "cme_ingest_summary.json"),
+        "report_date": "2026-05-06",
+        "detail_rows": 1,
+        "summary_rows": 1,
+        "total_rows": 1,
+    }
