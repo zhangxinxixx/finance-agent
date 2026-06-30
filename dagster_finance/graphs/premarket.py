@@ -166,7 +166,7 @@ def build_market_state_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
     name="c4_agent_pipeline",
     description="C3 agents (parallel) → coordinator → strategy card",
 )
-def c4_agent_pipeline(snapshot: dict[str, Any]):
+def c4_agent_pipeline(snapshot: dict[str, Any], market_state: dict[str, Any]):
     # C3 agents run in parallel where possible
     macro_out = macro_liquidity_agent_op(snapshot)
     options_out = cme_options_agent_op(snapshot)
@@ -183,7 +183,7 @@ def c4_agent_pipeline(snapshot: dict[str, Any]):
     )
 
     # Strategy card
-    card = strategy_card_op(snapshot, coord_out, risk_out)
+    card = strategy_card_op(market_state, coord_out, risk_out)
     return card
 
 
@@ -201,7 +201,7 @@ def premarket_graph():
 
     # Merge into unified snapshot
     snapshot = merge_analysis_snapshot_op(macro_state, cme_state, news_state)
-    build_market_state_op(snapshot)
+    market_state = build_market_state_op(snapshot)
 
     # C4 agent pipeline
-    c4_agent_pipeline(snapshot)
+    c4_agent_pipeline(snapshot, market_state)

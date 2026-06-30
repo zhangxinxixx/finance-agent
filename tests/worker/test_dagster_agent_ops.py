@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
+from apps.analysis.state import build_market_state
 from dagster_finance.ops.agents import strategy_card_op
 from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.task import TaskRun, TaskStatus, ensure_task_tables
@@ -180,3 +181,50 @@ def test_strategy_card_op_emits_agent_and_decision_timeline_events(tmp_path, mon
         "confidence": 0.7,
         "is_trade_instruction": False,
     }
+
+
+def test_strategy_card_op_accepts_market_state_decision_input(tmp_path, monkeypatch) -> None:
+    session = _make_session()
+    run_id = uuid.uuid4()
+    run = TaskRun(
+        id=run_id,
+        name="premarket_job",
+        task_type="premarket",
+        status=TaskStatus.running,
+        snapshot_id="XAUUSD:2026-05-14:analysis",
+    )
+    session.add(run)
+    session.commit()
+
+    coordinator_output = _agent_output(module="coordinator", agent_name="coordinator_agent")
+    risk_output = _agent_output(module="risk", agent_name="risk_agent")
+    snapshot = {
+        **_snapshot(),
+        "asset": "XAUUSD",
+        "trade_date": "2026-05-14",
+        "macro": {"status": "available", "data": {"indicators": {}}},
+        "options": {"status": "unavailable", "reason": "input_not_available"},
+        "technical": {"status": "unavailable", "reason": "input_not_available"},
+        "positioning": {"status": "unavailable", "reason": "input_not_available"},
+        "news": {"status": "unavailable", "reason": "input_not_available"},
+        "market_odds": {"status": "unavailable", "reason": "input_not_available"},
+    }
+    market_state = build_market_state(snapshot).model_dump(mode="json")
+    context = SimpleNamespace(
+        run_id=str(run_id),
+        resources=SimpleNamespace(db_session=session),
+        log=SimpleNamespace(info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None),
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = strategy_card_op.compute_fn.decorated_fn(
+        context,
+        snapshot=market_state,
+        coordinator_output=coordinator_output.model_dump(mode="json"),
+        risk_output=risk_output.model_dump(mode="json"),
+    )
+
+    assert result["artifact_type"] == "strategy_card"
+    artifacts = session.query(RunArtifact).order_by(RunArtifact.file_path.asc()).all()
+    assert {artifact.run_id for artifact in artifacts} == {run.id}
+    assert all(artifact.artifact_metadata["input_snapshot_ids"]["analysis_snapshot"] == run.snapshot_id for artifact in artifacts)

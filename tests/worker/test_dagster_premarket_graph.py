@@ -50,3 +50,4 @@ def test_premarket_graph_includes_market_state_between_snapshot_and_c4() -> None
     c4_invocation = next(key for key in dependencies if key.name == "c4_agent_pipeline")
     assert dependencies[market_state_invocation]["snapshot"].node == "merge_analysis_snapshot_op"
     assert dependencies[c4_invocation]["snapshot"].node == "merge_analysis_snapshot_op"
+    assert dependencies[c4_invocation]["market_state"].node == "build_market_state_op"
