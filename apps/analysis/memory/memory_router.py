@@ -23,8 +23,8 @@ from apps.analysis.memory.mem0_client import get_mem0_client
 from apps.analysis.memory.memory_service import MemoryService
 
 # ── 项目常量 ──────────────────────────────────────────
-DEFAULT_USER_ID = "local_user"
-DEFAULT_APP_ID = "finance_agent"
+DEFAULT_USER_ID = "xinxi"
+DEFAULT_APP_ID = "finance_analysis_system"
 
 # ── Agent 关键词推断映射 ───────────────────────────────
 # 从任务描述中的关键词推断应查询的 agent_id。

@@ -2,7 +2,7 @@
 
 原则：
   Mem0 只存项目主线摘要和执行约束。
-  外部知识库 / docs 存完整文档。
+  Obsidian 存完整文档。
   Git 存代码变更。
   Postgres / ClickHouse 存业务数据。
   MinIO / storage 存原始数据。
@@ -114,7 +114,7 @@ class MemoryPolicy:
 
 # ── 自动触发策略 ──────────────────────────────────────
 # 独立函数（非 MemoryPolicy 静态方法），因为它们不依赖实例状态，
-# 可直接被 agent 会话 hook 调用，无需实例化 MemoryPolicy。
+# 可直接被 Hermes/Codex 的会话 hook 调用，无需实例化 MemoryPolicy。
 
 
 def should_retrieve(
@@ -152,8 +152,8 @@ def should_retrieve(
     meta_keywords = [
         "agent", "rule", "规则", "架构", "architecture",
         "决策", "decision", "约束", "constraint",
-        "memory", "mem0", "记忆",
-        "automation", "项目", "project",
+        "memory", "mem0", "记忆", "obsidian",
+        "codex", "hermes", "项目", "project",
         "阶段", "phase", "计划", "plan",
         "上次", "之前", "前面说", "我们以前", "上次说",
     ]

@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timezone
 from typing import Any
 
 from apps.api.services.agent_read_model import build_dashboard_agent_summary
+from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
 from apps.api.services.macro_service import get_macro_latest
 from apps.api.services.market_service import get_market_tickers
 from apps.api.services.options_service import get_options_snapshot
@@ -85,6 +86,29 @@ def _select_latest_reports(reports: list[dict[str, Any]], limit: int = 5) -> lis
         item.setdefault("status", "ready")
         available_reports.append(item)
     return sorted(available_reports, key=_sort_key, reverse=True)[:limit]
+
+
+def _select_latest_supplemental_report(reports: list[dict[str, Any]]) -> dict[str, Any] | None:
+    supplemental = [
+        dict(report)
+        for report in reports
+        if report.get("available") and report.get("type") == "macro_event_followup"
+    ]
+    if not supplemental:
+        return None
+
+    for report in supplemental:
+        report.setdefault("status", "ready")
+
+    def _sort_key(report: dict[str, Any]) -> tuple[date, str, str]:
+        trade_date = _safe_trade_date(str(report.get("trade_date") or ""))
+        return (
+            trade_date or date.min,
+            str(report.get("run_id") or ""),
+            str(report.get("report_id") or ""),
+        )
+
+    return sorted(supplemental, key=_sort_key, reverse=True)[0]
 
 
 def _latest_report_date(reports: list[dict[str, Any]], *, include_degraded: bool) -> str | None:
@@ -201,6 +225,21 @@ def _gate_agent_summary(agent_summary: dict[str, Any], composite_analysis: dict[
     return gated
 
 
+def _load_gold_macro_overview() -> dict[str, Any] | None:
+    try:
+        payload = get_gold_mainlines_latest()
+    except Exception as exc:
+        logger.warning(
+            "Failed to load gold macro overview for dashboard summary",
+            exc_info=exc,
+            extra={"service": "dashboard_summary", "stage": "gold_macro_overview", "degraded": True},
+        )
+        return None
+
+    overview = payload.get("gold_macro_overview") if isinstance(payload, dict) else None
+    return overview if isinstance(overview, dict) and overview else None
+
+
 def get_dashboard_summary() -> dict[str, Any]:
     options_snapshot = get_options_snapshot()
     market_tickers = get_market_tickers()
@@ -217,6 +256,7 @@ def get_dashboard_summary() -> dict[str, Any]:
     reports_index = list_reports_index()
     all_reports = reports_index.get("reports", [])
     latest_reports = _select_latest_reports(all_reports)
+    latest_supplemental_report = _select_latest_supplemental_report(all_reports)
     try:
         ds_sources = get_data_source_statuses().get("sources", [])
     except Exception as exc:
@@ -295,6 +335,7 @@ def get_dashboard_summary() -> dict[str, Any]:
     ]
 
     agent_summary = _gate_agent_summary(build_dashboard_agent_summary(), composite_analysis)
+    gold_macro_overview = _load_gold_macro_overview()
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -351,7 +392,9 @@ def get_dashboard_summary() -> dict[str, Any]:
         "warnings": warnings,
         "risk_alerts": risk_alerts,
         "agent_summary": agent_summary,
+        "gold_macro_overview": gold_macro_overview,
         "composite_analysis": composite_analysis,
+        "latest_supplemental_report": latest_supplemental_report,
         "latest_reports": latest_reports,
         "data_source_status": ds_summary,
         "recent_tasks": tasks,

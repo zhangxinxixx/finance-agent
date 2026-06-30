@@ -7,10 +7,10 @@
   run_id   — 单次任务上下文
 
 使用方式：
-  svc.add_memory(content, app_id="finance_agent", ...)             → app 级
+  svc.add_memory(content, app_id="finance_analysis_system", ...)   → app 级
   svc.add_memory(content, agent_id="risk_agent", ...)              → agent 级
-  svc.add_memory(content, user_id="local_user", ...)               → user 级
-  svc.search_for_app(query, app_id="finance_agent")                → 检索 app 级
+  svc.add_memory(content, user_id="xinxi", ...)                    → user 级
+  svc.search_for_app(query, app_id="finance_analysis_system")       → 检索 app 级
   svc.search_for_agent(query, agent_id="risk_agent")                → 检索 agent 级
 """
 
@@ -110,7 +110,7 @@ class MemoryService:
         return result.get("results", [])
 
     def search_for_user(
-        self, query: str, user_id: str = "local_user", *, top_k: int = 10
+        self, query: str, user_id: str = "xinxi", *, top_k: int = 10
     ) -> list[dict[str, Any]]:
         """检索 user 级记忆。"""
         result = self.client.search(
@@ -122,8 +122,8 @@ class MemoryService:
         self,
         task: str,
         *,
-        user_id: str = "local_user",
-        app_id: str = "finance_agent",
+        user_id: str = "xinxi",
+        app_id: str = "finance_analysis_system",
         agent_id: str | None = None,
         top_k: int = 5,
     ) -> dict[str, list[dict[str, Any]]]:
@@ -140,5 +140,5 @@ class MemoryService:
             result["agent"] = []
         return result
 
-    def get_all_memories(self, *, user_id: str = "local_user", top_k: int = 50):
+    def get_all_memories(self, *, user_id: str = "xinxi", top_k: int = 50):
         return self.client.get_all(filters={"user_id": user_id}, top_k=top_k)

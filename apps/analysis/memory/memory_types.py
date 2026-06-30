@@ -37,8 +37,8 @@ class ProjectMemoryRecord(BaseModel):
     所有字段必填（除 metadata 外），确保记忆可追溯、可检索。
     """
 
-    user_id: str = "local_user"
-    project_id: str = "finance_agent"
+    user_id: str = "xinxi"
+    project_id: str = "finance_analysis_system"
     memory_type: ProjectMemoryType
     content: str = Field(..., min_length=1, description="记忆内容摘要，不宜过长")
     tags: list[str] = Field(default_factory=list, description="分类标签，如 ['frontend', 'phase1']")
@@ -49,6 +49,6 @@ class ProjectMemoryRecord(BaseModel):
     )
     source: str = Field(
         default="manual",
-        description="来源：manual / agent_execution / user_feedback / code_review",
+        description="来源：manual / hermes_execution / user_feedback / code_review",
     )
     metadata: dict[str, Any] = Field(default_factory=dict, description="扩展元数据")

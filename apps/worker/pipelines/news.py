@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from apps.analysis.gold_mainline_engine import archive_gold_macro_overview, build_gold_macro_overview
 from apps.collectors.news.base import NewsCollectionResult, RawNewsItem
 from apps.features.news.daily_brief_snapshot import archive_daily_brief_input_snapshot, build_daily_brief_input_snapshot
 from apps.features.news.daily_market_brief import DailyMarketBrief, archive_daily_market_brief, build_daily_market_brief
@@ -22,6 +23,7 @@ from apps.features.news.daily_analysis_triggers import (
     build_daily_analysis_triggers,
 )
 from apps.features.news.event_candidates import EventCandidateBundle, archive_event_candidates, build_event_candidates
+from apps.features.news.gold_event_mainlines import archive_gold_event_mainlines, build_gold_event_mainlines
 from apps.features.news.impact_classifier import EventImpactAssessment, archive_impact_assessments, build_impact_assessments
 from apps.features.news.market_binding import (
     MarketReaction,
@@ -52,11 +54,14 @@ class NewsPipelineState:
     collector_statuses: list[dict[str, Any]] = field(default_factory=list)
     event_bundle: EventCandidateBundle | None = None
     impact_assessments: list[EventImpactAssessment] = field(default_factory=list)
+    gold_event_mainlines: Any | None = None
     daily_analysis_triggers: DailyAnalysisTriggerBundle | None = None
     report_event_extraction: Jin10ReportEventExtraction | None = None
     market_reactions: list[MarketReaction] = field(default_factory=list)
     daily_market_brief: DailyMarketBrief | None = None
+    gold_macro_overview: Any | None = None
     snapshot_dict: dict[str, Any] | None = None
+    artifact_paths: dict[str, str] = field(default_factory=dict)
     step_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -269,12 +274,33 @@ def _step_feature(
         run_id=run_key,
         reactions=reactions,
     )
+    gold_event_mainlines = build_gold_event_mainlines(
+        bundle.event_candidates,
+        impact_assessments=assessments,
+        as_of=as_of,
+    )
+    gold_event_mainlines_path = archive_gold_event_mainlines(
+        storage_root=storage_root,
+        retrieved_date=state.retrieved_date,
+        run_id=run_key,
+        bundle=gold_event_mainlines,
+    )
 
     state.event_bundle = bundle
     state.impact_assessments = assessments
+    state.gold_event_mainlines = gold_event_mainlines
     state.daily_analysis_triggers = daily_analysis_triggers
     state.report_event_extraction = report_extraction
     state.market_reactions = reactions
+    state.artifact_paths.update({
+        "event_candidates": event_candidates_path,
+        "impact_assessments": impact_assessments_path,
+        "daily_analysis_triggers": daily_analysis_triggers_path,
+        "market_reactions": market_reactions_path,
+        "gold_event_mainlines": gold_event_mainlines_path,
+    })
+    if report_events_path is not None:
+        state.artifact_paths["report_events"] = report_events_path
     return {
         "step": "news_feature",
         "status": "success",
@@ -285,11 +311,14 @@ def _step_feature(
         "daily_analysis_trigger_count": len(daily_analysis_triggers.triggers),
         "report_event_count": len(report_extraction.items) if report_extraction is not None else 0,
         "market_reaction_count": len(reactions),
+        "gold_mainline_count": len(gold_event_mainlines.mainlines),
+        "gold_event_link_count": len(gold_event_mainlines.event_links),
         "event_candidates_path": event_candidates_path,
         "impact_assessments_path": impact_assessments_path,
         "daily_analysis_triggers_path": daily_analysis_triggers_path,
         "report_events_path": report_events_path,
         "market_reactions_path": market_reactions_path,
+        "gold_event_mainlines_path": gold_event_mainlines_path,
         "artifact_path": event_candidates_path,
         "warnings": warnings,
     }
@@ -321,8 +350,26 @@ def _step_brief(
         run_id=run_key,
         brief=brief,
     )
+    gold_event_mainlines_payload = _gold_event_mainlines_payload(state)
+    gold_macro_overview = build_gold_macro_overview(gold_event_mainlines_payload)
+    gold_macro_overview_snapshot = gold_macro_overview.to_dict()
+    gold_macro_overview_snapshot["input_snapshot_ids"] = {
+        "gold_event_mainlines": state.artifact_paths.get("gold_event_mainlines"),
+    }
+    gold_macro_overview_path = archive_gold_macro_overview(
+        storage_root=storage_root,
+        retrieved_date=state.retrieved_date,
+        run_id=run_key,
+        overview=gold_macro_overview,
+        input_snapshot_ids={"gold_event_mainlines": state.artifact_paths.get("gold_event_mainlines")},
+    )
 
     state.daily_market_brief = brief
+    state.gold_macro_overview = gold_macro_overview
+    state.artifact_paths.update({
+        "daily_market_brief": brief_path,
+        "gold_macro_overview": gold_macro_overview_path,
+    })
     trigger_bundle = state.daily_analysis_triggers.to_dict() if state.daily_analysis_triggers is not None else None
     report_events = state.report_event_extraction.to_dict() if state.report_event_extraction is not None else None
     daily_brief_input_snapshot = build_daily_brief_input_snapshot(
@@ -353,11 +400,17 @@ def _step_brief(
     data_quality = dict(brief.data_quality)
     data_quality["daily_analysis_trigger_count"] = len(state.daily_analysis_triggers.triggers) if state.daily_analysis_triggers is not None else 0
     data_quality["daily_brief_report_mode"] = daily_brief_input_snapshot.report_mode
+    data_quality["gold_mainline_count"] = len(gold_event_mainlines_payload.get("mainlines") or [])
+    data_quality["gold_event_link_count"] = len(gold_event_mainlines_payload.get("event_links") or [])
+    data_quality["gold_verification_item_count"] = len(gold_macro_overview.verification_matrix)
     state.snapshot_dict = {
         "daily_market_brief": brief.to_dict(),
+        "gold_event_mainlines": gold_event_mainlines_payload,
+        "gold_macro_overview": gold_macro_overview_snapshot,
         "daily_analysis_triggers": trigger_bundle,
         "daily_brief_input_snapshot": daily_brief_input_snapshot.to_dict(),
         "daily_brief_output": daily_brief_output,
+        "artifact_paths": dict(state.artifact_paths),
         "source_refs": brief.source_refs,
         "data_quality": data_quality,
     }
@@ -366,6 +419,7 @@ def _step_brief(
         "status": "success",
         "retrieved_date": state.retrieved_date,
         "daily_market_brief_path": brief_path,
+        "gold_macro_overview_path": gold_macro_overview_path,
         "daily_brief_input_snapshot_path": daily_brief_input_snapshot_path,
         "daily_brief_markdown_path": daily_brief_paths["markdown"],
         "daily_brief_json_path": daily_brief_paths["json"],
@@ -374,6 +428,9 @@ def _step_brief(
         "candidate_event_count": len(brief.candidate_events),
         "unconfirmed_risk_count": len(brief.unconfirmed_risks),
         "daily_brief_report_mode": daily_brief_input_snapshot.report_mode,
+        "gold_mainline_count": len(gold_event_mainlines_payload.get("mainlines") or []),
+        "gold_verification_item_count": len(gold_macro_overview.verification_matrix),
+        "gold_dominant_mainline": gold_macro_overview.dominant_mainline,
     }
 
 
@@ -399,6 +456,30 @@ def _collectors() -> list[tuple[str, Callable[..., NewsCollectionResult]]]:
     if is_feishu_jin10_enabled():
         collectors.append(("jin10_feishu", collect_feishu_jin10_messages))
     return collectors
+
+
+def _gold_event_mainlines_payload(state: NewsPipelineState) -> dict[str, Any]:
+    if hasattr(state.gold_event_mainlines, "to_dict"):
+        payload = state.gold_event_mainlines.to_dict()
+    elif isinstance(state.gold_event_mainlines, dict):
+        payload = dict(state.gold_event_mainlines)
+    else:
+        payload = {}
+
+    payload["artifact_refs"] = [
+        {
+            "artifact_type": artifact_type,
+            "path": path,
+        }
+        for artifact_type, path in [
+            ("gold_event_mainlines", state.artifact_paths.get("gold_event_mainlines")),
+            ("event_candidates", state.artifact_paths.get("event_candidates")),
+            ("impact_assessments", state.artifact_paths.get("impact_assessments")),
+            ("market_reactions", state.artifact_paths.get("market_reactions")),
+        ]
+        if path
+    ]
+    return payload
 
 
 def _merge_collection_result(state: NewsPipelineState, result: NewsCollectionResult) -> None:

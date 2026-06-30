@@ -2,7 +2,7 @@
 
 封装项目主线记忆的读写操作，对上层提供统一接口。
 所有 Mem0 调用通过 MemoryService，不直接接触 mem0 SDK。
-使用实体作用域：entity="app" + app_id="finance_agent"。
+使用实体作用域：entity="app" + app_id="finance_analysis_system"。
 
 典型用法：
     from apps.analysis.memory import ProjectMainlineMemory, ProjectMemoryRecord, ProjectMemoryType
@@ -15,12 +15,12 @@
         content="当前执行 Phase 1 布局重构",
         tags=["frontend", "phase1"],
         importance="high",
-        source="agent_execution",
+        source="hermes_execution",
     )
     mainline.add_mainline_memory(record)
 
     # 检索执行上下文 (user + app + agent 三段)
-    context = mainline.get_execution_context("Phase 2 总览页内容重建", agent_id="automation_agent")
+    context = mainline.get_execution_context("Phase 2 总览页内容重建", agent_id="codex_dev_agent")
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ from apps.analysis.memory.memory_policy import MemoryPolicy
 from apps.analysis.memory.memory_types import ProjectMemoryRecord, ProjectMemoryType
 
 # ── 项目常量 ──────────────────────────────────────────
-DEFAULT_USER_ID = "local_user"
-DEFAULT_APP_ID = "finance_agent"
+DEFAULT_USER_ID = "xinxi"
+DEFAULT_APP_ID = "finance_analysis_system"
 
 
 class ProjectMainlineMemory:
@@ -107,7 +107,7 @@ class ProjectMainlineMemory:
             content="\n".join(content_parts),
             tags=tags or [],
             importance="high",
-            source="agent_execution_summary",
+            source="hermes_execution_summary",
         )
         return self.add_mainline_memory(record)
 
@@ -144,7 +144,7 @@ class ProjectMainlineMemory:
         Args:
             task: 当前任务描述。
             limit: 每段返回记忆数量上限。
-            agent_id: 当前执行的 Agent ID（可选，如 "automation_agent"）。
+            agent_id: 当前执行的 Agent ID（可选，如 "codex_dev_agent"）。
 
         Returns:
             {"user": [...], "app": [...], "agent": [...]}

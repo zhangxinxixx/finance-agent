@@ -29,7 +29,9 @@ from apps.api.data_service import (
 from apps.api.main import app, api_strategy_card_detail, api_strategy_cards_latest
 from apps.worker.pipelines.macro_event_followup import generate_macro_event_followup
 from database.models.analysis import ensure_analysis_tables
+from database.queries.analysis import upsert_final_analysis_result
 from database.models.report import ensure_report_tables
+from database.queries.report import upsert_report_artifact, upsert_report_item
 
 client = TestClient(app)
 
@@ -399,7 +401,7 @@ def test_list_reports_index_full(tmp_path: Path):
     assert isinstance(sc[0]["generated_at"], str)
 
     macro = [r for r in reports if r["type"] == "macro_report"]
-    assert macro[0]["title"] == "XAUUSD 宏观数据报告（2026-05-14）"
+    assert macro[0]["title"] == "XAUUSD 宏观分析报告（2026-05-14）"
     assert macro[0]["report_id"] == "macro_report:auto-v2"
     assert isinstance(macro[0]["generated_at"], str)
 
@@ -413,6 +415,160 @@ def test_list_reports_index_full(tmp_path: Path):
     assert followup[0]["anchor_trade_date"] == "2026-05-16"
     assert followup[0]["summary"] == "Weekend headlines reinforce the prior bullish stance."
     assert isinstance(followup[0]["generated_at"], str)
+
+
+def test_list_reports_index_includes_db_only_registered_report(tmp_path: Path):
+    session = _make_report_session()
+    upsert_report_item(
+        session,
+        {
+            "report_id": "macro_event_followup:2026-06-01:db-run-1",
+            "family": "macro_event_followup_supplement",
+            "report_type": "macro_event_followup",
+            "title": "XAUUSD 宏观事件跟进补充（2026-06-01）",
+            "asset": "XAUUSD",
+            "trade_date": "2026-06-01",
+            "run_id": "db-run-1",
+            "snapshot_id": "snap-db-1",
+            "data_status": "live",
+            "lifecycle_status": "generated",
+            "source_refs": [],
+            "metadata": {},
+        },
+    )
+    upsert_report_artifact(
+        session,
+        {
+            "artifact_id": "macro_event_followup:2026-06-01:db-run-1:analysis",
+            "report_id": "macro_event_followup:2026-06-01:db-run-1",
+            "artifact_type": "analysis_md",
+            "file_path": "storage/outputs/registered/macro_event_followup/2026-06-01/db-run-1/analysis.md",
+            "version": "1",
+            "status": "generated",
+            "content_type": "text/markdown",
+            "is_primary": True,
+        },
+    )
+    upsert_report_artifact(
+        session,
+        {
+            "artifact_id": "macro_event_followup:2026-06-01:db-run-1:structured",
+            "report_id": "macro_event_followup:2026-06-01:db-run-1",
+            "artifact_type": "structured_json",
+            "file_path": "storage/outputs/registered/macro_event_followup/2026-06-01/db-run-1/report_structured.json",
+            "version": "1",
+            "status": "generated",
+            "content_type": "application/json",
+            "is_primary": False,
+        },
+    )
+    session.commit()
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, return_value=session),
+    ):
+        index = list_reports_index()
+
+    db_reports = [item for item in index["reports"] if item["report_id"] == "macro_event_followup:2026-06-01:db-run-1"]
+    assert len(db_reports) == 1
+    item = db_reports[0]
+    assert item["type"] == "macro_event_followup"
+    assert item["trade_date"] == "2026-06-01"
+    assert item["run_id"] == "db-run-1"
+    assert item["family"] == "macro_event_followup_supplement"
+    assert item["title"] == "XAUUSD 宏观事件跟进补充（2026-06-01）"
+    assert item["format"] == "markdown+json"
+    assert item["available"] is True
+    assert isinstance(item["generated_at"], str)
+
+
+def test_list_reports_index_prefers_registered_report_over_legacy_final_result(tmp_path: Path):
+    session = _make_report_session()
+    run_id = "db-run-dup"
+    _make_tree(
+        tmp_path,
+        {
+            f"storage/outputs/final_report/XAUUSD/2026-06-02/{run_id}/final_report.md": "# registered",
+        },
+    )
+    upsert_final_analysis_result(
+        session,
+        payload={
+            "asset": "XAUUSD",
+            "trade_date": "2026-06-02",
+            "run_id": run_id,
+            "snapshot_id": "snap-db-dup",
+            "analysis_snapshot_db_id": None,
+            "final_bias": "neutral",
+            "confidence": 0.7,
+            "market_state": "premarket",
+            "scenario_summary": "Legacy final result",
+            "is_trade_instruction": False,
+            "input_snapshot_ids": {"analysis_snapshot": "snap-db-dup"},
+            "source_refs": [],
+            "source_agent_outputs": [],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "strategy_card": None,
+            "run_summaries": {},
+            "payload": {"legacy": True},
+        },
+        paths={
+            "final_report_path": f"storage/outputs/final_report/XAUUSD/2026-06-02/{run_id}/final_report.md",
+            "strategy_card_json_path": None,
+            "strategy_card_md_path": None,
+            "run_summary_path": None,
+            "final_report_sha256": "legacysha",
+            "strategy_card_sha256": None,
+        },
+    )
+    upsert_report_item(
+        session,
+        {
+            "report_id": f"final_report:{run_id}",
+            "family": "final_report_markdown",
+            "report_type": "final_report",
+            "title": "Registered final report",
+            "asset": "XAUUSD",
+            "trade_date": "2026-06-02",
+            "run_id": run_id,
+            "snapshot_id": "snap-db-dup",
+            "data_status": "live",
+            "lifecycle_status": "generated",
+            "source_refs": [],
+            "metadata": {},
+        },
+    )
+    upsert_report_artifact(
+        session,
+        {
+            "artifact_id": f"final_report:{run_id}:0",
+            "report_id": f"final_report:{run_id}",
+            "artifact_type": "analysis_md",
+            "file_path": f"storage/outputs/final_report/XAUUSD/2026-06-02/{run_id}/final_report.md",
+            "status": "generated",
+            "content_type": "text/markdown",
+            "is_primary": True,
+        },
+    )
+    session.commit()
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, return_value=session),
+    ):
+        index = list_reports_index()
+
+    final_reports = [
+        item
+        for item in index["reports"]
+        if item["type"] == "final_report" and item["trade_date"] == "2026-06-02" and item["run_id"] == run_id
+    ]
+    assert len(final_reports) == 1
+    assert final_reports[0]["report_id"] == f"final_report:{run_id}"
+    assert final_reports[0]["title"] == "Registered final report"
 
 
 def test_get_options_snapshot_prefers_new_cme_output(tmp_path: Path):

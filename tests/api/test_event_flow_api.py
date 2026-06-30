@@ -604,7 +604,7 @@ def test_build_event_flow_events_and_detail_from_overview(tmp_path):
                             },
                             "source_refs": [
                                 {
-                                    "source_ref": "jin10_feishu:chat_fixture:om_1",
+                                    "source_ref": "jin10_feishu:oc_jin10:om_1",
                                     "source": "jin10_feishu",
                                     "source_type": "supplemental",
                                     "title": "美联储鹰派表态带动美元和收益率上行",
@@ -652,6 +652,139 @@ def test_build_event_flow_events_and_detail_from_overview(tmp_path):
     assert impact["gold_impact"] == "bearish"
     assert market_reaction["status"] == "validated"
     assert market_reaction["market_snapshot"] == {"XAUUSD": {"move_pct": -0.4}}
+
+
+def test_build_overview_attaches_gold_mainlines_and_enriches_matching_events(tmp_path):
+    brief_path = tmp_path / "storage" / "features" / "news" / "2026-06-12" / "run-news" / "daily_market_brief.json"
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    brief_path.write_text(
+        json.dumps(
+            {
+                "daily_market_brief": {
+                    "as_of": "2026-06-12T12:00:00+00:00",
+                    "confirmed_events": [
+                        {
+                            "event_id": "evt:hormuz",
+                            "event_time": "2026-06-12T11:00:00+00:00",
+                            "what_happened": "Hormuz shipping risk lifted oil and gold volatility.",
+                            "event_type": "hormuz_risk",
+                            "pricing_status": "unpriced",
+                            "affected_assets": ["XAUUSD", "WTI"],
+                            "source_refs": [{"source_ref": "reuters:hormuz", "source": "reuters_public_news"}],
+                        }
+                    ],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    gold_feature_dir = tmp_path / "storage" / "features" / "news" / "2026-06-12" / "run-gold"
+    gold_analysis_dir = tmp_path / "storage" / "analysis" / "gold_mainlines" / "2026-06-12" / "run-gold"
+    gold_feature_dir.mkdir(parents=True, exist_ok=True)
+    gold_analysis_dir.mkdir(parents=True, exist_ok=True)
+    gold_feature_path = gold_feature_dir / "gold_event_mainlines.json"
+    gold_feature_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "gold-event-mainlines-v1",
+                "asset": "XAUUSD",
+                "as_of": "2026-06-12T12:00:00+00:00",
+                "status": "partial",
+                "mainlines": [
+                    {"mainline_id": "geopolitical_war_risk", "rank": 1, "event_ids": ["evt:hormuz"]}
+                ],
+                "event_links": [
+                    {
+                        "event_id": "evt:hormuz",
+                        "mainline_ids": ["geopolitical_war_risk", "oil_prices", "real_rates_usd"],
+                        "primary_mainline": "geopolitical_war_risk",
+                        "transmission_path_ids": ["geopolitics_to_oil_to_rates", "haven_bid"],
+                        "direction_by_asset": {"XAUUSD": "mixed", "WTI": "bullish"},
+                        "pricing_status": "unpriced",
+                        "verification_status": "single_source",
+                        "bullish_drivers": ["safe_haven_bid"],
+                        "bearish_drivers": ["oil_inflation_rate_pressure"],
+                        "dominant_driver": "oil_inflation_rate_pressure",
+                        "verification_needed": ["multi_source_confirmation_needed", "oil_price_reaction_needed"],
+                        "verification_chain": {
+                            "status": "single_source",
+                            "required_status": "needs_multi_source",
+                            "source_count": 1,
+                            "official_source_count": 0,
+                            "independent_source_count": 1,
+                            "has_official_source": False,
+                            "has_multi_source": False,
+                            "missing_confirmations": ["multi_source_confirmation_needed", "oil_price_reaction_needed"],
+                            "source_refs": [{"source_ref": "reuters:hormuz", "source": "reuters_public_news"}],
+                        },
+                        "changed_dominant_theme": True,
+                        "source_refs": [{"source_ref": "reuters:hormuz", "source": "reuters_public_news"}],
+                    }
+                ],
+                "dominant_forces": ["geopolitical_war_risk"],
+                "source_refs": [{"source_ref": "reuters:hormuz", "source": "reuters_public_news"}],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (gold_analysis_dir / "gold_macro_overview.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "gold-macro-overview-v1",
+                "retrieved_date": "2026-06-12",
+                "run_id": "run-gold",
+                "input_snapshot_ids": {
+                    "gold_event_mainlines": "features/news/2026-06-12/run-gold/gold_event_mainlines.json"
+                },
+                "status": "partial",
+                "asset": "XAUUSD",
+                "as_of": "2026-06-12T12:00:00+00:00",
+                "phase": "weak_repair_watch",
+                "dominant_mainline": "geopolitical_war_risk",
+                "net_bias": "mixed",
+                "risk_score": 72,
+                "one_line_conclusion": "地缘战争风险是当前主导因素。",
+                "theme_rankings": [
+                    {"mainline_id": "geopolitical_war_risk", "rank": 1, "score": 88.0}
+                ],
+                "driver_conflict": None,
+                "war_oil_rate_chain": {"path_id": "geopolitics_to_oil_to_rates"},
+                "verification_matrix": [
+                    {
+                        "id": "verify-oil",
+                        "status": "pending",
+                        "mainline_id": "oil_prices",
+                        "required_source": "oil_price",
+                    }
+                ],
+                "key_events": ["evt:hormuz"],
+                "source_refs": [{"source_ref": "reuters:hormuz", "source": "reuters_public_news"}],
+                "artifact_refs": [],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    overview = build_event_flow_overview()
+    event = overview["events"][0]
+
+    assert overview["gold_macro_overview"]["dominant_mainline"] == "geopolitical_war_risk"
+    assert overview["gold_mainlines"]["event_links"][0]["event_id"] == "evt:hormuz"
+    assert event["mainline_ids"] == ["geopolitical_war_risk", "oil_prices", "real_rates_usd"]
+    assert event["primary_mainline"] == "geopolitical_war_risk"
+    assert event["transmission_path_ids"] == ["geopolitics_to_oil_to_rates", "haven_bid"]
+    assert event["bullish_drivers"] == ["safe_haven_bid"]
+    assert event["bearish_drivers"] == ["oil_inflation_rate_pressure"]
+    assert event["dominant_driver"] == "oil_inflation_rate_pressure"
+    assert event["verification_needed"] == ["multi_source_confirmation_needed", "oil_price_reaction_needed"]
+    assert event["verification_chain"]["required_status"] == "needs_multi_source"
+    assert event["verification_chain"]["missing_confirmations"] == ["multi_source_confirmation_needed", "oil_price_reaction_needed"]
+    assert event["changed_dominant_theme"] is True
 
 
 def test_build_event_flow_detail_returns_none_for_missing_event():
@@ -718,7 +851,7 @@ def test_api_event_flow_split_read_models(tmp_path):
                             },
                             "source_refs": [
                                 {
-                                    "source_ref": "jin10_feishu:chat_fixture:om_1",
+                                    "source_ref": "jin10_feishu:oc_jin10:om_1",
                                     "source": "jin10_feishu",
                                     "source_type": "supplemental",
                                     "title": "美联储鹰派表态带动美元和收益率上行",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from apps.api.services._report_lineage import resolve_report_lineage_context
 from apps.api.services._storage import _PROJECT_ROOT, _iso, _latest_asset_date_run, _try_db_session
 from apps.api.services._trace_refs import coerce_artifact_type, dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
 from apps.api.services.agent_output_service import build_agent_output_summary
+from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
 from apps.analysis.macro.regime import classify_macro_regime
 from apps.renderer.contracts import MacroEventFollowupStructuredPayload
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
@@ -28,6 +30,9 @@ from database.models.report import ReportArtifact as ReportArtifactModel
 from database.models.report import ReportItem
 from database.queries.report import get_report_artifacts as query_report_artifacts
 from database.queries.report import get_report_detail as query_report_detail
+
+
+logger = logging.getLogger(__name__)
 
 
 _STANDARD_ARTIFACT_TYPES = {
@@ -71,10 +76,12 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
         if item is not None:
             artifacts = query_report_artifacts(db, report_id)
             detail = _build_report_detail_from_item(item, artifacts)
-            return _enrich_report_detail_with_lineage_warnings(db, detail)
+            detail = _enrich_report_detail_with_lineage_warnings(db, detail)
+            return _enrich_report_detail_with_gold_macro_context(detail)
     except (OperationalError, ProgrammingError):
         pass
-    return _build_legacy_report_detail(db, report_id)
+    detail = _build_legacy_report_detail(db, report_id)
+    return _enrich_report_detail_with_gold_macro_context(detail) if detail is not None else None
 
 
 def get_report_artifacts(db: Session, report_id: str) -> list[ReportArtifactSchema] | None:
@@ -243,6 +250,24 @@ def _enrich_report_detail_with_lineage_warnings(db: Session, detail: ReportDetai
     if warnings == detail.warnings and normalized_run_id == detail.run_id and normalized_snapshot_id == detail.snapshot_id:
         return detail
     return detail.model_copy(update={"warnings": warnings, "run_id": normalized_run_id, "snapshot_id": normalized_snapshot_id})
+
+
+def _enrich_report_detail_with_gold_macro_context(detail: ReportDetail) -> ReportDetail:
+    if detail.asset and str(detail.asset).upper() not in {"XAUUSD", "GC", "GOLD"}:
+        return detail
+    try:
+        payload = get_gold_mainlines_latest(project_root=_PROJECT_ROOT)
+    except Exception as exc:
+        logger.warning(
+            "Failed to load gold macro overview for report detail",
+            exc_info=exc,
+            extra={"service": "report_detail", "stage": "gold_macro_overview", "degraded": True},
+        )
+        return detail
+    overview = payload.get("gold_macro_overview") if isinstance(payload, dict) else None
+    if not isinstance(overview, dict) or not overview:
+        return detail
+    return detail.model_copy(update={"gold_macro_overview": overview})
 
 
 def _list_report_agent_outputs(
@@ -640,16 +665,19 @@ def _legacy_macro_report_detail(report_id: str) -> ReportDetail | None:
     base = _find_run_dir(_PROJECT_ROOT / "storage" / "outputs" / "macro", macro_id)
     if base is None:
         date_dir = _PROJECT_ROOT / "storage" / "outputs" / "macro" / macro_id
-        if date_dir.is_dir() and (date_dir / "macro_snapshot.md").exists():
+        if date_dir.is_dir() and _macro_report_md_path(date_dir) is not None:
             base = (macro_id, date_dir)
     if base is None:
         return None
     trade_date, run_dir = base
+    report_md = _macro_report_md_path(run_dir)
+    if report_md is None:
+        return None
     artifacts = _artifact_schemas_from_paths(
         report_id=report_id,
         generated_at=None,
         path_specs=[
-            (ArtifactType.analysis_md, run_dir / "macro_snapshot.md", True, "text/markdown"),
+            (ArtifactType.analysis_md, report_md, True, "text/markdown"),
             (ArtifactType.structured_json, run_dir / "macro_snapshot.json", False, "application/json"),
             (ArtifactType.structured_json, run_dir / "macro_conclusion.json", False, "application/json"),
         ],
@@ -664,7 +692,7 @@ def _legacy_macro_report_detail(report_id: str) -> ReportDetail | None:
         warnings=[],
         report_id=report_id,
         family="macro_report",
-        title=f"XAUUSD 宏观数据报告（{trade_date}）",
+        title=f"XAUUSD 宏观分析报告（{trade_date}）",
         asset="XAUUSD",
         trade_date=trade_date,
         lifecycle_status=ReportLifecycleStatus.generated,
@@ -2599,8 +2627,8 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
             runs = [run_dir for run_dir in date_dir.iterdir() if run_dir.is_dir()]
             if runs:
                 for run_dir in sorted(runs, reverse=True):
-                    snap = run_dir / "macro_snapshot.md"
-                    if snap.exists():
+                    report_md = _macro_report_md_path(run_dir)
+                    if report_md is not None:
                         reports.append(
                             {
                                 "type": "macro_report",
@@ -2611,12 +2639,12 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                                 "title": _report_index_title("macro_report", date_dir.name),
                                 "format": "markdown",
                                 "available": True,
-                                "generated_at": _generated_at_from_paths(snap),
+                                "generated_at": _generated_at_from_paths(report_md),
                             }
                         )
             else:
-                snap = date_dir / "macro_snapshot.md"
-                if snap.exists():
+                report_md = _macro_report_md_path(date_dir)
+                if report_md is not None:
                     reports.append(
                         {
                             "type": "macro_report",
@@ -2627,7 +2655,7 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                             "title": _report_index_title("macro_report", date_dir.name),
                             "format": "markdown",
                             "available": True,
-                            "generated_at": _generated_at_from_paths(snap),
+                            "generated_at": _generated_at_from_paths(report_md),
                         }
                     )
     followup_base = _PROJECT_ROOT / "storage" / "outputs" / "macro_event_followup" / asset
@@ -2683,12 +2711,22 @@ def _typed_report_id(report_type: str, raw_id: str) -> str:
 def _report_index_title(report_type: str, trade_date: str) -> str:
     return {
         "final_report": f"XAUUSD 综合报告（{trade_date}）",
-        "macro_report": f"XAUUSD 宏观数据报告（{trade_date}）",
+        "macro_report": f"XAUUSD 宏观分析报告（{trade_date}）",
         "macro_event_followup": f"XAUUSD 宏观事件跟进补充（{trade_date}）",
         "strategy_card": f"XAUUSD 策略卡片（{trade_date}）",
         "options_report": f"黄金期权结构报告（{trade_date}）",
         "options_visual_report": f"黄金期权可视报告（{trade_date}）",
     }.get(report_type, f"{report_type}（{trade_date}）")
+
+
+def _macro_report_md_path(run_dir: Path) -> Path | None:
+    full_report = run_dir / "macro_full_report.md"
+    if full_report.exists():
+        return full_report
+    snapshot_report = run_dir / "macro_snapshot.md"
+    if snapshot_report.exists():
+        return snapshot_report
+    return None
 
 
 def _load_macro_event_followup_payload(run_dir: Path) -> MacroEventFollowupStructuredPayload | None:
@@ -2756,7 +2794,7 @@ def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:
         for date_dir in sorted(macro_base.iterdir()):
             if not date_dir.is_dir():
                 continue
-            if (date_dir / "macro_snapshot.md").exists() or any((run_dir / "macro_snapshot.md").exists() for run_dir in date_dir.iterdir() if run_dir.is_dir()):
+            if _macro_report_md_path(date_dir) is not None or any(_macro_report_md_path(run_dir) is not None for run_dir in date_dir.iterdir() if run_dir.is_dir()):
                 date_modules[date_dir.name].add("macro")
 
     if roots["jin10"].exists():

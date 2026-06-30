@@ -22,7 +22,22 @@ import type {
   Jin10ArticleBriefBundle,
 } from "@/types/event-flow";
 import type { SourceRef } from "@/types/common";
+import type {
+  GoldMacroOverview,
+  GoldMainline,
+  GoldMainlineEventLink,
+  GoldMainlinesViewModel,
+  GoldNetBias,
+  TransmissionPath,
+} from "@/types/gold-mainlines";
 import { fetchJson } from "@/adapters/apiClient";
+import {
+  formatGoldDriverLabel,
+  formatGoldMainlineLabel,
+  formatGoldNetBiasLabel,
+  formatTransmissionPathLabel,
+  normalizeGoldMainlineId,
+} from "@/components/shared/goldMainlineFormat";
 
 const TIMELINE: EventFlowTimelineItem[] = [
   {
@@ -425,6 +440,193 @@ function asSourceRefs(value: unknown): SourceRef[] {
   return value
     .filter((item): item is SourceRef => Boolean(item) && typeof item === "object")
     .map(normalizeSourceRef);
+}
+
+function asStringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function asGoldMainlineList(value: unknown): GoldMainline[] {
+  return asStringList(value)
+    .map((item) => normalizeGoldMainlineId(item))
+    .filter((item): item is GoldMainline => Boolean(item));
+}
+
+function goldLinkMainlineIds(link: GoldMainlineEventLink | undefined): GoldMainline[] {
+  if (!link) return [];
+  return [
+    ...asGoldMainlineList(link.mainline_ids),
+    ...asGoldMainlineList([link.primary_mainline]),
+  ].filter((item, index, items) => items.indexOf(item) === index);
+}
+
+function asTransmissionPathList(value: unknown): TransmissionPath[] {
+  return asStringList(value) as TransmissionPath[];
+}
+
+const GOLD_NET_BIAS_VALUES = new Set<string>([
+  "strong_bullish",
+  "bullish",
+  "neutral_bullish",
+  "neutral",
+  "neutral_bearish",
+  "bearish",
+  "strong_bearish",
+  "mixed",
+  "unknown",
+]);
+
+function asGoldNetBias(value: unknown): GoldNetBias | null {
+  const text = asString(value);
+  if (!text) return null;
+  if (text === "uncertain") return "unknown";
+  return GOLD_NET_BIAS_VALUES.has(text) ? text as GoldNetBias : null;
+}
+
+function asGoldMainline(value: unknown): GoldMainline | null {
+  const text = asString(value);
+  return normalizeGoldMainlineId(text);
+}
+
+function normalizeGoldMacroOverview(value: unknown): GoldMacroOverview | null {
+  const record = asRecord(value);
+  return Object.keys(record).length > 0 ? record as unknown as GoldMacroOverview : null;
+}
+
+function normalizeGoldMainlinesViewModel(value: unknown): GoldMainlinesViewModel | null {
+  const record = asRecord(value);
+  return Object.keys(record).length > 0 ? record as unknown as GoldMainlinesViewModel : null;
+}
+
+function goldEventLinksById(value: GoldMainlinesViewModel | null): Map<string, GoldMainlineEventLink> {
+  const links = Array.isArray(value?.event_links) ? value.event_links : [];
+  return new Map(
+    links
+      .filter((link) => typeof link.event_id === "string" && link.event_id.trim().length > 0)
+      .map((link) => [link.event_id, link]),
+  );
+}
+
+function goldNetEffectFromLink(link: GoldMainlineEventLink | undefined): GoldNetBias | null {
+  const directionByAsset = asRecord(link?.direction_by_asset);
+  return asGoldNetBias(directionByAsset.XAUUSD)
+    ?? asGoldNetBias(directionByAsset.gold)
+    ?? asGoldNetBias(directionByAsset.GC)
+    ?? null;
+}
+
+function goldPricingToEventPricing(value: string | null | undefined): PricingStatus {
+  const normalized = value?.toLowerCase();
+  if (normalized === "priced" || normalized === "confirmed" || normalized === "已定价") return "已定价";
+  if (normalized === "partial" || normalized === "partially_priced" || normalized === "部分定价") return "部分定价";
+  return "未定价";
+}
+
+function goldBiasToEventImpact(value: GoldNetBias | null): EventImpact {
+  if (value === "strong_bullish" || value === "bullish" || value === "neutral_bullish") return "利多黄金";
+  if (value === "strong_bearish" || value === "bearish" || value === "neutral_bearish") return "利空黄金";
+  if (value === "mixed") return "混合";
+  return "双向波动";
+}
+
+function goldMainlineToEventType(value: GoldMainline | null | undefined): EventType {
+  if (value === "fed_policy_path" || value === "real_rates_usd") return "宏观数据";
+  if (value === "oil_prices" || value === "geopolitical_war_risk") return "地缘/能源";
+  if (value === "etf_flows" || value === "institutional_sentiment") return "资金流";
+  if (value === "gold_technical_levels") return "市场价格";
+  return "市场事件";
+}
+
+function goldLinkSummary(link: GoldMainlineEventLink): string {
+  const paths = (link.transmission_path_ids ?? []).map(formatTransmissionPathLabel);
+  const drivers = [
+    ...(link.bullish_drivers ?? []),
+    ...(link.bearish_drivers ?? []),
+    link.dominant_driver ?? "",
+  ].filter(Boolean).map(formatGoldDriverLabel);
+  const checks = (link.verification_needed ?? []).map(formatGoldDriverLabel);
+  const parts = [
+    paths.length ? `传导链：${paths.join(" / ")}` : "",
+    drivers.length ? `驱动：${drivers.join(" / ")}` : "",
+    checks.length ? `待验证：${checks.join(" / ")}` : "",
+  ].filter(Boolean);
+  return parts.join("；") || "黄金主线引擎返回事件归因，但尚未返回驱动拆解。";
+}
+
+function timelineFromGoldLinks(
+  goldMainlines: GoldMainlinesViewModel | null,
+  goldMacroOverview: GoldMacroOverview | null,
+  fallbackUpdatedAt: string,
+): EventFlowTimelineItem[] {
+  const links = Array.isArray(goldMainlines?.event_links) ? goldMainlines.event_links : [];
+  const asOf = goldMainlines?.as_of || goldMacroOverview?.as_of || fallbackUpdatedAt;
+  const date = asOf?.slice(0, 10) || "";
+  const time = asOf?.slice(11, 16) || "";
+
+  return links.map((link, index) => {
+    const mainlineIds = goldLinkMainlineIds(link);
+    const primaryMainline = asGoldMainline(link.primary_mainline) ?? mainlineIds[0] ?? null;
+    const netEffect = goldNetEffectFromLink(link);
+    const title = `${formatGoldMainlineLabel(primaryMainline)}归因：${formatGoldNetBiasLabel(netEffect ?? "unknown")}`;
+    const assets = Object.keys(asRecord(link.direction_by_asset)).join(" / ") || goldMainlines?.asset || "XAUUSD";
+
+    return {
+      id: link.event_id || `gold-mainline-link-${index}`,
+      time,
+      date,
+      title,
+      desc: goldLinkSummary(link),
+      type: goldMainlineToEventType(primaryMainline),
+      importance: link.changed_dominant_theme ? "高" : "中",
+      status: "发展中",
+      impact: goldBiasToEventImpact(netEffect),
+      source: "黄金主线引擎",
+      assets,
+      period: "主线归因",
+      pricing: goldPricingToEventPricing(link.pricing_status),
+      verification_status: link.verification_status ?? null,
+      risk_level: link.changed_dominant_theme ? "high" : "medium",
+      event_kind: "gold_mainline_link",
+      raw_event_type: "gold_mainline_link",
+      source_refs: link.source_refs,
+      affected_assets: assets.split("/").map((item) => item.trim()).filter(Boolean),
+      impact_path: (link.transmission_path_ids ?? []).map(formatTransmissionPathLabel).join(" / ") || null,
+      gold_impact: formatGoldNetBiasLabel(netEffect ?? "unknown"),
+      market_validation: {},
+      market_snapshot: {},
+      related_news_items: [],
+      mainlines: mainlineIds,
+      primary_mainline: primaryMainline,
+      transmission_chains: link.transmission_path_ids ?? [],
+      dominant_driver: link.dominant_driver ?? null,
+      bullish_drivers: link.bullish_drivers ?? [],
+      bearish_drivers: link.bearish_drivers ?? [],
+      net_effect: netEffect,
+      verification_needed: link.verification_needed ?? [],
+      verification_chain: link.verification_chain ?? null,
+      changed_dominant_theme: Boolean(link.changed_dominant_theme),
+    };
+  });
+}
+
+function tableRowsFromTimeline(timeline: EventFlowTimelineItem[]): EventFlowTableRow[] {
+  return timeline.map((event) => ({
+    id: event.id,
+    time: [event.date, event.time].filter(Boolean).join(" ").trim() || event.time,
+    title: event.title,
+    type: event.type,
+    source: event.source ?? "事件流",
+    assets: event.assets ?? event.affected_assets?.join(", ") ?? "—",
+    impact: event.impact,
+    pricing: event.pricing ?? "未定价",
+    period: event.period ?? "主线",
+    stars: event.importance === "高" ? 5 : event.importance === "中" ? 3 : 1,
+    verification_status: event.verification_status,
+    risk_level: event.risk_level,
+    event_kind: event.event_kind,
+    source_refs: event.source_refs,
+    related_news_items: event.related_news_items,
+  }));
 }
 
 const SOURCE_NAME_MAP: Record<string, string> = {
@@ -1239,6 +1441,9 @@ function normalizeReportInputItems(value: unknown): EventFlowReportInputItem[] {
 function _mapApiToViewModel(raw: Record<string, unknown>): EventFlowViewModel {
   const events = (raw.events as Array<Record<string, unknown>>) ?? [];
   const briefSummary = normalizeBriefSummary(raw.brief_summary);
+  const goldMacroOverview = normalizeGoldMacroOverview(raw.gold_macro_overview);
+  const goldMainlines = normalizeGoldMainlinesViewModel(raw.gold_mainlines);
+  const goldLinksByEventId = goldEventLinksById(goldMainlines);
   const normalizedEvents = events.flatMap((e, i) => {
     const title = buildChineseHeadline(asString(e.title), asString(e.event_type) || null).trim();
     if (!title) return [];
@@ -1249,38 +1454,56 @@ function _mapApiToViewModel(raw: Record<string, unknown>): EventFlowViewModel {
     }];
   });
 
-  const timeline: EventFlowTimelineItem[] = normalizedEvents.map(({ raw: e, index, title }) => ({
-    id: asString(e.id, String(index)),
-    time: (e.time as string) ?? "",
-    date: "",
-    title,
-    desc: buildChineseSummary(asString(e.title), asString(e.event_type) || null, asString(e.impact_path) || null),
-    type: "市场事件" as EventType,
-    importance: ((e.importance as string) ?? "低") as EventImportance,
-    status: "已公布" as EventStatus,
-    impact: "混合" as EventImpact,
-    source: translateSourceName((e.source as string) ?? "Jin10"),
-    assets: Array.isArray(e.affected_assets) ? translateAssetList(e.affected_assets.filter((item): item is string => typeof item === "string")).join(" / ") : "",
-    period: "",
-    pricing: ((e.pricing as string) ?? "未定价") as PricingStatus,
-    verification_status: asString(e.verification_status) || null,
-    risk_level: asString(e.risk_level) || null,
-    event_kind: asString(e.kind) || null,
-    raw_event_type: asString(e.event_type) || null,
-    source_refs: asSourceRefs(e.source_refs),
-    affected_assets: Array.isArray(e.affected_assets) ? e.affected_assets.filter((item): item is string => typeof item === "string") : [],
-    impact_path: asString(e.impact_path) || null,
-    gold_impact: asString(e.gold_impact) || null,
-    silver_impact: asString(e.silver_impact) || null,
-    dollar_impact: asString(e.dollar_impact) || null,
-    yield_impact: asString(e.yield_impact) || null,
-    oil_impact: asString(e.oil_impact) || null,
-    market_validation: asRecord(e.market_validation),
-    market_snapshot: asRecord(e.market_snapshot),
-    related_news_items: normalizeRelatedNewsItems(e.related_news_items),
-  }));
+  const eventTimeline: EventFlowTimelineItem[] = normalizedEvents.map(({ raw: e, index, title }) => {
+    const eventId = asString(e.id, String(index));
+    const goldLink = goldLinksByEventId.get(eventId);
+    return {
+      id: eventId,
+      time: (e.time as string) ?? "",
+      date: "",
+      title,
+      desc: buildChineseSummary(asString(e.title), asString(e.event_type) || null, asString(e.impact_path) || null),
+      type: "市场事件" as EventType,
+      importance: ((e.importance as string) ?? "低") as EventImportance,
+      status: "已公布" as EventStatus,
+      impact: "混合" as EventImpact,
+      source: translateSourceName((e.source as string) ?? "Jin10"),
+      assets: Array.isArray(e.affected_assets) ? translateAssetList(e.affected_assets.filter((item): item is string => typeof item === "string")).join(" / ") : "",
+      period: "",
+      pricing: ((e.pricing as string) ?? "未定价") as PricingStatus,
+      verification_status: asString(e.verification_status) || goldLink?.verification_status || null,
+      risk_level: asString(e.risk_level) || null,
+      event_kind: asString(e.kind) || null,
+      raw_event_type: asString(e.event_type) || null,
+      source_refs: asSourceRefs(e.source_refs),
+      affected_assets: Array.isArray(e.affected_assets) ? e.affected_assets.filter((item): item is string => typeof item === "string") : [],
+      impact_path: asString(e.impact_path) || null,
+      gold_impact: asString(e.gold_impact) || null,
+      silver_impact: asString(e.silver_impact) || null,
+      dollar_impact: asString(e.dollar_impact) || null,
+      yield_impact: asString(e.yield_impact) || null,
+      oil_impact: asString(e.oil_impact) || null,
+      market_validation: asRecord(e.market_validation),
+      market_snapshot: asRecord(e.market_snapshot),
+      related_news_items: normalizeRelatedNewsItems(e.related_news_items),
+      mainlines: goldLinkMainlineIds(goldLink).length ? goldLinkMainlineIds(goldLink) : asGoldMainlineList(e.mainline_ids),
+      primary_mainline: asGoldMainline(goldLink?.primary_mainline) ?? asGoldMainline(e.primary_mainline),
+      transmission_chains: goldLink?.transmission_path_ids ?? asTransmissionPathList(e.transmission_path_ids),
+      dominant_driver: goldLink?.dominant_driver ?? (asString(e.dominant_driver) || null),
+      bullish_drivers: goldLink?.bullish_drivers ?? asStringList(e.bullish_drivers),
+      bearish_drivers: goldLink?.bearish_drivers ?? asStringList(e.bearish_drivers),
+      net_effect: goldNetEffectFromLink(goldLink) ?? asGoldNetBias(e.net_effect),
+      verification_needed: goldLink?.verification_needed ?? asStringList(e.verification_needed),
+      verification_chain: goldLink?.verification_chain ?? asRecord(e.verification_chain),
+      changed_dominant_theme: Boolean(goldLink?.changed_dominant_theme ?? e.changed_dominant_theme),
+    };
+  });
 
-  const table: EventFlowTableRow[] = normalizedEvents.map(({ raw: e, title }) => ({
+  const timeline: EventFlowTimelineItem[] = eventTimeline.length > 0
+    ? eventTimeline
+    : timelineFromGoldLinks(goldMainlines, goldMacroOverview, asString(raw.updated_at));
+
+  const table: EventFlowTableRow[] = normalizedEvents.length > 0 ? normalizedEvents.map(({ raw: e, title }) => ({
     id: asString(e.id),
     time: (e.time as string) ?? "",
     title,
@@ -1296,7 +1519,7 @@ function _mapApiToViewModel(raw: Record<string, unknown>): EventFlowViewModel {
     event_kind: asString(e.kind) || null,
     source_refs: asSourceRefs(e.source_refs),
     related_news_items: normalizeRelatedNewsItems(e.related_news_items),
-  }));
+  })) : tableRowsFromTimeline(timeline);
 
   return {
     status: (raw.status as EventFlowViewModel["status"]) ?? "partial",
@@ -1313,7 +1536,9 @@ function _mapApiToViewModel(raw: Record<string, unknown>): EventFlowViewModel {
     daily_analysis_triggers: normalizeProgressTriggerBundle(raw.daily_analysis_triggers),
     article_briefs: normalizeArticleBriefBundle(raw.article_briefs),
     report_input_items: [],
-    has_data: events.length > 0 || briefSummary !== null,
+    gold_macro_overview: goldMacroOverview,
+    gold_mainlines: goldMainlines,
+    has_data: events.length > 0 || timeline.length > 0 || briefSummary !== null,
     source_refs: (raw.source_refs as EventFlowViewModel["source_refs"]) ?? [],
   };
 }
@@ -1354,6 +1579,8 @@ function _mergeApiIntoCurated(curated: EventFlowViewModel, raw: Record<string, u
       : curatedBrief,
     article_briefs: apiView.article_briefs ?? curated.article_briefs ?? null,
     daily_analysis_triggers: apiView.daily_analysis_triggers ?? curated.daily_analysis_triggers ?? null,
+    gold_macro_overview: apiView.gold_macro_overview ?? curated.gold_macro_overview ?? null,
+    gold_mainlines: apiView.gold_mainlines ?? curated.gold_mainlines ?? null,
     has_data: true,
   };
 }

@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -21,15 +20,13 @@ def get_mem0_client() -> MemoryClient:
     """获取 Mem0 客户端单例。
 
     从环境变量 MEM0_API_KEY 读取凭证；若当前进程尚未加载环境，
-    会先尝试加载项目根目录 `.env`，再尝试加载 `FINANCE_AGENT_ENV_FILE`，
+    会先尝试加载项目根目录 `.env`，再尝试加载 `~/.hermes/.env`，
     最后回退到 Settings 管理的 DB secret。
     使用 lru_cache 确保整个进程生命周期只创建一个 client 实例。
     """
     project_root = Path(__file__).resolve().parents[3]
     load_dotenv(project_root / ".env", override=False)
-    extra_env_file = os.getenv("FINANCE_AGENT_ENV_FILE")
-    if extra_env_file:
-        load_dotenv(Path(extra_env_file).expanduser(), override=False)
+    load_dotenv(Path.home() / ".hermes" / ".env", override=False)
 
     api_key = resolve_runtime_secret("MEM0_API_KEY") or ""
     if not api_key:

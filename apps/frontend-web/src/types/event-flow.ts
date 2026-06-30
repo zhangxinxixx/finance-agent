@@ -1,3 +1,11 @@
+import type {
+  GoldMacroOverview,
+  GoldMainline,
+  GoldMainlinesViewModel,
+  GoldNetBias,
+  TransmissionPath,
+} from "@/types/gold-mainlines";
+
 export type EventImportance = "高" | "中" | "低";
 export type EventStatus = "已公布" | "发展中" | "传闻中" | "已结束" | "即将公布";
 export type EventImpact =
@@ -57,6 +65,16 @@ export interface EventFlowTimelineItem {
   market_validation?: Record<string, unknown>;
   market_snapshot?: Record<string, unknown>;
   related_news_items?: EventFlowRelatedNewsItem[];
+  mainlines?: GoldMainline[];
+  primary_mainline?: GoldMainline | null;
+  transmission_chains?: TransmissionPath[];
+  dominant_driver?: string | null;
+  bullish_drivers?: string[];
+  bearish_drivers?: string[];
+  net_effect?: GoldNetBias | null;
+  verification_needed?: string[];
+  verification_chain?: Record<string, unknown> | null;
+  changed_dominant_theme?: boolean;
 }
 
 export interface EventFlowRelatedNewsItem {
@@ -302,6 +320,8 @@ export interface EventFlowViewModel {
   daily_analysis_triggers?: EventFlowProgressTriggerBundle | null;
   article_briefs?: Jin10ArticleBriefBundle | null;
   report_input_items?: EventFlowReportInputItem[];
+  gold_macro_overview?: GoldMacroOverview | null;
+  gold_mainlines?: GoldMainlinesViewModel | null;
   has_data: boolean;
   source_refs?: import("@/types/common").SourceRef[];
 }

@@ -6,6 +6,9 @@ import "./index.css";
 
 const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
 const DashboardAnalysisPage = lazy(() => import("./pages/DashboardAnalysisPage").then((module) => ({ default: module.DashboardAnalysisPage })));
+const GoldMainlinesPage = lazy(() => import("./pages/GoldMainlinesPage").then((module) => ({ default: module.GoldMainlinesPage })));
+const RatesDollarPage = lazy(() => import("./pages/RatesDollarPage").then((module) => ({ default: module.RatesDollarPage })));
+const OilGeopoliticsPage = lazy(() => import("./pages/OilGeopoliticsPage").then((module) => ({ default: module.OilGeopoliticsPage })));
 const DataIngestionPage = lazy(() => import("./pages/DataIngestionPage").then((module) => ({ default: module.DataIngestionPage })));
 const MarketMonitorPage = lazy(() => import("./pages/MarketMonitorPage").then((module) => ({ default: module.MarketMonitorPage })));
 const CMEOptionsPage = lazy(() => import("./pages/CMEOptionsPage").then((module) => ({ default: module.CMEOptionsPage })));
@@ -51,6 +54,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={lazyPage(<DashboardPage />)} />
           <Route path="/dashboard/analysis" element={lazyPage(<DashboardAnalysisPage />)} />
+          <Route path="/gold-mainlines" element={lazyPage(<GoldMainlinesPage />)} />
+          <Route path="/rates-dollar" element={lazyPage(<RatesDollarPage />)} />
+          <Route path="/oil-geopolitics" element={lazyPage(<OilGeopoliticsPage />)} />
           <Route path="/data-ingestion" element={lazyPage(<DataIngestionPage />)} />
           <Route path="/data-sources/:sourceId" element={lazyPage(<DataIngestionPage />)} />
           <Route path="/market-monitor" element={lazyPage(<MarketMonitorPage />)} />

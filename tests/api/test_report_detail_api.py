@@ -181,6 +181,47 @@ def test_report_detail_returns_standard_four_artifacts(tmp_path: Path, monkeypat
     }
 
 
+def test_report_detail_includes_gold_macro_overview_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_report(session)
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/reports/2026-05-26/report-std-001/source.md": "# Source\n\nBody",
+            "storage/outputs/reports/2026-05-26/report-std-001/analysis.md": "# Analysis\n\nView",
+            "storage/outputs/reports/2026-05-26/report-std-001/visual.html": "<html><body>visual</body></html>",
+            "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        report_service,
+        "get_gold_mainlines_latest",
+        lambda *, project_root=None: {
+            "status": "partial",
+            "gold_macro_overview": {
+                "asset": "XAUUSD",
+                "as_of": "2026-06-30T00:00:00Z",
+                "dominant_mainline": "real_rates_usd",
+                "theme_rankings": [{"rank": 1, "mainline_id": "real_rates_usd", "score": 72}],
+                "verification_matrix": [{"label": "多源确认", "status": "pending"}],
+            },
+        },
+    )
+
+    with factory() as db:
+        payload = api_main.api_report_detail("report-std-001", db=db).model_dump(mode="json")
+
+    assert payload["gold_macro_overview"]["asset"] == "XAUUSD"
+    assert payload["gold_macro_overview"]["dominant_mainline"] == "real_rates_usd"
+    assert payload["gold_macro_overview"]["theme_rankings"][0]["mainline_id"] == "real_rates_usd"
+
+
 def test_report_subroutes_read_standard_source_and_analysis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apps.api import main as api_main
     from apps.api.services import report_service
@@ -415,7 +456,7 @@ def test_report_detail_filesystem_final_report_adapter_reads_markdown_without_db
     assert analysis_payload["content"].startswith("# XAUUSD 相关报告")
 
 
-def test_report_detail_macro_report_adapter_reads_macro_snapshot(
+def test_report_detail_macro_report_adapter_prefers_macro_full_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from apps.api import main as api_main
@@ -424,6 +465,7 @@ def test_report_detail_macro_report_adapter_reads_macro_snapshot(
     _make_tree(
         tmp_path,
         {
+            "storage/outputs/macro/2026-06-21/run-macro/macro_full_report.md": "# XAUUSD 宏观 / 流动性更新\n\n## 一句话结论",
             "storage/outputs/macro/2026-06-21/run-macro/macro_snapshot.md": "# XAUUSD 宏观数据报告\n\n## 核心宏观指标",
         },
     )
@@ -435,10 +477,10 @@ def test_report_detail_macro_report_adapter_reads_macro_snapshot(
         analysis_payload = api_main.api_report_analysis("macro_report:run-macro", db=db)
 
     assert detail["family"] == "macro_report"
-    assert detail["title"] == "XAUUSD 宏观数据报告（2026-06-21）"
+    assert detail["title"] == "XAUUSD 宏观分析报告（2026-06-21）"
     assert detail["run_id"] == "run-macro"
     assert detail["data_status"] == "live"
-    assert analysis_payload["content"].startswith("# XAUUSD 宏观数据报告")
+    assert analysis_payload["content"].startswith("# XAUUSD 宏观 / 流动性更新")
 
 
 def test_report_detail_macro_event_followup_adapter_uses_trade_date_scoped_report_id(

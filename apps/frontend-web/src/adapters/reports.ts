@@ -398,5 +398,6 @@ export async function fetchReportDetailView(reportId: string): Promise<ReportDet
     tabs,
     available_tabs: availableTabs,
     structured_payload: detail.structured_payload ?? null,
+    gold_macro_overview: detail.gold_macro_overview ?? null,
   };
 }

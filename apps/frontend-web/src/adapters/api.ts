@@ -68,11 +68,38 @@ type RawDashboardSummaryResponse = {
   pipeline?: DashboardSummary["pipeline"];
   warnings?: string[];
   risk_alerts?: string[];
+  integrated_macro?: {
+    report_type?: string;
+    trade_date?: string;
+    run_id?: string | null;
+    source?: string;
+    overall_bias?: string;
+    direction?: unknown;
+    macro_regime?: string;
+    dominant_driver?: unknown;
+    liquidity_state?: string;
+    rates_state?: string;
+    dollar_state?: string;
+    options_alignment?: string;
+    confidence?: number | null;
+    reasoning?: string;
+    trade_implication?: string;
+    trigger_upgrade?: unknown;
+    trigger_downgrade?: unknown;
+    invalidation?: unknown;
+    risks?: unknown;
+    missing_inputs?: unknown;
+    composite_status?: string | null;
+    composite_trade_date?: string | null;
+    source_refs?: DashboardSummary["source_trace"];
+  } | null;
   agent_summary?: {
     coordinator?: RawDashboardAgentCompactSummary | null;
     synthesis?: RawDashboardAgentCompactSummary | null;
   } | null;
   composite_analysis?: DashboardSummary["composite_analysis"];
+  gold_macro_overview?: DashboardSummary["gold_macro_overview"];
+  latest_supplemental_report?: DashboardSummary["latest_supplemental_report"];
   latest_reports?: DashboardSummary["latest_reports"];
   data_source_status?: Record<string, {
     name?: string;
@@ -249,6 +276,42 @@ function normalizeDashboardAgent(item: RawDashboardAgentCompactSummary | null | 
   };
 }
 
+function normalizeIntegratedMacro(
+  item: RawDashboardSummaryResponse["integrated_macro"],
+): DashboardSummary["integrated_macro"] {
+  if (!item) return null;
+  return {
+    report_type: asString(item.report_type, "integrated_macro_summary"),
+    trade_date: asString(item.trade_date),
+    run_id: asOptionalString(item.run_id),
+    source: asString(item.source, "macro_conclusion"),
+    overall_bias: asString(item.overall_bias, "宏观结论待确认"),
+    direction: normalizeSignalDirection(item.direction, "neutral"),
+    macro_regime: asString(item.macro_regime, "宏观阶段待确认"),
+    dominant_driver: asStringList(item.dominant_driver),
+    liquidity_state: asString(item.liquidity_state, "流动性状态待确认"),
+    rates_state: asString(item.rates_state, "利率状态待确认"),
+    dollar_state: asString(item.dollar_state, "美元状态待确认"),
+    options_alignment: asString(item.options_alignment, "期权结构待确认"),
+    confidence: typeof item.confidence === "number" ? item.confidence : null,
+    reasoning: asString(item.reasoning),
+    trade_implication: asString(item.trade_implication),
+    trigger_upgrade: asStringList(item.trigger_upgrade),
+    trigger_downgrade: asStringList(item.trigger_downgrade),
+    invalidation: asStringList(item.invalidation),
+    risks: asStringList(item.risks),
+    missing_inputs: asStringList(item.missing_inputs),
+    composite_status: asOptionalString(item.composite_status),
+    composite_trade_date: asOptionalString(item.composite_trade_date),
+    source_refs: item.source_refs ?? [],
+  };
+}
+
+function normalizeGoldMacroOverview(value: unknown): DashboardSummary["gold_macro_overview"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return Object.keys(value).length > 0 ? value as DashboardSummary["gold_macro_overview"] : null;
+}
+
 function normalizeReportStatus(value: unknown): DashboardSummary["latest_reports"][number]["status"] {
   if (value === "ready" || value === "pending" || value === "missing" || value === "degraded") {
     return value;
@@ -271,7 +334,7 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
   const resistance = normalizeWallLevels(options.walls?.resistance);
   const support = normalizeWallLevels(options.walls?.support);
   const intentScore = asNumber(options.intent_score);
-  const direction = intentScore >= 0.6 ? "bullish" : intentScore <= 0.35 ? "bearish" : "neutral";
+  const optionDirection = intentScore >= 0.6 ? "bullish" : intentScore <= 0.35 ? "bearish" : "neutral";
   const warnings = raw.warnings ?? [];
   const riskAlerts = raw.risk_alerts ?? [];
   const rawTriggers = asStringList(rawStrategy.triggers);
@@ -297,7 +360,7 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
     realtime_quotes: raw.realtime_quotes ?? {},
     conclusion: {
       bias: `期权结构：${asString(options.intent, "unavailable")}`,
-      direction,
+      direction: optionDirection,
       confidence: intentScore,
       macro_phase: raw.macro ? `macro: ${raw.macro.available_count ?? 0} available` : "macro unavailable",
       options_summary: `Gamma Zero ${options.gamma_zero?.toFixed?.(1) ?? "—"}，Forward ${options.forward_price?.toFixed?.(1) ?? "—"}，到期月 ${(options.expiries ?? []).slice(0, 4).join(" / ")}`,
@@ -359,9 +422,9 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
       },
     },
     strategy: {
-      bias: asString(rawStrategy.bias, `期权意图 ${asString(options.intent, "unavailable")}`),
-      direction: normalizeSignalDirection(rawStrategy.direction, direction),
-      confidence: typeof rawStrategy.confidence === "number" ? rawStrategy.confidence : intentScore,
+      bias: asString(rawStrategy.bias, "综合报告待生成"),
+      direction: normalizeSignalDirection(rawStrategy.direction, "neutral"),
+      confidence: typeof rawStrategy.confidence === "number" ? rawStrategy.confidence : 0,
       macro_phase: asString(rawStrategy.macro_phase, raw.macro ? `macro as_of ${raw.macro.as_of ?? "—"}` : "macro unavailable"),
       key_levels: {
         resistance: rawResistance.length > 0 ? rawResistance : resistance.map((item) => item.strike),
@@ -383,11 +446,19 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
     pipeline: raw.pipeline ?? { raw: "unavailable", parsed: "unavailable", features: "unavailable", agent: "unavailable", report: "unavailable", knowledge: "unavailable" },
     warnings,
     risk_alerts: riskAlerts,
+    integrated_macro: normalizeIntegratedMacro(raw.integrated_macro),
+    gold_macro_overview: normalizeGoldMacroOverview(raw.gold_macro_overview),
     agent_summary: {
       coordinator: normalizeDashboardAgent(raw.agent_summary?.coordinator),
       synthesis: normalizeDashboardAgent(raw.agent_summary?.synthesis),
     },
     composite_analysis: raw.composite_analysis,
+    latest_supplemental_report: raw.latest_supplemental_report
+      ? {
+          ...raw.latest_supplemental_report,
+          status: normalizeReportStatus(raw.latest_supplemental_report.status),
+        }
+      : null,
     latest_reports: (raw.latest_reports ?? []).map((report) => ({
       ...report,
       status: normalizeReportStatus(report.status),
@@ -678,17 +749,19 @@ function buildDashboardViewModel(
     run_id: strategyCardView.run_id ?? null,
     generated_at: summary.generated_at,
     market_state: {
-      label: strategyCardView.scenario_summary || summary.conclusion.bias || "等待后端综合结论",
+      label: strategyCardView.scenario_summary || strategyCardView.bias || "等待后端综合结论",
       bias: strategyCardView.direction,
       confidence: strategyCardView.confidence,
       status: strategyCardView.status,
-      summary: summary.conclusion.options_summary || "暂无综合摘要",
+      summary: summary.agent_summary?.synthesis?.summary || summary.agent_summary?.coordinator?.summary || strategyCardView.scenario_summary || "暂无综合摘要",
       updated_at: summary.generated_at,
       source_refs: strategyCardView.source_refs,
     },
     key_drivers: [
-      { id: "options", label: "期权结构", summary: summary.conclusion.options_summary, status: normalizeDataStatus(summary.cme_options.intent ? "available" : "unavailable"), source_refs: sourceRefs },
       { id: "macro", label: "宏观阶段", summary: summary.conclusion.macro_phase, status: modules.find((item) => item.id === "macro")?.status ?? "unavailable", source_refs: sourceRefs },
+      { id: "rates", label: "利率与美元", summary: "美元指数、名义利率、实际利率共同决定宏观方向", status: modules.find((item) => item.id === "market")?.status ?? "unavailable", source_refs: sourceRefs },
+      { id: "liquidity", label: "流动性", summary: "TGA / RRP / 银行准备金用于判断流动性背景", status: modules.find((item) => item.id === "macro")?.status ?? "unavailable", source_refs: sourceRefs },
+      { id: "options", label: "期权结构", summary: summary.conclusion.options_summary, status: normalizeDataStatus(summary.cme_options.intent ? "available" : "unavailable"), source_refs: sourceRefs },
     ],
     strategy_card: strategyCardView,
     cme_summary: {
@@ -709,6 +782,7 @@ function buildDashboardViewModel(
       metrics: Object.values(summary.macro_liquidity),
       source_refs: sourceRefs,
     },
+    gold_macro_overview: summary.gold_macro_overview ?? null,
     risk_alerts: summary.risk_alerts.map((alert, index) => ({
       id: `risk-${index}`,
       label: "风险提示",

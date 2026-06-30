@@ -1,4 +1,5 @@
 import type { DataStatus, ModuleStatus, ReportMeta, SourceRef } from "@/types/common";
+import type { GoldMacroOverview } from "@/types/gold-mainlines";
 
 export type PipelineStageStatus = "done" | "running" | "pending" | "unavailable";
 
@@ -160,10 +161,13 @@ export interface ReportItem {
   title: string;
   trade_date: string;
   run_id: string | null;
+  report_id?: string | null;
   type?: string | null;
   family?: string | null;
   url?: string | null;
   status: DashboardReportStatus;
+  anchor_trade_date?: string | null;
+  summary?: string | null;
   quality_audit?: {
     status?: string | null;
     reason_codes?: string[];
@@ -184,6 +188,17 @@ export interface DashboardCompositeAnalysisStatus {
     title?: string | null;
     quality_status?: string | null;
   }>;
+  availability_judgment?: {
+    status: "usable" | "usable_with_warnings" | "needs_generation" | "blocked" | string;
+    can_use_report: boolean;
+    can_use_as_latest_composite: boolean;
+    needs_generation: boolean;
+    has_eligible_context: boolean;
+    report_trade_date: string | null;
+    target_trade_date: string | null;
+    reason_codes: string[];
+    blocking_reason_codes: string[];
+  };
   warnings: string[];
 }
 
@@ -253,12 +268,41 @@ export interface DashboardSummary {
   pipeline: PipelineStatus;
   warnings: string[];
   risk_alerts: string[];
+  integrated_macro?: DashboardIntegratedMacroReadModel | null;
   agent_summary?: DashboardAgentSummary;
   composite_analysis?: DashboardCompositeAnalysisStatus;
+  gold_macro_overview?: GoldMacroOverview | null;
+  latest_supplemental_report?: ReportItem | null;
   latest_reports: ReportItem[];
   recent_tasks: TaskItem[];
   data_source_status: Record<string, DataSourceBrief>;
   source_trace: SourceTraceItem[];
+}
+
+export interface DashboardIntegratedMacroReadModel {
+  report_type: string;
+  trade_date: string;
+  run_id?: string | null;
+  source: string;
+  overall_bias: string;
+  direction: SignalDirection;
+  macro_regime: string;
+  dominant_driver: string[];
+  liquidity_state: string;
+  rates_state: string;
+  dollar_state: string;
+  options_alignment: string;
+  confidence: number | null;
+  reasoning: string;
+  trade_implication: string;
+  trigger_upgrade: string[];
+  trigger_downgrade: string[];
+  invalidation: string[];
+  risks: string[];
+  missing_inputs: string[];
+  composite_status?: string | null;
+  composite_trade_date?: string | null;
+  source_refs: SourceTraceItem[];
 }
 
 export interface DashboardViewModel {
@@ -271,6 +315,7 @@ export interface DashboardViewModel {
   strategy_card: DashboardStrategyCardViewModel | null;
   cme_summary: DashboardCMEOptionsSummaryViewModel | null;
   macro_summary: DashboardMacroSummaryViewModel | null;
+  gold_macro_overview?: GoldMacroOverview | null;
   risk_alerts: DashboardRiskItemView[];
   data_status: ModuleStatus[];
   latest_reports: ReportMeta[];

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -316,6 +317,76 @@ def test_build_strategy_card_partial_confidence_respected():
 
     assert card.confidence == 0.45
     assert "partial" in card.scenario_summary.lower()
+
+
+def test_build_strategy_card_displays_confidence_kernel_breakdown():
+    coordinator = _coordinator_output()
+    coordinator = coordinator.model_copy(
+        update={
+            "input_payload": {
+                "confidence_kernel": {
+                    "version": "1.0",
+                    "data_confidence": 0.84,
+                    "freshness_confidence": 0.92,
+                    "evidence_confidence": 0.78,
+                    "cross_source_confidence": 0.50,
+                    "conflict_penalty": 0.50,
+                    "model_dependency_penalty": 0.0,
+                    "regime_confidence": None,
+                    "overall": 0.55,
+                    "caps": ["macro_options_conflict"],
+                    "reasons": ["macro/options directional conflict caps confidence."],
+                }
+            }
+        }
+    )
+
+    card = build_strategy_card(
+        snapshot=_snapshot(),
+        coordinator_output=coordinator,
+        created_at=_CREATED_AT,
+    )
+
+    assert card.confidence_kernel is not None
+    assert card.confidence_kernel["overall"] == 0.55
+    assert card.confidence_kernel["caps"] == ["macro_options_conflict"]
+
+
+def test_build_strategy_card_uses_gold_macro_overview_as_conditional_signal():
+    snapshot = _snapshot()
+    snapshot["news"] = {
+        "data": {
+            "gold_macro_overview": {
+                "asset": "XAUUSD",
+                "as_of": "2026-06-30T00:00:00Z",
+                "phase": "macro_verification",
+                "dominant_mainline": "real_rates_usd",
+                "net_bias": "mixed",
+                "driver_conflict": {"verification_needed": ["real_rate_response_needed"]},
+                "verification_matrix": [
+                    {"label": "多源确认", "status": "pending"},
+                    {"label": "实际利率确认", "status": "pending"},
+                ],
+            }
+        }
+    }
+
+    card = build_strategy_card(
+        snapshot=snapshot,
+        coordinator_output=_coordinator_output(),
+        created_at=_CREATED_AT,
+    )
+
+    assert card.gold_macro_conditions is not None
+    assert card.gold_macro_conditions["dominant_mainline"] == "real_rates_usd"
+    assert card.gold_macro_conditions["net_bias"] == "mixed"
+    assert card.trigger_conditions == [
+        "Gold macro context remains mixed with dominant mainline real_rates_usd."
+    ]
+    assert any("pending verification" in item for item in card.watchlist)
+    assert any("GoldMacroOverview dominant mainline changes" in item for item in card.invalid_conditions)
+    combined = " ".join(card.trigger_conditions + card.confirmation_conditions + card.invalid_conditions)
+    assert not re.search(r"\b(buy|sell|enter|stop.loss|take.profit|long\s*entry|short\s*entry)\b", combined, re.IGNORECASE)
 
 
 # ═══════════════════════════════════════════════════════════════════════

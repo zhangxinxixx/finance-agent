@@ -54,6 +54,55 @@ def test_dashboard_summary_includes_agent_read_model(monkeypatch):
     assert data["agent_summary"]["coordinator"]["agent_name"] == "coordinator"
 
 
+def test_dashboard_summary_includes_gold_macro_overview(monkeypatch):
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_options_snapshot", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_market_tickers", lambda: {"sources": [], "tickers": {}, "generated_at": None})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_macro_latest", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_recent_tasks", lambda _limit=5: [])
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_reports_index", lambda: {"reports": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_data_source_statuses", lambda: {"sources": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.build_dashboard_agent_summary", lambda: {"coordinator": None, "synthesis": None})
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.get_gold_mainlines_latest",
+        lambda: {
+            "status": "partial",
+            "gold_macro_overview": {
+                "asset": "XAUUSD",
+                "as_of": "2026-06-30T00:00:00Z",
+                "phase": "weak_repair_watch",
+                "net_bias": "mixed",
+                "dominant_mainline": "real_rates_usd",
+                "theme_rankings": [
+                    {
+                        "rank": 1,
+                        "mainline_id": "real_rates_usd",
+                        "score": 18,
+                        "theme_score": 18,
+                        "direction_score": -1,
+                        "impact_score": 3,
+                        "confidence_score": 3,
+                        "freshness_score": 2,
+                    }
+                ],
+                "war_oil_rate_chain": {
+                    "path_id": "geopolitics_to_oil_to_rates",
+                    "conclusion_code": "C",
+                    "conclusion_label": "两者抵消，黄金震荡",
+                    "net_effect": "mixed",
+                },
+            },
+        },
+    )
+
+    data = get_dashboard_summary()
+
+    assert data["gold_macro_overview"]["asset"] == "XAUUSD"
+    assert data["gold_macro_overview"]["dominant_mainline"] == "real_rates_usd"
+    assert data["gold_macro_overview"]["theme_rankings"][0]["theme_score"] == 18
+    assert data["gold_macro_overview"]["theme_rankings"][0]["direction_score"] == -1
+    assert data["gold_macro_overview"]["war_oil_rate_chain"]["conclusion_code"] == "C"
+
+
 def test_dashboard_summary_latest_reports_are_globally_sorted_by_trade_date(monkeypatch):
     monkeypatch.setattr("apps.api.services.dashboard_service.get_options_snapshot", lambda: None)
     monkeypatch.setattr("apps.api.services.dashboard_service.get_market_tickers", lambda: {"sources": [], "tickers": {}, "generated_at": None})
@@ -192,6 +241,51 @@ def test_dashboard_summary_exposes_latest_macro_event_followup_without_replacing
 
     assert data["composite_analysis"]["trade_date"] == "2026-06-13"
     assert data["composite_analysis"]["latest_report_date"] == "2026-06-14"
+    assert data["latest_supplemental_report"]["type"] == "macro_event_followup"
+    assert data["latest_supplemental_report"]["anchor_trade_date"] == "2026-06-13"
+    assert data["latest_supplemental_report"]["summary"] == "Weekend events reinforce the prior composite view."
     assert data["latest_reports"][0]["type"] == "macro_event_followup"
     assert data["latest_reports"][0]["anchor_trade_date"] == "2026-06-13"
     assert data["latest_reports"][0]["summary"] == "Weekend events reinforce the prior composite view."
+
+
+def test_dashboard_summary_keeps_latest_supplemental_report_when_it_falls_outside_latest_report_limit(monkeypatch):
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_options_snapshot", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_market_tickers", lambda: {"sources": [], "tickers": {}, "generated_at": None})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_macro_latest", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_recent_tasks", lambda _limit=5: [])
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.list_reports_index",
+        lambda: {
+            "reports": [
+                *[
+                    {
+                        "type": "macro_report",
+                        "trade_date": f"2026-06-{day:02d}",
+                        "run_id": f"macro-{day}",
+                        "report_id": f"macro_report:macro-{day}",
+                        "available": True,
+                    }
+                    for day in range(20, 26)
+                ],
+                {
+                    "type": "macro_event_followup",
+                    "trade_date": "2026-06-14",
+                    "anchor_trade_date": "2026-06-13",
+                    "run_id": "followup-run",
+                    "report_id": "macro_event_followup:2026-06-14:followup-run",
+                    "family": "macro_event_followup_supplement",
+                    "summary": "Older weekend supplement remains separately addressable.",
+                    "available": True,
+                },
+            ]
+        },
+    )
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_data_source_statuses", lambda: {"sources": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.build_dashboard_agent_summary", lambda: {"coordinator": None, "synthesis": None})
+
+    data = get_dashboard_summary()
+
+    assert all(item["type"] != "macro_event_followup" for item in data["latest_reports"])
+    assert data["latest_supplemental_report"]["report_id"] == "macro_event_followup:2026-06-14:followup-run"
+    assert data["latest_supplemental_report"]["summary"] == "Older weekend supplement remains separately addressable."

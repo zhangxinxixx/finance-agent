@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from apps.api.schemas.agent import (
     PromptVersionCreate,
 )
-from apps.analysis.memory import build_automation_memory_context
+from apps.analysis.memory import build_codex_memory_context
 from apps.premarket import PREMARKET_STEP_ORDER, sort_premarket_steps
 from apps.api.data_service import (
     get_dashboard_summary,
@@ -88,6 +88,10 @@ from apps.api.services.feishu_jin10_message_monitor_service import (
     get_feishu_jin10_message_monitor_latest,
     list_feishu_jin10_message_monitor_dates,
 )
+from apps.api.services.gold_mainline_service import (
+    get_gold_mainlines,
+    get_gold_mainlines_latest,
+)
 from apps.api.routes import data_source_routes
 from apps.api.routes import (
     agent_analysis_read_routes,
@@ -97,6 +101,7 @@ from apps.api.routes import (
     event_flow_routes,
     execution_read_routes,
     frontend_compat_routes,
+    gold_mainline_routes,
     health_routes,
     jin10_market_routes,
     jin10_report_routes,
@@ -564,6 +569,7 @@ app.include_router(settings_read_routes.router)
 app.include_router(settings_write_routes.router)
 app.include_router(jin10_report_routes.router)
 app.include_router(news_routes.router)
+app.include_router(gold_mainline_routes.router)
 app.include_router(jin10_market_routes.router)
 app.include_router(premarket_routes.router)
 app.include_router(agent_governance_read_routes.router)
@@ -680,6 +686,8 @@ api_create_daily_analysis_followup_tasks = news_routes.api_create_daily_analysis
 api_feishu_jin10_message_monitor_latest = news_routes.api_feishu_jin10_message_monitor_latest
 api_feishu_jin10_message_monitor_dates = news_routes.api_feishu_jin10_message_monitor_dates
 api_feishu_jin10_message_monitor = news_routes.api_feishu_jin10_message_monitor
+api_gold_mainlines_latest = gold_mainline_routes.api_gold_mainlines_latest
+api_gold_mainlines = gold_mainline_routes.api_gold_mainlines
 api_jin10_quotes_latest = jin10_market_routes.api_jin10_quotes_latest
 api_jin10_calendar = jin10_market_routes.api_jin10_calendar
 api_jin10_flash = jin10_market_routes.api_jin10_flash
@@ -731,7 +739,7 @@ system_status = system_status_routes.system_status
 
 # Keep these globals explicit so modular route handlers and legacy tests can patch via apps.api.main.
 _HEALTH_ROUTE_DEPENDENCIES = (
-    build_automation_memory_context,
+    build_codex_memory_context,
 )
 _DATA_SOURCE_ROUTE_DEPENDENCIES = (
     get_data_source_statuses,
@@ -822,6 +830,10 @@ _NEWS_ROUTE_DEPENDENCIES = (
     get_feishu_jin10_message_monitor_latest,
     list_feishu_jin10_message_monitor_dates,
     get_feishu_jin10_message_monitor,
+)
+_GOLD_MAINLINE_ROUTE_DEPENDENCIES = (
+    get_gold_mainlines_latest,
+    get_gold_mainlines,
 )
 
 

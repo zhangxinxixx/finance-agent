@@ -2,6 +2,8 @@ import type { ArtifactRef } from "@/types/artifact";
 import type { DataStatus, ReportFormat, ReportMeta, SourceRef } from "@/types/common";
 import type { SourceTracePayload } from "@/types/source-trace";
 
+import type { GoldMacroOverview } from "@/types/gold-mainlines";
+
 export type ReportType = "final_report" | "strategy_card" | "options_report" | "macro_report" | string;
 export type ReportFamily = "cme_options_visual" | "final_report_markdown" | "options_report_markdown" | "jin10_daily_visual" | "jin10_weekly_visual";
 
@@ -104,6 +106,7 @@ export interface Jin10ReportBundleResponse {
   article_id?: string;
   title?: string;
   source_url?: string;
+  generated_at?: string | null;
   default_view: Jin10Subview;
   views: Record<Jin10Subview, Jin10ArtifactView>;
   quality_audit?: Jin10QualityAudit | null;
@@ -257,6 +260,7 @@ export interface ReportDetailResponse {
   input_snapshot_ids: string[];
   review_items: Array<Record<string, unknown>>;
   structured_payload?: Record<string, unknown> | null;
+  gold_macro_overview?: GoldMacroOverview | null;
 }
 
 export interface ReportArtifactPayloadResponse {
@@ -373,4 +377,5 @@ export interface ReportDetailView {
   tabs: Partial<Record<ReportArtifactTabKey, ReportArtifactContentView>>;
   available_tabs: ReportDetailTabKey[];
   structured_payload?: Record<string, unknown> | null;
+  gold_macro_overview?: GoldMacroOverview | null;
 }

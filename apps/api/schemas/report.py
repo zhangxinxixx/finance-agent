@@ -35,6 +35,7 @@ class ReportDetail(ReportSummary):
     input_snapshot_ids: list[str] = Field(default_factory=list)
     review_items: list[ReviewItem] = Field(default_factory=list)
     structured_payload: dict | None = None
+    gold_macro_overview: dict | None = None
 
 
 class ReportDeterministicInput(SchemaModel):

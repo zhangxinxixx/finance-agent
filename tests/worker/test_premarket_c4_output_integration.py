@@ -362,6 +362,47 @@ def test_c4_pipeline_source_refs_flow_through(tmp_path: Path) -> None:
     assert len(data["source_refs"]) > 0
 
 
+def test_c4_pipeline_strategy_card_consumes_gold_macro_conditions(tmp_path: Path) -> None:
+    """GoldMacroOverview should reach strategy_card as conditional research signals."""
+    from apps.worker.runner import _run_c4_agent_pipeline
+
+    snapshot = _make_rich_snapshot(run_id="run-gold-macro-conditions")
+    snapshot["news"] = {
+        "status": "available",
+        "data": {
+            "gold_macro_overview": {
+                "asset": "XAUUSD",
+                "as_of": "2026-06-30T00:00:00Z",
+                "phase": "macro_verification",
+                "dominant_mainline": "real_rates_usd",
+                "net_bias": "mixed",
+                "driver_conflict": {"verification_needed": ["real_rate_response_needed"]},
+                "verification_matrix": [
+                    {"label": "多源确认", "status": "pending"},
+                    {"label": "实际利率确认", "status": "pending"},
+                ],
+            }
+        },
+    }
+
+    summaries, _ = _run_c4_agent_pipeline(
+        storage_root=tmp_path,
+        snapshot=snapshot,
+        run_id="run-gold-macro-conditions",
+        created_at=_CREATED_AT,
+    )
+
+    json_path = Path(summaries["strategy_card"]["paths"][0])
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["gold_macro_conditions"]["dominant_mainline"] == "real_rates_usd"
+    assert data["gold_macro_conditions"]["net_bias"] == "mixed"
+    assert data["trigger_conditions"] == [
+        "Gold macro context remains mixed with dominant mainline real_rates_usd."
+    ]
+    assert any("Gold macro condition" in item for item in data["confirmation_conditions"])
+    assert any("GoldMacroOverview dominant mainline changes" in item for item in data["invalid_conditions"])
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Full runner integration tests (with DB + mocked pipelines)
 # ═══════════════════════════════════════════════════════════════════════

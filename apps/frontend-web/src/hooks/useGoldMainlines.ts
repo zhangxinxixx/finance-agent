@@ -1,0 +1,57 @@
+import { useEffect, useState } from "react";
+import { fetchGoldMainlinesLatest, type GoldMainlinesResponse } from "@/adapters/goldMainlines";
+
+interface GoldMainlinesState {
+  data: GoldMainlinesResponse | null;
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+  refetch: () => void;
+}
+
+export function useGoldMainlines(): GoldMainlinesState {
+  const [data, setData] = useState<GoldMainlinesResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const nextData = await fetchGoldMainlinesLatest();
+        if (!cancelled) {
+          setData(nextData);
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          setData(null);
+          setError(cause instanceof Error ? cause : new Error("加载黄金主线失败"));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadToken]);
+
+  return {
+    data,
+    isLoading,
+    isError: error !== null,
+    error,
+    refetch: () => setReloadToken((value) => value + 1),
+  };
+}
+
+export default useGoldMainlines;

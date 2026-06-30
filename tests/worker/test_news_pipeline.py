@@ -114,22 +114,37 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     assert collect_summary["source_ref_count"] == 2
     assert collect_summary["artifact_path"] == f"features/news/{state.retrieved_date}/run-news/collection_diagnostics.json"
     assert feature_summary["event_candidate_count"] == 2
+    assert feature_summary["gold_mainline_count"] == 9
+    assert feature_summary["gold_event_link_count"] == 2
+    assert feature_summary["gold_event_mainlines_path"] == f"features/news/{state.retrieved_date}/run-news/gold_event_mainlines.json"
     assert brief_summary["confirmed_event_count"] == 1
     assert brief_summary["candidate_event_count"] == 1
+    assert brief_summary["gold_mainline_count"] == 9
+    assert brief_summary["gold_macro_overview_path"] == f"analysis/gold_mainlines/{state.retrieved_date}/run-news/gold_macro_overview.json"
     assert state.snapshot_dict is not None
     assert state.snapshot_dict["daily_market_brief"]["confirmed_events"][0]["verification_status"] == "official_confirmed"
+    assert state.snapshot_dict["gold_event_mainlines"]["mainlines"][0]["mainline_id"] == "fed_policy_path"
+    assert state.snapshot_dict["gold_macro_overview"]["theme_rankings"][0]["mainline_id"] == "fed_policy_path"
+    assert state.snapshot_dict["gold_macro_overview"]["input_snapshot_ids"]["gold_event_mainlines"] == f"features/news/{state.retrieved_date}/run-news/gold_event_mainlines.json"
     assert state.snapshot_dict["daily_analysis_triggers"]["trigger_count"] == 0
     assert state.snapshot_dict["daily_brief_input_snapshot"]["report_mode"] == "news_driven"
     assert state.snapshot_dict["daily_brief_output"]["status"] == "available"
     assert state.snapshot_dict["data_quality"]["daily_analysis_trigger_count"] == 0
+    assert state.snapshot_dict["data_quality"]["gold_mainline_count"] == 9
+    assert state.snapshot_dict["data_quality"]["gold_event_link_count"] == 2
 
     feature_dir = tmp_path / "features" / "news" / state.retrieved_date / "run-news"
+    analysis_dir = tmp_path / "analysis" / "gold_mainlines" / state.retrieved_date / "run-news"
     output_dir = tmp_path / "outputs" / "daily_brief" / state.retrieved_date / "run-news"
     diagnostics_payload = json.loads((feature_dir / "collection_diagnostics.json").read_text(encoding="utf-8"))
+    gold_mainlines_payload = json.loads((feature_dir / "gold_event_mainlines.json").read_text(encoding="utf-8"))
+    gold_overview_payload = json.loads((analysis_dir / "gold_macro_overview.json").read_text(encoding="utf-8"))
     assert (feature_dir / "event_candidates.json").exists()
     assert (feature_dir / "impact_assessments.json").exists()
+    assert (feature_dir / "gold_event_mainlines.json").exists()
     assert (feature_dir / "daily_market_brief.json").exists()
     assert (feature_dir / "daily_brief_input_snapshot.json").exists()
+    assert (analysis_dir / "gold_macro_overview.json").exists()
     assert (output_dir / "daily_brief.md").exists()
     assert (output_dir / "daily_brief.json").exists()
     assert brief_summary["daily_brief_input_snapshot_path"] == f"features/news/{state.retrieved_date}/run-news/daily_brief_input_snapshot.json"
@@ -147,6 +162,12 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     assert diagnostics_payload["latest_source_status_by_source_key"]["gdelt_news"]["source_refs"] == [
         {"source_ref": "gdelt:test", "source": "gdelt_news"}
     ]
+    assert gold_mainlines_payload["run_id"] == "run-news"
+    assert len(gold_mainlines_payload["mainlines"]) == 9
+    assert len(gold_mainlines_payload["event_links"]) == 2
+    assert gold_overview_payload["run_id"] == "run-news"
+    assert gold_overview_payload["input_snapshot_ids"]["gold_event_mainlines"] == f"features/news/{state.retrieved_date}/run-news/gold_event_mainlines.json"
+    assert len(gold_overview_payload["theme_rankings"]) == 9
 
 
 def test_news_pipeline_collect_checkpoint_skips_seen_items_on_rerun(tmp_path: Path) -> None:
@@ -282,7 +303,9 @@ def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp
 
     assert feature_summary["report_event_count"] >= 2
     assert feature_summary["market_reaction_count"] >= 1
+    assert feature_summary["gold_mainline_count"] == 9
     assert brief_summary["candidate_event_count"] >= 2
+    assert brief_summary["gold_verification_item_count"] >= 1
     assert report_events_payload["source_key"] == "jin10_report_events"
     assert report_events_payload["items"]
     assert market_reactions_payload["market_reactions"]
@@ -300,6 +323,9 @@ def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp
         for item in brief_payload["daily_market_brief"]["candidate_events"]
     )
     assert any(item["asset"] == "WTI" for item in brief_payload["daily_market_brief"]["asset_reactions"])
+    assert state.snapshot_dict is not None
+    assert state.snapshot_dict["gold_event_mainlines"]["event_links"]
+    assert state.snapshot_dict["gold_macro_overview"]["input_snapshot_ids"]["gold_event_mainlines"] == f"features/news/{state.retrieved_date}/run-news/gold_event_mainlines.json"
 
 
 def test_news_pipeline_feature_step_writes_jin10_daily_analysis_triggers(tmp_path: Path) -> None:
@@ -314,7 +340,7 @@ def test_news_pipeline_feature_step_writes_jin10_daily_analysis_triggers(tmp_pat
                     source_key="jin10_feishu",
                     source_name="Jin10 Feishu Chat Pull",
                     source_type="supplemental",
-                    feed_key="chat_fixture",
+                    feed_key="oc_jin10",
                     title=(
                         "能源推升通胀数据，美联储已难兑现宽松。黄金乐观情绪被清除，短期动量仍为负。"
                         "多头交易仍需等新的催化剂，收复4500是第一道槛。"
@@ -342,13 +368,13 @@ def test_news_pipeline_feature_step_writes_jin10_daily_analysis_triggers(tmp_pat
                         "source_refs": [
                             {
                                 "source": "jin10_feishu",
-                                "source_ref": "jin10_feishu:chat_fixture:om_trigger",
+                                "source_ref": "jin10_feishu:oc_jin10:om_trigger",
                             }
                         ],
                     },
                 )
             ],
-            source_refs=[{"source": "jin10_feishu", "source_ref": "jin10_feishu:chat_fixture"}],
+            source_refs=[{"source": "jin10_feishu", "source_ref": "jin10_feishu:oc_jin10"}],
         )
 
     with (
@@ -370,6 +396,8 @@ def test_news_pipeline_feature_step_writes_jin10_daily_analysis_triggers(tmp_pat
     assert trigger_payload["trigger_count"] == 1
     assert trigger_payload["triggers"][0]["priority"] == "high"
     assert trigger_payload["triggers"][0]["suggested_actions"][2] == "run_jin10_daily_analysis"
+    assert state.snapshot_dict["gold_event_mainlines"]["mainlines"][0]["mainline_id"] == "fed_policy_path"
+    assert state.snapshot_dict["gold_macro_overview"]["theme_rankings"][0]["mainline_id"] == "fed_policy_path"
 
 
 def test_run_premarket_executes_news_steps_and_snapshot_contains_brief(tmp_path: Path) -> None:
@@ -412,5 +440,7 @@ def test_run_premarket_executes_news_steps_and_snapshot_contains_brief(tmp_path:
     assert snapshot["news"]["status"] == "available"
     assert snapshot["news"]["data"]["daily_market_brief"]["confirmed_events"][0]["event_id"].startswith("event:fed_hawkish:")
     assert snapshot["news"]["data"]["daily_analysis_triggers"]["trigger_count"] == 0
+    assert snapshot["news"]["data"]["gold_event_mainlines"]["mainlines"][0]["mainline_id"] == "fed_policy_path"
+    assert snapshot["news"]["data"]["gold_macro_overview"]["input_snapshot_ids"]["gold_event_mainlines"].endswith("/gold_event_mainlines.json")
     assert snapshot["news"]["data"]["daily_brief_input_snapshot"]["report_mode"] == "news_driven"
     assert snapshot["news"]["data"]["daily_brief_output"]["status"] == "available"

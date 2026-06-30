@@ -27,6 +27,7 @@ from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.agent_read_model import build_event_impact_agent_summary
 from apps.api.services.daily_analysis_followup_service import get_daily_analysis_followups_latest
 from apps.api.services.daily_analysis_trigger_service import get_daily_analysis_triggers_latest
+from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,8 @@ def build_event_flow_overview() -> dict[str, Any]:
         "daily_analysis_triggers": None,
         "daily_analysis_followups": None,
         "article_briefs": None,
+        "gold_macro_overview": None,
+        "gold_mainlines": None,
         "source_refs": [],
         "warnings": [],
     }
@@ -398,6 +401,7 @@ def _overview_events(overview: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _finalize_event_flow_result(result: dict[str, Any]) -> dict[str, Any]:
+    _attach_gold_mainline_read_model(result)
     preferred_ids = set()
     brief_summary = result.get("brief_summary") if isinstance(result.get("brief_summary"), dict) else {}
     market_mainline = brief_summary.get("market_mainline") if isinstance(brief_summary.get("market_mainline"), dict) else {}
@@ -407,6 +411,7 @@ def _finalize_event_flow_result(result: dict[str, Any]) -> dict[str, Any]:
 
     events = _overview_events(result)
     result["events"] = _dedupe_event_flow_events(events, preferred_ids=preferred_ids)
+    _enrich_events_with_gold_mainline_links(result)
     if primary_event_id and not any(event.get("id") == primary_event_id for event in result["events"]):
         replacement = next(
             (
@@ -419,6 +424,86 @@ def _finalize_event_flow_result(result: dict[str, Any]) -> dict[str, Any]:
         if replacement is not None:
             market_mainline["primary_event_id"] = replacement.get("id")
     return result
+
+
+def _attach_gold_mainline_read_model(result: dict[str, Any]) -> None:
+    try:
+        payload = get_gold_mainlines_latest(project_root=_PROJECT_ROOT)
+    except Exception:
+        logger.warning("failed to load gold mainline read model for event flow", exc_info=True)
+        return
+    if not isinstance(payload, dict) or payload.get("status") == "unavailable":
+        return
+    overview = payload.get("gold_macro_overview")
+    mainlines = payload.get("gold_mainlines")
+    if isinstance(overview, dict):
+        result["gold_macro_overview"] = overview
+    if isinstance(mainlines, dict):
+        result["gold_mainlines"] = mainlines
+    source_refs = payload.get("source_refs")
+    if isinstance(source_refs, list) and source_refs:
+        result["source_refs"] = _merge_source_refs(
+            result.get("source_refs") if isinstance(result.get("source_refs"), list) else [],
+            [
+                {
+                    "source_ref": f"gold_mainlines:{payload.get('date')}/{payload.get('run_id')}",
+                    "label": "黄金九主线归因",
+                    "status": payload.get("status") or "partial",
+                    "path": payload.get("artifact_path"),
+                }
+            ],
+        )
+
+
+def _enrich_events_with_gold_mainline_links(result: dict[str, Any]) -> None:
+    gold_mainlines = result.get("gold_mainlines")
+    if not isinstance(gold_mainlines, dict):
+        return
+    event_links = gold_mainlines.get("event_links")
+    if not isinstance(event_links, list):
+        return
+    links_by_event_id = {
+        str(link.get("event_id") or ""): link
+        for link in event_links
+        if isinstance(link, dict) and str(link.get("event_id") or "").strip()
+    }
+    if not links_by_event_id:
+        return
+    enriched: list[dict[str, Any]] = []
+    for event in _overview_events(result):
+        event_id = str(event.get("id") or "")
+        link = links_by_event_id.get(event_id)
+        if link is None:
+            enriched.append(event)
+            continue
+        item = dict(event)
+        field_map = {
+            "mainline_ids": "mainline_ids",
+            "primary_mainline": "primary_mainline",
+            "transmission_path_ids": "transmission_path_ids",
+            "bullish_drivers": "bullish_drivers",
+            "bearish_drivers": "bearish_drivers",
+            "dominant_driver": "dominant_driver",
+            "verification_needed": "verification_needed",
+            "verification_chain": "verification_chain",
+            "changed_dominant_theme": "changed_dominant_theme",
+        }
+        for source_field, target_field in field_map.items():
+            if source_field in link:
+                item[target_field] = link[source_field]
+        direction_by_asset = link.get("direction_by_asset")
+        if isinstance(direction_by_asset, dict):
+            item["direction_by_asset"] = dict(direction_by_asset)
+            item["net_effect"] = direction_by_asset.get("XAUUSD") or direction_by_asset.get("gold")
+        if link.get("pricing_status"):
+            item["pricing"] = link.get("pricing_status")
+        if link.get("verification_status"):
+            item["verification_status"] = link.get("verification_status")
+        market_validation_ref = str(link.get("market_validation_ref") or "").strip()
+        if market_validation_ref:
+            item["market_validation_ref"] = market_validation_ref
+        enriched.append(item)
+    result["events"] = enriched
 
 
 def _dedupe_event_flow_events(events: list[dict[str, Any]], *, preferred_ids: set[str] | None = None) -> list[dict[str, Any]]:

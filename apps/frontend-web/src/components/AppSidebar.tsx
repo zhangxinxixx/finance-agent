@@ -4,11 +4,13 @@ import {
   DatabaseZap,
   Activity,
   LineChart,
+  Gauge,
   BarChart3,
   FileText,
   MessagesSquare,
   BookOpen,
   Bot,
+  Flame,
   Target,
   Settings,
   GitBranch,
@@ -17,6 +19,9 @@ import {
 
 const navItems = [
   { id: "dashboard", zh: "总览", icon: LayoutDashboard, path: "/dashboard" },
+  { id: "gold-mainlines", zh: "黄金主线", icon: Target, path: "/gold-mainlines" },
+  { id: "rates-dollar", zh: "利率与美元", icon: Gauge, path: "/rates-dollar" },
+  { id: "oil-geopolitics", zh: "石油与地缘", icon: Flame, path: "/oil-geopolitics" },
   { id: "data-ingestion", zh: "数据接入", icon: DatabaseZap, path: "/data-ingestion" },
   { id: "event-flow", zh: "事件流", icon: GitBranch, path: "/event-flow" },
   { id: "feishu-monitor", zh: "飞书监控", icon: MessagesSquare, path: "/feishu-monitor" },
@@ -34,12 +39,12 @@ export function AppSidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-logo">
-        <div className="sidebar-logo-mark" style={{ background: "linear-gradient(135deg, var(--brand-gold), var(--warn))" }}>
-          <Activity size={15} />
+        <div className="sidebar-logo-mark">
+          <Activity size={16} />
         </div>
         <div className="min-w-0">
           <div className="sidebar-logo-text-zh">金融分析中台</div>
-          <div className="text-[9px] tracking-[0.06em] text-[var(--fg-5)]">研究工作台</div>
+          <div className="text-[10px] tracking-[0.06em] text-[var(--fg-5)]">研究工作台</div>
         </div>
       </div>
 
@@ -54,7 +59,7 @@ export function AppSidebar() {
             >
               <Icon className="icon" />
               <div className="min-w-0">
-                <div className="truncate text-[11px]">{item.zh}</div>
+                <div className="truncate text-[12px]">{item.zh}</div>
               </div>
             </NavLink>
           );
@@ -62,14 +67,14 @@ export function AppSidebar() {
       </nav>
 
       <div className="sidebar-bottom">
-        <div className="flex items-center justify-between gap-2 text-[10px]">
+        <div className="flex items-center justify-between gap-2 text-[11px]">
           <span className="text-finance-text-muted">本地终端</span>
-          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--up-border)] bg-[var(--up-soft)] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--up)]">
+          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--up-border)] bg-[var(--up-soft)] px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--up)]">
             <span className="h-1.5 w-1.5 rounded-full bg-current" />
             在线
           </span>
         </div>
-        <div className="mt-1 text-[8px] tracking-[0.06em] text-[var(--fg-5)]">当前会话已连接</div>
+        <div className="mt-1 text-[10px] tracking-[0.06em] text-[var(--fg-5)]">当前会话已连接</div>
       </div>
     </aside>
   );

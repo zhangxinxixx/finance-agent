@@ -24,6 +24,8 @@ class StrategyCardOutput(BaseModel):
     risk_points: list[str]
     invalid_conditions: list[str]
     watchlist: list[str]
+    trigger_conditions: list[str] = Field(default_factory=list)
+    confirmation_conditions: list[str] = Field(default_factory=list)
     market_regime: str | None = None
     source_refs: list[dict[str, Any]]
     input_snapshot_ids: dict[str, Any]
@@ -41,6 +43,14 @@ class StrategyCardOutput(BaseModel):
     data_category_summary: dict[str, Any] = Field(
         default_factory=dict,
         description="Summary of data_category counts across source_refs",
+    )
+    confidence_kernel: dict[str, Any] | None = Field(
+        default=None,
+        description="Central ConfidenceKernel breakdown propagated from coordinator output",
+    )
+    gold_macro_conditions: dict[str, Any] | None = Field(
+        default=None,
+        description="Conditional gold macro signals derived from GoldMacroOverview for strategy gating",
     )
 
     @model_validator(mode="after")

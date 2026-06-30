@@ -67,6 +67,15 @@ def build_strategy_card(
         for item in risk_output.watchlist:
             if item not in watchlist:
                 watchlist.append(item)
+    gold_macro_conditions = _extract_gold_macro_conditions(snapshot)
+    trigger_conditions = list(gold_macro_conditions.get("trigger_conditions") or []) if gold_macro_conditions else []
+    confirmation_conditions = list(gold_macro_conditions.get("confirmation_conditions") or []) if gold_macro_conditions else []
+    if gold_macro_conditions:
+        for item in gold_macro_conditions.get("watchlist") or []:
+            if item not in watchlist:
+                watchlist.append(str(item))
+        for item in gold_macro_conditions.get("invalidation_conditions") or []:
+            invalid_conditions.append(str(item))
 
     # ── source_refs (snapshot + coordinator + risk) ────────────────────
     source_refs = _merge_source_refs(snapshot, coordinator_output, risk_output)
@@ -85,6 +94,7 @@ def build_strategy_card(
 
     # ── data_category_summary from source_refs ────────────────────────
     data_category_summary = _compute_data_category_summary(source_refs)
+    confidence_kernel = _extract_confidence_kernel(coordinator_output)
 
     # ── input_snapshot_ids ─────────────────────────────────────────────
     input_snapshot_ids = _lineage_ids(snapshot, coordinator_output, risk_output)
@@ -98,6 +108,8 @@ def build_strategy_card(
     # ── final sanitisation: never emit executable trade instructions ───
     risk_points = [_strip_execution(text) for text in risk_points]
     invalid_conditions = [_strip_execution(text) for text in invalid_conditions]
+    trigger_conditions = [_strip_execution(text) for text in trigger_conditions]
+    confirmation_conditions = [_strip_execution(text) for text in confirmation_conditions]
     scenario_summary = _strip_execution(scenario_summary)
 
     return StrategyCardOutput(
@@ -112,6 +124,8 @@ def build_strategy_card(
         risk_points=risk_points,
         invalid_conditions=invalid_conditions,
         watchlist=watchlist,
+        trigger_conditions=trigger_conditions,
+        confirmation_conditions=confirmation_conditions,
         source_refs=source_refs,
         input_snapshot_ids=input_snapshot_ids,
         created_at=created_at,
@@ -120,6 +134,8 @@ def build_strategy_card(
         evidence_refs=evidence_refs,
         data_quality=data_quality,
         data_category_summary=data_category_summary,
+        confidence_kernel=confidence_kernel,
+        gold_macro_conditions=gold_macro_conditions,
     )
 
 
@@ -281,6 +297,109 @@ def _compute_data_category_summary(source_refs: list[dict[str, Any]]) -> dict[st
         "system_inference": counts.get("system_inference", 0),
         "total": total,
     }
+
+
+def _extract_confidence_kernel(coordinator: AgentOutput) -> dict[str, Any] | None:
+    payload = coordinator.input_payload
+    if not isinstance(payload, dict):
+        return None
+    kernel = payload.get("confidence_kernel")
+    return dict(kernel) if isinstance(kernel, dict) else None
+
+
+def _extract_gold_macro_conditions(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    overview = _find_gold_macro_overview(snapshot)
+    if not overview:
+        return None
+
+    dominant = str(overview.get("dominant_mainline") or "").strip() or "unknown"
+    net_bias = str(overview.get("net_bias") or "").strip() or "unknown"
+    as_of = str(overview.get("as_of") or "").strip() or None
+    phase = str(overview.get("phase") or "").strip() or None
+    verification_needed = _verification_needed(overview)
+    changed_theme = bool(overview.get("changed_dominant_theme"))
+
+    trigger_conditions = [
+        f"Gold macro context remains {net_bias} with dominant mainline {dominant}.",
+    ]
+    confirmation_conditions = [
+        "Gold macro condition can raise conviction only after pending verification items are resolved.",
+    ]
+    invalidation_conditions = [
+        "Strategy card must be rechecked if GoldMacroOverview dominant mainline changes.",
+    ]
+    watchlist = [
+        f"Gold macro pending verification: {item}" for item in verification_needed[:3]
+    ]
+    if not verification_needed:
+        confirmation_conditions.append("Gold macro verification matrix has no pending top-level blockers.")
+    if changed_theme:
+        invalidation_conditions.append("GoldMacroOverview reports a changed dominant theme; keep strategy view provisional.")
+
+    return {
+        "as_of": as_of,
+        "phase": phase,
+        "dominant_mainline": dominant,
+        "net_bias": net_bias,
+        "trigger_conditions": trigger_conditions,
+        "confirmation_conditions": confirmation_conditions,
+        "invalidation_conditions": invalidation_conditions,
+        "watchlist": watchlist,
+        "verification_needed": verification_needed,
+        "source_refs": list(overview.get("source_refs") or []) if isinstance(overview.get("source_refs"), list) else [],
+    }
+
+
+def _find_gold_macro_overview(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    direct = snapshot.get("gold_macro_overview")
+    if isinstance(direct, dict) and direct:
+        return direct
+
+    news = snapshot.get("news")
+    if isinstance(news, dict):
+        news_data = news.get("data")
+        if isinstance(news_data, dict):
+            nested = news_data.get("gold_macro_overview")
+            if isinstance(nested, dict) and nested:
+                return nested
+
+    payload = snapshot.get("payload")
+    if isinstance(payload, dict):
+        nested = payload.get("gold_macro_overview")
+        if isinstance(nested, dict) and nested:
+            return nested
+    return None
+
+
+def _verification_needed(overview: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    conflict = overview.get("driver_conflict")
+    if isinstance(conflict, dict):
+        values.extend(str(item) for item in _as_list(conflict.get("verification_needed")) if str(item).strip())
+    matrix = overview.get("verification_matrix")
+    if isinstance(matrix, list):
+        for item in matrix:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").lower()
+            if status in {"resolved", "verified", "confirmed", "available"}:
+                continue
+            label = item.get("label") or item.get("reason") or item.get("required_source")
+            if label:
+                values.append(str(label))
+    return _dedupe_strings(values)
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped
 
 
 def _lineage_ids(
