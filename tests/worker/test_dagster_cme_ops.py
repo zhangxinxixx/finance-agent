@@ -180,6 +180,67 @@ def test_option_wall_op_registers_cme_option_artifacts_in_run_artifact_registry(
     assert all(artifact.artifact_metadata["input_snapshot_ids"]["parse_run_id"] == "parse-run-1" for artifact in artifacts)
 
 
+def test_option_wall_op_emits_snapshot_and_report_timeline_events(tmp_path) -> None:
+    session = _make_session()
+    run_id = uuid.uuid4()
+    session.add(
+        TaskRun(
+            id=run_id,
+            name="premarket_job",
+            task_type="premarket",
+            status=TaskStatus.running,
+            snapshot_id="cme-options:2026-05-06",
+            trade_date="2026-05-06",
+        )
+    )
+    session.commit()
+    context = SimpleNamespace(
+        run_id=str(run_id),
+        resources=SimpleNamespace(db_session=session),
+        log=SimpleNamespace(info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None),
+    )
+
+    with (
+        patch("apps.worker.pipelines.cme.get_cme_option_rows", return_value=_option_rows()),
+        patch("apps.worker.pipelines.cme.get_available_cme_trade_dates", return_value=[]),
+    ):
+        option_wall_op.compute_fn.decorated_fn(
+            context,
+            _cme_state(),
+            CmeConfig(storage_root=str(tmp_path)),
+        )
+
+    events = session.query(ExecutionEvent).filter(ExecutionEvent.run_id == run_id).all()
+    standard_events = {
+        event.event_type: (event.task_id, json.loads(event.payload))
+        for event in events
+        if event.event_type in {"SNAPSHOT_BUILT", "REPORT_WRITTEN"}
+    }
+
+    assert set(standard_events) == {"SNAPSHOT_BUILT", "REPORT_WRITTEN"}
+    snapshot_task_id, snapshot_payload = standard_events["SNAPSHOT_BUILT"]
+    report_task_id, report_payload = standard_events["REPORT_WRITTEN"]
+    assert snapshot_task_id == report_task_id
+    assert snapshot_payload == {
+        "source": "cme_daily_bulletin",
+        "snapshot_id": "cme-options:2026-05-06",
+        "snapshot_path": str(tmp_path / "features" / "cme" / "2026-05-06" / str(run_id) / "options_analysis.json"),
+        "trade_date": "2026-05-06",
+        "product": "OG",
+        "row_count": 5,
+        "walls_count": 2,
+    }
+    assert report_payload == {
+        "source": "cme_daily_bulletin",
+        "report_path": str(tmp_path / "outputs" / "cme" / "2026-05-06" / str(run_id) / "options_analysis.md"),
+        "visual_json_path": str(tmp_path / "outputs" / "cme" / "2026-05-06" / str(run_id) / "options_visual_report.json"),
+        "html_path": str(tmp_path / "outputs" / "cme" / "2026-05-06" / str(run_id) / "options_visual_report.html"),
+        "trade_date": "2026-05-06",
+        "product": "OG",
+        "intent_type": "I4_trend_launch",
+    }
+
+
 def test_cme_dagster_download_parse_ingest_ops_register_written_artifacts(tmp_path) -> None:
     session = _make_session()
     run_id = uuid.uuid4()

@@ -164,7 +164,7 @@ def option_wall_op(context, state: CmePipelineState, config: CmeConfig) -> CmePi
         storage_root=storage, run_id=run_id, db=context.resources.db_session,
     )
     if summary.get("status") == "success":
-        register_dagster_output_artifacts(
+        task_id = register_dagster_output_artifacts(
             context,
             db=context.resources.db_session,
             paths=[
@@ -181,6 +181,34 @@ def option_wall_op(context, state: CmePipelineState, config: CmeConfig) -> CmePi
             snapshot_id=f"cme-options:{summary.get('trade_date')}",
             trade_date=summary.get("trade_date"),
             json_artifact_type="feature_json",
+        )
+        _emit_cme_timeline_event(
+            context,
+            task_id=task_id,
+            event_type="SNAPSHOT_BUILT",
+            payload={
+                "source": "cme_daily_bulletin",
+                "snapshot_id": f"cme-options:{summary.get('trade_date')}",
+                "snapshot_path": summary.get("json_path"),
+                "trade_date": summary.get("trade_date"),
+                "product": summary.get("product"),
+                "row_count": summary.get("row_count"),
+                "walls_count": summary.get("walls_count"),
+            },
+        )
+        _emit_cme_timeline_event(
+            context,
+            task_id=task_id,
+            event_type="REPORT_WRITTEN",
+            payload={
+                "source": "cme_daily_bulletin",
+                "report_path": summary.get("md_path"),
+                "visual_json_path": summary.get("visual_json_path"),
+                "html_path": summary.get("html_path"),
+                "trade_date": summary.get("trade_date"),
+                "product": summary.get("product"),
+                "intent_type": summary.get("intent_type"),
+            },
         )
     context.log.info(f"option_wall done: {summary.get('status', 'ok')}")
     return state
