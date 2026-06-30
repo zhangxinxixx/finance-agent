@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from apps.analysis.evidence import EvidenceItem
+
 
 class AgentBias(StrEnum):
     BULLISH = "bullish"
@@ -71,6 +73,10 @@ class AgentOutput(BaseModel):
     data_quality: list[str] = Field(
         default_factory=list,
         description="Data quality tags: stale_data, proxy_gex, prelim_data, etc.",
+    )
+    evidence_items: list[EvidenceItem] = Field(
+        default_factory=list,
+        description="Structured evidence factors for downstream reducers and decisions.",
     )
     # ── LLM metadata (optional, only for LLM-powered agents) ──
     llm_model: str | None = Field(default=None, description="LLM model used for this analysis")

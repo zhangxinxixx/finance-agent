@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from apps.analysis.agents import AgentBias, AgentOutput, AgentStatus
+from apps.analysis.evidence import EvidenceItem
 
 
 def _valid_payload() -> dict:
@@ -47,12 +48,83 @@ def test_agent_output_accepts_required_schema_and_serializes_to_json():
     assert output.source_refs == []
     assert output.status is AgentStatus.SUCCESS
     assert isinstance(output.created_at, datetime)
+    assert output.evidence_items == []
 
     encoded = output.model_dump(mode="json")
     assert encoded["bias"] == "neutral"
     assert encoded["status"] == "success"
     assert encoded["source_refs"] == []
     json.dumps(encoded, ensure_ascii=False)
+
+
+def test_evidence_item_accepts_structured_factor_payload_and_serializes_to_json():
+    item = EvidenceItem.model_validate(
+        {
+            "factor": "real_yield_pressure",
+            "direction": "bearish",
+            "strength": 0.72,
+            "confidence": 0.8,
+            "freshness": 0.9,
+            "source_tier": "official",
+            "source_refs": [{"source": "fred", "symbol": "DGS10"}],
+            "data_category": "confirmed_data",
+            "invalidation_hint": "Real yields reverse lower.",
+            "notes": "10Y real yield is elevated.",
+        }
+    )
+
+    assert item.version == "1.0"
+    assert item.factor == "real_yield_pressure"
+    assert item.direction == "bearish"
+    assert item.strength == 0.72
+    assert item.confidence == 0.8
+    assert item.freshness == 0.9
+    assert item.source_refs == [{"source": "fred", "symbol": "DGS10"}]
+    encoded = item.model_dump(mode="json")
+    assert encoded["direction"] == "bearish"
+    json.dumps(encoded, ensure_ascii=False)
+
+
+def test_agent_output_accepts_evidence_items_for_downstream_consumers():
+    payload = _valid_payload()
+    payload["evidence_items"] = [
+        {
+            "factor": "options_wall",
+            "direction": "bullish",
+            "strength": 0.65,
+            "confidence": 0.7,
+            "freshness": 1.0,
+            "source_tier": "exchange",
+            "source_refs": [{"source": "cme_daily_bulletin"}],
+            "data_category": "confirmed_data",
+        }
+    ]
+
+    output = AgentOutput.model_validate(payload)
+
+    assert len(output.evidence_items) == 1
+    assert output.evidence_items[0].factor == "options_wall"
+    assert output.evidence_items[0].direction == "bullish"
+    assert output.model_dump(mode="json")["evidence_items"][0]["factor"] == "options_wall"
+
+
+@pytest.mark.parametrize("field", ["strength", "confidence", "freshness"])
+@pytest.mark.parametrize("value", [-0.01, 1.01])
+def test_evidence_item_rejects_scores_outside_zero_to_one(field: str, value: float):
+    payload = {
+        "factor": "real_yield_pressure",
+        "direction": "bearish",
+        "strength": 0.5,
+        "confidence": 0.5,
+        "freshness": 0.5,
+        "source_tier": "official",
+        "source_refs": [{"source": "fred"}],
+        "data_category": "confirmed_data",
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError, match=field):
+        EvidenceItem.model_validate(payload)
 
 
 @pytest.mark.parametrize("confidence", [0.0, 1.0])
