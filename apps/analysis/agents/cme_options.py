@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+from apps.analysis.evidence import EvidenceItem
 
 _AGENT_NAME = "cme_options_agent"
 _MODULE = "options"
@@ -176,6 +177,7 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
         status=status,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
+        evidence_items=_options_evidence_items(options, source_refs, expiry_structures),
     )
 
 
@@ -367,6 +369,103 @@ def _direction_from_wall(wall: dict[str, Any]) -> float:
         return 1.0
     if "resistance" in text or "call" in text:
         return -1.0
+    return 0.0
+
+
+def _options_evidence_items(
+    options: dict[str, Any],
+    source_refs: list[dict[str, Any]],
+    expiry_structures: list[dict[str, Any]],
+) -> list[EvidenceItem]:
+    items: list[EvidenceItem] = []
+
+    top_wall = next(iter(_list_of_dicts(options.get("wall_scores"))), None)
+    if top_wall is not None:
+        wall_score = _to_float(top_wall.get("wall_score")) or 0.5
+        wall_label = _wall_label(top_wall)
+        strike = _to_float(top_wall.get("strike") or top_wall.get("price") or top_wall.get("level"))
+        items.append(
+            EvidenceItem(
+                factor="option_wall",
+                direction=_evidence_direction_from_wall(top_wall),
+                strength=_clamp(wall_score, 0.0, 1.0),
+                confidence=_clamp(max(wall_score, 0.5) * 0.82, 0.35, 0.9),
+                freshness=1.0 if _source_status(options).upper() == "FINAL" else 0.65,
+                source_tier="exchange",
+                source_refs=[dict(ref) for ref in source_refs],
+                data_category=DataCategory.CONFIRMED_DATA.value,
+                invalidation_hint="Top wall flips or loses rank.",
+                notes=f"{wall_label}" + (f" near {strike:g}" if strike is not None else ""),
+            )
+        )
+
+    gamma_zero = _aggregate_gamma_zero(options)
+    if gamma_zero is not None or expiry_structures:
+        first = expiry_structures[0] if expiry_structures else {}
+        items.append(
+            EvidenceItem(
+                factor="gamma_positioning",
+                direction=_gamma_evidence_direction(first),
+                strength=_gamma_evidence_strength(first, gamma_zero),
+                confidence=0.72 if expiry_structures else 0.58,
+                freshness=1.0 if _source_status(options).upper() == "FINAL" else 0.65,
+                source_tier="exchange",
+                source_refs=[dict(ref) for ref in source_refs],
+                data_category=DataCategory.CONFIRMED_DATA.value,
+                invalidation_hint="Price crosses gamma zero or per-expiry GEX structure changes.",
+                notes=f"aggregate_gamma_zero={gamma_zero:g}" if gamma_zero is not None else None,
+            )
+        )
+
+    roll_signal = next(iter(_list_of_dicts(options.get("roll_signals"))), None)
+    if roll_signal is not None:
+        confidence = _to_float(roll_signal.get("confidence")) or 0.5
+        roll_type = _text(roll_signal.get("roll_type")) or "roll"
+        items.append(
+            EvidenceItem(
+                factor="expiry_risk",
+                direction="mixed",
+                strength=_clamp(confidence, 0.0, 1.0),
+                confidence=_clamp(confidence, 0.0, 1.0),
+                freshness=1.0 if _source_status(options).upper() == "FINAL" else 0.65,
+                source_tier="exchange",
+                source_refs=[dict(ref) for ref in source_refs],
+                data_category=DataCategory.CONFIRMED_DATA.value,
+                invalidation_hint="Roll signal disappears or reverses.",
+                notes=roll_type,
+            )
+        )
+
+    return items
+
+
+def _evidence_direction_from_wall(wall: dict[str, Any]) -> str:
+    numeric = _direction_from_wall(wall)
+    if numeric > 0:
+        return "bullish"
+    if numeric < 0:
+        return "bearish"
+    return "neutral"
+
+
+def _gamma_evidence_direction(structure: dict[str, Any]) -> str:
+    label = str(structure.get("structure_label") or "")
+    position = str(structure.get("position_vs_gamma_zero") or "")
+    if "Put-GEX" in label or position == "below":
+        return "bearish"
+    if "Call-GEX" in label or position == "above":
+        return "bullish"
+    if label or position != "unknown":
+        return "mixed"
+    return "neutral"
+
+
+def _gamma_evidence_strength(structure: dict[str, Any], gamma_zero: float | None) -> float:
+    net_gex = _to_float(structure.get("net_gex"))
+    if net_gex is not None:
+        return _clamp(abs(net_gex) / 500_000_000.0, 0.2, 1.0)
+    if gamma_zero is not None:
+        return 0.45
     return 0.0
 
 
