@@ -174,6 +174,23 @@ def test_conflicting_macro_options_exposes_conflict_and_caps_confidence():
     assert any("conflict" in note.lower() or "冲突" in note for note in output.risk_points + output.invalid_conditions)
 
 
+def test_coordinator_attaches_confidence_kernel_debug_payload():
+    output = coordinate_agent_outputs(
+        _snapshot(unavailable_modules=["technical"]),
+        macro_output=_macro(AgentBias.BULLISH, 0.82),
+        options_output=_options(AgentBias.BEARISH, 0.80),
+        risk_output=_risk(AgentBias.MIXED, 0.62),
+        created_at=_CREATED_AT,
+    )
+
+    assert output.input_payload is not None
+    kernel = output.input_payload["confidence_kernel"]
+    assert kernel["version"] == "1.0"
+    assert kernel["overall"] <= 0.55
+    assert "macro_options_conflict" in kernel["caps"]
+    assert "technical_unavailable" in kernel["caps"]
+
+
 def test_missing_risk_output_returns_partial_without_exception():
     output = coordinate_agent_outputs(
         _snapshot(),

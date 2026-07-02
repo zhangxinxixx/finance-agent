@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+from apps.analysis.confidence import compute_confidence_kernel
 
 _AGENT_NAME = "coordinator_agent"
 _MODULE = "coordinator"
@@ -151,6 +152,11 @@ def coordinate_agent_outputs(
         bias = AgentBias.UNAVAILABLE
 
     confidence = _confidence(prior_outputs, status, unavailable_modules, risk_points, invalid_conditions)
+    confidence_kernel = compute_confidence_kernel(
+        market_state=snapshot,
+        evidence_items=_confidence_evidence_items(snapshot, prior_outputs),
+        agent_outputs=prior_outputs,
+    )
     if risk is not None:
         confidence = min(confidence, _risk_cap(risk))
         if risk.bias in {AgentBias.MIXED, AgentBias.NEUTRAL, AgentBias.UNAVAILABLE} and bias in _DIRECTIONAL_BIASES:
@@ -187,6 +193,7 @@ def coordinate_agent_outputs(
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
         evidence_items=evidence_items,
+        input_payload={"confidence_kernel": confidence_kernel.model_dump(mode="json")},
     )
 
 
@@ -243,6 +250,16 @@ def _evidence_items(outputs: list[AgentOutput]):
                 continue
             seen.add(key)
             items.append(item)
+    return items
+
+
+def _confidence_evidence_items(snapshot: dict[str, Any], outputs: list[AgentOutput]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for ref in _source_refs(snapshot, outputs):
+        item = dict(ref)
+        item.setdefault("source_type", item.get("source") or item.get("type") or "structured")
+        item.setdefault("status", item.get("verification_status") or item.get("status") or "confirmed")
+        items.append(item)
     return items
 
 
