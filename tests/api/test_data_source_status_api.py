@@ -55,6 +55,8 @@ _JIN10_MULTI_ENTRY_EXPECTATIONS = {
     "jin10_xnews_public": ("news", "scraper", "http_document"),
     "jin10_datacenter_reports": ("macro", "structured", "js_data_script"),
     "jin10_svip_reports": ("reports", "scraper", "vip_browser_profile"),
+    "jin10_web_important_flash": ("news", "web_flash", "vip_browser_profile"),
+    "jin10_web_vip_flash": ("news", "vip_flash", "vip_browser_profile"),
 }
 
 
@@ -893,6 +895,73 @@ def test_data_service_extracts_latest_news_raw_ref_from_feature_artifact(tmp_pat
     assert jin10_news["metadata"]["pressure_profile"]["upgrade_required"] is True
 
 
+def test_jin10_web_important_flash_metadata_contract(tmp_path: Path) -> None:
+    """jin10_web_important_flash exposes correct metadata for frontend."""
+    from apps.api.data_service import get_data_source_statuses
+
+    with patch("apps.api.data_service._try_db_session", return_value=None), patch(
+        "apps.api.data_service._PROJECT_ROOT", tmp_path
+    ):
+        result = get_data_source_statuses()
+
+    sources = _sources_by_key(result)
+    src = sources["jin10_web_important_flash"]
+    assert src["source_group"] == "news"
+    assert src["source_type"] == "web_flash"
+    assert src["access_method"] == "vip_browser_profile"
+    assert src["metadata"]["provider_role"] == "supplemental"
+    assert src["metadata"]["priority_level"] == "P0"
+    assert src["metadata"]["event_layer"] == "realtime_flash"
+    assert src["metadata"]["frontend_label"] == "Jin10 首页重要快讯"
+
+
+def test_jin10_web_vip_flash_metadata_contract(tmp_path: Path) -> None:
+    """jin10_web_vip_flash exposes correct metadata for frontend."""
+    from apps.api.data_service import get_data_source_statuses
+
+    with patch("apps.api.data_service._try_db_session", return_value=None), patch(
+        "apps.api.data_service._PROJECT_ROOT", tmp_path
+    ):
+        result = get_data_source_statuses()
+
+    sources = _sources_by_key(result)
+    src = sources["jin10_web_vip_flash"]
+    assert src["source_group"] == "news"
+    assert src["source_type"] == "vip_flash"
+    assert src["access_method"] == "vip_browser_profile"
+    assert src["metadata"]["provider_role"] == "supplemental"
+    assert src["metadata"]["priority_level"] == "P0"
+    assert src["metadata"]["event_layer"] == "vip_analysis_flash"
+    assert src["metadata"]["frontend_label"] == "Jin10 VIP 快讯"
+
+
+def test_jin10_web_flash_sources_observability_and_readiness(tmp_path: Path) -> None:
+    """Both new Jin10 web flash sources expose polling strategy and pressure profile."""
+    from apps.api.data_service import get_data_source_statuses
+
+    with patch("apps.api.data_service._try_db_session", return_value=None), patch(
+        "apps.api.data_service._PROJECT_ROOT", tmp_path
+    ):
+        result = get_data_source_statuses()
+
+    sources = _sources_by_key(result)
+
+    important = sources["jin10_web_important_flash"]
+    assert important["metadata"]["polling_strategy"]["mode"] == "server_side_cache"
+    assert "60s" in important["metadata"]["polling_strategy"]["cadence"]
+    assert important["metadata"]["pressure_profile"]["level"] == "high"
+    assert important["metadata"]["pressure_profile"]["upgrade_required"] is True
+    assert important["readiness_state"] == "not_configured"
+    assert important["gate_state"] == "closed"
+
+    vip = sources["jin10_web_vip_flash"]
+    assert vip["metadata"]["polling_strategy"]["mode"] == "manual_or_authorized_browser_profile"
+    assert vip["metadata"]["pressure_profile"]["level"] == "medium"
+    assert vip["metadata"]["pressure_profile"]["upgrade_required"] is False
+    assert vip["readiness_state"] == "not_configured"
+    assert vip["gate_state"] == "closed"
+
+
 # ── route contract tests ──
 
 
@@ -1346,102 +1415,6 @@ def test_api_data_sources_registry_exposes_expected_source_contract() -> None:
     assert sources["fred"]["freshness_sla_minutes"] == 2160
     assert "macro_snapshot" in sources["fred"]["required_for"]
     assert sources["fred"]["enabled"] is True
-
-
-def test_api_data_sources_registry_exposes_source_tiers() -> None:
-    data = jsonable_encoder(api_data_sources_registry())
-    sources = {item["source_key"]: item for item in data["sources"]}
-
-    assert sources["fred"]["source_tier"] == "official_primary"
-    assert sources["dxy"]["source_tier"] == "market_primary"
-    assert sources["jin10_news"]["source_tier"] == "supplemental"
-    assert sources["gdelt_news"]["source_tier"] == "candidate"
-    assert sources["cme_options"]["source_tier"] == "inference"
-
-
-def test_data_source_health_latest_exposes_source_health_scores() -> None:
-    payload = {
-        "sources": [
-            {
-                "source_key": "fred",
-                "source_name": "FRED",
-                "source_group": "macro",
-                "status": "ok",
-                "configured": True,
-                "raw_ingested": True,
-                "parsed": True,
-                "analysis_ready": True,
-                "latest_update_time": "2026-06-24T09:30:00+00:00",
-                "latest_health_at": "2026-06-24T09:30:00+00:00",
-                "freshness_status": "fresh",
-                "freshness_reason": "within_sla",
-                "readiness_state": "ready",
-                "gate_state": "open",
-                "metadata": {"frontend_label": "FRED 官方宏观主源", "source_tier": "official_primary"},
-            },
-            {
-                "source_key": "jin10_mcp_flash",
-                "source_name": "Jin10 MCP Flash",
-                "source_group": "news",
-                "status": "ok",
-                "configured": True,
-                "raw_ingested": True,
-                "parsed": True,
-                "analysis_ready": True,
-                "latest_update_time": "2026-06-24T06:00:00+00:00",
-                "latest_health_at": "2026-06-24T06:00:00+00:00",
-                "freshness_status": "stale",
-                "freshness_reason": "ttl_exceeded",
-                "readiness_state": "degraded",
-                "gate_state": "degraded",
-                "metadata": {"frontend_label": "Jin10 MCP 快讯", "source_tier": "supplemental"},
-            },
-            {
-                "source_key": "gdelt_news",
-                "source_name": "GDELT DOC News Radar",
-                "source_group": "news",
-                "status": "error",
-                "configured": True,
-                "raw_ingested": False,
-                "parsed": False,
-                "analysis_ready": False,
-                "latest_update_time": None,
-                "latest_health_at": "2026-06-24T08:00:00+00:00",
-                "freshness_status": "unknown",
-                "freshness_reason": "missing_timestamp",
-                "readiness_state": "blocked",
-                "gate_state": "closed",
-                "metadata": {"frontend_label": "GDELT 全球新闻雷达", "source_tier": "candidate"},
-            },
-        ]
-    }
-
-    with patch("apps.api.services.source_service.get_data_source_statuses", return_value=payload), patch(
-        "apps.api.services.source_service._utc_now", return_value=datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
-    ):
-        data = get_data_source_health_latest()
-
-    sources = {item["source_key"]: item for item in data["items"]}
-    fred = sources["fred"]
-    stale_flash = sources["jin10_mcp_flash"]
-    gdelt = sources["gdelt_news"]
-
-    assert fred["source_tier"] == "official_primary"
-    assert fred["freshness_score"] == 1.0
-    assert fred["quality_score"] == 1.0
-    assert fred["staleness_seconds"] == 1800
-    assert fred["last_success_at"] == "2026-06-24T09:30:00+00:00"
-    assert fred["last_failure_at"] is None
-
-    assert stale_flash["source_tier"] == "supplemental"
-    assert stale_flash["freshness_score"] == 0.0
-    assert stale_flash["quality_score"] < fred["quality_score"]
-    assert stale_flash["readiness_state"] == "degraded"
-
-    assert gdelt["source_tier"] == "candidate"
-    assert gdelt["quality_score"] < stale_flash["quality_score"]
-    assert gdelt["last_success_at"] is None
-    assert gdelt["last_failure_at"] == "2026-06-24T08:00:00+00:00"
 
 
 def test_api_data_source_history_reads_persisted_snapshots_for_one_source() -> None:

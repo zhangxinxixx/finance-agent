@@ -38,7 +38,7 @@ def test_upsert_app_secret_stores_ciphertext_not_plaintext() -> None:
         secret_name="api_key",
         encrypted_value="ciphertext-value",
         masked_value="fred****1234",
-        actor="automation",
+        actor="codex",
         request_id="secret-001",
         audit_id="settings-action:secret:fred:secret-001",
     )
@@ -51,7 +51,7 @@ def test_upsert_app_secret_stores_ciphertext_not_plaintext() -> None:
     assert fetched.encrypted_value == "ciphertext-value"
     assert fetched.masked_value == "fred****1234"
     assert fetched.secret_name == "api_key"
-    assert fetched.updated_by == "automation"
+    assert fetched.updated_by == "codex"
     assert fetched.request_id == "secret-001"
     assert fetched.audit_id == "settings-action:secret:fred:secret-001"
 
@@ -64,7 +64,7 @@ def test_reset_app_secret_deletes_stored_ciphertext() -> None:
         secret_name="api_key",
         encrypted_value="ciphertext-value",
         masked_value="fred****1234",
-        actor="automation",
+        actor="codex",
     )
     session.commit()
 

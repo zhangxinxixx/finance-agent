@@ -26,15 +26,15 @@ export function ListView({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "88px minmax(0,2.3fr) 92px 132px 72px 70px 92px 48px",
-          padding: "6px 9px",
+          gridTemplateColumns: "96px minmax(0,2.3fr) 102px 146px 78px 78px 104px 56px",
+          padding: "8px 10px",
           background: "color-mix(in srgb, var(--bg-panel) 88%, transparent)",
           borderBottom: "1px solid var(--border)",
-          fontSize: 8,
+          fontSize: "var(--text-10)",
           fontWeight: 600,
           textTransform: "uppercase",
           color: "var(--fg-5)",
-          letterSpacing: "0.08em",
+          letterSpacing: 0,
           alignItems: "center",
         }}
       >
@@ -64,12 +64,12 @@ export function ListView({
             aria-label={isOpenable ? `查看${cat.label} ${item.trade_date || "未知日期"}报告` : undefined}
             style={{
               display: "grid",
-              gridTemplateColumns: "88px minmax(0,2.3fr) 92px 132px 72px 70px 92px 48px",
-              padding: "7px 9px",
+              gridTemplateColumns: "96px minmax(0,2.3fr) 102px 146px 78px 78px 104px 56px",
+              padding: "9px 10px",
               borderBottom: "1px solid var(--border-faint)",
               alignItems: "center",
-              gap: 6,
-              fontSize: 10,
+              gap: 8,
+              fontSize: "var(--text-11)",
               color: "var(--fg-3)",
               cursor: isOpenable ? "pointer" : "default",
               transition: "background 120ms",
@@ -91,7 +91,7 @@ export function ListView({
                 background: `${cat.color}1f`,
                 color: cat.color,
                 borderRadius: 2,
-                fontSize: 8,
+                fontSize: "var(--text-10)",
                 fontWeight: 600,
                 display: "inline-block",
                 width: "fit-content",
@@ -100,22 +100,22 @@ export function ListView({
               {cat.label}
             </span>
             <span style={{ minWidth: 0 }}>
-              <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9.5, color: "var(--fg-2)" }}>
+              <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "var(--text-12)", color: "var(--fg-2)", lineHeight: 1.35 }}>
                 {title}
               </span>
-              <span style={{ display: "block", marginTop: 1, fontSize: 8, color: "var(--fg-5)" }}>
+              <span style={{ display: "block", marginTop: 2, fontSize: "var(--text-10)", color: "var(--fg-5)" }}>
                 {item.format}
               </span>
             </span>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-11)" }}>
               {item.trade_date || "-"}
             </span>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--fg-4)" }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-10)", color: "var(--fg-4)" }}>
               {generatedAtLabel}
             </span>
             <span
               style={{
-                fontSize: 9,
+                fontSize: "var(--text-11)",
                 color: "var(--fg-4)",
               }}
             >
@@ -123,7 +123,7 @@ export function ListView({
             </span>
             <span
               style={{
-                fontSize: 9,
+                fontSize: "var(--text-11)",
                 color: item.available ? "#10b981" : "#f59e0b",
               }}
             >
@@ -132,13 +132,13 @@ export function ListView({
             <span
               style={{
                 fontFamily: "var(--font-mono)",
-                fontSize: 8,
+                fontSize: "var(--text-10)",
                 color: "var(--fg-5)",
               }}
             >
               {shortRunId(item.run_id)}
             </span>
-            <span style={{ fontSize: 9, color: "var(--fg-4)" }}>
+            <span style={{ fontSize: "var(--text-11)", color: "var(--fg-4)" }}>
               {isOpenable ? "进入" : "-"}
             </span>
           </div>

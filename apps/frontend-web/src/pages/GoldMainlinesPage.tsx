@@ -10,7 +10,8 @@ import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
-import { getStatusLabel } from "@/components/shared/statusMeta";
+import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
+import { GoldTopicOverviewCard, GoldTopicStatusBar } from "@/components/gold-mainlines/GoldMainlinePageFrame";
 import {
   GOLD_MAINLINE_META,
   GOLD_MAINLINE_ORDER,
@@ -19,7 +20,6 @@ import {
   formatGoldMainlineLabel,
   formatGoldNarrativeText,
   formatGoldNetBiasLabel,
-  formatGoldPhaseLabel,
   formatGoldPricingLayerLabel,
   formatGoldSourceRefLabel,
   formatTransmissionPathLabel,
@@ -59,10 +59,6 @@ function warningLabel(value: string): string {
 
 function warningText(values: string[]): string {
   return values.map(warningLabel).join("；");
-}
-
-function compactRunId(value: string): string {
-  return value.length > 26 ? `${value.slice(0, 16)}...${value.slice(-8)}` : value;
 }
 
 function statusTone(value: string | null | undefined) {
@@ -151,72 +147,31 @@ function formatEventCount(value: number): string {
   return `${value} 条事件`;
 }
 
-function CompactCoverageMetrics({ rows, overview }: { rows: MainlineCoverageRow[]; overview: GoldMacroOverview }) {
+function GoldMainlineHero({ overview, rows }: { overview: GoldMacroOverview; rows: MainlineCoverageRow[] }) {
+  const conflict = overview.driver_conflict;
   const covered = rows.filter((row) => row.ranking).length;
   const pending = rows.filter((row) => row.status === "pending").length;
   const missing = rows.filter((row) => row.status === "missing").length;
   const eventCount = new Set(rows.flatMap((row) => row.eventIds)).size || overview.key_events.length;
-  const metrics = [
-    { label: "覆盖", value: `${covered}/9`, meta: `缺口 ${missing}` },
-    { label: "待验证", value: pending, meta: "单源 / 缺关键数据" },
-    { label: "事件", value: eventCount, meta: "用于归因排序" },
-    { label: "验证项", value: overview.verification_matrix.length, meta: overview.asset || "XAU" },
-  ];
 
   return (
-    <div className="grid min-w-0 grid-cols-2 gap-1.5 sm:grid-cols-4">
-      {metrics.map((metric) => (
-        <div key={metric.label} className="min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-1.5">
-          <div className="flex min-w-0 items-baseline justify-between gap-2">
-            <div className="truncate text-[10px] font-semibold text-[var(--fg-5)]">{metric.label}</div>
-            <div className="fa-num shrink-0 text-[14px] font-semibold text-[var(--fg-2)]">{metric.value}</div>
-          </div>
-          <div className="mt-0.5 truncate text-[10px] text-[var(--fg-5)]">{metric.meta}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function GoldMainlineHero({ overview, rows }: { overview: GoldMacroOverview; rows: MainlineCoverageRow[] }) {
-  const conflict = overview.driver_conflict;
-
-  return (
-    <FACard
-      density="compact"
-      className="shrink-0"
-      bodyClassName="!p-2.5"
-    >
-      <div className="mb-2 flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--border-faint)] pb-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="h-5 w-[2px] shrink-0 rounded-[var(--radius-xs)] bg-[var(--emphasis)]" />
-          <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase text-[var(--fg-5)]">归因层</div>
-            <div className="truncate text-[14px] font-semibold leading-tight text-[var(--fg-1)]">黄金主线</div>
-          </div>
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <FAStatusPill tone={goldNetBiasTone(overview.net_bias)} dot={false}>{formatGoldNetBiasLabel(overview.net_bias)}</FAStatusPill>
-          <FAStatusPill tone="info" dot={false}>{formatGoldPhaseLabel(overview.phase)}</FAStatusPill>
-          <FAStatusPill tone="neutral" dot={false}>风险 {scoreLabel(overview.risk_score)}/100</FAStatusPill>
-        </div>
-      </div>
-      <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(430px,0.56fr)]">
-        <div className="min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] font-semibold text-[var(--fg-5)]">主导</span>
-            <FAStatusPill tone="info" dot={false}>{formatGoldMainlineLabel(overview.dominant_mainline)}</FAStatusPill>
-            {conflict?.dominant_driver ? (
-              <FAStatusPill tone={goldConflictTone(conflict.status)} dot={false}>{formatGoldDriverLabel(conflict.dominant_driver)}</FAStatusPill>
-            ) : null}
-          </div>
-          <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[var(--fg-3)]">
-            {formatGoldNarrativeText(overview.one_line_conclusion || conflict?.explanation) || "主线引擎暂未返回摘要。"}
-          </p>
-        </div>
-        <CompactCoverageMetrics rows={rows} overview={overview} />
-      </div>
-    </FACard>
+    <GoldTopicOverviewCard
+      title="黄金主线归因"
+      eyebrow="Attribution Layer"
+      accent="emphasis"
+      description={formatGoldNarrativeText(overview.one_line_conclusion || conflict?.explanation) || "主线引擎暂未返回摘要。"}
+      metrics={[
+        {
+          label: "主导主线",
+          value: formatGoldMainlineLabel(overview.dominant_mainline),
+          meta: conflict?.dominant_driver ? formatGoldDriverLabel(conflict.dominant_driver) : "dominant",
+          tone: conflict?.status === "conflicted" || conflict?.status === "mixed" ? "warn" : "info",
+        },
+        { label: "覆盖", value: `${covered}/9`, meta: `待接入 ${missing}` },
+        { label: "待验证", value: pending, meta: "单源 / 缺关键数据", tone: pending ? "warn" : "up" },
+        { label: "事件 / 验证", value: `${eventCount}E / ${overview.verification_matrix.length}V`, meta: overview.asset || "XAUUSD" },
+      ]}
+    />
   );
 }
 
@@ -593,14 +548,16 @@ export function GoldMainlinesPage() {
 
   useEffect(() => {
     shell.setHeaderContent(
-      <div className="dashboard-header-summary dashboard-header-summary--stacked">
-        <div className="dashboard-header-summary-title">黄金主线归因</div>
-        <div className="dashboard-header-summary-meta">
-          <span className="dashboard-header-summary-item">九条主线排序</span>
-          <span className="dashboard-header-summary-item">多空冲突</span>
-          <span className="dashboard-header-summary-item">传导链验证</span>
-        </div>
-      </div>,
+      <HeaderBreadcrumb
+        title="黄金主线归因"
+        meta={
+          <>
+            <span className="dashboard-header-summary-item">九条主线排序</span>
+            <span className="dashboard-header-summary-item">多空冲突</span>
+            <span className="dashboard-header-summary-item">传导链验证</span>
+          </>
+        }
+      />,
     );
 
     return () => shell.setHeaderContent(null);
@@ -655,17 +612,7 @@ export function GoldMainlinesPage() {
   return (
     <FAPageScaffold
       toolbar={(
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <FAStatusPill tone={statusTone(data.status)} dot={false}>{getStatusLabel(data.status)}</FAStatusPill>
-            <FAStatusPill tone="neutral" dot={false}>{data.date || overview.as_of?.slice(0, 10) || "日期未知"}</FAStatusPill>
-            {data.run_id ? <FAStatusPill tone="dim" dot={false} title={data.run_id}>{compactRunId(data.run_id)}</FAStatusPill> : null}
-          </div>
-          <button type="button" onClick={refetch} className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--fg-2)]">
-            <RefreshCw size={12} />
-            刷新
-          </button>
-        </div>
+        <GoldTopicStatusBar status={data.status} date={data.date || overview.as_of?.slice(0, 10)} runId={data.run_id} netBias={overview.net_bias} phase={overview.phase} riskScore={overview.risk_score} onRefresh={refetch} />
       )}
     >
       {data.warnings.length ? (

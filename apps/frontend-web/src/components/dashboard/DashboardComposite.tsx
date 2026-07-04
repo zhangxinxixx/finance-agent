@@ -20,7 +20,7 @@ export function DashboardComposite({ summary, viewModel }: DashboardCompositePro
     viewModel?.market_state.summary?.trim() ||
     summary.agent_summary?.synthesis?.summary?.trim() ||
     summary.agent_summary?.coordinator?.summary?.trim() ||
-    summary.conclusion.options_summary ||
+    summary.strategy.bias ||
     "等待后端生成综合分析摘要。";
   const compositeSummary = translateText(rawCompositeSummary);
 

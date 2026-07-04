@@ -294,6 +294,7 @@ def sample_agent_input_snapshot() -> dict[str, Any]:
                     "DXY": {"value": 97.8, "change_1w": -0.8},
                     "RRPONTSYD": {"value": 82.0},
                     "TGA": {"value": 510.0, "change_1w": -45.0},
+                    "WRESBAL": {"value": 3210.0, "change_1w": 18.0},
                     "SOFR": {"value": 4.32},
                     "EFFR": {"value": 4.33},
                     "IORB": {"value": 4.40},

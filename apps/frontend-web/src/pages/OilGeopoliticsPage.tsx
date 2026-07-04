@@ -10,13 +10,13 @@ import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPil
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
-import { getStatusLabel } from "@/components/shared/statusMeta";
+import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
+import { GoldTopicOverviewCard, GoldTopicStatusBar } from "@/components/gold-mainlines/GoldMainlinePageFrame";
 import {
   GOLD_MAINLINE_META,
   formatGoldDriverLabel,
   formatGoldMainlineLabel,
   formatGoldNetBiasLabel,
-  formatGoldPhaseLabel,
   formatGoldPricingLayerLabel,
   formatTransmissionPathLabel,
   formatGoldVerificationStatusLabel,
@@ -75,8 +75,8 @@ function statusTone(value: string | null | undefined): FAStatusTone {
   return "neutral";
 }
 
-function rankingMainlineId(item: GoldMainlineRanking): GoldMainline | null {
-  return normalizeGoldMainlineId(item.mainline_id ?? item.mainline);
+function rankingMainlineId(item: GoldMainlineRanking | null | undefined): GoldMainline | null {
+  return normalizeGoldMainlineId(item?.mainline_id ?? item?.mainline);
 }
 
 function eventMainlineIds(event: GoldMainlineEventLink): GoldMainline[] {
@@ -175,41 +175,23 @@ function OilHeader({ overview, rows }: { overview: GoldMacroOverview; rows: Topi
   const coveredCount = rows.filter((row) => row.ranking).length;
 
   return (
-    <FACard
+    <GoldTopicOverviewCard
       title="石油与地缘"
       eyebrow="Oil / Geopolitics"
       description={chain?.summary || leading?.summary || overview.one_line_conclusion || "等待后端主线总览返回石油与地缘摘要。"}
       accent="warn"
-      className="shrink-0"
-      action={(
-        <div className="flex flex-wrap justify-end gap-1.5">
-          <FAStatusPill tone={goldNetBiasTone(chain?.net_effect ?? leading?.direction ?? overview.net_bias)} dot={false}>
-            {formatGoldNetBiasLabel(chain?.net_effect ?? leading?.direction ?? overview.net_bias)}
-          </FAStatusPill>
-          <FAStatusPill tone="neutral" dot={false}>{formatGoldPhaseLabel(overview.phase)}</FAStatusPill>
-          <FAStatusPill tone="dim" dot={false}>{overview.as_of?.slice(0, 16).replace("T", " ") || "时间未知"}</FAStatusPill>
-        </div>
-      )}
-    >
-      <div className="grid gap-3 md:grid-cols-4">
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[10px] font-semibold text-[var(--fg-5)]">专题覆盖</div>
-          <div className="fa-num mt-2 text-[18px] font-semibold text-[var(--fg-2)]">{coveredCount}/2</div>
-        </div>
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[10px] font-semibold text-[var(--fg-5)]">风险链</div>
-          <div className="mt-2 text-[13px] font-semibold text-[var(--fg-2)]">{formatTransmissionPathLabel(chain?.path_id)}</div>
-        </div>
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[10px] font-semibold text-[var(--fg-5)]">主导驱动</div>
-          <div className="mt-2 text-[13px] font-semibold text-[var(--fg-2)]">{formatGoldDriverLabel(chain?.dominant_driver ?? overview.driver_conflict?.dominant_driver)}</div>
-        </div>
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[10px] font-semibold text-[var(--fg-5)]">风险分</div>
-          <div className="fa-num mt-2 text-[18px] font-semibold text-[var(--fg-2)]">{scoreLabel(overview.risk_score)}/100</div>
-        </div>
-      </div>
-    </FACard>
+      metrics={[
+        { label: "专题覆盖", value: `${coveredCount}/2`, meta: "Oil / Geopolitics", tone: coveredCount === 2 ? "up" : "warn" },
+        { label: "风险链", value: formatTransmissionPathLabel(chain?.path_id), meta: chain?.conclusion_code ? `${chain.conclusion_code}. ${chain.conclusion_label ?? ""}` : "chain" },
+        {
+          label: "主导驱动",
+          value: formatGoldDriverLabel(chain?.dominant_driver ?? overview.driver_conflict?.dominant_driver),
+          meta: formatGoldMainlineLabel(rankingMainlineId(leading) ?? overview.dominant_mainline),
+          tone: goldNetBiasTone(chain?.net_effect ?? leading?.direction ?? overview.net_bias),
+        },
+        { label: "风险分", value: `${scoreLabel(overview.risk_score)}/100`, meta: "risk score", tone: "warn" },
+      ]}
+    />
   );
 }
 
@@ -448,14 +430,16 @@ export function OilGeopoliticsPage() {
 
   useEffect(() => {
     shell.setHeaderContent(
-      <div className="dashboard-header-summary dashboard-header-summary--stacked">
-        <div className="dashboard-header-summary-title">石油与地缘</div>
-        <div className="dashboard-header-summary-meta">
-          <span className="dashboard-header-summary-item">战争风险</span>
-          <span className="dashboard-header-summary-item">油价冲击</span>
-          <span className="dashboard-header-summary-item">利率传导</span>
-        </div>
-      </div>,
+      <HeaderBreadcrumb
+        title="石油与地缘"
+        meta={
+          <>
+            <span className="dashboard-header-summary-item">战争风险</span>
+            <span className="dashboard-header-summary-item">油价冲击</span>
+            <span className="dashboard-header-summary-item">利率传导</span>
+          </>
+        }
+      />,
     );
     return () => shell.setHeaderContent(null);
   }, [shell]);
@@ -504,17 +488,7 @@ export function OilGeopoliticsPage() {
   return (
     <FAPageScaffold
       toolbar={(
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <FAStatusPill tone={statusTone(data.status)} dot={false}>{getStatusLabel(data.status)}</FAStatusPill>
-            <FAStatusPill tone="neutral" dot={false}>{data.date || overview.as_of?.slice(0, 10) || "日期未知"}</FAStatusPill>
-            {data.run_id ? <FAStatusPill tone="dim" dot={false}>{data.run_id}</FAStatusPill> : null}
-          </div>
-          <button type="button" onClick={refetch} className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--fg-2)]">
-            <RefreshCw size={12} />
-            刷新
-          </button>
-        </div>
+        <GoldTopicStatusBar status={data.status} date={data.date || overview.as_of?.slice(0, 10)} runId={data.run_id} netBias={overview.net_bias} phase={overview.phase} riskScore={overview.risk_score} onRefresh={refetch} />
       )}
     >
       {data.warnings.length ? <FAWarningBanner title="降级提示" description={warningText(data.warnings)} tone="info" /> : null}

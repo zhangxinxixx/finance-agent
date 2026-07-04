@@ -95,7 +95,7 @@ export function TimelineView({
                     background: `${cat.color}1f`,
                     color: cat.color,
                     borderRadius: 2,
-                    fontSize: 9,
+                    fontSize: "var(--text-10)",
                     fontWeight: 600,
                   }}
                 >
@@ -103,7 +103,7 @@ export function TimelineView({
                 </span>
                 <span
                   style={{
-                    fontSize: 10,
+                    fontSize: "var(--text-11)",
                     color: "var(--fg-5)",
                     fontFamily: "var(--font-mono)",
                   }}
@@ -111,12 +111,12 @@ export function TimelineView({
                   {item.trade_date || "-"}
                 </span>
               </div>
-              <div style={{ fontSize: 11, color: "var(--fg-2)", fontWeight: 500 }}>
+              <div style={{ fontSize: "var(--text-12)", color: "var(--fg-2)", fontWeight: 600, lineHeight: 1.4 }}>
                 {getReportTitle(item)}
               </div>
               <div
                 style={{
-                  fontSize: 9,
+                  fontSize: "var(--text-10)",
                   color: "var(--fg-5)",
                   marginTop: 2,
                   fontFamily: "var(--font-mono)",

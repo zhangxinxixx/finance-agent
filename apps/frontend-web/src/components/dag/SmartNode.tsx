@@ -31,11 +31,11 @@ const STAGE_LABELS_SMART: Record<DagNodeType, string> = {
 };
 
 const STATUS_STYLE: Record<string, { dot: string; text: string; bg: string }> = {
-  success:  { dot: "var(--up)",      text: "var(--up)",      bg: "var(--color-up-subtle)" },
-  running:  { dot: "var(--warn)",    text: "var(--warn)",    bg: "var(--color-warn-subtle)" },
-  failed:   { dot: "var(--down)",    text: "var(--down)",    bg: "var(--color-down-subtle)" },
+  success:  { dot: "var(--up)",      text: "var(--up)",      bg: "var(--up-soft)" },
+  running:  { dot: "var(--warn)",    text: "var(--warn)",    bg: "var(--warn-soft)" },
+  failed:   { dot: "var(--down)",    text: "var(--down)",    bg: "var(--down-soft)" },
   pending:  { dot: "var(--fg-5)",    text: "var(--fg-4)",    bg: "var(--bg-card-inner)" },
-  partial:  { dot: "#f59e0b",        text: "#d97706",        bg: "#fef3c7" },
+  partial:  { dot: "var(--warn)",    text: "var(--warn)",    bg: "var(--warn-soft)" },
 };
 
 // ── Helper ──
@@ -115,22 +115,22 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
       <Handle
         type="target"
         position={Position.Left}
-        className="!left-[-5px] !h-3 !w-3 !border !border-white/20 !bg-[rgba(8,12,20,0.92)]"
+        className="!left-[-5px] !h-3 !w-3 !border !border-[var(--border-strong)] !bg-[var(--bg-card)]"
         style={{ boxShadow: `0 0 14px ${color}88` }}
       />
       <Handle
         type="source"
         position={Position.Right}
-        className="!right-[-5px] !h-3 !w-3 !border !border-white/20 !bg-[rgba(8,12,20,0.92)]"
+        className="!right-[-5px] !h-3 !w-3 !border !border-[var(--border-strong)] !bg-[var(--bg-card)]"
         style={{ boxShadow: `0 0 14px ${color}88` }}
       />
       <div
         className="pointer-events-none absolute inset-0 opacity-80"
         style={{
-          background: `radial-gradient(circle at 14% 16%, ${color}30, transparent 34%), radial-gradient(circle at 86% 0%, rgba(255,255,255,0.1), transparent 28%)`,
+          background: `radial-gradient(circle at 14% 16%, ${color}22, transparent 34%), radial-gradient(circle at 86% 0%, rgba(70,119,230,0.08), transparent 28%)`,
         }}
       />
-      <div className="pointer-events-none absolute inset-x-4 top-0 h-px bg-white/20" />
+      <div className="pointer-events-none absolute inset-x-4 top-0 h-px bg-[var(--border-faint)]" />
       <div className="pointer-events-none absolute -right-8 top-4 h-16 w-16 rounded-full blur-2xl opacity-45" style={{ background: color }} />
 
       {/* ── Top: Status + Label ── */}
@@ -148,7 +148,7 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             {sequenceIndex != null && (
-              <span className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[10px] font-mono text-[var(--brand-gold)]">
+              <span className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[10px] font-mono text-[var(--brand-gold)]">
                 {String(sequenceIndex).padStart(2, "0")}
               </span>
             )}
@@ -186,7 +186,7 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
       </div>
 
       <div className="relative px-3 pt-2.5">
-        <div className="min-h-[34px] rounded-[10px] border border-white/8 bg-black/10 px-2.5 py-1.5">
+        <div className="min-h-[34px] rounded-[10px] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-1.5">
           <div
             className="text-[10.5px] font-medium leading-snug text-[var(--fg-3)]"
             style={{
@@ -205,7 +205,7 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
         <div className="flex items-center gap-2">
           <div
             className="relative h-2.5 flex-1 overflow-hidden rounded-full"
-            style={{ background: "rgba(255,255,255,0.07)" }}
+            style={{ background: "var(--bg-terminal)" }}
           >
             <div
               className="h-full rounded-full transition-all duration-700"

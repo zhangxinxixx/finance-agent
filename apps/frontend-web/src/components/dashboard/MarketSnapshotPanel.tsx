@@ -54,7 +54,6 @@ export function MarketSnapshotPanel({
   const xau = market.XAUUSD;
   const xauValue = metricValue(xau.value);
   const trendUp = xau.trend === "up";
-  const trendColor = trendUp ? "var(--up)" : xau.trend === "down" ? "var(--down)" : "var(--brand-hover)";
 
   const chartData = useMemo(() => {
     const points = history?.series ?? [];
@@ -111,53 +110,42 @@ export function MarketSnapshotPanel({
 
   return (
     <div className="fa-card">
-      <div className="fa-card-header" style={{ flexDirection: "column", alignItems: "stretch", gap: 7 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <span style={{ font: "700 12px/1 var(--font-sans)", color: "var(--fg-1)" }}>XAUUSD</span>
-          <span className="fa-num" style={{ font: "700 16px/1 var(--font-mono)", color: "var(--fg-1)" }}>
+      <div className="fa-card-header flex-col !items-stretch gap-[7px]">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[12px] font-bold leading-none text-[var(--fg-1)]">
+            XAUUSD
+          </span>
+          <span className="fa-num text-[16px] font-bold leading-none text-[var(--fg-1)]">
             {xauValue}
           </span>
           {xau.change ? (
-            <span className="fa-num" style={{ fontSize: 11, color: trendUp ? "var(--up)" : "var(--down)", fontWeight: 600 }}>
+            <span
+              className="fa-num text-[11px] font-semibold"
+              style={{ color: trendUp ? "var(--up)" : "var(--down)" }}
+            >
               {xau.change}
             </span>
           ) : null}
-          <div
-            style={{
-              marginLeft: "auto",
-              display: "flex",
-              gap: 2,
-              padding: 2,
-              border: "1px solid var(--border-faint)",
-              borderRadius: 6,
-              background: "rgba(255,255,255,0.02)",
-            }}
-          >
-            {TIMEFRAMES.map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => {
-                  setActiveTimeframe(t);
-                  onTimeframeChange?.(t);
-                }}
-                style={{
-                  minWidth: 34,
-                  padding: "5px 7px",
-                  background: effectiveTimeframe === t ? "rgba(121,171,255,0.16)" : "transparent",
-                  color: effectiveTimeframe === t ? "var(--brand-hover)" : "var(--fg-4)",
-                  border: "0",
-                  borderRadius: 4,
-                  font: "600 10px/1 var(--font-sans)",
-                  cursor: "pointer",
-                }}
-              >
-                {t}
-              </button>
-            ))}
+          <div className="ml-auto flex gap-[2px] rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[rgba(255,255,255,0.02)] p-[2px]">
+            {TIMEFRAMES.map((t) => {
+              const active = effectiveTimeframe === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => {
+                    setActiveTimeframe(t);
+                    onTimeframeChange?.(t);
+                  }}
+                  className={`min-w-[34px] cursor-pointer border-0 px-[7px] py-[5px] text-[10px] font-semibold leading-none transition-colors ${active ? "bg-[var(--bg-active)] text-[var(--brand-hover)]" : "bg-transparent text-[var(--fg-4)] hover:bg-[var(--bg-hover)]"}`}
+                >
+                  {t}
+                </button>
+              );
+            })}
           </div>
         </div>
-        <div style={{ fontSize: 10, color: "var(--fg-5)", lineHeight: 1.4 }}>
+        <div className="text-[10px] leading-[1.4] text-[var(--fg-5)]">
           {history
             ? `${history.available_points} pts · ${history.source_timeframe ?? "unknown"} source${history.coverage_note ? ` · ${history.coverage_note}` : ""}`
             : historyLoading
@@ -169,19 +157,19 @@ export function MarketSnapshotPanel({
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "5px 14px", background: "rgba(0,0,0,0.15)", borderBottom: "1px solid var(--border)", overflowX: "auto" }}>
+      <div className="flex items-center gap-0 overflow-x-auto border-b border-[var(--border)] bg-[rgba(0,0,0,0.15)] px-[14px] py-[5px]">
         {strip.map((level, index) => (
-          <div key={`${level.desc}-${index}`} style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
-            {index > 0 ? <span style={{ color: "var(--border-strong)", fontSize: 12, margin: "0 10px" }}>|</span> : null}
-            <span style={{ width: 2, height: 10, background: level.color, borderRadius: 1 }} />
-            <span className="fa-num" style={{ fontSize: 11, fontWeight: 700, color: level.color }}>{level.label}</span>
-            <span style={{ fontSize: 9, color: "var(--fg-5)" }}>{level.desc}</span>
+          <div key={`${level.desc}-${index}`} className="flex shrink-0 items-center gap-[5px]">
+            {index > 0 ? <span className="mx-[10px] text-[12px] text-[var(--border-strong)]">|</span> : null}
+            <span className="h-[10px] w-[2px] rounded-[var(--radius-xs)]" style={{ background: level.color }} />
+            <span className="fa-num text-[11px] font-bold" style={{ color: level.color }}>{level.label}</span>
+            <span className="text-[9px] text-[var(--fg-5)]">{level.desc}</span>
           </div>
         ))}
       </div>
 
-      <div className="fa-card-body" style={{ padding: "12px" }}>
-        <div style={{ border: "1px solid var(--border-faint)", borderRadius: 10, background: "var(--bg-card-inner)", padding: 12 }}>
+      <div className="fa-card-body !p-[12px]">
+        <div className="rounded-[var(--radius-lg)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-[12px]">
           <PriceLineChart
             points={chartData?.points ?? []}
             candles={chartData?.candles ?? undefined}

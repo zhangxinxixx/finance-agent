@@ -1,7 +1,7 @@
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { getStatusLabel, getStatusTone } from "@/components/shared/statusMeta";
 import type { CMEOptionsResponse } from "@/types/cme-options";
-import { CME_META_TEXT, formatNumber, resolveDirectionalWall, toneStyle, translateEvidence } from "./cmeOptionsFormat";
+import { formatNumber, resolveDirectionalWall, toneStyle, translateEvidence } from "./cmeOptionsFormat";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
 
 interface CMEOptionsOverviewGridProps {
@@ -248,19 +248,19 @@ function buildLevelCards(snapshot: CMEOptionsResponse, wallScores: CMEOptionsRes
       label: "突破门槛",
       value: formatNumber(nearestResistance?.strike),
       detail: `距远期价 ${formatPercent(nearestResistance?.distance_pct)} / 评分 ${formatNumber(nearestResistance?.wall_score, 2)}`,
-      tone: "warn",
+      tone: "important",
     },
     {
       label: "防守底线",
       value: formatNumber(nearestSupport?.strike),
       detail: `距远期价 ${formatPercent(nearestSupport?.distance_pct)} / 评分 ${formatNumber(nearestSupport?.wall_score, 2)}`,
-      tone: "info",
+      tone: "important",
     },
     {
       label: "伽马零点",
       value: formatNumber(gex?.gamma_zero?.price, 1),
       detail: `${translateEvidence(gex?.gamma_zero?.method ?? "推导值")} / 净伽马 ${formatNumber(gex?.net_gex)}`,
-      tone: gex?.net_gex_direction === "negative" ? "down" : gex?.net_gex_direction === "positive" ? "up" : "slate",
+      tone: "important",
     },
   ];
 }
@@ -382,13 +382,13 @@ function buildAnalystReadout(
       label: "当前环境",
       value: gex?.net_gex_direction === "negative" ? "负伽马风险" : gex?.net_gex_direction === "positive" ? "正伽马缓冲" : "中性吸附",
       detail: priceVsGamma,
-      tone: gex?.net_gex_direction === "negative" ? "down" : gex?.net_gex_direction === "positive" ? "up" : "slate",
+      tone: "important",
     },
     {
       label: "近月影响区间",
       value: `${formatNumber(putWall?.strike)} - ${formatNumber(callWall?.strike)}`,
       detail: `下方 ${formatNumber(putWall?.strike)} 为保护/支撑，上方 ${formatNumber(callWall?.strike)} 为压制/突破观察`,
-      tone: "info",
+      tone: "important",
     },
     {
       label: "吸附与突破",
@@ -402,13 +402,13 @@ function buildAnalystReadout(
       detail: farInsight
         ? `看高观察 ${formatNumber(farInsight.callTop?.strike)}，看低保护 ${formatNumber(farInsight.putTop?.strike)}；${farInsight.direction}`
         : "当前 CME 快照未返回可用远月结构",
-      tone: "warn",
+      tone: "important",
     },
     {
       label: "风险确认",
       value: snapshot.data_source.status === "FINAL" ? "终版确认" : "预览待确认",
       detail: riskSignals.length ? riskSignals.join("；") : "未检测到高置信换月或尾部迁移信号",
-      tone: snapshot.data_source.status === "FINAL" ? "up" : "warn",
+      tone: "important",
     },
   ];
 }
@@ -429,173 +429,178 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores }: CMEOptionsOverv
   const reportHighlights = buildCMEReportHighlights(snapshot, nearInsight, farInsight);
   const reportBasis = buildCMEReportBasis(snapshot);
   const analystReadout = buildAnalystReadout(snapshot, wallScores, nearInsight, farInsight);
-  const boardPanel = {
-    border: "1px solid var(--border-faint)",
-    borderRadius: "var(--radius-lg)",
-    background: "linear-gradient(180deg, var(--bg-panel), var(--bg-card-inner))",
-  };
-  const rowDivider = "1px solid var(--border-faint)";
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(min(100%,360px),1fr))", gap: 10, alignItems: "start" }}>
-      <CMEOptionsSurface title="期权结构总览" bodyStyle={{ display: "grid", gap: 10, background: "var(--bg-card-inner)" }}>
-        <div style={boardPanel}>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(190px,0.9fr) repeat(3,minmax(120px,1fr))", gap: 0 }}>
-            <div style={{ padding: "12px 14px", borderRight: rowDivider }}>
-              <div style={{ fontSize: 9, color: CME_META_TEXT, fontWeight: 700 }}>近月影响价格区间</div>
-              <div className="fa-num" style={{ marginTop: 7, fontSize: 22, color: "var(--fg-1)", fontFamily: "var(--font-mono)", fontWeight: 850 }}>
+    <div className="cme-options-overview-layout">
+      <main className="cme-options-overview-main">
+        <CMEOptionsSurface title="结构判断工作台" bodyStyle={{ display: "grid", gap: 10, background: "var(--bg-card-inner)" }}>
+          <section className="cme-options-decision-board" aria-label="期权结构总览">
+            <div className="cme-options-decision-cell cme-options-decision-cell--range">
+              <span className="cme-options-mini-label">近月影响区间</span>
+              <strong className="cme-options-range-value fa-num">
                 {formatRange(analysisRange.min, analysisRange.max)}
+              </strong>
+              <span className="cme-options-cell-detail">区间口径：{analysisRange.source}</span>
+            </div>
+
+            <div className="cme-options-decision-cell">
+              <span className="cme-options-mini-label cme-options-mini-label--down">看涨压力</span>
+              <strong className="cme-options-decision-value fa-num">{formatGex(nearInsight?.callGex)}</strong>
+              <span className="cme-options-cell-detail cme-options-cell-detail--important">核心点位 {formatNumber(nearInsight?.callTop?.strike)}</span>
+            </div>
+
+            <div className="cme-options-decision-cell">
+              <span className="cme-options-mini-label cme-options-mini-label--up">看跌支撑</span>
+              <strong className="cme-options-decision-value fa-num">{formatGex(nearInsight?.putGex)}</strong>
+              <span className="cme-options-cell-detail cme-options-cell-detail--important">核心点位 {formatNumber(nearInsight?.putTop?.strike)}</span>
+            </div>
+
+            <div className="cme-options-decision-cell cme-options-decision-cell--judgement">
+              <span className="cme-options-mini-label cme-options-mini-label--important">近月判断 · {nearInsight?.expiry ?? "—"}</span>
+              <strong className="cme-options-decision-title">{nearInsight?.dominance ?? "暂无近月分布"}</strong>
+              <span className="cme-options-cell-detail">{nearInsight?.direction ?? "当前快照未返回近月伽马分布。"}</span>
+            </div>
+          </section>
+
+          <section className="cme-options-thesis-panel">
+            <div className="cme-options-thesis-copy">
+              <span className="cme-options-mini-label">后端综合判断</span>
+              <p>{primarySummary}</p>
+            </div>
+
+            <div className="cme-options-far-panel">
+              <div className="cme-options-section-heading">
+                <span>远月资金押注</span>
+                <strong>{farInsight ? `${farInsight.expiry} · ${farInsight.dominance}` : "无远月数据"}</strong>
               </div>
-              <div style={{ marginTop: 6, fontSize: 10, color: "var(--fg-5)" }}>区间口径：{analysisRange.source}</div>
+              {farInsight ? (
+                <>
+                  <div className="cme-options-far-grid">
+                    <div className="cme-options-far-cell cme-options-far-cell--wide">
+                      <span>资金倾向</span>
+                      <strong>{farInsight.dominance}</strong>
+                      <small>净伽马 {formatGex(farInsight.netGex)} / 总量 {formatGex(farInsight.totalGex)}</small>
+                    </div>
+                    <div className="cme-options-far-cell">
+                      <span>看高观察</span>
+                      <strong className="fa-num">{formatNumber(farInsight.callTop?.strike)}</strong>
+                      <small>{formatGex(farInsight.callTop?.value)}</small>
+                    </div>
+                    <div className="cme-options-far-cell">
+                      <span>看低保护</span>
+                      <strong className="fa-num">{formatNumber(farInsight.putTop?.strike)}</strong>
+                      <small>{formatGex(farInsight.putTop?.value)}</small>
+                    </div>
+                  </div>
+                  <div className="cme-options-far-tags">
+                    {farInsight.totalTop.map((item) => (
+                      <span key={`${farInsight.expiry}-${item.strike}`}>
+                        {formatNumber(item.strike)} / {formatGex(item.value)}
+                      </span>
+                    ))}
+                  </div>
+                  {farInsight.skewNote ? <p className="cme-options-muted-note">{farInsight.skewNote}</p> : null}
+                </>
+              ) : (
+                <p className="cme-options-muted-note">当前快照未返回远月伽马分布。</p>
+              )}
             </div>
-            <div style={{ padding: "12px 14px", borderRight: rowDivider }}>
-              <div style={{ fontSize: 9, color: "var(--down)", fontWeight: 700 }}>看涨压力</div>
-              <div className="fa-num" style={{ marginTop: 7, fontSize: 17, color: "var(--fg-1)", fontFamily: "var(--font-mono)", fontWeight: 800 }}>{formatGex(nearInsight?.callGex)}</div>
-              <div style={{ marginTop: 5, fontSize: 10, color: "var(--fg-4)" }}>核心点位 {formatNumber(nearInsight?.callTop?.strike)}</div>
-            </div>
-            <div style={{ padding: "12px 14px", borderRight: rowDivider }}>
-              <div style={{ fontSize: 9, color: "var(--up)", fontWeight: 700 }}>看跌支撑</div>
-              <div className="fa-num" style={{ marginTop: 7, fontSize: 17, color: "var(--fg-1)", fontFamily: "var(--font-mono)", fontWeight: 800 }}>{formatGex(nearInsight?.putGex)}</div>
-              <div style={{ marginTop: 5, fontSize: 10, color: "var(--fg-4)" }}>核心点位 {formatNumber(nearInsight?.putTop?.strike)}</div>
-            </div>
-            <div style={{ padding: "12px 14px" }}>
-              <div style={{ fontSize: 9, color: CME_META_TEXT, fontWeight: 700 }}>近月判断 · {nearInsight?.expiry ?? "—"}</div>
-              <div style={{ marginTop: 7, fontSize: 12, color: "var(--fg-2)", fontWeight: 750 }}>{nearInsight?.dominance ?? "暂无近月分布"}</div>
-              <div style={{ marginTop: 5, fontSize: 10, color: "var(--fg-4)", lineHeight: 1.45 }}>{nearInsight?.direction ?? "当前快照未返回近月伽马分布。"}</div>
-            </div>
-          </div>
+          </section>
+        </CMEOptionsSurface>
 
-          <div style={{ borderTop: rowDivider, padding: "11px 14px" }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
-              <div style={{ fontSize: 9, color: CME_META_TEXT, fontWeight: 700 }}>远月资金押注</div>
-              <div style={{ fontSize: 10, color: "var(--fg-4)" }}>{farInsight?.expiry ?? "无远月数据"}</div>
-            </div>
-            {farInsight ? (
-              <>
-                <div style={{ marginTop: 9, display: "grid", gridTemplateColumns: "minmax(150px,1.1fr) repeat(2,minmax(110px,0.75fr))", gap: 0, border: rowDivider, borderRadius: "var(--radius-md)", overflow: "hidden", background: "var(--bg-card)" }}>
-                  <div style={{ padding: "9px 11px", borderRight: rowDivider }}>
-                    <div style={{ fontSize: 9, color: CME_META_TEXT }}>资金倾向</div>
-                    <div style={{ marginTop: 5, fontSize: 12, color: "var(--fg-2)", fontWeight: 750 }}>{farInsight.dominance}</div>
-                    <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-4)" }}>净伽马 {formatGex(farInsight.netGex)} / 总量 {formatGex(farInsight.totalGex)}</div>
-                  </div>
-                  <div style={{ padding: "9px 11px", borderRight: rowDivider }}>
-                    <div style={{ fontSize: 9, color: "var(--down)" }}>看高观察</div>
-                    <div className="fa-num" style={{ marginTop: 5, fontSize: 16, color: "var(--fg-1)", fontFamily: "var(--font-mono)", fontWeight: 800 }}>{formatNumber(farInsight.callTop?.strike)}</div>
-                    <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-4)" }}>{formatGex(farInsight.callTop?.value)}</div>
-                  </div>
-                  <div style={{ padding: "9px 11px" }}>
-                    <div style={{ fontSize: 9, color: "var(--up)" }}>看低保护</div>
-                    <div className="fa-num" style={{ marginTop: 5, fontSize: 16, color: "var(--fg-1)", fontFamily: "var(--font-mono)", fontWeight: 800 }}>{formatNumber(farInsight.putTop?.strike)}</div>
-                    <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-4)" }}>{formatGex(farInsight.putTop?.value)}</div>
-                  </div>
-                </div>
-                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {farInsight.totalTop.map((item) => (
-                    <span key={`${farInsight.expiry}-${item.strike}`} style={{ border: "1px solid var(--border-faint)", borderRadius: 999, background: "var(--bg-card)", padding: "3px 8px", fontSize: 10, color: "var(--fg-3)" }}>
-                      {formatNumber(item.strike)} / {formatGex(item.value)}
-                    </span>
-                  ))}
-                </div>
-                {farInsight.skewNote ? <div style={{ marginTop: 8, fontSize: 10, color: "var(--fg-4)", lineHeight: 1.5 }}>{farInsight.skewNote}</div> : null}
-              </>
-            ) : (
-              <div style={{ marginTop: 8, fontSize: 10, color: "var(--fg-5)" }}>当前快照未返回远月伽马分布。</div>
-            )}
-          </div>
-        </div>
-
-        <div style={boardPanel}>
-          <div style={{ padding: "9px 12px", borderBottom: rowDivider, fontSize: 9, color: CME_META_TEXT, fontWeight: 700 }}>关键价位速查</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
+        <CMEOptionsSurface title="关键价位矩阵" bodyStyle={{ padding: 0, background: "var(--bg-card-inner)" }}>
+          <div className="cme-options-level-grid">
             {levelCards.map((level, index) => {
               const tone = toneStyle(level.tone);
               return (
-                <div key={level.label} style={{ padding: "9px 12px", borderRight: index % 3 === 2 ? "none" : rowDivider, borderBottom: index < 3 ? rowDivider : "none", minHeight: 78 }}>
-                  <div style={{ fontSize: 9, color: tone.text, fontWeight: 700 }}>{level.label}</div>
-                  <div className="fa-num" style={{ marginTop: 6, fontSize: 17, fontWeight: 800, color: "var(--fg-1)", fontFamily: "var(--font-mono)" }}>{level.value}</div>
-                  <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-4)", lineHeight: 1.45 }}>{level.detail}</div>
+                <div key={level.label} className="cme-options-level-card">
+                  <span style={{ color: tone.text }}>{level.label}</span>
+                  <strong className="fa-num">{level.value}</strong>
+                  <p>{level.detail}</p>
                 </div>
               );
             })}
           </div>
-        </div>
+        </CMEOptionsSurface>
 
-        <div style={{ ...boardPanel, padding: "10px 12px" }}>
-          <div style={{ fontSize: 9, color: CME_META_TEXT, fontWeight: 700 }}>后端解释摘要</div>
-          <div style={{ marginTop: 8, fontSize: 11, color: "var(--fg-3)", lineHeight: 1.7 }}>{primarySummary}</div>
-        </div>
-
-        <div style={boardPanel}>
-          <div style={{ padding: "9px 12px", borderBottom: rowDivider, fontSize: 9, color: CME_META_TEXT, fontWeight: 700 }}>分析师读盘</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))" }}>
+        <CMEOptionsSurface title="分析师读盘" bodyStyle={{ padding: 0, background: "var(--bg-card-inner)" }}>
+          <div className="cme-options-readout-grid">
             {analystReadout.map((row, index) => {
               const tone = toneStyle(row.tone);
               return (
-                <div key={row.label} style={{ padding: "9px 12px", borderRight: index % 2 === 1 ? "none" : rowDivider, borderBottom: index < analystReadout.length - 1 ? rowDivider : "none", minHeight: 74 }}>
-                  <div style={{ fontSize: 9, color: tone.text, fontWeight: 700 }}>{row.label}</div>
-                  <div style={{ marginTop: 6, fontSize: 12, color: "var(--fg-2)", fontWeight: 760 }}>{row.value}</div>
-                  <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-4)", lineHeight: 1.45 }}>{row.detail}</div>
+                <div key={row.label} className="cme-options-readout-card">
+                  <span style={{ color: tone.text }}>{row.label}</span>
+                  <strong>{row.value}</strong>
+                  <p>{row.detail}</p>
                 </div>
               );
             })}
           </div>
-        </div>
-      </CMEOptionsSurface>
-      <CMEOptionsSurface title="价值数据 / 风险与溯源" bodyStyle={{ display: "grid", gap: 10, background: "var(--bg-card-inner)" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {analysis?.fact_review_status ? (
-            <FAStatusPill tone={reviewStatusTone(analysis.fact_review_status)}>
-              {reviewStatusLabel(analysis.fact_review_status)}
-            </FAStatusPill>
-          ) : null}
-          <FAStatusPill tone={reportStatusTone(snapshot.data_source.status)}>{reportStatusLabel(snapshot.data_source.status)}</FAStatusPill>
-          <FAStatusPill tone="neutral">{productLabel(snapshot.data_source.product)}</FAStatusPill>
-        </div>
-        <div style={{ ...boardPanel, padding: "9px 10px" }}>
-          <div style={{ fontSize: 9, color: CME_META_TEXT, marginBottom: 5 }}>下一风险提示</div>
-          <div style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.6 }}>{nextRisk}</div>
-        </div>
-        <div style={boardPanel}>
-          <div style={{ padding: "9px 10px", borderBottom: rowDivider, fontSize: 9, color: CME_META_TEXT, fontWeight: 700 }}>CME 报告重点提取</div>
-          <div style={{ padding: "8px 10px", borderBottom: rowDivider, background: "rgba(148,163,184,0.06)" }}>
-            <div style={{ fontSize: 10, color: "var(--fg-3)", lineHeight: 1.45, fontWeight: 700 }}>{reportBasis.summary}</div>
-            <div style={{ marginTop: 3, fontSize: 10, color: "var(--fg-5)", lineHeight: 1.45 }}>{reportBasis.detail}</div>
+        </CMEOptionsSurface>
+      </main>
+
+      <aside className="cme-options-overview-rail">
+        <CMEOptionsSurface title="风险与可信度" bodyStyle={{ display: "grid", gap: 10, background: "var(--bg-card-inner)" }}>
+          <div className="cme-options-status-row">
+            {analysis?.fact_review_status ? (
+              <FAStatusPill tone={reviewStatusTone(analysis.fact_review_status)}>
+                {reviewStatusLabel(analysis.fact_review_status)}
+              </FAStatusPill>
+            ) : null}
+            <FAStatusPill tone={reportStatusTone(snapshot.data_source.status)}>{reportStatusLabel(snapshot.data_source.status)}</FAStatusPill>
+            <FAStatusPill tone="neutral">{productLabel(snapshot.data_source.product)}</FAStatusPill>
           </div>
-          {reportHighlights.map((row) => {
-            const tone = toneStyle(row.tone);
-            return (
-              <div key={row.label} style={{ padding: "8px 10px", borderBottom: row.label === reportHighlights[reportHighlights.length - 1]?.label ? "none" : rowDivider }}>
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
-                  <span style={{ fontSize: 9, color: tone.text, flexShrink: 0, fontWeight: 700 }}>{row.label}</span>
-                  <span className="fa-num" style={{ fontSize: 11, color: "var(--fg-2)", fontFamily: "var(--font-mono)", fontWeight: 740, textAlign: "right" }}>{row.value}</span>
+
+          <div className="cme-options-rail-block cme-options-rail-block--risk">
+            <span className="cme-options-mini-label">下一风险提示</span>
+            <p>{nextRisk}</p>
+          </div>
+
+          <div className="cme-options-rail-block">
+            <span className="cme-options-mini-label">CME 报告基准</span>
+            <strong>{reportBasis.summary}</strong>
+            <p>{reportBasis.detail}</p>
+          </div>
+
+          <div className="cme-options-rail-list">
+            {reportHighlights.map((row) => {
+              const tone = toneStyle(row.tone);
+              return (
+                <div key={row.label} className="cme-options-rail-row">
+                  <div>
+                    <span style={{ color: tone.text }}>{row.label}</span>
+                    <strong className="fa-num">{row.value}</strong>
+                  </div>
+                  <p>{row.detail}</p>
                 </div>
-                <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-5)", lineHeight: 1.45 }}>{row.detail}</div>
+              );
+            })}
+          </div>
+
+          <div className="cme-options-rail-list">
+            {valueRows.map((row) => (
+              <div key={row.label} className="cme-options-rail-row cme-options-rail-row--important">
+                <div>
+                  <span>{row.label}</span>
+                  <strong className="fa-num">{row.value}</strong>
+                </div>
+                <p>{row.detail}</p>
               </div>
-            );
-          })}
-        </div>
-        <div style={boardPanel}>
-          {valueRows.map((row) => (
-            <div key={row.label} style={{ padding: "8px 10px", borderBottom: row.label === valueRows[valueRows.length - 1]?.label ? "none" : rowDivider }}>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
-                <span style={{ fontSize: 9, color: CME_META_TEXT, flexShrink: 0 }}>{row.label}</span>
-                <span className="fa-num" style={{ fontSize: 11, color: "var(--fg-2)", fontFamily: "var(--font-mono)", fontWeight: 700, textAlign: "right" }}>{row.value}</span>
-              </div>
-              <div style={{ marginTop: 4, fontSize: 10, color: "var(--fg-5)", lineHeight: 1.45 }}>{row.detail}</div>
+            ))}
+          </div>
+
+          <div className="cme-options-count-grid">
+            <div>
+              <span>来源引用</span>
+              <strong className="fa-num">{snapshot.source_trace.length}</strong>
             </div>
-          ))}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", border: rowDivider, borderRadius: "var(--radius-md)", overflow: "hidden", background: "var(--bg-panel)" }}>
-          <div style={{ padding: "8px 10px", borderRight: rowDivider }}>
-            <div style={{ fontSize: 9, color: CME_META_TEXT }}>来源引用</div>
-            <div className="fa-num" style={{ marginTop: 4, fontSize: 14, color: "var(--fg-1)", fontFamily: "var(--font-mono)", fontWeight: 700 }}>{snapshot.source_trace.length}</div>
+            <div>
+              <span>待复核</span>
+              <strong className="fa-num">{analysis?.pending_review_count ?? 0}</strong>
+            </div>
           </div>
-          <div style={{ padding: "8px 10px" }}>
-            <div style={{ fontSize: 9, color: CME_META_TEXT }}>待复核</div>
-            <div className="fa-num" style={{ marginTop: 4, fontSize: 14, color: "var(--fg-1)", fontFamily: "var(--font-mono)", fontWeight: 700 }}>{analysis?.pending_review_count ?? 0}</div>
-          </div>
-        </div>
-      </CMEOptionsSurface>
+        </CMEOptionsSurface>
+      </aside>
     </div>
   );
 }

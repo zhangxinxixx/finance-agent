@@ -34,7 +34,7 @@ function deriveGroup(source: DataSourceStatusViewModel): string {
 const STAGE_HEADERS = [
   "连接",
   "采集",
-  "Raw落地",
+  "Raw",
   "解析",
   "校验",
   "快照",
@@ -59,37 +59,38 @@ export function SourcePipelineMatrix({ sources, selectedId, onSelect, onStageCli
   })).filter((g) => g.items.length > 0);
 
   return (
-    <div className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] overflow-hidden min-h-0">
+    <div className="data-ingestion-matrix flex flex-col min-h-0">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--bg-panel)] px-3 py-2 shrink-0">
         <div className="flex items-center gap-2">
           <Database size={12} className="text-[var(--fg-6)]" />
-          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-2)]">
+          <span className="whitespace-nowrap text-[12px] font-semibold text-[var(--fg-1)]">
             数据源采集加工健康矩阵
           </span>
         </div>
         <div className="flex items-center gap-2">
           <StageLegend />
-          <span className="fa-num text-[9px] font-bold text-[var(--fg-5)]">
-            {sources.length} sources
+          <span className="fa-num text-[10px] font-bold text-[var(--fg-4)]">
+            {sources.length} 数据源
           </span>
         </div>
       </div>
 
       {/* Column headers (only visible when we have data) */}
       {sources.length > 0 && (
-        <div className="flex items-center gap-2 px-2 py-1 text-[8px] font-semibold uppercase tracking-wider text-[var(--fg-6)] border-b border-[var(--border-faint)] shrink-0">
-          <div className="w-[6px] shrink-0" /> {/* dot space */}
-          <div className="min-w-[130px] max-w-[150px] shrink-0">数据源</div>
-          <div className="flex-1 flex items-center gap-0">
+        <div className="data-ingestion-matrix-row data-ingestion-matrix-header-row px-2 py-1.5 text-[10px] font-semibold text-[var(--fg-4)] border-b border-[var(--border-faint)] shrink-0">
+          <div /> {/* dot space */}
+          <div>数据源</div>
+          <div>日期</div>
+          <div className="data-ingestion-stage-chain">
             {STAGE_HEADERS.map((h, i) => (
               <div key={h} className="flex items-center">
-                <div className="w-[48px] text-center">{h}</div>
-                {i < STAGE_HEADERS.length - 1 && <div className="w-[12px]" />}
+                <div className="w-[38px] whitespace-nowrap text-center">{h}</div>
+                {i < STAGE_HEADERS.length - 1 && <div className="w-[8px]" />}
               </div>
             ))}
           </div>
-          <div className="hidden xl:block w-[140px] shrink-0">影响模块</div>
+          <div>影响模块</div>
         </div>
       )}
 
@@ -107,20 +108,20 @@ export function SourcePipelineMatrix({ sources, selectedId, onSelect, onStageCli
               <div key={group.key} className="mb-1">
                 {/* Group separator */}
                 <button
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-left hover:bg-[var(--bg-hover)] transition-colors"
+                  className="data-ingestion-matrix-group-button flex items-center gap-2 w-full px-3 py-1.5 text-left hover:bg-[var(--bg-hover)] transition-colors"
                   onClick={() => toggle(group.key)}
                 >
                   <div
                     className="rounded-full shrink-0"
-                    style={{ width: 6, height: 6, background: group.dotColor, boxShadow: `0 0 6px ${group.dotColor}` }}
+                    style={{ width: 6, height: 6, background: group.dotColor }}
                   />
-                  <span className="text-[9px] font-semibold text-[var(--fg-3)]">
+                  <span className="text-[11px] font-semibold text-[var(--fg-2)]">
                     {group.label}
                   </span>
-                  <span className="fa-num text-[9px] font-bold" style={{ color: group.dotColor }}>
+                  <span className="fa-num text-[10px] font-bold" style={{ color: group.dotColor }}>
                     {group.items.length}
                   </span>
-                  <span className="text-[8px] text-[var(--fg-6)] ml-1">
+                  <span className="text-[10px] text-[var(--fg-5)] ml-1">
                     {group.key === "live" ? "全部 live · 直接消费" : group.key === "partial" ? "子源失败或覆盖受限" : "不可用或未实现"}
                   </span>
                   <svg

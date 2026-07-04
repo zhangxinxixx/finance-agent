@@ -54,6 +54,11 @@ const PRIORITY_LABELS: Record<SourcePriority, string> = {
   SUPPLEMENTAL: "补充",
 };
 
+function compactDateLabel(value: string): string {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[2]}-${match[3]}` : value;
+}
+
 /** Compute overall status from pipeline_health for the status dot */
 function overallDotColor(health: SourcePipelineHealth | undefined): string {
   if (!health) return "var(--fg-6)";
@@ -72,7 +77,7 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
 
   return (
     <div
-      className="group flex items-center gap-2 px-2 py-1.5 rounded-[var(--radius-sm)] transition-colors cursor-pointer"
+      className="data-ingestion-source-row data-ingestion-matrix-row group px-2 py-1.5 transition-colors cursor-pointer"
       style={{
         background: selected ? "var(--bg-active)" : undefined,
         borderLeft: selected ? `2px solid var(--brand)` : "2px solid transparent",
@@ -88,17 +93,17 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
       {/* Status dot */}
       <div
         className="shrink-0 rounded-full"
-        style={{ width: 6, height: 6, background: dotColor, boxShadow: `0 0 6px ${dotColor}` }}
+        style={{ width: 6, height: 6, background: dotColor }}
       />
 
       {/* Source name + type */}
-      <div className="flex flex-col min-w-[130px] max-w-[150px] shrink-0">
-        <span className="text-[10px] font-semibold text-[var(--fg-2)] truncate leading-tight">
+      <div className="flex min-w-0 flex-col">
+        <span className="text-[12px] font-semibold text-[var(--fg-2)] truncate leading-tight" title={source.label}>
           {source.label}
         </span>
         <div className="flex items-center gap-1 mt-0.5">
           <span
-            className="inline-block text-[7px] font-semibold uppercase tracking-wider px-1 py-px rounded"
+            className="inline-block text-[10px] font-semibold uppercase tracking-[0] px-1.5 py-px rounded"
             style={{
               background: `${domainColor}15`,
               color: domainColor,
@@ -107,17 +112,20 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
           >
             {source.type}
           </span>
-          <span className="text-[7px] text-[var(--fg-6)]">{PRIORITY_LABELS[source.role as SourcePriority] ?? source.role}</span>
+          <span className="text-[10px] text-[var(--fg-5)]">{PRIORITY_LABELS[source.role as SourcePriority] ?? source.role}</span>
         </div>
       </div>
 
       {/* Latest data date badge */}
-      {health?.latestDataDate && (
-        <div className="shrink-0 flex flex-col items-center" style={{ minWidth: 50 }}>
-          <span className="fa-num text-[8px] text-[var(--fg-5)]">{health.latestDataDate}</span>
+      <div className="flex min-w-0 flex-col items-center">
+        {health?.latestDataDate ? (
+          <>
+          <span className="fa-num text-[10px] text-[var(--fg-4)]" title={health.latestDataDate}>
+            {compactDateLabel(health.latestDataDate)}
+          </span>
           {health.stalenessDays !== null && health.stalenessDays !== undefined && (
             <span
-              className="text-[7px] font-semibold px-1 rounded"
+              className="text-[10px] font-semibold px-1.5 rounded"
               style={{
                 color: health.stalenessDays <= 1 ? "var(--up)" : health.stalenessDays <= 3 ? "var(--warn)" : "var(--down)",
                 background: health.stalenessDays <= 1 ? "var(--up-soft)" : health.stalenessDays <= 3 ? "var(--warn-soft)" : "var(--down-soft)",
@@ -126,11 +134,14 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
               {health.stalenessDays === 0 ? "今天" : `${health.stalenessDays}d`}
             </span>
           )}
-        </div>
-      )}
+          </>
+        ) : (
+          <span className="text-[10px] text-[var(--fg-6)]">—</span>
+        )}
+      </div>
 
       {/* 7-stage pipeline chain */}
-      <div className="flex items-center gap-0 flex-1 min-w-0">
+      <div className="data-ingestion-stage-chain">
         {health ? (
           STAGE_KEYS.map((key, idx) => {
             const stage = health.stages[key];
@@ -140,12 +151,14 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
                   status={stage.status}
                   label={STAGE_LABELS[key]}
                   message={stage.message}
+                  compact
                   onClick={() => onStageClick?.(source.id, key)}
                 />
                 {idx < STAGE_KEYS.length - 1 && (
                   <StageConnector
                     fromStatus={stage.status}
                     toStatus={health.stages[STAGE_KEYS[idx + 1]].status}
+                    compact
                   />
                 )}
               </div>
@@ -153,7 +166,7 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
           })
         ) : (
           /* Fallback: show boolean flags as simple indicators */
-          <div className="flex items-center gap-1 text-[8px]">
+          <div className="flex items-center gap-1 text-[10px]">
             {source.configured ? <span className="text-[var(--up)]">●</span> : <span className="text-[var(--down)]">●</span>}
             <span className="text-[var(--fg-6)]">配置</span>
             {source.raw_ingested ? <span className="text-[var(--up)]">●</span> : <span className="text-[var(--down)]">●</span>}
@@ -167,12 +180,14 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
       </div>
 
       {/* Affected modules */}
-      {health && (
-        <div className="hidden xl:flex items-center gap-1 shrink-0 max-w-[140px]">
+      <div className="data-ingestion-module-cell">
+        {health ? (
+          <>
           {health.affectedModules.slice(0, 3).map((mod) => (
             <span
               key={mod}
-              className="text-[7px] font-medium px-1 py-px rounded"
+              className="text-[10px] font-medium px-1.5 py-px rounded"
+              title={mod}
               style={{
                 background: "var(--bg-card-inner)",
                 color: "var(--fg-5)",
@@ -182,8 +197,9 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
               {mod}
             </span>
           ))}
-        </div>
-      )}
+          </>
+        ) : null}
+      </div>
     </div>
   );
 }

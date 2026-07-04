@@ -17,14 +17,14 @@ def test_feishu_client_uses_app_credentials_and_caches_tenant_access_token() -> 
             return httpx.Response(200, json={"code": 0, "tenant_access_token": "tenant-token", "expire": 7200})
         assert request.headers["authorization"] == "Bearer tenant-token"
         assert request.url.params["container_id_type"] == "chat"
-        assert request.url.params["container_id"] == "chat_fixture"
+        assert request.url.params["container_id"] == "oc_jin10"
         return httpx.Response(200, json={"code": 0, "data": {"items": []}})
 
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     client = FeishuOpenApiClient(app_id="cli_test", app_secret="secret", http_client=http_client)
 
-    client.list_chat_messages(chat_id="chat_fixture", page_size=20)
-    client.list_chat_messages(chat_id="chat_fixture", page_size=20)
+    client.list_chat_messages(chat_id="oc_jin10", page_size=20)
+    client.list_chat_messages(chat_id="oc_jin10", page_size=20)
 
     token_calls = [call for call in calls if call[1].endswith("/tenant_access_token/internal")]
     message_calls = [call for call in calls if call[1].endswith("/im/v1/messages")]
@@ -48,7 +48,7 @@ def test_feishu_client_refreshes_token_once_when_message_request_reports_token_e
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     client = FeishuOpenApiClient(app_id="cli_test", app_secret="secret", http_client=http_client)
 
-    payload = client.list_chat_messages(chat_id="chat_fixture")
+    payload = client.list_chat_messages(chat_id="oc_jin10")
 
     assert payload["data"]["items"][0]["message_id"] == "om_1"
     assert seen_authorizations == ["Bearer old-token", "Bearer new-token"]

@@ -1,10 +1,9 @@
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
-import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { FATabBar } from "@/components/shared/FATabBar";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { MarkdownViewer } from "@/components/reports/MarkdownViewer";
-import type { FAStatusTone } from "@/components/shared/FAStatusPill";
+import { formatDateTime } from "@/lib/date";
 import type { Jin10ReportBundleView, Jin10Subview } from "@/types/reports";
 
 interface Jin10DailyVisualViewerProps {
@@ -27,20 +26,6 @@ const VIEW_HINTS: Record<Jin10Subview, string> = {
   agent_analysis: "基于原文与日报结构生成的 LLM 分析 Markdown，作为研究结论层阅读入口。",
   daily_visual: "基于 LLM/日报分析结果生成的 HTML 可视化报告，用于图文化阅读和展示。",
 };
-
-function qualityTone(status: string | undefined): FAStatusTone {
-  if (status === "accepted") return "up";
-  if (status === "rejected") return "down";
-  if (status === "needs_review") return "warn";
-  return "dim";
-}
-
-function qualityLabel(status: string | undefined): string {
-  if (status === "accepted") return "稽核通过";
-  if (status === "needs_review") return "待复核";
-  if (status === "rejected") return "已拒绝";
-  return "未记录";
-}
 
 export function Jin10DailyVisualViewer({
   report,
@@ -96,7 +81,12 @@ export function Jin10DailyVisualViewer({
   }
 
   const activeView = report.views[selectedView];
-  const qualityAudit = report.quality_audit;
+  const metaItems = [
+    { label: "报告日期", value: report.trade_date },
+    { label: "生成时间", value: formatDateTime(report.generated_at) },
+    { label: "文章 ID", value: report.article_id ? `article ${report.article_id}` : "—" },
+    { label: "Run ID", value: report.run_id },
+  ];
   const viewTabs = (["agent_analysis", "daily_visual", "raw_article"] as Jin10Subview[]).map((view) => ({
     value: view,
     label: VIEW_LABELS[view],
@@ -109,43 +99,34 @@ export function Jin10DailyVisualViewer({
       eyebrow="Visual Viewer"
       accent="warn"
       action={
-        <div className="flex flex-wrap items-center gap-2">
-          <FAStatusPill tone="dim" dot={false} className="fa-num">
-            {report.trade_date}
-          </FAStatusPill>
-          <FAStatusPill tone="neutral" dot={false} className="fa-num">
-            {report.run_id}
-          </FAStatusPill>
-          {report.article_id ? (
-            <FAStatusPill tone="info" dot={false} className="fa-num">
-              article {report.article_id}
-            </FAStatusPill>
-          ) : null}
-        </div>
+        report.source_url ? (
+          <a
+            href={report.source_url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2.5 py-1 text-[11px] font-semibold text-[var(--fg-3)] transition-colors hover:border-[var(--brand)] hover:text-[var(--fg-1)]"
+          >
+            原文链接
+          </a>
+        ) : null
       }
       className="flex min-h-0 flex-1 flex-col"
       bodyClassName="min-h-0 flex flex-1 flex-col gap-4"
     >
       {report.title ? <div className="text-[12px] text-[var(--fg-4)]">{report.title}</div> : null}
-      {qualityAudit ? (
-        <FAWarningBanner
-          title="质量稽核"
-          description={
-            qualityAudit.reasons.length
-              ? qualityAudit.reasons
-                  .slice(0, 3)
-                  .map((reason) => `${reason.code}${reason.message ? `: ${reason.message}` : ""}`)
-                  .join("；")
-              : "未发现需要人工处理的质量问题。"
-          }
-          tone={qualityAudit.status === "rejected" ? "down" : qualityAudit.status === "needs_review" ? "warn" : "info"}
-          action={
-            <FAStatusPill tone={qualityTone(qualityAudit.status)} dot={false}>
-              {qualityLabel(qualityAudit.status)}
-            </FAStatusPill>
-          }
-        />
-      ) : null}
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        {metaItems.map((item) => (
+          <div
+            key={item.label}
+            className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2"
+          >
+            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">{item.label}</div>
+            <div className="fa-num mt-1 truncate text-[12px] font-semibold text-[var(--fg-2)]" title={item.value}>
+              {item.value}
+            </div>
+          </div>
+        ))}
+      </div>
       <div className="grid gap-3 sm:grid-cols-3">
         {([
           { key: "raw_article" as Jin10Subview, eyebrow: "Source MD", title: "原文 Markdown 报告" },
@@ -159,6 +140,7 @@ export function Jin10DailyVisualViewer({
               key={card.key}
               type="button"
               onClick={() => available && onSelectView(card.key)}
+              aria-disabled={!available}
               className="rounded-[var(--radius-lg)] border p-3 text-left transition-colors"
               style={{
                 borderColor: selected ? "var(--brand)" : "var(--border-faint)",
@@ -171,11 +153,6 @@ export function Jin10DailyVisualViewer({
                 {card.eyebrow}
               </div>
               <div className="text-[12px] font-semibold text-[var(--fg-2)]">{card.title}</div>
-              <div className="mt-2">
-                <FAStatusPill tone={available ? "up" : "warn"} dot={false}>
-                  {available ? "available" : "missing"}
-                </FAStatusPill>
-              </div>
             </button>
           );
         })}
@@ -195,7 +172,7 @@ export function Jin10DailyVisualViewer({
           <iframe
             title={`Jin10 report ${selectedView} ${report.trade_date} ${report.run_id}`}
             srcDoc={activeView.content ?? ""}
-            className="h-full w-full rounded-lg border border-[var(--border)] bg-white"
+            className="h-full w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
             sandbox="allow-same-origin"
           />
         </div>

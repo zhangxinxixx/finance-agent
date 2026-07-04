@@ -1,9 +1,7 @@
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
-import { FAPageIntro } from "@/components/shared/FAPageIntro";
+import { DataModeBanner, type DataMode } from "@/components/shared/DataModeBanner";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
-import { FAStatusPill } from "@/components/shared/FAStatusPill";
-import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import { StrategyFilterBar } from "@/components/strategy/StrategyFilterBar";
 import { StrategyCalibrationPanel, StrategyHistoryListSection } from "@/components/strategy/StrategyHistoryCalibration";
 import {
@@ -14,7 +12,6 @@ import { StrategyHeroSection } from "@/components/strategy/StrategyHeroSection";
 import { StrategyScenarioSection } from "@/components/strategy/StrategyScenarioSection";
 import { StrategyModuleSignalsSection, StrategyPlaybookMatchesSection } from "@/components/strategy/StrategySignalsPanels";
 import { StrategyDataTraceSection } from "@/components/strategy/StrategyTracePanel";
-import { formatDate, sourceLabel, sourceTone, statusTone, strategyValueLabel } from "@/components/strategy/strategyFormat";
 import {
   DEFAULT_STRATEGY_ASSET,
   useStrategyPageState,
@@ -22,6 +19,15 @@ import {
 import { useStrategy } from "@/hooks/useStrategy";
 
 // ── Page ──
+
+function strategyDataMode(source: string, status: string): DataMode {
+  if (source === "unavailable") return "unavailable";
+  const value = status.toLowerCase();
+  if (value === "available" || value === "live") return "live";
+  if (value === "partial" || value === "stale") return "partial";
+  if (value === "error" || value === "unavailable") return "unavailable";
+  return "fallback";
+}
 
 export function StrategyPage() {
   const [selectedAsset, setSelectedAsset] = useState<string>(DEFAULT_STRATEGY_ASSET);
@@ -62,32 +68,6 @@ export function StrategyPage() {
 
   return (
     <FAPageScaffold
-      intro={(
-        <FAPageIntro
-          eyebrow="策略工作台"
-          title="策略中心"
-          description="汇总宏观、期权、事件与知识库信号，按资产、窗口和市场状态切换策略卡片与情景剧本。"
-          meta={(
-            <>
-              <FASourceTraceBadge source={formatDate(data.updated_at ?? data.trade_date)} status="updated_at" tone="info" />
-              <FASourceTraceBadge source={sourceLabel(data.source)} status="data_source" tone={sourceTone(data.source)} />
-              <FASourceTraceBadge source={selectedAsset} status="asset" tone="info" />
-              {selectedStrategyCardId ? (
-                <span className="rounded-[var(--radius-sm)] border border-[var(--info-border)] bg-[var(--info-soft)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--info)]" title={selectedStrategyCardId}>
-                  已选策略卡
-                </span>
-              ) : null}
-            </>
-          )}
-          action={(
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <FAStatusPill tone={statusTone(data.status)}>{strategyValueLabel(data.status)}</FAStatusPill>
-              <FAStatusPill tone={sourceTone(data.source)}>{sourceLabel(data.source)}</FAStatusPill>
-              <FAStatusPill tone="info">{selectedAsset}</FAStatusPill>
-            </div>
-          )}
-        />
-      )}
       toolbar={(
         <StrategyFilterBar
           assetTabs={assetTabs}
@@ -101,8 +81,24 @@ export function StrategyPage() {
           onRefresh={refetch}
         />
       )}
-      bodyClassName="fa-page-stack"
+      bodyClassName="fa-page-stack strategy-page-body"
     >
+      <DataModeBanner
+        mode={strategyDataMode(data.source, data.status)}
+        reason={data.unavailable_reason ?? "每日策略框架只展示后端 StrategyCard read model；日内实时更新链路未接入时会显式标记，不由前端补造。"}
+      />
+
+      <StrategyHeroSection
+        hero={data.hero}
+        scenario={data.scenario}
+        dailyUpdate={data.daily_update}
+        weekendContext={data.weekend_context}
+        asset={selectedAsset}
+        sampleSize={data.sample_size}
+        source={data.source}
+        updatedAt={data.updated_at}
+      />
+
       <div className="fa-page-grid lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <StrategyHistoryListSection
           items={visibleHistory}
@@ -132,8 +128,6 @@ export function StrategyPage() {
           <span>正在加载策略详情...</span>
         </div>
       ) : null}
-
-      <StrategyHeroSection hero={data.hero} asset={selectedAsset} sampleSize={data.sample_size} source={data.source} />
 
       {data.scenario ? <StrategyScenarioSection scenario={data.scenario} /> : null}
 

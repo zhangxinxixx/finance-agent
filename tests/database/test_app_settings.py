@@ -43,7 +43,7 @@ def test_upsert_app_setting_persists_value_and_audit_fields() -> None:
         setting_key="global.language",
         scope="global",
         value_json={"value": "en-US"},
-        actor="automation",
+        actor="codex",
         reason="testing",
         request_id="app-setting-001",
         audit_id="settings-action:preferences:app-setting-001",
@@ -56,7 +56,7 @@ def test_upsert_app_setting_persists_value_and_audit_fields() -> None:
     assert fetched.id == record.id
     assert fetched.scope == "global"
     assert fetched.value_json == {"value": "en-US"}
-    assert fetched.updated_by == "automation"
+    assert fetched.updated_by == "codex"
     assert fetched.update_reason == "testing"
     assert fetched.request_id == "app-setting-001"
     assert fetched.audit_id == "settings-action:preferences:app-setting-001"
@@ -70,7 +70,7 @@ def test_list_app_settings_returns_saved_source_overlay() -> None:
         scope="source",
         source_key="fred",
         value_json={"enabled": False},
-        actor="automation",
+        actor="codex",
     )
     session.commit()
 
@@ -90,14 +90,14 @@ def test_app_setting_events_are_recorded_for_set_and_reset() -> None:
         setting_key="global.language",
         scope="global",
         value_json={"value": "en-US"},
-        actor="automation",
+        actor="codex",
         request_id="set-001",
         audit_id="settings-action:preferences:set-001",
     )
     reset_app_setting(
         session,
         setting_key="global.language",
-        actor="automation",
+        actor="codex",
         request_id="reset-001",
         audit_id="settings-action:preferences-reset:reset-001",
     )
@@ -127,11 +127,11 @@ def test_reset_app_setting_removes_current_overlay() -> None:
         scope="source",
         source_key="fred",
         value_json={"enabled": False},
-        actor="automation",
+        actor="codex",
     )
     session.commit()
 
-    reset_app_setting(session, setting_key="source.fred.enabled", actor="automation")
+    reset_app_setting(session, setting_key="source.fred.enabled", actor="codex")
     session.commit()
 
     assert get_app_setting(session, "source.fred.enabled") is None

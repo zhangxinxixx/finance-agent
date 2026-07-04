@@ -24,7 +24,7 @@ def _jin10_feishu_item(
         source_key="jin10_feishu",
         source_name="Jin10 Feishu Chat Pull",
         source_type="supplemental",
-        feed_key="chat_fixture",
+        feed_key="oc_jin10",
         title=title,
         url=url,
         domain="xnews.jin10.com",
@@ -47,7 +47,7 @@ def _jin10_feishu_item(
                 "topic_tags": ["gold", "macro", "rates"],
                 "reasons": ["rates_macro_path", "gold_direct", "detail_link_present"],
             },
-            "source_refs": [{"source": "jin10_feishu", "source_ref": "jin10_feishu:chat_fixture:om_trigger"}],
+            "source_refs": [{"source": "jin10_feishu", "source_ref": "jin10_feishu:oc_jin10:om_trigger"}],
         },
     )
 

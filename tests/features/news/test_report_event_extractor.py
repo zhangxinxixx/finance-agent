@@ -32,7 +32,7 @@ RAW_REPORT = {
                 "黄金ETF资金观望等待催化剂，白银或已进入低估区间",
             ],
         },
-        "external_report_dir": "/tmp/finance-agent-test/jin10-reports/2026-06-09/daily/221446",
+        "external_report_dir": "fixtures/jin10-reports/2026-06-09/daily/221446",
     },
     "quality_audit": {
         "status": "needs_review",
@@ -42,7 +42,7 @@ RAW_REPORT = {
         {
             "source": "jin10_external",
             "asset_type": "report_md",
-            "path": "/tmp/finance-agent-test/jin10-reports/2026-06-09/daily/221446/report.md",
+            "path": "fixtures/jin10-reports/2026-06-09/daily/221446/report.md",
             "source_url": "https://svip.jin10.com/news/221446",
         }
     ],

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ReportDetailHero } from "@/components/reports/ReportDetailSections";
+import { ReportDetailHero, ReportGoldMacroOverviewCard } from "@/components/reports/ReportDetailSections";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
@@ -116,6 +116,8 @@ export function ReportDetailPage() {
           onTabChange={setActiveTab}
           summaryChips={summaryChips}
         />
+
+        <ReportGoldMacroOverviewCard data={data} />
 
         {data.warnings.length > 0 ? (
           <div className="space-y-2">

@@ -28,7 +28,6 @@ export function DataStatusBar() {
     return sources.map((src) => SOURCE_SHORT[src.name] || src.name).join(" / ");
   }, [sources]);
 
-
   return (
     <div className="status-bar">
       <div className="statusbar-group">
@@ -44,7 +43,7 @@ export function DataStatusBar() {
       {sourceSummary ? (
         <>
           <div className="statusbar-sep" />
-          <div className="statusbar-group text-[10px] text-[var(--fg-4)]">
+          <div className="statusbar-group text-[11px] text-[var(--fg-4)]">
             <span className="text-[var(--fg-5)]">数据源</span>
             <span className="truncate">{sourceSummary}</span>
           </div>

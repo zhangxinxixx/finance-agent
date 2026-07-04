@@ -3,13 +3,21 @@ import { ContextPanelShell } from "@/components/shared/ContextPanel";
 import { useJin10Calendar } from "@/hooks/useJin10Calendar";
 import { useEventFlowLiveFlash } from "@/hooks/useEventFlowLiveFlash";
 import { buildDashboardRightPanelModel } from "./DashboardRightPanelModel";
-import { EconomicCalendarSection, RealtimeFlashSection } from "./DashboardRightPanelSections";
+import {
+  DataTraceSection,
+  EconomicCalendarSection,
+  LatestIntegratedReportSection,
+  LatestOptionsReportSection,
+  LatestSupplementalReportSection,
+  RealtimeFlashSection,
+} from "./DashboardRightPanelSections";
+import { GoldMacroOverviewPanel } from "./GoldMacroOverviewPanel";
 
 interface DashboardRightPanelProps {
   summary: DashboardSummary;
 }
 
-export function DashboardRightPanel({ summary: _summary }: DashboardRightPanelProps) {
+export function DashboardRightPanel({ summary }: DashboardRightPanelProps) {
   const calendar = useJin10Calendar();
   const flash = useEventFlowLiveFlash(50);
 
@@ -20,7 +28,14 @@ export function DashboardRightPanel({ summary: _summary }: DashboardRightPanelPr
     });
 
   return (
-    <ContextPanelShell>
+    <ContextPanelShell className="dashboard-right-panel">
+      <div className="dashboard-right-panel-header">
+        <div>
+          <div className="dashboard-right-panel-title">研究上下文</div>
+        </div>
+        <div className="dashboard-right-panel-meta">{summary.source_trace.length} 条数据链路</div>
+      </div>
+      <GoldMacroOverviewPanel overview={summary.gold_macro_overview} />
       <RealtimeFlashSection
         items={visibleFlash}
         overflowCount={flashOverflowCount}
@@ -35,6 +50,10 @@ export function DashboardRightPanel({ summary: _summary }: DashboardRightPanelPr
         isLoading={calendar.isLoading}
         isError={calendar.isError}
       />
+      <DataTraceSection sourceTrace={summary.source_trace} />
+      <LatestSupplementalReportSection report={summary.latest_supplemental_report} />
+      <LatestIntegratedReportSection reports={summary.latest_reports} />
+      <LatestOptionsReportSection reports={summary.latest_reports} />
     </ContextPanelShell>
   );
 }

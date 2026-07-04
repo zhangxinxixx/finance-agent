@@ -51,6 +51,78 @@ class _FakeMCPClient:
         }
 
 
+def _write_web_flash_briefs_artifact(
+    project_root: Path,
+    *,
+    include_important: bool = True,
+    include_vip: bool = True,
+) -> Path:
+    artifact_path = (
+        project_root
+        / "storage"
+        / "features"
+        / "news"
+        / "2026-06-23"
+        / "run-web"
+        / "jin10_web_flash_briefs.json"
+    )
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "retrieved_date": "2026-06-23",
+                "jin10_web_flash_briefs": {
+                    "status": "ok",
+                    "brief_count": int(include_important) + int(include_vip),
+                    "briefs": [
+                        *(
+                            [
+                                {
+                                    "source_key": "jin10_web_important_flash",
+                                    "headline": "重要快讯：黄金突破关键阻力",
+                                    "display_bucket": "important",
+                                    "published_at": "2026-06-23 09:30:00",
+                                    "url": "https://www.jin10.com/flash/important-1",
+                                    "access_status": "public",
+                                    "verification_status": "verified",
+                                }
+                            ]
+                            if include_important
+                            else []
+                        ),
+                        *(
+                            [
+                                {
+                                    "source_key": "jin10_web_vip_flash",
+                                    "headline": "VIP快讯：机构持仓更新",
+                                    "display_bucket": "vip",
+                                    "published_at": "2026-06-23 09:31:00",
+                                    "url": "https://www.jin10.com/flash/vip-1",
+                                    "access_status": "vip_required",
+                                    "verification_status": "profile_required",
+                                }
+                            ]
+                            if include_vip
+                            else []
+                        ),
+                    ],
+                    "data_quality": {"source": "fixture"},
+                    "source_refs": [{"source_key": "jin10_web_flash", "status": "ok"}],
+                    "artifact_refs": [
+                        {"file_path": "storage/features/news/2026-06-23/run-web/jin10_web_flash_briefs.json"}
+                    ],
+                    "quality_flags": {},
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
 def test_ingestion_source_test_runs_jin10_flash_probe_and_archives_preview(monkeypatch, tmp_path: Path) -> None:
     session = _make_session()
     monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
@@ -58,7 +130,7 @@ def test_ingestion_source_test_runs_jin10_flash_probe_and_archives_preview(monke
 
     response = main.api_ingestion_source_test(
         "jin10_mcp_flash",
-        body=DataSourceTestRequest(actor="automation", reason="manual preview", request_id="probe-001", limit=2),
+        body=DataSourceTestRequest(actor="codex", reason="manual preview", request_id="probe-001", limit=2),
         db=session,
     )
 
@@ -104,6 +176,131 @@ def test_ingestion_source_test_runs_jin10_flash_probe_and_archives_preview(monke
     }
 
 
+def test_ingestion_source_test_reads_web_important_flash_latest_artifact(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    _write_web_flash_briefs_artifact(tmp_path)
+
+    response = main.api_ingestion_source_test(
+        "jin10_web_important_flash",
+        body=DataSourceTestRequest(actor="codex", reason="web important preview", request_id="probe-web-important", limit=5),
+        db=session,
+    )
+
+    assert response.status == "ok"
+    assert response.data_status == "live"
+    assert response.summary["source_key"] == "jin10_web_important_flash"
+    assert response.summary["matching_count"] == 1
+    assert response.summary["sample_count"] == 1
+    assert response.preview == [
+        {
+            "headline": "重要快讯：黄金突破关键阻力",
+            "display_bucket": "important",
+            "published_at": "2026-06-23 09:30:00",
+            "url": "https://www.jin10.com/flash/important-1",
+            "access_status": "public",
+            "verification_status": "verified",
+        }
+    ]
+    assert (tmp_path / response.artifacts["raw_path"]).exists()
+    assert (tmp_path / response.artifacts["parsed_path"]).exists()
+    raw_payload = json.loads((tmp_path / response.artifacts["raw_path"]).read_text(encoding="utf-8"))
+    raw_text = json.dumps(raw_payload, ensure_ascii=False)
+    assert "VIP快讯：机构持仓更新" not in raw_text
+    assert "jin10_web_vip_flash" not in raw_text
+
+
+def test_ingestion_source_test_reads_web_vip_flash_latest_artifact(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    _write_web_flash_briefs_artifact(tmp_path)
+
+    response = main.api_ingestion_source_test(
+        "jin10_web_vip_flash",
+        body=DataSourceTestRequest(actor="codex", reason="web vip preview", request_id="probe-web-vip", limit=5),
+        db=session,
+    )
+
+    assert response.status == "ok"
+    assert response.data_status == "live"
+    assert response.summary["source_key"] == "jin10_web_vip_flash"
+    assert response.summary["matching_count"] == 1
+    assert response.summary["sample_count"] == 1
+    assert response.preview == [
+        {
+            "headline": "VIP快讯：机构持仓更新",
+            "display_bucket": "vip",
+            "published_at": "2026-06-23 09:31:00",
+            "url": "https://www.jin10.com/flash/vip-1",
+            "access_status": "vip_required",
+            "verification_status": "profile_required",
+        }
+    ]
+    assert response.preview[0]["access_status"] == "vip_required"
+    assert (tmp_path / response.artifacts["raw_path"]).exists()
+    assert (tmp_path / response.artifacts["parsed_path"]).exists()
+    raw_payload = json.loads((tmp_path / response.artifacts["raw_path"]).read_text(encoding="utf-8"))
+    raw_text = json.dumps(raw_payload, ensure_ascii=False)
+    assert "重要快讯：黄金突破关键阻力" not in raw_text
+    assert "jin10_web_important_flash" not in raw_text
+
+
+def test_ingestion_source_test_web_flash_zero_match_returns_partial(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    _write_web_flash_briefs_artifact(tmp_path, include_important=False, include_vip=True)
+
+    response = main.api_ingestion_source_test(
+        "jin10_web_important_flash",
+        body=DataSourceTestRequest(actor="codex", reason="web important no match", request_id="probe-web-zero"),
+        db=session,
+    )
+
+    assert response.status == "no_matching_briefs"
+    assert response.data_status == "partial"
+    assert response.preview == []
+    assert response.summary["reason_code"] == "no_matching_briefs"
+    assert response.summary["matching_count"] == 0
+
+
+def test_ingestion_source_test_web_flash_without_artifact_returns_partial(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+
+    response = main.api_ingestion_source_test(
+        "jin10_web_important_flash",
+        body=DataSourceTestRequest(actor="codex", reason="missing web flash artifact", request_id="probe-web-missing"),
+        db=session,
+    )
+
+    assert response.status == "no_latest_artifact"
+    assert response.data_status == "partial"
+    assert response.preview == []
+    assert response.summary["reason_code"] == "no_latest_artifact"
+    assert response.summary["source_key"] == "jin10_web_important_flash"
+    assert response.summary["method"] == "latest.jin10_web_flash_briefs"
+
+
+def test_ingestion_source_test_web_flash_malformed_artifact_returns_partial(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    artifact_path = tmp_path / "storage/features/news/2026-06-23/run-bad/jin10_web_flash_briefs.json"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(json.dumps({"brief_count": "bad"}), encoding="utf-8")
+
+    response = main.api_ingestion_source_test(
+        "jin10_web_important_flash",
+        body=DataSourceTestRequest(actor="codex", reason="malformed web flash artifact", request_id="probe-web-bad"),
+        db=session,
+    )
+
+    assert response.status == "malformed_latest_artifact"
+    assert response.data_status == "partial"
+    assert response.preview == []
+    assert response.summary["reason_code"] == "malformed_latest_artifact"
+    assert response.summary["artifact_path"] == artifact_path.relative_to(tmp_path).as_posix()
+
+
 @dataclass
 class _DatacenterFetchResult:
     status: str = "schema_changed"
@@ -133,7 +330,7 @@ def test_ingestion_source_test_returns_datacenter_schema_changed(monkeypatch, tm
 
     response = main.api_ingestion_source_test(
         "jin10_datacenter_reports",
-        body=DataSourceTestRequest(actor="automation", reason="datacenter probe", request_id="probe-dc", limit=3),
+        body=DataSourceTestRequest(actor="codex", reason="datacenter probe", request_id="probe-dc", limit=3),
         db=session,
     )
 
@@ -196,7 +393,7 @@ def test_ingestion_source_test_does_not_auto_fetch_svip_reports(monkeypatch, tmp
 
     response = main.api_ingestion_source_test(
         "jin10_svip_reports",
-        body=DataSourceTestRequest(actor="automation", reason="svip probe", request_id="probe-svip"),
+        body=DataSourceTestRequest(actor="codex", reason="svip probe", request_id="probe-svip"),
         db=session,
     )
 

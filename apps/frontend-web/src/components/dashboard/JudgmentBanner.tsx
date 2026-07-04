@@ -22,7 +22,7 @@ export function JudgmentBanner({ summary, viewModel, agentCoordinator, agentSynt
       ? (agentCoordinator.bias as SignalDirection)
       : marketState?.bias === "bullish" || marketState?.bias === "bearish" || marketState?.bias === "neutral"
         ? marketState.bias
-        : conclusion.direction;
+        : strategy.direction;
   const confidence =
     agentSynthesis?.confidence ??
     agentCoordinator?.confidence ??
@@ -35,12 +35,12 @@ export function JudgmentBanner({ summary, viewModel, agentCoordinator, agentSynt
     ? translateText(agentSynthesis.bias)
     : agentCoordinator
       ? translateText(agentCoordinator.bias)
-      : translateText(marketState?.label || conclusion.bias || strategy.bias || "—");
+      : translateText(marketState?.label || strategy.bias || "—");
   const summaryText = synthesisSummary
     ? synthesisSummary
     : agentCoordinator?.summary
       ? translateText(agentCoordinator.summary)
-      : translateText(marketState?.summary || conclusion.options_summary || "—");
+      : translateText(marketState?.summary || strategy.bias || "—");
   const realtimeHint = summary.realtime_status?.message ? translateText(summary.realtime_status.message) : null;
   const triggers = (agentSynthesis?.keyFindings.length ? agentSynthesis.keyFindings : strategy.triggers)
     .slice(0, 3)

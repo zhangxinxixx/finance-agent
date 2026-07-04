@@ -187,10 +187,9 @@ def test_collect_project_docs_preset_uses_real_docs():
 
     specs = collect_document_specs(args)
 
-    assert len(specs) == 2
-    assert PROJECT_DOCS_EXISTING_DOCUMENT_IDS == {}
-    assert specs[0].document_id is None
-    assert any(path.as_posix() == "docs/diagrams/system-architecture.mmd" for path in specs[0].diagram_paths)
+    assert len(specs) == 3
+    assert specs[0].document_id == PROJECT_DOCS_EXISTING_DOCUMENT_IDS[specs[0].title]
+    assert any(path.as_posix() == "docs/diagrams/system-architecture.mmd" for path in specs[1].diagram_paths)
     for spec in specs:
         for relative_path in [*spec.markdown_paths, *spec.diagram_paths]:
             assert (PROJECT_ROOT / relative_path).exists(), relative_path
@@ -198,7 +197,7 @@ def test_collect_project_docs_preset_uses_real_docs():
 
 def test_attach_existing_document_ids_binds_known_project_docs():
     specs = attach_existing_document_ids(
-        (PublishDocumentSpec(title="finance-agent 页面规格", markdown_paths=(Path("docs/frontend/page-specs/dashboard.md"),)),)
+        (PublishDocumentSpec(title="finance-agent 改造规划", markdown_paths=(Path("docs/09_FRONTEND_ROADMAP.md"),)),)
     )
 
     assert specs[0].document_id is None
@@ -263,15 +262,15 @@ def test_cli_dry_run_project_preset_outputs_summary():
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert len(payload) == 2
-    assert payload[0]["action"] == "create"
-    assert payload[0]["document_id"] is None
-    assert payload[0]["board_count"] == 8
-    assert payload[0]["table_count"] > 0
-    assert "docs/diagrams/system-architecture.mmd" in payload[0]["diagrams"]
-    assert "docs/diagrams/news-pipeline-flow.mmd" in payload[0]["diagrams"]
-    assert payload[1]["action"] == "create"
-    assert payload[1]["document_id"] is None
+    assert len(payload) == 3
+    assert payload[0]["action"] == "update"
+    assert payload[0]["document_id"] == "S3JMdA5uPoSpdkxRwDUchbUkn3d"
+    assert payload[1]["board_count"] == 8
+    assert payload[1]["table_count"] > 0
+    assert "docs/diagrams/system-architecture.mmd" in payload[1]["diagrams"]
+    assert "docs/diagrams/news-pipeline-flow.mmd" in payload[1]["diagrams"]
+    assert payload[2]["action"] == "create"
+    assert payload[2]["document_id"] is None
 
 
 def test_publish_existing_document_requires_confirm_overwrite():

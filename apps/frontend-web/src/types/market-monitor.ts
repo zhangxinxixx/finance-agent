@@ -6,7 +6,12 @@ export type MarketMonitorMetricGroup = "metals" | "dollar" | "rates" | "liquidit
 
 export type MarketMonitorChange = string | number | null;
 
-export type MarketRegimeKey = "rate_pressure" | "transition_release" | "trend_tailwind";
+export type MarketRegimeKey =
+  | "rate_pressure"
+  | "transition_release"
+  | "trend_tailwind"
+  | "liquidity_crunch"
+  | "monetary_credit_repricing";
 
 export type MarketEnvironmentFilterKey = "us10y" | "dxy" | "us02y" | "xauusd_price_reaction";
 

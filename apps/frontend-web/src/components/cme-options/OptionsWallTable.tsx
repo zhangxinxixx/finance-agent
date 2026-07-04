@@ -54,10 +54,10 @@ export function OptionsWallTable({ wallScores }: OptionsWallTableProps) {
         <button
           type="button"
           onClick={() => setExpanded((prev) => !prev)}
-          className="inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium text-[var(--fg-4)] transition-colors hover:bg-[var(--bg-hover)]"
+          className="inline-flex items-center gap-1 rounded px-2 py-1 text-[length:var(--text-10)] font-medium text-[var(--fg-4)] transition-colors hover:bg-[var(--bg-hover)]"
         >
           {expanded ? "收起" : "展开"}
-          <span className="text-[10px]">{expanded ? "▲" : "▼"}</span>
+          <span className="text-[length:var(--text-10)]">{expanded ? "▲" : "▼"}</span>
         </button>
       }
     >

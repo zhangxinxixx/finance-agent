@@ -13,7 +13,7 @@ interface KnowledgeDetailProps {
 
 export function KnowledgeDetail({ item, activeTab, onTabChange }: KnowledgeDetailProps) {
   return (
-    <div className="flex min-h-0 flex-col gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-3">
       <KnowledgeDetailHero item={item} />
 
       <div className="flex flex-wrap gap-1.5 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-panel)] p-1.5">

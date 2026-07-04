@@ -11,11 +11,6 @@ export function CriticalAlertBanner({ sources }: CriticalAlertBannerProps) {
   if (blockers.length === 0) return null;
 
   const names = blockers.map((b) => b.label).join(" · ");
-  const details = blockers
-    .slice(0, 3)
-    .map((b) => b.error_message || b.status_reason || "异常")
-    .join(" / ");
-
   return (
     <div
       className="flex items-center gap-2 rounded-[var(--radius-md)] px-3 py-2 shrink-0"
@@ -29,7 +24,6 @@ export function CriticalAlertBanner({ sources }: CriticalAlertBannerProps) {
         {blockers.length} 个关键阻塞:
       </span>
       <span className="text-[10px] text-[var(--fg-3)] truncate flex-1">{names}</span>
-      <span className="text-[9px] text-[var(--fg-5)] shrink-0 hidden md:block">{details}</span>
     </div>
   );
 }

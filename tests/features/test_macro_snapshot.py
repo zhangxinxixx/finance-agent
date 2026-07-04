@@ -44,10 +44,10 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     us10y = snapshot.indicators["US10Y"]
     rrp_usage = snapshot.indicators["ON_RRP_USAGE"]
 
-    assert real_10y.label == "10Y 实际利率（10Y TIPS）"
-    assert real_10y.value == 1.91
-    assert real_10y.weekly_change == -0.02
-    assert real_10y.monthly_change == 0.01
+    assert real_10y.label == "10Y 实际利率 = US10Y - T10YIE"
+    assert real_10y.value == 1.95
+    assert real_10y.weekly_change == 0.05
+    assert real_10y.monthly_change == -0.05
     assert yield_spread.value == 0.3
     assert yield_spread.weekly_change == 0.0
     assert us10y.unit == "%"
@@ -70,7 +70,7 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     assert "DXY" in markdown
 
 
-def test_macro_snapshot_marks_real_10y_unavailable_when_dfii10_is_missing() -> None:
+def test_macro_snapshot_marks_real_10y_unavailable_when_t10yie_is_missing() -> None:
     points = [
         {
             "symbol": "DGS10",
@@ -86,7 +86,6 @@ def test_macro_snapshot_marks_real_10y_unavailable_when_dfii10_is_missing() -> N
     snapshot = build_macro_snapshot(points, as_of="2026-05-06")
 
     assert "REAL_10Y" not in snapshot.indicators
-    assert "DFII10" in snapshot.unavailable_symbols
     assert "T10YIE" in snapshot.unavailable_symbols
     assert "BREAKEVEN_10Y" not in snapshot.indicators
     assert snapshot.indicators["US10Y"].value == 4.3

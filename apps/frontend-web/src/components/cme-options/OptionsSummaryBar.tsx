@@ -62,19 +62,19 @@ export function OptionsSummaryBar({ dataSource }: OptionsSummaryBarProps) {
       </div>
 
       <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-3">
-        <div className="text-[10px] font-semibold text-[var(--fg-5)]">覆盖到期月</div>
+        <div className="text-[length:var(--text-10)] font-semibold text-[var(--fg-5)]">覆盖到期月</div>
         <div className="mt-2 flex flex-wrap gap-1.5">
           {expiries.length > 0 ? (
             expiries.map((expiry) => (
               <span
                 key={expiry}
-                className="inline-flex items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-panel)] px-2 py-1 text-[10px] font-semibold text-[var(--fg-3)]"
+                className="inline-flex items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-panel)] px-2 py-1 text-[length:var(--text-10)] font-semibold text-[var(--fg-3)]"
               >
                 {expiry}
               </span>
             ))
           ) : (
-            <span className="text-[11px] text-[var(--fg-4)]">暂无到期月信息</span>
+            <span className="text-[length:var(--text-11)] text-[var(--fg-4)]">暂无到期月信息</span>
           )}
         </div>
       </div>

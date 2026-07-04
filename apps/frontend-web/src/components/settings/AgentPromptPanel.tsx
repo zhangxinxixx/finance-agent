@@ -55,7 +55,7 @@ export function AgentPromptPanel({ agentId, agents, onChanged, onError }: AgentP
         status: "draft",
         enabled: true,
         change_note: "settings page synced registry prompt template",
-        created_by: "automation",
+        created_by: "codex",
         request_id: `settings-prompt-${selectedAgent.agent_id}-${Date.now()}`,
       });
       await reloadVersions();
@@ -96,7 +96,7 @@ export function AgentPromptPanel({ agentId, agents, onChanged, onError }: AgentP
         rating: Number(feedbackRating),
         category: feedbackCategory,
         comment: feedbackComment.trim(),
-        submitted_by: "automation",
+        submitted_by: "codex",
         request_id: `settings-feedback-${selectedAgent.agent_id}-${Date.now()}`,
       });
       await reloadFeedbackHistory();

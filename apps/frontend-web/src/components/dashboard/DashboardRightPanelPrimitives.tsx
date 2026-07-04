@@ -28,52 +28,31 @@ export function formatPanelDate(value: string | null | undefined): string {
 
 export function DashboardPanelEmptyState({
   children,
-  border = "1px solid var(--border-faint)",
-  background = "var(--bg-card-inner)",
+  className = "",
 }: {
   children: ReactNode;
-  border?: string;
-  background?: string;
+  className?: string;
 }) {
   return (
-    <div
-      style={{
-        padding: "8px",
-        borderRadius: 3,
-        background,
-        border,
-        fontSize: 10,
-        color: "var(--fg-5)",
-        textAlign: "center",
-      }}
-    >
+    <div className={`dashboard-panel-empty-state ${className}`}>
       {children}
     </div>
   );
 }
 
 export function DashboardPanelStack({ children }: { children: ReactNode }) {
-  return <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>{children}</div>;
+  return <div className="dashboard-panel-stack">{children}</div>;
 }
 
 export function DashboardPanelCard({
   children,
-  background = "var(--bg-card-inner)",
-  border = "1px solid var(--border-faint)",
+  className = "",
 }: {
   children: ReactNode;
-  background?: string;
-  border?: string;
+  className?: string;
 }) {
   return (
-    <div
-      style={{
-        padding: "6px 8px",
-        borderRadius: 3,
-        background,
-        border,
-      }}
-    >
+    <div className={`dashboard-panel-card ${className}`}>
       {children}
     </div>
   );

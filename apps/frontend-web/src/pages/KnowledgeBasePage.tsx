@@ -1,3 +1,4 @@
+import { BookOpen, RefreshCw } from "lucide-react";
 import {
   KnowledgeBaseErrorState,
   KnowledgeBaseLoadingState,
@@ -7,9 +8,9 @@ import { KnowledgeFilterBar } from "@/components/knowledge/KnowledgeFilterBar";
 import { KnowledgeListPane } from "@/components/knowledge/KnowledgeListPane";
 import { KnowledgeOpsPane } from "@/components/knowledge/KnowledgeOpsPane";
 import { KnowledgePlaybookSection } from "@/components/knowledge/KnowledgePlaybookSection";
-import { KnowledgeTypeTabs } from "@/components/knowledge/KnowledgeTypeTabs";
-import { FAPageIntro } from "@/components/shared/FAPageIntro";
+import { buildKnowledgeTypeTabs } from "@/components/knowledge/KnowledgeTypeTabs";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
+import { FAWorkspaceHeader } from "@/components/shared/FAWorkspaceHeader";
 import { useKnowledge } from "@/hooks/useKnowledge";
 import { useKnowledgePageState, useKnowledgeSelectionSync } from "@/hooks/useKnowledgePageState";
 
@@ -49,25 +50,39 @@ export function KnowledgeBasePage() {
   }
 
   const { items, selectedItem, stats } = knowledge.data;
+  const typeTabs = buildKnowledgeTypeTabs(knowledge.data.typeCounts);
 
   return (
     <FAPageScaffold
-      intro={(
-        <FAPageIntro
-          eyebrow="研究知识资产"
-          title="知识库"
-          description="左侧管理条目列表，中间阅读与验证细节，右侧承载运营统计和规则动作，避免把筛选、详情和运维信息混在同一列。"
-          meta={(
-            <>
-              <span className="text-[10px] text-[var(--fg-4)]">条目 {items.length}</span>
-              <span className="text-[10px] text-[var(--fg-4)]">当前类型 {typeTab}</span>
-              {selectedItem ? <span className="text-[10px] text-[var(--fg-4)]">已选 {selectedItem.title}</span> : null}
-            </>
-          )}
-        />
-      )}
+      className="knowledge-page-shell"
       toolbar={(
         <div className="fa-page-stack">
+          <FAWorkspaceHeader
+            className="knowledge-workspace-header"
+            icon={BookOpen}
+            title="知识库"
+            tabs={typeTabs}
+            value={typeTab}
+            onChange={handleTypeTabChange}
+            ariaLabel="知识类型筛选"
+            actions={(
+              <button type="button" onClick={knowledge.refetch} className="fa-workspace-toolbar-button">
+                <RefreshCw size={12} />
+                刷新
+              </button>
+            )}
+            primaryLabel="知识资产"
+            primaryItems={[
+              { label: "条目", value: items.length },
+              { label: "主题", value: topic },
+              { label: "状态", value: status },
+            ]}
+            secondaryLabel="当前"
+            secondaryItems={[
+              ...(selectedItem ? [{ label: "已选", value: selectedItem.title, title: selectedItem.title }] : []),
+            ]}
+          />
+
           <KnowledgeFilterBar
             search={search}
             onSearchChange={setSearch}
@@ -78,12 +93,10 @@ export function KnowledgeBasePage() {
             statuses={knowledge.statuses}
             onStatusChange={handleStatusFilter}
           />
-
-          <KnowledgeTypeTabs value={typeTab} onChange={handleTypeTabChange} />
         </div>
       )}
     >
-      <div className="fa-page-grid fa-page-grid--triple flex-1">
+      <div className="fa-page-grid knowledge-page-grid flex-1">
         <KnowledgeListPane items={items} selectedId={selectedId} onSelect={handleSelectItem} />
         <KnowledgeDetailPane item={selectedItem} activeTab={detailTab} onTabChange={setDetailTab} />
         <KnowledgeOpsPane

@@ -54,21 +54,17 @@ export function KnowledgeListItem({ item, isActive, onSelect }: KnowledgeListIte
     <button
       type="button"
       onClick={() => onSelect(item.id)}
-      className={`w-full rounded-[var(--radius-lg)] border p-3 text-left transition-all duration-[var(--dur-fast)] ${
-        isActive
-          ? "border-[var(--brand)] bg-[var(--brand-dim)] shadow-[0_0_0_1px_var(--brand)]"
-          : "border-[var(--border)] bg-[var(--bg-card)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)]"
-      }`}
+      className={`knowledge-list-row ${isActive ? "knowledge-list-row--active" : ""}`}
     >
-      <div className="flex items-start gap-2.5">
+      <div className="flex min-w-0 items-start gap-2.5">
         <span
-          className={`flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[var(--radius-md)] text-[12px] font-bold ${TYPE_ICON_CLASS[item.type] ?? TYPE_ICON_CLASS.method}`}
+          className={`knowledge-list-row-icon ${TYPE_ICON_CLASS[item.type] ?? TYPE_ICON_CLASS.method}`}
         >
           {TYPE_GLYPH[item.type] ?? "?"}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-semibold leading-snug text-[var(--fg-2)]">{item.title}</div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <div className="truncate text-[12px] font-semibold leading-snug text-[var(--fg-1)]">{item.title}</div>
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
             <span className={`inline-flex items-center rounded-[var(--radius-pill)] px-1.5 py-0.5 text-[9px] font-semibold ${STATUS_TONE[item.status]}`}>
               {item.status}
             </span>
@@ -81,9 +77,9 @@ export function KnowledgeListItem({ item, isActive, onSelect }: KnowledgeListIte
           </div>
         </div>
       </div>
-      <div className="mt-2.5 flex items-center justify-between text-[10px] text-[var(--fg-5)]">
+      <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-[var(--fg-5)]">
         <span>{item.agentReady ? "Agent 可用" : "仅人工使用"}</span>
-        <span className="fa-num">引用 {item.citations} / {item.updated}</span>
+        <span className="fa-num truncate">引用 {item.citations} / {item.updated}</span>
       </div>
     </button>
   );

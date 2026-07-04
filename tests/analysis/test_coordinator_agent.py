@@ -36,7 +36,6 @@ def _agent_output(
     source_ref: dict | None = None,
     risk_points: list[str] | None = None,
     invalid_conditions: list[str] | None = None,
-    evidence_items: list[dict] | None = None,
 ) -> AgentOutput:
     return AgentOutput(
         version="1.0",
@@ -54,7 +53,6 @@ def _agent_output(
         source_refs=[source_ref or {"source": module, "ref": f"{module}:2026-05-14"}],
         status=status,
         created_at=_CREATED_AT,
-        evidence_items=evidence_items or [],
     )
 
 
@@ -104,59 +102,6 @@ def test_aligned_macro_options_outputs_schema_valid_final_view():
     assert any("macro" in finding.lower() for finding in output.key_findings)
     assert any("options" in finding.lower() for finding in output.key_findings)
     assert output.input_snapshot_ids["risk"] == "risk:2026-05-14"
-
-
-def test_coordinator_prefers_structured_evidence_items_when_available():
-    macro = _agent_output(
-        agent_name="macro_liquidity_agent",
-        module="macro",
-        bias=AgentBias.BULLISH,
-        confidence=0.72,
-        evidence_items=[
-            {
-                "factor": "real_yield_pressure",
-                "direction": "bullish",
-                "strength": 0.7,
-                "confidence": 0.8,
-                "freshness": 1.0,
-                "source_tier": "official",
-                "source_refs": [{"source": "fred", "symbol": "REAL_YIELD_10Y"}],
-                "data_category": "confirmed_data",
-            }
-        ],
-    )
-    options = _agent_output(
-        agent_name="cme_options_agent",
-        module="options",
-        bias=AgentBias.BEARISH,
-        confidence=0.74,
-        evidence_items=[
-            {
-                "factor": "option_wall",
-                "direction": "bearish",
-                "strength": 0.91,
-                "confidence": 0.75,
-                "freshness": 1.0,
-                "source_tier": "exchange",
-                "source_refs": [{"source": "cme_daily_bulletin"}],
-                "data_category": "confirmed_data",
-            }
-        ],
-    )
-
-    output = coordinate_agent_outputs(
-        _snapshot(),
-        macro_output=macro,
-        options_output=options,
-        risk_output=_risk(AgentBias.MIXED, 0.6),
-        created_at=_CREATED_AT,
-    )
-
-    evidence_by_factor = {item.factor: item for item in output.evidence_items}
-    assert {"real_yield_pressure", "option_wall"} <= set(evidence_by_factor)
-    assert evidence_by_factor["real_yield_pressure"].direction == "bullish"
-    assert evidence_by_factor["option_wall"].direction == "bearish"
-    assert any("structured evidence" in finding.lower() for finding in output.key_findings)
 
 
 def test_conflicting_macro_options_exposes_conflict_and_caps_confidence():

@@ -53,7 +53,7 @@ def test_settings_status_overlays_saved_preferences_and_source_enabled(monkeypat
         setting_key="global.language",
         scope="global",
         value_json={"value": "en-US"},
-        actor="automation",
+        actor="codex",
     )
     upsert_app_setting(
         session,
@@ -61,7 +61,7 @@ def test_settings_status_overlays_saved_preferences_and_source_enabled(monkeypat
         scope="source",
         source_key="fred",
         value_json={"enabled": False},
-        actor="automation",
+        actor="codex",
     )
     session.commit()
 
@@ -91,7 +91,7 @@ def test_settings_status_includes_masked_stored_secret(monkeypatch, tmp_path):
         secret_name="api_key",
         encrypted_value=cipher,
         masked_value="fred****1234",
-        actor="automation",
+        actor="codex",
     )
     session.commit()
 

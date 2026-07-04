@@ -108,9 +108,9 @@ class TestMemoryService:
     def test_add_memory_user_scope(self, mock_memory_client: MagicMock):
         """add_memory user 级：传 user_id。"""
         svc = MemoryService(memory_client=mock_memory_client)
-        svc.add_memory(content="偏好中文", user_id="local_user", memory_type="user_pref")
+        svc.add_memory(content="偏好中文", user_id="xinxi", memory_type="user_pref")
         kwargs = mock_memory_client.add.call_args.kwargs
-        assert kwargs["user_id"] == "local_user"
+        assert kwargs["user_id"] == "xinxi"
         assert kwargs["metadata"]["memory_type"] == "user_pref"
 
     def test_add_memory_app_scope(self, mock_memory_client: MagicMock):
@@ -118,12 +118,12 @@ class TestMemoryService:
         svc = MemoryService(memory_client=mock_memory_client)
         svc.add_memory(
             content="核心主链规则",
-            app_id="finance_agent",
+            app_id="finance_analysis_system",
             memory_type="project_principle",
             importance="high",
         )
         kwargs = mock_memory_client.add.call_args.kwargs
-        assert kwargs["app_id"] == "finance_agent"
+        assert kwargs["app_id"] == "finance_analysis_system"
         assert "user_id" not in kwargs
 
     def test_add_memory_agent_scope(self, mock_memory_client: MagicMock):
@@ -132,7 +132,7 @@ class TestMemoryService:
         svc.add_memory(
             content="risk agent read-only",
             agent_id="risk_agent",
-            app_id="finance_agent",
+            app_id="finance_analysis_system",
             memory_type="agent_rule",
         )
         kwargs = mock_memory_client.add.call_args.kwargs
@@ -141,9 +141,9 @@ class TestMemoryService:
     def test_search_for_app(self, mock_memory_client: MagicMock):
         """search_for_app 应传 app_id filter。"""
         svc = MemoryService(memory_client=mock_memory_client)
-        svc.search_for_app(query="架构规则", app_id="finance_agent")
+        svc.search_for_app(query="架构规则", app_id="finance_analysis_system")
         kwargs = mock_memory_client.search.call_args.kwargs
-        assert kwargs["filters"] == {"app_id": "finance_agent"}
+        assert kwargs["filters"] == {"app_id": "finance_analysis_system"}
 
     def test_search_for_agent(self, mock_memory_client: MagicMock):
         """search_for_agent 应传 agent_id filter。"""
@@ -157,7 +157,7 @@ class TestMemoryService:
         svc = MemoryService(memory_client=mock_memory_client)
         ctx = svc.search_context_for_task(
             task="risk 分析",
-            app_id="finance_agent",
+            app_id="finance_analysis_system",
             agent_id="risk_agent",
             top_k=5,
         )
@@ -166,7 +166,7 @@ class TestMemoryService:
         assert "agent" in ctx
 
     def test_get_all_memories(self, memory_service: MemoryService):
-        results = memory_service.get_all_memories(user_id="local_user")
+        results = memory_service.get_all_memories(user_id="xinxi")
         assert isinstance(results, dict)
 
 
@@ -186,12 +186,12 @@ class TestProjectMainlineMemory:
             content="当前执行 Phase 1 布局重构",
             tags=["frontend", "phase1"],
             importance="high",
-            source="agent_execution",
+            source="hermes_execution",
         )
         result = mainline.add_mainline_memory(record)
         assert result["status"] == "ok"
         kwargs = mock_memory_client.add.call_args.kwargs
-        assert kwargs["app_id"] == "finance_agent"
+        assert kwargs["app_id"] == "finance_analysis_system"
         assert "user_id" not in kwargs  # app 级不传 user_id
 
     def test_add_mainline_memory_rejects_invalid(self, mainline: ProjectMainlineMemory):
@@ -229,7 +229,7 @@ class TestProjectMainlineMemory:
         results = mainline.search_mainline("当前阶段", limit=5)
         assert isinstance(results, list)
         kwargs = mock_memory_client.search.call_args.kwargs
-        assert kwargs["filters"] == {"app_id": "finance_agent"}
+        assert kwargs["filters"] == {"app_id": "finance_analysis_system"}
 
     def test_get_execution_context(
         self, mainline: ProjectMainlineMemory, mock_memory_client: MagicMock

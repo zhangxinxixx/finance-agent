@@ -82,6 +82,23 @@ def test_resolve_runtime_secret_supports_fred_db_secret(monkeypatch) -> None:
     assert resolve_runtime_secret("FRED_API_KEY", session=session) == "fred-db-secret"
 
 
+def test_resolve_runtime_secret_falls_back_to_main_checkout_env_from_worktree(monkeypatch, tmp_path) -> None:
+    main_root = tmp_path / "finance-agent-main"
+    worktree_root = tmp_path / "finance-agent-worktrees" / "frontend-style"
+    common_git_dir = main_root / ".git"
+    worktree_git_dir = common_git_dir / "worktrees" / "frontend-style"
+
+    worktree_root.mkdir(parents=True)
+    worktree_git_dir.mkdir(parents=True)
+    (main_root / ".env").write_text("JIN10_MCP_KEY=shared-worktree-secret\n", encoding="utf-8")
+    (worktree_root / ".git").write_text(f"gitdir: {worktree_git_dir}\n", encoding="utf-8")
+
+    monkeypatch.delenv("JIN10_MCP_KEY", raising=False)
+    monkeypatch.setattr("apps.runtime.secret_resolver._PROJECT_ROOT", worktree_root)
+
+    assert resolve_runtime_secret("JIN10_MCP_KEY") == "shared-worktree-secret"
+
+
 def test_jin10_client_uses_runtime_secret_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         "apps.collectors.jin10.mcp_client.resolve_runtime_secret",

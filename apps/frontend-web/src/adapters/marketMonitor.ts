@@ -143,6 +143,22 @@ function createUnavailableRegimes(): Record<MarketRegimeKey, MarketRegime> {
       interpretation: "",
       drivers: [],
     },
+    liquidity_crunch: {
+      label: "Liquidity Crunch",
+      status: "unavailable",
+      confidence: 0,
+      description: "",
+      interpretation: "",
+      drivers: [],
+    },
+    monetary_credit_repricing: {
+      label: "Monetary Credit Repricing",
+      status: "unavailable",
+      confidence: 0,
+      description: "",
+      interpretation: "",
+      drivers: [],
+    },
   };
 }
 

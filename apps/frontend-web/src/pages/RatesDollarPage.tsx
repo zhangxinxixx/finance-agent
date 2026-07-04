@@ -10,13 +10,13 @@ import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPil
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
-import { getStatusLabel } from "@/components/shared/statusMeta";
+import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
+import { GoldTopicOverviewCard, GoldTopicStatusBar } from "@/components/gold-mainlines/GoldMainlinePageFrame";
 import {
   GOLD_MAINLINE_META,
   formatGoldDriverLabel,
   formatGoldMainlineLabel,
   formatGoldNetBiasLabel,
-  formatGoldPhaseLabel,
   formatGoldPricingLayerLabel,
   formatTransmissionPathLabel,
   formatGoldVerificationStatusLabel,
@@ -170,41 +170,22 @@ function RatesHeader({ overview, rows }: { overview: GoldMacroOverview; rows: To
   const coveredCount = rows.filter((row) => row.ranking).length;
 
   return (
-    <FACard
+    <GoldTopicOverviewCard
       title="利率与美元"
       eyebrow="Rate / Dollar"
       description={leading?.summary || overview.one_line_conclusion || "等待后端主线总览返回利率与美元摘要。"}
       accent="info"
-      className="shrink-0"
-      action={(
-        <div className="flex flex-wrap justify-end gap-1.5">
-          <FAStatusPill tone={goldNetBiasTone(leading?.direction ?? overview.net_bias)} dot={false}>
-            {formatGoldNetBiasLabel(leading?.direction ?? overview.net_bias)}
-          </FAStatusPill>
-          <FAStatusPill tone="neutral" dot={false}>{formatGoldPhaseLabel(overview.phase)}</FAStatusPill>
-          <FAStatusPill tone="dim" dot={false}>{overview.as_of?.slice(0, 16).replace("T", " ") || "时间未知"}</FAStatusPill>
-        </div>
-      )}
-    >
-      <div className="grid gap-3 md:grid-cols-4">
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[10px] font-semibold text-[var(--fg-5)]">专题覆盖</div>
-          <div className="fa-num mt-2 text-[18px] font-semibold text-[var(--fg-2)]">{coveredCount}/2</div>
-        </div>
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[10px] font-semibold text-[var(--fg-5)]">主导主线</div>
-          <div className="mt-2 text-[13px] font-semibold text-[var(--fg-2)]">{formatGoldMainlineLabel(rankingMainlineId(leading) ?? overview.dominant_mainline)}</div>
-        </div>
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[10px] font-semibold text-[var(--fg-5)]">主线分数</div>
-          <div className="fa-num mt-2 text-[18px] font-semibold text-[var(--fg-2)]">{scoreLabel(leading?.score)}</div>
-        </div>
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[10px] font-semibold text-[var(--fg-5)]">置信度</div>
-          <div className="fa-num mt-2 text-[18px] font-semibold text-[var(--fg-2)]">{scoreLabel(leading?.confidence)}</div>
-        </div>
-      </div>
-    </FACard>
+      metrics={[
+        { label: "专题覆盖", value: `${coveredCount}/2`, meta: "Fed path / Real rates", tone: coveredCount === 2 ? "up" : "warn" },
+        {
+          label: "主导主线",
+          value: formatGoldMainlineLabel(rankingMainlineId(leading) ?? overview.dominant_mainline),
+          meta: leading ? formatGoldPricingLayerLabel(leading.pricing_layer) : "dominant",
+        },
+        { label: "主线分数", value: scoreLabel(leading?.theme_score ?? leading?.score), meta: "Theme score", tone: goldNetBiasTone(leading?.direction ?? overview.net_bias) },
+        { label: "置信度", value: scoreLabel(leading?.confidence_score ?? leading?.confidence), meta: leading?.verification_status ?? "confidence" },
+      ]}
+    />
   );
 }
 
@@ -386,14 +367,16 @@ export function RatesDollarPage() {
 
   useEffect(() => {
     shell.setHeaderContent(
-      <div className="dashboard-header-summary dashboard-header-summary--stacked">
-        <div className="dashboard-header-summary-title">利率与美元</div>
-        <div className="dashboard-header-summary-meta">
-          <span className="dashboard-header-summary-item">Fed path</span>
-          <span className="dashboard-header-summary-item">实际利率</span>
-          <span className="dashboard-header-summary-item">DXY</span>
-        </div>
-      </div>,
+      <HeaderBreadcrumb
+        title="利率与美元"
+        meta={
+          <>
+            <span className="dashboard-header-summary-item">Fed path</span>
+            <span className="dashboard-header-summary-item">实际利率</span>
+            <span className="dashboard-header-summary-item">DXY</span>
+          </>
+        }
+      />,
     );
     return () => shell.setHeaderContent(null);
   }, [shell]);
@@ -441,17 +424,7 @@ export function RatesDollarPage() {
   return (
     <FAPageScaffold
       toolbar={(
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <FAStatusPill tone={statusTone(data.status)} dot={false}>{getStatusLabel(data.status)}</FAStatusPill>
-            <FAStatusPill tone="neutral" dot={false}>{data.date || overview.as_of?.slice(0, 10) || "日期未知"}</FAStatusPill>
-            {data.run_id ? <FAStatusPill tone="dim" dot={false}>{data.run_id}</FAStatusPill> : null}
-          </div>
-          <button type="button" onClick={refetch} className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--fg-2)]">
-            <RefreshCw size={12} />
-            刷新
-          </button>
-        </div>
+        <GoldTopicStatusBar status={data.status} date={data.date || overview.as_of?.slice(0, 10)} runId={data.run_id} netBias={overview.net_bias} phase={overview.phase} riskScore={overview.risk_score} onRefresh={refetch} />
       )}
     >
       {data.warnings.length ? <FAWarningBanner title="降级提示" description={warningText(data.warnings)} tone="info" /> : null}

@@ -39,8 +39,8 @@ export function IngestionActionsPanel({
       style={{ maxHeight: "min(36vh, 360px)" }}
     >
       <div className="border-b border-[var(--border)] bg-[var(--bg-panel)] px-3 py-2">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-2)]">操作入口</div>
-        <div className="mt-0.5 text-[9px] text-[var(--fg-5)]">重试只创建 task_run，页面不本地改数据状态</div>
+        <div className="text-[12px] font-semibold text-[var(--fg-1)]">操作入口</div>
+        <div className="mt-0.5 text-[11px] text-[var(--fg-4)]">重试只创建 task_run，页面不本地改数据状态</div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         <IngestionActionList actionableSources={actionableSources} runningSource={runningSource} onRetry={handleRetry} />

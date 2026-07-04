@@ -1,10 +1,15 @@
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
+import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { MarketMonitorLoadingPanel, MarketMonitorWeekendBanner } from "@/components/market-monitor/MarketMonitorSections";
+import { MarketMonitorLoadingPanel } from "@/components/market-monitor/MarketMonitorSections";
 
 export function MarketMonitorPageLoadingState() {
-  return <MarketMonitorLoadingPanel />;
+  return (
+    <FAPageScaffold className="market-monitor-page-shell">
+      <MarketMonitorLoadingPanel />
+    </FAPageScaffold>
+  );
 }
 
 export function MarketMonitorPageErrorState({
@@ -15,21 +20,25 @@ export function MarketMonitorPageErrorState({
   onRetry: () => void;
 }) {
   return (
-    <ErrorState
-      title="市场监控加载失败"
-      message={message}
-      onRetry={onRetry}
-      retryLabel="重试"
-    />
+    <FAPageScaffold className="market-monitor-page-shell">
+      <ErrorState
+        title="市场监控加载失败"
+        message={message}
+        onRetry={onRetry}
+        retryLabel="重试"
+      />
+    </FAPageScaffold>
   );
 }
 
 export function MarketMonitorPageEmptyState() {
   return (
-    <FAEmptyState
-      title="暂无可展示的市场监控数据"
-      description="当前返回结果缺少 has_data 或 metrics 内容，页面保留新设计骨架并显式标记 unavailable。"
-    />
+    <FAPageScaffold className="market-monitor-page-shell">
+      <FAEmptyState
+        title="暂无可展示的市场监控数据"
+        description="当前返回结果没有任何可展示的市场、事件或溯源面板数据。"
+      />
+    </FAPageScaffold>
   );
 }
 
@@ -42,7 +51,6 @@ export function MarketMonitorPageChrome({
 }) {
   return (
     <>
-      <MarketMonitorWeekendBanner />
       {errorReason ? (
         <FAWarningBanner
           tone={source === "unavailable" ? "down" : "info"}

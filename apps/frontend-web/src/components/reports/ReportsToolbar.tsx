@@ -19,7 +19,7 @@ export function ReportsToolbar({
     <div className="mb-1.5 flex flex-wrap items-center gap-2 rounded-[var(--radius-lg)] border border-[var(--border-faint)] bg-[var(--bg-card)] px-2.5 py-1.5">
       <div className="relative min-w-[220px] flex-1">
         <Search
-          size={11}
+          size={14}
           className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--fg-5)]"
         />
         <input
@@ -28,7 +28,7 @@ export function ReportsToolbar({
           placeholder="搜索报告..."
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
-          className="h-8 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] pl-8 pr-3 text-[11px] text-[var(--fg-2)] outline-none transition-colors placeholder:text-[var(--fg-5)] focus:border-[var(--brand-border)]"
+          className="h-9 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] pl-8 pr-3 text-[length:var(--text-12)] text-[var(--fg-2)] outline-none transition-colors placeholder:text-[var(--fg-5)] focus:border-[var(--brand-border)]"
         />
       </div>
 
@@ -45,13 +45,13 @@ export function ReportsToolbar({
             aria-pressed={viewMode === mode}
             onClick={() => onViewModeChange(mode)}
             title={label}
-            className={`inline-flex h-8 w-9 items-center justify-center border-r border-[var(--border)] text-[10px] transition-colors last:border-r-0 ${
+            className={`inline-flex h-9 w-10 items-center justify-center border-r border-[var(--border)] text-[length:var(--text-11)] transition-colors last:border-r-0 ${
               viewMode === mode
                 ? "bg-[var(--brand-soft)] text-[var(--brand)]"
                 : "text-[var(--fg-4)] hover:bg-[var(--bg-panel)] hover:text-[var(--fg-2)]"
             }`}
           >
-            <Icon size={11} />
+            <Icon size={14} />
           </button>
         ))}
       </div>

@@ -19,12 +19,12 @@ def api_memory_context(task: str):
     from apps.api import main as api_main
 
     try:
-        context = api_main.build_automation_memory_context(task)
+        context = api_main.build_codex_memory_context(task)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
     return api_main.MemoryContextResponse(
         task=task,
         context=context,
-        source="automation_mem0_adapter",
+        source="memory_context_adapter",
     )

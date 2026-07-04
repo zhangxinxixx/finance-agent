@@ -101,17 +101,19 @@ export function useStrategyPageState(
 
 function buildAssetTabs(assetOptions: StrategyAssetSummaryViewModel[]): FATabOption<string>[] {
   const optionMap = new Map(assetOptions.map((item) => [item.asset, item]));
-  const tabs = KNOWN_STRATEGY_ASSETS.map((asset) => {
+  const tabs = KNOWN_STRATEGY_ASSETS.flatMap((asset) => {
     const matched = optionMap.get(asset.value);
-    return {
+    if (!matched || matched.sample_size <= 0) return [];
+    return [{
       value: asset.value,
       label: asset.label,
-      count: matched?.sample_size ?? 0,
-    };
+      count: matched.sample_size,
+    }];
   });
 
   for (const item of assetOptions) {
     if (tabs.some((tab) => tab.value === item.asset)) continue;
+    if (item.sample_size <= 0) continue;
     tabs.push({
       value: item.asset,
       label: item.asset,

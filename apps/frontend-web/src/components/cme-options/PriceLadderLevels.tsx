@@ -55,10 +55,10 @@ export function PriceLadderLevelRow({
     >
       <div style={{ width: 3, height: 26, borderRadius: 2, background: tone.text, flexShrink: 0 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="fa-num" style={{ fontSize: 11, color: "var(--fg-1)", fontWeight: 700, fontFamily: "var(--font-mono)" }}>
+        <div className="fa-num" style={{ fontSize: "var(--text-10)", color: "var(--fg-1)", fontWeight: 700 }}>
           {formatNumber(level.strike)}
         </div>
-        <div style={{ fontSize: 9, color: CME_META_TEXT, marginTop: 2 }}>{level.note}</div>
+        <div style={{ fontSize: "var(--text-9)", color: CME_META_TEXT, marginTop: 2 }}>{level.note}</div>
       </div>
       <span
         style={{
@@ -67,7 +67,7 @@ export function PriceLadderLevelRow({
           background: tone.bg,
           border: `1px solid ${tone.border}`,
           color: tone.text,
-          fontSize: 9,
+          fontSize: "var(--text-9)",
           fontWeight: 600,
           whiteSpace: "nowrap",
         }}

@@ -66,38 +66,38 @@ export function ReportCard({
       }}
     >
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
-        <span style={{ padding: "2px 6px", background: `${cat.color}1f`, color: cat.color, border: `1px solid ${cat.color}33`, borderRadius: 2, fontSize: 9, fontWeight: 600, lineHeight: "14px" }}>
+        <span style={{ padding: "3px 7px", background: `${cat.color}1f`, color: cat.color, border: `1px solid ${cat.color}33`, borderRadius: 2, fontSize: "var(--text-10)", fontWeight: 600, lineHeight: "15px" }}>
           {cat.label}
         </span>
-        <span style={{ padding: "2px 6px", background: `${statusColor}1f`, color: statusColor, border: `1px solid ${statusColor}33`, borderRadius: 2, fontSize: 9, fontWeight: 600, lineHeight: "14px" }}>
+        <span style={{ padding: "3px 7px", background: `${statusColor}1f`, color: statusColor, border: `1px solid ${statusColor}33`, borderRadius: 2, fontSize: "var(--text-10)", fontWeight: 600, lineHeight: "15px" }}>
           {statusLabel}
         </span>
         {item.type === "options_report" ? (
-          <span style={{ padding: "2px 5px", background: "rgba(52,211,153,0.1)", color: "#34d399", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 2, fontSize: 9, fontWeight: 600 }}>
+          <span style={{ padding: "3px 6px", background: "rgba(52,211,153,0.1)", color: "#34d399", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 2, fontSize: "var(--text-10)", fontWeight: 600, lineHeight: "15px" }}>
             期权墙位
           </span>
         ) : null}
         {item.format ? (
-          <span style={{ padding: "2px 6px", background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 2, fontSize: 8, color: "var(--fg-5)", lineHeight: "14px" }}>
+          <span style={{ padding: "3px 7px", background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 2, fontSize: "var(--text-10)", color: "var(--fg-5)", lineHeight: "15px" }}>
             {item.format}
           </span>
         ) : null}
         {meta.tags.map((tag) => (
-          <span key={tag} style={{ padding: "2px 6px", background: "rgba(255,255,255,0.04)", border: "1px solid var(--border-faint)", borderRadius: 2, fontSize: 8, color: "var(--fg-5)", lineHeight: "14px" }}>
+          <span key={tag} style={{ padding: "3px 7px", background: "rgba(255,255,255,0.04)", border: "1px solid var(--border-faint)", borderRadius: 2, fontSize: "var(--text-10)", color: "var(--fg-5)", lineHeight: "15px" }}>
             {tag}
           </span>
         ))}
       </div>
 
-      <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.35, color: "var(--fg-2)", marginBottom: 4 }}>
+      <div style={{ fontWeight: 600, fontSize: "var(--text-13)", lineHeight: 1.4, color: "var(--fg-2)", marginBottom: 4 }}>
         {getReportTitle(item)}
       </div>
 
-      <div style={{ fontSize: 10, color: "var(--fg-4)", lineHeight: 1.55, marginBottom: 8, flex: 1 }}>
+      <div style={{ fontSize: "var(--text-11)", color: "var(--fg-4)", lineHeight: 1.55, marginBottom: 8, flex: 1 }}>
         {meta.summary}
       </div>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginBottom: 8, fontSize: 10, color: "var(--fg-4)" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginBottom: 8, fontSize: "var(--text-11)", color: "var(--fg-4)" }}>
         {[
           { label: "资产", value: assetLabel, color: cat.color },
           { label: "日期", value: dateLabel, color: "var(--fg-2)" },
@@ -105,26 +105,26 @@ export function ReportCard({
           { label: "绑定", value: item.run_id ? "Snapshot" : "未绑定", color: item.run_id ? "#60a5fa" : "var(--fg-5)" },
         ].map((metric) => (
           <div key={metric.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 9, color: "var(--fg-5)" }}>{metric.label}</span>
-            <span style={{ fontSize: 10, fontWeight: 700, color: metric.color, fontFamily: "var(--font-mono)" }}>{metric.value}</span>
+            <span style={{ fontSize: "var(--text-10)", color: "var(--fg-5)" }}>{metric.label}</span>
+            <span style={{ fontSize: "var(--text-11)", fontWeight: 700, color: metric.color, fontFamily: "var(--font-mono)" }}>{metric.value}</span>
           </div>
         ))}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, paddingTop: 8, borderTop: "1px solid var(--border-faint)", marginTop: "auto" }}>
         <div className="flex items-center gap-2">
-          <span style={{ fontSize: 9, color: "var(--fg-5)", fontFamily: "var(--font-mono)" }}>{runLabel}</span>
+          <span style={{ fontSize: "var(--text-10)", color: "var(--fg-5)", fontFamily: "var(--font-mono)" }}>{runLabel}</span>
         </div>
         {isOpenable ? (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onSelect(); }}
-            style={{ padding: "4px 12px", background: "rgba(59,130,246,0.12)", color: "var(--brand-hover)", border: "1px solid rgba(59,130,246,0.25)", borderRadius: 3, fontSize: 10, fontWeight: 600, cursor: "pointer", transition: "background 120ms" }}
+            style={{ padding: "5px 13px", background: "rgba(59,130,246,0.12)", color: "var(--brand-hover)", border: "1px solid rgba(59,130,246,0.25)", borderRadius: 3, fontSize: "var(--text-11)", fontWeight: 600, cursor: "pointer", transition: "background 120ms" }}
           >
             查看
           </button>
         ) : (
-          <span style={{ fontSize: 10, color: "var(--fg-5)" }}>不可用</span>
+          <span style={{ fontSize: "var(--text-11)", color: "var(--fg-5)" }}>不可用</span>
         )}
       </div>
     </div>

@@ -47,6 +47,7 @@ def test_jin10_calendar_api_normalizes_and_sorts_payload(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_PATH", cache_path)
     monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
+    monkeypatch.setattr(main, "_jin10_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
 
     result = main.api_jin10_calendar()
 
@@ -58,6 +59,8 @@ def test_jin10_calendar_api_normalizes_and_sorts_payload(monkeypatch, tmp_path):
         "high_impact": 2,
         "earliest_event_date": "2026-06-20",
         "latest_event_date": "2026-06-24",
+        "window_start_date": "2026-06-17",
+        "window_end_date": "2026-07-06",
     }
     assert [event["title"] for event in result["events"]] == [
         "美国6月初请失业金人数",
@@ -94,6 +97,7 @@ def test_jin10_calendar_api_marks_past_only_window_as_stale(monkeypatch, tmp_pat
 
     monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_PATH", cache_path)
     monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
+    monkeypatch.setattr(main, "_jin10_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
 
     result = main.api_jin10_calendar()
 
@@ -128,6 +132,7 @@ def test_jin10_calendar_api_refreshes_past_only_window(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_PATH", cache_path)
     monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
+    monkeypatch.setattr(main, "_jin10_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
 
     def refresh() -> None:
         cache_path.write_text(
@@ -159,3 +164,31 @@ def test_jin10_calendar_api_refreshes_past_only_window(monkeypatch, tmp_path):
     assert result["stats"]["upcoming"] == 1
     assert result["events"][0]["title"] == "美国6月FOMC利率决定"
     assert result["freshness"]["reason"] == "fresh"
+
+
+def test_jin10_calendar_api_filters_events_outside_display_window(monkeypatch, tmp_path):
+    cache_path = tmp_path / "calendar_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-06-22T01:00:00+00:00",
+                "events": [
+                    {"title": "窗口前事件", "pub_time": "2026-06-16 20:30", "star": 5, "actual": None},
+                    {"title": "窗口内事件", "pub_time": "2026-06-24 02:00", "star": 5, "actual": None},
+                    {"title": "窗口后事件", "pub_time": "2026-07-07 20:30", "star": 5, "actual": None},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_PATH", cache_path)
+    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
+    monkeypatch.setattr(main, "_jin10_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
+
+    result = main.api_jin10_calendar()
+
+    assert result["stats"]["total"] == 1
+    assert result["stats"]["window_start_date"] == "2026-06-17"
+    assert result["stats"]["window_end_date"] == "2026-07-06"
+    assert [event["title"] for event in result["events"]] == ["窗口内事件"]

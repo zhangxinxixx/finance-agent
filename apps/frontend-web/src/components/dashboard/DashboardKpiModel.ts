@@ -28,8 +28,10 @@ function metricValue(value: DashboardMetric["value"], fractionDigits = 2): strin
 }
 
 function translateUnit(unit: string | null | undefined): string {
-  if (unit === "USD/oz") return "美元/盎司";
-  return unit ?? "";
+  if (!unit) return "";
+  if (unit === "USD/oz") return "";
+  if (unit === "%") return "%";
+  return unit.length > 4 ? "" : unit;
 }
 
 function translateSubtitle(text: string | null | undefined): string | undefined {
@@ -102,8 +104,9 @@ function impactFromBackendKey(metric: DashboardMetric | undefined, subtitle?: st
   return backendImpactMap[rawNote ?? ""] ?? backendImpactMap[rawSubtitle ?? ""] ?? "数据不足";
 }
 
+
 export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKpiMetric[] {
-  const { market_summary: market, cme_options: options } = summary;
+  const { market_summary: market, macro_liquidity: liquidity } = summary;
   const xauRT = realtimeQuote(summary, "XAUUSD");
   const dxyRT = realtimeQuote(summary, "DXY");
 
@@ -116,8 +119,15 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
   const dxySubtitle = translateSubtitle(market.DXY.note) ?? (dxyRT?.change_pct != null ? "实时行情" : undefined);
   const us10ySubtitle = translateSubtitle(market.US10Y.note);
   const real10ySubtitle = translateSubtitle(market.REAL_10Y.note);
-  const gexSubtitle = translateSubtitle(options.market_regime);
-  const pinSubtitle = translateSubtitle(options.intent);
+  const t10yieSubtitle = translateSubtitle(market.T10YIE.note);
+  const rrpSubtitle = translateSubtitle(liquidity.RRP.note);
+  const tgaSubtitle = translateSubtitle(liquidity.TGA.note);
+  const bankReservesSubtitle = translateSubtitle(liquidity.BANK_RESERVES.note);
+
+  function macroImpact(metric: DashboardMetric | undefined): DashboardGoldImpactLabel {
+    if (metric == null || metric.value === null || metric.value === undefined || metric.value === "") return "数据不足";
+    return metric.status === "ok" ? "中性" : "数据不足";
+  }
 
   return [
     {
@@ -126,7 +136,8 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       delta: formatChangePct(xauRT?.change_pct) ?? market.XAUUSD.change ?? undefined,
       trend: xauTrend,
       unit: translateUnit(market.XAUUSD.unit),
-      accent: "#f59e0b",
+      sparkColor: market.XAUUSD.trend === "up" ? "var(--up)" : market.XAUUSD.trend === "down" ? "var(--down)" : undefined,
+      accent: "#b45309",
       subtitle: xauSubtitle,
       impactLabel: impactFromBackendKey(market.XAUUSD, xauSubtitle),
       dataStatus: xauRT ? realtimeStatusOf(summary, "XAUUSD") : metricStatusOf(market.XAUUSD),
@@ -137,7 +148,8 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       delta: formatChangePct(dxyRT?.change_pct) ?? market.DXY.change ?? undefined,
       trend: dxyTrend,
       unit: translateUnit(market.DXY.unit),
-      accent: "#3b82f6",
+      sparkColor: market.DXY.trend === "up" ? "var(--up)" : market.DXY.trend === "down" ? "var(--down)" : undefined,
+      accent: "#2563eb",
       subtitle: dxySubtitle,
       impactLabel: impactFromBackendKey(market.DXY, dxySubtitle),
       dataStatus: dxyRT ? realtimeStatusOf(summary, "DXY") : metricStatusOf(market.DXY),
@@ -151,7 +163,7 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       sparkColor: market.US10Y.trend === "up" ? "var(--up)" : market.US10Y.trend === "down" ? "var(--down)" : undefined,
       accent: "#06b6d4",
       subtitle: us10ySubtitle,
-      impactLabel: impactFromBackendKey(market.US10Y, us10ySubtitle),
+      impactLabel: macroImpact(market.US10Y),
       dataStatus: metricStatusOf(market.US10Y),
     },
     {
@@ -163,30 +175,56 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       sparkColor: market.REAL_10Y.trend === "up" ? "var(--up)" : market.REAL_10Y.trend === "down" ? "var(--down)" : undefined,
       accent: "#a78bfa",
       subtitle: real10ySubtitle,
-      impactLabel: impactFromBackendKey(market.REAL_10Y, real10ySubtitle),
+      impactLabel: macroImpact(market.REAL_10Y),
       dataStatus: metricStatusOf(market.REAL_10Y),
     },
     {
-      label: "净GEX",
-      value: options.net_gex != null ? options.net_gex.toLocaleString("en-US", { maximumFractionDigits: 0 }) : "—",
-      trend: "flat",
-      unit: "",
-      sparkColor: "var(--warn)",
+      label: "T10YIE",
+      value: metricValue(market.T10YIE.value, 2),
+      delta: market.T10YIE.change ?? undefined,
+      trend: trendOf(market.T10YIE),
+      unit: "%",
+      sparkColor: market.T10YIE.trend === "up" ? "var(--up)" : market.T10YIE.trend === "down" ? "var(--down)" : undefined,
       accent: "#f59e0b",
-      subtitle: gexSubtitle,
-      impactLabel: impactFromBackendKey({ label: "净GEX", value: options.net_gex, note: options.market_regime }, gexSubtitle),
-      dataStatus: options.data_status ?? options.confidence?.data_status ?? "unavailable",
+      subtitle: t10yieSubtitle,
+      impactLabel: macroImpact(market.T10YIE),
+      dataStatus: metricStatusOf(market.T10YIE),
     },
     {
-      label: "钉住价位",
-      value: options.pin_level != null ? options.pin_level.toLocaleString("en-US", { maximumFractionDigits: 1 }) : "—",
-      trend: "flat",
-      unit: "",
-      sparkColor: "var(--brand-hover)",
-      accent: "#3b82f6",
-      subtitle: pinSubtitle,
-      impactLabel: impactFromBackendKey({ label: "钉住价位", value: options.pin_level, note: options.intent }, pinSubtitle),
-      dataStatus: options.data_status ?? options.confidence?.data_status ?? "unavailable",
+      label: "RRP",
+      value: metricValue(liquidity.RRP.value, 2),
+      delta: liquidity.RRP.change ?? undefined,
+      trend: trendOf(liquidity.RRP),
+      unit: translateUnit(liquidity.RRP.unit),
+      sparkColor: liquidity.RRP.trend === "up" ? "var(--up)" : liquidity.RRP.trend === "down" ? "var(--down)" : undefined,
+      accent: "#14b8a6",
+      subtitle: rrpSubtitle,
+      impactLabel: macroImpact(liquidity.RRP),
+      dataStatus: metricStatusOf(liquidity.RRP),
+    },
+    {
+      label: "TGA",
+      value: metricValue(liquidity.TGA.value, 2),
+      delta: liquidity.TGA.change ?? undefined,
+      trend: trendOf(liquidity.TGA),
+      unit: translateUnit(liquidity.TGA.unit),
+      sparkColor: liquidity.TGA.trend === "up" ? "var(--up)" : liquidity.TGA.trend === "down" ? "var(--down)" : undefined,
+      accent: "#0ea5e9",
+      subtitle: tgaSubtitle,
+      impactLabel: macroImpact(liquidity.TGA),
+      dataStatus: metricStatusOf(liquidity.TGA),
+    },
+    {
+      label: "RESERVES",
+      value: metricValue(liquidity.BANK_RESERVES.value, 2),
+      delta: liquidity.BANK_RESERVES.change ?? undefined,
+      trend: trendOf(liquidity.BANK_RESERVES),
+      unit: translateUnit(liquidity.BANK_RESERVES.unit),
+      sparkColor: liquidity.BANK_RESERVES.trend === "up" ? "var(--up)" : liquidity.BANK_RESERVES.trend === "down" ? "var(--down)" : undefined,
+      accent: "#64748b",
+      subtitle: bankReservesSubtitle,
+      impactLabel: macroImpact(liquidity.BANK_RESERVES),
+      dataStatus: metricStatusOf(liquidity.BANK_RESERVES),
     },
   ];
 }

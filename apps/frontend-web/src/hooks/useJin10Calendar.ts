@@ -21,6 +21,8 @@ export interface Jin10CalendarStats {
   high_impact: number;
   earliest_event_date: string | null;
   latest_event_date: string | null;
+  window_start_date?: string | null;
+  window_end_date?: string | null;
 }
 
 export interface Jin10CalendarFreshness {

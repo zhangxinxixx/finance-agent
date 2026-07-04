@@ -71,18 +71,7 @@ export function MultiLineChart({
 
   return (
     <div className={className}>
-      <div
-        style={{
-          background: "var(--bg-panel)",
-          border: "1px solid var(--border-faint)",
-          borderRadius: "var(--radius-lg)",
-          height: "100%",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
-      >
-        {/* K 线图（内置时间周期切换器） */}
+      <div className="market-monitor-chart-shell">
         <div style={{ flex: 1, minHeight: 0 }}>
           <KLineChart
             candles={liveCandles}
@@ -95,7 +84,6 @@ export function MultiLineChart({
           />
         </div>
 
-        {/* Legend */}
         <MultiLineChartLegend metrics={metrics} seriesData={seriesData} statusText={statusText} />
       </div>
     </div>

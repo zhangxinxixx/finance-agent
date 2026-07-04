@@ -64,6 +64,25 @@ def test_regime_rate_pressure():
     """Rising real yields + rising DXY + rising rates → rate_pressure."""
     indicators = {
         "REAL_10Y": {"value": 2.0, "daily_change": 0.15, "weekly_change": 0.30},
+        "DXY": {"value": 106.0, "daily_change": 0.2, "weekly_change": 0.8},
+        "DGS2": {"value": 5.0, "daily_change": 0.10},
+        "DGS10": {"value": 4.55, "daily_change": 0.08},
+        "T10YIE": {"value": 2.3, "daily_change": 0.05},
+        "ON_RRP_USAGE": {"value": 500.0, "daily_change": 20.0},
+        "TGA": {"value": 600.0, "daily_change": 30.0},
+        "SOFR": {"value": 5.3, "daily_change": 0.01},
+        "EFFR": {"value": 5.25, "daily_change": 0.01},
+        "IORB": {"value": 5.4, "daily_change": 0.0},
+    }
+    result = classify_macro_regime(indicators)
+    assert result["market_phase"] == "rate_pressure"
+    assert result["confidence"] > 0.5
+
+
+def test_regime_liquidity_crunch():
+    """10Y stress zone + DXY surge + real-yield pressure → liquidity_crunch."""
+    indicators = {
+        "REAL_10Y": {"value": 2.0, "daily_change": 0.15, "weekly_change": 0.30},
         "DXY": {"value": 106.0, "daily_change": 0.5, "weekly_change": 1.5},
         "DGS2": {"value": 5.0, "daily_change": 0.10},
         "DGS10": {"value": 4.8, "daily_change": 0.08},
@@ -75,8 +94,25 @@ def test_regime_rate_pressure():
         "IORB": {"value": 5.4, "daily_change": 0.0},
     }
     result = classify_macro_regime(indicators)
-    assert result["market_phase"] == "rate_pressure"
-    assert result["confidence"] > 0.5
+    assert result["market_phase"] == "liquidity_crunch"
+
+
+def test_regime_monetary_credit_repricing():
+    """Gold strength despite rates/USD pressure → monetary_credit_repricing."""
+    indicators = {
+        "XAUUSD": {"value": 2450.0, "daily_change": 25.0},
+        "DXY": {"value": 103.0, "daily_change": 0.2},
+        "DGS2": {"value": 4.7, "daily_change": 0.05},
+        "DGS10": {"value": 4.45, "daily_change": 0.08},
+        "T10YIE": {"value": 2.3, "daily_change": 0.02},
+        "ON_RRP_USAGE": {"value": 300.0, "daily_change": -5.0},
+        "TGA": {"value": 600.0, "daily_change": 5.0},
+        "SOFR": {"value": 4.9, "daily_change": 0.0},
+        "EFFR": {"value": 4.9, "daily_change": 0.0},
+        "IORB": {"value": 5.0, "daily_change": 0.0},
+    }
+    result = classify_macro_regime(indicators)
+    assert result["market_phase"] == "monetary_credit_repricing"
 
 
 def test_regime_trend_tailwind():
@@ -148,7 +184,7 @@ def test_eval_real_yield_computed():
     result = _eval_real_yield(ind)
     assert result["status"] == "available"
     assert result["value"] == pytest.approx(2.2)
-    assert result["source"].endswith("(computed)")
+    assert result["source"] == "US10Y - T10YIE (computed_main)"
 
 
 def test_eval_real_yield_unavailable():
@@ -211,17 +247,27 @@ def test_gold_interpretation_unavailable():
     assert "Insufficient macro data" in gi
 
 
+def test_gold_interpretation_liquidity_crunch():
+    gi = _render_gold_interpretation("liquidity_crunch", {}, [])
+    assert "LIQUIDITY CRUNCH" in gi
+
+
+def test_gold_interpretation_monetary_credit_repricing():
+    gi = _render_gold_interpretation("monetary_credit_repricing", {}, [])
+    assert "MONETARY CREDIT REPRICING" in gi
+
+
 # ── Unit: change conditions ────────────────────────────────────────────
 
 
 def test_change_conditions_rate_pressure():
     conds = _change_conditions("rate_pressure")
-    assert any("Real yields turn lower" in c for c in conds)
+    assert any("US10Y - T10YIE turns lower" in c for c in conds)
 
 
 def test_change_conditions_trend_tailwind():
     conds = _change_conditions("trend_tailwind")
-    assert any("Real yields begin rising" in c for c in conds)
+    assert any("US10Y - T10YIE begins rising" in c for c in conds)
 
 
 # ── Integration: classify_macro_regime returns all fields ──────────────

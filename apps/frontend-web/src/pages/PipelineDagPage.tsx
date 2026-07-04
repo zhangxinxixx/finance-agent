@@ -21,7 +21,7 @@ import dagre from "dagre";
 import {
   ArrowLeft, GitBranch, XCircle, RefreshCw,
   Clock, Activity, Play, Loader2, Database, Gauge, FileText, Brain, Target, Save,
-  Maximize2, Minimize2,
+  Maximize2,
 } from "lucide-react";
 import {
   fetchDagGraph,
@@ -470,11 +470,11 @@ function DagAtmosphereStyles() {
         position: absolute;
         inset: -20%;
         background-image:
-          linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+          linear-gradient(rgba(70,119,230,0.08) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(70,119,230,0.08) 1px, transparent 1px);
         background-size: 56px 56px;
         animation: dag-pan-grid 18s linear infinite;
-        opacity: 0.28;
+        opacity: 0.42;
       }
       .dag-canvas-atmosphere::after {
         content: "";
@@ -482,10 +482,10 @@ function DagAtmosphereStyles() {
         inset: 0;
         pointer-events: none;
         background:
-          radial-gradient(circle at 12% 18%, rgba(59,130,246,0.20), transparent 24%),
-          radial-gradient(circle at 48% 8%, rgba(245,158,11,0.16), transparent 18%),
-          radial-gradient(circle at 84% 22%, rgba(16,185,129,0.17), transparent 22%),
-          linear-gradient(180deg, rgba(4,10,18,0.18) 0%, rgba(4,10,18,0.04) 18%, transparent 100%);
+          radial-gradient(circle at 12% 18%, rgba(70,119,230,0.12), transparent 24%),
+          radial-gradient(circle at 48% 8%, rgba(183,121,31,0.10), transparent 18%),
+          radial-gradient(circle at 84% 22%, rgba(5,150,105,0.10), transparent 22%),
+          linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 72%, transparent) 0%, color-mix(in srgb, var(--bg-panel) 18%, transparent) 24%, transparent 100%);
       }
       .dag-node-progress-sheen {
         animation: dag-node-progress-sheen 1.6s linear infinite;
@@ -668,7 +668,7 @@ function TopBar({
   const ok = summary.failed === 0 && summary.running === 0;
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border-faint)]"
+    <div className="flex min-w-0 items-center gap-3 overflow-hidden border-b border-[var(--border-faint)] px-4 py-2"
       style={{ background: "var(--bg-card)", minHeight: 42 }}>
       <GitBranch size={16} className="text-[var(--brand-gold)] shrink-0" />
       <span className="text-[12px] font-bold text-[var(--fg-1)] tracking-wide shrink-0">
@@ -716,13 +716,13 @@ function TopBar({
         <RefreshCw size={11} /> 恢复布局
       </button>
 
-      {preflightHint && <span className="text-[9px] text-[var(--fg-5)] shrink-0">{preflightHint}</span>}
-      {runMessage && <span className="text-[9px] text-[var(--fg-4)] shrink-0">{runMessage}</span>}
-      {layoutMessage && <span className="text-[9px] text-[var(--fg-4)] shrink-0">{layoutMessage}</span>}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[9px] text-[var(--fg-5)]" title={[preflightHint, runMessage, layoutMessage].filter(Boolean).join(" · ")}>
+          {[preflightHint, runMessage, layoutMessage].filter(Boolean).join(" · ")}
+        </div>
+      </div>
 
-      <div className="flex-1" />
-
-      <div className="flex items-center gap-3 text-[9px] shrink-0">
+      <div className="hidden shrink-0 items-center gap-3 text-[9px] 2xl:flex">
         {[{ l: "总计", v: summary.total, c: "var(--fg-2)" },
           { l: "成功", v: summary.success, c: "var(--up)" },
           { l: "失败", v: summary.failed, c: summary.failed > 0 ? "var(--down)" : "var(--fg-4)" },
@@ -739,7 +739,7 @@ function TopBar({
 
       <select value={tradeDateFilter}
         onChange={e => setTradeDateFilter(e.target.value)}
-        className="rounded-md border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 py-1 text-[9px] text-[var(--fg-3)] outline-none">
+        className="max-w-[118px] shrink-0 rounded-md border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 py-1 text-[9px] text-[var(--fg-3)] outline-none">
         <option value="">选择日期</option>
         {tradeDates.map(d => <option key={d} value={d}>{d}</option>)}
       </select>
@@ -850,7 +850,30 @@ function InspectorPanel({
 }) {
   const [activeTab, setActiveTab] = useState<InspectorTab>("input");
 
-  if (!node) return null;
+  if (!node) {
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-[var(--bg-card)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[var(--border-faint)] px-3 py-2.5">
+          <div>
+            <div className="text-[10px] font-semibold text-[var(--fg-2)]">节点详情</div>
+            <div className="text-[8px] text-[var(--fg-5)]">选择 DAG 节点后查看输入、输出、血缘与执行日志</div>
+          </div>
+          <GitBranch size={13} className="text-[var(--fg-5)]" />
+        </div>
+        <div className="flex flex-1 items-center justify-center px-5 text-center">
+          <div className="max-w-[260px]">
+            <div className="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--bg-panel)] text-[var(--brand-gold)]">
+              <GitBranch size={16} />
+            </div>
+            <div className="text-[10px] font-semibold text-[var(--fg-3)]">未选择节点</div>
+            <div className="mt-1 text-[8px] leading-relaxed text-[var(--fg-5)]">
+              点击画布中的采集、解析、特征、分析或输出节点，右侧会同步显示该节点的来源、产物、错误与上下游关系。
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const color = STAGE_COLORS[node.type] || "#94a3b8";
 
   // Extract step-level JSON data (populated by useNodeDetail)
@@ -859,8 +882,7 @@ function InspectorPanel({
   const stepErrors = ((node as any).execution?.step_errors as Record<string, unknown>[]) || [];
 
   return (
-    <div className="shrink-0 border-l border-[var(--border)] bg-[var(--bg-card)] flex flex-col"
-      style={{ width: 300 }}>
+    <div className="flex h-full min-h-0 flex-col bg-[var(--bg-card)]">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[var(--border-faint)] shrink-0 bg-[var(--bg-card)]">
         <div className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
@@ -1205,23 +1227,23 @@ function DailyRunsPanel({
   onSelectRun: (runId: string) => void;
 }) {
   return (
-    <section className="min-h-0 rounded-tl-md border-r border-[var(--border)] bg-[var(--bg-card)]">
-      <div className="flex items-center justify-between gap-3 border-b border-[var(--border-faint)] px-4 py-2">
+    <section className="flex h-full min-h-0 flex-col bg-[var(--bg-card)]">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border-faint)] px-4 py-2">
         <div>
           <div className="text-[10px] font-semibold text-[var(--fg-2)]">任务索引</div>
           <div className="text-[8px] text-[var(--fg-5)]">{tradeDate} · {tasks.length} 条运行记录</div>
         </div>
-        <div className="rounded-full border border-white/8 bg-black/10 px-2.5 py-1 text-[7px] font-semibold uppercase tracking-[0.16em] text-[var(--fg-4)]">
+        <div className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-1 text-[7px] font-semibold uppercase tracking-[0.16em] text-[var(--fg-4)]">
           Run Index
         </div>
       </div>
 
-      <div className="max-h-[420px] overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto">
         {tasks.length === 0 ? (
           <div className="px-4 py-10 text-[9px] text-[var(--fg-5)]">该日期暂无任务运行记录</div>
         ) : (
           <div>
-            <div className="sticky top-0 z-10 grid grid-cols-[56px_58px_minmax(0,1fr)] items-center gap-2 border-b border-[var(--border-faint)] bg-[rgba(8,15,24,0.94)] px-4 py-2 text-[7px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-6)] backdrop-blur-sm">
+            <div className="sticky top-0 z-10 grid grid-cols-[56px_58px_minmax(0,1fr)] items-center gap-2 border-b border-[var(--border-faint)] bg-[var(--bg-panel)] px-4 py-2 text-[7px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-6)] backdrop-blur-sm">
               <span>时间</span>
               <span>状态</span>
               <span>任务</span>
@@ -1343,8 +1365,8 @@ function RunDetailPanel({
   };
 
   return (
-    <section className="min-h-0 rounded-tr-md bg-[var(--bg-card)]">
-      <div className="flex items-center justify-between gap-3 border-b border-[var(--border-faint)] px-4 py-2">
+    <section className="flex h-full min-h-0 flex-col bg-[var(--bg-card)]">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border-faint)] px-4 py-2">
         <div>
           <div className="text-[10px] font-semibold text-[var(--fg-2)]">任务调度日志</div>
           <div className="text-[8px] text-[var(--fg-5)]">
@@ -1359,7 +1381,7 @@ function RunDetailPanel({
         )}
       </div>
 
-      <div className="flex items-center gap-1 border-b border-[var(--border-faint)] px-4 py-2">
+      <div className="flex shrink-0 items-center gap-1 border-b border-[var(--border-faint)] px-4 py-2">
         {[
           { key: "events", label: "事件" },
           { key: "overview", label: "概览" },
@@ -1383,7 +1405,7 @@ function RunDetailPanel({
         })}
       </div>
 
-      <div className="overflow-auto p-4 max-h-[420px]">
+      <div className="min-h-0 flex-1 overflow-auto p-4">
         {detailLoading ? (
           <div className="flex items-center justify-center py-8 text-[9px] text-[var(--fg-5)]">
             <Loader2 size={14} className="mr-2 animate-spin" /> 加载任务信息...
@@ -1532,6 +1554,123 @@ function RunDetailPanel({
         )}
       </div>
     </section>
+  );
+}
+
+type WorkbenchTab = "node" | "runs" | "events";
+
+function SchedulerWorkbenchPanel({
+  node,
+  nodeLoading,
+  onCloseNode,
+  onFitNode,
+  tradeDate,
+  tasks,
+  selectedRunId,
+  onSelectRun,
+  selectedTask,
+  detail,
+  detailLoading,
+  localRunLogs,
+}: {
+  node: DagNodeSpec | null;
+  nodeLoading: boolean;
+  onCloseNode: () => void;
+  onFitNode: () => void;
+  tradeDate: string;
+  tasks: SchedulerTaskRun[];
+  selectedRunId: string | null;
+  onSelectRun: (runId: string) => void;
+  selectedTask: SchedulerTaskRun | null;
+  detail: RunDetail | null;
+  detailLoading: boolean;
+  localRunLogs: RunLogEntry[];
+}) {
+  const [activeTab, setActiveTab] = useState<WorkbenchTab>("runs");
+
+  useEffect(() => {
+    if (node) {
+      setActiveTab("node");
+      return;
+    }
+    setActiveTab((current) => (current === "node" ? "runs" : current));
+  }, [node?.node_id]);
+
+  const tabs: Array<{ key: WorkbenchTab; label: string; meta: string }> = [
+    { key: "node", label: "节点", meta: node ? formatTaskDisplayLabel(node.type) : "未选中" },
+    { key: "runs", label: "运行", meta: `${tasks.length} 条` },
+    { key: "events", label: "事件", meta: selectedTask ? formatStatus(selectedTask.status) : "无任务" },
+  ];
+
+  return (
+    <aside
+      data-testid="scheduler-workbench-panel"
+      className="flex h-full min-h-0 w-[360px] max-w-[40vw] shrink-0 flex-col border-l border-[var(--border)] bg-[var(--bg-card)] shadow-[var(--shadow-card)]"
+    >
+      <div className="shrink-0 border-b border-[var(--border-faint)] bg-[var(--bg-panel)] px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-[10px] font-semibold text-[var(--fg-2)]">调度作战面板</div>
+            <div className="mt-0.5 truncate text-[8px] text-[var(--fg-5)]">
+              {tradeDate || "最新日期"} · DAG 节点、运行索引、事件流
+            </div>
+          </div>
+          <div className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-4)]">
+            Ops
+          </div>
+        </div>
+      </div>
+
+      <div className="grid shrink-0 grid-cols-3 border-b border-[var(--border-faint)] bg-[var(--bg-panel)]">
+        {tabs.map((tab) => {
+          const active = activeTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className="min-w-0 border-b-2 px-2 py-2 text-left transition-colors"
+              style={{
+                borderColor: active ? "var(--brand-gold)" : "transparent",
+                background: active ? "rgba(240,185,11,0.07)" : "transparent",
+              }}
+            >
+              <div className="truncate text-[9px] font-semibold" style={{ color: active ? "var(--fg-2)" : "var(--fg-5)" }}>
+                {tab.label}
+              </div>
+              <div className="mt-0.5 truncate text-[7px] text-[var(--fg-6)]">{tab.meta}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {activeTab === "node" && (
+          <InspectorPanel
+            node={node}
+            isLoading={nodeLoading}
+            onClose={onCloseNode}
+            onFitNode={onFitNode}
+          />
+        )}
+        {activeTab === "runs" && (
+          <DailyRunsPanel
+            tradeDate={tradeDate}
+            tasks={tasks}
+            selectedRunId={selectedRunId}
+            onSelectRun={onSelectRun}
+          />
+        )}
+        {activeTab === "events" && (
+          <RunDetailPanel
+            tradeDate={tradeDate}
+            selectedTask={selectedTask}
+            detail={detail}
+            detailLoading={detailLoading}
+            localRunLogs={localRunLogs}
+          />
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -2000,7 +2139,7 @@ export function PipelineDagPage() {
 
   return (
     <ReactFlowProvider>
-      <div className="finance-page-shell flex flex-col h-full">
+      <div className="finance-page-shell pipeline-dag-page-shell flex h-full min-h-0 flex-col gap-0 overflow-hidden">
         <DagAtmosphereStyles />
         <TopBar
           summary={summary}
@@ -2020,94 +2159,64 @@ export function PipelineDagPage() {
           layoutMessage={layoutMessage}
         />
 
-        <div className="flex flex-col">
-          <div
-            className="flex min-h-0 flex-none"
-            style={{ height: "calc(100vh - 176px)", minHeight: "calc(100vh - 176px)" }}
-          >
-            <div className="flex h-full min-h-0 flex-1">
-              <div className="dag-canvas-atmosphere flex-1 min-w-0 relative overflow-hidden" style={{ background: "linear-gradient(180deg, #06101a 0%, #09131e 38%, #0b1622 100%)" }}>
-                {loading && (
-                  <div className="absolute inset-0 flex items-center justify-center z-20 bg-[var(--bg-panel)]/80">
-                    <div className="flex flex-col items-center gap-2">
-                      <Loader2 size={24} className="animate-spin text-[var(--brand-gold)]" />
-                      <span className="text-[10px] text-[var(--fg-4)]">加载流程图...</span>
-                    </div>
-                  </div>
-                )}
-                {error && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-[var(--bg-panel)]/80">
-                    <XCircle size={28} className="text-[var(--down)] mb-2" />
-                    <span className="text-sm text-[var(--fg-3)]">{error}</span>
-                    <button onClick={load} className="mt-3 rounded-md border border-[var(--border)] px-4 py-1.5 text-[10px] text-[var(--fg-3)] hover:bg-[var(--bg-hover)]">重试</button>
-                  </div>
-                )}
-                {!loading && !error && (
-                  <>
-                    <FlowCanvas
-                      rfNodes={rfNodes}
-                      rfEdges={rfEdges}
-                      onNodesChange={onNodesChange}
-                      onEdgesChange={onEdgesChange}
-                      onNodeClick={handleNodeClick}
-                      onNodeMouseEnter={handleNodeMouseEnter}
-                      onNodeMouseLeave={handleNodeMouseLeave}
-                      onPaneClick={handlePaneClick}
-                    />
-                    <Panel position="top-right" className="!m-3 !rounded-[18px] !border !border-white/10 !bg-[rgba(6,12,20,0.68)] !px-3 !py-2 !shadow-[0_20px_50px_-34px_rgba(0,0,0,0.85)] !backdrop-blur-md">
-                      <div className="flex items-center gap-2 text-[7px] uppercase tracking-[0.16em] text-[var(--fg-5)]">
-                        {STAGE_ORDER.map((stage) => (
-                          <div key={stage} className="flex items-center gap-1 rounded-full border border-white/8 bg-white/5 px-2 py-1">
-                            <span className="h-1.5 w-1.5 rounded-full" style={{ background: STAGE_COLORS[stage] }} />
-                            <span>{STAGE_LABELS[stage]}</span>
-                            <span className="font-mono text-[var(--fg-3)]">{stageCounts[stage] ?? 0}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </Panel>
-                  </>
-                )}
-              </div>
-
-              <InspectorPanel
-                node={inspectorNode}
-                isLoading={detailLoading}
-                onClose={() => setSelectedNodeId(null)}
-                onFitNode={fitSelectedNode}
-              />
-            </div>
-          </div>
-
-          <div className="border-t border-[var(--border)] bg-[var(--bg-panel)]">
-            <div className="flex items-center justify-between gap-3 border-b border-[var(--border-faint)] px-4 py-2.5">
-              <div>
-                <div className="text-[10px] font-semibold text-[var(--fg-2)]">当日任务调度日志</div>
-                <div className="text-[8px] text-[var(--fg-5)]">
-                  {activeTradeDate || "最新日期"} · {dailyRuns.length} 条运行记录
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="dag-canvas-atmosphere relative min-w-0 flex-1 overflow-hidden">
+            {loading && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-[var(--bg-panel)]/80">
+                <div className="flex flex-col items-center gap-2">
+                  <Loader2 size={24} className="animate-spin text-[var(--brand-gold)]" />
+                  <span className="text-[10px] text-[var(--fg-4)]">加载流程图...</span>
                 </div>
               </div>
-              <div className="rounded-full border border-white/8 bg-black/10 px-2.5 py-1 text-[7px] font-semibold uppercase tracking-[0.16em] text-[var(--fg-4)]">
-                调度控制台
+            )}
+            {error && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[var(--bg-panel)]/80">
+                <XCircle size={28} className="mb-2 text-[var(--down)]" />
+                <span className="text-sm text-[var(--fg-3)]">{error}</span>
+                <button onClick={load} className="mt-3 rounded-md border border-[var(--border)] px-4 py-1.5 text-[10px] text-[var(--fg-3)] hover:bg-[var(--bg-hover)]">重试</button>
               </div>
-            </div>
-
-            <div className="grid min-h-[360px] grid-cols-[300px_minmax(0,1fr)]">
-            <DailyRunsPanel
-              tradeDate={activeTradeDate || "最新日期"}
-              tasks={dailyRuns}
-              selectedRunId={selectedRunId}
-              onSelectRun={handleSelectRun}
-            />
-
-            <RunDetailPanel
-              tradeDate={activeTradeDate || "最新日期"}
-              selectedTask={selectedTask}
-              detail={selectedRunDetail}
-              detailLoading={runDetailLoading}
-              localRunLogs={dailyRunLogs}
-            />
-            </div>
+            )}
+            {!loading && !error && (
+              <>
+                <FlowCanvas
+                  rfNodes={rfNodes}
+                  rfEdges={rfEdges}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  onNodeClick={handleNodeClick}
+                  onNodeMouseEnter={handleNodeMouseEnter}
+                  onNodeMouseLeave={handleNodeMouseLeave}
+                  onPaneClick={handlePaneClick}
+                />
+                <Panel position="top-right" className="pipeline-dag-stage-panel !m-3">
+                  <div className="flex items-center gap-2 text-[7px] uppercase tracking-[0.16em] text-[var(--fg-5)]">
+                    {STAGE_ORDER.map((stage) => (
+                      <div key={stage} className="flex items-center gap-1 rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-1">
+                        <span className="h-1.5 w-1.5 rounded-full" style={{ background: STAGE_COLORS[stage] }} />
+                        <span>{STAGE_LABELS[stage]}</span>
+                        <span className="font-mono text-[var(--fg-3)]">{stageCounts[stage] ?? 0}</span>
+                      </div>
+                    ))}
+                  </div>
+                </Panel>
+              </>
+            )}
           </div>
+
+          <SchedulerWorkbenchPanel
+            node={inspectorNode}
+            nodeLoading={detailLoading}
+            onCloseNode={() => setSelectedNodeId(null)}
+            onFitNode={fitSelectedNode}
+            tradeDate={activeTradeDate || "最新日期"}
+            tasks={dailyRuns}
+            selectedRunId={selectedRunId}
+            onSelectRun={handleSelectRun}
+            selectedTask={selectedTask}
+            detail={selectedRunDetail}
+            detailLoading={runDetailLoading}
+            localRunLogs={dailyRunLogs}
+          />
         </div>
       </div>
     </ReactFlowProvider>

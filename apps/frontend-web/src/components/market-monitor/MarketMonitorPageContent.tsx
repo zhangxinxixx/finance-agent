@@ -1,3 +1,4 @@
+import type { MarketMonitorHistoryResponse } from "@/adapters/marketMonitor";
 import {
   MarketMonitorCalendarSection,
   MarketMonitorCrossAssetSection,
@@ -6,9 +7,10 @@ import {
   MarketMonitorPricingChainSection,
 } from "@/components/market-monitor/MarketMonitorSections";
 import { textOrDash } from "@/components/market-monitor/format";
-import type { MarketMonitorHistoryResponse } from "@/adapters/marketMonitor";
 import type { Jin10CalendarEvent, Jin10CalendarFreshness, Jin10CalendarStats } from "@/hooks/useJin10Calendar";
 import type { MarketMonitorHistoryTimeframe } from "@/hooks/useMarketMonitor";
+import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
+import { MarketMonitorPageChrome } from "@/components/market-monitor/MarketMonitorPageStates";
 import type { MarketMonitorMockFile, MarketMonitorSourceTraceItem } from "@/types/market-monitor";
 import type { MarketMonitorShape, MarketMonitorTab } from "./marketMonitorPageModel";
 
@@ -18,6 +20,8 @@ interface MarketMonitorPageContentProps {
   tabOptions: Array<{ value: MarketMonitorTab; label: string }>;
   pageStatusLabel: string;
   sourceLabel: string;
+  errorReason: string | null | undefined;
+  source: string | null | undefined;
   snapshot: MarketMonitorShape;
   metrics: MarketMonitorShape["metrics"] extends infer T ? Extract<T, any[]> : never;
   marketRegimes: MarketMonitorMockFile["market_regimes"];
@@ -38,6 +42,7 @@ interface MarketMonitorPageContentProps {
   history: MarketMonitorHistoryResponse | null;
   historyTimeframe: MarketMonitorHistoryTimeframe;
   setHistoryTimeframe: (timeframe: MarketMonitorHistoryTimeframe) => void;
+  onRefresh: () => void;
 }
 
 export function MarketMonitorPageContent({
@@ -46,6 +51,8 @@ export function MarketMonitorPageContent({
   tabOptions,
   pageStatusLabel,
   sourceLabel,
+  errorReason,
+  source,
   snapshot,
   metrics,
   marketRegimes,
@@ -66,20 +73,28 @@ export function MarketMonitorPageContent({
   history,
   historyTimeframe,
   setHistoryTimeframe,
+  onRefresh,
 }: MarketMonitorPageContentProps) {
   return (
-    <>
-      <MarketMonitorPageHeader
-        pageStatusLabel={pageStatusLabel}
-        sourceLabel={sourceLabel}
-        latestDate={textOrDash(snapshot.latest_date)}
-        realtimeRegime={realtimeRegime}
-        primaryDriver={primaryDriver}
-        history={history}
-        activeTab={activeTab}
-        tabOptions={tabOptions}
-        onTabChange={onTabChange}
-      />
+    <FAPageScaffold
+      className="market-monitor-page-shell"
+      toolbar={(
+        <MarketMonitorPageHeader
+          pageStatusLabel={pageStatusLabel}
+          sourceLabel={sourceLabel}
+          latestDate={textOrDash(snapshot.latest_date)}
+          realtimeRegime={realtimeRegime}
+          primaryDriver={primaryDriver}
+          history={history}
+          activeTab={activeTab}
+          tabOptions={tabOptions}
+          onTabChange={onTabChange}
+          onRefresh={onRefresh}
+        />
+      )}
+      bodyClassName="fa-page-stack"
+    >
+      <MarketMonitorPageChrome errorReason={errorReason} source={source} />
 
       {activeTab === "overview" ? (
         <MarketMonitorOverviewSection
@@ -114,7 +129,6 @@ export function MarketMonitorPageContent({
         <MarketMonitorCalendarSection
           sourceLabel={sourceLabel}
           latestDate={textOrDash(snapshot.latest_date)}
-          historySummary={historySummary}
           events={calendarEvents}
           generatedAt={calendarGeneratedAt}
           calendarStatus={calendarStatus}
@@ -129,6 +143,6 @@ export function MarketMonitorPageContent({
           agentMarketRegime={agentMarketRegime}
         />
       ) : null}
-    </>
+    </FAPageScaffold>
   );
 }

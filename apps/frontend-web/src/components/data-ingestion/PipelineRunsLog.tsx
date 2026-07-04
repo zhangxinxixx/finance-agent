@@ -22,10 +22,10 @@ export function PipelineRunsLog({ sources }: PipelineRunsLogProps) {
   return (
     <div className="flex flex-col rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] overflow-hidden">
       <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--bg-panel)] px-3 py-2">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-2)]">
+        <span className="text-[12px] font-semibold text-[var(--fg-1)]">
           Pipeline 日志
         </span>
-        <span className="text-[9px] text-[var(--fg-5)]">最近运行</span>
+        <span className="text-[11px] text-[var(--fg-4)]">最近运行</span>
       </div>
       <div className="flex flex-col">
         {entries.length === 0 ? (
@@ -34,7 +34,7 @@ export function PipelineRunsLog({ sources }: PipelineRunsLogProps) {
           entries.map((entry, idx) => (
             <div
               key={`${entry.label}-${idx}`}
-              className="flex items-start gap-2 border-b border-[var(--border-faint)] px-3 py-1.5"
+              className="flex items-start gap-2 border-b border-[var(--border-faint)] px-3 py-2"
             >
               <div
                 className="mt-1 h-[5px] w-[5px] shrink-0 rounded-full"
@@ -42,12 +42,12 @@ export function PipelineRunsLog({ sources }: PipelineRunsLogProps) {
               />
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-2">
-                  <span className="truncate text-[10px] text-[var(--fg-3)]">{entry.label}</span>
-                  <span className="shrink-0 font-mono text-[8px] text-[var(--fg-5)]">
+                  <span className="truncate text-[12px] font-semibold text-[var(--fg-2)]" title={entry.label}>{entry.label}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-[var(--fg-5)]">
                     {formatDateTime(entry.time)}
                   </span>
                 </div>
-                <div className="mt-0.5 text-[9px] text-[var(--fg-5)]">{entry.detail}</div>
+                <div className="mt-1 text-[11px] text-[var(--fg-4)]">{entry.detail}</div>
               </div>
             </div>
           ))

@@ -39,7 +39,7 @@ def test_brief_link_creates_traceable_task_run_and_review() -> None:
     response = api_event_flow_brief_link(
         "brief-001",
         body=EventFlowBriefLinkRequest(
-            actor="automation",
+            actor="codex",
             reason="merge brief into existing macro event",
             request_id="link-001",
             target_event_id="event-001",
@@ -82,22 +82,22 @@ def test_other_event_flow_actions_register_reviewable_requests() -> None:
 
     ignore = api_event_flow_brief_ignore(
         "brief-ignored",
-        body=EventFlowActionRequest(actor="automation", reason="noise item", request_id="ignore-001"),
+        body=EventFlowActionRequest(actor="codex", reason="noise item", request_id="ignore-001"),
         db=session,
     )
     include = api_event_flow_report_input_include(
         "input-include",
-        body=EventFlowActionRequest(actor="automation", reason="promote to daily synthesis", request_id="include-001"),
+        body=EventFlowActionRequest(actor="codex", reason="promote to daily synthesis", request_id="include-001"),
         db=session,
     )
     exclude = api_event_flow_report_input_exclude(
         "input-exclude",
-        body=EventFlowActionRequest(actor="automation", reason="duplicate input", request_id="exclude-001"),
+        body=EventFlowActionRequest(actor="codex", reason="duplicate input", request_id="exclude-001"),
         db=session,
     )
     review = api_event_flow_event_review(
         "event-review",
-        body=EventFlowActionRequest(actor="automation", reason="needs human check", request_id="review-001"),
+        body=EventFlowActionRequest(actor="codex", reason="needs human check", request_id="review-001"),
         db=session,
     )
 
@@ -133,7 +133,7 @@ def test_brief_link_requires_target_event_id() -> None:
     with pytest.raises(ValidationError):
         EventFlowBriefLinkRequest.model_validate(
             {
-                "actor": "automation",
+                "actor": "codex",
                 "reason": "missing target",
                 "request_id": "bad-001",
             }

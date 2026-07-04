@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import subprocess
 import sys
 from collections import defaultdict
@@ -19,12 +18,7 @@ PDF_PATH = Path("storage/raw/cme/daily_bulletin/2026-05-06/Section64_Metals_Opti
 def _resolve_pdf_path() -> Path:
     if PDF_PATH.exists():
         return PDF_PATH
-    fallback_raw = os.getenv("CME_TEST_PDF_PATH", "").strip()
-    if not fallback_raw:
-        pytest.skip("CME fixture PDF is not available; set CME_TEST_PDF_PATH to run this test")
-    fallback = Path(fallback_raw).expanduser()
-    assert fallback.exists(), fallback
-    return fallback
+    pytest.skip("CME PDF fixture is not available")
 
 
 def _sum_rows(detail_rows):

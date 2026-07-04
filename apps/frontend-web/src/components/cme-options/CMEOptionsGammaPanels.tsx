@@ -49,8 +49,8 @@ export function ChangeTable({ snapshot }: { snapshot: CMEOptionsResponse }) {
             borderBottom: index < rows.length - 1 ? "1px solid var(--border-faint)" : "none",
           }}
         >
-          <span style={{ fontSize: 10, color: CME_META_TEXT }}>{row.label}</span>
-          <span className="fa-num" style={{ fontSize: 11, fontWeight: 600, color: toneStyle(row.tone).text, fontFamily: "var(--font-mono)" }}>
+          <span style={{ fontSize: "var(--text-10)", color: CME_META_TEXT }}>{row.label}</span>
+          <span className="fa-num" style={{ fontSize: "var(--text-10)", fontWeight: 600, color: toneStyle(row.tone).text }}>
             {row.value}
           </span>
         </div>
@@ -80,16 +80,16 @@ export function SkewPanel({ snapshot }: { snapshot: CMEOptionsResponse }) {
     <CMEOptionsSurface title="波动率偏斜 / 尾部风险" bodyStyle={{ padding: "8px 12px" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {rows.map((row) => (
-          <div key={row.label} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 10 }}>
+          <div key={row.label} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: "var(--text-10)" }}>
             <span style={{ color: "var(--fg-5)", minWidth: 90, flexShrink: 0 }}>{row.label}</span>
             {row.value ? (
-              <span className="fa-num" style={{ color: row.color, fontWeight: 600, fontFamily: "var(--font-mono)", fontSize: 11 }}>{row.value}</span>
+              <span className="fa-num" style={{ color: row.color, fontWeight: 600, fontSize: "var(--text-10)" }}>{row.value}</span>
             ) : (
               <span style={{ color: "var(--fg-4)" }}>{row.label}</span>
             )}
           </div>
         ))}
-        {skewFindings.length === 0 ? <div style={{ fontSize: 10, color: "var(--fg-5)" }}>暂无 skew 数据</div> : null}
+        {skewFindings.length === 0 ? <div style={{ fontSize: "var(--text-10)", color: "var(--fg-5)" }}>暂无 skew 数据</div> : null}
       </div>
     </CMEOptionsSurface>
   );
@@ -102,9 +102,9 @@ export function ExposurePanel({ snapshot }: { snapshot: CMEOptionsResponse }) {
   return (
     <CMEOptionsSurface title="敞口">
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+        <table style={{ width: "100%", fontSize: "var(--text-10)", borderCollapse: "collapse" }}>
           <thead>
-            <tr style={{ borderBottom: "1px solid var(--border)", color: CME_META_TEXT, fontSize: 10 }}>
+            <tr style={{ borderBottom: "1px solid var(--border)", color: CME_META_TEXT, fontSize: "var(--text-10)" }}>
               <th style={{ padding: "5px 8px", textAlign: "left" }}>到期月</th>
               <th style={{ padding: "5px 8px", textAlign: "right" }}>净方向敞口</th>
               <th style={{ padding: "5px 8px", textAlign: "right" }}>看涨敞口</th>
@@ -118,12 +118,12 @@ export function ExposurePanel({ snapshot }: { snapshot: CMEOptionsResponse }) {
               const exposure = snapshot.exposure?.[expiry];
               return (
                 <tr key={expiry} style={{ borderBottom: "1px solid var(--border-faint)" }}>
-                  <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--fg-2)" }}>{expiry}</td>
-                  <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: (exposure?.net_delta_exposure ?? 0) < 0 ? "var(--down)" : "var(--up)" }}>{formatBillions(exposure?.net_delta_exposure)}</td>
-                  <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--fg-3)" }}>{formatBillions(exposure?.call_delta_exposure)}</td>
-                  <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--fg-3)" }}>{formatBillions(exposure?.put_delta_exposure)}</td>
-                  <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--fg-3)" }}>{formatBillions(exposure?.total_vega)}</td>
-                  <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--fg-3)" }}>{formatBillions(exposure?.total_theta)}</td>
+                  <td className="fa-num" style={{ padding: "5px 8px", fontWeight: 600, color: "var(--fg-2)" }}>{expiry}</td>
+                  <td className="fa-num" style={{ padding: "5px 8px", textAlign: "right", fontWeight: 600, color: (exposure?.net_delta_exposure ?? 0) < 0 ? "var(--down)" : "var(--up)" }}>{formatBillions(exposure?.net_delta_exposure)}</td>
+                  <td className="fa-num" style={{ padding: "5px 8px", textAlign: "right", color: "var(--fg-3)" }}>{formatBillions(exposure?.call_delta_exposure)}</td>
+                  <td className="fa-num" style={{ padding: "5px 8px", textAlign: "right", color: "var(--fg-3)" }}>{formatBillions(exposure?.put_delta_exposure)}</td>
+                  <td className="fa-num" style={{ padding: "5px 8px", textAlign: "right", color: "var(--fg-3)" }}>{formatBillions(exposure?.total_vega)}</td>
+                  <td className="fa-num" style={{ padding: "5px 8px", textAlign: "right", color: "var(--fg-3)" }}>{formatBillions(exposure?.total_theta)}</td>
                 </tr>
               );
             })}

@@ -35,11 +35,11 @@ function aggStatus(sources: DataSourceStatusViewModel[], stageKey: PipelineStage
 
 export function PipelineStageProgress({ sources, onStageFilter, activeFilter }: PipelineStageProgressProps) {
   return (
-    <div className="flex items-center gap-0 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 shrink-0 overflow-x-auto">
+    <div className="data-ingestion-stage-progress">
       {/* Source count label */}
       <div className="flex flex-col items-center mr-2 shrink-0">
         <span className="fa-num text-[14px] font-bold text-[var(--fg-1)]">{sources.length}</span>
-        <span className="text-[8px] font-semibold uppercase tracking-wider text-[var(--fg-6)]">数据源</span>
+        <span className="text-[10px] font-semibold text-[var(--fg-4)]">数据源</span>
       </div>
 
       {STAGES.map(({ key, label }, idx) => {
@@ -58,8 +58,9 @@ export function PipelineStageProgress({ sources, onStageFilter, activeFilter }: 
             )}
 
             {/* Stage node with count */}
-            <div
-              className="flex flex-col items-center gap-0.5 cursor-pointer px-1 py-0.5 rounded transition-colors shrink-0"
+            <button
+              type="button"
+              className="data-ingestion-stage-progress-node"
               style={{
                 background: isActive ? "var(--bg-active)" : undefined,
                 outline: isActive ? "1px solid var(--brand)" : undefined,
@@ -67,11 +68,11 @@ export function PipelineStageProgress({ sources, onStageFilter, activeFilter }: 
               onClick={() => onStageFilter?.(activeFilter === key ? null : key)}
             >
               <StageNode status={status} compact />
-              <span className="text-[8px] font-semibold text-[var(--fg-4)] whitespace-nowrap">{label}</span>
-              <span className="fa-num text-[9px] font-bold" style={{ color: status === "OK" ? "var(--up)" : status === "WARN" ? "var(--warn)" : "var(--down)" }}>
+              <span className="text-[10px] font-semibold text-[var(--fg-3)] whitespace-nowrap">{label}</span>
+              <span className="fa-num text-[10px] font-bold" style={{ color: status === "OK" ? "var(--up)" : status === "WARN" ? "var(--warn)" : "var(--down)" }}>
                 {healthy}/{sources.length}
               </span>
-            </div>
+            </button>
           </div>
         );
       })}

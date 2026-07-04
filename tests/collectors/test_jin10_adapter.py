@@ -1116,7 +1116,7 @@ def test_report_quality_audit_rejects_non_daily_report_title() -> None:
         report={
             "title": "美国就业岗位排行榜 薪资中位数最高的是哪个工种？丨财料-金十数据VIP",
             "date": "2026-06-08",
-            "external_report_dir": "/tmp/finance-agent-test/jin10-reports/2026-06-08/daily/221274",
+            "external_report_dir": "fixtures/jin10-reports/2026-06-08/daily/221274",
         },
         parsed_report={"vlm_status": "success"},
         raw_article={

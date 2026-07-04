@@ -1,24 +1,24 @@
 import type { CSSProperties, ReactNode } from "react";
 
 const EYEBROW_STYLE: CSSProperties = {
-  fontSize: 8,
+  fontSize: "var(--text-10)",
   fontWeight: 600,
-  letterSpacing: "0.12em",
+  letterSpacing: 0,
   textTransform: "uppercase",
   color: "var(--fg-5)",
-  marginBottom: 4,
+  marginBottom: 5,
 };
 
 const FILTER_SECTION_STYLE: CSSProperties = {
   marginBottom: 0,
-  paddingBottom: 6,
+  paddingBottom: 8,
   borderBottom: "1px solid var(--border-faint)",
 };
 
 const DATE_RANGE_GRID_STYLE: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "1fr 1fr",
-  gap: 4,
+  gap: 5,
 };
 
 export function ReportsRailEyebrowHeader({ label }: { label: string }) {
@@ -39,8 +39,8 @@ export function ReportsRailFilterSection({
         style={{
         display: "flex",
         flexDirection: "column",
-        gap: 1,
-        padding: "3px",
+        gap: 2,
+        padding: "4px",
         borderRadius: 5,
         background: "rgba(255,255,255,0.018)",
         border: "1px solid var(--border-faint)",
@@ -69,13 +69,13 @@ export function ReportsRailTextOptionButton({
         display: "block",
         width: "100%",
         textAlign: "left",
-        minHeight: 24,
-        padding: "3px 7px",
+        minHeight: 28,
+        padding: "5px 8px",
         borderRadius: 4,
         background: isActive ? "color-mix(in srgb, var(--brand-soft) 78%, transparent)" : "transparent",
         border: isActive ? "1px solid var(--brand-border)" : "1px solid transparent",
         color: isActive ? "var(--brand-hover)" : "var(--fg-3)",
-        fontSize: 9,
+        fontSize: "var(--text-11)",
         fontWeight: isActive ? 600 : 400,
         cursor: "pointer",
         marginBottom: 0,
@@ -109,8 +109,8 @@ export function ReportsRailColorOptionButton({
         width: "100%",
         alignItems: "center",
         gap: 6,
-        minHeight: 24,
-        padding: "3px 6px",
+        minHeight: 28,
+        padding: "5px 7px",
         borderRadius: 4,
         cursor: "pointer",
         marginBottom: 0,
@@ -135,9 +135,9 @@ export function ReportsRailColorOptionButton({
       >
         {isActive ? <span style={{ width: 6, height: 6, borderRadius: 1, background: "#fff" }} /> : null}
       </span>
-      <span style={{ fontSize: 9, color: isActive ? "var(--fg-2)" : "var(--fg-3)", flex: 1, fontWeight: isActive ? 600 : 500 }}>{label}</span>
+      <span style={{ fontSize: "var(--text-11)", color: isActive ? "var(--fg-2)" : "var(--fg-3)", flex: 1, fontWeight: isActive ? 600 : 500 }}>{label}</span>
       {typeof count === "number" ? (
-        <span style={{ fontSize: 8, color: isActive ? "var(--brand-hover)" : "var(--fg-5)", fontFamily: "var(--font-mono)" }}>
+        <span style={{ fontSize: "var(--text-10)", color: isActive ? "var(--brand-hover)" : "var(--fg-5)", fontFamily: "var(--font-mono)" }}>
           {count}
         </span>
       ) : null}
@@ -166,8 +166,8 @@ export function ReportsRailDotOptionButton({
         width: "100%",
         alignItems: "center",
         gap: 6,
-        minHeight: 24,
-        padding: "3px 6px",
+        minHeight: 28,
+        padding: "5px 7px",
         borderRadius: 4,
         cursor: "pointer",
         marginBottom: 0,
@@ -179,7 +179,7 @@ export function ReportsRailDotOptionButton({
       <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 }} />
       <span
         style={{
-          fontSize: 9,
+          fontSize: "var(--text-11)",
           color: isActive ? "var(--brand-hover)" : "var(--fg-2)",
           flex: 1,
           fontWeight: isActive ? 600 : 500,
@@ -192,7 +192,7 @@ export function ReportsRailDotOptionButton({
 }
 
 export function ReportsRailDateRangeGrid({ children }: { children: ReactNode }) {
-  return <div style={{ ...DATE_RANGE_GRID_STYLE, gap: 3 }}>{children}</div>;
+  return <div style={{ ...DATE_RANGE_GRID_STYLE, gap: 4 }}>{children}</div>;
 }
 
 export function ReportsRailDateRangeButton({
@@ -209,10 +209,10 @@ export function ReportsRailDateRangeButton({
       type="button"
       onClick={onClick}
       style={{
-        minHeight: 24,
-        padding: "4px 6px",
+        minHeight: 28,
+        padding: "5px 7px",
         borderRadius: 4,
-        fontSize: 9,
+        fontSize: "var(--text-11)",
         textAlign: "center",
         cursor: "pointer",
         background: isActive ? "color-mix(in srgb, var(--brand-soft) 78%, transparent)" : "var(--bg-card-inner)",

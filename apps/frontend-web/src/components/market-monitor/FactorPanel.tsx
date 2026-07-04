@@ -32,27 +32,14 @@ const FACTOR_PANEL_ITEMS: FactorItem[] = [
 
 export function FactorPanel() {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        background: "var(--bg-panel)",
-        border: "1px solid var(--border-faint)",
-        borderRadius: "var(--radius-lg)",
-        height: "100%",
-      }}
-    >
+    <div className="market-monitor-factor-panel">
       {FACTOR_PANEL_ITEMS.map((item, index) => (
         <div
           key={item.type}
+          className="market-monitor-factor-panel-row"
           style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "center",
-            padding: "9px 10px",
-            borderLeft: `2px solid ${item.color}`,
-            borderBottom: index < FACTOR_PANEL_ITEMS.length - 1 ? "1px solid var(--border-faint)" : undefined,
+            borderLeftColor: item.color,
+            borderBottomColor: index < FACTOR_PANEL_ITEMS.length - 1 ? "var(--border-faint)" : "transparent",
           }}
         >
           <FactorPanelBlock
@@ -65,17 +52,7 @@ export function FactorPanel() {
         </div>
       ))}
 
-      <div
-        style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "center",
-          padding: "9px 10px",
-          borderLeft: "2px solid #f59e0b",
-          borderTop: "1px solid var(--border-faint)",
-        }}
-      >
+      <div className="market-monitor-factor-panel-row market-monitor-factor-panel-row--alert">
         <FactorPanelBlock
           type="ALERT"
           color="#f59e0b"
@@ -103,60 +80,18 @@ function FactorPanelBlock({
 }) {
   return (
     <>
-      <div
-        style={{
-          fontFamily: "var(--font-sans)",
-          fontWeight: 500,
-          fontSize: 8,
-          lineHeight: 1,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: "var(--fg-5)",
-          marginBottom: 6,
-        }}
-      >
+      <div className="market-monitor-factor-panel-type">
         {type}
       </div>
-      <div className="flex items-start gap-2">
-        <div
-          style={{
-            width: 18,
-            height: 18,
-            borderRadius: 3,
-            background: `${color}1a`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-            fontFamily: "var(--font-sans)",
-            fontWeight: 700,
-            fontSize: 9,
-            color,
-          }}
-        >
+      <div className="market-monitor-factor-panel-body">
+        <div className="market-monitor-factor-panel-icon" style={{ backgroundColor: `${color}1a`, color }}>
           {icon}
         </div>
         <div className="min-w-0">
-          <div
-            style={{
-              fontFamily: "var(--font-sans)",
-              fontWeight: 700,
-              fontSize: 11,
-              lineHeight: 1,
-              color,
-            }}
-          >
+          <div className="market-monitor-factor-panel-name" style={{ color }}>
             {name}
           </div>
-          <div
-            style={{
-              fontFamily: "var(--font-sans)",
-              fontSize: 9.5,
-              lineHeight: 1.5,
-              color: "var(--fg-4)",
-              marginTop: 4,
-            }}
-          >
+          <div className="market-monitor-factor-panel-description">
             {description}
           </div>
         </div>

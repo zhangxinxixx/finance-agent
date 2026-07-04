@@ -21,7 +21,7 @@ export function ContextPanelShell({
   children,
   width = "100%",
   padded = true,
-  gap = 10,
+  gap = 12,
   className = "",
   style,
 }: ContextPanelShellProps) {
@@ -32,12 +32,13 @@ export function ContextPanelShell({
         width,
         flexShrink: 0,
         border: "1px solid var(--border-faint)",
-        borderRadius: "var(--radius-lg)",
+        borderRadius: "var(--radius-xl)",
         background: "var(--bg-panel)",
+        boxShadow: "var(--shadow-card)",
         overflowY: "auto",
         ...(padded
           ? {
-              padding: 10,
+              padding: 12,
               display: "flex",
               flexDirection: "column",
               gap,
@@ -60,9 +61,9 @@ export function ContextPanelSectionHeader({
 }: ContextPanelSectionHeaderProps) {
   return (
     <div className={`flex items-center gap-2 ${className}`}>
-      <Icon size={12} style={{ color: iconColor }} />
-      <span style={{ font: "600 10px/1 Inter", color: "var(--fg-2)" }}>{title}</span>
-      {meta ? <span className="text-[9px] text-[var(--fg-5)]">{meta}</span> : null}
+      <Icon size={13} style={{ color: iconColor }} />
+      <span style={{ font: "600 11px/1.2 var(--font-sans)", color: "var(--fg-2)" }}>{title}</span>
+      {meta ? <span className="text-[10px] text-[var(--fg-5)]">{meta}</span> : null}
     </div>
   );
 }

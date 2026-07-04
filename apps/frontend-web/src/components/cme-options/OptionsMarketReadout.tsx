@@ -75,7 +75,7 @@ export function OptionsMarketReadout({ dataSource, netGexAggregate, wallScores, 
 
       {calibration.calibration_warnings?.[0] ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-2">
-          <div className="text-[10px] leading-4 text-[var(--fg-4)]">{calibration.calibration_warnings[0]}</div>
+          <div className="text-[length:var(--text-10)] leading-4 text-[var(--fg-4)]">{calibration.calibration_warnings[0]}</div>
         </div>
       ) : null}
     </FACard>

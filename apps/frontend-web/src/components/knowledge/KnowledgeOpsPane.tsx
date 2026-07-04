@@ -17,7 +17,7 @@ export function KnowledgeOpsPane({
   onTabChange,
 }: KnowledgeOpsPaneProps) {
   return (
-    <div className="hidden 2xl:flex 2xl:flex-col">
+    <div className="hidden min-h-0 xl:flex xl:flex-col">
       <KnowledgeOpsPanel
         stats={stats}
         selectedItem={selectedItem}

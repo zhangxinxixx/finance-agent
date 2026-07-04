@@ -13,7 +13,6 @@ import {
   DataIngestionLoadingState,
 } from "@/components/data-ingestion/DataIngestionPageStates";
 import {
-  computePipelineStats,
   filterSourcesByStage,
   getGlobalDataFreshness,
 } from "@/components/data-ingestion/dataIngestionPageModel";
@@ -22,12 +21,13 @@ import {
   IngestionActionsPanel,
   SourceDetailPanel,
 } from "@/components/data-ingestion/DataIngestionSidePanels";
-import { IngestionSummaryBar } from "@/components/data-ingestion/IngestionSummaryBar";
 import { PipelineRunsLog } from "@/components/data-ingestion/PipelineRunsLog";
 import { PipelineStageProgress } from "@/components/data-ingestion/PipelineStageProgress";
 import { SourcePipelineMatrix } from "@/components/data-ingestion/SourcePipelineMatrix";
 import { SourceStageDetailDrawer } from "@/components/data-ingestion/SourceStageDetailDrawer";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
+import { FAWorkspaceHeader } from "@/components/shared/FAWorkspaceHeader";
+import { Database, RefreshCw } from "lucide-react";
 
 export function DataIngestionPage() {
   const ingestion = useDataIngestion();
@@ -66,8 +66,7 @@ export function DataIngestionPage() {
   const systemStatus = viewModel.system_status;
   const sources = viewModel.sources;
   const selectedSource = selectedSourceId ? sources.find((s) => s.id === selectedSourceId) ?? null : null;
-  const pipelineStats = computePipelineStats(sources);
-  const { globalDataDate, globalStaleness } = getGlobalDataFreshness(sources, systemStatus);
+  const { globalDataDate } = getGlobalDataFreshness(sources, systemStatus);
   const degradedCount = sources.filter((source) => source.status !== "available").length;
 
   // Find source for drawer
@@ -95,17 +94,33 @@ export function DataIngestionPage() {
   const filteredSources = filterSourcesByStage(sources, stageFilter);
 
   return (
-    <FAPageScaffold>
-      <IngestionSummaryBar
-        summary={vmSummary}
-        pipelineStats={pipelineStats}
-        degradedCount={degradedCount}
-        dataDate={globalDataDate}
-        stalenessDays={globalStaleness}
-        lastRun={systemStatus?.latest_run_created_at?.slice(0, 16).replace("T", " ") ?? null}
-        onRefresh={ingestion.refetch}
-      />
-
+    <FAPageScaffold
+      className="data-ingestion-page-shell"
+      toolbar={(
+        <FAWorkspaceHeader
+          className="data-ingestion-workspace-header"
+          icon={Database}
+          title="数据接入"
+          actions={(
+            <button type="button" onClick={ingestion.refetch} className="fa-workspace-toolbar-button">
+              <RefreshCw size={12} />
+              刷新
+            </button>
+          )}
+          primaryLabel="数据源"
+          primaryItems={[
+            { label: "可用", value: `${vmSummary?.available_count ?? 0}/${sources.length}` },
+            { label: "待处理", value: degradedCount },
+            ...(globalDataDate ? [{ label: "数据日期", value: globalDataDate }] : []),
+          ]}
+          secondaryLabel="运行"
+          secondaryItems={[
+            ...(systemStatus?.latest_run_created_at ? [{ label: "最近", value: systemStatus.latest_run_created_at.slice(0, 16).replace("T", " ") }] : []),
+          ]}
+        />
+      )}
+      bodyClassName="fa-page-stack"
+    >
       <CriticalAlertBanner sources={sources} />
 
       <PipelineStageProgress
@@ -115,15 +130,18 @@ export function DataIngestionPage() {
       />
 
       <div className="fa-split-grid fa-split-grid--right data-ingestion-main-grid">
-        <SourcePipelineMatrix
-          sources={filteredSources}
-          selectedId={selectedSourceId}
-          onSelect={handleSourceSelect}
-          onStageClick={(sourceId, stageKey) => {
-            setStageDrawerSource(sourceId);
-            setStageDrawerKey(stageKey);
-          }}
-        />
+        <div className="data-ingestion-left-stack">
+          <SourcePipelineMatrix
+            sources={filteredSources}
+            selectedId={selectedSourceId}
+            onSelect={handleSourceSelect}
+            onStageClick={(sourceId, stageKey) => {
+              setStageDrawerSource(sourceId);
+              setStageDrawerKey(stageKey);
+            }}
+          />
+          <PipelineRunsLog sources={sources} />
+        </div>
 
         <div className="fa-scroll-column data-ingestion-side-rail">
           <SourceDetailPanel
@@ -148,7 +166,6 @@ export function DataIngestionPage() {
             sources={sources}
             systemStatus={systemStatus}
           />
-          <PipelineRunsLog sources={sources} />
         </div>
       </div>
 

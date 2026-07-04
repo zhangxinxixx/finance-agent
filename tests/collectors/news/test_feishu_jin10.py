@@ -22,7 +22,7 @@ class FakeFeishuClient:
 def _text_message(message_id: str, text: str, sender_name: str = "金十新闻") -> dict[str, object]:
     return {
         "message_id": message_id,
-        "chat_id": "chat_fixture",
+        "chat_id": "oc_jin10",
         "message_type": "text",
         "create_time": "1767225600000",
         "sender": {"id": "ou_sender", "sender_name": sender_name},
@@ -50,7 +50,7 @@ def test_collect_feishu_jin10_messages_archives_raw_payload_and_maps_high_value_
     result = collect_feishu_jin10_messages(
         retrieved_date="2026-06-11",
         storage_root=tmp_path,
-        chat_id="chat_fixture",
+        chat_id="oc_jin10",
         client=client,
     )
 
@@ -59,7 +59,7 @@ def test_collect_feishu_jin10_messages_archives_raw_payload_and_maps_high_value_
     item = result.items[0]
     assert item.source_key == "jin10_feishu"
     assert item.source_type == "supplemental"
-    assert item.feed_key == "chat_fixture"
+    assert item.feed_key == "oc_jin10"
     assert item.event_type == "hormuz_risk"
     assert item.verification_status == "single_source"
     assert item.url == "https://news.jin10.com/detail/1"
@@ -82,7 +82,7 @@ def test_collect_feishu_jin10_messages_archives_raw_payload_and_maps_high_value_
     assert "om_low" not in json.dumps(parsed_payload, ensure_ascii=False)
     assert result.source_refs[0]["status"] == "available"
     assert result.source_refs[0]["accepted_item_count"] == 1
-    assert client.calls[0]["chat_id"] == "chat_fixture"
+    assert client.calls[0]["chat_id"] == "oc_jin10"
 
 
 def test_collect_feishu_jin10_messages_requires_chat_id(tmp_path: Path) -> None:
@@ -99,11 +99,11 @@ def test_collect_feishu_jin10_messages_requires_chat_id(tmp_path: Path) -> None:
 
 
 def test_feishu_jin10_enablement_ignores_generic_lark_or_feishu_credentials(monkeypatch) -> None:
-    monkeypatch.setenv("FEISHU_JIN10_CHAT_ID", "chat_fixture")
+    monkeypatch.setenv("FEISHU_JIN10_CHAT_ID", "oc_jin10")
     monkeypatch.setenv("FEISHU_APP_ID", "cli_existing_docs")
     monkeypatch.setenv("FEISHU_APP_SECRET", "existing-docs-secret")
-    monkeypatch.setenv("LARK_APP_ID", "cli_existing_generic")
-    monkeypatch.setenv("LARK_APP_SECRET", "existing-generic-secret")
+    monkeypatch.setenv("LARK_APP_ID", "cli_existing_bridge")
+    monkeypatch.setenv("LARK_APP_SECRET", "existing-bridge-secret")
     monkeypatch.delenv("FEISHU_NEWS_APP_ID", raising=False)
     monkeypatch.delenv("FEISHU_NEWS_APP_SECRET", raising=False)
 
@@ -129,7 +129,7 @@ def test_collect_feishu_jin10_messages_archives_but_does_not_emit_low_value_mess
     result = collect_feishu_jin10_messages(
         retrieved_date="2026-06-11",
         storage_root=tmp_path,
-        chat_id="chat_fixture",
+        chat_id="oc_jin10",
         client=client,
     )
 
@@ -167,7 +167,7 @@ def test_collect_feishu_jin10_messages_keeps_completed_pages_when_next_page_fail
     result = collect_feishu_jin10_messages(
         retrieved_date="2026-06-11",
         storage_root=tmp_path,
-        chat_id="chat_fixture",
+        chat_id="oc_jin10",
         client=client,
         max_pages=2,
     )

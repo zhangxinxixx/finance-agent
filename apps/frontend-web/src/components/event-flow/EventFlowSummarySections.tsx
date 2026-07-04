@@ -1,9 +1,8 @@
-import { Calendar } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
-import { formatDateTime, getLatestTradeDate } from "@/lib/date";
+import { formatDateTime } from "@/lib/date";
 import type { EventFlowBriefSummary } from "@/types/event-flow";
 import { CountMetric } from "./EventFlowSectionHelpers";
 import { formatEventFlowArtifactLabel } from "./eventFlowFormat";
@@ -27,20 +26,6 @@ export function EventFlowEmptyState({
       </FACard>
       <FAEmptyState title="暂无事件数据" description="当前返回结果为空，页面保留骨架。" />
     </>
-  );
-}
-
-export function EventFlowWeekendBanner() {
-  return (
-    <div
-      className="flex items-center gap-2 rounded-[var(--radius-sm)] px-3 py-1.5"
-      style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.15)" }}
-    >
-      <Calendar size={12} color="#3b82f6" />
-      <span className="text-[10px] font-medium text-[#3b82f6]">
-        周末模式 — 市场数据为最近交易日（{getLatestTradeDate()}），新闻事件实时更新中
-      </span>
-    </div>
   );
 }
 

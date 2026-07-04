@@ -91,29 +91,6 @@ def test_available_options_returns_schema_valid_agent_output_bound_to_snapshot_a
     assert any("IV skew" in finding or "skew" in finding.lower() for finding in output.key_findings)
 
 
-def test_available_options_emits_structured_evidence_items():
-    output = analyze_cme_options(_available_snapshot(), created_at=datetime(2026, 5, 14, tzinfo=timezone.utc))
-
-    evidence_by_factor = {item.factor: item for item in output.evidence_items}
-
-    assert {"option_wall", "gamma_positioning", "expiry_risk"} <= set(evidence_by_factor)
-    wall = evidence_by_factor["option_wall"]
-    assert wall.direction == "bearish"
-    assert wall.strength == 0.91
-    assert wall.confidence >= 0.7
-    assert wall.source_refs
-    assert wall.data_category == "confirmed_data"
-
-    gamma = evidence_by_factor["gamma_positioning"]
-    assert gamma.direction in {"bullish", "bearish", "neutral", "mixed"}
-    assert 0.0 <= gamma.strength <= 1.0
-    assert gamma.source_tier == "exchange"
-
-    expiry = evidence_by_factor["expiry_risk"]
-    assert expiry.confidence == 0.55
-    assert "near_to_far" in (expiry.notes or "")
-
-
 def test_prelim_source_uncertainty_reduces_confidence_or_records_risk_note():
     snapshot = _available_snapshot()
     _opt_data(snapshot)["data_source"]["status"] = "PRELIM"

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { MarketMonitorPageContent } from "@/components/market-monitor/MarketMonitorPageContent";
 import {
-  MarketMonitorPageChrome,
   MarketMonitorPageEmptyState,
   MarketMonitorPageErrorState,
   MarketMonitorPageLoadingState,
@@ -46,8 +45,16 @@ export function MarketMonitorPage() {
   const realtimeRegime = snapshot.realtime_regime;
   const primaryDriver = snapshot.primary_driver;
   const agentMarketRegime = snapshot.agent_market_regime ?? null;
-  const hasData = Boolean(snapshot.has_data);
-  const isEmpty = !data || !hasData || !isNonEmptyArray(metrics);
+  const hasMetrics = isNonEmptyArray(metrics);
+  const hasRenderableSnapshot =
+    hasMetrics
+    || Boolean(history)
+    || sourceTrace.length > 0
+    || Boolean(agentMarketRegime)
+    || Boolean(realtimeRegime)
+    || Boolean(primaryDriver);
+  const isCalendarTab = activeTab === "calendar";
+  const isEmpty = !data || (!hasRenderableSnapshot && !isCalendarTab);
   const sourceLabel = textOrDash(snapshot.source ?? "mock");
   const historySummary = history
     ? `${history.available_points} pts / ${history.source_timeframe ?? "unknown"}${history.degraded ? " degraded" : ""}`
@@ -71,49 +78,49 @@ export function MarketMonitorPage() {
     }, { replace: true });
   }
 
+  if (isLoading) {
+    return <MarketMonitorPageLoadingState />;
+  }
+
+  if (isError) {
+    return <MarketMonitorPageErrorState message={error?.message ?? "未知错误"} onRetry={refetch} />;
+  }
+
+  if (isEmpty) {
+    return <MarketMonitorPageEmptyState />;
+  }
+
   return (
-    <div className="finance-page-shell">
-      <div className="fa-layout-fill overflow-y-auto">
-        {isLoading ? (
-          <MarketMonitorPageLoadingState />
-        ) : isError ? (
-          <MarketMonitorPageErrorState message={error?.message ?? "未知错误"} onRetry={refetch} />
-        ) : isEmpty ? (
-          <MarketMonitorPageEmptyState />
-        ) : (
-          <>
-            <MarketMonitorPageChrome errorReason={snapshot.error_reason} source={snapshot.source} />
-            <MarketMonitorPageContent
-              activeTab={activeTab}
-              onTabChange={handleTabChange}
-              tabOptions={tabOptions}
-              pageStatusLabel={diagnosisText(pageStatus)}
-              sourceLabel={sourceLabel}
-              snapshot={snapshot}
-              metrics={metrics}
-              marketRegimes={marketRegimes}
-              environmentFilters={environmentFilters}
-              sourceTrace={sourceTrace}
-              overviewSummary={overviewSummary}
-              historySummary={historySummary}
-              calendarEvents={calendar.data}
-              calendarGeneratedAt={calendar.generatedAt}
-              calendarStatus={calendar.status}
-              calendarStats={calendar.stats}
-              calendarFreshness={calendar.freshness}
-              calendarIsLoading={calendar.isLoading}
-              calendarIsError={calendar.isError}
-              realtimeRegime={realtimeRegime}
-              primaryDriver={primaryDriver}
-              agentMarketRegime={agentMarketRegime}
-              history={history}
-              historyTimeframe={historyTimeframe}
-              setHistoryTimeframe={setHistoryTimeframe}
-            />
-          </>
-        )}
-      </div>
-    </div>
+    <MarketMonitorPageContent
+      activeTab={activeTab}
+      onTabChange={handleTabChange}
+      tabOptions={tabOptions}
+      pageStatusLabel={diagnosisText(pageStatus)}
+      sourceLabel={sourceLabel}
+      errorReason={snapshot.error_reason}
+      source={snapshot.source}
+      snapshot={snapshot}
+      metrics={metrics}
+      marketRegimes={marketRegimes}
+      environmentFilters={environmentFilters}
+      sourceTrace={sourceTrace}
+      overviewSummary={overviewSummary}
+      historySummary={historySummary}
+      calendarEvents={calendar.data}
+      calendarGeneratedAt={calendar.generatedAt}
+      calendarStatus={calendar.status}
+      calendarStats={calendar.stats}
+      calendarFreshness={calendar.freshness}
+      calendarIsLoading={calendar.isLoading}
+      calendarIsError={calendar.isError}
+      realtimeRegime={realtimeRegime}
+      primaryDriver={primaryDriver}
+      agentMarketRegime={agentMarketRegime}
+      history={history}
+      historyTimeframe={historyTimeframe}
+      setHistoryTimeframe={setHistoryTimeframe}
+      onRefresh={refetch}
+    />
   );
 }
 

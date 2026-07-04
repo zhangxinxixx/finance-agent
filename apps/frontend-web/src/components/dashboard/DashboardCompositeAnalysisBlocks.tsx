@@ -17,48 +17,28 @@ export function DashboardCompositeSummaryBlock({
   confidencePct: number | null;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        gap: 12,
-        padding: "10px 12px",
-        background: "var(--bg-card-inner)",
-        border: "1px solid var(--border)",
-        borderRadius: 3,
-      }}
-    >
-      <Target size={13} color="var(--brand-hover)" style={{ flexShrink: 0, marginTop: 2 }} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            font: "600 9px/1 Inter",
-            color: "var(--fg-5)",
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            marginBottom: 4,
-          }}
-        >
-          综合结论
+    <div className="relative overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
+      <div className="pointer-events-none absolute inset-y-0 left-0 w-[3px] bg-[var(--fa-important)]" />
+      <div className="flex gap-3 pl-1">
+        <Target size={14} className="mt-0.5 shrink-0 text-[var(--brand-hover)]" />
+        <div className="min-w-0 flex-1">
+          <div className="fa-compact-label mb-1">
+            综合结论
+          </div>
+          <div className="text-[13px] leading-[1.6] text-[var(--fg-2)]">{compositeSummary}</div>
         </div>
-        <div style={{ fontSize: 13, color: "var(--fg-2)", lineHeight: 1.6 }}>{compositeSummary}</div>
-      </div>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 4,
-          paddingLeft: 12,
-          borderLeft: "1px solid var(--border)",
-          flexShrink: 0,
-        }}
-      >
-        <span style={{ fontSize: 8, color: "var(--fg-5)", letterSpacing: "0.08em", textTransform: "uppercase" }}>确信度</span>
-        <span className="fa-num" style={{ font: "700 22px/1 JetBrains Mono", color: "#f59e0b" }}>
-          {confidencePct ?? "—"}
-        </span>
-        <span style={{ fontSize: 9, color: "var(--fg-5)" }}>/ 100</span>
+        <div className="flex w-[118px] shrink-0 flex-col justify-center gap-1 border-l border-[var(--border)] pl-3">
+          <span className="fa-compact-label">确信度</span>
+          <div className="flex items-end gap-1">
+            <span className="fa-num text-[24px] font-bold leading-none text-[var(--fa-important)]">
+              {confidencePct ?? "—"}
+            </span>
+            <span className="pb-0.5 text-[10px] text-[var(--fa-text-muted)]">/100</span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-[var(--border-faint)]">
+            <div className="h-full rounded-full bg-[var(--fa-important)]" style={{ width: `${Math.max(0, Math.min(100, confidencePct ?? 0))}%` }} />
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -71,25 +51,13 @@ export function DashboardCompositeResonanceTable({ items }: { items: ResonanceIt
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-        <Layers size={12} color="var(--brand-hover)" />
-        <span style={{ font: "600 12px/1 Inter", color: "var(--fg-2)" }}>关键位速览</span>
-        <span style={{ fontSize: 10, color: "var(--fg-5)" }}>基于当前期权结构与综合结论</span>
+      <div className="mb-2 flex items-center gap-1.5">
+        <Layers size={12} className="text-[var(--brand-hover)]" />
+        <span className="text-[12px] font-semibold leading-none text-[var(--fg-2)]">关键位速览</span>
+        <span className="fa-compact-meta">基于当前期权结构与综合结论</span>
       </div>
-      <div style={{ background: "var(--bg-card-inner)", border: "1px solid var(--border)", borderRadius: 3, overflow: "hidden" }}>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "112px 1.1fr 1.3fr 1fr",
-            padding: "7px 12px",
-            background: "var(--bg-panel)",
-            borderBottom: "1px solid var(--border)",
-            font: "600 9px/1 Inter",
-            color: "var(--fg-5)",
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-          }}
-        >
+      <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)]">
+        <div className="fa-compact-label grid grid-cols-[112px_1.1fr_1.3fr_1fr] border-b border-[var(--border)] bg-[var(--bg-section)] px-3 py-2">
           <span>价位</span>
           <span>宏观含义</span>
           <span>期权含义</span>
@@ -100,25 +68,17 @@ export function DashboardCompositeResonanceTable({ items }: { items: ResonanceIt
           return (
             <div
               key={`${r.kind}-${r.px}-${i}`}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "112px 1.1fr 1.3fr 1fr",
-                padding: "8px 12px",
-                borderBottom: i === items.length - 1 ? 0 : "1px solid var(--border)",
-                alignItems: "center",
-                fontSize: 11,
-                lineHeight: 1.5,
-              }}
+              className={`grid grid-cols-[112px_1.1fr_1.3fr_1fr] items-center px-3 py-2.5 text-[11px] leading-[1.5] transition-colors hover:bg-[var(--bg-hover)] ${i === items.length - 1 ? "" : "border-b border-[var(--border)]"}`}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <span style={{ width: 3, height: 14, background: pxColor, borderRadius: 1 }} />
-                <span className="fa-num" style={{ color: pxColor, fontWeight: 700, fontSize: 12 }}>
+              <div className="flex items-center gap-1.5">
+                <span className="h-[14px] w-[3px] rounded-[1px]" style={{ background: pxColor }} />
+                <span className="fa-num text-[12px] font-bold" style={{ color: pxColor }}>
                   {r.px}
                 </span>
               </div>
-              <span style={{ color: "var(--fg-3)" }}>{r.macro}</span>
-              <span style={{ color: "var(--fg-3)" }}>{r.options}</span>
-              <span style={{ color: r.core ? "var(--fg-2)" : "var(--fg-3)", fontWeight: r.core ? 600 : 400 }}>{r.verdict}</span>
+              <span className="text-[var(--fg-3)]">{r.macro}</span>
+              <span className="text-[var(--fg-3)]">{r.options}</span>
+              <span className={r.core ? "font-semibold text-[var(--fg-2)]" : "text-[var(--fg-3)]"}>{r.verdict}</span>
             </div>
           );
         })}
@@ -129,11 +89,11 @@ export function DashboardCompositeResonanceTable({ items }: { items: ResonanceIt
 
 export function DashboardCompositeRevisionBlock({ revision }: { revision: string }) {
   return (
-    <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 10px", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.18)", borderRadius: 3 }}>
-      <AlertTriangle size={12} color="#f59e0b" style={{ flexShrink: 0, marginTop: 1 }} />
-      <div style={{ flex: 1 }}>
-        <span style={{ font: "600 9px/1 Inter", color: "#f59e0b", letterSpacing: "0.08em", textTransform: "uppercase", marginRight: 8 }}>改判条件</span>
-        <span style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.6 }}>{revision}</span>
+    <div className="flex items-start gap-2 rounded-[var(--radius-lg)] border border-[var(--warn-border)] bg-[var(--warn-soft)] p-3">
+      <AlertTriangle size={12} className="mt-px shrink-0 text-[var(--warn)]" />
+      <div className="flex-1">
+        <span className="fa-compact-label mr-2 text-[var(--warn)]">改判条件</span>
+        <span className="text-[11px] leading-[1.6] text-[var(--fg-3)]">{revision}</span>
       </div>
     </div>
   );

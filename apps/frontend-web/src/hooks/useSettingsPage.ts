@@ -74,7 +74,7 @@ export function useSettingsPage() {
         language: preferences.language,
         timezone: preferences.timezone,
         report_template: preferences.report_template,
-        actor: "automation",
+        actor: "codex",
         reason: "settings page preference update",
         request_id: `settings-pref-${Date.now()}`,
       });
@@ -98,7 +98,7 @@ export function useSettingsPage() {
     try {
       await resetSettingsPreferences({
         keys: ["language", "timezone", "report_template"],
-        actor: "automation",
+        actor: "codex",
         reason: "reset settings preferences to defaults",
         request_id: `settings-pref-reset-${Date.now()}`,
       });
@@ -122,7 +122,7 @@ export function useSettingsPage() {
     try {
       await updateSettingsSource(source.id, {
         enabled: next,
-        actor: "automation",
+        actor: "codex",
         reason: "settings page source toggle",
         request_id: `settings-source-${source.id}-${Date.now()}`,
       });
@@ -149,7 +149,7 @@ export function useSettingsPage() {
     setBanner(null);
     try {
       await resetSettingsSource(source.id, {
-        actor: "automation",
+        actor: "codex",
         reason: "clear source enable override",
         request_id: `settings-source-reset-${source.id}-${Date.now()}`,
       });
@@ -177,7 +177,7 @@ export function useSettingsPage() {
     setBanner(null);
     try {
       await rollbackSettingsEvent(entry.auditId, {
-        actor: "automation",
+        actor: "codex",
         reason: `rollback ${entry.settingKey}`,
         request_id: `settings-rollback-${entry.auditId}-${Date.now()}`,
       });

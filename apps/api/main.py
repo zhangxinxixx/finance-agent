@@ -158,6 +158,8 @@ _JIN10_FLASH_CACHE_PATH = Path("./storage/outputs/jin10/flash_cache.json")
 _JIN10_FLASH_CACHE_MAX_AGE_SECONDS = 60
 _JIN10_CALENDAR_CACHE_PATH = Path("./storage/outputs/jin10/calendar_cache.json")
 _JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS = 18 * 60 * 60
+_JIN10_CALENDAR_PAST_WINDOW_DAYS = 7
+_JIN10_CALENDAR_FUTURE_WINDOW_DAYS = 14
 _PREMARKET_ACTIVE_TASK_STALE_AFTER = timedelta(
     hours=int(os.getenv("PREMARKET_ACTIVE_TASK_STALE_AFTER_HOURS", "6"))
 )
@@ -1106,6 +1108,19 @@ def _normalize_jin10_calendar_event(event: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _jin10_calendar_window(now: datetime | None = None) -> tuple[str, str]:
+    anchor = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+    return (
+        (anchor - timedelta(days=_JIN10_CALENDAR_PAST_WINDOW_DAYS)).isoformat(),
+        (anchor + timedelta(days=_JIN10_CALENDAR_FUTURE_WINDOW_DAYS)).isoformat(),
+    )
+
+
+def _is_jin10_calendar_event_in_window(event: dict[str, Any], *, window_start: str, window_end: str) -> bool:
+    event_date = event.get("event_date")
+    return isinstance(event_date, str) and window_start <= event_date <= window_end
+
+
 def _calendar_event_sort_key(event: dict[str, Any]) -> tuple[int, float, int]:
     sort_ts = float(event.get("_sort_ts") or 0.0)
     star = int(event.get("star") or 0)
@@ -1124,6 +1139,11 @@ def _calendar_cache_age_seconds(path: Path) -> int | None:
 def _build_jin10_calendar_payload(data: dict[str, Any], cache_path: Path) -> dict[str, Any]:
     raw_events = data.get("events")
     events = [_normalize_jin10_calendar_event(item) for item in raw_events if isinstance(item, dict)] if isinstance(raw_events, list) else []
+    window_start_date, window_end_date = _jin10_calendar_window()
+    events = [
+        event for event in events
+        if _is_jin10_calendar_event_in_window(event, window_start=window_start_date, window_end=window_end_date)
+    ]
     events.sort(key=_calendar_event_sort_key)
 
     upcoming_count = sum(1 for event in events if event.get("release_state") == "upcoming")
@@ -1159,6 +1179,8 @@ def _build_jin10_calendar_payload(data: dict[str, Any], cache_path: Path) -> dic
             "high_impact": high_impact_count,
             "earliest_event_date": earliest_event_date,
             "latest_event_date": latest_event_date,
+            "window_start_date": window_start_date,
+            "window_end_date": window_end_date,
         },
         "freshness": {
             "is_stale": is_stale,

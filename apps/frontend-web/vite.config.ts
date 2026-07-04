@@ -7,6 +7,9 @@ const dagsterTarget = process.env.VITE_DAGSTER_TARGET || "http://127.0.0.1:3333"
 
 const spaRoutes = new Set([
   "/dashboard",
+  "/gold-mainlines",
+  "/rates-dollar",
+  "/oil-geopolitics",
   "/data-ingestion",
   "/market-monitor",
   "/cme-options",

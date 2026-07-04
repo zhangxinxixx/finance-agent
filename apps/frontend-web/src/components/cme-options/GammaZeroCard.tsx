@@ -59,53 +59,53 @@ export function GammaZeroCard({ netGexAggregate, wallScores = [] }: GammaZeroCar
     >
       <div className="grid gap-3 sm:grid-cols-3">
         <div style={{ padding: "12px 14px", background: "var(--bg-card-inner)", border: "1px solid var(--border)", borderLeft: "3px solid var(--brand)", borderRadius: 3 }}>
-          <div style={{ fontSize: 9, fontWeight: 600, color: "var(--fg-5)" }}>伽马零点</div>
-          <div className="fa-num" style={{ fontSize: 18, fontWeight: 700, color: "var(--fg-1)", fontFamily: "var(--font-mono)", letterSpacing: "-0.02em", marginTop: 6 }}>
+          <div style={{ fontSize: "var(--text-9)", fontWeight: 600, color: "var(--fg-5)" }}>伽马零点</div>
+          <div className="fa-num" style={{ fontSize: "var(--text-18)", fontWeight: 700, color: "var(--fg-1)", marginTop: 6 }}>
             {formatNumber(gammaZero?.price)}
           </div>
-          <div style={{ fontSize: 10, color: "var(--fg-5)", marginTop: 4 }}>关键翻转价位</div>
+          <div style={{ fontSize: "var(--text-10)", color: "var(--fg-5)", marginTop: 4 }}>关键翻转价位</div>
         </div>
         <div style={{ padding: "12px 14px", background: "var(--bg-card-inner)", border: "1px solid var(--border)", borderRadius: 3 }}>
-          <div style={{ fontSize: 9, fontWeight: 600, color: "var(--fg-5)" }}>推导方法</div>
-          <div className="fa-num" style={{ fontSize: 14, fontWeight: 700, color: "var(--fg-2)", fontFamily: "var(--font-mono)", letterSpacing: "-0.02em", marginTop: 6 }}>
+          <div style={{ fontSize: "var(--text-9)", fontWeight: 600, color: "var(--fg-5)" }}>推导方法</div>
+          <div className="fa-num" style={{ fontSize: "var(--text-13)", fontWeight: 700, color: "var(--fg-2)", marginTop: 6 }}>
             {translateEvidence(gammaZero?.method?.trim())}
           </div>
-          <div style={{ fontSize: 10, color: "var(--fg-5)", marginTop: 4 }}>伽马零点推导方法</div>
+          <div style={{ fontSize: "var(--text-10)", color: "var(--fg-5)", marginTop: 4 }}>伽马零点推导方法</div>
         </div>
         <div style={{ padding: "12px 14px", background: direction === "negative" ? "rgba(240,82,82,0.08)" : direction === "positive" ? "rgba(16,185,129,0.08)" : "var(--bg-card-inner)", border: `1px solid ${direction === "negative" ? "rgba(240,82,82,0.25)" : direction === "positive" ? "rgba(16,185,129,0.25)" : "var(--border)"}`, borderLeft: `3px solid ${direction === "negative" ? "var(--down)" : direction === "positive" ? "var(--up)" : "var(--fg-4)"}`, borderRadius: 3 }}>
-          <div style={{ fontSize: 9, fontWeight: 600, color: "var(--fg-5)" }}>净伽马敞口</div>
-          <div className={`fa-num ${directionStyles}`} style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: "-0.02em", marginTop: 6 }}>
+          <div style={{ fontSize: "var(--text-9)", fontWeight: 600, color: "var(--fg-5)" }}>净伽马敞口</div>
+          <div className={`fa-num ${directionStyles}`} style={{ fontSize: "var(--text-18)", fontWeight: 700, marginTop: 6 }}>
             {formatInteger(netGexAggregate.net_gex)}
           </div>
-          <div style={{ fontSize: 10, color: "var(--fg-5)", marginTop: 4 }}>净伽马敞口 · {directionLabel}</div>
+          <div style={{ fontSize: "var(--text-10)", color: "var(--fg-5)", marginTop: 4 }}>净伽马敞口 · {directionLabel}</div>
         </div>
       </div>
       <div style={{ padding: "12px 14px", background: "var(--bg-card-inner)", border: "1px solid var(--border)", borderRadius: 3 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <span style={{ fontSize: 11, color: "var(--fg-4)" }}>看跌伽马主导</span>
-            <span className={`fa-num ${direction === "negative" ? "text-[var(--down)]" : "text-[var(--fg-5)]"}`} style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
+            <span style={{ fontSize: "var(--text-10)", color: "var(--fg-4)" }}>看跌伽马主导</span>
+            <span className={`fa-num ${direction === "negative" ? "text-[var(--down)]" : "text-[var(--fg-5)]"}`} style={{ fontSize: "var(--text-10)", fontWeight: 600 }}>
               {direction === "negative" ? "活跃" : "偏弱"}
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <span style={{ fontSize: 11, color: "var(--fg-4)" }}>伽马零点</span>
-            <span className="fa-num" style={{ fontSize: 12, fontWeight: 700, color: "var(--fg-2)", fontFamily: "var(--font-mono)" }}>{formatNumber(gammaZero?.price, 1)}</span>
+            <span style={{ fontSize: "var(--text-10)", color: "var(--fg-4)" }}>伽马零点</span>
+            <span className="fa-num" style={{ fontSize: "var(--text-11)", fontWeight: 700, color: "var(--fg-2)" }}>{formatNumber(gammaZero?.price, 1)}</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, paddingTop: 8, borderTop: "1px solid var(--border-faint)" }}>
-            <span style={{ fontSize: 11, color: "var(--fg-4)" }}>当前净伽马方向</span>
-            <span className={directionStyles} style={{ fontSize: 12, fontWeight: 600 }}>{directionLabel}</span>
+            <span style={{ fontSize: "var(--text-10)", color: "var(--fg-4)" }}>当前净伽马方向</span>
+            <span className={directionStyles} style={{ fontSize: "var(--text-11)", fontWeight: 600 }}>{directionLabel}</span>
           </div>
           {callWall && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <span style={{ fontSize: 11, color: "var(--fg-4)" }}>看涨压制</span>
-              <span className="fa-num" style={{ fontSize: 11, fontWeight: 600, color: "var(--down)", fontFamily: "var(--font-mono)" }}>{formatNumber(callWall.strike)} · {callWall.wall_score.toFixed(2)}</span>
+              <span className="fa-num" style={{ fontSize: "var(--text-10)", fontWeight: 600, color: "var(--down)" }}>{formatNumber(callWall.strike)} · {callWall.wall_score.toFixed(2)}</span>
             </div>
           )}
           {putWall && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <span style={{ fontSize: 11, color: "var(--fg-4)" }}>看跌支撑</span>
-              <span className="fa-num" style={{ fontSize: 11, fontWeight: 600, color: "var(--up)", fontFamily: "var(--font-mono)" }}>{formatNumber(putWall.strike)} · {putWall.wall_score.toFixed(2)}</span>
+              <span className="fa-num" style={{ fontSize: "var(--text-10)", fontWeight: 600, color: "var(--up)" }}>{formatNumber(putWall.strike)} · {putWall.wall_score.toFixed(2)}</span>
             </div>
           )}
         </div>

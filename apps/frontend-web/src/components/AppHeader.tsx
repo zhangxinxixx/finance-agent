@@ -1,9 +1,15 @@
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
-import { Bell, RefreshCw, Clock } from "lucide-react";
+import { Bell, RefreshCw, Clock, Moon, Sun } from "lucide-react";
 import { useDataStatus } from "../hooks/useDataStatus";
+import { HeaderBreadcrumb } from "./shared/HeaderBreadcrumb";
 
 const viewLabels: Record<string, string> = {
-  "/dashboard": "总览",
+  "/dashboard/analysis": "综合分析",
+  "/dashboard": "黄金宏观交易驾驶舱",
+  "/gold-mainlines": "黄金主线归因",
+  "/rates-dollar": "利率与美元",
+  "/oil-geopolitics": "石油与地缘",
   "/data-ingestion": "数据接入",
   "/event-flow": "事件流",
   "/event-flow/": "事件详情",
@@ -20,7 +26,7 @@ const viewLabels: Record<string, string> = {
   "/scheduler/grid": "任务网格",
   "/scheduler/tasks": "任务计划",
   "/review-center": "人工复核",
-  "/strategy": "策略中心",
+  "/strategy": "每日策略框架",
   "/settings": "系统设置",
   "/settings/audit": "审计日志",
 };
@@ -32,53 +38,88 @@ function getViewLabel(pathname: string): string {
   return match?.[1] || pathname;
 }
 
-export function AppHeader() {
+function formatLocalClock(value: Date): { date: string; time: string } {
+  return {
+    date: value.toLocaleDateString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }),
+    time: value.toLocaleTimeString("zh-CN", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }),
+  };
+}
+
+interface AppHeaderProps {
+  theme: "light" | "dark";
+  onToggleTheme: () => void;
+  headerContent?: ReactNode | null;
+}
+
+export function AppHeader({ theme, onToggleTheme, headerContent }: AppHeaderProps) {
   const location = useLocation();
   const label = getViewLabel(location.pathname);
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10);
-  const timeStr = now.toTimeString().slice(0, 8);
+  const [now, setNow] = useState(() => new Date());
+  const { date: dateStr, time: timeStr } = useMemo(() => formatLocalClock(now), [now]);
   const { refetch } = useDataStatus();
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   return (
     <header className="header">
-      <div className="min-w-0">
-        <div className="header-breadcrumb">
-          <span className="text-[9px] tracking-[0.08em] text-finance-text-muted">金融分析中台</span>
-          <span className="text-[10px] text-finance-text-tertiary">/</span>
-          <span className="truncate text-[11px] font-semibold text-finance-text-primary">{label}</span>
-        </div>
+      <div className="header-primary">
+        {headerContent ?? (
+          <HeaderBreadcrumb title={label} />
+        )}
       </div>
 
       <div className="header-right">
-        <div className="hidden items-center gap-1.5 text-[10px] text-finance-text-muted 2xl:flex">
-          <Clock size={10} />
+        <div className="hidden items-center gap-1.5 text-[11px] text-finance-text-muted 2xl:flex">
+          <Clock size={11} />
           <span>{dateStr}</span>
           <span className="text-finance-text-tertiary">|</span>
           <span className="text-finance-accent-soft">{timeStr} 本地</span>
         </div>
 
-        <button className="rounded-full border border-transparent p-2 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]" title="刷新" onClick={() => refetch()}>
-          <RefreshCw size={13} className="text-finance-text-muted" />
+        <button className="rounded-full border border-transparent p-2.5 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]" title="刷新" onClick={() => refetch()}>
+          <RefreshCw size={14} className="text-finance-text-muted" />
         </button>
-        <button className="relative rounded-full border border-transparent p-2 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]" title="告警">
-          <Bell size={13} className="text-finance-text-muted" />
+        <button
+          className="rounded-full border border-transparent p-2.5 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]"
+          title={theme === "dark" ? "切换亮色" : "切换夜间"}
+          onClick={onToggleTheme}
+        >
+          {theme === "dark" ? (
+            <Sun size={14} className="text-finance-text-muted" />
+          ) : (
+            <Moon size={14} className="text-finance-text-muted" />
+          )}
+        </button>
+        <button className="relative rounded-full border border-transparent p-2.5 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]" title="告警">
+          <Bell size={14} className="text-finance-text-muted" />
           <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-finance-bearish" />
         </button>
 
-        <div className="hidden items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 py-1 text-[9px] font-medium text-[var(--fg-4)] xl:flex">
+        <div className="hidden items-center gap-1 rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-1.5 text-[10px] font-medium text-[var(--fg-4)] xl:flex">
           <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--brand)]" />
           <span>研究工作台</span>
         </div>
 
-        <div className="flex items-center gap-2 rounded-full border border-transparent px-1.5 py-1 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]">
+        <div className="flex items-center gap-2 rounded-full border border-transparent px-2 py-1.5 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]">
           <div
-            className="flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold text-white"
+            className="flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-bold text-white"
             style={{ background: "var(--brand-gradient)" }}
           >
             T
           </div>
-          <span className="hidden text-[11px] text-finance-text-secondary md:block">研究员</span>
+          <span className="hidden text-[12px] text-finance-text-secondary md:block">研究员</span>
         </div>
       </div>
     </header>

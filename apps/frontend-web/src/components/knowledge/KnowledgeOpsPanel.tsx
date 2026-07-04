@@ -1,5 +1,3 @@
-import { FACard } from "@/components/shared/FACard";
-import { FAMetricCard } from "@/components/shared/FAMetricCard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { KnowledgeItem, KnowledgeOpsTab, KnowledgeViewModel } from "@/types/knowledge";
 
@@ -46,59 +44,68 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
     .filter((item) => item.id !== selectedItem?.id)
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, 3);
+  const statRows = [
+    { label: "总资产", value: stats.total || allItems.length, meta: "精选研究资产" },
+    { label: "智能体资产", value: stats.agentReady || allItems.filter((item) => item.agentReady).length, meta: "Prompt / 搜索双入口" },
+    { label: "待复核", value: stats.reviewQueueCount || reviewItems.length, meta: "需要人工二次校验" },
+    { label: "剧本模板", value: stats.playbookCount || allItems.filter((item) => item.type === "playbook").length, meta: `候选 ${stats.playbookCandidateCount || allItems.filter((item) => item.playbookReady).length}` },
+  ];
 
   return (
-    <div className="flex min-h-0 flex-col gap-3">
-      {/* Stats Overview */}
-      <FACard title="知识库概览" eyebrow="统计" accent="brand" bodyClassName="space-y-2">
-        <div className="grid grid-cols-2 gap-2">
-          <FAMetricCard label="总资产" value={stats.total} hint="精选研究资产" />
-          <FAMetricCard label="智能体资产" value={stats.agentReady} hint="Prompt / 搜索双入口" />
-          <FAMetricCard label="待复核" value={stats.reviewQueueCount} hint="需要人工二次校验" trend={stats.reviewQueueCount > 0 ? "down" : "flat"} />
-          <FAMetricCard label="剧本模板" value={stats.playbookCount} hint={`候选 ${stats.playbookCandidateCount}`} />
+    <aside className="knowledge-ops-panel">
+      <section className="knowledge-ops-section">
+        <SectionHeading eyebrow="统计" title="知识库概览" />
+        <div className="knowledge-stat-list">
+          {statRows.map((row) => (
+            <div key={row.label} className="knowledge-stat-row">
+              <span>{row.label}</span>
+              <strong className="fa-num">{row.value}</strong>
+              <em>{row.meta}</em>
+            </div>
+          ))}
         </div>
-      </FACard>
+      </section>
 
-      {/* Sync Health */}
-      <FACard title="同步健康" eyebrow="Sync" accent="info" bodyClassName="space-y-2">
-        <SyncItem name="外部知识库" status="已同步" color="green" />
-        <SyncItem name="Mem0 / 向量库" status="已索引" color="green" />
-        <SyncItem name="回测样本库" status="待补样本" color="orange" />
+      <section className="knowledge-ops-section">
+        <SectionHeading eyebrow="Sync" title="同步健康" />
+        <div className="knowledge-row-list">
+          <SyncItem name="Knowledge Vault" status="已同步" color="green" />
+          <SyncItem name="Mem0 / 向量库" status="已索引" color="green" />
+          <SyncItem name="回测样本库" status="待补样本" color="orange" />
+        </div>
         {selectedItem && (
-          <p className="mt-1 text-[10px] text-[var(--fg-5)]">
+          <p className="knowledge-reader-note">
             当前焦点：{selectedItem.title}
           </p>
         )}
-      </FACard>
+      </section>
 
-      {/* Review Queue */}
       {reviewItems.length > 0 && (
-        <FACard title="复核 / 过期队列" eyebrow="复核" accent="warn" bodyClassName="space-y-2">
-          {reviewItems.map((item) => (
-            <div key={item.id} className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{item.title}</span>
-                <span className="fa-num shrink-0 text-[10px] text-[var(--fg-5)]">{item.verifiedAt}</span>
+        <section className="knowledge-ops-section">
+          <SectionHeading eyebrow="复核" title="复核 / 过期队列" />
+          <div className="knowledge-row-list">
+            {reviewItems.map((item) => (
+              <div key={item.id} className="knowledge-row-item knowledge-row-item--stacked">
+                <div className="knowledge-row-meta">
+                  <span>{item.title}</span>
+                  <span className="fa-num">{item.verifiedAt}</span>
+                </div>
+                <FAStatusPill tone="warn" className="mt-1.5">{item.status}</FAStatusPill>
               </div>
-              <FAStatusPill tone="warn" className="mt-1.5">{item.status}</FAStatusPill>
-            </div>
-          ))}
-        </FACard>
+            ))}
+          </div>
+        </section>
       )}
 
-      {/* Tabbed Content */}
-      <FACard title="资产与沉淀" eyebrow="Assets" accent="info" bodyClassName="space-y-3">
-        <div className="flex flex-wrap gap-1">
+      <section className="knowledge-ops-section">
+        <SectionHeading eyebrow="Assets" title="资产与沉淀" />
+        <div className="knowledge-ops-tabs">
           {OPS_TABS.map((tab) => (
             <button
               key={tab.id}
               type="button"
               onClick={() => onTabChange(tab.id)}
-              className={`rounded-[var(--radius-pill)] px-2 py-1 text-[10px] font-semibold transition-colors ${
-                activeTab === tab.id
-                  ? "bg-[var(--bg-active)] text-[var(--brand-hover)]"
-                  : "text-[var(--fg-5)] hover:bg-[var(--bg-hover)] hover:text-[var(--fg-3)]"
-              }`}
+              className={activeTab === tab.id ? "is-active" : ""}
             >
               {tab.label}
             </button>
@@ -130,23 +137,23 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
         )}
 
         {activeTab === "recent" && (
-          <div className="space-y-2">
+          <div className="knowledge-row-list">
             {recentItems.map((item) => (
-              <div key={item.id} className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{item.title}</span>
-                  <span className="fa-num shrink-0 text-[10px] text-[var(--fg-5)]">引用 {item.citations}</span>
+              <div key={item.id} className="knowledge-row-item knowledge-row-item--stacked">
+                <div className="knowledge-row-meta">
+                  <span>{item.title}</span>
+                  <span className="fa-num">引用 {item.citations}</span>
                 </div>
-                <p className="mt-1 truncate text-[10px] text-[var(--fg-4)]">{item.summary}</p>
+                <p className="knowledge-row-copy">{item.summary}</p>
               </div>
             ))}
           </div>
         )}
 
         {activeTab === "recommend" && (
-          <div className="space-y-2">
+          <div className="knowledge-row-list">
             {recommendItems.map((item, index) => (
-              <div key={item.id} className="flex gap-2.5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-2.5">
+              <div key={item.id} className="knowledge-row-item">
                 <span className={`flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[var(--radius-md)] text-[11px] font-bold ${TYPE_ICON_CLASS[item.type]}`}>
                   {String(index + 1).padStart(2, "0")}
                 </span>
@@ -158,15 +165,24 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
             ))}
           </div>
         )}
-      </FACard>
-    </div>
+      </section>
+    </aside>
+  );
+}
+
+function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) {
+  return (
+    <header className="knowledge-ops-heading">
+      <span>{eyebrow}</span>
+      <strong>{title}</strong>
+    </header>
   );
 }
 
 function SyncItem({ name, status, color }: { name: string; status: string; color: "green" | "orange" | "red" }) {
   const dotClass = color === "green" ? "bg-[var(--up)]" : color === "orange" ? "bg-[var(--warn)]" : "bg-[var(--down)]";
   return (
-    <div className="flex items-center gap-2.5 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-2.5">
+    <div className="knowledge-row-item">
       <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
       <span className="text-[11px] font-semibold text-[var(--fg-2)]">{name}</span>
       <span className="ml-auto text-[10px] text-[var(--fg-4)]">{status}</span>
@@ -176,7 +192,7 @@ function SyncItem({ name, status, color }: { name: string; status: string; color
 
 function MiniAssetRow({ item, meta }: { item: KnowledgeItem; meta?: string }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-2.5">
+    <div className="knowledge-row-item">
       <span
         className={`flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[10px] font-bold ${TYPE_ICON_CLASS[item.type] ?? TYPE_ICON_CLASS.method}`}
       >
@@ -196,7 +212,7 @@ function DistillButton({ title, subtitle }: { title: string; subtitle: string })
   return (
     <button
       type="button"
-      className="w-full rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3 text-left transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)]"
+      className="knowledge-distill-button"
     >
       <div className="text-[11px] font-semibold text-[var(--fg-2)]">{title}</div>
       <div className="mt-1 text-[10px] text-[var(--fg-4)]">{subtitle}</div>

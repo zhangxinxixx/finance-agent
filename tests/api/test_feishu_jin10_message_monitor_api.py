@@ -29,13 +29,13 @@ def _write_parsed_messages(root: Path, *, date: str) -> None:
         json.dumps(
             {
                 "source_key": "jin10_feishu",
-                "chat_id": "chat_fixture",
+                "chat_id": "oc_test",
                 "retrieved_date": date,
                 "messages": [
                     {
                         "message": {
                             "message_id": "om_221732",
-                            "chat_id": "chat_fixture",
+                            "chat_id": "oc_test",
                             "sender_name": "金十新闻",
                             "message_type": "post",
                             "content": "美伊冲突结束预期升温，降息空间压缩，金价上行空间收窄。",
@@ -58,7 +58,7 @@ def _write_parsed_messages(root: Path, *, date: str) -> None:
                     {
                         "message": {
                             "message_id": "om_221733",
-                            "chat_id": "chat_fixture",
+                            "chat_id": "oc_test",
                             "sender_name": "金十新闻",
                             "message_type": "post",
                             "content": "另一条可执行的跟进消息。",
@@ -81,7 +81,7 @@ def _write_parsed_messages(root: Path, *, date: str) -> None:
                     {
                         "message": {
                             "message_id": "om_flash",
-                            "chat_id": "chat_fixture",
+                            "chat_id": "oc_test",
                             "sender_name": "金十新闻",
                             "message_type": "post",
                             "content": "WTI 原油短线下挫。",

@@ -30,7 +30,7 @@ def test_ingestion_retry_creates_traceable_task_run() -> None:
 
     response = api_ingestion_source_retry(
         "cme_bulletin",
-        body=DataSourceActionRequest(actor="automation", reason="refresh missing snapshot", request_id="retry-001"),
+        body=DataSourceActionRequest(actor="codex", reason="refresh missing snapshot", request_id="retry-001"),
         db=session,
     )
 
@@ -55,7 +55,7 @@ def test_manual_upload_registers_raw_artifact_and_requires_followup() -> None:
             source_key="cme_bulletin",
             file_name="daily-bulletin.pdf",
             sha256="abc123",
-            actor="automation",
+            actor="codex",
             reason="official fallback file",
             request_id="upload-001",
         ),

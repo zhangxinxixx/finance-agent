@@ -477,6 +477,89 @@ def test_get_strategy_card_latest_prefers_newer_filesystem_artifact_over_older_d
     assert data["json"]["confidence"] == 0.55
 
 
+def test_strategy_cards_read_model_latest_merges_newer_filesystem_artifact(tmp_path: Path):
+    """Plural StrategyCard read model must not stop at stale DB rows."""
+    from apps.api.data_service import get_strategy_card_read_model_latest, list_strategy_cards
+
+    session = _make_inmem_session()
+    _upsert_final(session, trade_date="2026-06-21", run_id="db-run")
+    session.commit()
+
+    sc_json = json.dumps(
+        {
+            "bias": "neutral",
+            "confidence": 0.42,
+            "asset": "XAUUSD",
+            "scenario_summary": "Use the latest filesystem strategy card.",
+            "watchlist": ["macro confirmation", "price behavior"],
+        }
+    )
+    trigger_json = json.dumps(
+        {
+            "as_of": "2026-07-04T10:00:00+00:00",
+            "rule_version": "jin10-daily-analysis-trigger-v1",
+            "trigger_count": 1,
+            "triggers": [
+                {
+                    "trigger_id": "trigger:strategy:update",
+                    "priority": "high",
+                    "status": "queued",
+                    "source_title": "今日宏观事件需要复核",
+                    "source_url": "https://xnews.jin10.com/details/strategy-update",
+                    "event_type": "macro_reprice",
+                    "impact_path": "macro_update_to_strategy_review",
+                    "gold_impact": "bearish",
+                    "suggested_actions": ["run_jin10_daily_analysis"],
+                    "evidence_text": "今日宏观事件可能影响上一份策略框架。",
+                    "source_refs": [{"source": "jin10_feishu", "source_ref": "jin10_feishu:update"}],
+                    "data_quality": {"verification_status": "single_source"},
+                    "created_at": "2026-07-04T10:00:00+00:00",
+                }
+            ],
+        }
+    )
+    _make_tree(tmp_path, {
+        "storage/outputs/strategy_card/XAUUSD/2026-07-01/fs-new/strategy_card.json": sc_json,
+        "storage/outputs/strategy_card/XAUUSD/2026-07-01/fs-new/strategy_card.md": "# New strategy",
+        "storage/features/news/2026-07-04/news-update/daily_analysis_triggers.json": trigger_json,
+        "storage/outputs/jin10/2026-07-04/weekly-1/daily_analysis.json": json.dumps(
+            {
+                "family": "jin10_weekly_visual",
+                "title": "一周热榜精选：弱非农下加息押注退潮",
+                "summary": "周末周报给出宏观重定价背景。",
+            }
+        ),
+        "storage/outputs/jin10/2026-07-04/weekly-1/daily_analysis.html": "<html>weekly</html>",
+        "storage/outputs/macro/2026-07-02/macro-backfill/macro_full_report.md": "# Macro update\n近两天宏观动态。",
+    })
+
+    def _fake_try_db():
+        return session
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_SESSION_REF, _fake_try_db),
+    ):
+        listing = list_strategy_cards(limit=1)
+        detail = get_strategy_card_read_model_latest()
+
+    assert listing["items"][0]["trade_date"] == "2026-07-01"
+    assert listing["items"][0]["run_id"] == "fs-new"
+    assert detail is not None
+    assert detail["trade_date"] == "2026-07-01"
+    assert detail["run_id"] == "fs-new"
+    assert detail["scenario"]["watchlist"] == ["macro confirmation", "price behavior"]
+    assert detail["daily_update"]["date"] == "2026-07-04"
+    assert detail["daily_update"]["queue_count"] == 1
+    assert detail["daily_update"]["items"][0]["title"] == "今日宏观事件需要复核"
+    assert detail["weekend_context"]["mode"] == "weekend"
+    assert detail["weekend_context"]["weekly_report"]["title"] == "一周热榜精选：弱非农下加息押注退潮"
+    assert detail["weekend_context"]["latest_report_date"] == "2026-07-04"
+    assert detail["weekend_context"]["monday_outlook"]["summary"]
+    assert detail["weekend_context"]["weekly_report"]["trade_date"] == "2026-07-04"
+    assert {item["trade_date"] for item in detail["weekend_context"]["recent_context"]} >= {"2026-07-02"}
+
+
 # ═══════════════════════════════════════════════════════════════════
 # get_strategy_card (exact) — DB-first
 # ═══════════════════════════════════════════════════════════════════

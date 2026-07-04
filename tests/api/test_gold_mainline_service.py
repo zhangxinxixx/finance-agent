@@ -317,6 +317,59 @@ def test_get_gold_mainlines_latest_loads_overview_and_event_mainlines(tmp_path: 
     assert payload["source_refs"] == [{"source": "fed_rss", "source_ref": "fed:test"}]
 
 
+def test_get_gold_mainlines_latest_infers_overview_from_event_mainlines(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-14",
+        run_id="run-event-only",
+        dominant_mainline="fed_policy_path",
+    )
+    overview_path.unlink()
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = get_gold_mainlines_latest()
+
+    assert payload["status"] == "partial"
+    assert payload["date"] == "2026-06-14"
+    assert payload["run_id"] == "run-event-only"
+    assert payload["artifact_path"] is None
+    assert payload["input_snapshot_ids"]["gold_event_mainlines"] == (
+        "features/news/2026-06-14/run-event-only/gold_event_mainlines.json"
+    )
+    assert payload["gold_macro_overview"]["dominant_mainline"] in _ALL_MAINLINES
+    assert len(payload["gold_macro_overview"]["theme_rankings"]) == 9
+    assert any(
+        row["mainline_id"] == "fed_policy_path"
+        for row in payload["gold_macro_overview"]["theme_rankings"]
+    )
+    assert payload["gold_mainlines"]["mainlines"][0]["mainline_id"] == "fed_policy_path"
+    assert "gold_macro_overview inferred from gold_event_mainlines artifact" in payload["warnings"]
+
+
+def test_get_gold_mainlines_exact_infers_overview_from_event_mainlines(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-15",
+        run_id="run-exact-event-only",
+        dominant_mainline="oil_prices",
+    )
+    overview_path.unlink()
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = get_gold_mainlines(date="2026-06-15", run_id="run-exact-event-only")
+
+    assert payload["status"] == "partial"
+    assert payload["date"] == "2026-06-15"
+    assert payload["run_id"] == "run-exact-event-only"
+    assert payload["artifact_path"] is None
+    assert payload["gold_macro_overview"]["dominant_mainline"] in _ALL_MAINLINES
+    assert len(payload["gold_macro_overview"]["theme_rankings"]) == 9
+    assert any(
+        row["mainline_id"] == "oil_prices"
+        for row in payload["gold_macro_overview"]["theme_rankings"]
+    )
+
+
 def test_get_gold_mainlines_fills_mainline_id_alias_from_mainline_only_artifacts(tmp_path: Path) -> None:
     overview_path, _ = _write_gold_artifacts(
         tmp_path,

@@ -94,7 +94,7 @@ export function SettingsAuditPage() {
     setError(null);
     try {
       await rollbackSettingsEvent(entry.auditId, {
-        actor: "automation",
+        actor: "codex",
         reason: `rollback ${entry.settingKey}`,
         request_id: `settings-audit-rollback-${entry.auditId}-${Date.now()}`,
       });

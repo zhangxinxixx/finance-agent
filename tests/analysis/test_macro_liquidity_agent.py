@@ -4,7 +4,8 @@ import copy
 from datetime import datetime, timezone
 
 from apps.analysis.agents import AgentBias, AgentOutput, AgentStatus
-from apps.analysis.agents.macro_liquidity import analyze_macro_liquidity
+from apps.analysis.agents.macro_liquidity import analyze_macro_liquidity, build_macro_liquidity_structured_payload
+from apps.analysis.agents.macro_liquidity_prompt import build_macro_liquidity_prompt_template
 from apps.analysis.agents.registry import get_agent_registry
 
 
@@ -19,11 +20,13 @@ def _available_snapshot() -> dict:
                 "as_of": "2026-05-14",
                 "indicators": {
                     "DGS10": {"value": 4.30, "change_1w": -0.05},
+                    "DGS2": {"value": 4.05, "change_1w": 0.02},
                     "T10YIE": {"value": 2.35, "change_1w": 0.02},
                     "REAL_YIELD_10Y": {"value": 1.95, "change_1w": -0.07},
                     "DXY": {"value": 97.8, "change_1w": -0.8},
-                    "RRPONTSYD": {"value": 82.0},
+                    "RRPONTSYD": {"value": 82.0, "change_1w": -12.0},
                     "TGA": {"value": 510.0, "change_1w": -45.0},
+                    "WRESBAL": {"value": 3210.0, "change_1w": 18.0},
                     "SOFR": {"value": 4.32},
                     "EFFR": {"value": 4.33},
                     "IORB": {"value": 4.40},
@@ -67,24 +70,6 @@ def test_available_macro_returns_schema_valid_agent_output__uses_conftest_fixtur
     assert "结论偏" in output.summary
     assert any("real yield" in finding.lower() for finding in output.key_findings)
     assert "DXY" in output.watchlist
-
-
-def test_available_macro_emits_structured_evidence_items():
-    output = analyze_macro_liquidity(_available_snapshot(), created_at=datetime(2026, 5, 14, tzinfo=timezone.utc))
-
-    evidence_by_factor = {item.factor: item for item in output.evidence_items}
-
-    assert {"real_yield_pressure", "dollar_pressure", "liquidity_condition"} <= set(evidence_by_factor)
-    real_yield = evidence_by_factor["real_yield_pressure"]
-    assert real_yield.direction == "bullish"
-    assert 0.0 <= real_yield.strength <= 1.0
-    assert 0.0 <= real_yield.confidence <= 1.0
-    assert real_yield.source_refs
-    assert real_yield.data_category == "confirmed_data"
-
-    dollar = evidence_by_factor["dollar_pressure"]
-    assert dollar.direction == "bullish"
-    assert dollar.source_tier == "market"
 
 
 def test_missing_dxy_lowers_confidence_and_records_risk_or_invalid_condition():
@@ -157,7 +142,12 @@ def test_agent_output_includes_market_phase_and_regime_drivers():
 
     assert output.market_phase is not None, "market_phase should be set when macro is available"
     assert output.market_phase in (
-        "rate_pressure", "transition_release", "trend_tailwind", "unavailable",
+        "rate_pressure",
+        "transition_release",
+        "trend_tailwind",
+        "liquidity_crunch",
+        "monetary_credit_repricing",
+        "unavailable",
     ), f"Unexpected market_phase: {output.market_phase}"
     assert output.regime_drivers is not None, "regime_drivers should be set when macro is available"
     assert isinstance(output.regime_drivers, dict)
@@ -200,7 +190,27 @@ def test_macro_liquidity_registry_prompts_as_llm() -> None:
     agent = get_agent_registry("macro_liquidity_agent")
     assert agent is not None
     assert agent["prompt"]["kind"] == "llm"
-    assert "宏观流动性分析" in agent["prompt"]["template"]
+    assert "XAUUSD 宏观交易引擎 v2.1" in agent["prompt"]["template"]
+
+
+def test_macro_prompt_allows_web_but_requires_external_gap_labeling() -> None:
+    prompt = build_macro_liquidity_prompt_template()
+
+    assert "不主动联网" not in prompt
+    assert "必须主动核验关键缺口" in prompt
+    assert "外部联网补充 / 待系统化接入" in prompt
+
+
+def test_macro_structured_payload_marks_sources_missing_from_system() -> None:
+    snapshot = _available_snapshot()
+    snapshot["source_refs"] = [{"symbol": "DXY", "source": "cnbc"}]
+
+    payload = build_macro_liquidity_structured_payload(snapshot)
+
+    assert payload["external_web_policy"]["use_full_available_capability"] is True
+    gaps = payload["system_data_gaps"]
+    assert any(gap["item"] == "DXY TradingView weekly/monthly" for gap in gaps)
+    assert any(gap["item"] == "ETF / GLD flows" for gap in gaps)
 
 
 def test_agent_output_regime_fields_present_in_dict_form():

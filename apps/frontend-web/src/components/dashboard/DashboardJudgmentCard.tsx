@@ -37,31 +37,29 @@ export function DashboardJudgmentCard({
 
   return (
     <div
-      className="rounded-[var(--radius-md)]"
+      className="relative overflow-hidden rounded-[var(--radius-lg)] shadow-[0_18px_36px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.045)]"
       style={{
-        background: "var(--bg-card)",
-        border: "1px solid var(--border)",
-        borderLeft: "3px solid #f59e0b",
+        background:
+          "linear-gradient(135deg, rgba(245,158,11,0.12), transparent 28%), linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.01)), var(--bg-card)",
+        border: "1px solid color-mix(in srgb, var(--warn) 34%, var(--border))",
       }}
     >
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-[linear-gradient(90deg,var(--warn),rgba(245,158,11,0.15),transparent)]" />
       <div
         className="flex flex-wrap items-center gap-2.5"
         style={{
-          background: "var(--bg-panel)",
-          padding: "8px 14px",
+          background: "linear-gradient(180deg, rgba(245,158,11,0.08), rgba(12,23,40,0.72))",
+          padding: "7px 12px",
+          borderBottom: "1px solid var(--border)",
         }}
       >
-        <Star size={12} color="#f59e0b" fill="#f59e0b" />
-        <span
-          style={{
-            fontSize: "12px",
-            fontWeight: 600,
-            fontFamily: "var(--font-sans)",
-            color: "var(--fg-2)",
-          }}
-        >
-          今日综合判断卡
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] shadow-[0_0_18px_rgba(245,158,11,0.14)]">
+          <Star size={13} color="var(--warn)" fill="var(--warn)" />
         </span>
+        <div className="min-w-0">
+          <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--warn)]">Decision Card</div>
+          <div className="text-[13px] font-bold leading-tight text-[var(--fg-1)]">今日综合判断卡</div>
+        </div>
         {agentSynthesis?.factReviewStatus ? (
           <div
             className="inline-flex items-center gap-1.5"
@@ -72,47 +70,35 @@ export function DashboardJudgmentCard({
               border: reviewTone.border,
             }}
           >
-            <span style={{ fontSize: "8px", color: "var(--fg-5)", letterSpacing: "0.06em" }}>事实审查</span>
-            <span style={{ fontSize: "10px", fontWeight: 600, color: reviewTone.color }}>
+            <span className="text-[8px] text-[var(--fg-5)] tracking-[0.06em]">事实审查</span>
+            <span className="text-[10px] font-semibold" style={{ color: reviewTone.color }}>
               {reviewStatusLabel(agentSynthesis.factReviewStatus)}
             </span>
           </div>
         ) : null}
         <div className="flex-1" />
         <div
-          className="inline-flex items-center gap-1.5"
+          className="inline-flex items-center gap-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
           style={{
-            padding: "3px 10px",
-            background: "rgba(245,158,11,0.08)",
-            border: "1px solid rgba(245,158,11,0.20)",
-            borderRadius: "3px",
+            padding: "3px 9px",
+            background: "var(--warn-soft)",
+            border: "1px solid var(--warn-border)",
+            borderRadius: "var(--radius-md)",
           }}
         >
-          <span style={{ fontSize: "8px", color: "var(--fg-5)", letterSpacing: "0.06em" }}>确信度</span>
-          <span
-            style={{
-              fontSize: "16px",
-              fontWeight: 700,
-              fontFamily: "var(--font-mono)",
-              color: "#f59e0b",
-              lineHeight: 1,
-            }}
-          >
+          <span className="text-[8px] text-[var(--fg-5)] tracking-[0.06em]">确信度</span>
+          <span className="text-[17px] font-bold font-[var(--font-mono)] text-[var(--warn)] leading-none">
             {conviction}
           </span>
-          <span style={{ fontSize: "9px", color: "var(--fg-5)" }}>/ 100</span>
+          <span className="text-[9px] text-[var(--fg-5)]">/ 100</span>
         </div>
         <div
+          className="text-[9px] font-bold tracking-[0.08em] uppercase text-[var(--warn)]"
           style={{
             padding: "3px 8px",
-            background: "rgba(245,158,11,0.10)",
-            color: "#f59e0b",
-            border: "1px solid rgba(245,158,11,0.25)",
+            background: "var(--warn-soft)",
+            border: "1px solid var(--warn-border)",
             borderRadius: "3px",
-            fontSize: "9px",
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
           }}
         >
           总览
@@ -122,32 +108,33 @@ export function DashboardJudgmentCard({
       <div
         className="dashboard-judgment-grid"
       >
-        <div style={{ minWidth: 0, padding: "14px 14px 14px 16px", borderRight: "1px solid var(--border)" }}>
-          <div className="space-y-2">
-            <DetailRow label="市场阶段" value={macroPhase} valueColor="#f59e0b" />
+        <div className="min-w-0 p-2.5" style={{ borderRight: "1px solid var(--border)" }}>
+          <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[rgba(255,255,255,0.025)] p-2.5">
+          <div className="space-y-1.5">
+            <DetailRow label="市场阶段" value={macroPhase} valueColor="var(--warn)" />
             <DetailRow label="黄金状态" value={biasLabel} />
             <DetailRow
               label="交易方向"
               value={directionLabel(direction)}
               valueColor={direction === "bullish" ? "var(--up)" : direction === "bearish" ? "var(--down)" : "var(--fg-3)"}
             />
-            <DetailRow label="置信度" value={`${conviction}/100`} valueColor="#f59e0b" />
+            <DetailRow label="置信度" value={`${conviction}/100`} valueColor="var(--warn)" />
           </div>
 
-          <div className="mt-3 flex flex-wrap gap-1.5">
+          <div className="mt-2 flex flex-wrap gap-1.5">
             <Chip label={macroPhase} />
             <Chip label={directionLabel(direction)} />
           </div>
 
           <div
             style={{
-              marginTop: "10px",
-              padding: "8px 10px",
-              borderRadius: "6px",
-              border: "1px solid var(--border-faint)",
-              background: "var(--bg-card-inner)",
+              marginTop: "8px",
+              padding: "6px 9px",
+              borderRadius: "var(--radius-md)",
+              border: "1px solid var(--warn-border)",
+              background: "linear-gradient(180deg, var(--warn-soft), rgba(255,255,255,0.018))",
               fontSize: "10px",
-              color: "var(--fg-3)",
+              color: "var(--fg-2)",
               lineHeight: 1.4,
             }}
           >
@@ -158,7 +145,7 @@ export function DashboardJudgmentCard({
           {realtimeHint ? (
             <div
               style={{
-                marginTop: "8px",
+                marginTop: "6px",
                 fontSize: "9px",
                 color: "var(--fg-5)",
                 lineHeight: 1.5,
@@ -168,7 +155,7 @@ export function DashboardJudgmentCard({
             </div>
           ) : null}
           {agentSynthesis ? (
-            <div className="mt-3 flex flex-wrap gap-1.5">
+            <div className="mt-2 flex flex-wrap gap-1.5">
               <MetaPill label={`已汇总 ${agentSynthesis.claimCount} 条判断`} />
               {agentSynthesis.invalidConditions.length > 0 ? (
                 <MetaPill
@@ -178,45 +165,42 @@ export function DashboardJudgmentCard({
               ) : null}
             </div>
           ) : null}
+          </div>
         </div>
 
-        <div style={{ minWidth: 0, padding: "14px 14px", borderRight: "1px solid var(--border)" }}>
+        <div className="min-w-0 p-2.5" style={{ borderRight: "1px solid var(--border)" }}>
           <div className="dashboard-judgment-factor-grid">
             <FactorGroup
               title="主导因子"
-              color="#10b981"
+              color="var(--up)"
               items={triggers}
-              icon={<ChevronUp size={10} color="#10b981" style={{ marginTop: "1px", flexShrink: 0 }} />}
+              icon={<ChevronUp size={10} color="var(--up)" style={{ marginTop: "1px", flexShrink: 0 }} />}
             />
             <FactorGroup
               title="压制因子"
-              color="#f05252"
+              color="var(--down)"
               items={invalids}
-              icon={<ChevronDown size={10} color="#f05252" style={{ marginTop: "1px", flexShrink: 0 }} />}
+              icon={<ChevronDown size={10} color="var(--down)" style={{ marginTop: "1px", flexShrink: 0 }} />}
             />
           </div>
         </div>
 
-        <div style={{ minWidth: 0, padding: "14px 18px 14px 20px" }}>
+        <div className="min-w-0 p-2.5">
+          <div className="h-full rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[rgba(255,255,255,0.02)] p-2.5">
           <div
-            style={{
-              fontSize: "9px",
-              color: "#3b82f6",
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              fontWeight: 600,
-              marginBottom: "10px",
-            }}
+            className="text-[9px] text-[var(--info)] tracking-[0.08em] uppercase font-semibold"
+            style={{ marginBottom: "8px" }}
           >
             关键价位
           </div>
           <div className="space-y-2">
             {keyLevels.resistance.slice(0, 3).map((price, index) => (
-              <LevelRow key={`r-${index}-${price}`} price={price} label="阻力" color="#f05252" />
+              <LevelRow key={`r-${index}-${price}`} price={price} label="阻力" color="var(--down)" />
             ))}
             {keyLevels.support.slice(0, 3).map((price, index) => (
-              <LevelRow key={`s-${index}-${price}`} price={price} label="支撑" color="#10b981" />
+              <LevelRow key={`s-${index}-${price}`} price={price} label="支撑" color="var(--up)" />
             ))}
+          </div>
           </div>
         </div>
       </div>

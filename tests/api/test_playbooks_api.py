@@ -44,7 +44,7 @@ def test_create_and_list_playbook_templates() -> None:
             "invalidations": ["wallscore_too_high"],
             "source_refs": [{"source_ref": "playbook.range_breakout"}],
             "last_validated": "2026-05-30T08:00:00Z",
-            "actor": "automation",
+            "actor": "codex",
             "request_id": "pb-create-001",
         },
     )
@@ -76,7 +76,7 @@ def test_playbook_detail_returns_history() -> None:
             "actions": ["watch", "confirm", "avoid_chasing"],
             "invalidations": ["wallscore_too_high"],
             "source_refs": [{"source_ref": "playbook.range_breakout"}],
-            "actor": "automation",
+            "actor": "codex",
             "request_id": "pb-create-001",
         },
     )
@@ -92,7 +92,7 @@ def test_playbook_detail_returns_history() -> None:
             "actions": ["watch", "confirm", "avoid_chasing"],
             "invalidations": ["wallscore_too_high", "volume_drops"],
             "source_refs": [{"source_ref": "playbook.range_breakout"}],
-            "actor": "automation",
+            "actor": "codex",
             "request_id": "pb-create-002",
         },
     )
@@ -119,7 +119,7 @@ def test_duplicate_playbook_version_returns_conflict() -> None:
         "actions": ["watch"],
         "invalidations": [],
         "source_refs": [{"source_ref": "playbook.range_breakout"}],
-        "actor": "automation",
+        "actor": "codex",
         "request_id": "pb-create-001",
     }
     first = client.post("/api/playbooks", json=payload)

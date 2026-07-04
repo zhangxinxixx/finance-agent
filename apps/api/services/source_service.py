@@ -5,13 +5,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from apps.api.services._storage import _PROJECT_ROOT, _latest_date_dir, _try_db_session
-from apps.api.services.source_models import (
-    SourceDefinition,
-    SourceHealth,
-    SourceTier,
-    source_tier_from_definition,
-)
-
 
 _KNOWN_SOURCE_DEFS: list[dict[str, Any]] = [
     {"source_key": "fred", "source_name": "FRED", "source_group": "macro", "source_type": "api", "access_method": "fred_api", "metadata": {"provider_role": "official_primary", "fallback_for": [], "fallback_sources": ["openbb_macro", "jin10_news"], "frontend_label": "FRED 官方宏观主源", "notes": "官方宏观时间序列主源；异常时由 OpenBB 补充，并由 Jin10 提供事件/快讯上下文。"}},
@@ -31,6 +24,8 @@ _KNOWN_SOURCE_DEFS: list[dict[str, Any]] = [
     {"source_key": "jin10_xnews_public", "source_name": "Jin10 xnews Public", "source_group": "news", "source_type": "scraper", "access_method": "http_document", "metadata": {"provider_role": "supplemental", "priority_level": "P1", "event_layer": "article_context", "fallback_for": [], "fallback_sources": ["jin10_mcp_flash"], "frontend_label": "Jin10 公开文章", "notes": "公开 xnews 详情页正文和图片；只作为 single_source/article context。"}},
     {"source_key": "jin10_datacenter_reports", "source_name": "Jin10 Datacenter Reports", "source_group": "macro", "source_type": "structured", "access_method": "js_data_script", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "fallback_for": [], "fallback_sources": ["fred", "positioning_cot", "cme_options"], "frontend_label": "Jin10 数据中心报表", "notes": "数据中心 JS/API 结构化报表；只做补充展示和交叉验证，不覆盖官方事实。"}},
     {"source_key": "jin10_svip_reports", "source_name": "Jin10 SVIP Reports", "source_group": "reports", "source_type": "scraper", "access_method": "vip_browser_profile", "metadata": {"provider_role": "supplemental", "priority_level": "P1", "fallback_for": [], "fallback_sources": ["jin10_xnews_public"], "frontend_label": "Jin10 SVIP 授权报告", "notes": "已授权浏览器 profile 下的报告图文资产；缺登录或预览页必须显式标记。"}},
+    {"source_key": "jin10_web_important_flash", "source_name": "Jin10 Web Important Flash", "source_group": "news", "source_type": "web_flash", "access_method": "vip_browser_profile", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "event_layer": "realtime_flash", "fallback_for": [], "fallback_sources": ["jin10_mcp_flash", "jin10_news"], "frontend_label": "Jin10 首页重要快讯", "notes": "首页重要市场快讯和重要新闻头条采集；单源 supplemental 上下文。"}},
+    {"source_key": "jin10_web_vip_flash", "source_name": "Jin10 Web VIP Flash", "source_group": "news", "source_type": "vip_flash", "access_method": "vip_browser_profile", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "event_layer": "vip_analysis_flash", "fallback_for": [], "fallback_sources": ["jin10_mcp_flash", "jin10_news"], "frontend_label": "Jin10 VIP 快讯", "notes": "首页 VIP 快讯分析采集；必须显式标记登录/VIP 限制。"}},
     {"source_key": "jin10_feishu", "source_name": "Jin10 Feishu Chat Pull", "source_group": "news", "source_type": "webhook", "access_method": "feishu_openapi_chat_pull", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "event_layer": "supplemental_trade_signal", "fallback_for": [], "fallback_sources": ["jin10_news"], "frontend_label": "飞书金十群消息", "notes": "主动拉取飞书群内金十机器人消息，作为交易线索和日报触发来源；单源内容保持 supplemental/single_source。"}},
     {"source_key": "fed_rss", "source_name": "Federal Reserve RSS", "source_group": "news", "source_type": "rss", "access_method": "feedparser+httpx", "metadata": {"provider_role": "official_primary", "priority_level": "P0", "event_layer": "official_calendar", "fallback_for": [], "fallback_sources": ["jin10_news"], "frontend_label": "Fed 官方 RSS 事件源", "notes": "只采集 Fed 官方发布/讲话/纪要事件；不替代 FRED/Fed 宏观时间序列。"}},
     {"source_key": "bls_calendar", "source_name": "BLS Release Calendar", "source_group": "news", "source_type": "calendar", "access_method": "official_calendar", "metadata": {"provider_role": "official_primary", "priority_level": "P0", "event_layer": "official_calendar", "fallback_for": [], "fallback_sources": ["jin10_news"], "frontend_label": "BLS 官方发布日历", "notes": "CPI/PPI/非农/JOLTS 等发布时间事件层；数据值仍由宏观链处理。"}},
@@ -42,12 +37,6 @@ _KNOWN_SOURCE_DEFS: list[dict[str, Any]] = [
 ]
 
 _KNOWN_SOURCE_INDEX: dict[str, dict[str, Any]] = {src["source_key"]: src for src in _KNOWN_SOURCE_DEFS}
-_KNOWN_SOURCE_DEFINITIONS: list[SourceDefinition] = [
-    SourceDefinition.from_mapping(src) for src in _KNOWN_SOURCE_DEFS
-]
-_KNOWN_SOURCE_DEFINITION_INDEX: dict[str, SourceDefinition] = {
-    src.source_key: src for src in _KNOWN_SOURCE_DEFINITIONS
-}
 _NEWS_SOURCE_STORAGE_DIRS: dict[str, str] = {
     "fed_rss": "fed_rss",
     "bls_calendar": "bls",
@@ -190,6 +179,18 @@ _SOURCE_OBSERVABILITY: dict[str, dict[str, Any]] = {
         "artifact_layers": ["~/jin10-reports", "storage/outputs/jin10"],
         "polling_strategy": {"mode": "manual_or_authorized_browser_profile", "cadence": "manual / configured report job only", "query": "SVIP category/detail through authorized browser profile"},
         "pressure_profile": {"level": "medium", "upgrade_required": False, "recommendation": "不要自动全量抓取；登录态失效时标记 login_required，图片可得但正文不足时标记 image_only。"},
+    },
+    "jin10_web_important_flash": {
+        "database_tables": ["data_source_status", "analysis_snapshots.news", "task_runs", "task_steps"],
+        "artifact_layers": ["storage/raw/jin10/web_flash", "storage/parsed/jin10/web_flash", "storage/features/news"],
+        "polling_strategy": {"mode": "server_side_cache", "cadence": "60s-5m collector controlled / manual refresh", "query": "Jin10 homepage important flash + important news top list"},
+        "pressure_profile": {"level": "high", "upgrade_required": True, "recommendation": "首页重要快讯压力高，需要后端缓存；前端只读缓存，避免直接高频轮询。"},
+    },
+    "jin10_web_vip_flash": {
+        "database_tables": ["data_source_status", "analysis_snapshots.news", "task_runs", "task_steps"],
+        "artifact_layers": ["storage/raw/jin10/web_flash", "storage/parsed/jin10/web_flash", "storage/features/news"],
+        "polling_strategy": {"mode": "manual_or_authorized_browser_profile", "cadence": "manual / configured authorized browser refresh", "query": "Jin10 homepage VIP flash analysis through authorized browser profile"},
+        "pressure_profile": {"level": "medium", "upgrade_required": False, "recommendation": "VIP 快讯中等压力，不要自动全量抓取；登录/VIP 限制必须显式标记。"},
     },
     "jin10_feishu": {
         "database_tables": ["data_source_status", "analysis_snapshots.news", "task_runs", "task_steps"],
@@ -454,18 +455,12 @@ def _latest_news_feature_artifacts() -> dict[str, Any]:
 
 def _normalize_source_metadata(source_key: str, metadata: Any, *, source_name: str | None = None) -> dict[str, Any]:
     source_def = _KNOWN_SOURCE_INDEX.get(source_key, {})
-    definition = _KNOWN_SOURCE_DEFINITION_INDEX.get(source_key)
-    contract = definition.governance_metadata() if definition is not None else source_def.get("metadata") or {}
+    contract = source_def.get("metadata") or {}
     normalized = dict(metadata) if isinstance(metadata, dict) else {}
     if source_name and "frontend_label" not in normalized and not contract.get("frontend_label"):
         normalized["frontend_label"] = source_name
     normalized = {**normalized, **contract}
     normalized["provider_role"] = normalized.get("provider_role") or "derived"
-    if "source_tier" not in normalized:
-        normalized["source_tier"] = source_tier_from_definition(
-            {"source_key": source_key, "source_group": source_def.get("source_group")},
-            normalized,
-        ).value
     normalized["fallback_for"] = normalized.get("fallback_for") if isinstance(normalized.get("fallback_for"), list) else []
     normalized["fallback_sources"] = normalized.get("fallback_sources") if isinstance(normalized.get("fallback_sources"), list) else []
     if source_name and "frontend_label" not in normalized:
@@ -1061,19 +1056,16 @@ def get_data_source_history(source_key: str, *, db: Any, limit: int = 30) -> dic
 def _source_registry_entry(source_def: dict[str, Any]) -> dict[str, Any]:
     source_key = str(source_def.get("source_key") or "")
     source_group = str(source_def.get("source_group") or "unknown")
-    definition = _KNOWN_SOURCE_DEFINITION_INDEX.get(source_key) or SourceDefinition.from_mapping(source_def)
     observability = _SOURCE_OBSERVABILITY.get(source_key, {})
     polling_strategy = observability.get("polling_strategy") if isinstance(observability, dict) else {}
     if not isinstance(polling_strategy, dict):
         polling_strategy = {}
     mode = str(polling_strategy.get("mode") or "")
     ttl = _FRESHNESS_MODE_TTLS.get(mode)
-    metadata = definition.governance_metadata()
+    metadata = source_def.get("metadata") if isinstance(source_def.get("metadata"), dict) else {}
     return {
         "source_key": source_key,
         "source_name": source_def.get("source_name") or source_key,
-        "source_tier": definition.source_tier.value,
-        "provider_role": definition.provider_role,
         "domain": source_group,
         "provider": source_def.get("source_name") or source_key,
         "source_type": source_def.get("source_type"),
@@ -1135,113 +1127,6 @@ def _source_layer_status(*, done: bool, configured: bool, status: str) -> str:
     return "pending"
 
 
-def _source_tier_for_source(source: dict[str, Any]) -> SourceTier:
-    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
-    source_tier = str(metadata.get("source_tier") or "").strip()
-    if source_tier:
-        try:
-            return SourceTier(source_tier)
-        except ValueError:
-            pass
-
-    source_key = str(source.get("source_key") or "")
-    definition = _KNOWN_SOURCE_DEFINITION_INDEX.get(source_key)
-    if definition is not None:
-        return definition.source_tier
-    return source_tier_from_definition(
-        {
-            "source_key": source_key,
-            "source_group": source.get("source_group"),
-            "source_type": source.get("source_type"),
-        },
-        metadata,
-    )
-
-
-def _source_staleness_seconds(source: dict[str, Any], as_of_dt: datetime) -> int | None:
-    latest_dt = _parse_datetime(source.get("latest_update_time"))
-    if latest_dt is None:
-        return None
-    return max(0, int((as_of_dt - latest_dt).total_seconds()))
-
-
-def _source_freshness_score(source: dict[str, Any], *, staleness_seconds: int | None) -> float:
-    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
-    freshness_status = str(source.get("freshness_status") or metadata.get("freshness_status") or "unknown").lower()
-    if freshness_status == "fresh":
-        return 1.0
-    if freshness_status == "manual":
-        return 0.6
-    if freshness_status == "stale":
-        return 0.0
-    if freshness_status == "not_applicable":
-        return 0.0
-    return 0.25 if staleness_seconds is not None else 0.0
-
-
-def _source_quality_score(source: dict[str, Any], *, freshness_score: float) -> float:
-    status = str(source.get("status") or "").strip().lower()
-    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
-    health_state = str(source.get("health_state") or metadata.get("health_state") or "").strip().lower()
-    readiness_state = str(source.get("readiness_state") or metadata.get("readiness_state") or "").strip().lower()
-
-    quality = 0.0
-    for key in ("configured", "raw_ingested", "parsed", "analysis_ready"):
-        if source.get(key):
-            quality += 0.2
-    quality += 0.2 * freshness_score
-
-    if readiness_state == "degraded":
-        quality = min(quality, 0.75)
-    elif readiness_state in {"blocked", "not_configured"}:
-        quality = min(quality, 0.25)
-
-    if health_state == "cooldown":
-        quality = min(quality, 0.55)
-    if status in {"partial", "stale", "warn", "rate_limited"}:
-        quality = min(quality, 0.75)
-    if status in {"error", "failed"}:
-        quality = min(quality, 0.2)
-    if status in {"not_connected", "unavailable"}:
-        quality = min(quality, 0.25)
-
-    return round(max(0.0, min(1.0, quality)), 3)
-
-
-def _source_last_success_at(source: dict[str, Any]) -> str | None:
-    status = str(source.get("status") or "").strip().lower()
-    has_data = bool(source.get("raw_ingested") or source.get("parsed") or source.get("analysis_ready"))
-    if status in {"ok", "partial", "stale", "warn", "rate_limited"} and has_data:
-        return _first_non_empty(source.get("latest_update_time"), source.get("latest_health_at"))
-    return None
-
-
-def _source_last_failure_at(source: dict[str, Any]) -> str | None:
-    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
-    status = str(source.get("status") or "").strip().lower()
-    health_state = str(source.get("health_state") or metadata.get("health_state") or "").strip().lower()
-    error_message = str(source.get("error_message") or "").strip()
-    if error_message or status in {"error", "failed", "not_connected", "unavailable"} or health_state in {"unavailable", "cooldown"}:
-        return _first_non_empty(source.get("latest_health_at"), metadata.get("latest_health_at"), source.get("latest_update_time"))
-    return None
-
-
-def _source_health(source: dict[str, Any], *, as_of_dt: datetime) -> SourceHealth:
-    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
-    staleness_seconds = _source_staleness_seconds(source, as_of_dt)
-    freshness_score = _source_freshness_score(source, staleness_seconds=staleness_seconds)
-    return SourceHealth(
-        source_key=str(source.get("source_key") or ""),
-        source_tier=_source_tier_for_source(source),
-        freshness_score=freshness_score,
-        staleness_seconds=staleness_seconds,
-        quality_score=_source_quality_score(source, freshness_score=freshness_score),
-        readiness_state=str(source.get("readiness_state") or metadata.get("readiness_state") or "blocked"),
-        last_success_at=_source_last_success_at(source),
-        last_failure_at=_source_last_failure_at(source),
-    )
-
-
 def _source_health_data_status(source: dict[str, Any]) -> str:
     status = str(source.get("status") or "not_connected").lower()
     freshness_status = str(source.get("freshness_status") or source.get("metadata", {}).get("freshness_status") or "").lower()
@@ -1287,7 +1172,6 @@ def get_data_source_health_latest(date: str | None = None, db: Any | None = None
         freshness_status = str(source.get("freshness_status") or metadata.get("freshness_status") or "unknown")
         freshness_reason = str(source.get("freshness_reason") or metadata.get("freshness_reason") or "unknown")
         data_status = _source_health_data_status(source)
-        source_health = _source_health(source, as_of_dt=as_of_dt)
 
         if data_status == "live":
             live_count += 1
@@ -1304,7 +1188,6 @@ def get_data_source_health_latest(date: str | None = None, db: Any | None = None
                 "source_name": source_name,
                 "source_group": source.get("source_group"),
                 "provider_role": metadata.get("provider_role"),
-                **source_health.to_payload(),
                 "latest_data_date": source.get("latest_update_time"),
                 "latest_health_at": source.get("latest_health_at") or metadata.get("latest_health_at"),
                 "health_state": source.get("health_state") or metadata.get("health_state") or "unavailable",
@@ -1315,6 +1198,7 @@ def get_data_source_health_latest(date: str | None = None, db: Any | None = None
                 "feature_status": _source_layer_status(done=feature_ready, configured=configured, status=status),
                 "analysis_status": _source_layer_status(done=analysis_ready, configured=configured, status=status),
                 "data_status": data_status,
+                "readiness_state": source.get("readiness_state") or metadata.get("readiness_state"),
                 "gate_state": source.get("gate_state") or metadata.get("gate_state"),
                 "gating_reason": source.get("gating_reason") or metadata.get("gating_reason"),
                 "last_run_id": source.get("last_run_id"),

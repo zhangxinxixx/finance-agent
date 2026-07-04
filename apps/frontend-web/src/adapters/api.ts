@@ -3,10 +3,10 @@ import type { DataStatus, ModuleStatus, ReportMeta, SourceRef } from "@/types/co
 import { fetchJson } from "@/adapters/apiClient";
 import { mergeDataStatus, normalizeDataStatus } from "@/lib/status";
 import { dedupeSourceRefs, normalizeSourceRefs, sourceRefFromEndpoint } from "@/lib/sourceRefs";
-import dashboardMock from "@/mocks/dashboard.json";
 
 const DASHBOARD_SUMMARY_PATH = "/api/dashboard/summary";
-const DASHBOARD_TIMEOUT_MS = 1800;
+const DASHBOARD_TIMEOUT_MS = 8000;
+const ENABLE_DASHBOARD_MOCK_FALLBACK = import.meta.env.VITE_ENABLE_DASHBOARD_MOCK_FALLBACK === "true";
 
 type RawDashboardSummaryResponse = {
   generated_at?: string;
@@ -826,7 +826,8 @@ function buildDashboardDataResponse(
   };
 }
 
-function loadDashboardFromMock(preferredDate?: string | null): DashboardDataResponse {
+async function loadDashboardFromMock(preferredDate?: string | null): Promise<DashboardDataResponse> {
+  const { default: dashboardMock } = await import("@/mocks/dashboard.json");
   const mock = dashboardMock as DashboardMockPayload;
   const dates = sortDatesDesc(Array.isArray(mock.dates) ? mock.dates : []);
   const selectedDate =
@@ -846,12 +847,15 @@ export async function fetchDashboardData(preferredDate?: string | null): Promise
       "dashboard",
     );
     const summary = normalizeDashboardSummary(summaryRaw);
-    if (!isRenderableDashboardSummary(summary, "api")) {
+    const selectedDate = dashboardTradeDate(summary);
+    if (!isRenderableDashboardSummary(summary, "api") && ENABLE_DASHBOARD_MOCK_FALLBACK) {
       return loadDashboardFromMock(preferredDate);
     }
-    const selectedDate = dashboardTradeDate(summary);
     return buildDashboardDataResponse(summary, selectedDate, "api");
-  } catch {
-    return loadDashboardFromMock(preferredDate);
+  } catch (error) {
+    if (ENABLE_DASHBOARD_MOCK_FALLBACK) {
+      return loadDashboardFromMock(preferredDate);
+    }
+    throw error;
   }
 }

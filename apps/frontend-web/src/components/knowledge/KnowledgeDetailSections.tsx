@@ -1,7 +1,3 @@
-import { FACard } from "@/components/shared/FACard";
-import { FAMetricCard } from "@/components/shared/FAMetricCard";
-import { FASectionHeader } from "@/components/shared/FASectionHeader";
-import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { KnowledgeDetailTab, KnowledgeItem, KnowledgeItemStatus } from "@/types/knowledge";
 
@@ -24,53 +20,47 @@ function statusToneFor(status: KnowledgeItemStatus): "up" | "warn" | "info" {
 
 export function KnowledgeDetailHero({ item }: { item: KnowledgeItem }) {
   return (
-    <FACard
-      accent="brand"
-      bodyClassName="space-y-4"
-      action={
-        <div className="flex flex-wrap items-center gap-1.5">
+    <section className="knowledge-reader-hero">
+      <div className="knowledge-reader-hero-top">
+        <div className="min-w-0">
+          <div className="knowledge-reader-kicker">
+            <span className="fa-num">{item.version}</span>
+            <span>{item.author}</span>
+            <span>{item.typeLabel}</span>
+            <span>{item.topic}</span>
+          </div>
+          <h2>{item.title}</h2>
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
           <FAStatusPill tone={statusToneFor(item.status)}>{item.status}</FAStatusPill>
           {item.agentReady ? <FAStatusPill tone="info">智能体可调用</FAStatusPill> : null}
         </div>
-      }
-    >
-      <FASectionHeader
-        title={item.title}
-        description={item.thesis}
-        eyebrow={
-          <span className="flex items-center gap-2">
-            <span className="font-mono text-[10px] text-[var(--fg-5)]">{item.version}</span>
-            <span className="text-[var(--fg-6)]">/</span>
-            <span className="text-[10px] text-[var(--fg-4)]">{item.author}</span>
-          </span>
-        }
-      />
-      <div className="flex flex-wrap items-center gap-2">
-        <FASourceTraceBadge source={item.typeLabel} status="type" tone="info" />
-        <FASourceTraceBadge source={item.topic} status="topic" tone="dim" />
-        <FASourceTraceBadge source={`引用 ${item.citations}`} status="citations" tone="neutral" />
-        <FASourceTraceBadge
-          source={`可信度 ${item.confidence}%`}
-          status="confidence"
-          tone={item.confidence >= 90 ? "up" : item.confidence >= 75 ? "info" : "warn"}
-        />
       </div>
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <FAMetricCard label="版本" value={item.version} hint={`创建 ${item.createdAt}`} />
-        <FAMetricCard label="最近验证" value={item.verifiedAt} hint={`作者 ${item.author}`} />
-        <FAMetricCard
-          label="引用强度"
-          value={item.citations}
-          hint={`下游模块 ${item.dashboards}`}
-          trend={item.citations > 80 ? "up" : "flat"}
-        />
-        <FAMetricCard
-          label="可信度"
-          value={`${item.confidence}%`}
-          hint={item.reviewQueued ? "进入复核队列" : "未触发复核告警"}
-          trend={item.confidence >= 85 ? "up" : item.confidence < 70 ? "down" : "flat"}
-        />
+      <p>{item.thesis}</p>
+      <div className="knowledge-fact-strip">
+        <Fact label="创建" value={item.createdAt} />
+        <Fact label="最近验证" value={item.verifiedAt} />
+        <Fact label="引用" value={item.citations} />
+        <Fact label="下游" value={item.dashboards} />
+        <Fact label="可信度" value={`${item.confidence}%`} tone={item.reviewQueued ? "warn" : "up"} />
       </div>
-    </FACard>
+    </section>
+  );
+}
+
+function Fact({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string | number;
+  tone?: "up" | "warn";
+}) {
+  return (
+    <span className={tone ? `knowledge-fact knowledge-fact--${tone}` : "knowledge-fact"}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </span>
   );
 }

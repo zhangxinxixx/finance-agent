@@ -13,8 +13,26 @@ def test_attempt_once_uses_existing_local_report(monkeypatch, tmp_path: Path) ->
     )
     seen: dict[str, str] = {}
 
-    def fake_run_pipeline(*, trade_date: str, article_id: str, category: str, qwen_model: str, env):
-        seen.update({"trade_date": trade_date, "article_id": article_id, "category": category, "qwen_model": qwen_model})
+    def fake_run_pipeline(
+        *,
+        trade_date: str,
+        article_id: str,
+        category: str,
+        vision_provider: str,
+        mimo_model: str,
+        qwen_model: str | None,
+        env,
+    ):
+        seen.update(
+            {
+                "trade_date": trade_date,
+                "article_id": article_id,
+                "category": category,
+                "vision_provider": vision_provider,
+                "mimo_model": mimo_model,
+                "qwen_model": qwen_model or "",
+            }
+        )
         return {"date": trade_date, "daily_reports": [{"run_id": article_id}]}
 
     monkeypatch.setattr(scheduler, "_run_pipeline", fake_run_pipeline)
@@ -24,6 +42,8 @@ def test_attempt_once_uses_existing_local_report(monkeypatch, tmp_path: Path) ->
         category = "270"
         report_type = "daily"
         browser_profile = None
+        vision_provider = "mimo"
+        mimo_model = "mimo-v2.5"
         qwen_model = "qwen3-vl-plus"
         dry_run = False
         force_rerun = False
@@ -35,6 +55,8 @@ def test_attempt_once_uses_existing_local_report(monkeypatch, tmp_path: Path) ->
         "trade_date": "2026-06-05",
         "article_id": "221250",
         "category": "270",
+        "vision_provider": "mimo",
+        "mimo_model": "mimo-v2.5",
         "qwen_model": "qwen3-vl-plus",
     }
 

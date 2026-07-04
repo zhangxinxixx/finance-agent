@@ -89,23 +89,23 @@ function LevelList({
       className={`border ${borderClass}`}
       bodyClassName="space-y-2"
     >
-      <p className="text-[11px] text-[var(--fg-4)]">{subtitle}</p>
+      <p className="text-[length:var(--text-11)] text-[var(--fg-4)]">{subtitle}</p>
       {levels.map((level, index) => (
         <div
           key={`${tone}-${level.strike}-${index}`}
           className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-2.5"
         >
           <div className="min-w-0">
-            <div className="fa-num text-[15px] font-semibold text-[var(--fg-2)]">
+            <div className="fa-num text-[length:var(--text-14)] font-semibold text-[var(--fg-2)]">
               {formatPrice(level.strike)}
             </div>
-            <div className="mt-0.5 text-[11px] text-[var(--fg-4)]">
+            <div className="mt-0.5 text-[length:var(--text-11)] text-[var(--fg-4)]">
               {tone === "call" ? "压制强度" : "支撑强度"} {formatScore(level.wall_score)}
             </div>
           </div>
-          <div className={`shrink-0 text-right text-xs font-medium ${accentClass}`}>
+          <div className={`shrink-0 text-right text-[length:var(--text-11)] font-medium ${accentClass}`}>
             <div>{formatPercent(level.distance_pct)}</div>
-            <div className="mt-0.5 text-[10px] text-[var(--fg-5)]">距离</div>
+            <div className="mt-0.5 text-[length:var(--text-10)] text-[var(--fg-5)]">距离</div>
           </div>
         </div>
       ))}
@@ -122,7 +122,7 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
 
   return (
     <FACard title="价位轨道" eyebrow="关键价位" accent="brand" bodyClassName="space-y-4">
-      <p className="text-[11px] text-[var(--fg-4)]">基于当前支撑 / 阻力与墙位数据做轻量解释性展示。</p>
+      <p className="text-[length:var(--text-11)] text-[var(--fg-4)]">基于当前支撑 / 阻力与墙位数据做轻量解释性展示。</p>
       <div className="grid gap-3 lg:grid-cols-3">
         <LevelList
           title="上方看涨压制区"
@@ -138,21 +138,21 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
           action={<FAStatusPill tone="info">参考位</FAStatusPill>}
           bodyClassName="space-y-3"
         >
-          <p className="text-[11px] text-[var(--fg-4)]">由当前墙位中最高持仓行权价推导。</p>
+          <p className="text-[length:var(--text-11)] text-[var(--fg-4)]">由当前墙位中最高持仓行权价推导。</p>
           <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-3">
             {pinLevel ? (
               <>
-                <div className="fa-num text-2xl font-semibold tracking-tight text-[var(--fg-2)]">
+                <div className="fa-num text-[length:var(--text-22)] font-semibold tracking-[0] text-[var(--fg-2)]">
                   {formatPrice(pinLevel.strike)}
                 </div>
-                <div className="mt-1 text-xs text-[var(--fg-4)]">最高持仓：{formatPrice(pinLevel.oi)}</div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-[var(--fg-4)]">
+                <div className="mt-1 text-[length:var(--text-11)] text-[var(--fg-4)]">最高持仓：{formatPrice(pinLevel.oi)}</div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-[length:var(--text-11)] text-[var(--fg-4)]">
                   <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 py-2">
-                    <div className="text-[10px] font-semibold text-[var(--fg-5)]">墙型</div>
+                    <div className="text-[length:var(--text-10)] font-semibold text-[var(--fg-5)]">墙型</div>
                     <div className="mt-0.5 font-medium text-[var(--fg-3)]">{wallTypeLabel(pinLevel.wall_type)}</div>
                   </div>
                   <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 py-2">
-                    <div className="text-[10px] font-semibold text-[var(--fg-5)]">墙位评分</div>
+                    <div className="text-[length:var(--text-10)] font-semibold text-[var(--fg-5)]">墙位评分</div>
                     <div className="mt-0.5 font-medium text-[var(--fg-3)]">
                       {formatScore(pinLevel.wall_score)}
                     </div>
@@ -160,7 +160,7 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
                 </div>
               </>
             ) : (
-              <div className="text-sm text-[var(--fg-4)]">当前没有可用于计算 Pin 位的墙位数据。</div>
+              <div className="text-[length:var(--text-12)] text-[var(--fg-4)]">当前没有可用于计算 Pin 位的墙位数据。</div>
             )}
           </div>
         </FACard>

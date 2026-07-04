@@ -21,7 +21,7 @@ export function FAConvictionBar({ value, label = "确信度", ariaLabel = "确�
   return (
     <div className={className}>
       <div className="mb-1 flex items-center justify-between gap-2 text-[10px]">
-        <span className="font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">{label}</span>
+        <span className="font-semibold tracking-[0] text-[var(--fg-5)]">{label}</span>
         <span className="fa-num font-semibold text-[var(--fg-2)]">{Math.round(clamped)}%</span>
       </div>
       <div

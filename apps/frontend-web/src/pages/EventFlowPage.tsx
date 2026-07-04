@@ -1,10 +1,7 @@
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { GitBranch, Loader2, RefreshCw } from "lucide-react";
 import { ErrorState } from "@/components/shared/ErrorState";
-import {
-  EventFlowEmptyState,
-  EventFlowWeekendBanner,
-} from "@/components/event-flow/EventFlowPageSections";
+import { EventFlowEmptyState } from "@/components/event-flow/EventFlowPageSections";
 import { EventFlowImpactAnalysisPanel } from "@/components/event-flow/EventFlowImpactAnalysisPanel";
 import { EventFlowLiveBriefsPanel } from "@/components/event-flow/EventFlowLiveBriefsPanel";
 import { EventFlowOverviewPanel } from "@/components/event-flow/EventFlowOverviewPanel";
@@ -12,7 +9,6 @@ import { EventFlowReportInputsPanel } from "@/components/event-flow/EventFlowRep
 import { EventFlowTimelinePanel } from "@/components/event-flow/EventFlowTimelinePanel";
 import { EventFlowTabs, isEventFlowTab, type EventFlowTabKey } from "@/components/event-flow/EventFlowTabs";
 import { useEventFlow } from "@/hooks/useEventFlow";
-import { isWeekend } from "@/lib/date";
 import type { EventFlowBriefSummary, EventFlowTimelineItem } from "@/types/event-flow";
 
 const EVENT_FLOW_ASSET_LABELS: Record<string, string> = {
@@ -343,8 +339,6 @@ export function EventFlowPage() {
           </div>
         </div>
       </section>
-
-      {isWeekend() ? <EventFlowWeekendBanner /> : null}
 
       <div className="fa-layout-fill">{renderTabContent()}</div>
     </div>

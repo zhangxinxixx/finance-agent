@@ -8,7 +8,7 @@ from apps.parsers.news.feishu_message import looks_like_jin10_message, parse_fei
 def test_parse_text_message_extracts_content_marker_and_link() -> None:
     message = {
         "message_id": "om_text",
-        "chat_id": "chat_fixture",
+        "chat_id": "oc_jin10",
         "message_type": "text",
         "create_time": "1767225600000",
         "sender": {"id": "ou_sender", "sender_name": "金十新闻"},
@@ -20,7 +20,7 @@ def test_parse_text_message_extracts_content_marker_and_link() -> None:
     envelope = parse_feishu_message(message)
 
     assert envelope.message_id == "om_text"
-    assert envelope.chat_id == "chat_fixture"
+    assert envelope.chat_id == "oc_jin10"
     assert envelope.sender_name == "金十新闻"
     assert "霍尔木兹" in envelope.content
     assert envelope.links == ["https://news.jin10.com/detail/1"]
@@ -32,7 +32,7 @@ def test_parse_text_message_extracts_content_marker_and_link() -> None:
 def test_parse_post_message_extracts_nested_link_nodes() -> None:
     message = {
         "message_id": "om_post",
-        "chat_id": "chat_fixture",
+        "chat_id": "oc_jin10",
         "message_type": "post",
         "create_time": "1767225600000",
         "sender": {"id": "ou_sender"},
@@ -59,7 +59,7 @@ def test_parse_post_message_extracts_nested_link_nodes() -> None:
 def test_parse_interactive_message_extracts_card_urls() -> None:
     message = {
         "message_id": "om_card",
-        "chat_id": "chat_fixture",
+        "chat_id": "oc_jin10",
         "message_type": "interactive",
         "create_time": "1767225600000",
         "sender": {"id": "ou_sender"},
@@ -82,7 +82,7 @@ def test_parse_interactive_message_extracts_card_urls() -> None:
 def test_parse_real_message_list_shape_uses_msg_type_and_body_content() -> None:
     message = {
         "message_id": "om_real",
-        "chat_id": "chat_fixture",
+        "chat_id": "oc_jin10",
         "msg_type": "post",
         "create_time": "1767225600000",
         "sender": {"id": "cli_sender", "sender_type": "app"},
@@ -109,7 +109,7 @@ def test_parse_real_message_list_shape_uses_msg_type_and_body_content() -> None:
 def test_parse_malformed_content_preserves_raw_content() -> None:
     envelope = parse_feishu_message({
         "message_id": "om_bad",
-        "chat_id": "chat_fixture",
+        "chat_id": "oc_jin10",
         "message_type": "text",
         "create_time": "bad-time",
         "content": "plain text with https://example.com/raw",

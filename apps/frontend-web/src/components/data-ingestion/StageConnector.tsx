@@ -3,6 +3,7 @@ import type { PipelineStageStatus } from "@/types/data-ingestion";
 interface StageConnectorProps {
   fromStatus: PipelineStageStatus;
   toStatus: PipelineStageStatus;
+  compact?: boolean;
 }
 
 const TERMINAL = new Set<PipelineStageStatus>(["ERROR", "BLOCKED", "NO_DATA", "SKIPPED"]);
@@ -10,11 +11,11 @@ const DEGRADED = new Set<PipelineStageStatus>(["WARN", "PARTIAL", "NO_SNAPSHOT",
 const HEALTHY  = new Set<PipelineStageStatus>(["OK", "READY"]);
 
 function pickColor(from: PipelineStageStatus, to: PipelineStageStatus): string {
-  if (TERMINAL.has(from)) return "rgba(239,68,68,0.4)";
-  if (TERMINAL.has(to))   return "rgba(239,68,68,0.25)";
-  if (DEGRADED.has(from) || DEGRADED.has(to)) return "rgba(245,158,11,0.35)";
-  if (HEALTHY.has(from) && HEALTHY.has(to))   return "rgba(16,185,129,0.4)";
-  return "rgba(144,166,196,0.2)";
+  if (TERMINAL.has(from)) return "rgba(220,38,38,0.24)";
+  if (TERMINAL.has(to))   return "rgba(220,38,38,0.18)";
+  if (DEGRADED.has(from) || DEGRADED.has(to)) return "rgba(217,119,6,0.22)";
+  if (HEALTHY.has(from) && HEALTHY.has(to))   return "rgba(5,150,105,0.22)";
+  return "rgba(148,163,184,0.22)";
 }
 
 function pickDash(from: PipelineStageStatus, to: PipelineStageStatus): string | undefined {
@@ -23,21 +24,25 @@ function pickDash(from: PipelineStageStatus, to: PipelineStageStatus): string | 
   return undefined;
 }
 
-export function StageConnector({ fromStatus, toStatus }: StageConnectorProps) {
+export function StageConnector({ fromStatus, toStatus, compact = false }: StageConnectorProps) {
   const color = pickColor(fromStatus, toStatus);
   const dash = pickDash(fromStatus, toStatus);
+  const width = compact ? 8 : 12;
+  const height = compact ? 22 : 26;
+  const midY = height / 2;
+  const arrowX = compact ? 5.5 : 8;
 
   return (
-    <div className="inline-flex items-center shrink-0" style={{ width: 12, height: 26 }}>
-      <svg width="12" height="26" viewBox="0 0 12 26">
+    <div className="inline-flex items-center shrink-0" style={{ width, height }}>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
         <line
-          x1="0" y1="13" x2="8" y2="13"
+          x1="0" y1={midY} x2={arrowX} y2={midY}
           stroke={color}
           strokeWidth={1.5}
           strokeDasharray={dash}
         />
         <path
-          d="M8 9 L12 13 L8 17"
+          d={`M${arrowX} ${midY - 3} L${width} ${midY} L${arrowX} ${midY + 3}`}
           fill="none"
           stroke={color}
           strokeWidth={1.2}

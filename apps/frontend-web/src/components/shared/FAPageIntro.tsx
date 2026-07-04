@@ -5,6 +5,7 @@ interface FAPageIntroProps {
   eyebrow?: ReactNode;
   description?: ReactNode;
   meta?: ReactNode;
+  metaPlacement?: "body" | "side";
   action?: ReactNode;
   className?: string;
 }
@@ -14,19 +15,30 @@ export function FAPageIntro({
   eyebrow,
   description,
   meta,
+  metaPlacement = "body",
   action,
   className = "",
 }: FAPageIntroProps) {
+  const sideMeta = metaPlacement === "side" ? meta : null;
+  const bodyMeta = metaPlacement === "body" ? meta : null;
+  const hasSide = sideMeta || action;
+  const sideClass = hasSide ? "fa-page-intro--with-side" : "";
+
   return (
-    <section className={`fa-page-intro ${className}`}>
+    <section className={`fa-page-intro ${sideClass} ${className}`}>
       <div className="fa-page-intro-copy">
-        {eyebrow ? <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--fg-5)]">{eyebrow}</div> : null}
+        {eyebrow ? <div className="fa-eyebrow">{eyebrow}</div> : null}
         <h1>{title}</h1>
         {description ? <p>{description}</p> : null}
-        {meta ? <div className="fa-page-intro-meta mt-3">{meta}</div> : null}
+        {bodyMeta ? <div className="fa-page-intro-meta mt-3">{bodyMeta}</div> : null}
       </div>
 
-      {action ? <div className="fa-page-intro-side">{action}</div> : null}
+      {hasSide ? (
+        <div className="fa-page-intro-side">
+          {sideMeta ? <div className="fa-page-intro-meta fa-page-intro-meta--side">{sideMeta}</div> : null}
+          {action}
+        </div>
+      ) : null}
     </section>
   );
 }

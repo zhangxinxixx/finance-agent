@@ -10,6 +10,8 @@ import {
   getImpactLabel,
   translateEventFlowValue,
 } from "./eventFlowFormat";
+import { formatGoldMainlineLabel, formatTransmissionPathLabel } from "@/components/shared/goldMainlineFormat";
+import { EventGoldMainlineTrace } from "./EventGoldMainlineTrace";
 
 const STATUS_PILL_CLASS_NAME = "px-[5px] py-[1px] text-[9px]";
 
@@ -23,6 +25,8 @@ interface TimelineDisplayRow {
   pricing: string;
   verificationStatus: string;
   sourceCount: number;
+  mainlineLabel: string | null;
+  pathLabel: string | null;
 }
 
 function sourceCount(event: EventFlowTimelineItem): number {
@@ -40,6 +44,8 @@ function toDisplayRow(event: EventFlowTimelineItem): TimelineDisplayRow {
     pricing: event.pricing ?? "未定价",
     verificationStatus: translateEventFlowValue(event.verification_status ?? "unavailable"),
     sourceCount: sourceCount(event),
+    mainlineLabel: event.primary_mainline ? formatGoldMainlineLabel(event.primary_mainline) : null,
+    pathLabel: event.transmission_chains?.[0] ? formatTransmissionPathLabel(event.transmission_chains[0]) : null,
   };
 }
 
@@ -48,7 +54,7 @@ function RelatedNewsItems({ items }: { items?: EventFlowRelatedNewsItem[] }) {
   if (visible.length === 0) return null;
 
   return (
-    <div className="mt-3 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-soft)] px-2.5 py-2">
+    <div className="mt-3 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <span className="text-[10px] font-semibold text-[var(--fg-5)]">相关快讯</span>
         <span className="font-mono text-[10px] text-[var(--fg-5)]">{visible.length}/{items?.length ?? visible.length}</span>
@@ -100,6 +106,8 @@ function tableRowToDisplayRow(row: EventFlowTableRow): TimelineDisplayRow {
     pricing: row.pricing,
     verificationStatus: translateEventFlowValue(row.verification_status ?? "unavailable"),
     sourceCount: Math.max(row.source_refs?.length ?? 0, row.related_news_items?.length ?? 0),
+    mainlineLabel: null,
+    pathLabel: null,
   };
 }
 
@@ -146,6 +154,9 @@ function TimelineHighlights({
                 {headline.subline ? <div className="line-clamp-1 text-[11px] leading-5 text-[var(--fg-4)]">{headline.subline}</div> : null}
               </div>
               <div className="mt-1 line-clamp-2 text-[11px] leading-5 text-[var(--fg-3)]">{event.desc || "暂无事件摘要。"}</div>
+              <div className="mt-2">
+                <EventGoldMainlineTrace event={event} />
+              </div>
               <RelatedNewsItems items={event.related_news_items} />
             </div>
             {onOpenDetail ? (
@@ -222,6 +233,11 @@ function TimelineTable({
           <span className="min-w-0 space-y-0.5" title={row.title}>
             <span className="block truncate text-[11px] font-semibold leading-5 text-[var(--fg-2)]">{headline.lead}</span>
             {headline.subline ? <span className="block truncate text-[10px] leading-4 text-[var(--fg-4)]">{headline.subline}</span> : null}
+            {row.mainlineLabel || row.pathLabel ? (
+              <span className="block truncate text-[10px] leading-4 text-[var(--fg-5)]">
+                {[row.mainlineLabel, row.pathLabel].filter(Boolean).join(" / ")}
+              </span>
+            ) : null}
           </span>
           <FAStatusPill status={row.status} domain="event" dot={false} className={STATUS_PILL_CLASS_NAME}>
             {translateEventFlowValue(row.status)}

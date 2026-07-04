@@ -87,7 +87,7 @@ export function CMEVisualReportViewer({
         <iframe
           title={`CME visual report ${report.trade_date} ${report.run_id}`}
           srcDoc={report.content}
-          className="h-full w-full rounded-lg border border-[var(--border)] bg-white"
+          className="h-full w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
           sandbox="allow-same-origin"
         />
       </div>

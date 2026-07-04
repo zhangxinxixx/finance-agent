@@ -13,6 +13,7 @@ interface StrategyFilterBarProps {
   activeRegime: string;
   onRegimeChange: (value: string) => void;
   onRefresh: () => void;
+  showAssetTabs?: boolean;
 }
 
 export function StrategyFilterBar({
@@ -25,15 +26,19 @@ export function StrategyFilterBar({
   activeRegime,
   onRegimeChange,
   onRefresh,
+  showAssetTabs = true,
 }: StrategyFilterBarProps) {
   return (
     <FAFilterBar
+      className="strategy-filter-bar"
       left={
         <>
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">资产</span>
-            <FATabBar tabs={assetTabs} value={selectedAsset} onChange={onAssetChange} ariaLabel="策略资产筛选" />
-          </div>
+          {showAssetTabs ? (
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">资产</span>
+              <FATabBar tabs={assetTabs} value={selectedAsset} onChange={onAssetChange} ariaLabel="策略资产筛选" />
+            </div>
+          ) : null}
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">窗口</span>
             <FATabBar tabs={STRATEGY_WINDOW_TABS} value={selectedWindow} onChange={onWindowChange} ariaLabel="策略历史窗口筛选" />

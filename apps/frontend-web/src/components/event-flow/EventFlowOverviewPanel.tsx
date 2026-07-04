@@ -19,6 +19,12 @@ import type {
   EventFlowViewModel,
 } from "@/types/event-flow";
 import {
+  formatGoldDriverLabel,
+  formatGoldMainlineLabel,
+  formatTransmissionPathLabel,
+} from "@/components/shared/goldMainlineFormat";
+import { EventGoldMainlineTrace } from "./EventGoldMainlineTrace";
+import {
   formatEventFlowHeadline,
   formatEventFlowHeadlineSummary,
   formatEventFlowSourceLabel,
@@ -155,7 +161,7 @@ function collectTopEvents(data: EventFlowViewModel, timeline: EventFlowTimelineI
   if (timeline.length > 0) {
     return [...timeline]
       .sort((a, b) => eventWeight(b) - eventWeight(a))
-      .slice(0, 5);
+      .slice(0, 4);
   }
 
   return (data.article_briefs?.briefs ?? [])
@@ -314,7 +320,7 @@ function collectOngoingMainlines(
     items.push(item);
   };
 
-  for (const event of [...timeline].filter(isOpenMainline).sort((a, b) => eventWeight(b) - eventWeight(a)).slice(0, 5)) {
+  for (const event of [...timeline].filter(isOpenMainline).sort((a, b) => eventWeight(b) - eventWeight(a)).slice(0, 3)) {
     const title = formatEventFlowHeadlineSummary(event.title, 54);
     addItem({
       key: normalizedMainlineKey(title.raw),
@@ -358,6 +364,188 @@ function collectOngoingMainlines(
   }
 
   return items.slice(0, 5);
+}
+
+interface CountItem {
+  id: string;
+  count: number;
+}
+
+function hasGoldEvidence(event: EventFlowTimelineItem): boolean {
+  return Boolean(
+    event.primary_mainline ||
+    (event.mainlines ?? []).length > 0 ||
+    (event.transmission_chains ?? []).length > 0 ||
+    event.net_effect ||
+    (event.verification_needed ?? []).length > 0 ||
+    event.changed_dominant_theme,
+  );
+}
+
+function collectMainlineIds(event: EventFlowTimelineItem): string[] {
+  return uniqueStrings([
+    event.primary_mainline,
+    ...(event.mainlines ?? []),
+  ], 12);
+}
+
+function countById(values: string[]): CountItem[] {
+  const counts = new Map<string, number>();
+  values.forEach((value) => counts.set(value, (counts.get(value) ?? 0) + 1));
+  return Array.from(counts.entries())
+    .map(([id, count]) => ({ id, count }))
+    .sort((left, right) => right.count - left.count || left.id.localeCompare(right.id, "zh-CN"));
+}
+
+function needsVerification(event: EventFlowTimelineItem): boolean {
+  const status = (event.verification_status ?? "").toLowerCase();
+  return (
+    (event.verification_needed ?? []).length > 0 ||
+    status.includes("verification") ||
+    status.includes("single_source") ||
+    status.includes("unverified")
+  );
+}
+
+function collectEvidenceEvents(timeline: EventFlowTimelineItem[]): EventFlowTimelineItem[] {
+  return timeline.filter(hasGoldEvidence);
+}
+
+function collectFeaturedEvidenceEvents(events: EventFlowTimelineItem[]): EventFlowTimelineItem[] {
+  return [...events]
+    .sort((left, right) => {
+      const rightScore =
+        (right.changed_dominant_theme ? 80 : 0) +
+        (needsVerification(right) ? 40 : 0) +
+        (right.net_effect === "mixed" || right.impact.includes("混合") ? 20 : 0) +
+        eventWeight(right);
+      const leftScore =
+        (left.changed_dominant_theme ? 80 : 0) +
+        (needsVerification(left) ? 40 : 0) +
+        (left.net_effect === "mixed" || left.impact.includes("混合") ? 20 : 0) +
+        eventWeight(left);
+      return rightScore - leftScore;
+    })
+    .slice(0, 3);
+}
+
+function GoldEvidenceOverview({
+  timeline,
+  onOpenDetail,
+}: {
+  timeline: EventFlowTimelineItem[];
+  onOpenDetail?: (id: string) => void;
+}) {
+  const evidenceEvents = collectEvidenceEvents(timeline);
+  const mainlineCounts = countById(evidenceEvents.flatMap(collectMainlineIds)).slice(0, 6);
+  const pathCounts = countById(evidenceEvents.flatMap((event) => event.transmission_chains ?? [])).slice(0, 6);
+  const verificationItems = countById(evidenceEvents.flatMap((event) => event.verification_needed ?? [])).slice(0, 6);
+  const changedCount = evidenceEvents.filter((event) => event.changed_dominant_theme).length;
+  const mixedCount = evidenceEvents.filter((event) => event.net_effect === "mixed" || event.impact.includes("混合")).length;
+  const verificationCount = evidenceEvents.filter(needsVerification).length;
+  const featuredEvents = collectFeaturedEvidenceEvents(evidenceEvents);
+
+  return (
+    <FACard
+      title={
+        <div className="flex items-center gap-2">
+          <GitBranch size={12} className="text-[var(--brand-hover)]" />
+          <span>事件层摘要</span>
+        </div>
+      }
+      eyebrow="主线证据"
+      accent="brand"
+      className="xl:col-span-12"
+      bodyClassName="space-y-3"
+    >
+      {evidenceEvents.length === 0 ? (
+        <FAEmptyState title="暂无主线归因" description="当前事件流还没有返回主线标签、传导链或待验证字段。" className="py-5" />
+      ) : (
+        <>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+            {[
+              { label: "已归因事件", value: `${evidenceEvents.length}/${timeline.length}` },
+              { label: "覆盖主线", value: `${mainlineCounts.length}/9` },
+              { label: "传导链", value: String(pathCounts.length) },
+              { label: "待验证", value: String(verificationCount) },
+              { label: "改变主导", value: String(changedCount) },
+            ].map((item) => (
+              <div key={item.label} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
+                <div className="text-[9px] font-semibold text-[var(--fg-5)]">{item.label}</div>
+                <div className="fa-num mt-1 text-[15px] font-semibold text-[var(--fg-1)]">{item.value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+            <div className="grid content-start gap-3 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-3">
+              <div>
+                <div className="text-[10px] font-semibold tracking-[0.04em] text-[var(--fg-5)]">主线覆盖</div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {mainlineCounts.length > 0 ? mainlineCounts.map((item) => (
+                    <FAStatusPill key={item.id} tone="info" dot={false}>
+                      {formatGoldMainlineLabel(item.id)} · {item.count}
+                    </FAStatusPill>
+                  )) : <span className="text-[10px] text-[var(--fg-5)]">未返回</span>}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold tracking-[0.04em] text-[var(--fg-5)]">传导链</div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {pathCounts.length > 0 ? pathCounts.map((item) => (
+                    <FAStatusPill key={item.id} tone="warn" dot={false}>
+                      {formatTransmissionPathLabel(item.id)} · {item.count}
+                    </FAStatusPill>
+                  )) : <span className="text-[10px] text-[var(--fg-5)]">未返回</span>}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold tracking-[0.04em] text-[var(--fg-5)]">待验证项</div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {verificationItems.length > 0 ? verificationItems.map((item) => (
+                    <FAStatusPill key={item.id} tone="warn" dot={false}>
+                      {formatGoldDriverLabel(item.id)} · {item.count}
+                    </FAStatusPill>
+                  )) : <span className="text-[10px] text-[var(--fg-5)]">未返回</span>}
+                </div>
+              </div>
+              {mixedCount > 0 ? (
+                <div className="rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-2.5 py-2 text-[10px] leading-5 text-[var(--warn)]">
+                  多空混合事件 {mixedCount} 条，需要在影响页继续拆分利多和利空驱动。
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
+              {featuredEvents.map((event) => (
+                <button
+                  key={event.id}
+                  type="button"
+                  onClick={onOpenDetail ? () => onOpenDetail(event.id) : undefined}
+                  disabled={!onOpenDetail}
+                  className="block w-full rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-default"
+                >
+                  <div className="mb-1.5 flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="line-clamp-1 text-[11px] font-semibold text-[var(--fg-2)]">{event.title}</div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[9px] text-[var(--fg-5)]">
+                        <span>{event.source ?? "事件流"}</span>
+                        <span>{event.date || formatDateTime(event.time)}</span>
+                      </div>
+                    </div>
+                    <FAStatusPill tone={needsVerification(event) ? "warn" : "info"} dot={false}>
+                      {needsVerification(event) ? "待验证" : "已归因"}
+                    </FAStatusPill>
+                  </div>
+                  <EventGoldMainlineTrace event={event} density="compact" />
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </FACard>
+  );
 }
 
 function traceTitle(ref: SourceRef): string {
@@ -460,9 +648,9 @@ export function EventFlowOverviewPanel({
   const assets = aggregateAssets(table, timeline).slice(0, 5);
   const traceRefs = collectSourceRefs(data, sourceRefs, timeline, table);
   const researchDisplayKeys = new Set<string>();
-  const highlightItems = collectResearchItems(summary?.newsHighlights ?? [], 3, researchDisplayKeys);
-  const watchItems = collectResearchItems(summary?.watchlist ?? [], 3, researchDisplayKeys);
-  const riskItems = collectResearchItems(summary?.riskPoints ?? [], 3, researchDisplayKeys);
+  const highlightItems = collectResearchItems(summary?.newsHighlights ?? [], 2, researchDisplayKeys);
+  const watchItems = collectResearchItems(summary?.watchlist ?? [], 2, researchDisplayKeys);
+  const riskItems = collectResearchItems(summary?.riskPoints ?? [], 2, researchDisplayKeys);
   const mainHeadline = formatEventFlowHeadlineSummary(summary?.headline ?? topEvents[0]?.title ?? "事件主线待补充", 72);
   const mainSummary = formatEventFlowHeadline(summary?.summary ?? topEvents[0]?.desc ?? overviewStatus.description, 92);
   const mainSource = formatEventFlowSourceLabel(data.source, 18);
@@ -494,6 +682,8 @@ export function EventFlowOverviewPanel({
 
   return (
     <div className={`grid gap-3 xl:grid-cols-12 ${className}`}>
+      <GoldEvidenceOverview timeline={timeline} onOpenDetail={onOpenDetail} />
+
       <FACard
         title="当前重点主线"
         eyebrow="总览"
@@ -502,8 +692,8 @@ export function EventFlowOverviewPanel({
         className="xl:col-span-12"
         bodyClassName="space-y-3"
       >
-        <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
-          <div className="self-start space-y-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[rgba(17,33,54,0.28)] px-3 py-3">
+        <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,0.98fr)_minmax(300px,1.02fr)]">
+          <div className="space-y-1.5 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2.5">
             <div className="flex items-start justify-between gap-2">
               <div className="space-y-1 min-w-0">
                 <div className="text-[10px] font-semibold tracking-[0.04em] text-[var(--fg-5)]">主导主线</div>
@@ -522,7 +712,7 @@ export function EventFlowOverviewPanel({
                 </span>
               ) : null}
             </div>
-            <div className="line-clamp-2 text-[11px] leading-5 text-[var(--fg-3)]" title={mainSummary.raw}>
+            <div className="line-clamp-1 text-[11px] leading-5 text-[var(--fg-3)]" title={mainSummary.raw}>
               {mainSummary.foreign ? "当前主线摘要来自英文原文，详情请进入事件或快讯查看。" : mainSummary.text}
             </div>
             <div className="flex flex-wrap gap-2">
@@ -531,21 +721,32 @@ export function EventFlowOverviewPanel({
               {summary?.pricingStatus ? <FAStatusPill tone={pillTone(summary.pricingStatus)}>{translateEventFlowValue(summary.pricingStatus)}</FAStatusPill> : null}
               {summary?.riskLevel ? <FAStatusPill tone={pillTone(summary.riskLevel)}>{translateEventFlowValue(summary.riskLevel)}</FAStatusPill> : null}
             </div>
+            <div className="mt-2 grid gap-1.5 border-t border-[var(--border-faint)] pt-2 text-[10px] leading-5 text-[var(--fg-4)]">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[var(--fg-5)]">来源</span>
+                <span className="min-w-0 truncate text-[var(--fg-2)]">{mainSource.text}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[var(--fg-5)]">更新时间</span>
+                <span className="fa-num text-[var(--fg-2)]">{formatDateTime(data.updated_at)}</span>
+              </div>
+              <FASourceTraceBadge source={mainSource.text} status="data_source" tone={SECTION_TONE[data.status] ?? "info"} />
+            </div>
           </div>
-          <div className="space-y-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[rgba(17,33,54,0.22)] px-3 py-3">
+          <div className="max-h-[220px] space-y-1.5 overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2.5">
             <div className="flex items-center justify-between gap-3">
               <div className="text-[10px] font-semibold tracking-[0.04em] text-[var(--fg-5)]">持续跟踪主线</div>
               <FAStatusPill tone={ongoingMainlines.length > 0 ? "warn" : "dim"} dot={false}>{ongoingMainlines.length} 条</FAStatusPill>
             </div>
             {ongoingMainlines.length > 0 ? (
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 {ongoingMainlines.map((item) => (
                   <button
                     type="button"
                     key={`mainline-${item.key}`}
                     onClick={item.eventId && onOpenDetail ? () => onOpenDetail(item.eventId as string) : undefined}
                     disabled={!item.eventId || !onOpenDetail}
-                    className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[rgba(12,23,40,0.6)] px-2.5 py-2 text-left transition-colors hover:bg-[rgba(26,45,70,0.52)] disabled:cursor-default"
+                    className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-default"
                   >
                     <div className="min-w-0 space-y-1">
                       <div className="text-[11px] font-semibold leading-5 text-[var(--fg-2)]" title={item.title.raw}>
@@ -574,18 +775,6 @@ export function EventFlowOverviewPanel({
             )}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 text-[10px] leading-5 text-[var(--fg-4)]">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="text-[var(--fg-5)]">来源</span>
-            <span>{mainSource.text}</span>
-          </span>
-          <span className="text-[var(--fg-5)]">·</span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="text-[var(--fg-5)]">更新时间</span>
-            <span>{formatDateTime(data.updated_at)}</span>
-          </span>
-          <FASourceTraceBadge source={mainSource.text} status="data_source" tone={SECTION_TONE[data.status] ?? "info"} className="ml-1" />
-        </div>
         {overviewStatus.tone !== "up" ? (
           <div className="rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[10px] leading-5 text-[var(--warn)]">
             {overviewStatus.description}
@@ -607,13 +796,13 @@ export function EventFlowOverviewPanel({
         {topEvents.length === 0 ? (
           <FAEmptyState title="暂无重点事件" description="当前没有可汇总的事件主线候选。" className="py-5" />
         ) : (
-          <div className="overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)] bg-[rgba(17,33,54,0.38)]">
+          <div className="overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)]">
             {topEventTitles.map((event, index) => (
               <button
                 type="button"
                 key={event.id}
                 onClick={onOpenDetail ? () => onOpenDetail(event.id) : undefined}
-                className="grid w-full grid-cols-[92px_minmax(0,1fr)] gap-0 border-b border-[var(--border-faint)] text-left transition-colors last:border-b-0 hover:bg-[rgba(26,45,70,0.52)] disabled:cursor-default"
+                className="grid w-full grid-cols-[92px_minmax(0,1fr)] gap-0 border-b border-[var(--border-faint)] text-left transition-colors last:border-b-0 hover:bg-[var(--bg-hover)] disabled:cursor-default"
                 disabled={!onOpenDetail}
               >
                 <div className="flex flex-col gap-1 border-r border-[var(--border-faint)] px-3 py-3">
@@ -671,7 +860,7 @@ export function EventFlowOverviewPanel({
         {radarSummary ? (
           <>
             <div className="grid gap-3 lg:grid-cols-[96px_minmax(0,1fr)]">
-              <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[rgba(17,33,54,0.34)] px-3 py-3">
+              <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-3">
                 <div className="text-[9px] font-semibold tracking-[0.08em] text-[var(--fg-5)]">均值</div>
                 <div className="mt-1 fa-num text-[19px] font-semibold text-[var(--fg-1)]">{radarSummary.average}</div>
               </div>
@@ -688,7 +877,7 @@ export function EventFlowOverviewPanel({
                         <span>{axis!.label}</span>
                         <span className="fa-num text-[var(--fg-2)]">{axis!.value}/100</span>
                       </div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-[rgba(17,33,54,0.56)]">
+                      <div className="h-1.5 overflow-hidden rounded-full bg-[var(--border-faint)]">
                         <div className="h-full rounded-full bg-[var(--warn)]" style={{ width: `${axis!.value}%` }} />
                       </div>
                     </div>
@@ -704,7 +893,7 @@ export function EventFlowOverviewPanel({
                 </FAStatusPill>
               </div>
               {assets.length > 0 ? (
-                <div className="overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[rgba(17,33,54,0.34)]">
+                <div className="overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)]">
                   {assets.map((asset) => (
                     <div
                       key={asset.name}
@@ -739,22 +928,22 @@ export function EventFlowOverviewPanel({
         className="xl:col-span-12"
         bodyClassName="space-y-3"
       >
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(280px,0.86fr)]">
-          <div className="space-y-4">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)_minmax(280px,0.9fr)]">
+          <div className="space-y-3">
             <ResearchList title="新闻要点" items={highlightItems} emptyText="当前未返回新闻要点。" />
-            <div className="border-t border-[var(--border-faint)] pt-3">
+            <div className="border-t border-[var(--border-faint)] pt-2.5">
               <ResearchList title="观察清单" items={watchItems} emptyText="当前未返回观察清单。" />
             </div>
           </div>
 
-          <div className="space-y-3 rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[rgba(57,40,10,0.18)] px-3 py-3">
+          <div className="space-y-3 rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-3">
             <ResearchList title="风险提示" items={riskItems} emptyText="当前未返回风险提示。" warn />
             <div className="border-t border-[var(--warn-border)] pt-3 text-[10px] leading-5 text-[var(--warn)]">
               高风险提示保留在首屏，其余原始引用已下沉到快讯、输入和详情页。
             </div>
           </div>
 
-          <div className="space-y-3 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[rgba(17,33,54,0.34)] px-3 py-3">
+          <div className="space-y-3 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-3">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-[10px] text-[var(--fg-5)]">
                 <GitBranch size={11} />

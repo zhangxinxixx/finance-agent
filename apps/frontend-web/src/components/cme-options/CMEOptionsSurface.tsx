@@ -12,7 +12,7 @@ export function CMEOptionsSurface({ title, action, children, bodyStyle }: CMEOpt
     <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", overflow: "hidden" }}>
       {(title || action) && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "var(--bg-panel)", borderBottom: "1px solid var(--border)" }}>
-          {title ? <span style={{ font: "600 12px/1 Inter", color: "var(--fg-2)", flex: 1 }}>{title}</span> : null}
+          {title ? <span className="cme-options-surface-title">{title}</span> : null}
           {action}
         </div>
       )}

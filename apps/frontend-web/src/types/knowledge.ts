@@ -91,6 +91,7 @@ export interface KnowledgeViewModel {
     pinnedCount: number;
     totalCitations: number;
   };
+  typeCounts?: Record<KnowledgeTypeTab, number>;
   source_refs?: import("@/types/common").SourceRef[];
   has_data?: boolean;
 }

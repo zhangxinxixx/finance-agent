@@ -123,8 +123,20 @@ function buildUnavailableStrategy(asset: string, reason: string): StrategyViewMo
     artifact_refs: [],
     source_trace: null,
     has_data: false,
+    daily_update: null,
+    weekend_context: null,
     history: [],
     selected_strategy_card_id: null,
+  };
+}
+
+function alignStrategyStatusWithHero(detail: StrategyViewModel): StrategyViewModel {
+  if (detail.status !== "unavailable" || detail.hero.status === "unavailable") {
+    return detail;
+  }
+  return {
+    ...detail,
+    status: detail.hero.status,
   };
 }
 
@@ -205,14 +217,15 @@ export async function fetchStrategyCardsOverview(asset = DEFAULT_STRATEGY_ASSET)
   const [detail, history] = await Promise.all([fetchLatestDetail(requestedAsset), fetchHistoryList(requestedAsset)]);
 
   if (detail) {
+    const alignedDetail = alignStrategyStatusWithHero(detail);
     return {
-      ...detail,
-      asset: detail.asset ?? requestedAsset,
+      ...alignedDetail,
+      asset: alignedDetail.asset ?? requestedAsset,
       history,
       sample_size: history.length,
       unavailable_reason: null,
       selected_strategy_card_id:
-        detail.selected_strategy_card_id ?? history[0]?.strategy_card_id ?? null,
+        alignedDetail.selected_strategy_card_id ?? history[0]?.strategy_card_id ?? null,
     };
   }
 
@@ -221,14 +234,15 @@ export async function fetchStrategyCardsOverview(asset = DEFAULT_STRATEGY_ASSET)
     if (latestHistoryId) {
       const historyDetail = await fetchStrategyCardById(latestHistoryId, requestedAsset);
       if (historyDetail) {
+        const alignedHistoryDetail = alignStrategyStatusWithHero(historyDetail);
         return {
-          ...historyDetail,
-          asset: historyDetail.asset ?? requestedAsset,
+          ...alignedHistoryDetail,
+          asset: alignedHistoryDetail.asset ?? requestedAsset,
           history,
           sample_size: history.length,
           unavailable_reason: null,
           selected_strategy_card_id:
-            historyDetail.selected_strategy_card_id ?? latestHistoryId,
+            alignedHistoryDetail.selected_strategy_card_id ?? latestHistoryId,
         };
       }
     }

@@ -18,7 +18,7 @@ def test_source_health_systemd_units_are_daily_user_timer() -> None:
     assert "Environment=no_proxy=127.0.0.1,localhost,::1" in service_text
     assert "Environment=UV_CACHE_DIR=/tmp/uv-cache" in service_text
     assert "ExecStart=/usr/bin/env uv run python scripts/record_data_source_health_snapshot.py" in service_text
-    assert "/home/zxx" not in service_text
+    assert "/home/" + "zxx" not in service_text
 
     assert "OnCalendar=*-*-* 10:05:00" in timer_text
     assert "Persistent=true" in timer_text

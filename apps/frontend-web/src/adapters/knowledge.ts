@@ -2,6 +2,7 @@ import type {
   KnowledgeItem,
   KnowledgeItemType,
   KnowledgeItemStatus,
+  KnowledgeTypeTab,
   KnowledgeViewModel,
 } from "@/types/knowledge";
 
@@ -377,6 +378,58 @@ function computeStats(items: KnowledgeItem[]) {
   };
 }
 
+function computeTypeCounts(items: KnowledgeItem[]): Record<KnowledgeTypeTab, number> {
+  const counts: Record<KnowledgeTypeTab, number> = {
+    all: items.length,
+    method: 0,
+    playbook: 0,
+    note: 0,
+    review: 0,
+    agent: 0,
+    dict: 0,
+  };
+
+  for (const item of items) {
+    counts[item.type] += 1;
+  }
+
+  return counts;
+}
+
+function filterKnowledgeItems(
+  items: KnowledgeItem[],
+  options?: {
+    search?: string;
+    topic?: string;
+    status?: string;
+    typeTab?: string;
+  },
+): KnowledgeItem[] {
+  const { search = "", topic = "全部主题", status = "全部状态", typeTab = "all" } = options ?? {};
+  const searchText = search.trim().toLowerCase();
+
+  return items.filter((item) => {
+    const matchesSearch =
+      !searchText ||
+      [item.title, item.summary, item.thesis, item.tags.join(" "), item.inputs.join(" ")]
+        .join(" ")
+        .toLowerCase()
+        .includes(searchText);
+    const matchesTopic = topic === "全部主题" || item.topic === topic || item.tags.includes(topic);
+    const matchesStatus = status === "全部状态" || item.status === status;
+    const matchesType = typeTab === "all" || item.type === typeTab;
+    return matchesSearch && matchesTopic && matchesStatus && matchesType;
+  });
+}
+
+function sortKnowledgeItems(items: KnowledgeItem[]): KnowledgeItem[] {
+  return [...items].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    if (a.reviewQueued !== b.reviewQueued) return a.reviewQueued ? -1 : 1;
+    return b.citations - a.citations;
+  });
+}
+
 function readNumber(record: Record<string, unknown>, keys: string[], fallback: number): number {
   for (const key of keys) {
     const value = record[key];
@@ -486,10 +539,19 @@ export async function fetchKnowledgeView(options?: {
       }
 
       selectedItem = selectedItem ?? (effectiveId ? apiItems.find((item) => item.id === effectiveId) ?? null : null);
-      effectiveId = selectedItem?.id ?? effectiveId;
+      const allItems = mergeSelectedItem(apiItems, selectedItem);
+      const filteredItems = sortKnowledgeItems(filterKnowledgeItems(allItems, options));
+      effectiveId = effectiveId && filteredItems.some((item) => item.id === effectiveId)
+        ? effectiveId
+        : filteredItems[0]?.id ?? null;
 
-      const items = mergeSelectedItem(apiItems, selectedItem);
-      if ((raw.status !== "unavailable" || selectedItem) && items.length > 0) {
+      if (!selectedItem || selectedItem.id !== effectiveId) {
+        selectedItem = effectiveId ? await fetchKnowledgeItemDetail(effectiveId) : null;
+      }
+      selectedItem = selectedItem ?? (effectiveId ? filteredItems.find((item) => item.id === effectiveId) ?? null : null);
+
+      const items = mergeSelectedItem(filteredItems, selectedItem);
+      if ((raw.status !== "unavailable" || selectedItem) && allItems.length > 0) {
         // 后端有真实数据时直接返回
         return {
           status: normalizeApiStatus(raw.status),
@@ -498,7 +560,8 @@ export async function fetchKnowledgeView(options?: {
           items,
           selectedId: effectiveId,
           selectedItem,
-          stats: normalizeApiStats(raw.stats, items),
+          stats: normalizeApiStats(raw.stats, allItems),
+          typeCounts: computeTypeCounts(allItems),
           has_data: true,
           source_refs: Array.isArray(raw.source_refs) ? raw.source_refs : [],
         };
@@ -509,26 +572,8 @@ export async function fetchKnowledgeView(options?: {
   }
 
   // ── Mock fallback ──
-  const { search = "", topic = "全部主题", status = "全部状态", typeTab = "all", selectedId = null } = options ?? {};
-
-  const filtered = MOCK_ITEMS.filter((item) => {
-    const matchesSearch =
-      !search ||
-      [item.title, item.summary, item.thesis, item.tags.join(" "), item.inputs.join(" ")]
-        .join(" ")
-        .toLowerCase()
-        .includes(search.toLowerCase());
-    const matchesTopic = topic === "全部主题" || item.topic === topic || item.tags.includes(topic);
-    const matchesStatus = status === "全部状态" || item.status === status;
-    const matchesType = typeTab === "all" || item.type === typeTab;
-    return matchesSearch && matchesTopic && matchesStatus && matchesType;
-  });
-
-  const sorted = [...filtered].sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    if (a.reviewQueued !== b.reviewQueued) return a.reviewQueued ? -1 : 1;
-    return b.citations - a.citations;
-  });
+  const { selectedId = null } = options ?? {};
+  const sorted = sortKnowledgeItems(filterKnowledgeItems(MOCK_ITEMS, options));
 
   const effectiveId = selectedId && sorted.some((item) => item.id === selectedId)
     ? selectedId
@@ -541,6 +586,7 @@ export async function fetchKnowledgeView(options?: {
     selectedId: effectiveId,
     selectedItem,
     stats: computeStats(MOCK_ITEMS),
+    typeCounts: computeTypeCounts(MOCK_ITEMS),
   });
 }
 

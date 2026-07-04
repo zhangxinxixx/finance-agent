@@ -6,7 +6,7 @@ interface DashboardRightPanelInput {
   flashItems: EventFlowLiveFlashItem[];
 }
 
-const RIGHT_PANEL_TOP_LIMIT = 5;
+const RIGHT_PANEL_TOP_LIMIT = 3;
 const CALENDAR_LOOKAHEAD_DAYS = 7;
 
 export interface DashboardRightPanelModel {

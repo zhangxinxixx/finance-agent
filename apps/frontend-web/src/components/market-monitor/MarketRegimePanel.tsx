@@ -7,7 +7,13 @@ interface MarketRegimePanelProps {
   marketRegimes: MarketMonitorMockFile["market_regimes"];
 }
 
-const REGIME_ORDER: MarketRegimeKey[] = ["rate_pressure", "transition_release", "trend_tailwind"];
+const REGIME_ORDER: MarketRegimeKey[] = [
+  "rate_pressure",
+  "transition_release",
+  "trend_tailwind",
+  "liquidity_crunch",
+  "monetary_credit_repricing",
+];
 
 function formatConfidence(confidence: number) {
   if (!Number.isFinite(confidence)) {
@@ -30,6 +36,8 @@ const REGIME_LABELS: Record<MarketRegimeKey, { zh: string; color: string; icon: 
   rate_pressure: { zh: "利率压力", color: "#f05252", icon: "▼" },
   transition_release: { zh: "过渡释放", color: "#f59e0b", icon: "◆" },
   trend_tailwind: { zh: "趋势顺风", color: "#10b981", icon: "▲" },
+  liquidity_crunch: { zh: "流动性踩踏", color: "#dc2626", icon: "✦" },
+  monetary_credit_repricing: { zh: "货币信用重估", color: "#2563eb", icon: "●" },
 };
 
 export function MarketRegimePanel({ marketRegimes }: MarketRegimePanelProps) {

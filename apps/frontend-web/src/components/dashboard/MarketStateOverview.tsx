@@ -1,10 +1,7 @@
 import type { DashboardSummary, DashboardViewModel, SignalDirection } from "@/types/dashboard";
-import { Activity, ChevronDown, ChevronUp, Minus, Target } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
-import { FAConvictionBar } from "@/components/shared/FAConvictionBar";
-import { FAMetricCard } from "@/components/shared/FAMetricCard";
-import { FAStatusPill } from "@/components/shared/FAStatusPill";
-import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
+import { buildIntegratedMacroSummary, buildOptionsEvidenceSummary } from "./DashboardIntegratedMacroModel";
 import { translateText } from "./judgmentFormat";
 
 interface MarketStateOverviewProps {
@@ -18,45 +15,20 @@ function directionLabel(direction: SignalDirection) {
   return "中性";
 }
 
-function directionHeadline(direction: SignalDirection) {
-  if (direction === "bullish") return "看多";
-  if (direction === "bearish") return "看空";
-  return "中性";
+function compactText(value: string): string {
+  const text = translateText(value).replace(/\s+/g, " ").trim();
+  return text.length > 72 ? `${text.slice(0, 72).trim()}...` : text;
 }
 
-function directionTone(direction: SignalDirection): "up" | "down" | "neutral" {
-  if (direction === "bullish") return "up";
-  if (direction === "bearish") return "down";
-  return "neutral";
-}
-
-function metricValue(value: number | string | null | undefined, unit?: string) {
-  if (value === null || value === undefined || value === "") return "—";
-  if (typeof value === "number") {
-    return `${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}${unit ?? ""}`;
-  }
-  return `${value}${unit ?? ""}`;
-}
-
-function ListBlock({
-  title,
-  items,
-  kind,
-}: {
-  title: string;
-  items: string[];
-  kind: "up" | "down" | "neutral";
-}) {
-  const Icon = kind === "up" ? ChevronUp : kind === "down" ? ChevronDown : Minus;
-  const iconClass = kind === "up" ? "text-[var(--up)]" : kind === "down" ? "text-[var(--down)]" : "text-[var(--fg-5)]";
+function LevelRows({ title, rows }: { title: string; rows: Array<{ label: string; value: string; tone?: "up" | "down" | "neutral" }> }) {
   return (
-    <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
-      <div className="mb-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">{title}</div>
-      <div className="space-y-2">
-        {items.map((item) => (
-          <div key={item} className="flex items-start gap-2 text-[11px] text-[var(--fg-3)]">
-            <Icon size={11} className={`mt-0.5 shrink-0 ${iconClass}`} />
-            <span>{item}</span>
+    <div className="dashboard-level-group">
+      <div className="dashboard-section-label">{title}</div>
+      <div className="dashboard-level-list">
+        {rows.map((row) => (
+          <div key={`${title}-${row.label}-${row.value}`} className={`dashboard-level-row dashboard-level-row--${row.tone ?? "neutral"}`}>
+            <span>{row.label}</span>
+            <strong>{row.value}</strong>
           </div>
         ))}
       </div>
@@ -64,111 +36,112 @@ function ListBlock({
   );
 }
 
-function KeyLevelBlock({ levels }: { levels: DashboardSummary["strategy"]["key_levels"] }) {
-  return (
-    <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
-      <div className="mb-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">关键价位</div>
-      <div className="space-y-2">
-        {levels.resistance.map((level, index) => (
-          <div key={`res-${level}-${index}`} className="flex items-center gap-2">
-            <span className="h-4 w-[3px] rounded-[var(--radius-xs)] bg-[var(--down)]" />
-            <span className="font-mono text-[11px] font-semibold text-[var(--down)]">{level.toLocaleString("en-US")}</span>
-            <span className="text-[10px] text-[var(--fg-5)]">阻力</span>
-          </div>
-        ))}
-        {levels.support.map((level, index) => (
-          <div key={`sup-${level}-${index}`} className="flex items-center gap-2">
-            <span className="h-4 w-[3px] rounded-[var(--radius-xs)] bg-[var(--up)]" />
-            <span className="font-mono text-[11px] font-semibold text-[var(--up)]">{level.toLocaleString("en-US")}</span>
-            <span className="text-[10px] text-[var(--fg-5)]">支撑</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+function formatLevel(value: number): string {
+  return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+
+function uniqueLevels(levels: number[]): number[] {
+  const seen = new Set<number>();
+  return levels.filter((level) => {
+    if (seen.has(level)) return false;
+    seen.add(level);
+    return true;
+  });
 }
 
 export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewProps) {
-  const { conclusion, market_summary: market, strategy } = summary;
-  const marketState = viewModel?.market_state;
-  const direction = marketState?.bias === "bullish" || marketState?.bias === "bearish" || marketState?.bias === "neutral"
-    ? marketState.bias
-    : conclusion.direction;
-  const confidence = marketState?.confidence ?? conclusion.confidence ?? strategy.confidence ?? null;
-  const primaryMetrics = [market.XAUUSD, market.DXY, market.US10Y, market.REAL_10Y].filter(Boolean);
+  const integrated = buildIntegratedMacroSummary(summary, viewModel);
+  const optionsEvidence = buildOptionsEvidenceSummary(summary);
+  const integratedConfidence = integrated.confidence == null ? null : Math.round(Math.max(0, Math.min(1, integrated.confidence)) * 100);
+  const dataPct = integrated.dataCompleteness.pct;
+  const macroResistance = uniqueLevels(integrated.macroLevels.resistance).slice(0, 1);
+  const macroSupport = uniqueLevels(integrated.macroLevels.support).slice(0, 2);
+  const directionText = directionLabel(integrated.direction);
+  const confirmationText = compactText(integrated.tradeImplication);
+  const riskText = compactText(integrated.riskNote);
+  const keyLevelText = [
+    macroResistance[0] == null ? null : `确认 ${formatLevel(macroResistance[0])}`,
+    macroSupport[0] == null ? null : `观察 ${formatLevel(macroSupport[0])}`,
+    optionsEvidence.pin === "—" ? null : `Pin ${optionsEvidence.pin}`,
+  ].filter(Boolean).join(" / ") || "等待关键价位确认";
+  const dataQualityText = dataPct == null
+    ? integrated.dataCompleteness.label
+    : `${dataPct}% · ${integrated.dataCompleteness.label}`;
 
   return (
-    <FACard title="今日综合判断卡" eyebrow="判断看板" accent="warn" bodyClassName="space-y-4">
-      <div className="grid gap-3 xl:grid-cols-[1.5fr_1fr_1fr_1.15fr]">
-        <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
-          <div className="grid gap-2">
-            <div className="grid grid-cols-[72px_1fr] gap-2">
-              <div className="text-[10px] text-[var(--fg-5)]">市场阶段</div>
-              <div className="text-[14px] font-bold text-[var(--warn)]">{translateText(strategy.macro_phase)}</div>
-            </div>
-            <div className="grid grid-cols-[72px_1fr] gap-2">
-              <div className="text-[10px] text-[var(--fg-5)]">黄金状态</div>
-              <div className="text-[14px] font-bold text-[var(--fg-2)]">{translateText(marketState?.label || conclusion.bias || "等待后端综合结论")}</div>
-            </div>
-            <div className="grid grid-cols-[72px_1fr] gap-2">
-              <div className="text-[10px] text-[var(--fg-5)]">交易方向</div>
-              <div className={`text-[14px] font-bold ${direction === "bullish" ? "text-[var(--up)]" : direction === "bearish" ? "text-[var(--down)]" : "text-[var(--fg-3)]"}`}>
-                {directionHeadline(direction)}
-              </div>
+    <FACard
+      title="今日综合判断"
+      accent="emphasis"
+      density="compact"
+      className="dashboard-decision-panel"
+      bodyClassName="dashboard-decision-body"
+    >
+      <div className="dashboard-decision-grid dashboard-decision-grid--integrated">
+        <div className="dashboard-decision-memo">
+          <div className="dashboard-decision-memo-rule" aria-hidden="true" />
+          <div className="dashboard-decision-text-block">
+            <div className="dashboard-section-label">操作框架</div>
+            <div className={`dashboard-decision-headline dashboard-decision-headline--${integrated.direction}`}>
+              <span>{directionText}</span>
+              <strong>{translateText(integrated.decisionSummary)}</strong>
             </div>
           </div>
 
-          <div className="mt-3 flex flex-wrap gap-2">
-            <FAStatusPill tone="warn">{translateText(strategy.macro_phase)}</FAStatusPill>
-            <FAStatusPill tone={direction === "bullish" ? "up" : direction === "bearish" ? "down" : "neutral"}>{directionLabel(direction)}</FAStatusPill>
-          </div>
-
-          <div className="mt-3 text-[11px] leading-6 text-[var(--fg-4)]">
-            {translateText(marketState?.summary || conclusion.options_summary)}
+          <div className="dashboard-decision-focus-grid">
+            <div className="dashboard-decision-focus-card dashboard-decision-focus-card--primary">
+              <span>交易条件</span>
+              <strong>{confirmationText}</strong>
+            </div>
+            <div className="dashboard-decision-focus-card">
+              <span>关键价位</span>
+              <strong>{keyLevelText}</strong>
+            </div>
+            <div className="dashboard-decision-focus-card dashboard-decision-focus-card--risk">
+              <span>
+                <ShieldAlert size={11} />
+                风险线
+              </span>
+              <strong>{riskText}</strong>
+            </div>
           </div>
         </div>
 
-        <ListBlock title="主导因子" items={strategy.triggers.slice(0, 3)} kind="up" />
-        <ListBlock title="压制因子" items={strategy.invalid_conditions.slice(0, 3)} kind="down" />
-        <KeyLevelBlock levels={strategy.key_levels} />
+        <div className="dashboard-decision-section dashboard-decision-side">
+          <LevelRows
+            title="宏观交易价位"
+            rows={[
+              ...macroResistance.map((level) => ({ label: "上方确认区", value: formatLevel(level), tone: "down" as const })),
+              ...macroSupport.map((level, index) => ({
+                label: index === 0 ? "下方观察区" : "下方失效区",
+                value: formatLevel(level),
+                tone: "up" as const,
+              })),
+            ]}
+          />
+          <LevelRows
+            title="期权结构价位"
+            rows={[
+              { label: "Gamma Zero", value: optionsEvidence.gammaZero, tone: "neutral" },
+              { label: "Pin", value: optionsEvidence.pin, tone: "neutral" },
+              { label: "Call Wall", value: optionsEvidence.callWall, tone: "down" },
+              { label: "Put Wall", value: optionsEvidence.putWall, tone: "up" },
+            ]}
+          />
+        </div>
+
+        <div className="dashboard-quality-compact dashboard-quality-strip">
+          <div className="dashboard-quality-row dashboard-quality-row--highlight">
+            <span>质量</span>
+            <strong>
+              置信度 {integratedConfidence == null ? "—" : `${integratedConfidence}/100`} · 期权 {optionsEvidence.confidencePct}
+            </strong>
+          </div>
+          <div className="dashboard-quality-row">
+            <span>数据</span>
+            <strong>{dataQualityText} · 链路 {integrated.dataCompleteness.ok}/{integrated.dataCompleteness.total || "—"}</strong>
+          </div>
+        </div>
       </div>
-
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_260px]">
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {primaryMetrics.map((metric) => (
-            <FAMetricCard
-              key={metric.label}
-              label={metric.label}
-              value={metricValue(metric.value, metric.unit)}
-              delta={metric.change ?? undefined}
-              trend={metric.trend === "up" || metric.trend === "down" ? metric.trend : "flat"}
-              hint={metric.note ?? undefined}
-              status={metric.status ?? undefined}
-              statusTone={
-                metric.status === "ok"
-                  ? "up"
-                  : metric.status === "warn"
-                    ? "warn"
-                    : metric.status === "error"
-                      ? "down"
-                      : metric.status === "info"
-                        ? "info"
-                        : "dim"
-              }
-            />
-          ))}
-        </div>
-
-        <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
-          <div className="mb-3 flex items-center gap-2">
-            <Activity size={12} className="text-[var(--brand-hover)]" />
-            <div className="text-[10px] font-semibold tracking-[0.08em] text-[var(--fg-5)]">确信度</div>
-          </div>
-          <FAConvictionBar value={(confidence ?? 0) * 100} tone="warn" />
-        </div>
-      </div>
-
-      <FAWarningBanner title="改判条件" description={strategy.risk_points[0] || summary.risk_alerts[0] || "等待后端补充改判条件。"} tone="warn" />
     </FACard>
   );
 }

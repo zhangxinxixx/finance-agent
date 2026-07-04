@@ -19,7 +19,7 @@ export function ReportsSummaryBar({
           <button
             type="button"
             onClick={onResetFilters}
-            className="text-[10px] font-semibold text-[var(--brand-hover)] transition-colors hover:text-[var(--brand)]"
+            className="text-[length:var(--text-11)] font-semibold text-[var(--brand-hover)] transition-colors hover:text-[var(--brand)]"
           >
             清除筛选
           </button>
@@ -63,7 +63,7 @@ export function ReportsPagination({
 
   return (
     <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card)] px-3 py-2">
-      <div className="text-[10px] text-[var(--fg-4)]">
+      <div className="text-[length:var(--text-11)] text-[var(--fg-4)]">
         显示 <span className="fa-num text-[var(--fg-2)]">{start}-{end}</span> / <span className="fa-num text-[var(--fg-2)]">{totalItems}</span>
       </div>
       <div className="flex items-center gap-1 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-1">
@@ -71,19 +71,19 @@ export function ReportsPagination({
           type="button"
           onClick={() => onPageChange(currentPage - 1)}
           disabled={currentPage <= 1}
-          className="inline-flex h-7 min-w-7 items-center justify-center rounded-[var(--radius-sm)] px-2 text-[10px] text-[var(--fg-3)] transition-colors hover:bg-[var(--bg-panel)] disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex h-8 min-w-8 items-center justify-center rounded-[var(--radius-sm)] px-2.5 text-[length:var(--text-11)] text-[var(--fg-3)] transition-colors hover:bg-[var(--bg-panel)] disabled:cursor-not-allowed disabled:opacity-40"
         >
           上一页
         </button>
         {visiblePages.map((page, index) => (
           page === "ellipsis" ? (
-            <span key={`ellipsis-${index}`} className="px-1 text-[10px] text-[var(--fg-5)]">…</span>
+            <span key={`ellipsis-${index}`} className="px-1 text-[length:var(--text-11)] text-[var(--fg-5)]">…</span>
           ) : (
             <button
               key={page}
               type="button"
               onClick={() => onPageChange(page)}
-              className={`inline-flex h-7 min-w-7 items-center justify-center rounded-[var(--radius-sm)] px-2 text-[10px] ${
+              className={`inline-flex h-8 min-w-8 items-center justify-center rounded-[var(--radius-sm)] px-2.5 text-[length:var(--text-11)] ${
                 currentPage === page
                   ? "bg-[var(--brand-soft)] text-[var(--brand-hover)]"
                   : "text-[var(--fg-3)] transition-colors hover:bg-[var(--bg-panel)]"
@@ -97,7 +97,7 @@ export function ReportsPagination({
           type="button"
           onClick={() => onPageChange(currentPage + 1)}
           disabled={currentPage >= totalPages}
-          className="inline-flex h-7 min-w-7 items-center justify-center rounded-[var(--radius-sm)] px-2 text-[10px] text-[var(--fg-3)] transition-colors hover:bg-[var(--bg-panel)] disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex h-8 min-w-8 items-center justify-center rounded-[var(--radius-sm)] px-2.5 text-[length:var(--text-11)] text-[var(--fg-3)] transition-colors hover:bg-[var(--bg-panel)] disabled:cursor-not-allowed disabled:opacity-40"
         >
           下一页
         </button>
@@ -150,7 +150,7 @@ export function ReportsLibraryContent({
         />
       ))}
       {filteredReports.length === 0 ? (
-        <div className="col-[1/-1] rounded-[var(--radius-lg)] border border-dashed border-[var(--border)] bg-[var(--bg-card)] px-5 py-10 text-center text-[12px] text-[var(--fg-5)]">
+        <div className="col-[1/-1] rounded-[var(--radius-lg)] border border-dashed border-[var(--border)] bg-[var(--bg-card)] px-5 py-10 text-center text-[length:var(--text-12)] text-[var(--fg-5)]">
           暂无匹配的报告
         </div>
       ) : null}

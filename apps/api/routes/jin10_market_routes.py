@@ -47,7 +47,7 @@ def api_jin10_quotes_latest():
 
 @router.get("/api/jin10/calendar")
 def api_jin10_calendar():
-    """返回 Jin10 经济日历（高影响力 + 未来事件）。"""
+    """返回 Jin10 经济日历（上一周 + 未来两周窗口）。"""
     from apps.api import main as api_main
 
     cache_path = api_main._JIN10_CALENDAR_CACHE_PATH

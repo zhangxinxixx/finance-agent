@@ -20,7 +20,7 @@ export function ReportArtifactPanel({ tab }: { tab: ReportArtifactContentView | 
         <iframe
           title={tab.label}
           srcDoc={tab.content}
-          className="min-h-[72vh] w-full rounded-lg border border-finance-border bg-white"
+          className="min-h-[72vh] w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
         />
       </div>
     );

@@ -28,7 +28,7 @@ export function AgentInspectionFeedbackForm({ agent }: { agent: AgentInspectionI
         rating: Number(feedbackRating),
         category: feedbackCategory,
         comment,
-        submitted_by: "automation",
+        submitted_by: "codex",
         request_id: `agent-task-feedback-${agent.run_id}-${agent.agent_name}-${Date.now()}`,
       });
       setFeedbackComment("");

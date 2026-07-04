@@ -55,7 +55,49 @@ function rankingMainlineId(item: GoldMainlineRanking): string | null {
 }
 
 export function GoldMacroOverviewPanel({ overview }: GoldMacroOverviewPanelProps) {
-  if (!overview) return null;
+  if (!overview) {
+    return (
+      <section className="fa-card min-h-[178px]">
+        <header className="fa-card-header !px-3 !py-2">
+          <span className="h-3.5 w-[3px] rounded-[var(--radius-xs)] fa-important-bg" />
+          <div className="min-w-0 flex-1">
+            <div className="dashboard-cme-micro-label">黄金主线总览</div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-2">
+              <FAStatusPill tone="warn" dot={false} className="whitespace-nowrap">
+                未生成
+              </FAStatusPill>
+              <span className="truncate text-[12px] font-semibold text-[var(--fg-2)]">等待后端产物</span>
+            </div>
+          </div>
+        </header>
+        <div className="fa-card-body space-y-3" style={{ padding: "9px 12px" }}>
+          <div className="rounded border px-2.5 py-2" style={{ borderColor: "var(--border-faint)", background: "var(--bg-card-inner)" }}>
+            <div className="mb-1.5 text-[10px] font-semibold text-[var(--fg-5)]">主线入口</div>
+            <p className="text-[11px] leading-5 text-[var(--fg-3)]">
+              当前黄金主线总览产物暂不可用；先保留右栏入口，用于快速进入三条专题链路。
+            </p>
+          </div>
+          <div className="grid gap-1.5">
+            {[
+              { to: "/gold-mainlines", label: "黄金主线排序" },
+              { to: "/rates-dollar", label: "利率与美元" },
+              { to: "/oil-geopolitics", label: "石油与地缘" },
+            ].map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                className="inline-flex items-center justify-between gap-2 rounded-[var(--radius-md)] border px-2.5 py-1.5 text-[10px] font-semibold text-[var(--fg-3)] transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-panel)] hover:text-[var(--fg-2)]"
+                style={{ borderColor: "var(--border-faint)", background: "var(--bg-card-inner)" }}
+              >
+                <span>{item.label}</span>
+                <ArrowRight size={11} />
+              </Link>
+            ))}
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   const conflict = overview.driver_conflict;
   const topRankings = [...(overview.theme_rankings ?? [])]

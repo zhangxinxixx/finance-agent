@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, ShieldAlert, Target, Waves } from "lucide-react";
+import { Activity, AlertTriangle, GitBranch, ShieldAlert, Target, Waves } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
@@ -9,7 +9,14 @@ import type {
   EventFlowTableRow,
   EventFlowTimelineItem,
 } from "@/types/event-flow";
+import {
+  formatGoldMainlineLabel,
+  formatGoldNetBiasLabel,
+  formatTransmissionPathLabel,
+  goldNetBiasTone,
+} from "@/components/shared/goldMainlineFormat";
 import { EventChainAnalysis } from "./EventChainAnalysis";
+import { EventGoldMainlineTrace } from "./EventGoldMainlineTrace";
 import { translateEventFlowValue } from "./eventFlowFormat";
 import { ImpactAssets } from "./ImpactAssets";
 import { RiskRadar } from "./RiskRadar";
@@ -161,7 +168,15 @@ function SummaryTiles({
   radar: EventFlowRadarAxis[];
 }) {
   const highImportanceCount = timeline.filter((event) => event.importance === "高").length;
-  const watchCount = timeline.filter((event) => (event.verification_status ?? "").includes("verification")).length;
+  const watchCount = timeline.filter((event) => {
+    const status = event.verification_status ?? "";
+    return (
+      (event.verification_needed ?? []).length > 0 ||
+      status.includes("verification") ||
+      status.includes("single_source") ||
+      status.includes("unverified")
+    );
+  }).length;
   const radarAverage = radar.length > 0
     ? Math.round(radar.reduce((sum, item) => sum + item.value, 0) / radar.length)
     : null;
@@ -170,7 +185,7 @@ function SummaryTiles({
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
       {[
-        { icon: AlertTriangle, label: "重点事件", value: String(highImportanceCount), hint: "高重要性时间线事件" },
+        { icon: AlertTriangle, label: "事件样本", value: String(timeline.length), hint: `其中 ${highImportanceCount} 条高重要性` },
         { icon: Activity, label: "情绪主指标", value: sentimentSummary, hint: "来自情绪面板的首要指标" },
         { icon: ShieldAlert, label: "风险均值", value: radarAverage === null ? "未返回" : `${radarAverage}/100`, hint: "风险雷达平均值" },
         { icon: Target, label: "待验证", value: String(watchCount), hint: "含待验证标记的事件数量" },
@@ -185,6 +200,119 @@ function SummaryTiles({
         </div>
       ))}
     </div>
+  );
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  values.forEach((value) => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    result.push(value);
+  });
+  return result;
+}
+
+function mainlineEvents(timeline: EventFlowTimelineItem[]): EventFlowTimelineItem[] {
+  return timeline.filter((event) => (
+    event.primary_mainline ||
+    (event.mainlines ?? []).length > 0 ||
+    (event.transmission_chains ?? []).length > 0 ||
+    event.net_effect ||
+    (event.verification_needed ?? []).length > 0
+  ));
+}
+
+function MainlineAttributionSummary({ timeline }: { timeline: EventFlowTimelineItem[] }) {
+  const attributed = mainlineEvents(timeline);
+  const changedCount = attributed.filter((event) => event.changed_dominant_theme).length;
+  const mixedCount = attributed.filter((event) => event.net_effect === "mixed" || event.impact.includes("混合")).length;
+  const verificationCount = attributed.filter((event) => (event.verification_needed ?? []).length > 0).length;
+  const paths = uniqueStrings(attributed.flatMap((event) => event.transmission_chains ?? []));
+  const mainlineCounts = new Map<string, number>();
+
+  attributed.forEach((event) => {
+    const ids = uniqueStrings([event.primary_mainline, ...(event.mainlines ?? [])]);
+    ids.forEach((id) => mainlineCounts.set(id, (mainlineCounts.get(id) ?? 0) + 1));
+  });
+
+  const topMainlines = Array.from(mainlineCounts.entries()).sort((left, right) => right[1] - left[1]).slice(0, 5);
+  const featuredEvents = attributed
+    .filter((event) => event.changed_dominant_theme || event.net_effect === "mixed" || (event.verification_needed ?? []).length > 0)
+    .slice(0, 4);
+
+  return (
+    <FACard
+      title={
+        <div className="flex items-center gap-2">
+          <GitBranch size={12} className="text-[var(--brand-hover)]" />
+          <span>主线归因摘要</span>
+        </div>
+      }
+      eyebrow="九主线证据"
+      accent="brand"
+      bodyClassName="space-y-3"
+    >
+      {attributed.length === 0 ? (
+        <FAEmptyState title="暂无主线归因" description="当前事件流没有返回 mainlines / transmission_chains 字段。" className="py-6" />
+      ) : (
+        <>
+          <div className="grid gap-2 sm:grid-cols-4">
+            {[
+              { label: "已归因事件", value: `${attributed.length}/${timeline.length}` },
+              { label: "Mixed", value: String(mixedCount) },
+              { label: "改变主导因素", value: String(changedCount) },
+              { label: "待验证事件", value: String(verificationCount) },
+            ].map((item) => (
+              <div key={item.label} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
+                <div className="text-[9px] font-semibold text-[var(--fg-5)]">{item.label}</div>
+                <div className="fa-num mt-1 text-[14px] font-semibold text-[var(--fg-1)]">{item.value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
+            <div className="grid content-start gap-3">
+              <div>
+                <div className="text-[10px] font-semibold text-[var(--fg-5)]">主线覆盖</div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {topMainlines.length ? topMainlines.map(([id, count]) => (
+                    <FAStatusPill key={id} tone="info" dot={false}>
+                      {formatGoldMainlineLabel(id)} · {count}
+                    </FAStatusPill>
+                  )) : <span className="text-[11px] text-[var(--fg-4)]">未返回主线标签</span>}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold text-[var(--fg-5)]">传导链</div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {paths.length ? paths.slice(0, 5).map((path) => (
+                    <FAStatusPill key={path} tone="warn" dot={false}>{formatTransmissionPathLabel(path)}</FAStatusPill>
+                  )) : <span className="text-[11px] text-[var(--fg-4)]">未返回传导链</span>}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {featuredEvents.length ? featuredEvents.map((event) => (
+                <div key={event.id} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
+                  <div className="mb-1.5 flex items-start justify-between gap-2">
+                    <div className="line-clamp-1 text-[11px] font-semibold text-[var(--fg-2)]">{event.title}</div>
+                    {event.net_effect ? (
+                      <FAStatusPill tone={goldNetBiasTone(event.net_effect)} dot={false}>{formatGoldNetBiasLabel(event.net_effect)}</FAStatusPill>
+                    ) : null}
+                  </div>
+                  <EventGoldMainlineTrace event={event} density="compact" />
+                </div>
+              )) : (
+                <div className="text-[11px] leading-5 text-[var(--fg-4)]">当前没有 mixed、改变主导因素或待验证事件。</div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </FACard>
   );
 }
 
@@ -207,6 +335,7 @@ export function EventFlowImpactAnalysisPanel({
   return (
     <div className="space-y-4">
       <SummaryTiles timeline={timeline} sentiment={sentiment} radar={radar} />
+      <MainlineAttributionSummary timeline={timeline} />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
         <div className="space-y-4">
           <EventChainAnalysis chain={chain} activeEvent={activeEvent} />

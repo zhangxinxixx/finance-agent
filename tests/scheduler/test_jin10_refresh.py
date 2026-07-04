@@ -115,6 +115,39 @@ class _FakeFlashHttpxClient:
         return _FakeHttpResponse(text=f"data:{json_module(payload)}\n")
 
 
+class _FakeCalendarHttpxClient:
+    def __init__(self, *args, **kwargs):
+        self._calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url: str, json: dict | None = None, headers: dict | None = None):
+        self._calls += 1
+        if self._calls == 1:
+            return _FakeHttpResponse(headers={"Mcp-Session-Id": "sid-test"})
+        if self._calls == 2:
+            return _FakeHttpResponse()
+        assert json is not None
+        assert json.get("method") == "tools/call"
+        payload = {
+            "result": {
+                "structuredContent": {
+                    "status": 200,
+                    "data": [
+                        {"title": "窗口前事件", "pub_time": "2026-06-16 20:30", "star": 5, "actual": None},
+                        {"title": "窗口内事件", "pub_time": "2026-06-24 02:00", "star": 5, "actual": None},
+                        {"title": "窗口后事件", "pub_time": "2026-07-07 20:30", "star": 5, "actual": None},
+                    ],
+                }
+            }
+        }
+        return _FakeHttpResponse(text=f"data:{json_module(payload)}\n")
+
+
 def json_module(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
@@ -193,6 +226,25 @@ def test_refresh_jin10_flash_cache_handles_data_items_shape(monkeypatch, tmp_pat
         assert status.source_metadata["classification_model"] == "mimo-small-test"
         assert status.source_metadata["cache_artifact_path"].endswith("flash_cache.json")
         assert status.source_metadata["lane_source_key"] == "jin10_mcp_flash"
+
+
+def test_refresh_jin10_calendar_cache_persists_only_display_window(monkeypatch, tmp_path):
+    monkeypatch.setattr(scheduler, "_get_mcp_key", lambda: "fake-key")
+    monkeypatch.setattr(scheduler, "_CALENDAR_CACHE_PATH", tmp_path / "calendar_cache.json")
+    monkeypatch.setattr(
+        scheduler,
+        "_jin10_calendar_window",
+        lambda now=None: (
+            datetime(2026, 6, 17, tzinfo=UTC),
+            datetime(2026, 7, 6, 23, 59, 59, tzinfo=UTC),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "httpx", type("FakeHttpxModule", (), {"Client": _FakeCalendarHttpxClient})())
+
+    scheduler.refresh_jin10_calendar_cache()
+
+    payload = json.loads((tmp_path / "calendar_cache.json").read_text(encoding="utf-8"))
+    assert [event["title"] for event in payload["events"]] == ["窗口内事件"]
 
 
 def test_refresh_jin10_flash_cache_respects_disabled_jin10_mcp_setting(monkeypatch, tmp_path):

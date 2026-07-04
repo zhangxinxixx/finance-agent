@@ -95,7 +95,7 @@ export function SettingsAuditFilters({
             <input
               value={actor}
               onChange={(event) => onActorChange(event.target.value)}
-              placeholder="automation"
+              placeholder="codex"
               className="w-[110px] bg-transparent text-[11px] text-[var(--fg-2)] outline-none placeholder:text-[var(--fg-5)]"
             />
           </label>

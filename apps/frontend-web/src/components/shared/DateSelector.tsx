@@ -13,7 +13,7 @@ export function DateSelector({ dates, selectedDate, generatedAt, onChange }: Dat
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
       <label className="flex min-w-0 items-center gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-2">
         <CalendarDays size={12} className="text-[var(--brand-hover)]" />
-        <span className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">交易日期</span>
+        <span className="fa-compact-label">交易日期</span>
         <select
           className="min-w-[9rem] bg-transparent text-[11px] font-medium text-[var(--fg-2)] outline-none"
           value={selectedDate ?? ""}
@@ -28,8 +28,8 @@ export function DateSelector({ dates, selectedDate, generatedAt, onChange }: Dat
       </label>
 
       <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-2">
-        <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">生成时间</div>
-        <div className="mt-1 font-mono text-[11px] text-[var(--fg-3)]">{generatedAt ?? "不可用"}</div>
+        <div className="fa-compact-label">生成时间</div>
+        <div className="fa-num mt-1 text-[11px] text-[var(--fa-text-muted)]">{generatedAt ?? "不可用"}</div>
       </div>
     </div>
   );

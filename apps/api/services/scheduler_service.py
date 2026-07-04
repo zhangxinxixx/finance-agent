@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -330,16 +329,11 @@ def _get_data_source_status(db: Session) -> dict:
 
 
 def _get_cron_job_status() -> list[dict]:
-    """获取内部调度作业状态。"""
+    """获取本地调度作业状态。"""
     try:
         from pathlib import Path
         import json
-        jobs_file = Path(
-            os.getenv(
-                "FINANCE_AGENT_CRON_JOBS_FILE",
-                str(Path.home() / ".finance-agent" / "cron" / "jobs.json"),
-            )
-        ).expanduser()
+        jobs_file = Path.home() / ".finance-agent" / "cron" / "jobs.json"
         if not jobs_file.exists():
             return []
         with open(jobs_file) as f:
@@ -365,7 +359,7 @@ def _get_artifacts_summary() -> dict:
     """获取产出物摘要。"""
     try:
         from pathlib import Path
-        storage = Path(os.getenv("FINANCE_AGENT_STORAGE_ROOT", "storage")).expanduser()
+        storage = Path(__file__).resolve().parents[3] / "storage"
         today = utc_now().strftime("%Y-%m-%d")
 
         def count_files(dirpath: Path, pattern: str) -> int:

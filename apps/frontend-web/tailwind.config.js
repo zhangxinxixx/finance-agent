@@ -3,6 +3,12 @@ export default {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ["var(--font-sans)"],
+        display: ["var(--font-display)"],
+        mono: ["var(--font-mono)"],
+        market: ["var(--font-market)"],
+      },
       colors: {
         "finance-bg-root": "var(--color-bg-root)",
         "finance-bg-surface": "var(--color-bg-surface)",

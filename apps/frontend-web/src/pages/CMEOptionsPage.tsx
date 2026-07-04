@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { BarChart3, RefreshCw } from "lucide-react";
 
 import { fetchCMEOptionsDates } from "../adapters/cmeOptions";
 import { CMEOptionsKpiStrip } from "../components/cme-options/CMEOptionsKpiStrip";
@@ -8,9 +9,7 @@ import {
   type CMEOptionsTab,
   renderCMEOptionsTabContent,
   reportStatusLabel,
-  reportStatusTone,
   reviewStatusLabel,
-  reviewStatusTone,
   sourceLabel,
   sourceTone,
 } from "../components/cme-options/CMEOptionsPageSections";
@@ -19,7 +18,7 @@ import { FAEmptyState } from "../components/shared/FAEmptyState";
 import { FAFilterBar } from "../components/shared/FAFilterBar";
 import { FAPageScaffold } from "../components/shared/FAPageScaffold";
 import { FAStatusPill } from "../components/shared/FAStatusPill";
-import { FATabBar } from "../components/shared/FATabBar";
+import { FAWorkspaceHeader } from "../components/shared/FAWorkspaceHeader";
 import { ErrorState } from "../components/shared/ErrorState";
 import { useCMEOptions } from "../hooks/useCMEOptions";
 import type { CMEOptionsResponse } from "../types/cme-options";
@@ -121,54 +120,76 @@ export function CMEOptionsPage() {
     <FAPageScaffold
       className={pageShellClass}
       toolbar={(
-        <FAFilterBar
-          left={
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <FAStatusPill tone={sourceTone(source)}>{sourceLabel(source)}</FAStatusPill>
-              {status ? <FAStatusPill tone={reportStatusTone(status)}>{reportStatusLabel(status)}</FAStatusPill> : null}
-              {factReviewStatus ? (
-                <FAStatusPill tone={reviewStatusTone(factReviewStatus)}>{reviewStatusLabel(factReviewStatus)}</FAStatusPill>
-              ) : null}
-              <CMEOptionsIntentSummary snapshot={snapshot} />
-              <CMEOptionsKpiStrip snapshot={snapshot} />
-            </div>
-          }
-          right={
-            <>
-              <div className="flex flex-col gap-0.5">
-                <span className="text-[8px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">日期</span>
-                <select
-                  value={selectedDate ?? ""}
-                  onChange={(e) => setSelectedDate(e.target.value || undefined)}
-                  className="flex h-[28px] min-w-[100px] cursor-pointer items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 text-[11px] text-[var(--fg-2)] transition-colors hover:border-[var(--border-strong)]"
-                >
-                  {availableDates.map((d) => (
-                    <option key={d} value={d}>{d}</option>
-                  ))}
-                </select>
+        <div className="fa-page-stack">
+          <FAWorkspaceHeader
+            className="cme-options-workspace-header"
+            icon={BarChart3}
+            title="CME 期权结构"
+            tabs={tabOptions}
+            value={activeTab}
+            onChange={(value) => setActiveTab(value as CMEOptionsTab)}
+            ariaLabel="期权结构视图切换"
+            actions={(
+              <button type="button" onClick={refetch} className="fa-workspace-toolbar-button" title="刷新 CME 期权结构">
+                <RefreshCw size={12} />
+                刷新
+              </button>
+            )}
+            primaryLabel="数据状态"
+            primaryItems={[
+              { label: "来源", value: sourceLabel(source) },
+              ...(status ? [{ label: "公告", value: reportStatusLabel(status) }] : []),
+              ...(factReviewStatus ? [{ label: "复核", value: reviewStatusLabel(factReviewStatus) }] : []),
+            ]}
+            secondaryLabel="合约"
+            secondaryItems={[
+              ...(selectedDate ? [{ label: "日期", value: selectedDate }] : []),
+              ...(selectedExpiry ? [{ label: "到期", value: selectedExpiry }] : []),
+              { label: "行数", value: snapshot.data_source?.row_count?.toLocaleString("en-US") ?? "0" },
+            ]}
+          />
+
+          <FAFilterBar
+            className="cme-options-control-bar"
+            left={
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <CMEOptionsIntentSummary snapshot={snapshot} />
+                <CMEOptionsKpiStrip snapshot={snapshot} />
               </div>
-              <div className="flex flex-col gap-0.5">
-                <span className="text-[8px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">到期日</span>
-                <select
-                  value={selectedExpiry ?? ""}
-                  onChange={(e) => setSelectedExpiry(e.target.value || undefined)}
-                  className="flex h-[28px] min-w-[120px] cursor-pointer items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 text-[11px] text-[var(--fg-2)] transition-colors hover:border-[var(--border-strong)]"
-                >
-                  {expiryList.map((ex) => (
-                    <option key={ex} value={ex}>{ex}</option>
-                  ))}
-                </select>
-              </div>
-            </>
-          }
-        />
+            }
+            right={
+              <>
+                <div className="event-flow-filter-item">
+                  <span className="event-flow-filter-label">日期</span>
+                  <select
+                    value={selectedDate ?? ""}
+                    onChange={(e) => setSelectedDate(e.target.value || undefined)}
+                    className="event-flow-filter-box cme-options-filter-box min-w-[104px]"
+                  >
+                    {availableDates.map((d) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="event-flow-filter-item">
+                  <span className="event-flow-filter-label">到期日</span>
+                  <select
+                    value={selectedExpiry ?? ""}
+                    onChange={(e) => setSelectedExpiry(e.target.value || undefined)}
+                    className="event-flow-filter-box cme-options-filter-box min-w-[120px]"
+                  >
+                    {expiryList.map((ex) => (
+                      <option key={ex} value={ex}>{ex}</option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            }
+          />
+        </div>
       )}
       bodyClassName="fa-page-stack"
     >
-      <div className="shrink-0 px-1">
-        <FATabBar value={activeTab} tabs={tabOptions} onChange={(value) => setActiveTab(value as CMEOptionsTab)} ariaLabel="期权结构视图切换" />
-      </div>
-
       <div className="px-1 pb-4">
         {snapshot ? renderCMEOptionsTabContent({ snapshot, activeTab, wallScores, selectedExpiry }) : null}
       </div>

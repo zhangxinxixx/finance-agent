@@ -1,79 +1,44 @@
-import { FACard } from "@/components/shared/FACard";
-import { FAMetricCard } from "@/components/shared/FAMetricCard";
+import type { ReactNode } from "react";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
-import type { KnowledgeItem } from "@/types/knowledge";
-
-const METRIC_TREND: Record<string, "up" | "down" | "flat"> = {
-  positive: "up",
-  negative: "down",
-  neutral: "flat",
-};
+import type { KnowledgeCitation, KnowledgeItem } from "@/types/knowledge";
 
 export function OverviewTab({ item }: { item: KnowledgeItem }) {
   return (
-    <div className="space-y-3">
-      <FACard title="基础信息" eyebrow="概览" accent="info" bodyClassName="space-y-3">
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          <FAMetricCard label="类型 / 主题" value={`${item.typeLabel} / ${item.topic}`} />
-          <FAMetricCard label="版本 / 有效性" value={`${item.version} / ${item.status}`} />
-          <FAMetricCard
-            label="智能体 / 引用"
-            value={`${item.agentReady ? "可调用" : "未接入"} / ${item.citations}`}
-          />
-          <FAMetricCard label="最近验证" value={item.verifiedAt} />
+    <div className="knowledge-reader-stack">
+      <ReaderSection title="基础信息" eyebrow="概览">
+        <div className="knowledge-field-grid">
+          <Field label="类型 / 主题" value={`${item.typeLabel} / ${item.topic}`} />
+          <Field label="版本 / 有效性" value={`${item.version} / ${item.status}`} />
+          <Field label="智能体 / 引用" value={`${item.agentReady ? "可调用" : "未接入"} / ${item.citations}`} />
+          <Field label="最近验证" value={item.verifiedAt} />
         </div>
-      </FACard>
+      </ReaderSection>
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        <FACard title="核心摘要" eyebrow="摘要" accent="brand" bodyClassName="space-y-3">
-          <p className="text-[12px] leading-relaxed text-[var(--fg-3)]">{item.summary}</p>
-          <div className="h-px bg-[var(--border-faint)]" />
-          <p className="text-[11px] font-semibold text-[var(--fg-2)]">这条知识解决什么问题</p>
-          <p className="text-[12px] leading-relaxed text-[var(--fg-3)]">{item.thesis}</p>
-        </FACard>
+      <div className="knowledge-reader-split">
+        <ReaderSection title="核心摘要" eyebrow="摘要">
+          <p className="knowledge-reader-copy">{item.summary}</p>
+          <div className="knowledge-reader-divider" />
+          <div className="knowledge-reader-subtitle">这条知识解决什么问题</div>
+          <p className="knowledge-reader-copy">{item.thesis}</p>
+        </ReaderSection>
 
-        <FACard title="核心规则预览" eyebrow="规则预览" accent="warn" bodyClassName="space-y-2">
-          {item.rules.slice(0, 4).map((rule, index) => (
-            <div key={index} className="flex gap-2 rounded-[var(--radius-md)] bg-[var(--bg-card-inner)] p-2">
-              <span className="fa-num shrink-0 text-[10px] font-bold text-[var(--chart-1)]">
-                R{String(index + 1).padStart(2, "0")}
-              </span>
-              <p className="text-[11px] leading-relaxed text-[var(--fg-3)]">{rule}</p>
-            </div>
-          ))}
-          <p className="mt-1 text-[10px] text-[var(--fg-5)]">完整规则已放入「规则」标签页。</p>
-        </FACard>
+        <ReaderSection title="核心规则预览" eyebrow="规则预览" tone="warn">
+          <RuleList rules={item.rules.slice(0, 4)} />
+          <p className="knowledge-reader-note">完整规则已放入「规则」标签页。</p>
+        </ReaderSection>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        <FACard title="应用工作台" eyebrow="使用场景" accent="info" bodyClassName="space-y-2">
-          {item.scenes.map((scene, index) => (
-            <div key={index} className="flex gap-2 text-[11px] text-[var(--fg-3)]">
-              <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chart-1)]" />
-              <span className="leading-relaxed">{scene}</span>
-            </div>
-          ))}
-        </FACard>
+      <div className="knowledge-reader-split">
+        <ReaderSection title="应用工作台" eyebrow="使用场景">
+          <BulletList items={item.scenes} />
+        </ReaderSection>
 
-        <FACard title="触发 / 失效条件" eyebrow="条件说明" accent="warn" bodyClassName="space-y-3">
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">
-              触发条件
-            </p>
-            <p className="mt-1 text-[11px] leading-relaxed text-[var(--fg-3)]">
-              {item.monitorMetrics.slice(0, 2).map((m) => `${m.label} ${m.change}`).join("；")}
-            </p>
+        <ReaderSection title="触发 / 失效条件" eyebrow="条件说明" tone="warn">
+          <div className="knowledge-definition-list">
+            <Field label="触发条件" value={item.monitorMetrics.slice(0, 2).map((m) => `${m.label} ${m.change}`).join("；")} />
+            <Field label="失效条件" value={item.evidence[0]?.body ?? "暂无明确失效条件"} />
           </div>
-          <div className="h-px bg-[var(--border-faint)]" />
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">
-              失效条件
-            </p>
-            <p className="mt-1 text-[11px] leading-relaxed text-[var(--fg-3)]">
-              {item.evidence[0]?.body ?? "暂无明确失效条件"}
-            </p>
-          </div>
-        </FACard>
+        </ReaderSection>
       </div>
     </div>
   );
@@ -81,26 +46,15 @@ export function OverviewTab({ item }: { item: KnowledgeItem }) {
 
 export function RulesTab({ item }: { item: KnowledgeItem }) {
   return (
-    <FACard title="核心规则" eyebrow="规则详情" accent="brand" bodyClassName="space-y-3">
-      <p className="text-[11px] text-[var(--fg-4)]">
-        用规则块替代长段正文，方便后续复用到 Prompt、Agent 和盘前会议。
-      </p>
-      <div className="max-h-[420px] overflow-y-auto pr-1">
-        <div className="grid gap-2 lg:grid-cols-2">
+    <div className="knowledge-reader-stack">
+      <ReaderSection title="核心规则" eyebrow="规则详情" description="规则以行式结构呈现，方便复用到 Prompt、Agent 和盘前会议。">
+        <div className="knowledge-rule-list knowledge-rule-list--full">
           {item.rules.map((rule, index) => (
-            <div
-              key={index}
-              className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3"
-            >
-              <span className="fa-num text-[10px] font-bold text-[var(--chart-1)]">
-                R{String(index + 1).padStart(2, "0")}
-              </span>
-              <p className="mt-2 text-[12px] leading-relaxed text-[var(--fg-2)]">{rule}</p>
-            </div>
+            <RuleItem key={index} rule={rule} index={index} />
           ))}
         </div>
-      </div>
-    </FACard>
+      </ReaderSection>
+    </div>
   );
 }
 
@@ -110,186 +64,229 @@ export function IOTab({ item }: { item: KnowledgeItem }) {
   const outputs = [...new Set([...downstreamOutputs, ...citationOutputs])].slice(0, 4);
 
   return (
-    <div className="space-y-3">
-      <div className="grid gap-3 lg:grid-cols-2">
-        <FACard title="输入数据" eyebrow="输入" accent="info" bodyClassName="space-y-2">
-          <div className="flex flex-wrap gap-1.5">
-            {item.inputs.map((input) => (
-              <span
-                key={input}
-                className="inline-flex items-center rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[10px] text-[var(--fg-3)]"
-              >
-                {input}
-              </span>
-            ))}
-          </div>
-        </FACard>
+    <div className="knowledge-reader-stack">
+      <div className="knowledge-reader-split">
+        <ReaderSection title="输入数据" eyebrow="输入">
+          <PillList items={item.inputs} />
+        </ReaderSection>
 
-        <FACard title="输出模块" eyebrow="输出" accent="brand" bodyClassName="space-y-2">
-          {outputs.map((output) => (
-            <div key={output} className="flex gap-2 text-[11px] text-[var(--fg-3)]">
-              <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--brand)]" />
-              <span>{output}</span>
-            </div>
-          ))}
-        </FACard>
+        <ReaderSection title="输出模块" eyebrow="输出">
+          <BulletList items={outputs} />
+        </ReaderSection>
       </div>
 
-      <FACard title="适用场景" eyebrow="使用场景" accent="info" bodyClassName="space-y-2">
-        {item.scenes.map((scene, index) => (
-          <div key={index} className="flex gap-2 text-[11px] text-[var(--fg-3)]">
-            <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chart-1)]" />
-            <span className="leading-relaxed">{scene}</span>
-          </div>
-        ))}
-      </FACard>
+      <ReaderSection title="适用场景" eyebrow="使用场景">
+        <BulletList items={item.scenes} />
+      </ReaderSection>
     </div>
   );
 }
 
 export function DependenciesTab({ item }: { item: KnowledgeItem }) {
   return (
-    <div className="space-y-3">
-      <FACard title="下游依赖" eyebrow="依赖关系" accent="brand" bodyClassName="space-y-2">
-        <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
+    <div className="knowledge-reader-stack">
+      <ReaderSection title="下游依赖" eyebrow="依赖关系">
+        <div className="knowledge-row-list">
           {item.downstream.map((dep) => (
-            <div
-              key={dep.name}
-              className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-2.5"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[12px] font-semibold text-[var(--fg-2)]">{dep.name}</span>
-                <FAStatusPill tone="info" dot={false}>
-                  {dep.state}
-                </FAStatusPill>
+            <div key={dep.name} className="knowledge-row-item">
+              <div className="min-w-0">
+                <div className="knowledge-row-title">{dep.name}</div>
+                <p className="knowledge-row-copy">{dep.note}</p>
               </div>
-              <p className="mt-1 text-[11px] text-[var(--fg-4)]">{dep.note}</p>
+              <FAStatusPill tone="info" dot={false}>
+                {dep.state}
+              </FAStatusPill>
             </div>
           ))}
         </div>
-      </FACard>
+      </ReaderSection>
 
-      <FACard title="剧本化建议" eyebrow="建议" accent="warn">
-        <p className="text-[12px] leading-relaxed text-[var(--fg-3)]">
-          当前条目的最佳沉淀形态是{" "}
-          <span className="font-semibold text-[var(--fg-2)]">{item.typeLabel}</span>。
-          如果下一步要强化复用，建议先补充{" "}
-          <span className="font-semibold text-[var(--fg-2)]">
-            {item.playbookReady ? "盘中动作模板" : "动作约束或失败案例"}
-          </span>
-          ，再决定是否升级成剧本模板。
+      <ReaderSection title="剧本化建议" eyebrow="建议" tone="warn">
+        <p className="knowledge-reader-copy">
+          当前条目的最佳沉淀形态是 <strong>{item.typeLabel}</strong>。如果下一步要强化复用，建议先补充{" "}
+          <strong>{item.playbookReady ? "盘中动作模板" : "动作约束或失败案例"}</strong>，再决定是否升级成剧本模板。
         </p>
-      </FACard>
+      </ReaderSection>
     </div>
   );
 }
 
 export function ValidationTab({ item }: { item: KnowledgeItem }) {
   return (
-    <div className="space-y-3">
-      <FACard title="关键指标面" eyebrow="监控指标" accent="info" bodyClassName="space-y-3">
-        <p className="text-[11px] text-[var(--fg-4)]">
-          知识不是静态文档，需要绑定当前观测值、节奏约束和可执行动作。
-        </p>
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="knowledge-reader-stack">
+      <ReaderSection title="关键指标面" eyebrow="监控指标" description="知识不是静态文档，需要绑定当前观测值、节奏约束和可执行动作。">
+        <div className="knowledge-metric-table">
           {item.monitorMetrics.map((metric) => (
-            <FAMetricCard
-              key={metric.label}
-              label={metric.label}
-              value={metric.value}
-              delta={metric.change}
-              trend={METRIC_TREND[metric.tone]}
-            />
+            <div key={metric.label} className={`knowledge-metric-row knowledge-metric-row--${metric.tone}`}>
+              <span>{metric.label}</span>
+              <strong>{metric.value}</strong>
+              <em>{metric.change}</em>
+            </div>
           ))}
         </div>
-      </FACard>
+      </ReaderSection>
 
-      <FACard title="验证证据" eyebrow="证据" accent="brand" bodyClassName="space-y-2">
-        <div className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
+      <ReaderSection title="验证证据" eyebrow="证据">
+        <div className="knowledge-row-list">
           {item.evidence.map((entry, index) => (
-            <div
-              key={index}
-              className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-2.5"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold text-[var(--fg-2)]">{entry.title}</span>
-                <span className="fa-num text-[10px] text-[var(--fg-5)]">{entry.meta}</span>
+            <div key={index} className="knowledge-row-item knowledge-row-item--stacked">
+              <div className="knowledge-row-meta">
+                <span>{entry.title}</span>
+                <span className="fa-num">{entry.meta}</span>
               </div>
-              <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--fg-3)]">{entry.body}</p>
+              <p className="knowledge-row-copy">{entry.body}</p>
             </div>
           ))}
         </div>
-      </FACard>
+      </ReaderSection>
 
-      <FACard title="验证时间线" eyebrow="时间线" accent="warn" bodyClassName="space-y-2">
-        <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
+      <ReaderSection title="验证时间线" eyebrow="时间线" tone="warn">
+        <div className="knowledge-timeline">
           {item.timeline.map((entry, index) => (
-            <div
-              key={index}
-              className="flex gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-2.5"
-            >
-              <div className="mt-1 flex flex-col items-center">
-                <span className="h-2 w-2 rounded-full bg-[var(--chart-1)] shadow-[0_0_6px_rgba(245,158,11,0.4)]" />
-                {index < item.timeline.length - 1 && <span className="mt-1 w-px flex-1 bg-[var(--border)]" />}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-semibold text-[var(--fg-2)]">{entry.title}</span>
-                  <span className="fa-num shrink-0 text-[10px] text-[var(--fg-5)]">{entry.time}</span>
+            <div key={index} className="knowledge-timeline-row">
+              <span className="knowledge-timeline-dot" />
+              <div className="min-w-0">
+                <div className="knowledge-row-meta">
+                  <span>{entry.title}</span>
+                  <span className="fa-num">{entry.time}</span>
                 </div>
-                <p className="mt-1 text-[11px] leading-relaxed text-[var(--fg-4)]">{entry.copy}</p>
+                <p className="knowledge-row-copy">{entry.copy}</p>
               </div>
             </div>
           ))}
         </div>
-      </FACard>
+      </ReaderSection>
     </div>
   );
 }
 
 export function CitationsTab({ item }: { item: KnowledgeItem }) {
   return (
-    <div className="space-y-3">
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <FAMetricCard label="引用次数" value={item.citations} />
-        <FAMetricCard label="来源数" value={item.references} />
-        <FAMetricCard label="下游模块" value={item.dashboards} />
-        <FAMetricCard label="资产形态" value={item.typeLabel} />
+    <div className="knowledge-reader-stack">
+      <div className="knowledge-fact-strip knowledge-fact-strip--inline">
+        <InlineFact label="引用次数" value={item.citations} />
+        <InlineFact label="来源数" value={item.references} />
+        <InlineFact label="下游模块" value={item.dashboards} />
+        <InlineFact label="资产形态" value={item.typeLabel} />
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        <FACard title="上游引用" eyebrow="上游来源" accent="info" bodyClassName="space-y-2">
-          <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
-            {item.citationFlow.upstream.length > 0 ? (
-              item.citationFlow.upstream.map((cite, index) => (
-                <div
-                  key={index}
-                  className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-2.5"
-                >
-                  <div className="text-[11px] font-semibold text-[var(--fg-2)]">{cite.title}</div>
-                  <div className="mt-1 fa-num text-[10px] text-[var(--fg-5)]">{cite.meta}</div>
-                </div>
-              ))
-            ) : (
-              <p className="text-[11px] text-[var(--fg-4)]">当前没有显式上游来源，需补充原始依据。</p>
-            )}
-          </div>
-        </FACard>
+      <div className="knowledge-reader-split">
+        <ReaderSection title="上游引用" eyebrow="上游来源">
+          <CitationList citations={item.citationFlow.upstream} emptyText="当前没有显式上游来源，需补充原始依据。" />
+        </ReaderSection>
 
-        <FACard title="下游消费" eyebrow="下游使用" accent="brand" bodyClassName="space-y-2">
-          <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
-            {item.citationFlow.downstream.map((cite, index) => (
-              <div
-                key={index}
-                className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-2.5"
-              >
-                <div className="text-[11px] font-semibold text-[var(--fg-2)]">{cite.title}</div>
-                <div className="mt-1 fa-num text-[10px] text-[var(--fg-5)]">{cite.meta}</div>
-              </div>
-            ))}
-          </div>
-        </FACard>
+        <ReaderSection title="下游消费" eyebrow="下游使用">
+          <CitationList citations={item.citationFlow.downstream} />
+        </ReaderSection>
       </div>
+    </div>
+  );
+}
+
+function ReaderSection({
+  title,
+  eyebrow,
+  description,
+  tone = "info",
+  children,
+}: {
+  title: string;
+  eyebrow: string;
+  description?: string;
+  tone?: "info" | "warn";
+  children: ReactNode;
+}) {
+  return (
+    <section className={`knowledge-reader-section knowledge-reader-section--${tone}`}>
+      <header className="knowledge-reader-section-header">
+        <span>{eyebrow}</span>
+        <strong>{title}</strong>
+        {description ? <p>{description}</p> : null}
+      </header>
+      <div className="knowledge-reader-section-body">{children}</div>
+    </section>
+  );
+}
+
+function Field({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="knowledge-field">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function InlineFact({ label, value }: { label: string; value: string | number }) {
+  return (
+    <span className="knowledge-fact">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </span>
+  );
+}
+
+function RuleList({ rules }: { rules: string[] }) {
+  return (
+    <div className="knowledge-rule-list">
+      {rules.map((rule, index) => (
+        <RuleItem key={index} rule={rule} index={index} />
+      ))}
+    </div>
+  );
+}
+
+function RuleItem({ rule, index }: { rule: string; index: number }) {
+  return (
+    <div className="knowledge-rule-item">
+      <span className="fa-num">R{String(index + 1).padStart(2, "0")}</span>
+      <p>{rule}</p>
+    </div>
+  );
+}
+
+function BulletList({ items }: { items: string[] }) {
+  return (
+    <div className="knowledge-bullet-list">
+      {items.map((item, index) => (
+        <div key={index} className="knowledge-bullet-row">
+          <span />
+          <p>{item}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PillList({ items }: { items: string[] }) {
+  return (
+    <div className="knowledge-pill-list">
+      {items.map((item) => (
+        <span key={item}>{item}</span>
+      ))}
+    </div>
+  );
+}
+
+function CitationList({
+  citations,
+  emptyText = "暂无引用记录。",
+}: {
+  citations: KnowledgeCitation[];
+  emptyText?: string;
+}) {
+  if (citations.length === 0) {
+    return <p className="knowledge-reader-note">{emptyText}</p>;
+  }
+
+  return (
+    <div className="knowledge-row-list">
+      {citations.map((cite, index) => (
+        <div key={index} className="knowledge-row-item knowledge-row-item--stacked">
+          <div className="knowledge-row-title">{cite.title}</div>
+          <div className="fa-num knowledge-row-submeta">{cite.meta}</div>
+        </div>
+      ))}
     </div>
   );
 }

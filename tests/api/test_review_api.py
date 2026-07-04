@@ -128,7 +128,7 @@ def test_review_action_records_actor_request_and_audit_trace() -> None:
     approved = api_review_approve(
         "approve-with-audit",
         body=ReviewActionRequest(
-            actor="automation",
+            actor="codex",
             reason="validated source refs",
             request_id="req-001",
             expected_status="pending",
@@ -138,7 +138,7 @@ def test_review_action_records_actor_request_and_audit_trace() -> None:
 
     assert approved.status == "approved"
     assert approved.resolution_note == "validated source refs"
-    assert approved.resolution_actor == "automation"
+    assert approved.resolution_actor == "codex"
     assert approved.resolution_request_id == "req-001"
     assert approved.audit_id == "review-action:approve-with-audit:req-001"
     assert approved.action_status == "success"
@@ -151,7 +151,7 @@ def test_review_action_rejects_stale_expected_status() -> None:
     with pytest.raises(HTTPException) as exc:
         api_review_approve(
             "stale-review",
-            body=ReviewActionRequest(actor="automation", reason="stale", expected_status="approved"),
+            body=ReviewActionRequest(actor="codex", reason="stale", expected_status="approved"),
             db=session,
         )
 
@@ -165,14 +165,14 @@ def test_review_action_rejects_repeated_resolution() -> None:
 
     api_review_approve(
         "already-approved",
-        body=ReviewActionRequest(actor="automation", reason="first", request_id="req-first"),
+        body=ReviewActionRequest(actor="codex", reason="first", request_id="req-first"),
         db=session,
     )
 
     with pytest.raises(HTTPException) as exc:
         api_review_reject(
             "already-approved",
-            body=ReviewActionRequest(actor="automation", reason="second", request_id="req-second"),
+            body=ReviewActionRequest(actor="codex", reason="second", request_id="req-second"),
             db=session,
         )
 
@@ -185,7 +185,7 @@ def test_review_rerun_does_not_fake_scheduler_run_when_unwired() -> None:
 
     rerun = api_review_rerun(
         "rerun-unwired",
-        body=ReviewActionRequest(actor="automation", reason="rerun parser", request_id="req-rerun"),
+        body=ReviewActionRequest(actor="codex", reason="rerun parser", request_id="req-rerun"),
         db=session,
     )
 

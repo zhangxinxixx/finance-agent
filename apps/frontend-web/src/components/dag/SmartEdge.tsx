@@ -140,7 +140,7 @@ export const SmartEdge = memo(function SmartEdge({
         <div
           className="flex items-center justify-center rounded-full text-[7px] font-semibold leading-none shadow-sm backdrop-blur-sm"
           style={{
-            background: "rgba(8, 12, 20, 0.72)",
+            background: "color-mix(in srgb, var(--bg-card) 92%, transparent)",
             border: `1px solid ${stroke}aa`,
             color: stroke,
             padding: "2px 6px",

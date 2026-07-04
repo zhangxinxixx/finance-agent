@@ -302,13 +302,13 @@ export function KLineChart({
         : `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 
     let html = `<div style="font-size:11px;color:${TEXT_COLOR};margin-bottom:4px">${timeStr}</div>`;
-    html += `<div style="display:flex;gap:12px;font-size:12px;font-family:monospace">`;
+    html += `<div style="display:flex;gap:12px;font-size:12px;font-family:var(--font-mono)">`;
     html += `<div><span style="color:${TEXT_COLOR}">O </span><span style="color:#fff">${open.toFixed(2)}</span></div>`;
     html += `<div><span style="color:${TEXT_COLOR}">H </span><span style="color:${color}">${high.toFixed(2)}</span></div>`;
     html += `<div><span style="color:${TEXT_COLOR}">L </span><span style="color:${color}">${low.toFixed(2)}</span></div>`;
     html += `<div><span style="color:${TEXT_COLOR}">C </span><span style="color:${color}">${close.toFixed(2)}</span></div>`;
     html += `</div>`;
-    html += `<div style="margin-top:4px;font-size:11px;font-family:monospace;color:${color}">${sign}${change.toFixed(2)} (${sign}${changePct}%)</div>`;
+    html += `<div style="margin-top:4px;font-size:11px;font-family:var(--font-mono);color:${color}">${sign}${change.toFixed(2)} (${sign}${changePct}%)</div>`;
 
     // Check volume
     const volData = param.seriesData.get(volumeSeriesRef.current!);

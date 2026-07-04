@@ -65,26 +65,24 @@ export function CMEOptionsIntentSummary({ snapshot }: { snapshot: CMEOptionsResp
 
   return (
     <div
-      className="flex min-w-0 flex-wrap items-center gap-2 rounded-[var(--radius-md)] border px-3 py-1.5"
+      className="cme-options-intent-summary"
       style={{
-        borderColor: "rgba(240,82,82,0.28)",
-        background: "linear-gradient(135deg, rgba(240,82,82,0.12), rgba(240,82,82,0.04))",
-        borderLeft: "3px solid var(--down)",
+        borderColor: "var(--fa-important-border)",
+        background: "var(--fa-important-soft)",
       }}
     >
       <div className="flex items-center gap-2">
-        <Shield size={13} className="text-[var(--down)]" />
-        <div className="flex flex-col">
-          <span className="text-[8px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">当前意图</span>
-          <span className="text-[13px] font-bold leading-tight text-[var(--down)]">{intentType}</span>
+        <Shield size={13} className="text-[var(--fa-important)]" />
+        <div className="flex items-center gap-1.5">
+          <span className="fa-compact-label">当前意图</span>
+          <span className="cme-options-intent-title">{intentType}</span>
         </div>
       </div>
-      <div className="h-6 w-px bg-[var(--border)]" />
       <div
-        className="min-w-0 text-[10px] leading-snug text-[var(--fg-3)]"
+        className="cme-options-intent-evidence"
         title={localizedEvidence.join(" / ") || `置信度 ${confPct}/100`}
         style={{
-          maxWidth: 360,
+          maxWidth: 260,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -92,20 +90,9 @@ export function CMEOptionsIntentSummary({ snapshot }: { snapshot: CMEOptionsResp
       >
         {localizedEvidence[0] ?? `置信度 ${confPct}/100`}
       </div>
-      {localizedEvidence.slice(1, 3).map((ev) => (
-        <span
-          key={ev}
-          className="max-w-[160px] truncate rounded-[var(--radius-sm)] border px-2 py-0.5 text-[9px] font-semibold text-[var(--down)]"
-          style={{ borderColor: "rgba(240,82,82,0.22)", background: "rgba(240,82,82,0.08)" }}
-          title={ev}
-        >
-          {ev}
-        </span>
-      ))}
-      <div className="h-6 w-px bg-[var(--border)]" />
       <div className="flex items-center gap-1.5">
-        <span className="fa-num text-[16px] font-bold text-[var(--down)]" style={{ fontFamily: "var(--font-mono)" }}>{confPct}</span>
-        <span className="text-[9px] text-[var(--fg-5)]">/ 100</span>
+        <span className="cme-options-intent-score fa-num">{confPct}</span>
+        <span className="cme-options-intent-score-unit">/ 100</span>
       </div>
     </div>
   );
@@ -126,7 +113,7 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "overview") {
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
         <CMEOptionsOverviewGrid snapshot={snapshot} wallScores={wallScores} />
       </div>
     );
@@ -134,12 +121,12 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "gex-gamma") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,0.8fr) minmax(0,1.4fr)", gap: 8, alignItems: "start" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px,0.7fr) minmax(0,1.3fr)", gap: 6, alignItems: "start" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
           <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={currentPrice} />
           <ChangeTable snapshot={snapshot} />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
           <GammaZeroCard netGexAggregate={snapshot.gex?.netgex_aggregate as NetGexAggregate} wallScores={wallScores} />
           <GEXBreakdown snapshot={snapshot} selectedExpiry={selectedExpiry} />
           <ExposurePanel snapshot={snapshot} />
@@ -150,11 +137,11 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "wall-map") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,0.7fr) minmax(0,1.3fr)", gap: 8, alignItems: "start" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px,0.65fr) minmax(0,1.35fr)", gap: 6, alignItems: "start" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
           <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={currentPrice} />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
           <OptionsWallTable wallScores={wallScores} />
         </div>
       </div>
@@ -163,8 +150,8 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "scenario") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.85fr)", gap: 8, alignItems: "start" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(280px,0.76fr)", gap: 5, alignItems: "start" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
           <IVSkewTable snapshot={snapshot} />
           <ExposurePanel snapshot={snapshot} />
         </div>
@@ -174,8 +161,8 @@ export function renderCMEOptionsTabContent({
   }
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.85fr)", gap: 8, alignItems: "start" }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(280px,0.76fr)", gap: 5, alignItems: "start" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
         <SourceTracePanel sourceTrace={(snapshot.source_trace ?? []) as SourceTraceItems} />
       </div>
       <CMEOptionsRightColumn snapshot={snapshot} />

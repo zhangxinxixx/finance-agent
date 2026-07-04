@@ -1,0 +1,258 @@
+/*
+ * FinAnalytics typography contract
+ *
+ * Five levels only:
+ * - primary: page/module titles and primary values
+ * - body: normal readable content
+ * - muted: secondary content that still needs scanning
+ * - label: uppercase/ticker labels and metadata labels
+ * - faint: timestamps, hashes, empty hints only
+ */
+
+:root,
+:root[data-theme="light"] {
+  --fa-text-primary: var(--fg-1);
+  --fa-text-body: var(--fg-2);
+  --fa-text-muted: var(--fg-3);
+  --fa-text-label: var(--fg-4);
+  --fa-text-faint: var(--fg-5);
+  --fa-emphasis: var(--emphasis);
+  --fa-emphasis-soft: var(--emphasis-soft);
+  --fa-emphasis-border: var(--emphasis-border);
+  --fa-important: var(--important);
+  --fa-important-soft: var(--important-soft);
+  --fa-important-border: var(--important-border);
+}
+
+:root[data-theme="dark"] {
+  --fa-text-primary: var(--fg-1);
+  --fa-text-body: var(--fg-2);
+  --fa-text-muted: var(--fg-3);
+  --fa-text-label: var(--fg-4);
+  --fa-text-faint: var(--fg-5);
+  --fa-emphasis: var(--emphasis);
+  --fa-emphasis-soft: var(--emphasis-soft);
+  --fa-emphasis-border: var(--emphasis-border);
+  --fa-important: var(--important);
+  --fa-important-soft: var(--important-soft);
+  --fa-important-border: var(--important-border);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--type-body);
+  font-feature-settings: "cv01", "cv03", "ss03", "tnum";
+  text-rendering: geometricPrecision;
+}
+
+.fa-title,
+.fa-module-title,
+.fa-value {
+  font-family: var(--font-display);
+  color: var(--fa-text-primary);
+}
+
+.fa-page-title {
+  font-family: var(--font-display);
+  color: var(--fa-text-primary);
+  font-size: var(--type-page-title);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.fa-section-title {
+  font-family: var(--font-display);
+  color: var(--fa-text-primary);
+  font-size: var(--type-section-title);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+}
+
+.fa-card-title {
+  font-family: var(--font-display);
+  color: var(--fa-text-primary);
+  font-size: var(--type-card-title);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+}
+
+.fa-emphasis {
+  color: var(--fa-emphasis);
+}
+
+.fa-important {
+  color: var(--fa-important);
+}
+
+.fa-emphasis-bg {
+  background: var(--fa-emphasis);
+}
+
+.fa-important-bg {
+  background: var(--fa-important);
+}
+
+.fa-emphasis-chip {
+  border: 1px solid var(--fa-emphasis-border);
+  background: var(--fa-emphasis-soft);
+  color: var(--fa-emphasis);
+}
+
+.fa-important-chip {
+  border: 1px solid var(--fa-important-border);
+  background: var(--fa-important-soft);
+  color: var(--fa-important);
+}
+
+.fa-important-rule {
+  background: var(--fa-important);
+}
+
+.fa-body-text {
+  color: var(--fa-text-body);
+  font-size: var(--text-body);
+  line-height: var(--lh-body);
+}
+
+.fa-muted-text {
+  color: var(--fa-text-muted);
+  font-size: var(--type-body-sm);
+  line-height: var(--lh-body-sm);
+}
+
+.fa-faint-text {
+  color: var(--fa-text-faint);
+  font-size: var(--type-label);
+  line-height: 1.35;
+}
+
+.fa-label,
+.fa-eyebrow,
+.finance-panel-title,
+.finance-metric-label {
+  font-family: var(--font-display);
+  color: var(--fa-text-label);
+  font-size: var(--type-label);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0;
+  line-height: var(--lh-snug);
+  text-transform: uppercase;
+}
+
+.fa-compact-label {
+  font-family: var(--font-display);
+  color: var(--fa-text-label);
+  font-size: var(--type-caption);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0;
+  line-height: var(--lh-snug);
+  text-transform: uppercase;
+}
+
+.fa-compact-meta {
+  color: var(--fa-text-muted);
+  font-size: var(--type-label);
+  line-height: 1.4;
+}
+
+.fa-code-label {
+  font-family: var(--font-market);
+  color: var(--fa-text-body);
+  font-size: var(--type-subtitle);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0;
+  line-height: var(--lh-snug);
+  text-transform: uppercase;
+}
+
+.fa-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum", "zero";
+  letter-spacing: 0;
+}
+
+.fa-price-num {
+  font-family: var(--font-market);
+  color: var(--fa-text-primary);
+  font-size: var(--type-kpi-lg);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum", "zero";
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.fa-price-num--sm {
+  font-size: var(--text-18);
+}
+
+.fa-price-num--lg {
+  font-size: var(--text-28);
+}
+
+.fa-unit {
+  font-family: var(--font-market);
+  color: var(--fa-text-label);
+  font-size: var(--type-body-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0;
+}
+
+.fa-delta {
+  font-family: var(--font-market);
+  color: var(--fa-text-body);
+  font-size: var(--type-subtitle);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum", "zero";
+}
+
+.fa-kpi-chip {
+  display: inline-flex;
+  min-height: 30px;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-inner);
+  padding: 6px 9px;
+}
+
+.fa-kpi-chip-label {
+  color: var(--fa-text-label);
+  font-family: var(--font-display);
+  font-size: var(--type-label);
+  font-weight: var(--fw-bold);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.fa-kpi-chip-value {
+  color: var(--fa-text-primary);
+  font-family: var(--font-market);
+  font-size: var(--type-card-title);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum", "zero";
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.fa-card,
+.finance-panel,
+.finance-metric-card {
+  color: var(--fa-text-body);
+}
+
+.fa-card p,
+.finance-panel p {
+  color: var(--fa-text-body);
+}
+
+.fa-card-description {
+  color: var(--fa-text-muted);
+  font-size: var(--type-body-sm);
+  line-height: var(--lh-snug);
+}

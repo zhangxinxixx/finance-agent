@@ -9,12 +9,14 @@ export {
   ReportsKnowledgeSection,
 } from "./RightPanelStaticSections";
 
-const REGIME_ORDER: MarketRegimeKey[] = ["rate_pressure", "transition_release", "trend_tailwind"];
+const REGIME_ORDER: MarketRegimeKey[] = ["rate_pressure", "transition_release", "trend_tailwind", "liquidity_crunch", "monetary_credit_repricing"];
 
 const REGIME_COLORS: Record<MarketRegimeKey, string> = {
   rate_pressure: "#f05252",
   transition_release: "#f59e0b",
   trend_tailwind: "#10b981",
+  liquidity_crunch: "#dc2626",
+  monetary_credit_repricing: "#2563eb",
 };
 
 export function MarketDiagnosisSection({
@@ -29,27 +31,16 @@ export function MarketDiagnosisSection({
     || (activeRegime && marketRegimes?.[activeRegime] ? marketRegimes[activeRegime].label : "过渡释放态");
 
   return (
-    <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border-faint)" }}>
-      <ContextPanelSectionHeader icon={Activity} title="市场诊断" iconColor="var(--fg-5)" className="mb-2" />
-      <div style={{ marginBottom: 8 }}>
+    <div className="market-monitor-right-section">
+      <ContextPanelSectionHeader icon={Activity} title="市场诊断" iconColor="var(--fg-5)" className="market-monitor-right-section-header" />
+      <div className="market-monitor-right-regime-label">
         <span
-          style={{
-            fontFamily: "var(--font-sans)",
-            fontWeight: 500,
-            fontSize: 9,
-            lineHeight: 1,
-            padding: "3px 8px",
-            borderRadius: 3,
-            background: "rgba(245,158,11,0.08)",
-            border: "1px solid rgba(245,158,11,0.22)",
-            color: "#f59e0b",
-            display: "inline-block",
-          }}
+          className="market-monitor-right-regime-badge"
         >
           {regimeLabel}
         </span>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      <div className="market-monitor-right-regime-list">
         {REGIME_ORDER.map((key) => {
           const item = marketRegimes?.[key];
           if (!item) return null;
@@ -58,23 +49,18 @@ export function MarketDiagnosisSection({
           return (
             <div
               key={key}
-              style={{
-                padding: "6px 8px",
-                background: "var(--bg-card-inner)",
-                border: "1px solid var(--border-faint)",
-                borderRadius: 3,
-                borderLeft: `2px solid ${color}`,
-              }}
+              className="market-monitor-right-regime-card"
+              style={{ borderLeftColor: color }}
             >
               <div className="flex items-center justify-between">
-                <span style={{ fontFamily: "var(--font-sans)", fontWeight: 600, fontSize: 9.5, color: "var(--fg-2)" }}>
+                <span className="market-monitor-right-regime-title">
                   {item.label}
                 </span>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--fg-5)" }}>
+                <span className="market-monitor-right-regime-confidence">
                   {item.confidence <= 1 ? `${(item.confidence * 100).toFixed(0)}%` : `${item.confidence}%`}
                 </span>
               </div>
-              <div style={{ fontFamily: "var(--font-sans)", fontSize: 9, lineHeight: 1.5, color: "var(--fg-4)", marginTop: 4 }}>
+              <div className="market-monitor-right-regime-description">
                 {item.description}
               </div>
             </div>

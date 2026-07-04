@@ -36,6 +36,9 @@ export function translateText(text: string): string {
     "Summary Only": "仅摘要",
     "DAILY COMPOSITE": "综合分析",
     "I1_defensive": "一级防御",
+    "I2_structured_rebalance": "结构再平衡",
+    i2_structured_rebalance: "结构再平衡",
+    l2_structured_rebalance: "结构再平衡",
     "OpenBB Macro/Market": "OpenBB 宏观/市场",
   };
 
@@ -145,6 +148,10 @@ export function translateText(text: string): string {
     [/\bmacro\b/gi, "宏观"],
     [/\boptions?\b(?![^a-z])/gi, "期权"],
     [/\bCME\b/, "CME"],
+    [/\bI2_structured_rebalance\b/gi, "结构再平衡"],
+    [/\bi2_structured_rebalance\b/gi, "结构再平衡"],
+    [/\bl2_structured_rebalance\b/gi, "结构再平衡"],
+    [/\bstructured_rebalance\b/gi, "结构再平衡"],
   ];
 
   let result = text;

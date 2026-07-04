@@ -13,7 +13,7 @@ def _item(title: str, *, url: str = "https://xnews.jin10.com/details/221688") ->
         source_key="jin10_feishu",
         source_name="Jin10 Feishu Chat Pull",
         source_type="supplemental",
-        feed_key="chat_fixture",
+        feed_key="oc_jin10",
         title=title,
         url=url,
         domain="xnews.jin10.com",
@@ -32,7 +32,7 @@ def _item(title: str, *, url: str = "https://xnews.jin10.com/details/221688") ->
                 "asset_tags": ["XAUUSD", "DXY", "US02Y", "US10Y"],
                 "topic_tags": ["gold", "macro", "rates"],
             },
-            "source_refs": [{"source": "jin10_feishu", "source_ref": "jin10_feishu:chat_fixture:om_1"}],
+            "source_refs": [{"source": "jin10_feishu", "source_ref": "jin10_feishu:oc_jin10:om_1"}],
         },
     )
 

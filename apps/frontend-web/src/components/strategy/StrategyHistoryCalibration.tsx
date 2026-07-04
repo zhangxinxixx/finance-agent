@@ -24,7 +24,7 @@ export function StrategyHistoryListSection({
   regimeLabel: string;
 }) {
   return (
-    <FACard title="历史策略" eyebrow="样本回看" bodyClassName="space-y-3">
+    <FACard title="每日策略回看" eyebrow="按日策略卡" bodyClassName="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-[10px] text-[var(--fg-5)]">
         <History size={12} />
         <span>
@@ -78,7 +78,7 @@ export function StrategyHistoryListSection({
       ) : (
         <FAEmptyState
           title="当前筛选没有样本"
-          description="调整资产、时间窗口或 regime 后再看历史策略卡。"
+          description="调整资产、时间窗口或市场状态后再看历史每日策略卡。"
         />
       )}
     </FACard>
@@ -105,7 +105,7 @@ export function StrategyCalibrationPanel({
   unavailableReason: string | null;
 }) {
   return (
-    <FACard title="校准概览" eyebrow="样本分布" accent="info" bodyClassName="space-y-3">
+    <FACard title="框架校准" eyebrow="历史样本" accent="info" bodyClassName="space-y-3">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
           <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">资产</div>
@@ -121,7 +121,7 @@ export function StrategyCalibrationPanel({
           <div className="mt-1 text-[13px] font-semibold text-[var(--fg-2)]">{windowLabel}</div>
         </div>
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">市场状态</div>
+          <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">框架状态</div>
           <div className="mt-1 text-[13px] font-semibold text-[var(--fg-2)]">{strategyValueLabel(regimeLabel)}</div>
         </div>
       </div>
@@ -134,7 +134,7 @@ export function StrategyCalibrationPanel({
 
       {regimeCounts.length ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">历史分布</div>
+          <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">样本状态分布</div>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {regimeCounts.map((item) => (
               <FAStatusPill key={item.market_regime} tone="neutral">

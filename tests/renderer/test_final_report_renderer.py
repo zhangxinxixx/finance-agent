@@ -11,6 +11,13 @@ _REQUIRED_SECTIONS = [
     "## 宏观数据报告",
     "### 宏观数据主题",
     "### 核心宏观指标",
+    "### v2.1 流动性数据底座判断",
+    "### 当前阶段判断",
+    "### 当前主导变量排序",
+    "### 利率博弈区",
+    "### 黄金五因子评分",
+    "### 关键触发条件与失效条件",
+    "### 交易 / 配置含义",
     "### 宏观结论",
     "## 综合报告",
     "### 报告主题",
@@ -80,6 +87,8 @@ def _agent_output(
     watchlist: list[str] | None = None,
     invalid_conditions: list[str] | None = None,
     summary: str | None = None,
+    market_phase: str | None = None,
+    regime_drivers: dict | None = None,
 ) -> AgentOutput:
     return AgentOutput(
         version="1.0",
@@ -97,6 +106,8 @@ def _agent_output(
         source_refs=[{"source": module, "ref": f"{module}:2026-05-14"}],
         status=status,
         created_at=_CREATED_AT,
+        market_phase=market_phase,
+        regime_drivers=regime_drivers,
     )
 
 
@@ -109,6 +120,21 @@ def _macro() -> AgentOutput:
         key_findings=["Real yields fell and DXY softened."],
         watchlist=["DGS10", "DXY"],
         summary="Macro liquidity is supportive but not sufficient for execution.",
+        market_phase="transition_release",
+        regime_drivers={
+            "market_phase": "transition_release",
+            "confidence": 0.72,
+            "drivers": {
+                "real_yield": {"status": "available", "direction": "falling", "value": 1.85},
+                "dxy": {"status": "available", "direction": "falling", "value": 99.2},
+                "us02y": {"status": "unavailable"},
+                "us10y": {"status": "unavailable"},
+                "breakeven": {"status": "unavailable"},
+                "liquidity_quantity": {"status": "partial", "trend": "neutral"},
+                "liquidity_price": {"status": "unavailable"},
+            },
+            "change_conditions": ["US10Y - T10YIE turns lower for 2+ weeks"],
+        },
     )
 
 
@@ -198,6 +224,9 @@ def test_render_final_report_markdown_contains_required_sections_lineage_and_sou
     assert "| 指标 | 最新值 | 日期 | 日变 | 周变 | 月变 | 解读 |" in markdown
     assert "| DXY | 99.2 index | 2026-05-14 | - | -0.4 | - | 美元走弱，边际利多黄金 |" in markdown
     assert "| 10Y 实际利率 | 1.85 % | 2026-05-14 | -0.03 | -0.08 | -0.12 | 实际利率回落，估值压力缓和 |" in markdown
+    assert "当前阶段：过渡释放态" in markdown
+    assert "主口径为 US10Y - T10YIE" in markdown
+    assert "流动性数量层只作为底座" in markdown
     assert "| 协调器总结 | 部分可用 | 偏多 | 0.61 |" in markdown
     assert "Bullish research view with constrained confidence." in markdown
     assert "Real yields fell" in markdown

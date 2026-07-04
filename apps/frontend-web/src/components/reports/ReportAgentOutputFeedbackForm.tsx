@@ -26,7 +26,7 @@ export function ReportAgentOutputFeedbackForm({ item }: { item: ReportAnalysisAg
         rating: Number(feedbackRating),
         category: feedbackCategory,
         comment,
-        submitted_by: "automation",
+        submitted_by: "codex",
         request_id: `report-feedback-${item.agent_output_id}-${Date.now()}`,
       });
       setFeedbackComment("");

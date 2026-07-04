@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from apps.api.schemas.artifact import ArtifactDetailResponse
 from apps.api.schemas.common import WarningItem
-from apps.api.schemas.source_trace import ArtifactRef, SourceRef
+from apps.api.schemas.source_trace import ArtifactRef
 from apps.api.services._lineage_warnings import build_artifact_lineage_warnings
 from apps.api.services._report_lineage import resolve_report_lineage_context
 from apps.api.services._storage import _PROJECT_ROOT
@@ -69,7 +69,7 @@ def _build_registry_artifact_detail(db: Session, row: RunArtifact) -> ArtifactDe
         generated_at=row.created_at,
         sha256=row.sha256,
     )
-    source_refs = _parse_registry_source_refs(row)
+    source_refs = parse_source_refs(row.source_refs)
     if step is not None:
         source_refs = dedupe_source_refs([*source_refs, *parse_source_refs(step.source_refs)])
     input_refs = parse_artifact_refs(step.input_refs) if step is not None else []
@@ -165,12 +165,6 @@ def _parse_metadata(raw: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
-
-
-def _parse_registry_source_refs(row: RunArtifact) -> list[SourceRef]:
-    if row.source_refs_data:
-        return parse_source_refs(row.source_refs_data)
-    return parse_source_refs(row.source_refs)
 
 
 def _missing_file_warnings(file_path: str) -> list[WarningItem]:

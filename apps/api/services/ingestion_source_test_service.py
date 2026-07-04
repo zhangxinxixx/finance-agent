@@ -15,6 +15,7 @@ from apps.api.schemas.source_trace import ArtifactRef, SourceRef
 from apps.collectors.jin10.datacenter import DEFAULT_DATACENTER_SLUGS, fetch_datacenter_report
 from apps.collectors.jin10.mcp_client import Jin10MCPClient
 from apps.collectors.news.jin10_detail_fetcher import DEFAULT_JIN10_BROWSER_PROFILE
+from apps.api.services.jin10_web_flash_brief_service import get_jin10_web_flash_briefs_latest
 from apps.runtime.artifact_registry import register_step_artifacts
 from apps.runtime.state_machine import transition_task_run, transition_task_step
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensure_task_tables
@@ -22,6 +23,8 @@ from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensu
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_DATACENTER_SLUG = "dc_etf_gold"
 _DEFAULT_MARKET_CODE = "XAUUSD"
+_WEB_FLASH_SOURCE_KEYS = {"jin10_web_important_flash", "jin10_web_vip_flash"}
+_WEB_FLASH_ARTIFACT_FILENAME = "jin10_web_flash_briefs.json"
 _SUPPORTED_SOURCE_KEYS = {
     "jin10_mcp_flash",
     "jin10_mcp_calendar",
@@ -29,7 +32,7 @@ _SUPPORTED_SOURCE_KEYS = {
     "jin10_xnews_public",
     "jin10_datacenter_reports",
     "jin10_svip_reports",
-}
+} | _WEB_FLASH_SOURCE_KEYS
 
 
 @dataclass(slots=True)
@@ -117,6 +120,8 @@ def _run_probe(*, source_key: str, limit: int, run_id: str, slug: str | None = N
         return _probe_mcp_market(limit=limit)
     if source_key == "jin10_xnews_public":
         return _probe_xnews_public(limit=limit)
+    if source_key in _WEB_FLASH_SOURCE_KEYS:
+        return _probe_web_flash_artifact(source_key=source_key, limit=limit)
     if source_key == "jin10_datacenter_reports":
         return _probe_datacenter(run_id=run_id, slug=slug)
     return _probe_svip_profile()
@@ -258,6 +263,87 @@ def _probe_xnews_public(*, limit: int) -> _ProbeOutcome:
     )
 
 
+def _probe_web_flash_artifact(*, source_key: str, limit: int) -> _ProbeOutcome:
+    payload = get_jin10_web_flash_briefs_latest(project_root=_PROJECT_ROOT)
+    if payload is None:
+        latest_artifact = _latest_web_flash_artifact_path()
+        if latest_artifact is not None:
+            artifact_path = _relative_path(latest_artifact)
+            return _ProbeOutcome(
+                status="malformed_latest_artifact",
+                data_status=DataStatus.partial,
+                summary={
+                    "reason_code": "malformed_latest_artifact",
+                    "method": "latest.jin10_web_flash_briefs",
+                    "source_key": source_key,
+                    "artifact_path": artifact_path,
+                },
+                preview=[],
+                raw_payload={
+                    "source_key": source_key,
+                    "status": "malformed_latest_artifact",
+                    "artifact_path": artifact_path,
+                },
+                source_type="web_flash",
+                error_message=f"Malformed latest Jin10 web flash artifact: {artifact_path}",
+                error_type="malformed_latest_artifact",
+            )
+        return _ProbeOutcome(
+            status="no_latest_artifact",
+            data_status=DataStatus.partial,
+            summary={
+                "reason_code": "no_latest_artifact",
+                "method": "latest.jin10_web_flash_briefs",
+                "source_key": source_key,
+            },
+            preview=[],
+            raw_payload={"source_key": source_key, "status": "no_latest_artifact", "artifact": None},
+            source_type="web_flash",
+        )
+
+    briefs = payload.get("briefs") if isinstance(payload, dict) else []
+    briefs = [item for item in briefs if isinstance(item, dict)]
+    matching_briefs = [item for item in briefs if item.get("source_key") == source_key]
+    preview = [
+        {
+            "headline": _excerpt(str(item.get("headline") or ""), 160),
+            "display_bucket": item.get("display_bucket"),
+            "published_at": item.get("published_at"),
+            "url": item.get("url") or item.get("source_url") or item.get("final_url"),
+            "access_status": item.get("access_status"),
+            "verification_status": item.get("verification_status"),
+        }
+        for item in matching_briefs[:limit]
+    ]
+    artifact_status = str(payload.get("status") or "unknown")
+    status = "no_matching_briefs" if not matching_briefs else artifact_status
+    data_status = DataStatus.live if status == "ok" else DataStatus.partial
+    reason = "no_matching_briefs" if status == "no_matching_briefs" else None
+    return _ProbeOutcome(
+        status=status,
+        data_status=data_status,
+        summary={
+            "artifact_path": payload.get("artifact_path"),
+            "brief_count": payload.get("brief_count", len(briefs)),
+            "matching_count": len(matching_briefs),
+            "sample_count": len(preview),
+            "method": "latest.jin10_web_flash_briefs",
+            "source_key": source_key,
+            **({"reason_code": reason} if reason else {}),
+        },
+        preview=preview,
+        raw_payload=_web_flash_probe_raw_payload(
+            source_key=source_key,
+            status=status,
+            payload=payload,
+            matching_briefs=matching_briefs,
+        ),
+        source_type="web_flash",
+        error_message="No matching Jin10 web flash briefs in latest artifact" if reason else None,
+        error_type=reason,
+    )
+
+
 def _probe_datacenter(*, run_id: str, slug: str | None = None) -> _ProbeOutcome:
     target_slug = slug or _DEFAULT_DATACENTER_SLUG
     if target_slug not in DEFAULT_DATACENTER_SLUGS:
@@ -306,19 +392,19 @@ def _probe_datacenter(*, run_id: str, slug: str | None = None) -> _ProbeOutcome:
 
 def _probe_svip_profile() -> _ProbeOutcome:
     profile_path = DEFAULT_JIN10_BROWSER_PROFILE
-    profile_exists = bool(profile_path and profile_path.exists())
+    profile_exists = profile_path.exists()
     status = "manual_required" if profile_exists else "login_required"
     reason = (
         f"browser_profile present at {profile_path}; paid content fetch is disabled for immediate tests"
         if profile_exists
-        else "browser_profile is not configured; authorized SVIP session is required"
+        else f"browser_profile missing at {profile_path}; authorized SVIP session is required"
     )
     return _ProbeOutcome(
         status=status,
         data_status=DataStatus.manual_required,
         summary={
             "auto_fetch": False,
-            "browser_profile": str(profile_path) if profile_path else None,
+            "browser_profile": str(profile_path),
             "browser_profile_exists": profile_exists,
             "reason": reason,
         },
@@ -326,7 +412,7 @@ def _probe_svip_profile() -> _ProbeOutcome:
         raw_payload={
             "status": status,
             "auto_fetch": False,
-            "browser_profile": str(profile_path) if profile_path else None,
+            "browser_profile": str(profile_path),
             "browser_profile_exists": profile_exists,
         },
         source_type="scraper",
@@ -567,6 +653,46 @@ def _latest_article_briefs_artifact() -> Path | None:
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _latest_web_flash_artifact_path() -> Path | None:
+    base = _PROJECT_ROOT / "storage" / "features" / "news"
+    if not base.exists():
+        return None
+    for date_dir in sorted((path for path in base.iterdir() if path.is_dir()), reverse=True):
+        for run_dir in sorted((path for path in date_dir.iterdir() if path.is_dir()), reverse=True):
+            artifact_path = run_dir / _WEB_FLASH_ARTIFACT_FILENAME
+            if artifact_path.is_file():
+                return artifact_path
+    return None
+
+
+def _web_flash_probe_raw_payload(
+    *,
+    source_key: str,
+    status: str,
+    payload: dict[str, Any],
+    matching_briefs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "source_key": source_key,
+        "status": status,
+        "artifact": {
+            "status": payload.get("status"),
+            "date": payload.get("date"),
+            "run_id": payload.get("run_id"),
+            "retrieved_date": payload.get("retrieved_date"),
+            "artifact_path": payload.get("artifact_path"),
+            "as_of": payload.get("as_of"),
+            "rule_version": payload.get("rule_version"),
+            "brief_count": payload.get("brief_count"),
+            "matching_count": len(matching_briefs),
+            "briefs": matching_briefs,
+            "source_refs": payload.get("source_refs") if isinstance(payload.get("source_refs"), list) else [],
+            "artifact_refs": payload.get("artifact_refs") if isinstance(payload.get("artifact_refs"), list) else [],
+            "quality_flags": payload.get("quality_flags") if isinstance(payload.get("quality_flags"), dict) else {},
+        },
+    }
 
 
 def _relative_path(path: Path) -> str:

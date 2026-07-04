@@ -5,7 +5,7 @@ export function ReportsRailLoadingState() {
   return (
     <aside className="reports-rail" style={REPORTS_RAIL_PANEL_STYLE}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--fg-3)" }}>筛选</span>
+        <span style={{ fontSize: "var(--text-12)", fontWeight: 600, color: "var(--fg-3)" }}>筛选</span>
       </div>
       {Array.from({ length: 6 }).map((_, i) => (
         <div key={i} style={{ height: 24, marginBottom: 5, borderRadius: 3, background: "var(--bg-hover)", opacity: 0.4 }} />
@@ -17,7 +17,7 @@ export function ReportsRailLoadingState() {
 export function ReportsRailErrorState({ message }: { message: string }) {
   return (
     <aside className="reports-rail" style={REPORTS_RAIL_PANEL_STYLE}>
-      <div style={{ fontSize: 10, color: "var(--down)" }}>{message}</div>
+      <div style={{ fontSize: "var(--text-11)", color: "var(--down)" }}>{message}</div>
     </aside>
   );
 }
@@ -32,8 +32,8 @@ export function ReportsRailHeader({
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingBottom: 8, borderBottom: "1px solid var(--border-faint)" }}>
       <div>
-        <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--fg-5)" }}>Report Nav</div>
-        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--fg-3)" }}>筛选导航</span>
+        <div style={{ fontSize: "var(--text-10)", fontWeight: 600, letterSpacing: 0, textTransform: "uppercase", color: "var(--fg-5)" }}>Report Nav</div>
+        <span style={{ fontSize: "var(--text-12)", fontWeight: 600, color: "var(--fg-3)" }}>筛选导航</span>
       </div>
       {hasActiveFilters ? (
         <button
@@ -46,7 +46,7 @@ export function ReportsRailHeader({
             background: "none",
             border: "none",
             cursor: "pointer",
-            fontSize: 10,
+            fontSize: "var(--text-11)",
             color: "var(--brand-hover)",
             padding: 0,
           }}
@@ -62,7 +62,7 @@ export function ReportsRailHeader({
 export function ReportsRailFooter({ filteredCount, totalCount }: { filteredCount: number; totalCount: number }) {
   return (
     <div style={{ paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "var(--fg-5)", padding: "4px 6px", borderRadius: 4, background: "rgba(255,255,255,0.02)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "var(--text-11)", color: "var(--fg-5)", padding: "5px 7px", borderRadius: 4, background: "rgba(255,255,255,0.02)" }}>
         <span>可见报告</span>
         <span style={{ color: "var(--fg-2)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>
           {filteredCount} / {totalCount}

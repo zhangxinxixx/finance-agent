@@ -11,10 +11,10 @@ export type OptionsWallSortKey =
   | "pnt";
 export type OptionsWallSortDirection = "asc" | "desc";
 
-const MONO_CELL = "font-mono tabular-nums";
+const MONO_CELL = "fa-num";
 const HEADER_CLASS_NAME =
-  "px-3 py-2 text-left text-[11px] font-semibold tracking-[0.1em] text-[var(--fg-4)]";
-const CELL_CLASS_NAME = "px-3 py-2 align-middle text-[12px] text-[var(--fg-3)]";
+  "px-3 py-2 text-left text-[length:var(--text-10)] font-semibold tracking-[0] text-[var(--fg-4)]";
+const CELL_CLASS_NAME = "px-3 py-2 align-middle text-[length:var(--text-11)] text-[var(--fg-3)]";
 const NUMERIC_CLASS_NAME = `${CELL_CLASS_NAME} ${MONO_CELL}`;
 const HEADER_BUTTON_CLASS_NAME =
   "inline-flex w-full items-center justify-between gap-2 rounded px-1 py-0.5 transition-colors hover:bg-[var(--bg-hover)]";
@@ -152,7 +152,7 @@ export function OptionsWallTableHeader({
               onClick={() => onHeaderClick(column.key)}
             >
               <span>{column.label}</span>
-              <span className="text-[10px] text-[var(--fg-5)]">
+              <span className="text-[length:var(--text-10)] text-[var(--fg-5)]">
                 {sortKey === column.key ? (sortDirection === "asc" ? "↑" : "↓") : "↕"}
               </span>
             </button>
@@ -212,7 +212,7 @@ export function OptionsWallTableRows({ rows }: OptionsWallTableRowsProps) {
 export function OptionsWallEmptyState() {
   return (
     <FACard title="墙位明细" eyebrow="墙位评分" accent="warn">
-      <div className="flex min-h-32 items-center justify-center rounded-[var(--radius-lg)] border border-dashed border-[var(--border)] bg-[var(--bg-card-inner)] px-4 py-8 text-sm text-[var(--fg-4)]">
+      <div className="flex min-h-32 items-center justify-center rounded-[var(--radius-lg)] border border-dashed border-[var(--border)] bg-[var(--bg-card-inner)] px-4 py-8 text-[length:var(--text-12)] text-[var(--fg-4)]">
         该日期无期权数据
       </div>
     </FACard>

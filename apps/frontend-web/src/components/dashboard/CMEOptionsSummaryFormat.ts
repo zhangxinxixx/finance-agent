@@ -10,6 +10,10 @@ export function translateIntent(text: string | null | undefined): string {
     unavailable: "不可用",
     I1_defensive: "防守结构",
     I2_balanced: "均衡结构",
+    I2_structured_rebalance: "结构再平衡",
+    i2_structured_rebalance: "结构再平衡",
+    l2_structured_rebalance: "结构再平衡",
+    structured_rebalance: "结构再平衡",
     I3_breakout: "突破结构",
     I4_squeeze: "挤压结构",
   };

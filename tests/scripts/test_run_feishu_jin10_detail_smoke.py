@@ -20,7 +20,7 @@ def _raw_item(title: str, url: str) -> RawNewsItem:
         source_key="jin10_feishu",
         source_name="Jin10 Feishu Chat Pull",
         source_type="supplemental",
-        feed_key="chat_fixture",
+        feed_key="oc_test",
         title=title,
         url=url,
         domain="xnews.jin10.com",
@@ -40,7 +40,7 @@ def _raw_item(title: str, url: str) -> RawNewsItem:
                 "topic_tags": ["gold", "rates", "energy"] if has_gold or has_macro or has_energy else [],
                 "need_detail_fetch": url.startswith(("http://", "https://")),
             },
-            "source_refs": [{"source": "jin10_feishu", "source_ref": f"jin10_feishu:chat_fixture:{title}"}],
+            "source_refs": [{"source": "jin10_feishu", "source_ref": f"jin10_feishu:oc_test:{title}"}],
         },
     )
 
@@ -89,7 +89,7 @@ def test_collects_messages_fetches_detail_links_and_writes_summary(
                 _raw_item("飞书本地消息", "feishu://messages/om_1"),
                 _raw_item("黄金技术图", "https://flash.jin10.com/detail/2"),
             ],
-            source_refs=[{"source_ref": "jin10_feishu:chat_fixture", "status": "available"}],
+            source_refs=[{"source_ref": "jin10_feishu:oc_test", "status": "available"}],
         )
 
     def fake_fetch(**kwargs: Any) -> Jin10DetailFetchResult:
@@ -185,7 +185,7 @@ def test_collects_detail_links_with_browser_profile_fallback(
                     target_url,
                 )
             ],
-            source_refs=[{"source_ref": "jin10_feishu:chat_fixture", "status": "available"}],
+            source_refs=[{"source_ref": "jin10_feishu:oc_test", "status": "available"}],
         )
 
     def fake_fetch(**kwargs: Any) -> Jin10DetailFetchResult:
@@ -270,7 +270,7 @@ def test_prioritizes_gold_macro_xnews_for_detail_fetch_and_daily_trigger(
                     target_url,
                 ),
             ],
-            source_refs=[{"source_ref": "jin10_feishu:chat_fixture", "status": "available"}],
+            source_refs=[{"source_ref": "jin10_feishu:oc_test", "status": "available"}],
         )
 
     def fake_fetch(**kwargs: Any) -> Jin10DetailFetchResult:
@@ -326,7 +326,7 @@ def test_env_file_loader_only_sets_dedicated_missing_keys(tmp_path: Path, monkey
             [
                 "FEISHU_NEWS_APP_ID=cli_from_file",
                 "FEISHU_NEWS_APP_SECRET='secret_from_file'",
-                "FEISHU_JIN10_CHAT_ID=chat_from_file",
+                "FEISHU_JIN10_CHAT_ID=oc_from_file",
                 "LARK_APP_SECRET=must_not_load",
             ]
         ),
@@ -342,5 +342,5 @@ def test_env_file_loader_only_sets_dedicated_missing_keys(tmp_path: Path, monkey
     assert loaded == ["FEISHU_NEWS_APP_ID", "FEISHU_JIN10_CHAT_ID"]
     assert run_feishu_jin10_detail_smoke.os.environ["FEISHU_NEWS_APP_ID"] == "cli_from_file"
     assert run_feishu_jin10_detail_smoke.os.environ["FEISHU_NEWS_APP_SECRET"] == "existing_secret"
-    assert run_feishu_jin10_detail_smoke.os.environ["FEISHU_JIN10_CHAT_ID"] == "chat_from_file"
+    assert run_feishu_jin10_detail_smoke.os.environ["FEISHU_JIN10_CHAT_ID"] == "oc_from_file"
     assert run_feishu_jin10_detail_smoke.os.getenv("LARK_APP_SECRET") is None

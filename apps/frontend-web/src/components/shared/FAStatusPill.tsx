@@ -31,7 +31,7 @@ export function FAStatusPill({ tone, status, domain, label, children, dot = true
   return (
     <span
       title={resolvedTitle}
-      className={`inline-flex items-center gap-1 rounded-[var(--radius-pill)] border px-2 py-0.5 text-[9px] font-semibold uppercase leading-[1.4] tracking-[0.08em] ${toneStyles[resolvedTone]} ${className}`}
+      className={`inline-flex items-center gap-1 rounded-[var(--radius-pill)] border px-2 py-0.5 text-[11px] font-semibold leading-[1.35] tracking-[0] ${toneStyles[resolvedTone]} ${className}`}
     >
       {dot ? <span className="h-1.5 w-1.5 rounded-full bg-current" /> : null}
       <span>{children ?? meta?.label}</span>

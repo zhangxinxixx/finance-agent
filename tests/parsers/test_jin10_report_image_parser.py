@@ -9,6 +9,7 @@ import numpy as np
 from apps.parsers.jin10.report_image_parser import (
     PARSER_VERSION,
     _detect_white_chart_panels,
+    _normalize_vision_markdown_payload,
     parse_report_images,
     render_vision_markdown,
     write_parse_artifacts,
@@ -179,6 +180,74 @@ def test_render_vision_markdown_filters_directory_vip_and_brand_footer_noise():
     assert "每日 金银报告" not in markdown
 
 
+def test_render_vision_markdown_filters_model_request_noise():
+    markdown = render_vision_markdown(
+        title="测试报告",
+        published_at=None,
+        vision_markdown={
+            "pages": [
+                {
+                    "page_no": 15,
+                    "status": "success",
+                    "markdown": "## 白银机构动向\n\n无变化",
+                },
+                {
+                    "page_no": 16,
+                    "status": "success",
+                    "markdown": "请提供第 16 页的图片，我才能为您进行转录。",
+                },
+            ]
+        },
+    )
+
+    assert "## 白银机构动向\n\n无变化" in markdown
+    assert "请提供第 16 页的图片" not in markdown
+
+
+def test_render_vision_markdown_keeps_summary_body_but_strips_cover_shell_noise():
+    markdown = render_vision_markdown(
+        title="CPI与沃什首秀构成夏季行情核心，鹰派预期进入再定价窗口",
+        published_at="2026-06-10",
+        vision_markdown={
+            "pages": [
+                {
+                    "page_no": 2,
+                    "status": "success",
+                    "markdown": (
+                        "## 每日金银报告\n\n"
+                        "2026年06月10日\n\n"
+                        "CPI与沃什首秀构成夏季行情核心，鹰派预期进入再定价窗口\n\n"
+                        "加息预期持续累积，本次CPI将决定鹰派定价深化还是反转。"
+                        "通胀前景和下周美联储决议的政策倾向或将定调夏季行情走向。\n\n"
+                        "联系方式\n\n"
+                        "bianjibu@jin10.com\n\n"
+                        "VIP Team\n\n"
+                        "## 目录\n\n"
+                        "01 隔夜要闻\n\n"
+                        "02 今日黄金市场聚焦\n\n"
+                        "03 市场分析\n\n"
+                        "04 关键图表\n\n"
+                        "05 金银机构动向\n\n"
+                        "06 技术指标\n\n"
+                        "VIP专属报告系列\n\n"
+                        "本材料中的信息来自其撰写者的观点。"
+                    ),
+                }
+            ]
+        },
+    )
+
+    assert "加息预期持续累积，本次CPI将决定鹰派定价深化还是反转。" in markdown
+    assert "每日金银报告" not in markdown
+    assert "2026年06月10日" not in markdown
+    assert "CPI与沃什首秀构成夏季行情核心，鹰派预期进入再定价窗口\n\n加息预期" not in markdown
+    assert "01 隔夜要闻" not in markdown
+    assert "02 今日黄金市场聚焦" not in markdown
+    assert "VIP Team" not in markdown
+    assert "bianjibu@jin10.com" not in markdown
+    assert "本材料中的信息来自其撰写者的观点" not in markdown
+
+
 def test_render_vision_markdown_stitches_cross_page_broken_lines():
     markdown = render_vision_markdown(
         title="测试报告",
@@ -211,6 +280,77 @@ def test_render_vision_markdown_stitches_cross_page_broken_lines():
 
     assert "抵消了美元走强的影响" in markdown
     assert "预期明确转向" in markdown
+
+
+def test_render_vision_markdown_promotes_analyst_label_to_heading():
+    markdown = render_vision_markdown(
+        title="测试报告",
+        published_at=None,
+        vision_markdown={
+            "pages": [
+                {
+                    "page_no": 4,
+                    "status": "success",
+                    "markdown": "分析师Neils Christensen\n\n实际收益率上升已成为贵金属市场最明显的威胁。",
+                }
+            ]
+        },
+    )
+
+    assert "## 分析师Neils Christensen" in markdown
+    assert "实际收益率上升已成为贵金属市场最明显的威胁。" in markdown
+
+
+def test_render_vision_markdown_ignores_market_insight_noise_before_continuation():
+    markdown = render_vision_markdown(
+        title="测试报告",
+        published_at=None,
+        vision_markdown={
+            "pages": [
+                {
+                    "page_no": 6,
+                    "status": "success",
+                    "markdown": "随着油价飙升和通胀担忧充斥债券市场，名义利率大幅飙",
+                },
+                {
+                    "page_no": 7,
+                    "status": "success",
+                    "markdown": (
+                        "# 即时市场洞察\n\n"
+                        "# 每日金银报告\n\n"
+                        "升。确实，黄金最初在实际收益率上升时表现良好。"
+                    ),
+                },
+            ]
+        },
+    )
+
+    assert "名义利率大幅飙升。确实" in markdown
+    assert "即时市场洞察" not in markdown
+
+
+def test_render_vision_markdown_promotes_plain_heading_on_next_page():
+    markdown = render_vision_markdown(
+        title="测试报告",
+        published_at=None,
+        vision_markdown={
+            "pages": [
+                {
+                    "page_no": 14,
+                    "status": "success",
+                    "markdown": "## 黄金机构动向\n\n无变化",
+                },
+                {
+                    "page_no": 15,
+                    "status": "success",
+                    "markdown": "白银机构动向\n\n无变化",
+                },
+            ]
+        },
+    )
+
+    assert "## 黄金机构动向\n\n无变化\n\n## 白银机构动向\n\n无变化" in markdown
+    assert "无变化白银机构动向" not in markdown
 
 
 def test_parse_report_images_attaches_nearby_text_without_footer_noise(tmp_path: Path):
@@ -833,9 +973,10 @@ def test_parse_report_images_drops_full_page_provisional_when_opencv_finds_local
     )
 
     figures = artifacts["figures"]["figures"]
-    assert artifacts["parse_status"]["figures_total"] == 0
+    assert artifacts["parse_status"]["figures_total"] == 1
     assert all(figure["bbox"] != [0, 0, 1000, 2000] for figure in figures)
     assert len({figure["figure_id"] for figure in figures}) == len(figures)
+    assert "figures/fig_p2_001.png" in artifacts["body_markdown"]
     assert "黄金行情反复风险并未消除" in artifacts["body_markdown"]
 
 
@@ -1239,6 +1380,243 @@ def test_parse_report_images_chart_only_layout_page_merges_ocr_body_text(tmp_pat
     assert "全球最大黄金ETF最新一日转为减持" in artifacts["body_markdown"]
 
 
+def test_parse_report_images_recovers_missing_local_figure_when_layout_payload_has_no_chart(tmp_path: Path):
+    image_path = tmp_path / "etf-chart-page.png"
+    _write_page_image(image_path, include_chart=True)
+
+    artifacts = parse_report_images(
+        article_id="220100",
+        title="测试报告",
+        published_at=None,
+        image_entries=[{"seq": 16, "file": image_path.name, "path": str(image_path)}],
+        vision_markdown_runner=lambda pages, figures: {
+            "pages": [
+                {
+                    "page_no": 16,
+                    "status": "success",
+                    "markdown": (
+                        "黄金机构动向\n\n"
+                        "![黄金机构动向图表](https://example.com/placeholder.png)\n\n"
+                        "黄金ETF最新一日转为减持。"
+                    ),
+                }
+            ]
+        },
+        vision_layout_runner=lambda pages: {
+            "pages": [
+                {
+                    "page_no": 16,
+                    "status": "success",
+                    "image_size": {"width": 1000, "height": 1600},
+                    "blocks": [],
+                }
+            ]
+        },
+    )
+
+    assert artifacts["parse_status"]["figures_total"] == 1
+    assert "figures/fig_p16_001.png" in artifacts["body_markdown"]
+    assert "黄金ETF最新一日转为减持。" in artifacts["body_markdown"]
+
+
+def test_parse_report_images_rewrites_generic_chart_title_alt_from_heading(tmp_path: Path):
+    image_path = tmp_path / "generic-alt-page.png"
+    _write_page_image(image_path, include_chart=True)
+
+    artifacts = parse_report_images(
+        article_id="220100",
+        title="测试报告",
+        published_at=None,
+        image_entries=[{"seq": 16, "file": image_path.name, "path": str(image_path)}],
+        vision_markdown_runner=lambda pages, figures: {
+            "pages": [
+                {
+                    "page_no": 16,
+                    "status": "success",
+                    "markdown": (
+                        "## 黄金机构动向\n\n"
+                        "![图表标题](figures/fig_p16_001.png)\n\n"
+                        "黄金ETF最新一日转为减持。"
+                    ),
+                }
+            ]
+        },
+        vision_layout_runner=lambda pages: {
+            "pages": [
+                {
+                    "page_no": 16,
+                    "status": "success",
+                    "image_size": {"width": 1000, "height": 1600},
+                    "blocks": [
+                        {"id": "title_001", "type": "title", "text": "黄金机构动向", "bbox": [80, 160, 920, 220]},
+                        {"id": "chart_001", "type": "chart", "text": "", "bbox": [80, 260, 920, 720]},
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert "![黄金机构动向](figures/fig_p16_001.png)" in artifacts["body_markdown"]
+    assert "![图表标题](figures/fig_p16_001.png)" not in artifacts["body_markdown"]
+
+
+def test_parse_report_images_rebuilds_multi_chart_gallery_order_and_titles(tmp_path: Path):
+    image_path = tmp_path / "three-panel-page.png"
+    _write_three_white_panel_page_image(image_path)
+
+    artifacts = parse_report_images(
+        article_id="220100",
+        title="真实日报退化测试",
+        published_at=None,
+        image_entries=[{"seq": 12, "file": image_path.name, "path": str(image_path)}],
+        vision_markdown_runner=lambda pages, figures: {
+            "pages": [
+                {
+                    "page_no": 12,
+                    "status": "success",
+                    "markdown": (
+                        "## 关键图表\n\n"
+                        "![图表标题](figures/fig_p12_003.png)\n\n"
+                        "美国密歇根大学消费者信心指数终值再创新低\n\n"
+                        "![图表标题](figures/fig_p12_001.png)\n\n"
+                        "美国5月1年期通胀预期终值上升\n\n"
+                        "![图表标题](figures/fig_p12_002.png)\n\n"
+                        "市场对美联储加息的预期提前至今年12月上周五公布的美国5月密歇根大学消费者信心指数终值录得44.8。"
+                    ),
+                }
+            ]
+        },
+        vision_layout_runner=lambda pages: {
+            "pages": [
+                {
+                    "page_no": 12,
+                    "status": "success",
+                    "image_size": {"width": 1000, "height": 2000},
+                    "blocks": [
+                        {"id": "title_001", "type": "title", "text": "关键图表", "bbox": [60, 120, 900, 180]},
+                        {"id": "chart_001", "type": "chart", "text": "美国密歇根大学消费者信心指数终值再创新低", "bbox": [100, 260, 900, 500]},
+                        {"id": "chart_002", "type": "chart", "text": "美国5月1年期通胀预期终值上升", "bbox": [100, 820, 900, 1060]},
+                        {"id": "table_001", "type": "table", "text": "市场对美联储加息的预期提前至今年12月", "bbox": [260, 1510, 760, 1650]},
+                    ],
+                }
+            ]
+        },
+    )
+
+    markdown = artifacts["body_markdown"]
+
+    assert "![图表标题]" not in markdown
+    assert "市场对美联储加息的预期提前至今年12月上周五公布" not in markdown
+    assert markdown.index("## 美国密歇根大学消费者信心指数终值再创新低") < markdown.index("![美国密歇根大学消费者信心指数终值再创新低](figures/fig_p12_001.png)")
+    assert markdown.index("## 美国5月1年期通胀预期终值上升") < markdown.index("![美国5月1年期通胀预期终值上升](figures/fig_p12_002.png)")
+    assert markdown.index("## 市场对美联储加息的预期提前至今年12月") < markdown.index("![市场对美联储加息的预期提前至今年12月](figures/fig_p12_003.png)")
+    assert markdown.index("figures/fig_p12_001.png") < markdown.index("figures/fig_p12_002.png") < markdown.index("figures/fig_p12_003.png")
+    assert "上周五公布的美国5月密歇根大学消费者信心指数终值录得44.8。" in markdown
+
+
+def test_render_vision_markdown_strips_jin10_vip_suffix_from_title():
+    markdown = render_vision_markdown(
+        title="黄金行情反复风险并未消除，不可将反弹视为反攻信号-金十数据VIP",
+        published_at=None,
+        vision_markdown={
+            "pages": [
+                {
+                    "page_no": 2,
+                    "status": "success",
+                    "markdown": "## 行情回顾\n\n测试正文。",
+                }
+            ]
+        },
+    )
+
+    assert markdown.startswith("# 黄金行情反复风险并未消除，不可将反弹视为反攻信号\n\n")
+    assert "-金十数据VIP" not in markdown
+
+
+def test_normalize_vision_markdown_payload_drops_chart_date_heading_and_prefers_specific_heading():
+    normalized = _normalize_vision_markdown_payload(
+        {
+            "pages": [
+                {
+                    "page_no": 15,
+                    "status": "success",
+                    "markdown": (
+                        "## 白银CFTC投机性净多仓反弹终端\n\n"
+                        "### 20260519\n\n"
+                        "![CFTC商品类净/空/多头仓位](figures/fig_p15_001.png)\n"
+                    ),
+                }
+            ]
+        },
+        [
+            {
+                "figure_id": "fig_p15_001",
+                "page_no": 15,
+                "bbox": [0, 0, 10, 10],
+                "chart_image_path": "figures/fig_p15_001.png",
+                "title": "白银CFTC投机性净多仓反弹终端",
+            }
+        ],
+    )
+
+    page_markdown = normalized["pages"][0]["markdown"]
+
+    assert "20260519" not in page_markdown
+    assert "![白银CFTC投机性净多仓反弹终端](figures/fig_p15_001.png)" in page_markdown
+    assert "![CFTC商品类净/空/多头仓位](figures/fig_p15_001.png)" not in page_markdown
+
+
+def test_render_vision_markdown_normalizes_nested_hash_heading_prefix():
+    markdown = render_vision_markdown(
+        title="测试报告",
+        published_at=None,
+        vision_markdown={
+            "pages": [
+                {
+                    "page_no": 2,
+                    "status": "success",
+                    "markdown": "## # Phoenix Futures总裁Kevin Grady\n\n测试正文。",
+                }
+            ]
+        },
+    )
+
+    assert "## Phoenix Futures总裁Kevin Grady" in markdown
+    assert "## # Phoenix Futures总裁Kevin Grady" not in markdown
+
+
+def test_normalize_vision_markdown_payload_uses_section_heading_for_late_generic_chart_alt():
+    normalized = _normalize_vision_markdown_payload(
+        {
+            "pages": [
+                {
+                    "page_no": 14,
+                    "status": "success",
+                    "markdown": (
+                        "## 黄金CFTC投机性头多减持\n\n"
+                        "截至5月19日当周，黄金投机性净多头仓位下降。\n\n"
+                        "![图表标题](figures/fig_p14_001.png)\n"
+                    ),
+                }
+            ]
+        },
+        [
+            {
+                "figure_id": "fig_p14_001",
+                "page_no": 14,
+                "bbox": [0, 0, 10, 10],
+                "chart_image_path": "figures/fig_p14_001.png",
+                "title": "图表标题",
+            }
+        ],
+    )
+
+    page_markdown = normalized["pages"][0]["markdown"]
+
+    assert "![黄金CFTC投机性头多减持](figures/fig_p14_001.png)" in page_markdown
+    assert "![图表标题](figures/fig_p14_001.png)" not in page_markdown
+
+
 def test_parse_report_images_filters_fear_greed_indicator_layout_page(tmp_path: Path):
     image_path = tmp_path / "fear-greed-page.png"
     _write_page_image(image_path, include_chart=True)
@@ -1506,6 +1884,7 @@ def test_recognize_pages_as_markdown_uses_page_cache(monkeypatch, tmp_path: Path
 
     assert client.markdown_calls == 1
     assert first == second
+    assert first["provider"] == client.provider
     assert first["pages"][0]["markdown"] == "## 第1页\n\n缓存测试"
     assert list((cache_dir / "markdown" / "qwen3-vl-flash").glob("page_001_*.json"))
 
@@ -1532,6 +1911,7 @@ def test_recognize_pages_layout_uses_page_cache(monkeypatch, tmp_path: Path):
 
     assert client.layout_calls == 1
     assert first == second
+    assert first["provider"] == client.provider
     assert first["pages"][0]["blocks"][0]["type"] == "chart"
     assert first["pages"][0]["charts"][0]["bbox"] == [80, 260, 920, 720]
     assert list((cache_dir / "layout" / "qwen3-vl-flash").glob("page_001_*.json"))
@@ -1550,6 +1930,7 @@ def test_recognize_pages_unified_uses_page_cache(monkeypatch, tmp_path: Path):
 
     assert client.unified_calls == 1
     assert first == second
+    assert first["provider"] == client.provider
     assert first["pages"][0]["markdown"] == "## 黄金持仓\n\n![黄金持仓](figures/fig_p1_001.png)\n\n统一识别正文"
     assert first["pages"][0]["blocks"][0]["type"] == "chart"
     assert list((cache_dir / "unified" / "qwen3-vl-flash").glob("page_001_*.json"))
@@ -1604,6 +1985,7 @@ def test_parse_report_images_can_run_with_vlm_only(tmp_path: Path):
 
 
 class _FakeVisionClient:
+    provider = "mimo"
     model = "qwen3-vl-flash"
 
     def __init__(self) -> None:

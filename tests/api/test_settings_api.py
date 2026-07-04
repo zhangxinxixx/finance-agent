@@ -55,7 +55,7 @@ def test_settings_preferences_write_is_reflected_in_status(monkeypatch, tmp_path
             language="en-US",
             timezone="UTC",
             report_template="institutional_focus",
-            actor="automation",
+            actor="codex",
             reason="normalize analyst defaults",
             request_id="settings-pref-001",
         ),
@@ -81,7 +81,7 @@ def test_settings_source_toggle_overrides_enabled_without_faking_connectivity(mo
         "fred",
         body=SettingsSourceUpdateRequest(
             enabled=False,
-            actor="automation",
+            actor="codex",
             reason="disable unused data source",
             request_id="settings-source-001",
         ),
@@ -103,7 +103,7 @@ def test_settings_source_update_rejects_unknown_source() -> None:
     try:
         api_settings_update_source(
             "unknown_source",
-            body=SettingsSourceUpdateRequest(enabled=True, actor="automation", request_id="settings-source-404"),
+            body=SettingsSourceUpdateRequest(enabled=True, actor="codex", request_id="settings-source-404"),
             db=session,
         )
     except HTTPException as exc:
@@ -127,7 +127,7 @@ def test_settings_preferences_reset_restores_defaults_and_history(monkeypatch, t
         body=SettingsPreferencesUpdateRequest(
             language="en-US",
             timezone="UTC",
-            actor="automation",
+            actor="codex",
             request_id="settings-pref-set-001",
         ),
         db=session,
@@ -136,7 +136,7 @@ def test_settings_preferences_reset_restores_defaults_and_history(monkeypatch, t
     response = api_settings_reset_preferences(
         body=SettingsPreferencesResetRequest(
             keys=["language", "timezone"],
-            actor="automation",
+            actor="codex",
             reason="rollback to defaults",
             request_id="settings-pref-reset-001",
         ),
@@ -165,7 +165,7 @@ def test_settings_source_reset_clears_override(monkeypatch, tmp_path) -> None:
         "fred",
         body=SettingsSourceUpdateRequest(
             enabled=False,
-            actor="automation",
+            actor="codex",
             request_id="settings-source-set-001",
         ),
         db=session,
@@ -173,7 +173,7 @@ def test_settings_source_reset_clears_override(monkeypatch, tmp_path) -> None:
 
     response = api_settings_reset_source(
         "fred",
-        body=SettingsSourceResetRequest(actor="automation", request_id="settings-source-reset-001"),
+        body=SettingsSourceResetRequest(actor="codex", request_id="settings-source-reset-001"),
         db=session,
     )
     payload = api_settings_status(db=session)
@@ -194,14 +194,14 @@ def test_settings_history_rollback_restores_previous_source_state(monkeypatch, t
         "fred",
         body=SettingsSourceUpdateRequest(
             enabled=False,
-            actor="automation",
+            actor="codex",
             request_id="settings-source-set-rollback-001",
         ),
         db=session,
     )
     rollback_response = api_settings_rollback_history_event(
         source_response.audit_id,
-        body=SettingsRollbackRequest(actor="automation", reason="undo source toggle", request_id="settings-rollback-001"),
+        body=SettingsRollbackRequest(actor="codex", reason="undo source toggle", request_id="settings-rollback-001"),
         db=session,
     )
     payload = api_settings_status(db=session)
@@ -228,7 +228,7 @@ def test_settings_history_rollback_restores_previous_preference_value(monkeypatc
         body=SettingsPreferencesUpdateRequest(
             language="en-US",
             timezone="UTC",
-            actor="automation",
+            actor="codex",
             request_id="settings-pref-set-rollback-001",
         ),
         db=session,
@@ -236,7 +236,7 @@ def test_settings_history_rollback_restores_previous_preference_value(monkeypatc
     reset_response = api_settings_reset_preferences(
         body=SettingsPreferencesResetRequest(
             keys=["language"],
-            actor="automation",
+            actor="codex",
             reason="reset language to default",
             request_id="settings-pref-reset-rollback-001",
         ),
@@ -244,7 +244,7 @@ def test_settings_history_rollback_restores_previous_preference_value(monkeypatc
     )
     rollback_response = api_settings_rollback_history_event(
         reset_response.audit_id,
-        body=SettingsRollbackRequest(actor="automation", reason="undo language reset", request_id="settings-rollback-002"),
+        body=SettingsRollbackRequest(actor="codex", reason="undo language reset", request_id="settings-rollback-002"),
         db=session,
     )
     payload = api_settings_status(db=session)
@@ -267,7 +267,7 @@ def test_settings_history_rollback_rejects_secret_events(monkeypatch, tmp_path) 
         "fred",
         body=SettingsSecretUpdateRequest(
             secret_value="fred-secret-1234",
-            actor="automation",
+            actor="codex",
             request_id="settings-secret-rollback-blocked-001",
         ),
         db=session,
@@ -276,7 +276,7 @@ def test_settings_history_rollback_rejects_secret_events(monkeypatch, tmp_path) 
     try:
         api_settings_rollback_history_event(
             secret_response.audit_id,
-            body=SettingsRollbackRequest(actor="automation", request_id="settings-secret-rollback-blocked-001"),
+            body=SettingsRollbackRequest(actor="codex", request_id="settings-secret-rollback-blocked-001"),
             db=session,
         )
     except HTTPException as exc:
@@ -299,7 +299,7 @@ def test_settings_history_supports_scope_action_and_actor_filters(monkeypatch, t
     api_settings_update_preferences(
         body=SettingsPreferencesUpdateRequest(
             language="en-US",
-            actor="automation",
+            actor="codex",
             request_id="settings-pref-filter-001",
         ),
         db=session,
@@ -308,17 +308,17 @@ def test_settings_history_supports_scope_action_and_actor_filters(monkeypatch, t
         "fred",
         body=SettingsSourceUpdateRequest(
             enabled=False,
-            actor="automation",
+            actor="codex",
             request_id="settings-source-filter-001",
         ),
         db=session,
     )
 
-    source_history = api_settings_history(limit=10, scope="source", actor="automation", db=session)
+    source_history = api_settings_history(limit=10, scope="source", actor="codex", db=session)
     set_history = api_settings_history(limit=10, action="set", setting_key="source.fred.enabled", db=session)
 
     assert all(event.scope == "source" for event in source_history.events)
-    assert all(event.actor == "automation" for event in source_history.events)
+    assert all(event.actor == "codex" for event in source_history.events)
     assert len(set_history.events) == 1
     assert set_history.events[0].setting_key == "source.fred.enabled"
 
@@ -334,7 +334,7 @@ def test_settings_secret_write_is_masked_in_status_and_kept_off_runtime_env(monk
         "fred",
         body=SettingsSecretUpdateRequest(
             secret_value="fred-secret-1234",
-            actor="automation",
+            actor="codex",
             reason="configure fred key",
             request_id="settings-secret-001",
         ),
@@ -358,7 +358,7 @@ def test_settings_secret_write_requires_master_key(monkeypatch) -> None:
     try:
         api_settings_update_secret(
             "fred",
-            body=SettingsSecretUpdateRequest(secret_value="fred-secret-1234", actor="automation", request_id="secret-no-key"),
+            body=SettingsSecretUpdateRequest(secret_value="fred-secret-1234", actor="codex", request_id="secret-no-key"),
             db=session,
         )
     except HTTPException as exc:
@@ -376,7 +376,7 @@ def test_settings_secret_write_rejects_blank_value(monkeypatch) -> None:
     try:
         api_settings_update_secret(
             "fred",
-            body=SettingsSecretUpdateRequest(secret_value="   ", actor="automation", request_id="secret-blank-001"),
+            body=SettingsSecretUpdateRequest(secret_value="   ", actor="codex", request_id="secret-blank-001"),
             db=session,
         )
     except HTTPException as exc:
@@ -395,12 +395,12 @@ def test_settings_secret_reset_clears_stored_secret(monkeypatch, tmp_path) -> No
 
     api_settings_update_secret(
         "fred",
-        body=SettingsSecretUpdateRequest(secret_value="fred-secret-1234", actor="automation", request_id="secret-set-001"),
+        body=SettingsSecretUpdateRequest(secret_value="fred-secret-1234", actor="codex", request_id="secret-set-001"),
         db=session,
     )
     response = api_settings_reset_secret(
         "fred",
-        body=SettingsSecretResetRequest(actor="automation", request_id="secret-reset-001"),
+        body=SettingsSecretResetRequest(actor="codex", request_id="secret-reset-001"),
         db=session,
     )
     payload = api_settings_status(db=session)

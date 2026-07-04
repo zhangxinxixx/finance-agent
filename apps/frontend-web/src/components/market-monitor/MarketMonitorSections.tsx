@@ -1,7 +1,6 @@
 export {
   MarketMonitorLoadingPanel,
   MarketMonitorPageHeader,
-  MarketMonitorWeekendBanner,
 } from "./MarketMonitorHeaderSections";
 export {
   MarketMonitorCalendarSection,

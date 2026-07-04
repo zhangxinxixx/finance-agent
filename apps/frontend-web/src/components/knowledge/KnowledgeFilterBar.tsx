@@ -24,6 +24,7 @@ export function KnowledgeFilterBar({
 }: KnowledgeFilterBarProps) {
   return (
     <FAFilterBar
+      className="knowledge-filter-bar"
       left={
         <>
           <div className="relative min-w-0 flex-1">

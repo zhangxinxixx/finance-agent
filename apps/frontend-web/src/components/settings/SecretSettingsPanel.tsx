@@ -25,7 +25,7 @@ function SecretRow({
     try {
       await updateSettingsSecret(source.id, {
         secret_value: value.trim(),
-        actor: "automation",
+        actor: "codex",
         reason: "settings page secret update",
         request_id: `settings-secret-${source.id}-${Date.now()}`,
       });
@@ -46,7 +46,7 @@ function SecretRow({
     setMessage(null);
     try {
       await resetSettingsSecret(source.id, {
-        actor: "automation",
+        actor: "codex",
         reason: "settings page secret reset",
         request_id: `settings-secret-reset-${source.id}-${Date.now()}`,
       });

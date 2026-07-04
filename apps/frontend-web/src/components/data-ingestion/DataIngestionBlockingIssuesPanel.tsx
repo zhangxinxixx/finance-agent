@@ -116,10 +116,10 @@ function BlockingIssueItem({ issue }: { issue: BlockingIssue }) {
 
   return (
     <div
-      className="rounded-[var(--radius-md)] border px-2.5 py-2"
+      className="data-ingestion-issue-row rounded-[var(--radius-md)] border px-2.5 py-2"
       style={{
         borderColor: isError ? "var(--down-border)" : "var(--warn-border)",
-        background: isError ? "var(--down-soft)" : "var(--warn-soft)",
+        background: "var(--bg-card)",
       }}
     >
       <div className="flex items-center gap-1.5">

@@ -2,7 +2,7 @@
 P1-09: Knowledge Base 只读索引 API。
 
 当前阶段返回 unavailable，为前端提供标准契约结构。
-未来接入外部知识库、Mem0 或数据库后在此填充真实数据。
+未来接入知识库、向量库或数据库后在此填充真实数据。
 """
 
 from __future__ import annotations

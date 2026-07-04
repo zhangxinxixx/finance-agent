@@ -186,12 +186,12 @@ def test_get_macro_report_md_empty(tmp_path: Path):
         assert get_macro_report_md() is None
 
 
-def test_get_macro_report_md_ignores_full_report(tmp_path: Path):
-    """macro_full_report.md 不替代 macro_snapshot.md。"""
+def test_get_macro_report_md_prefers_full_report(tmp_path: Path):
+    """v2.1 macro_full_report.md is the primary daily macro report."""
     _make_tree(tmp_path, {
         "storage/outputs/macro/2026-05-14/auto-v2/macro_full_report.md": "full",
         "storage/outputs/macro/2026-05-14/auto-v2/macro_snapshot.md": "snapshot",
     })
     with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
         result = get_macro_report_md()
-    assert result == "snapshot"
+    assert result == "full"

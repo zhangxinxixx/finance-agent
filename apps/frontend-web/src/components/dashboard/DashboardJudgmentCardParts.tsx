@@ -10,36 +10,18 @@ export function DetailRow({
   valueColor?: string;
 }) {
   return (
-    <div className="grid" style={{ gridTemplateColumns: "72px 1fr", gap: "8px" }}>
-      <span
-        style={{
-          fontSize: "9px",
-          color: "var(--fg-5)",
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-          fontWeight: 600,
-        }}
-      >
+    <div className="grid grid-cols-[72px_1fr] items-baseline gap-2">
+      <span className="text-[9px] text-[var(--fg-5)] tracking-[0.06em] uppercase font-semibold">
         {label}
       </span>
-      <span style={{ fontSize: "11px", fontWeight: 600, color: valueColor }}>{value}</span>
+      <span className="text-[11px] font-semibold" style={{ color: valueColor }}>{value}</span>
     </div>
   );
 }
 
 export function Chip({ label }: { label: string }) {
   return (
-    <span
-      style={{
-        padding: "2px 7px",
-        borderRadius: "3px",
-        background: "rgba(245,158,11,0.10)",
-        border: "1px solid rgba(245,158,11,0.28)",
-        color: "#f59e0b",
-        fontSize: "9px",
-        fontWeight: 600,
-      }}
-    >
+    <span className="rounded-[var(--radius-pill)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-2 py-0.5 text-[9px] font-semibold text-[var(--warn)]">
       {label}
     </span>
   );
@@ -48,15 +30,11 @@ export function Chip({ label }: { label: string }) {
 export function MetaPill({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "warn" }) {
   return (
     <span
-      style={{
-        padding: "2px 7px",
-        borderRadius: "3px",
-        background: tone === "warn" ? "rgba(245,158,11,0.08)" : "var(--bg-card-inner)",
-        border: tone === "warn" ? "1px solid rgba(245,158,11,0.22)" : "1px solid var(--border)",
-        color: tone === "warn" ? "#f59e0b" : "var(--fg-4)",
-        fontSize: "9px",
-        fontWeight: 600,
-      }}
+      className={`rounded-[var(--radius-pill)] border px-2 py-0.5 text-[9px] font-semibold ${
+        tone === "warn"
+          ? "border-[var(--warn-border)] bg-[var(--warn-soft)] text-[var(--warn)]"
+          : "border-[var(--border)] bg-[rgba(255,255,255,0.025)] text-[var(--fg-4)]"
+      }`}
     >
       {label}
     </span>
@@ -77,16 +55,16 @@ export function FactorGroup({
   const visibleItems = items.slice(0, 3);
 
   return (
-    <div className="space-y-2">
+    <div
+      className="h-full rounded-[var(--radius-md)] border p-2.5"
+      style={{
+        borderColor: `color-mix(in srgb, ${color} 28%, var(--border))`,
+        background: `linear-gradient(180deg, color-mix(in srgb, ${color} 9%, transparent), rgba(255,255,255,0.018))`,
+      }}
+    >
       <div
-        className="flex items-center gap-1.5"
-        style={{
-          fontSize: "9px",
-          color,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          fontWeight: 600,
-        }}
+        className="mb-1.5 flex items-center gap-1.5 text-[9px] tracking-[0.08em] uppercase font-semibold"
+        style={{ color }}
       >
         {icon}
         <span>{title}</span>
@@ -94,13 +72,13 @@ export function FactorGroup({
       <div className="space-y-1.5">
         {visibleItems.length > 0 ? (
           visibleItems.map((item, index) => (
-            <div key={`${title}-${index}-${item}`} className="flex items-start gap-1.5">
+            <div key={`${title}-${index}-${item}`} className="flex items-start gap-2 rounded-[var(--radius-sm)] bg-[rgba(0,0,0,0.12)] px-2 py-1">
               {icon}
               <span className="line-clamp-2 text-[10px] leading-5 text-[var(--fg-2)]">{item}</span>
             </div>
           ))
         ) : (
-          <div style={{ fontSize: "10px", color: "var(--fg-5)" }}>—</div>
+          <div className="text-[10px] text-[var(--fg-5)]">—</div>
         )}
       </div>
     </div>
@@ -119,16 +97,12 @@ export function LevelRow({ price, label, color }: { price: number; label: string
         }}
       />
       <span
-        style={{
-          fontSize: "11px",
-          fontWeight: 700,
-          fontFamily: "var(--font-mono)",
-          color,
-        }}
+        className="text-[11px] font-bold font-[var(--font-mono)]"
+        style={{ color }}
       >
         {price.toLocaleString("en-US", { maximumFractionDigits: 1 })}
       </span>
-      <span style={{ fontSize: "9px", color: "var(--fg-4)" }}>{label}</span>
+      <span className="text-[9px] text-[var(--fg-4)]">{label}</span>
     </div>
   );
 }

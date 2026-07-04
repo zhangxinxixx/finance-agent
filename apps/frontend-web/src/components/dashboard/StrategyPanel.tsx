@@ -70,7 +70,7 @@ export function StrategyPanel({ strategy, strategyViewModel }: StrategyPanelProp
           {summaryText}
         </div>
         <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
-          <FAConvictionBar value={(confidence ?? 0) * 100} tone="warn" />
+          <FAConvictionBar value={(confidence ?? 0) * 100} tone="info" />
         </div>
       </div>
 

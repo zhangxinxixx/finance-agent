@@ -68,7 +68,7 @@ export function AgentTaskListCard({
   return (
     <Link
       to={`/agent-tasks/${encodeURIComponent(run.run_id)}`}
-      className="group block cursor-pointer rounded-[14px] border border-[var(--border)] bg-[linear-gradient(180deg,rgba(18,33,58,0.96),rgba(13,26,46,0.96))] p-3 transition-all hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] hover:shadow-[0_14px_32px_rgba(0,0,0,0.18)]"
+      className="group block cursor-pointer rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] p-3 transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)]"
     >
       <div className="flex flex-wrap items-start justify-between gap-2.5">
         <div className="min-w-0">
@@ -78,7 +78,7 @@ export function AgentTaskListCard({
             </span>
             <span className="text-[10px] text-[var(--fg-5)]">{formatTradeDate(run.trading_date)}</span>
           </div>
-          <div className="mt-2 text-[16px] font-semibold tracking-[-0.02em] text-[var(--fg-1)] group-hover:text-[var(--brand-hover)]">
+          <div className="mt-2 text-[16px] font-semibold tracking-[0] text-[var(--fg-1)] group-hover:text-[var(--brand-hover)]">
             {taskTypeLabel(run.task_type)}
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--fg-4)]">

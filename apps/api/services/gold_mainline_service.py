@@ -17,18 +17,20 @@ _MAINLINES_FILENAME = "gold_event_mainlines.json"
 def get_gold_mainlines_latest(*, project_root: Path | None = None) -> dict[str, Any]:
     root = project_root or _PROJECT_ROOT
     base = root / "storage" / "analysis" / "gold_mainlines"
-    if not base.exists():
-        return _unavailable_payload(date=None, run_id=None, warnings=["gold_macro_overview artifact unavailable"])
-    for date_dir in sorted((path for path in base.iterdir() if path.is_dir()), reverse=True):
-        for run_dir in sorted((path for path in date_dir.iterdir() if path.is_dir()), reverse=True):
-            overview_path = run_dir / _OVERVIEW_FILENAME
-            if overview_path.exists():
-                return _load_gold_mainlines(
-                    date=date_dir.name,
-                    run_id=run_dir.name,
-                    overview_path=overview_path,
-                    project_root=root,
-                )
+    if base.exists():
+        for date_dir in sorted((path for path in base.iterdir() if path.is_dir()), reverse=True):
+            for run_dir in sorted((path for path in date_dir.iterdir() if path.is_dir()), reverse=True):
+                overview_path = run_dir / _OVERVIEW_FILENAME
+                if overview_path.exists():
+                    return _load_gold_mainlines(
+                        date=date_dir.name,
+                        run_id=run_dir.name,
+                        overview_path=overview_path,
+                        project_root=root,
+                    )
+    inferred = _load_latest_inferred_gold_mainlines(project_root=root)
+    if inferred is not None:
+        return inferred
     return _unavailable_payload(date=None, run_id=None, warnings=["gold_macro_overview artifact unavailable"])
 
 
@@ -36,6 +38,9 @@ def get_gold_mainlines(*, date: str, run_id: str, project_root: Path | None = No
     root = project_root or _PROJECT_ROOT
     overview_path = root / "storage" / "analysis" / "gold_mainlines" / date / run_id / _OVERVIEW_FILENAME
     if not overview_path.exists():
+        inferred = _load_inferred_gold_mainlines(date=date, run_id=run_id, project_root=root)
+        if inferred is not None:
+            return inferred
         return _unavailable_payload(date=date, run_id=run_id, warnings=["gold_macro_overview artifact unavailable"])
     return _load_gold_mainlines(date=date, run_id=run_id, overview_path=overview_path, project_root=root)
 
@@ -74,6 +79,62 @@ def _load_linked_event_mainlines(*, overview: dict[str, Any], project_root: Path
         if path is not None and path.exists():
             return _load_event_mainlines(path=path, project_root=project_root)
     return _unavailable_mainlines()
+
+
+def _load_latest_inferred_gold_mainlines(*, project_root: Path) -> dict[str, Any] | None:
+    base = project_root / "storage" / "features" / "news"
+    if not base.exists():
+        return None
+    for date_dir in sorted((path for path in base.iterdir() if path.is_dir()), reverse=True):
+        for run_dir in sorted((path for path in date_dir.iterdir() if path.is_dir()), reverse=True):
+            event_path = run_dir / _MAINLINES_FILENAME
+            if event_path.exists():
+                return _load_inferred_gold_mainlines(
+                    date=date_dir.name,
+                    run_id=run_dir.name,
+                    project_root=project_root,
+                )
+    return None
+
+
+def _load_inferred_gold_mainlines(*, date: str, run_id: str, project_root: Path) -> dict[str, Any] | None:
+    event_path = project_root / "storage" / "features" / "news" / date / run_id / _MAINLINES_FILENAME
+    if not event_path.exists():
+        return None
+    mainlines = _load_event_mainlines(path=event_path, project_root=project_root)
+    if mainlines["status"] == "unavailable":
+        return None
+    event_ref = event_path.relative_to(project_root / "storage").as_posix()
+    seed_overview = {
+        "retrieved_date": date,
+        "run_id": run_id,
+        "as_of": mainlines.get("as_of"),
+        "input_snapshot_ids": {"gold_event_mainlines": event_ref},
+    }
+    overview = build_gold_macro_overview(
+        mainlines,
+        macro_context=_latest_macro_context_for_overview(overview=seed_overview, project_root=project_root),
+        market_context=_latest_market_context_for_overview(overview=seed_overview, project_root=project_root),
+    ).to_dict()
+    overview["retrieved_date"] = str(overview.get("retrieved_date") or date)
+    overview["run_id"] = str(overview.get("run_id") or run_id)
+    overview["input_snapshot_ids"] = {"gold_event_mainlines": event_ref}
+    _normalize_gold_mainline_contract(overview=overview, mainlines=mainlines)
+    _normalize_gold_requirement_contract(overview=overview, mainlines=mainlines, project_root=project_root)
+    warnings = [str(item) for item in overview.get("warnings") or []]
+    warnings.append("gold_macro_overview inferred from gold_event_mainlines artifact")
+    return {
+        "status": str(overview.get("status") or "partial"),
+        "date": str(overview.get("retrieved_date") or date),
+        "run_id": str(overview.get("run_id") or run_id),
+        "artifact_path": None,
+        "schema_version": overview.get("schema_version"),
+        "input_snapshot_ids": dict(overview.get("input_snapshot_ids") or {}),
+        "gold_macro_overview": overview,
+        "gold_mainlines": mainlines,
+        "source_refs": _source_refs(overview, mainlines),
+        "warnings": warnings,
+    }
 
 
 def _load_event_mainlines(*, path: Path, project_root: Path) -> dict[str, Any]:

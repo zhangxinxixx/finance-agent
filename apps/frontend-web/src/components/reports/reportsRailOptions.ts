@@ -48,12 +48,12 @@ export const DATE_RANGE_OPTIONS: [string, string][] = [
 ];
 
 export const REPORTS_RAIL_PANEL_STYLE = {
-  width: 164,
+  width: 184,
   flexShrink: 0,
   borderRight: "1px solid var(--border)",
   background: "var(--bg-panel)",
   overflow: "hidden",
-  padding: "8px",
+  padding: "10px",
   maxHeight: "none",
   minHeight: 0,
 } as const;

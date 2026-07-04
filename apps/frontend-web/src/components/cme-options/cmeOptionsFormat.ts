@@ -7,7 +7,8 @@ export const CME_TONE = {
   down: { text: "var(--down)", bg: "var(--down-soft)", border: "var(--down-border)" },
   warn: { text: "var(--warn)", bg: "var(--warn-soft)", border: "var(--warn-border)" },
   info: { text: "var(--brand-hover)", bg: "rgba(59,130,246,0.12)", border: "rgba(59,130,246,0.24)" },
-  violet: { text: "#b388ff", bg: "rgba(167,139,250,0.14)", border: "rgba(167,139,250,0.28)" },
+  important: { text: "var(--fa-important)", bg: "var(--fa-important-soft)", border: "var(--fa-important-border)" },
+  violet: { text: "var(--fa-important)", bg: "var(--fa-important-soft)", border: "var(--fa-important-border)" },
   slate: { text: "var(--fg-3)", bg: "rgba(148,163,184,0.10)", border: "rgba(148,163,184,0.18)" },
 } as const;
 
