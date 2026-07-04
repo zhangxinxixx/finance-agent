@@ -147,10 +147,8 @@ from apps.runtime.state_machine import (
     transition_task_run,
 )
 from database.models.engine import SessionLocal
-from database.models.analysis import ensure_analysis_tables
-from database.models.execution import ensure_execution_tables
-from database.models.report import ensure_report_tables
-from database.models.task import TaskRun, TaskStatus, TaskStep, ensure_task_tables
+from database.migrations.runtime import run_database_migrations
+from database.models.task import TaskRun, TaskStatus, TaskStep
 
 _should_skip_background_jobs_ref = None  # set by lifespan
 
@@ -453,16 +451,14 @@ async def lifespan(_app: FastAPI):
     from database.models.engine import SessionLocal
 
     if _database_reachable():
-        db = SessionLocal()
         try:
-            ensure_task_tables(db)
-            ensure_execution_tables(db)
-            ensure_analysis_tables(db)
-            ensure_report_tables(db)
+            bind = SessionLocal.kw.get("bind")
+            database_url = None
+            if bind is not None:
+                database_url = bind.url.render_as_string(hide_password=False)
+            run_database_migrations(database_url)
         except Exception:
-            logger.exception("Startup additive migrations failed")
-        finally:
-            db.close()
+            logger.exception("Startup Alembic migration failed")
 
         # 初始化所有已知数据源状态到 data_source_status 表（供调度中心/数据接入消费）
         try:

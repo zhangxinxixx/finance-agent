@@ -1,8 +1,4 @@
-"""Alembic environment for analysis tables (AnalysisBase only).
-
-Targets AnalysisBase.metadata — migrations are scoped to analysis_snapshots,
-agent_outputs, and final_analysis_results. Task/CME tables are managed separately.
-"""
+"""Alembic environment for the finance-agent runtime schema."""
 
 from __future__ import annotations
 
@@ -12,20 +8,32 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from database.models.analysis import AnalysisBase
+from database.models.execution import ExecutionBase
+from database.models.report import ReportBase
+from database.models.task import Base
+
+# Import model modules that register tables on shared metadata.
+from database.models import cme as _cme_models  # noqa: F401
+from database.models import playbook as _playbook_models  # noqa: F401
 
 # this is the Alembic Config object
-config = context.config
+config = getattr(context, "config", None)
 
 # Interpret the config file for Python logging
-if config.config_file_name is not None:
+if config is not None and config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Override sqlalchemy.url from environment variable if available
 DATABASE_URL = __import__("os").environ.get("DATABASE_URL")
-if DATABASE_URL:
+if config is not None and DATABASE_URL:
     config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
-target_metadata = AnalysisBase.metadata
+target_metadata = [
+    AnalysisBase.metadata,
+    Base.metadata,
+    ExecutionBase.metadata,
+    ReportBase.metadata,
+]
 
 
 def run_migrations_offline() -> None:
@@ -57,7 +65,8 @@ def run_migrations_online() -> None:
             context.run_migrations()
 
 
-if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
+if config is not None:
+    if context.is_offline_mode():
+        run_migrations_offline()
+    else:
+        run_migrations_online()
