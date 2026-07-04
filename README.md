@@ -1,6 +1,6 @@
 # finance-agent
 
-`finance-agent` 是一个本地可运行、可追溯、可复盘的金融研究中台，当前聚焦 XAUUSD / GC 黄金相关市场。系统用于采集官方与市场数据、解析和计算确定性特征、生成分析快照、产出报告与策略卡片，并通过 React 工作台展示只读分析、数据状态、任务运行和人工复核信息。
+`finance-agent` 是一个本地可运行、可追溯、可复盘的金融研究中台，当前聚焦 XAUUSD / GC 黄金相关市场。系统用于采集官方与市场数据、解析和计算确定性特征、生成宏观与事件分析快照、产出报告和策略卡片，并通过 React 工作台展示黄金宏观交易驾驶舱、黄金主线、数据状态、任务运行和人工复核信息。
 
 本项目不是自动交易系统，不包含自动下单能力。仓库内容仅用于研究、工程演示和本地复盘，不构成投资建议。
 
@@ -8,8 +8,17 @@
 
 - 默认只建议在本机或受信任内网运行，不要把 FastAPI、Dashboard、任务触发接口或本地数据目录裸露到公网。
 - 如需部署到共享环境或公网，必须自行增加认证、反向代理、IP allowlist、CORS 限制、任务触发权限控制和日志脱敏。
-- 使用者需要自行遵守 FRED、Fed、Treasury、CME、Jin10、OpenBB、yfinance、Reuters metadata 等数据源的服务条款；本项目不附带任何数据再分发授权。
+- 使用者需要自行遵守 FRED、Fed、Treasury、CME、Jin10、OpenBB、yfinance 等数据源的服务条款；本项目不附带任何数据再分发授权。
 - 不要提交 `.env`、API key、token、cookie、私钥、证书、浏览器登录态、真实报告产物或本地运行数据。
+
+## 当前能力快照
+
+- **黄金宏观交易驾驶舱**：`/dashboard` 汇总综合判断、关键价位、期权结构、宏观驱动、数据完整度和右侧研究上下文。
+- **黄金主线体系**：`/gold-mainlines` 展示九条黄金主线排序；`/rates-dollar` 聚焦利率与美元；`/oil-geopolitics` 聚焦石油与地缘传导。
+- **策略中心**：`/strategy` 展示每日策略卡、总体分析框架、主场景/反向场景、模块信号、历史校准、周末模式和 source trace。
+- **事件流与日历**：`/event-flow` 分离日历事件、重点事件、快讯和事件影响链路，支持最近窗口内的交易相关信息阅读。
+- **数据接入与调度**：`/data-ingestion` 和 `/scheduler` 展示数据源健康、链路阶段、任务运行、失败原因、重试和人工复核入口。
+- **报告与溯源**：`/reports` 和 `/reports/:reportId` 展示 Jin10、CME、final report、strategy card 等产物及其证据、输入和 artifact 链路。
 
 ## 当前主链
 
@@ -54,6 +63,7 @@ api -> scheduler -> worker -> collectors -> parsers -> features -> analysis -> r
 - CME / COMEX Daily Bulletin 与期权结构
 - Jin10 新闻、日历、快讯、行情和报告
 - 市场行情、技术结构、仓位、市场 odds
+- 黄金九条主线、利率美元链、石油地缘链
 - Agent 分析、报告三产物、策略卡片、SourceTrace
 
 ## 目录结构
@@ -237,11 +247,28 @@ cp .env.example .env
 - `GET /api/tasks`
 - `GET /api/runs`
 - `GET /api/dashboard/summary`
+- `GET /api/gold/mainlines/latest`
+- `GET /api/gold/mainlines?date=YYYY-MM-DD&run_id=...`
 - `GET /api/data-sources/status`
 - `GET /api/reports/index`
 - `GET /api/strategy-cards/latest`
 - `GET /api/events/flow/overview`
 - `GET /api/source-trace/{snapshot_id}`
+
+主要前端页面：
+
+| 路由 | 作用 |
+| --- | --- |
+| `/dashboard` | 黄金宏观交易驾驶舱，总览综合判断、关键价位、期权摘要和研究上下文 |
+| `/gold-mainlines` | 黄金九条主线排序、风险、传导链和验证项 |
+| `/rates-dollar` | 利率、美元、实际利率和美联储路径对黄金的影响 |
+| `/oil-geopolitics` | 石油、地缘风险和通胀预期对黄金的影响 |
+| `/strategy` | 策略卡、每日更新、周末模式、场景框架和 source trace |
+| `/event-flow` | 日历、重点事件、快讯和事件影响链路 |
+| `/data-ingestion` | 数据源状态、链路阶段、重试和手工接入 |
+| `/market-monitor` | 行情、跨资产监控、宏观/技术读数 |
+| `/cme-options` | CME 期权结构、墙位、Gamma/GEX、情景读数 |
+| `/reports` | 报告索引和报告详情入口 |
 
 完整 API 映射见 [docs/10_API_MAP.md](docs/10_API_MAP.md)。
 
@@ -269,7 +296,9 @@ git status --short
 git diff --check
 UV_CACHE_DIR=/tmp/uv-cache uv run ruff check .
 UV_CACHE_DIR=/tmp/uv-cache FINANCE_AGENT_DISABLE_BACKGROUND_JOBS=1 uv run --extra dev pytest -q
-cd apps/frontend-web && npm run build
+cd apps/frontend-web
+npm run typecheck
+npm run build
 ```
 
 提交前还需要确认：
@@ -278,4 +307,4 @@ cd apps/frontend-web && npm run build
 - 没有运行数据、临时文档、agent skill、本地索引、构建产物。
 - `.gitignore` 覆盖新增的本地生成目录。
 - README 与 `docs/` 中的架构、命令和入口保持一致。
-- 没有公开内部云文档 URL、Bitable token/table id、本地绝对路径、远程运维入口或浏览器登录态路径。
+- 公开发布前没有内部云文档 URL、表格应用标识、数据表标识、本地绝对路径、远程运维入口或浏览器登录态路径。
