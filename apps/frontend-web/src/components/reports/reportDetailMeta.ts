@@ -13,6 +13,7 @@ export function reportFamilyLabel(value: string | undefined): string {
   if (value === "macro_event_followup_supplement") return "宏观事件补充分析";
   if (value === "jin10_weekly_visual") return "Jin10 周报";
   if (value === "jin10_daily_visual") return "Jin10 日报";
+  if (value === "jin10_market_observation_report") return "Jin10 市场观察";
   return value;
 }
 

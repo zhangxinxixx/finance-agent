@@ -3,8 +3,10 @@ import {
   canOpenReport,
   CATEGORY_MAP,
   formatGeneratedAt,
+  getMarketObservationSubtype,
   getReportTitle,
   inferAssetLabel,
+  marketObservationSubtypeLabel,
   shortRunId,
   TYPE_DESCRIPTIONS,
 } from "@/components/reports/reportListMeta";
@@ -31,6 +33,7 @@ export function ReportCard({
   const generatedAtLabel = formatGeneratedAt(item.generated_at);
   const isOpenable = canOpenReport(item);
   const assetLabel = inferAssetLabel(item);
+  const marketObservationSubtype = getMarketObservationSubtype(item);
   const highlightMatch = searchQuery && `${cat.label} ${dateLabel}`.toLowerCase().includes(searchQuery.toLowerCase());
   const meta = TYPE_DESCRIPTIONS[item.type] ?? { summary: cat.label, tags: [cat.label] };
 
@@ -75,6 +78,11 @@ export function ReportCard({
         {item.type === "options_report" ? (
           <span style={{ padding: "3px 6px", background: "rgba(52,211,153,0.1)", color: "#34d399", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 2, fontSize: "var(--text-10)", fontWeight: 600, lineHeight: "15px" }}>
             期权墙位
+          </span>
+        ) : null}
+        {marketObservationSubtype ? (
+          <span style={{ padding: "3px 7px", background: marketObservationSubtype === "odds" ? "rgba(245,158,11,0.12)" : "rgba(6,182,212,0.12)", color: marketObservationSubtype === "odds" ? "#f59e0b" : "#06b6d4", border: marketObservationSubtype === "odds" ? "1px solid rgba(245,158,11,0.28)" : "1px solid rgba(6,182,212,0.28)", borderRadius: 2, fontSize: "var(--text-10)", fontWeight: 700, lineHeight: "15px" }}>
+            {marketObservationSubtypeLabel(marketObservationSubtype)}
           </span>
         ) : null}
         {item.format ? (

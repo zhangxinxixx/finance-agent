@@ -7,6 +7,11 @@ export const SUPPORTED_REPORT_TYPES = [
   "options_report",
   "jin10_daily_report",
   "jin10_weekly_report",
+  "jin10_positioning_report",
+  "jin10_technical_levels_report",
+  "jin10_oil_report",
+  "jin10_fx_report",
+  "jin10_market_observation_report",
 ] as const satisfies readonly ReportType[];
 
 export type SupportedReportType = (typeof SUPPORTED_REPORT_TYPES)[number];
@@ -19,6 +24,11 @@ export const CATEGORY_MAP: Record<string, { label: string; color: string }> = {
   options_report: { label: "期权分析", color: "#a78bfa" },
   jin10_daily_report: { label: "金十日报", color: "#f59e0b" },
   jin10_weekly_report: { label: "金十周报", color: "#14b8a6" },
+  jin10_positioning_report: { label: "金十持仓报告", color: "#22c55e" },
+  jin10_technical_levels_report: { label: "金十点位报告", color: "#60a5fa" },
+  jin10_oil_report: { label: "金十原油报告", color: "#f97316" },
+  jin10_fx_report: { label: "金十外汇报告", color: "#8b5cf6" },
+  jin10_market_observation_report: { label: "金十市场观察", color: "#06b6d4" },
 };
 
 export const DOT_COLORS: Record<string, string> = {
@@ -27,6 +37,11 @@ export const DOT_COLORS: Record<string, string> = {
   options_report: "#a78bfa",
   jin10_daily_report: "#f59e0b",
   jin10_weekly_report: "#14b8a6",
+  jin10_positioning_report: "#22c55e",
+  jin10_technical_levels_report: "#60a5fa",
+  jin10_oil_report: "#f97316",
+  jin10_fx_report: "#8b5cf6",
+  jin10_market_observation_report: "#06b6d4",
 };
 
 export const TYPE_DESCRIPTIONS: Record<string, { summary: string; tags: string[] }> = {
@@ -35,7 +50,26 @@ export const TYPE_DESCRIPTIONS: Record<string, { summary: string; tags: string[]
   options_report: { summary: "CME 期权结构分析 Markdown 报告，聚焦墙位、Gamma 零点与主导情景。", tags: ["策略卡", "期权"] },
   jin10_daily_report: { summary: "金十日报三视图报告包，承接原文、视觉版与 Agent 二次分析。", tags: ["看板", "金十"] },
   jin10_weekly_report: { summary: "金十周报报告包，聚焦周度主线、关键位框架与中短期路径推演。", tags: ["周报", "金十"] },
+  jin10_positioning_report: { summary: "金十持仓报告结构化输入，只作为单源补充证据展示，不生成交易结论。", tags: ["持仓", "补充源"] },
+  jin10_technical_levels_report: { summary: "金十点位报告输入，展示 VAH / VAL / POC、支撑阻力与失效条件。", tags: ["点位", "技术位"] },
+  jin10_oil_report: { summary: "金十原油报告作为能源与通胀链条上下文，需结合 EIA 和行情验证。", tags: ["原油", "通胀"] },
+  jin10_fx_report: { summary: "金十外汇报告作为 DXY、Fed 路径和外汇压力上下文，需结合行情验证。", tags: ["外汇", "美元"] },
+  jin10_market_observation_report: { summary: "金十市场观察承接 VIP每日市场观察和市场赔率表，只作为辅助决策证据。", tags: ["市场观察", "赔率"] },
 };
+
+const XAUUSD_REPORT_TYPES = new Set<string>([
+  "final_report",
+  "macro_report",
+  "jin10_daily_report",
+  "jin10_weekly_report",
+  "jin10_positioning_report",
+  "jin10_technical_levels_report",
+  "jin10_fx_report",
+  "jin10_market_observation_report",
+]);
+
+const OIL_REPORT_TYPES = new Set<string>(["jin10_oil_report"]);
+const FX_REPORT_TYPES = new Set<string>(["jin10_fx_report"]);
 
 export function isSupportedReportType(value: string): value is SupportedReportType {
   return SUPPORTED_REPORT_TYPE_SET.has(value);
@@ -63,7 +97,38 @@ export function getReportDetailId(item: ReportIndexItem): string | null {
 
 export function inferAssetLabel(item: ReportIndexItem): string {
   if (item.type === "options_report") return "OG";
+  if (item.type === "jin10_oil_report") return "OIL";
+  if (item.type === "jin10_fx_report") return "FX";
+  if (item.type === "jin10_market_observation_report") return "市场观察";
   return "XAUUSD";
+}
+
+export function reportMatchesAsset(item: ReportIndexItem, asset: string | null): boolean {
+  if (!asset || asset === "all") return true;
+  if (asset === "XAUUSD") return XAUUSD_REPORT_TYPES.has(item.type);
+  if (asset === "OG") return item.type === "options_report";
+  if (asset === "OIL") return OIL_REPORT_TYPES.has(item.type);
+  if (asset === "FX") return FX_REPORT_TYPES.has(item.type);
+  return true;
+}
+
+export type MarketObservationSubtype = "observation" | "odds";
+
+export function detectMarketObservationSubtype(...values: Array<string | null | undefined>): MarketObservationSubtype | null {
+  const text = values.filter(Boolean).join(" ");
+  if (/市场赔率数据表|市场赔率表|赔率表|market odds/i.test(text)) return "odds";
+  if (/VIP每日市场观察|每日市场观察|市场观察|market observation/i.test(text)) return "observation";
+  return null;
+}
+
+export function marketObservationSubtypeLabel(value: MarketObservationSubtype): string {
+  if (value === "odds") return "市场赔率";
+  return "市场观察";
+}
+
+export function getMarketObservationSubtype(item: ReportIndexItem): MarketObservationSubtype | null {
+  if (item.type !== "jin10_market_observation_report") return null;
+  return detectMarketObservationSubtype(item.source_title, item.title) ?? "observation";
 }
 
 export function getReportTitle(item: ReportIndexItem): string {
@@ -74,6 +139,11 @@ export function getReportTitle(item: ReportIndexItem): string {
   if (item.type === "options_report") return `黄金期权结构报告 · ${dateLabel}`;
   if (item.type === "jin10_weekly_report") return `Jin10 黄金周报 · ${dateLabel}`;
   if (item.type === "jin10_daily_report") return `Jin10 黄金日报 · ${dateLabel}`;
+  if (item.type === "jin10_positioning_report") return `Jin10 持仓报告 · ${dateLabel}`;
+  if (item.type === "jin10_technical_levels_report") return `Jin10 点位报告 · ${dateLabel}`;
+  if (item.type === "jin10_oil_report") return `Jin10 原油报告 · ${dateLabel}`;
+  if (item.type === "jin10_fx_report") return `Jin10 外汇报告 · ${dateLabel}`;
+  if (item.type === "jin10_market_observation_report") return `Jin10 市场观察 · ${dateLabel}`;
   return `${CATEGORY_MAP[item.type]?.label ?? item.type} · ${dateLabel}`;
 }
 
@@ -84,6 +154,7 @@ export function matchesReportSearch(item: ReportIndexItem, searchQuery: string):
   return (
     cat.toLowerCase().includes(q) ||
     (item.title ?? "").toLowerCase().includes(q) ||
+    (item.source_title ?? "").toLowerCase().includes(q) ||
     item.trade_date.toLowerCase().includes(q) ||
     item.type.toLowerCase().includes(q)
   );

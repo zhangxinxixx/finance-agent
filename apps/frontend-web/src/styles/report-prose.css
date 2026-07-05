@@ -1,0 +1,107 @@
+.report-prose {
+  color: var(--fa-text-body);
+  font-size: var(--type-body);
+  line-height: 1.82;
+}
+
+.report-prose h1 {
+  color: var(--fa-text-primary);
+  font-size: var(--type-page-title);
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.report-prose h2 {
+  color: var(--fa-text-primary);
+  font-size: var(--type-section-title);
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.report-prose h3 {
+  color: var(--fa-text-primary);
+  font-size: var(--type-card-title);
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.report-prose p {
+  color: var(--fa-text-body);
+}
+
+.report-prose ul {
+  color: var(--fa-text-body);
+}
+
+.report-prose li + li {
+  margin-top: 0.25rem;
+}
+
+.report-prose strong {
+  color: var(--fa-text-primary);
+  font-weight: 700;
+}
+
+.report-prose a {
+  color: var(--brand);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.report-prose code {
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-sm);
+  background: var(--bg-terminal);
+  color: var(--fa-text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--type-caption);
+  padding: 0.05rem 0.3rem;
+}
+
+.report-prose pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.report-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card-inner);
+}
+
+.report-table-scroll table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: var(--type-body-sm);
+  line-height: 1.65;
+}
+
+.report-table-scroll th,
+.report-table-scroll td {
+  border-bottom: 1px solid var(--border-faint);
+  padding: 0.62rem 0.75rem;
+  vertical-align: top;
+}
+
+.report-table-scroll th {
+  background: var(--bg-hover);
+  color: var(--fa-text-label);
+  font-size: var(--type-label);
+  font-weight: 700;
+}
+
+.report-table-scroll td {
+  color: var(--fa-text-body);
+}
+
+.report-table-scroll tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.report-table-scroll tbody tr:last-child td {
+  border-bottom: 0;
+}

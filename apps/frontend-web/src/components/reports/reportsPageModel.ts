@@ -1,4 +1,4 @@
-import { CATEGORY_MAP, isSupportedReportType } from "@/components/reports/reportListMeta";
+import { CATEGORY_MAP, isSupportedReportType, reportMatchesAsset } from "@/components/reports/reportListMeta";
 import type { ReportFilters } from "@/components/reports/reportsRailOptions";
 import type { ReportDateItem, ReportIndexItem } from "@/types/reports";
 
@@ -13,13 +13,27 @@ export function dedupeSupportedReports(indexItems: ReportIndexItem[]): ReportInd
   const seen = new Map<string, ReportIndexItem>();
   for (const item of indexItems) {
     if (!isSupportedReportType(item.type)) continue;
-    const key = `${item.type}|${item.trade_date}`;
+    const key =
+      item.type === "jin10_market_observation_report"
+        ? `${item.type}|${item.trade_date}|${item.run_id ?? item.report_id ?? ""}`
+        : `${item.type}|${item.trade_date}`;
     const existing = seen.get(key);
-    if (!existing || (item.run_id && item.run_id > (existing.run_id ?? ""))) {
+    if (!existing || compareReportFreshness(item, existing) > 0) {
       seen.set(key, item);
     }
   }
   return Array.from(seen.values()).sort((a, b) => b.trade_date.localeCompare(a.trade_date));
+}
+
+function compareReportFreshness(next: ReportIndexItem, current: ReportIndexItem): number {
+  const nextGeneratedAt = Date.parse(next.generated_at ?? "");
+  const currentGeneratedAt = Date.parse(current.generated_at ?? "");
+  const hasNextGeneratedAt = Number.isFinite(nextGeneratedAt);
+  const hasCurrentGeneratedAt = Number.isFinite(currentGeneratedAt);
+  if (hasNextGeneratedAt || hasCurrentGeneratedAt) {
+    return (hasNextGeneratedAt ? nextGeneratedAt : 0) - (hasCurrentGeneratedAt ? currentGeneratedAt : 0);
+  }
+  return (next.run_id ?? "").localeCompare(current.run_id ?? "");
 }
 
 export function filterReports(
@@ -46,10 +60,7 @@ export function filterReports(
     }
 
     if (filters.asset && filters.asset !== "all") {
-      if (filters.asset === "XAUUSD" && !["final_report", "macro_report", "jin10_daily_report", "jin10_weekly_report"].includes(item.type)) {
-        return false;
-      }
-      if (filters.asset === "OG" && item.type !== "options_report") {
+      if (!reportMatchesAsset(item, filters.asset)) {
         return false;
       }
     }

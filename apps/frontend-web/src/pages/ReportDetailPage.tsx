@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ReportDetailHero, ReportGoldMacroOverviewCard } from "@/components/reports/ReportDetailSections";
+import {
+  ReportDetailHero,
+  ReportGenerationTraceCard,
+  ReportGoldMacroOverviewCard,
+  ReportMarketObservationCard,
+} from "@/components/reports/ReportDetailSections";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
@@ -118,6 +123,8 @@ export function ReportDetailPage() {
         />
 
         <ReportGoldMacroOverviewCard data={data} />
+        <ReportMarketObservationCard data={data} />
+        <ReportGenerationTraceCard data={data} onTabChange={setActiveTab} />
 
         {data.warnings.length > 0 ? (
           <div className="space-y-2">
@@ -133,27 +140,17 @@ export function ReportDetailPage() {
         ) : null}
 
         <div className="min-h-0 flex-1">
-          <div className="flex min-h-0 flex-col gap-4">
-            <FACard
-              title="报告产物工作台"
-              eyebrow="报告产物"
-              accent="info"
-              className="flex min-h-[78vh] flex-col"
-              bodyClassName="flex flex-1 flex-col gap-3"
-            >
-              {tabs.length > 0 ? (
-                <div className="flex-1">
-                  {activeTab === "inputs" ? (
-                    <ReportAnalysisInputsPanel model={data.analysis_inputs} />
-                  ) : (
-                    <ReportArtifactPanel tab={currentTab} />
-                  )}
-                </div>
-              ) : (
-                <FAEmptyState title="暂无可用内容页签" description="后端未返回可展示的分析稿、来源稿、可视稿或证据包。" />
-              )}
-            </FACard>
-          </div>
+          {tabs.length > 0 ? (
+            activeTab === "inputs" ? (
+              <ReportAnalysisInputsPanel model={data.analysis_inputs} />
+            ) : (
+              <ReportArtifactPanel tab={currentTab} />
+            )
+          ) : (
+            <section className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] p-4">
+              <FAEmptyState title="暂无可用内容页签" description="后端未返回可展示的分析稿、来源稿、可视稿或证据包。" />
+            </section>
+          )}
         </div>
       </div>
     </div>

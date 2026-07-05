@@ -19,12 +19,19 @@ export const CATEGORY_CONFIGS: CategoryConfig[] = [
   { key: "options", label: "期权分析", color: "#a78bfa", matchType: "options_report" },
   { key: "jin10_daily", label: "Jin10日报", color: "#f59e0b", matchType: "jin10_daily_report" },
   { key: "jin10_weekly", label: "Jin10周报", color: "#14b8a6", matchType: "jin10_weekly_report" },
+  { key: "jin10_positioning", label: "Jin10持仓", color: "#22c55e", matchType: "jin10_positioning_report" },
+  { key: "jin10_levels", label: "Jin10点位", color: "#60a5fa", matchType: "jin10_technical_levels_report" },
+  { key: "jin10_oil", label: "Jin10原油", color: "#f97316", matchType: "jin10_oil_report" },
+  { key: "jin10_fx", label: "Jin10外汇", color: "#8b5cf6", matchType: "jin10_fx_report" },
+  { key: "jin10_market_observation", label: "Jin10市场观察", color: "#06b6d4", matchType: "jin10_market_observation_report" },
 ];
 
 export const ASSET_OPTIONS = [
   { key: "all", label: "全部", color: "var(--brand)" },
   { key: "XAUUSD", label: "XAUUSD", color: "#f59e0b" },
   { key: "OG", label: "OG (Gold)", color: "#10b981" },
+  { key: "OIL", label: "原油", color: "#f97316" },
+  { key: "FX", label: "外汇", color: "#8b5cf6" },
 ];
 
 export const STATUS_OPTIONS = [

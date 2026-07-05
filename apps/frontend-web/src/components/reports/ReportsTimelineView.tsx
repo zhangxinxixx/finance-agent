@@ -1,6 +1,16 @@
 import { useMemo } from "react";
 import type { ReportIndexItem } from "@/types/reports";
-import { canOpenReport, CATEGORY_MAP, DOT_COLORS, formatGeneratedAt, getReportTitle, matchesReportSearch, shortRunId } from "@/components/reports/reportListMeta";
+import {
+  canOpenReport,
+  CATEGORY_MAP,
+  DOT_COLORS,
+  formatGeneratedAt,
+  getMarketObservationSubtype,
+  getReportTitle,
+  marketObservationSubtypeLabel,
+  matchesReportSearch,
+  shortRunId,
+} from "@/components/reports/reportListMeta";
 import { handleSelectKeyDown } from "@/components/reports/reportLibraryViewCommon";
 
 export function TimelineView({
@@ -24,6 +34,7 @@ export function TimelineView({
         const dotColor = DOT_COLORS[item.type] ?? "#94a3b8";
         const isOpenable = canOpenReport(item);
         const generatedAtLabel = formatGeneratedAt(item.generated_at);
+        const marketObservationSubtype = getMarketObservationSubtype(item);
         return (
           <div
             key={`${item.type}-${item.trade_date}-${item.run_id ?? idx}`}
@@ -101,6 +112,21 @@ export function TimelineView({
                 >
                   {cat.label}
                 </span>
+                {marketObservationSubtype ? (
+                  <span
+                    style={{
+                      padding: "1px 5px",
+                      background: marketObservationSubtype === "odds" ? "rgba(245,158,11,0.12)" : "rgba(6,182,212,0.12)",
+                      color: marketObservationSubtype === "odds" ? "#f59e0b" : "#06b6d4",
+                      border: marketObservationSubtype === "odds" ? "1px solid rgba(245,158,11,0.28)" : "1px solid rgba(6,182,212,0.28)",
+                      borderRadius: 2,
+                      fontSize: "var(--text-10)",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {marketObservationSubtypeLabel(marketObservationSubtype)}
+                  </span>
+                ) : null}
                 <span
                   style={{
                     fontSize: "var(--text-11)",

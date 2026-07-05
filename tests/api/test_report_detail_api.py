@@ -634,10 +634,73 @@ def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: P
     _make_tree(
         tmp_path,
         {
-            "storage/outputs/jin10/2026-05-31/220787/raw_article_report.md": "# Weekly Source\n\nBody",
+            "storage/outputs/jin10/2026-05-31/220787/raw_article_report.md": "# Weekly Source\n\nBody\n\n![图表 1](figures/fig_p1_001.png)",
             "storage/outputs/jin10/2026-05-31/220787/agent_analysis_report.md": "# Weekly Analysis\n\nView",
             "storage/outputs/jin10/2026-05-31/220787/daily_analysis.html": "<html><body>weekly</body></html>",
-            "storage/outputs/jin10/2026-05-31/220787/raw_article_report.json": json.dumps({"article_id": "220787"}),
+            "external-jin10/2026-05-31/weekly/220787/report.md": "# Original Weekly Draft\n\nExternal raw source.",
+            "external-jin10/2026-05-31/weekly/220787/meta.json": json.dumps(
+                {
+                    "date": "2026-05-31",
+                    "id": "220787",
+                    "title": "External Weekly",
+                    "category": "黄金周报",
+                    "report_type": "weekly",
+                }
+            ),
+            "storage/outputs/jin10/2026-05-31/220787/raw_article_report.json": json.dumps(
+                {
+                    "article_id": "220787",
+                    "charts": [
+                        {
+                            "figure_id": "fig_p1_001",
+                            "image_path": "figures/fig_p1_001.png",
+                            "title": "图表 1",
+                            "recognized_text": "这是一段过长的正文混入图表识别文本，需要触发语义复核。" * 5,
+                        }
+                    ],
+                    "generated_from": {
+                        "source": "jin10_external",
+                        "content_stage": "parsed_markdown",
+                        "parser_trace": {
+                            "status": {
+                                "parser_version": "jin10-vlm-parser-v0.2",
+                                "parser_run_id": "test-run",
+                                "recognition_mode": "vlm",
+                                "vision_provider": "mimo",
+                                "vision_model": "mimo-v2.5",
+                                "vision_markdown_status": "success",
+                                "vision_layout_status": "success",
+                            },
+                        },
+                    },
+                    "quality_audit": {"status": "accepted", "checked_at": "2026-05-31T00:00:00Z"},
+                    "source_refs": [
+                        {
+                            "source": "jin10_external",
+                            "source_url": "https://svip.jin10.com/news/220787",
+                            "path": "/tmp/report.md",
+                        }
+                    ],
+                }
+            ),
+            "storage/outputs/jin10/2026-05-31/220787/agent_analysis_report.json": json.dumps(
+                {
+                    "generated_from": {
+                        "provider": "codex",
+                        "model": "gpt-5-codex",
+                        "generated_at": "2026-05-31T01:00:00Z",
+                    },
+                    "scenario_paths": [{"path": "路径A", "summary": "4100企稳"}],
+                    "trading_implications": [{"stance": "短线", "trigger": "站稳4120"}],
+                    "source_refs": [
+                        {
+                            "source": "jin10_agent_analysis",
+                            "source_url": "https://svip.jin10.com/news/220787",
+                            "path": "/tmp/agent.json",
+                        }
+                    ],
+                }
+            ),
             "storage/outputs/jin10/2026-05-31/220787/daily_analysis.json": json.dumps(
                 {
                     "family": "jin10_weekly_visual",
@@ -646,13 +709,108 @@ def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: P
                     "run_id": "220787",
                 }
             ),
+            "storage/outputs/jin10/2026-05-31/220787/figures/fig_p1_001.png": "png",
         },
     )
     monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service, "_JIN10_EXTERNAL_ROOT", tmp_path / "external-jin10")
     factory = _make_session_factory()
 
     with factory() as db:
         payload = api_main.api_report_detail("220787", db=db).model_dump(mode="json")
+        source_payload = api_main.get_report_source(db, "220787")
 
     assert payload["family"] == "jin10_weekly_visual"
-    assert payload["title"] == "Jin10 weekly report"
+    assert payload["title"] == "External Weekly"
+    assert source_payload is not None
+    assert source_payload["path"] == "storage/outputs/jin10/2026-05-31/220787/raw_article_report.md"
+    assert "# Weekly Source" in source_payload["content"]
+    assert "# Original Weekly Draft" not in source_payload["content"]
+    assert payload["data_status"] == "partial"
+    assert payload["lifecycle_status"] == "needs_review"
+    assert any(item["code"] == "jin10-chart-text-needs-review" for item in payload["warnings"])
+    assert len(payload["source_refs"]) == 2
+    trace = payload["structured_payload"]["_generation_trace"]
+    assert trace["llm"]["model"] == "gpt-5-codex"
+    assert trace["vlm"]["status"] == "tracked"
+    assert trace["vlm"]["provider"] == "mimo"
+    assert trace["vlm"]["model"] == "mimo-v2.5"
+    assert trace["vlm"]["parser_run_id"] == "test-run"
+    assert trace["vlm"]["vision_layout_status"] == "success"
+    assert trace["vlm"]["reason"] is None
+    assert trace["asset_audit"]["status"] == "pass"
+    assert trace["source_counts"]["original_images"] == 0
+    assert trace["quality_audit"]["semantic_review_status"] == "needs_review"
+    assert trace["quality_audit"]["chart_text_issues"][0]["figure_id"] == "fig_p1_001"
+    assert trace["strategy_handoff"]["scenario_paths"][0]["title"] == "路径A"
+
+
+def test_report_detail_jin10_chart_asset_mismatch_requires_agent_loop_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/jin10/2026-07-05/223608/raw_article_report.md": (
+                "# Weekly Source\n\n"
+                "![图表 1](figures/fig_p1_001.png)\n\n"
+                "![图表 2](figures/fig_p2_001.png)\n"
+            ),
+            "storage/outputs/jin10/2026-07-05/223608/agent_analysis_report.md": "# Weekly Analysis\n\nView",
+            "storage/outputs/jin10/2026-07-05/223608/daily_analysis.html": "<html><body>weekly</body></html>",
+            "storage/outputs/jin10/2026-07-05/223608/raw_article_report.json": json.dumps(
+                {
+                    "article_id": "223608",
+                    "charts": [
+                        {"figure_id": "fig_p1_001", "image_path": "figures/fig_p1_001.png", "title": "图表 1"},
+                        {"figure_id": "fig_p2_001", "image_path": "figures/fig_p2_001.png", "title": "图表 2"},
+                    ],
+                    "generated_from": {
+                        "source": "jin10_external",
+                        "parser_trace": {
+                            "status": "success",
+                            "figures_total": 1,
+                            "vision_layout_status": "partial",
+                        },
+                    },
+                    "quality_audit": {"status": "accepted", "checked_at": "2026-07-05T00:00:00Z"},
+                }
+            ),
+            "storage/outputs/jin10/2026-07-05/223608/agent_analysis_report.json": json.dumps(
+                {
+                    "generated_from": {"provider": "codex", "model": "gpt-5-codex"},
+                    "source_refs": [],
+                }
+            ),
+            "storage/outputs/jin10/2026-07-05/223608/daily_analysis.json": json.dumps(
+                {
+                    "family": "jin10_weekly_visual",
+                    "report_type": "weekly",
+                    "trade_date": "2026-07-05",
+                    "run_id": "223608",
+                }
+            ),
+            "storage/outputs/jin10/2026-07-05/223608/figures/fig_p1_001.png": "png",
+            "storage/outputs/jin10/2026-07-05/223608/figures/fig_p2_001.png": "png",
+        },
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service, "_JIN10_EXTERNAL_ROOT", tmp_path / "external-jin10")
+    factory = _make_session_factory()
+
+    with factory() as db:
+        payload = api_main.api_report_detail("223608", db=db).model_dump(mode="json")
+
+    trace = payload["structured_payload"]["_generation_trace"]
+    assert payload["data_status"] == "partial"
+    assert payload["lifecycle_status"] == "needs_review"
+    assert any(item["code"] == "jin10-chart-assets-needs-review" for item in payload["warnings"])
+    assert trace["asset_audit"]["status"] == "needs_review"
+    assert trace["asset_audit"]["markdown_image_refs"] == 2
+    assert trace["asset_audit"]["raw_chart_count"] == 2
+    assert trace["asset_audit"]["figure_files"] == 2
+    assert trace["asset_audit"]["parser_figures_total"] == 1
+    assert trace["asset_audit"]["count_issues"][0]["code"] == "parser_figure_count_mismatch"

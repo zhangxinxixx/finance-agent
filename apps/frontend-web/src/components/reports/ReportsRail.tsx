@@ -1,4 +1,5 @@
 import type { ReportIndexItem } from "@/types/reports";
+import { reportMatchesAsset } from "./reportListMeta";
 import type { ReportFilters } from "./reportsRailOptions";
 import { REPORTS_RAIL_PANEL_STYLE } from "./reportsRailOptions";
 import {
@@ -48,8 +49,7 @@ export function ReportsRail({ reports, filters, onFilterChange, railLoading, rai
   const filteredCount = reports.filter((item) => {
     if (filters.reportTypes.length > 0 && !filters.reportTypes.includes(item.type)) return false;
     if (filters.asset && filters.asset !== "all") {
-      if (filters.asset === "XAUUSD" && !["jin10_daily_report", "jin10_weekly_report"].includes(item.type)) return false;
-      if (filters.asset === "OG" && item.type !== "options_report") return false;
+      if (!reportMatchesAsset(item, filters.asset)) return false;
     }
     if (filters.status) {
       if (filters.status === "published" && !item.available) return false;

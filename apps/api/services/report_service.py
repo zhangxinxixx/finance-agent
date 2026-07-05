@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import or_, select
@@ -41,6 +41,7 @@ _STANDARD_ARTIFACT_TYPES = {
     ArtifactType.visual_html,
     ArtifactType.structured_json,
 }
+_JIN10_EXTERNAL_ROOT = Path("~/jin10-reports").expanduser()
 
 
 def _mtime_to_iso_utc(timestamp: float) -> str:
@@ -758,33 +759,311 @@ def _legacy_jin10_report_detail(report_id: str) -> ReportDetail | None:
             (ArtifactType.analysis_md, run_dir / "agent_analysis_report.md", False, "text/markdown"),
             (ArtifactType.visual_html, run_dir / "daily_analysis.html", False, "text/html"),
             (ArtifactType.structured_json, run_dir / "raw_article_report.json", False, "application/json"),
+            (ArtifactType.structured_json, run_dir / "agent_analysis_report.json", False, "application/json"),
+            (ArtifactType.structured_json, run_dir / "daily_analysis.json", False, "application/json"),
         ],
     )
     if not artifacts:
         return None
+    raw_payload = _read_optional_json(run_dir / "raw_article_report.json") or {}
+    agent_payload = _read_optional_json(run_dir / "agent_analysis_report.json") or {}
     daily_payload = _read_optional_json(run_dir / "daily_analysis.json") or {}
     family = str(daily_payload.get("family") or "").strip() or "jin10_daily_visual"
     external_meta = _find_external_jin10_meta(trade_date, report_id)
-    if family == "jin10_weekly_visual" or _is_explicit_jin10_weekly(external_meta or daily_payload):
+    if family in {
+        "jin10_positioning_report",
+        "jin10_technical_levels_report",
+        "jin10_oil_report",
+        "jin10_fx_report",
+        "jin10_market_observation_report",
+    }:
+        resolved_family = family
+        resolved_title = _jin10_source_title(raw_payload, external_meta) or str(daily_payload.get("title") or agent_payload.get("title") or "").strip() or _report_index_title(family, trade_date)
+    elif family == "jin10_weekly_visual" or _is_explicit_jin10_weekly(external_meta or daily_payload):
         resolved_family = "jin10_weekly_visual"
-        resolved_title = "Jin10 weekly report"
+        resolved_title = _jin10_source_title(raw_payload, external_meta) or str(daily_payload.get("title") or agent_payload.get("title") or "").strip() or "Jin10 weekly report"
     else:
         resolved_family = "jin10_daily_visual"
-        resolved_title = "Jin10 daily report"
+        resolved_title = _jin10_source_title(raw_payload, external_meta) or str(daily_payload.get("title") or agent_payload.get("title") or "").strip() or "Jin10 daily report"
+    structured_payload = _build_legacy_jin10_structured_payload(run_dir=run_dir, artifacts=artifacts)
+    generation_trace = (structured_payload or {}).get("_generation_trace") if isinstance(structured_payload, dict) else {}
+    semantic_needs_review = (
+        isinstance(generation_trace, dict)
+        and ((generation_trace.get("quality_audit") or {}).get("semantic_review_status") == "needs_review")
+    )
+    asset_audit = generation_trace.get("asset_audit") if isinstance(generation_trace, dict) else {}
+    asset_needs_review = isinstance(asset_audit, dict) and asset_audit.get("status") not in {None, "pass"}
+    warnings = [WarningItem(code="legacy-report-adapter", message="Legacy Jin10 bundle adapted to report detail")]
+    if semantic_needs_review:
+        warnings.append(
+            WarningItem(
+                code="jin10-chart-text-needs-review",
+                message="Jin10 chart text extraction mixed chart OCR with surrounding article text",
+                field="structured_payload._generation_trace.quality_audit.chart_text_issues",
+                hint="需人工复核切图与 recognized_text，再决定是否重跑图文解析。",
+            )
+        )
+    if asset_needs_review:
+        warnings.append(
+            WarningItem(
+                code="jin10-chart-assets-needs-review",
+                message="Jin10 report chart assets are inconsistent across markdown, raw charts, parser trace, and figure files",
+                field="structured_payload._generation_trace.asset_audit",
+                hint="先重跑图文 parser loop；parser 通过后再执行 rebuild_jin10_agent_analysis。",
+            )
+        )
+
     return ReportDetail(
         run_id=report_id,
         snapshot_id=None,
-        data_status=DataStatus.partial if _missing_standard_artifacts(artifacts) or _missing_files(artifacts) else DataStatus.live,
+        data_status=DataStatus.partial if semantic_needs_review or asset_needs_review or _missing_standard_artifacts(artifacts) or _missing_files(artifacts) else DataStatus.live,
         artifact_refs=artifacts,
-        warnings=[WarningItem(code="legacy-report-adapter", message="Legacy Jin10 bundle adapted to report detail")],
+        warnings=warnings,
         report_id=report_id,
         family=resolved_family,
         title=resolved_title,
         trade_date=trade_date,
-        lifecycle_status=ReportLifecycleStatus.generated,
+        lifecycle_status=ReportLifecycleStatus.needs_review if semantic_needs_review or asset_needs_review else ReportLifecycleStatus.generated,
         artifacts=artifacts,
-        structured_payload=_load_structured_payload(artifacts),
+        source_refs=dedupe_source_refs(
+            [
+                *parse_source_refs(raw_payload.get("source_refs")),
+                *parse_source_refs(agent_payload.get("source_refs")),
+            ]
+        ),
+        structured_payload=structured_payload,
     )
+
+
+def _build_legacy_jin10_structured_payload(*, run_dir: Path, artifacts: list[ReportArtifactSchema]) -> dict[str, Any] | None:
+    raw_payload = _read_optional_json(run_dir / "raw_article_report.json") or {}
+    if not raw_payload:
+        raw_payload = _load_structured_payload(artifacts) or {}
+    agent_payload = _read_optional_json(run_dir / "agent_analysis_report.json") or {}
+    daily_payload = _read_optional_json(run_dir / "daily_analysis.json") or {}
+    payload = dict(raw_payload)
+    payload["_generation_trace"] = _build_jin10_generation_trace(
+        run_dir=run_dir,
+        raw_payload=raw_payload,
+        agent_payload=agent_payload,
+        daily_payload=daily_payload,
+    )
+    return payload
+
+
+def _build_jin10_generation_trace(
+    *,
+    run_dir: Path,
+    raw_payload: dict[str, Any],
+    agent_payload: dict[str, Any],
+    daily_payload: dict[str, Any],
+) -> dict[str, Any]:
+    raw_generated_from = raw_payload.get("generated_from") if isinstance(raw_payload.get("generated_from"), dict) else {}
+    agent_generated_from = agent_payload.get("generated_from") if isinstance(agent_payload.get("generated_from"), dict) else {}
+    parser_trace = raw_generated_from.get("parser_trace") if isinstance(raw_generated_from.get("parser_trace"), dict) else {}
+    parser_status = parser_trace.get("status") if isinstance(parser_trace.get("status"), dict) else {}
+
+    def trace_value(key: str) -> Any:
+        return parser_trace.get(key) or parser_status.get(key)
+
+    charts = raw_payload.get("charts") if isinstance(raw_payload.get("charts"), list) else []
+    quality_audit = _normalize_jin10_quality_audit(agent_payload, raw_payload, daily_payload) or {}
+    asset_audit = _build_jin10_asset_audit(run_dir=run_dir, raw_payload=raw_payload)
+    chart_text_issues = _jin10_chart_text_issues(charts)
+    semantic_review_status = "needs_review" if chart_text_issues else "pass"
+    vision_layout_path = run_dir / "vision_layout.json"
+    vlm_provider = trace_value("vision_provider") or raw_generated_from.get("provider") or raw_generated_from.get("source")
+    vlm_model = trace_value("vision_model") or raw_generated_from.get("model") or raw_generated_from.get("vlm_model")
+    vision_layout_status = trace_value("vision_layout_status") or ("present" if vision_layout_path.exists() else "missing")
+    vlm_tracked = bool(vlm_model or trace_value("parser_run_id"))
+
+    return {
+        "llm": {
+            "provider": agent_generated_from.get("provider") or agent_generated_from.get("source"),
+            "model": agent_generated_from.get("model"),
+            "generated_at": agent_generated_from.get("generated_at"),
+            "token_usage": agent_generated_from.get("tokens"),
+            "source": agent_generated_from.get("source"),
+        },
+        "vlm": {
+            "provider": vlm_provider,
+            "model": vlm_model,
+            "content_stage": raw_generated_from.get("content_stage"),
+            "parser_version": trace_value("parser_version"),
+            "parser_run_id": trace_value("parser_run_id"),
+            "recognition_mode": trace_value("recognition_mode"),
+            "vision_markdown_status": trace_value("vision_markdown_status"),
+            "chart_render_mode": (raw_generated_from.get("article_context") or {}).get("chart_render_mode")
+            if isinstance(raw_generated_from.get("article_context"), dict)
+            else None,
+            "status": "tracked" if vlm_tracked else "untracked",
+            "vision_layout_status": vision_layout_status,
+            "reason": "vision_layout.json missing; parser output has no VLM model metadata"
+            if vision_layout_status == "missing" and not vlm_tracked
+            else None,
+        },
+        "quality_audit": {
+            "status": quality_audit.get("status"),
+            "checked_at": quality_audit.get("checked_at"),
+            "reason_count": len(quality_audit.get("reasons") or []) if isinstance(quality_audit.get("reasons"), list) else 0,
+            "semantic_review_status": semantic_review_status,
+            "chart_text_issue_count": len(chart_text_issues),
+            "chart_text_issues": chart_text_issues[:8],
+        },
+        "asset_audit": asset_audit,
+        "source_counts": {
+            "source_refs": len(raw_payload.get("source_refs") or []) + len(agent_payload.get("source_refs") or []),
+            "charts": len(charts),
+            "original_images": _count_jin10_source_images(raw_payload.get("source_refs")),
+            "artifacts": len([path for path in run_dir.iterdir() if path.is_file()]) if run_dir.exists() else 0,
+        },
+        "strategy_handoff": {
+            "scenario_paths": _summarize_named_items(agent_payload.get("scenario_paths")),
+            "trading_implications": _summarize_named_items(agent_payload.get("trading_implications"), title_key="stance"),
+            "source_artifact_refs": agent_payload.get("source_artifact_refs") or [],
+        },
+    }
+
+
+def _build_jin10_asset_audit(*, run_dir: Path, raw_payload: dict[str, Any]) -> dict[str, Any]:
+    markdown_image_refs = _extract_markdown_image_refs(run_dir / "raw_article_report.md")
+    markdown_refs = set(markdown_image_refs)
+    charts = raw_payload.get("charts") if isinstance(raw_payload.get("charts"), list) else []
+    chart_refs = {
+        str(chart.get("image_path"))
+        for chart in charts
+        if isinstance(chart, dict) and chart.get("image_path")
+    }
+    figure_paths = {f"figures/{path.name}" for path in (run_dir / "figures").glob("*.png")}
+    expected_refs = markdown_refs | chart_refs
+    parser_figures_total = _jin10_parser_figures_total(raw_payload)
+    count_issues: list[dict[str, Any]] = []
+    if len(markdown_image_refs) != len(markdown_refs):
+        count_issues.append(
+            {
+                "code": "duplicate_markdown_refs",
+                "markdown_image_refs": len(markdown_image_refs),
+                "unique_markdown_image_refs": len(markdown_refs),
+            }
+        )
+    if len(charts) != len(chart_refs):
+        count_issues.append(
+            {
+                "code": "duplicate_or_missing_chart_refs",
+                "chart_count": len(charts),
+                "unique_chart_image_refs": len(chart_refs),
+            }
+        )
+    if markdown_refs != chart_refs:
+        count_issues.append(
+            {
+                "code": "markdown_chart_ref_mismatch",
+                "markdown_only": sorted(markdown_refs - chart_refs),
+                "chart_only": sorted(chart_refs - markdown_refs),
+            }
+        )
+    if len(figure_paths) != len(expected_refs):
+        count_issues.append(
+            {
+                "code": "figure_file_count_mismatch",
+                "figure_files": len(figure_paths),
+                "expected_refs": len(expected_refs),
+            }
+        )
+    if parser_figures_total is not None and parser_figures_total != len(chart_refs):
+        count_issues.append(
+            {
+                "code": "parser_figure_count_mismatch",
+                "parser_figures_total": parser_figures_total,
+                "chart_image_refs": len(chart_refs),
+            }
+        )
+    missing_refs = sorted(ref for ref in expected_refs if ref not in figure_paths)
+    extra_files = sorted(path for path in figure_paths if path not in expected_refs)
+    if missing_refs:
+        status = "missing_assets"
+    elif count_issues or extra_files:
+        status = "needs_review"
+    else:
+        status = "pass"
+    return {
+        "markdown_image_refs": len(markdown_refs),
+        "markdown_image_ref_occurrences": len(markdown_image_refs),
+        "raw_chart_count": len(charts),
+        "chart_image_refs": len(chart_refs),
+        "figure_files": len(figure_paths),
+        "parser_figures_total": parser_figures_total,
+        "missing_refs": missing_refs,
+        "extra_files": extra_files,
+        "count_issues": count_issues,
+        "status": status,
+    }
+
+
+def _extract_markdown_image_refs(path: Path) -> list[str]:
+    text = _read_optional_text(path) or ""
+    return [match.strip() for match in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text) if match.strip()]
+
+
+def _jin10_parser_figures_total(raw_payload: dict[str, Any]) -> int | None:
+    generated_from = raw_payload.get("generated_from")
+    if not isinstance(generated_from, dict):
+        return None
+    parser_trace = generated_from.get("parser_trace")
+    if not isinstance(parser_trace, dict):
+        return None
+    value = parser_trace.get("figures_total")
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _jin10_chart_text_issues(charts: Any) -> list[dict[str, Any]]:
+    if not isinstance(charts, list):
+        return []
+    issues: list[dict[str, Any]] = []
+    for chart in charts:
+        if not isinstance(chart, dict):
+            continue
+        recognized_text = str(chart.get("recognized_text") or "")
+        if len(recognized_text) >= 120 or "\n\n" in recognized_text:
+            issues.append(
+                {
+                    "figure_id": chart.get("figure_id"),
+                    "image_path": chart.get("image_path"),
+                    "title": chart.get("title"),
+                    "text_len": len(recognized_text),
+                    "sample": recognized_text[:180].replace("\n", " "),
+                }
+            )
+    return issues
+
+
+def _count_jin10_source_images(source_refs: Any) -> int:
+    if not isinstance(source_refs, list):
+        return 0
+    return sum(1 for ref in source_refs if isinstance(ref, dict) and str(ref.get("asset_type") or "").lower() == "image")
+
+
+def _summarize_named_items(raw_items: Any, *, title_key: str = "path") -> list[dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+    summarized: list[dict[str, Any]] = []
+    for item in raw_items[:3]:
+        if not isinstance(item, dict):
+            continue
+        summarized.append(
+            {
+                "title": item.get(title_key) or item.get("title") or item.get("path") or item.get("stance"),
+                "summary": item.get("summary") or item.get("trigger"),
+                "invalid": item.get("invalid"),
+            }
+        )
+    return summarized
 
 
 def _legacy_external_jin10_weekly_detail(report_id: str) -> ReportDetail | None:
@@ -1152,7 +1431,7 @@ def _resolve_report_path(file_path: str | Path) -> Path | None:
         resolved = candidate.resolve()
         allowed_roots = [
             (_PROJECT_ROOT / "storage").resolve(),
-            Path("~/jin10-reports").expanduser().resolve(),
+            _JIN10_EXTERNAL_ROOT.resolve(),
         ]
     except OSError:
         return None
@@ -2286,13 +2565,16 @@ def get_jin10_daily_report_latest() -> dict[str, Any] | None:
     for date_dir in sorted((d for d in base.iterdir() if d.is_dir()), reverse=True):
         for run_dir in sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True):
             payload = _load_jin10_daily_report(date_dir.name, run_dir.name)
-            if payload is not None:
+            if payload is not None and _is_jin10_daily_storage_payload(payload):
                 return payload
     return None
 
 
 def get_jin10_daily_report(date: str, run_id: str) -> dict[str, Any] | None:
-    return _load_jin10_daily_report(date, run_id)
+    payload = _load_jin10_daily_report(date, run_id)
+    if payload is not None and not _is_jin10_daily_storage_payload(payload):
+        return None
+    return payload
 
 
 def _load_jin10_daily_report(date: str, run_id: str) -> dict[str, Any] | None:
@@ -2305,10 +2587,38 @@ def _load_jin10_daily_report(date: str, run_id: str) -> dict[str, Any] | None:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
     except Exception:
         return None
+    raw_payload = _read_optional_json(base / "raw_article_report.json")
+    external_meta = _find_external_jin10_meta(date, run_id)
+    source_title = _jin10_source_title(raw_payload, external_meta)
+    if source_title:
+        payload["source_title"] = source_title
     payload["content"] = html_path.read_text(encoding="utf-8")
     payload["format"] = "html"
     payload["path"] = str(html_path.relative_to(_PROJECT_ROOT))
     return payload
+
+
+_JIN10_NON_DAILY_TITLE_MARKERS = ("黄金头条", "投行金评", "财料", "一周热榜精选")
+
+
+def _has_jin10_non_daily_title_marker(*values: Any) -> bool:
+    for value in values:
+        text = str(value or "")
+        if text and any(marker in text for marker in _JIN10_NON_DAILY_TITLE_MARKERS):
+            return True
+    return False
+
+
+def _is_jin10_daily_storage_payload(payload: dict[str, Any], *, title_candidates: Iterable[Any] = ()) -> bool:
+    report_type = str(payload.get("report_type") or "").strip().lower()
+    family = str(payload.get("family") or "").strip()
+    if report_type and report_type != "daily":
+        return False
+    if family and family != "jin10_daily_visual":
+        return False
+    if _has_jin10_non_daily_title_marker(payload.get("title"), payload.get("source_title"), *title_candidates):
+        return False
+    return True
 
 
 def get_jin10_report_bundle_latest() -> dict[str, Any] | None:
@@ -2675,7 +2985,18 @@ def _collect_jin10_reports() -> list[dict[str, Any]]:
                 external_meta = _find_external_jin10_meta(date_dir.name, run_dir.name)
                 source_title = _jin10_source_title(raw_payload, external_meta)
                 is_weekly = str(payload.get("family") or "").strip() == "jin10_weekly_visual" or _is_explicit_jin10_weekly(external_meta or payload)
-                report_type = "jin10_weekly_report" if is_weekly else "jin10_daily_report"
+                report_type = _jin10_index_report_type(
+                    payload,
+                    is_weekly=is_weekly,
+                    title_candidates=(
+                        source_title,
+                        (agent_payload or {}).get("title"),
+                        (raw_payload or {}).get("title"),
+                        (external_meta or {}).get("title"),
+                    ),
+                )
+                if report_type is None:
+                    continue
                 seen.add((date_dir.name, run_dir.name))
                 item = {
                     "type": report_type,
@@ -2709,6 +3030,31 @@ def _collect_jin10_reports() -> list[dict[str, Any]]:
     return results
 
 
+def _jin10_index_report_type(
+    payload: dict[str, Any],
+    *,
+    is_weekly: bool,
+    title_candidates: Iterable[Any] = (),
+) -> str | None:
+    if is_weekly:
+        return "jin10_weekly_report"
+    normalized = str(payload.get("report_type") or "").strip().lower()
+    family = str(payload.get("family") or "").strip().lower()
+    if _is_jin10_daily_storage_payload(payload, title_candidates=title_candidates):
+        return "jin10_daily_report"
+    if normalized == "positioning" or family == "jin10_positioning_report":
+        return "jin10_positioning_report"
+    if normalized in {"technical_levels", "technical_level"} or family == "jin10_technical_levels_report":
+        return "jin10_technical_levels_report"
+    if normalized == "oil" or family == "jin10_oil_report":
+        return "jin10_oil_report"
+    if normalized == "fx" or family == "jin10_fx_report":
+        return "jin10_fx_report"
+    if normalized == "market_observation" or family == "jin10_market_observation_report":
+        return "jin10_market_observation_report"
+    return None
+
+
 def _jin10_source_title(raw_payload: dict[str, Any] | None, external_meta: dict[str, Any] | None = None) -> str | None:
     title = (raw_payload or {}).get("title") or (external_meta or {}).get("title")
     if title:
@@ -2722,7 +3068,7 @@ def _jin10_source_title(raw_payload: dict[str, Any] | None, external_meta: dict[
 
 
 def _collect_jin10_external_weekly_reports(seen: set[tuple[str, str]] | None = None) -> list[dict[str, Any]]:
-    external = Path("~/jin10-reports").expanduser()
+    external = _JIN10_EXTERNAL_ROOT
     results: list[dict[str, Any]] = []
     seen = seen or set()
     if not external.exists():
@@ -2755,7 +3101,7 @@ def _collect_jin10_external_weekly_reports(seen: set[tuple[str, str]] | None = N
 
 
 def _find_external_jin10_weekly_dir(report_id: str) -> tuple[str, Path] | None:
-    external = Path("~/jin10-reports").expanduser()
+    external = _JIN10_EXTERNAL_ROOT
     if not external.exists():
         return None
     for date_dir in sorted((item for item in external.iterdir() if item.is_dir()), reverse=True):
@@ -2767,7 +3113,7 @@ def _find_external_jin10_weekly_dir(report_id: str) -> tuple[str, Path] | None:
 
 
 def _find_external_jin10_meta(date: str, article_id: str) -> dict[str, Any] | None:
-    external = Path("~/jin10-reports").expanduser()
+    external = _JIN10_EXTERNAL_ROOT
     candidates = [
         external / date / "weekly" / article_id / "meta.json",
         external / date / "黄金周报" / article_id / "meta.json",
@@ -2780,7 +3126,6 @@ def _find_external_jin10_meta(date: str, article_id: str) -> dict[str, Any] | No
         if isinstance(meta, dict):
             return meta
     return None
-
 
 def _is_explicit_jin10_weekly(meta: dict[str, Any]) -> bool:
     category = str(meta.get("category") or "").strip()
@@ -3069,11 +3414,31 @@ def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:
         for date_dir in sorted(roots["jin10"].iterdir()):
             if not date_dir.is_dir():
                 continue
-            if any((run_dir / "daily_analysis.html").exists() for run_dir in date_dir.iterdir() if run_dir.is_dir()):
-                date_modules[date_dir.name].add("jin10_daily_report")
-                runs = sorted((run_dir for run_dir in date_dir.iterdir() if run_dir.is_dir()), reverse=True)
-                if runs:
-                    date_latest_run.setdefault(date_dir.name, runs[0].name)
+            indexed_runs: list[Path] = []
+            for run_dir in date_dir.iterdir():
+                if not run_dir.is_dir() or not (run_dir / "daily_analysis.html").exists():
+                    continue
+                payload = _read_optional_json(run_dir / "daily_analysis.json") or {}
+                raw_payload = _read_optional_json(run_dir / "raw_article_report.json")
+                external_meta = _find_external_jin10_meta(date_dir.name, run_dir.name)
+                source_title = _jin10_source_title(raw_payload, external_meta)
+                is_weekly = str(payload.get("family") or "").strip() == "jin10_weekly_visual" or str(payload.get("report_type") or "").strip().lower() == "weekly"
+                report_type = _jin10_index_report_type(
+                    payload,
+                    is_weekly=is_weekly,
+                    title_candidates=(
+                        source_title,
+                        (raw_payload or {}).get("title"),
+                        (external_meta or {}).get("title"),
+                    ),
+                )
+                if report_type is None:
+                    continue
+                date_modules[date_dir.name].add(report_type)
+                indexed_runs.append(run_dir)
+            if indexed_runs:
+                runs = sorted(indexed_runs, reverse=True)
+                date_latest_run.setdefault(date_dir.name, runs[0].name)
 
     dates_out = [
         {

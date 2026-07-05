@@ -15,6 +15,7 @@ export interface ReportIndexItem {
   report_id?: string | null;
   family?: string | null;
   title?: string | null;
+  source_title?: string | null;
   format: string;
   available: boolean;
 }
@@ -126,6 +127,7 @@ export interface Jin10WeeklyReportResponse {
   category: string;
   source_url: string;
   image_count?: number;
+  asset_base_url?: string;
   content: string;
   format: string;
 }
@@ -263,6 +265,62 @@ export interface ReportDetailResponse {
   gold_macro_overview?: GoldMacroOverview | null;
 }
 
+export interface ReportGenerationTrace {
+  llm?: {
+    provider?: string | null;
+    model?: string | null;
+    generated_at?: string | null;
+    token_usage?: Record<string, unknown> | null;
+    source?: string | null;
+  } | null;
+  vlm?: {
+    provider?: string | null;
+    model?: string | null;
+    content_stage?: string | null;
+    chart_render_mode?: string | null;
+    status?: string | null;
+    vision_layout_status?: string | null;
+    reason?: string | null;
+  } | null;
+  quality_audit?: {
+    status?: string | null;
+    checked_at?: string | null;
+    reason_count?: number | null;
+    semantic_review_status?: string | null;
+    chart_text_issue_count?: number | null;
+    chart_text_issues?: Array<{
+      figure_id?: string | null;
+      image_path?: string | null;
+      title?: string | null;
+      text_len?: number | null;
+      sample?: string | null;
+    }>;
+  } | null;
+  asset_audit?: {
+    status?: string | null;
+    markdown_image_refs?: number | null;
+    markdown_image_ref_occurrences?: number | null;
+    raw_chart_count?: number | null;
+    chart_image_refs?: number | null;
+    figure_files?: number | null;
+    parser_figures_total?: number | null;
+    missing_refs?: string[];
+    extra_files?: string[];
+    count_issues?: Array<Record<string, unknown>>;
+  } | null;
+  source_counts?: {
+    source_refs?: number | null;
+    charts?: number | null;
+    original_images?: number | null;
+    artifacts?: number | null;
+  } | null;
+  strategy_handoff?: {
+    scenario_paths?: Array<{ title?: string | null; summary?: string | null; invalid?: string | null }>;
+    trading_implications?: Array<{ title?: string | null; summary?: string | null; invalid?: string | null }>;
+    source_artifact_refs?: string[];
+  } | null;
+}
+
 export interface ReportArtifactPayloadResponse {
   report_id: string;
   artifact_id: string;
@@ -377,5 +435,6 @@ export interface ReportDetailView {
   tabs: Partial<Record<ReportArtifactTabKey, ReportArtifactContentView>>;
   available_tabs: ReportDetailTabKey[];
   structured_payload?: Record<string, unknown> | null;
+  generation_trace?: ReportGenerationTrace | null;
   gold_macro_overview?: GoldMacroOverview | null;
 }

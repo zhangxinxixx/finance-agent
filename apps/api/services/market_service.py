@@ -32,7 +32,7 @@ def get_jin10_daily_report_latest() -> dict[str, Any] | None:
             result = _load_jin10_daily_report(date_dir.name, run_dir.name)
             if result is None:
                 continue
-            if _is_weekly_storage_report(result):
+            if not _is_daily_storage_report(result):
                 continue
             result["report_type"] = "daily"
             return result
@@ -42,7 +42,7 @@ def get_jin10_daily_report_latest() -> dict[str, Any] | None:
 def get_jin10_daily_report(date: str, run_id: str) -> dict[str, Any] | None:
     result = _load_jin10_daily_report(date, run_id)
     if result is not None:
-        if _is_weekly_storage_report(result):
+        if not _is_daily_storage_report(result):
             return None
         result["report_type"] = "daily"
     return result
@@ -71,18 +71,19 @@ def get_jin10_weekly_report_latest() -> dict[str, Any] | None:
                 for article_dir in (d for d in sub_dir.iterdir() if d.is_dir()):
                     meta = _load_jin10_report_meta(date_dir.name, article_dir.name)
                     if meta and _is_explicit_jin10_weekly(meta):
-                        content = _read_jin10_report_content(date_dir.name, article_dir.name)
                         weekly = {
                             "article_id": meta.get("id"),
+                            "run_id": article_dir.name,
                             "date": meta.get("date"),
                             "title": meta.get("title"),
                             "report_type": "weekly",
                             "category": meta.get("category"),
                             "source_url": meta.get("source_url"),
-                            "image_count": len(meta.get("images", [])),
-                            "content": content,
+                            "image_count": _jin10_weekly_image_count(meta, date_dir.name, article_dir.name),
+                            "content": "",
                             "format": "markdown",
                         }
+                        _attach_jin10_weekly_markdown(weekly, date_dir.name, article_dir.name)
                         candidates.append((str(weekly.get("date") or date_dir.name), str(weekly.get("article_id") or article_dir.name), weekly))
 
     if not candidates:
@@ -91,20 +92,61 @@ def get_jin10_weekly_report_latest() -> dict[str, Any] | None:
 
 
 def _merge_report_meta(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-    """将 meta.json 的字段合并到 storage 结果中，并用 report.md 覆盖 content。"""
+    """将 meta.json 的字段合并到 storage 结果中，并用完整原稿覆盖 content。"""
     result["report_type"] = "weekly"
     for key in ("date", "title", "category", "source_url"):
         if meta.get(key) and not result.get(key):
             result[key] = meta.get(key)
-    result["image_count"] = len(meta.get("images", []))
-    # 替换 content 为原始 markdown 报告
     report_date = meta.get("date") or result.get("date") or ""
     article_id = meta.get("id") or result.get("article_id") or ""
-    raw_md = _read_jin10_report_content(report_date, article_id)
-    if raw_md:
-        result["content"] = raw_md
-        result["format"] = "markdown"
+    result["image_count"] = _jin10_weekly_image_count(meta, str(report_date), str(article_id))
+    # 替换 content 为原始 markdown 报告，优先使用 storage 解析后的完整原稿和本地图。
+    _attach_jin10_weekly_markdown(result, str(report_date), str(article_id))
     return result
+
+
+def _jin10_weekly_storage_base(date: str, article_id: str) -> Path:
+    return _PROJECT_ROOT / "storage" / "outputs" / "jin10" / date / article_id
+
+
+def _read_jin10_storage_raw_markdown(date: str, article_id: str) -> str:
+    path = _jin10_weekly_storage_base(date, article_id) / "raw_article_report.md"
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def _jin10_storage_figure_count(date: str, article_id: str) -> int:
+    figures = _jin10_weekly_storage_base(date, article_id) / "figures"
+    if not figures.exists():
+        return 0
+    return len([path for path in figures.glob("*.png") if path.is_file()])
+
+
+def _jin10_weekly_image_count(meta: dict[str, Any], date: str, article_id: str) -> int:
+    storage_count = _jin10_storage_figure_count(date, article_id)
+    if storage_count:
+        return storage_count
+    images = meta.get("images")
+    return len(images) if isinstance(images, list) else 0
+
+
+def _attach_jin10_weekly_markdown(payload: dict[str, Any], date: str, article_id: str) -> None:
+    storage_md = _read_jin10_storage_raw_markdown(date, article_id)
+    if storage_md:
+        payload["content"] = storage_md
+        payload["format"] = "markdown"
+        payload["path"] = str((_jin10_weekly_storage_base(date, article_id) / "raw_article_report.md").relative_to(_PROJECT_ROOT))
+        payload["asset_base_url"] = f"/api/jin10/report-bundle/{date}/{article_id}/asset/"
+        return
+
+    raw_md = _read_jin10_report_content(date, article_id)
+    if raw_md:
+        payload["content"] = raw_md
+        payload["format"] = "markdown"
 
 
 def _read_jin10_report_content(date: str, article_id: str) -> str:
@@ -136,18 +178,20 @@ def get_jin10_weekly_report(date: str, run_id: str) -> dict[str, Any] | None:
     # 查 ~/jin10-reports
     meta = _load_jin10_report_meta(date, run_id)
     if meta and _is_explicit_jin10_weekly(meta):
-        content = _read_jin10_report_content(date, run_id)
-        return {
+        weekly = {
             "article_id": meta.get("id"),
+            "run_id": run_id,
             "date": meta.get("date"),
             "title": meta.get("title"),
             "report_type": "weekly",
             "category": meta.get("category"),
             "source_url": meta.get("source_url"),
-            "image_count": len(meta.get("images", [])),
-            "content": content,
+            "image_count": _jin10_weekly_image_count(meta, date, run_id),
+            "content": "",
             "format": "markdown",
         }
+        _attach_jin10_weekly_markdown(weekly, date, run_id)
+        return weekly
     return None
 
 
@@ -184,6 +228,11 @@ def _load_jin10_daily_report(date: str, run_id: str) -> dict[str, Any] | None:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
     except Exception:
         return None
+    raw_payload = _read_optional_jin10_json(base / "raw_article_report.json")
+    report_meta = _load_jin10_report_meta(date, run_id)
+    source_title = _jin10_source_title(raw_payload, report_meta)
+    if source_title:
+        payload["source_title"] = source_title
     payload["content"] = html_path.read_text(encoding="utf-8")
     payload["format"] = "html"
     payload["path"] = str(html_path.relative_to(_PROJECT_ROOT))
@@ -192,7 +241,52 @@ def _load_jin10_daily_report(date: str, run_id: str) -> dict[str, Any] | None:
 
 def _is_weekly_storage_report(payload: dict[str, Any]) -> bool:
     """Storage outputs are authoritative; legacy rows without report_type are daily."""
-    return payload.get("report_type") == "weekly"
+    return payload.get("report_type") == "weekly" or payload.get("family") == "jin10_weekly_visual"
+
+
+def _is_daily_storage_report(payload: dict[str, Any]) -> bool:
+    report_type = str(payload.get("report_type") or "").strip().lower()
+    family = str(payload.get("family") or "").strip()
+    if report_type and report_type != "daily":
+        return False
+    if family and family != "jin10_daily_visual":
+        return False
+    if _has_jin10_non_daily_title_marker(payload.get("title"), payload.get("source_title")):
+        return False
+    return True
+
+
+_JIN10_NON_DAILY_TITLE_MARKERS = ("黄金头条", "投行金评", "财料", "一周热榜精选")
+
+
+def _has_jin10_non_daily_title_marker(*values: Any) -> bool:
+    for value in values:
+        text = str(value or "")
+        if text and any(marker in text for marker in _JIN10_NON_DAILY_TITLE_MARKERS):
+            return True
+    return False
+
+
+def _read_optional_jin10_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _jin10_source_title(raw_payload: dict[str, Any] | None, report_meta: dict[str, Any] | None = None) -> str | None:
+    title = (raw_payload or {}).get("title") or (report_meta or {}).get("title")
+    if title:
+        return str(title)
+    markdown = str((raw_payload or {}).get("article_markdown") or "")
+    for line in markdown.splitlines():
+        text = line.strip()
+        if text.startswith("#"):
+            return text.lstrip("#").strip() or None
+    return None
 
 
 def _is_explicit_jin10_weekly(meta: dict[str, Any]) -> bool:

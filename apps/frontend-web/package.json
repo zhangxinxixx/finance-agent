@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "tsc --noEmit",
+    "test:markdown-viewer": "node scripts/check-markdown-viewer.mjs",
+    "test:pipeline-dag": "node scripts/check-pipeline-dag-gold-mainline.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"
   },

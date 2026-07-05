@@ -168,16 +168,16 @@ export function Jin10DailyVisualViewer({
           description="对应 artifact 尚未生成，建议切换到其他可用视图或回查后端输出。"
         />
       ) : activeView.kind === "html" ? (
-        <div className="min-h-0 flex-1 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
+        <div className="min-h-[78vh] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
           <iframe
             title={`Jin10 report ${selectedView} ${report.trade_date} ${report.run_id}`}
             srcDoc={activeView.content ?? ""}
-            className="h-full w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
+            className="min-h-[72vh] w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
             sandbox="allow-same-origin"
           />
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-4">
+        <div className="min-h-[78vh] max-h-[78vh] overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-4">
           <MarkdownViewer content={activeView.content ?? ""} assetBaseUrl={activeView.asset_base_url} />
         </div>
       )}

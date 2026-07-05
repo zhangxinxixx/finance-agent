@@ -1,6 +1,16 @@
 import { useMemo } from "react";
 import type { ReportIndexItem } from "@/types/reports";
-import { canOpenReport, CATEGORY_MAP, formatGeneratedAt, getReportTitle, inferAssetLabel, matchesReportSearch, shortRunId } from "@/components/reports/reportListMeta";
+import {
+  canOpenReport,
+  CATEGORY_MAP,
+  formatGeneratedAt,
+  getMarketObservationSubtype,
+  getReportTitle,
+  inferAssetLabel,
+  marketObservationSubtypeLabel,
+  matchesReportSearch,
+  shortRunId,
+} from "@/components/reports/reportListMeta";
 import { handleSelectKeyDown } from "@/components/reports/reportLibraryViewCommon";
 
 export function ListView({
@@ -56,6 +66,7 @@ export function ListView({
         const assetLabel = inferAssetLabel(item);
         const title = getReportTitle(item);
         const generatedAtLabel = formatGeneratedAt(item.generated_at);
+        const marketObservationSubtype = getMarketObservationSubtype(item);
         return (
           <div
             key={`${item.type}-${item.trade_date}-${item.run_id ?? idx}`}
@@ -85,19 +96,38 @@ export function ListView({
               if (isOpenable) handleSelectKeyDown(event, () => onSelect(item));
             }}
           >
-            <span
-              style={{
-                padding: "1px 5px",
-                background: `${cat.color}1f`,
-                color: cat.color,
-                borderRadius: 2,
-                fontSize: "var(--text-10)",
-                fontWeight: 600,
-                display: "inline-block",
-                width: "fit-content",
-              }}
-            >
-              {cat.label}
+            <span style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              <span
+                style={{
+                  padding: "1px 5px",
+                  background: `${cat.color}1f`,
+                  color: cat.color,
+                  borderRadius: 2,
+                  fontSize: "var(--text-10)",
+                  fontWeight: 600,
+                  display: "inline-block",
+                  width: "fit-content",
+                }}
+              >
+                {cat.label}
+              </span>
+              {marketObservationSubtype ? (
+                <span
+                  style={{
+                    padding: "1px 5px",
+                    background: marketObservationSubtype === "odds" ? "rgba(245,158,11,0.12)" : "rgba(6,182,212,0.12)",
+                    color: marketObservationSubtype === "odds" ? "#f59e0b" : "#06b6d4",
+                    border: marketObservationSubtype === "odds" ? "1px solid rgba(245,158,11,0.28)" : "1px solid rgba(6,182,212,0.28)",
+                    borderRadius: 2,
+                    fontSize: "var(--text-10)",
+                    fontWeight: 700,
+                    display: "inline-block",
+                    width: "fit-content",
+                  }}
+                >
+                  {marketObservationSubtypeLabel(marketObservationSubtype)}
+                </span>
+              ) : null}
             </span>
             <span style={{ minWidth: 0 }}>
               <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "var(--text-12)", color: "var(--fg-2)", lineHeight: 1.35 }}>
