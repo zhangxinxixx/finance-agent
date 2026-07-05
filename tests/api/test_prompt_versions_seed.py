@@ -36,3 +36,31 @@ def test_seed_prompt_versions_includes_macro_liquidity_and_macro_event_followup(
 
     assert ("macro_liquidity_agent", "v1", "active", True) in pairs
     assert ("macro_event_followup_agent", "v1", "active", True) in pairs
+
+
+def test_seed_prompt_versions_includes_gold_v3_fixed_runtime_agents(monkeypatch) -> None:
+    db = _session()
+
+    def _session_local():
+        return db
+
+    monkeypatch.setattr("scripts.seed_prompt_versions.SessionLocal", _session_local)
+    seed()
+
+    expected_agent_ids = {
+        "source_health_agent",
+        "event_attribution_agent",
+        "transmission_chain_agent",
+        "driver_decomposition_agent",
+        "mainline_ranking_agent",
+        "gold_macro_overview_agent",
+        "review_gate_agent",
+        "report_render_agent",
+    }
+    rows = db.query(PromptVersion).filter(PromptVersion.agent_id.in_(expected_agent_ids)).all()
+
+    assert {row.agent_id for row in rows} == expected_agent_ids
+    assert all(row.version == "v1" for row in rows)
+    assert all(row.status == "active" for row in rows)
+    assert all(row.enabled for row in rows)
+    assert all(row.prompt_template.get("dag_node_id") for row in rows)

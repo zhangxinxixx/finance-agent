@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from apps.analysis.agents.fact_review import build_fact_review_prompt_template
+from apps.analysis.agents.gold_v3_prompts import list_gold_v3_agent_registry_entries
 from apps.analysis.agents.macro_event_followup_prompt import build_macro_event_followup_prompt_template
 from apps.analysis.agents.macro_liquidity_prompt import build_macro_liquidity_prompt_template
 from apps.analysis.agents.jin10_flash_semantic_filter import (
@@ -102,6 +103,46 @@ _RUNTIME_AGENT_META: dict[str, dict[str, Any]] = {
         "display_name": "综合分析",
         "role": "synthesis_agent",
         "registry_id": "synthesis_agent",
+    },
+    "source_health_agent": {
+        "display_name": "SourceHealthAgent",
+        "role": "health_agent",
+        "registry_id": "source_health_agent",
+    },
+    "event_attribution_agent": {
+        "display_name": "EventAttributionAgent",
+        "role": "attribution_agent",
+        "registry_id": "event_attribution_agent",
+    },
+    "transmission_chain_agent": {
+        "display_name": "TransmissionChainAgent",
+        "role": "chain_agent",
+        "registry_id": "transmission_chain_agent",
+    },
+    "driver_decomposition_agent": {
+        "display_name": "DriverDecompositionAgent",
+        "role": "decomposition_agent",
+        "registry_id": "driver_decomposition_agent",
+    },
+    "mainline_ranking_agent": {
+        "display_name": "MainlineRankingAgent",
+        "role": "ranking_agent",
+        "registry_id": "mainline_ranking_agent",
+    },
+    "gold_macro_overview_agent": {
+        "display_name": "GoldMacroOverviewAgent",
+        "role": "overview_agent",
+        "registry_id": "gold_macro_overview_agent",
+    },
+    "review_gate_agent": {
+        "display_name": "ReviewGateAgent",
+        "role": "review_agent",
+        "registry_id": "review_gate_agent",
+    },
+    "report_render_agent": {
+        "display_name": "ReportRenderAgent",
+        "role": "report_agent",
+        "registry_id": "report_render_agent",
     },
 }
 
@@ -214,6 +255,7 @@ def list_agent_registry() -> list[dict[str, Any]]:
     """Return the current read-only Agent registry for governance and prompt review."""
 
     return [
+        *list_gold_v3_agent_registry_entries(),
         {
             "agent_id": JIN10_FLASH_SEMANTIC_FILTER_AGENT_ID,
             "name": "金十快讯重点筛选 Agent",

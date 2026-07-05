@@ -24,6 +24,45 @@ def test_api_agents_registry_returns_prompt_templates() -> None:
     assert "flash_items_json" in flash_prompt["template"]["variables"]
 
 
+def test_api_agents_registry_includes_gold_v3_fixed_runtime_agents() -> None:
+    response = api_agents_registry()
+    agents = {item["agent_id"]: item for item in response["agents"]}
+
+    expected_agents = {
+        "source_health_agent": ("source_health_check", "每 15-30 分钟 / 每次任务前"),
+        "event_attribution_agent": ("mainline_attribution", "有新新闻/报告输入时"),
+        "transmission_chain_agent": ("transmission_chain_detection", "有地缘/油价/利率变化时"),
+        "driver_decomposition_agent": ("driver_decomposition", "每次出现 mixed 判断时"),
+        "mainline_ranking_agent": ("gold_mainline_agent", "每日固定 + 重大事件触发"),
+        "gold_macro_overview_agent": ("gold_macro_overview", "每日固定 + 主线变化时"),
+        "review_gate_agent": ("processing_monitor", "每次输出前"),
+        "report_render_agent": ("daily_report", "每日收盘/盘前"),
+    }
+
+    for agent_id, (dag_node_id, run_frequency) in expected_agents.items():
+        agent = agents[agent_id]
+        assert agent["status"] == "planned_prompt"
+        assert agent["dag_node_id"] == dag_node_id
+        assert agent["run_frequency"] == run_frequency
+        assert agent["prompt"]["kind"] == "llm"
+        assert agent["prompt"]["template"]["messages"]
+        assert agent["prompt"]["template"]["output_schema"]
+        assert agent["prompt"]["template"]["dag_node_id"] == dag_node_id
+        assert agent["input_sections"]
+        assert agent["output_targets"]
+        assert not any(str(target).startswith(("raw/", "parsed/", "features/")) for target in agent["output_targets"])
+
+    event_prompt = agents["event_attribution_agent"]["prompt"]["template"]
+    assert "fed_policy_path" in event_prompt["gold_mainlines"]
+    assert "war_oil_rate_chain" in event_prompt["transmission_chains"]
+    assert "bullish_drivers" in event_prompt["output_schema"]
+    assert "bearish_drivers" in event_prompt["output_schema"]
+
+    overview_prompt = agents["gold_macro_overview_agent"]["prompt"]["template"]
+    assert overview_prompt["output_schema"]["asset"] == "XAUUSD"
+    assert "processing_traces" in overview_prompt["output_schema"]
+
+
 def test_api_agent_registry_detail_404_for_unknown_agent() -> None:
     with pytest.raises(Exception) as exc:
         api_agent_registry_detail("missing_agent")
