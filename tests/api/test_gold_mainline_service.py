@@ -28,6 +28,35 @@ _ALL_MAINLINES = [
 ]
 
 
+def _gold_v3_source_status_payload(*, missing: set[str] | None = None) -> dict[str, list[dict[str, object]]]:
+    missing = missing or set()
+    p0_sources = [
+        "xauusd_price",
+        "dxy",
+        "treasury_2y",
+        "treasury_10y",
+        "tips_10y",
+        "fed_macro_events",
+        "brent_wti",
+        "geopolitical_news",
+        "technical_levels",
+    ]
+    return {
+        "sources": [
+            {
+                "source_key": source_key,
+                "status": "ok",
+                "health_state": "healthy",
+                "readiness_state": "ready",
+                "latest_health_at": "2026-06-11T12:00:00+00:00",
+                "source_refs": [{"source_ref": f"storage/{source_key}.json"}],
+            }
+            for source_key in p0_sources
+            if source_key not in missing
+        ]
+    }
+
+
 def _write_gold_artifacts(
     root: Path,
     *,
@@ -315,6 +344,62 @@ def test_get_gold_mainlines_latest_loads_overview_and_event_mainlines(tmp_path: 
     assert mainline["related_event_ids"] == ["event:fed"]
     assert payload["gold_mainlines"]["event_links"][0]["primary_mainline"] == "real_rates_usd"
     assert payload["source_refs"] == [{"source": "fed_rss", "source_ref": "fed:test"}]
+
+
+def test_get_gold_mainlines_attaches_source_health_without_overriding_partial(tmp_path: Path) -> None:
+    _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-12",
+        run_id="run-source-health",
+        dominant_mainline="real_rates_usd",
+    )
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(
+            "apps.api.services.gold_mainline_service.get_data_source_statuses",
+            return_value=_gold_v3_source_status_payload(missing={"xauusd_price"}),
+        ),
+    ):
+        payload = get_gold_mainlines_latest()
+
+    overview = payload["gold_macro_overview"]
+    source_health = overview["source_health"]
+    assert payload["status"] == "partial"
+    assert overview["status"] == "partial"
+    assert source_health["overall_status"] == "blocked"
+    assert source_health["p0_missing"] == ["xauusd_price"]
+    assert source_health["can_build_gold_macro_overview"] is False
+    assert "source_health blocked strong GoldMacroOverview conclusion" not in payload["warnings"]
+
+
+def test_get_gold_mainlines_blocks_strong_overview_when_source_health_conflicts(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-13",
+        run_id="run-source-health-block",
+        dominant_mainline="real_rates_usd",
+    )
+    overview_payload = json.loads(overview_path.read_text(encoding="utf-8"))
+    overview_payload["phase"] = "strong_uptrend"
+    overview_payload["one_line_conclusion"] = "strong bullish breakout"
+    overview_path.write_text(json.dumps(overview_payload, ensure_ascii=False), encoding="utf-8")
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(
+            "apps.api.services.gold_mainline_service.get_data_source_statuses",
+            return_value=_gold_v3_source_status_payload(missing={"xauusd_price"}),
+        ),
+    ):
+        payload = get_gold_mainlines_latest()
+
+    overview = payload["gold_macro_overview"]
+    assert payload["status"] == "blocked"
+    assert overview["status"] == "blocked"
+    assert overview["review_status"] == "blocked"
+    assert "P0 source gap conflicts with strong GoldMacroOverview conclusion" in overview["review_blocking_reasons"]
+    assert "source_health blocked strong GoldMacroOverview conclusion" in payload["warnings"]
 
 
 def test_get_gold_mainlines_latest_infers_overview_from_event_mainlines(tmp_path: Path) -> None:

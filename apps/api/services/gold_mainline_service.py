@@ -5,8 +5,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from apps.analysis.agents.source_health import build_gold_v3_source_health
 from apps.analysis.gold_mainline_engine import build_gold_macro_overview
 from apps.api.services._storage import _PROJECT_ROOT
+from apps.api.services.source_service import get_data_source_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,7 @@ def _load_gold_mainlines(*, date: str, run_id: str, overview_path: Path, project
     _normalize_gold_mainline_contract(overview=overview, mainlines=mainlines)
     _normalize_gold_requirement_contract(overview=overview, mainlines=mainlines, project_root=project_root)
     warnings = [str(item) for item in overview.get("warnings") or []]
+    warnings.extend(_apply_source_health_gate(overview=overview))
     if mainlines["status"] == "unavailable":
         warnings.append("gold_event_mainlines artifact unavailable")
     return {
@@ -122,6 +125,7 @@ def _load_inferred_gold_mainlines(*, date: str, run_id: str, project_root: Path)
     _normalize_gold_mainline_contract(overview=overview, mainlines=mainlines)
     _normalize_gold_requirement_contract(overview=overview, mainlines=mainlines, project_root=project_root)
     warnings = [str(item) for item in overview.get("warnings") or []]
+    warnings.extend(_apply_source_health_gate(overview=overview))
     warnings.append("gold_macro_overview inferred from gold_event_mainlines artifact")
     return {
         "status": str(overview.get("status") or "partial"),
@@ -262,6 +266,43 @@ def _merge_context_row(*, row: dict[str, Any], inferred_row: dict[str, Any]) -> 
             row[key] = inferred_row[key]
     row.setdefault("mainline_id", _ranking_mainline_id(row))
     row.setdefault("mainline", _ranking_mainline_id(row))
+
+
+def _apply_source_health_gate(*, overview: dict[str, Any]) -> list[str]:
+    try:
+        snapshot = build_gold_v3_source_health(
+            get_data_source_statuses(),
+            as_of=str(overview.get("as_of") or "") or None,
+            gold_macro_overview=overview,
+        )
+    except Exception as exc:
+        overview["source_health"] = {
+            "overall_status": "degraded",
+            "as_of": str(overview.get("as_of") or "") or None,
+            "p0_missing": [],
+            "p1_missing": [],
+            "p2_missing": [],
+            "stale_sources": [],
+            "fresh_sources": [],
+            "source_freshness": {},
+            "mainline_impact": {},
+            "can_build_gold_macro_overview": True,
+            "blocking_reasons": [],
+            "warnings": [f"source_health_unavailable: {exc.__class__.__name__}"],
+        }
+        return ["source_health unavailable for GoldMacroOverview gate"]
+
+    source_health = snapshot.to_dict()
+    overview["source_health"] = source_health
+    blocking_reasons = [str(item) for item in source_health.get("blocking_reasons") or []]
+    strong_conflict = any("strong GoldMacroOverview conclusion" in reason for reason in blocking_reasons)
+    if not strong_conflict:
+        return []
+
+    overview["status"] = "blocked"
+    overview["review_status"] = "blocked"
+    overview["review_blocking_reasons"] = blocking_reasons
+    return ["source_health blocked strong GoldMacroOverview conclusion"]
 
 
 def _has_context_feature_fields(overview: dict[str, Any]) -> bool:
