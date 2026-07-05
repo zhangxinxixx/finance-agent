@@ -13,6 +13,7 @@ from apps.analysis.agents.source_health import build_gold_v3_source_health
 from apps.analysis.gold_mainline_engine import archive_gold_macro_overview, build_gold_macro_overview
 from apps.api.services.source_service import get_data_source_statuses
 from apps.features.news.gold_event_mainlines import archive_gold_event_mainlines, build_gold_event_mainlines
+from apps.gold_runtime_orchestration import build_gold_runtime_summary_preview
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -42,6 +43,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional JSON file containing deterministic market context, e.g. XAUUSD price/candles.",
     )
+    parser.add_argument(
+        "--run-mode",
+        default="premarket_full_run",
+        help="Gold v3 runtime mode for the emitted run summary. Defaults to premarket_full_run.",
+    )
+    parser.add_argument(
+        "--trigger-reason",
+        default=None,
+        help="Optional trigger reason for the emitted Gold v3 runtime summary.",
+    )
     return parser
 
 
@@ -49,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     storage_root = Path(args.storage_root)
     try:
+        runtime_summary = build_gold_runtime_summary_preview(
+            run_mode=args.run_mode,
+            trigger_reason=args.trigger_reason,
+        )
         source_date, source_run_id = _resolve_source_run(
             storage_root=storage_root,
             date=args.date,
@@ -118,8 +133,22 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False), file=sys.stderr)
         return 1
 
+    runtime_summary["review_status"] = runtime_gate["review_gate"]["review_status"]
+    runtime_summary["warnings"] = sorted(
+        {
+            *[str(item) for item in runtime_summary.get("warnings") or []],
+            *[str(item) for item in runtime_gate["review_gate"].get("warnings") or []],
+        }
+    )
     summary = {
         "status": "success",
+        "run_mode": runtime_summary["run_mode"],
+        "trigger_reason": runtime_summary["trigger_reason"],
+        "affected_mainlines": runtime_summary["affected_mainlines"],
+        "affected_chains": runtime_summary["affected_chains"],
+        "agents_executed": runtime_summary["agents_executed"],
+        "agents_skipped": runtime_summary["agents_skipped"],
+        "gold_macro_overview_updated": runtime_summary["gold_macro_overview_updated"],
         "retrieved_date": source_date,
         "source_run_id": source_run_id,
         "output_run_id": output_run_id,
@@ -137,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         },
         "source_health_status": runtime_gate["source_health_check"]["status"],
         "review_status": runtime_gate["review_gate"]["review_status"],
+        "warnings": runtime_summary["warnings"],
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

@@ -125,6 +125,13 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
 
     assert exit_code == 0
     summary = json.loads(capsys.readouterr().out)
+    assert summary["run_mode"] == "premarket_full_run"
+    assert summary["trigger_reason"] == "daily_premarket_refresh"
+    assert "source_health_agent" in summary["agents_executed"]
+    assert "report_render_agent" in summary["agents_executed"]
+    assert "real_rates_dollar" in summary["affected_mainlines"]
+    assert "war_oil_rate_chain" in summary["affected_chains"]
+    assert summary["gold_macro_overview_updated"] is True
     assert summary["retrieved_date"] == "2026-06-30"
     assert summary["source_run_id"] == "source-run"
     assert summary["output_run_id"] == "gold-mainlines-refresh-test"
@@ -139,6 +146,7 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     assert summary["runtime_steps"]["review_gate"]["review_status"] == "needs_review"
     assert summary["source_health_status"] == "degraded"
     assert summary["review_status"] == "needs_review"
+    assert isinstance(summary["warnings"], list)
 
     mainlines_path = tmp_path / summary["gold_event_mainlines_path"]
     overview_path = tmp_path / summary["gold_macro_overview_path"]
@@ -210,3 +218,60 @@ def test_run_gold_mainline_pipeline_blocks_review_gate_from_source_health_confli
     assert overview["review_blocking_reasons"] == [
         "P0 source gap conflicts with strong GoldMacroOverview conclusion"
     ]
+
+
+def test_run_gold_mainline_pipeline_emits_major_event_runtime_summary(tmp_path: Path, capsys) -> None:
+    _write_input_artifacts(tmp_path, date="2026-06-30", run_id="source-run")
+
+    with mock.patch(
+        "scripts.run_gold_mainline_pipeline.get_data_source_statuses",
+        return_value=_gold_v3_source_status_payload(),
+    ):
+        exit_code = run_gold_mainline_pipeline.main(
+            [
+                "--storage-root",
+                str(tmp_path),
+                "--date",
+                "2026-06-30",
+                "--run-id",
+                "source-run",
+                "--output-run-id",
+                "gold-mainlines-major-event-test",
+                "--run-mode",
+                "major_event_reprice",
+                "--trigger-reason",
+                "hormuz_brent_shock",
+            ]
+        )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["run_mode"] == "major_event_reprice"
+    assert summary["trigger_reason"] == "hormuz_brent_shock"
+    assert "war_oil_rate_chain" in summary["affected_chains"]
+    assert "oil_price" in summary["affected_mainlines"]
+    assert "geopolitical_war" in summary["affected_mainlines"]
+    assert "report_render_agent" in summary["agents_skipped"]
+    assert summary["review_status"] == "needs_review"
+
+
+def test_run_gold_mainline_pipeline_rejects_unknown_run_mode(tmp_path: Path, capsys) -> None:
+    _write_input_artifacts(tmp_path, date="2026-06-30", run_id="source-run")
+
+    exit_code = run_gold_mainline_pipeline.main(
+        [
+            "--storage-root",
+            str(tmp_path),
+            "--date",
+            "2026-06-30",
+            "--run-id",
+            "source-run",
+            "--run-mode",
+            "unknown_mode",
+        ]
+    )
+
+    assert exit_code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error["status"] == "error"
+    assert "Unknown Gold runtime mode" in error["error"]
