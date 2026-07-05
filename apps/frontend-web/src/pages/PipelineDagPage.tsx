@@ -3,6 +3,7 @@
 // 展示完整数据加工管线：采集 → 解析 → 特征 → 分析 → 输出
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -32,6 +33,7 @@ import {
   type DagEdge,
   type DagGraph,
 } from "@/adapters/pipeline-dag";
+import { DAG_GROUPS } from "@/adapters/pipeline-dag-groups";
 import { ApiError, fetchJson } from "@/adapters/apiClient";
 import {
   fetchAgentAnalysis,
@@ -55,17 +57,36 @@ import { useNodeDetail } from "@/hooks/useNodeDetail";
 
 const NODE_WIDTH = 204;
 const NODE_HEIGHT = 132;
-const OUTPUT_COLUMN_GAP = 34;
-const SIDE_BRANCH_GAP_X = 86;
-const SIDE_BRANCH_GAP_Y = 74;
-const DAG_LAYOUT_STORAGE_KEY = "finance-agent:scheduler-dag-layout:v1";
+const NODE_COLUMN_GAP = 78;
+const NODE_ROW_GAP = 28;
+const GROUP_LANE_GAP = 22;
+const GROUP_MAX_ROWS = 6;
+const DAG_LAYOUT_STORAGE_KEY = "finance-agent:scheduler-dag-layout:v2";
 const OUTPUT_COLUMN_ORDER = [
   "daily_report",
   "strategy_card",
   "dashboard",
+  "gold_mainlines_page",
+  "oil_geopolitics_page",
+  "processing_monitor",
   "market_monitor",
   "source_trace",
+  "feishu_monitor",
 ];
+const GROUP_COLUMN_ORDER = [
+  "data_collection",
+  "raw_archive",
+  "raw_parse",
+  "feature_processing",
+  "analysis_agents",
+  "decision_synthesis",
+  "final_presentation",
+];
+const TASK_ORDER_BY_ID = new Map(
+  Object.values(DAG_GROUPS).flatMap((group) =>
+    group.tasks.map((task, index) => [task.id, group.order * 100 + index] as const),
+  ),
+);
 
 const STAGE_ICON_MAP: Record<string, typeof Database> = {
   collector: Database,
@@ -97,6 +118,10 @@ const TASK_DISPLAY_LABELS: Record<string, string> = {
   jin10_refresh_jin10_calendar: "金十日历刷新",
   premarket: "主流程",
 };
+
+function findFlowNodeElement(nodeId: string): Element | null {
+  return document.querySelector(`[data-id="${CSS.escape(nodeId)}"]`);
+}
 
 type PremarketReadinessSummary = {
   decision_counts?: {
@@ -146,6 +171,33 @@ type DagLayoutSnapshot = {
   nodes: Record<string, { x: number; y: number }>;
   updated_at: string;
 };
+
+function nodeSpec(node: Node): DagNodeSpec | undefined {
+  return (node.data as any)?.node_spec as DagNodeSpec | undefined;
+}
+
+function nodeCategory(node: Node): string {
+  return nodeSpec(node)?.category || "ungrouped";
+}
+
+function groupColumnIndex(category: string): number {
+  const index = GROUP_COLUMN_ORDER.indexOf(category);
+  return index >= 0 ? index : GROUP_COLUMN_ORDER.length;
+}
+
+function explicitNodeOrder(node: Node): number {
+  const outputIndex = OUTPUT_COLUMN_ORDER.indexOf(node.id);
+  if (outputIndex >= 0) return 10_000 + outputIndex;
+  return TASK_ORDER_BY_ID.get(node.id) ?? 50_000;
+}
+
+function sortNodesWithinGroup(a: Node, b: Node): number {
+  const explicitDiff = explicitNodeOrder(a) - explicitNodeOrder(b);
+  if (explicitDiff !== 0) return explicitDiff;
+  const yDiff = a.position.y - b.position.y;
+  if (Math.abs(yDiff) > 1) return yDiff;
+  return a.id.localeCompare(b.id, "zh-CN");
+}
 
 function formatPreflightBlockingReasons(blockingReasons: string[]): string {
   return blockingReasons.map((reason) => {
@@ -231,6 +283,47 @@ function persistDagLayout(nodes: Node[]): boolean {
   }
 }
 
+function applyGroupedColumnLayout(nodes: Node[]): Node[] {
+  if (nodes.length === 0) return nodes;
+
+  const grouped = new Map<string, Node[]>();
+  for (const node of nodes) {
+    const category = nodeCategory(node);
+    grouped.set(category, [...(grouped.get(category) ?? []), node]);
+  }
+
+  const orderedGroups = [...grouped.entries()].sort(([a], [b]) => groupColumnIndex(a) - groupColumnIndex(b));
+  const centerY = nodes.reduce((sum, node) => sum + node.position.y + NODE_HEIGHT / 2, 0) / nodes.length;
+  const startX = Math.min(...nodes.map((node) => node.position.x));
+  let cursorX = startX;
+  const positions = new Map<string, { x: number; y: number }>();
+
+  for (const [, groupNodes] of orderedGroups) {
+    const sortedNodes = [...groupNodes].sort(sortNodesWithinGroup);
+    const laneCount = sortedNodes.length > GROUP_MAX_ROWS ? 2 : 1;
+    const rowsPerLane = Math.ceil(sortedNodes.length / laneCount);
+    const totalHeight = rowsPerLane * NODE_HEIGHT + Math.max(0, rowsPerLane - 1) * NODE_ROW_GAP;
+    const groupStartY = centerY - totalHeight / 2;
+
+    sortedNodes.forEach((node, index) => {
+      const lane = Math.floor(index / rowsPerLane);
+      const row = index % rowsPerLane;
+      positions.set(node.id, {
+        x: cursorX + lane * (NODE_WIDTH + GROUP_LANE_GAP),
+        y: groupStartY + row * (NODE_HEIGHT + NODE_ROW_GAP),
+      });
+    });
+
+    const groupWidth = laneCount * NODE_WIDTH + Math.max(0, laneCount - 1) * GROUP_LANE_GAP;
+    cursorX += groupWidth + NODE_COLUMN_GAP;
+  }
+
+  return nodes.map((node) => ({
+    ...node,
+    position: positions.get(node.id) ?? node.position,
+  }));
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  Dagre Layout → React Flow positions
 // ═══════════════════════════════════════════════════════════════
@@ -264,69 +357,7 @@ function dagreLayout(
       };
     });
 
-  const outputNodes = nodes
-    .filter((node) => ((node.data as any)?.node_spec as DagNodeSpec | undefined)?.category === "final_presentation")
-    .filter((node) => node.id !== "feishu_monitor")
-    .sort((a, b) => OUTPUT_COLUMN_ORDER.indexOf(a.id) - OUTPUT_COLUMN_ORDER.indexOf(b.id));
-
-  if (outputNodes.length > 0) {
-    const outputX = Math.max(...nodes.map((node) => node.position.x));
-    const centerY = outputNodes.reduce((sum, node) => sum + node.position.y + NODE_HEIGHT / 2, 0) / outputNodes.length;
-    const totalHeight = outputNodes.length * NODE_HEIGHT + Math.max(0, outputNodes.length - 1) * OUTPUT_COLUMN_GAP;
-    const startY = centerY - totalHeight / 2;
-    const outputYById = new Map(
-      outputNodes.map((node, index) => [
-        node.id,
-        startY + index * (NODE_HEIGHT + OUTPUT_COLUMN_GAP),
-      ]),
-    );
-
-    const branchAnchorNode = nodes.find((node) => node.id === "jin10_flash_parse")
-      ?? nodes.find((node) => node.id === "jin10_message_raw");
-    const newsBranchNodeIds = new Set([
-      "jin10_message_raw",
-      "jin10_report_raw",
-      "jin10_flash_parse",
-      "jin10_report_parse",
-      "event_flow_feature",
-      "news_agent",
-    ]);
-    const newsBranchMaxY = Math.max(
-      ...nodes
-        .filter((node) => newsBranchNodeIds.has(node.id))
-        .map((node) => node.position.y),
-      branchAnchorNode?.position.y ?? 0,
-    );
-    const feishuMonitorY = branchAnchorNode
-      ? newsBranchMaxY + NODE_HEIGHT + SIDE_BRANCH_GAP_Y
-      : startY + totalHeight + SIDE_BRANCH_GAP_Y;
-
-    return {
-      nodes: nodes.map((node) => {
-        if (outputYById.has(node.id)) {
-          return {
-            ...node,
-            position: {
-              x: outputX,
-              y: outputYById.get(node.id)!,
-            },
-          };
-        }
-        if (node.id === "feishu_monitor") {
-          return {
-            ...node,
-            position: {
-              x: branchAnchorNode ? branchAnchorNode.position.x + SIDE_BRANCH_GAP_X : outputX - NODE_WIDTH - SIDE_BRANCH_GAP_X,
-              y: feishuMonitorY,
-            },
-          };
-        }
-        return node;
-      }),
-    };
-  }
-
-  return { nodes };
+  return { nodes: applyGroupedColumnLayout(nodes) };
 }
 
 function computeDagOrdering(nodes: DagNodeSpec[], edges: DagEdge[]) {
@@ -1719,7 +1750,7 @@ function FlowCanvas({
       nodeTypes={{ smartNode: SmartNode }}
       edgeTypes={{ smartEdge: SmartEdge }}
       fitView
-      fitViewOptions={{ padding: 0.12 }}
+      fitViewOptions={{ padding: 0.06 }}
       minZoom={0.18}
       maxZoom={2.4}
       defaultEdgeOptions={{
@@ -1762,6 +1793,8 @@ function FlowCanvas({
 // ═══════════════════════════════════════════════════════════════
 
 export function PipelineDagPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusNodeId = searchParams.get("focus");
   const [dagData, setDagData] = useState<DagGraph | null>(null);
   const [schedulerOverview, setSchedulerOverview] = useState<SchedulerOverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1872,7 +1905,7 @@ export function PipelineDagPage() {
       layoutAppliedRef.current = true;
       // Fit view after layout
       setTimeout(() => {
-        (window as any).__reactFlowInstance?.fitView?.({ padding: 0.3, duration: 300 });
+        (window as any).__reactFlowInstance?.fitView?.({ padding: 0.12, duration: 300 });
       }, 100);
     }
   }, [layoutedNodes, rfEdgesRaw, setNodes, setEdges]);
@@ -1941,7 +1974,13 @@ export function PipelineDagPage() {
 
   const handlePaneClick = useCallback(() => {
     setSelectedNodeId(null);
-  }, []);
+    if (!focusNodeId) return;
+    setSearchParams((params) => {
+      const next = new URLSearchParams(params);
+      next.delete("focus");
+      return next;
+    }, { replace: true });
+  }, [focusNodeId, setSearchParams]);
 
   const handleSaveLayout = useCallback(() => {
     const ok = persistDagLayout(rfNodes);
@@ -1960,15 +1999,28 @@ export function PipelineDagPage() {
     setHasSavedLayout(true);
     setLayoutMessage("已恢复布局");
     setTimeout(() => {
-      (window as any).__reactFlowInstance?.fitView?.({ padding: 0.22, duration: 260 });
+      (window as any).__reactFlowInstance?.fitView?.({ padding: 0.16, duration: 260 });
     }, 80);
   }, [setNodes]);
 
   // Fit to selected node
   const fitSelectedNode = useCallback(() => {
-    const el = document.querySelector(`[data-id="${selectedNodeId}"]`);
+    if (!selectedNodeId) return;
+    const el = findFlowNodeElement(selectedNodeId);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
   }, [selectedNodeId]);
+
+  useEffect(() => {
+    if (!focusNodeId || !dagData) return;
+    const matchedNode = dagData.nodes.find((node) => node.node_id === focusNodeId);
+    if (!matchedNode) return;
+    setSelectedNodeId((current) => current === focusNodeId ? current : focusNodeId);
+    const timer = window.setTimeout(() => {
+      const el = findFlowNodeElement(focusNodeId);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [focusNodeId, dagData]);
 
   const runPipeline = useCallback(async () => {
     setRunning(true); setRunMessage("启动中...");

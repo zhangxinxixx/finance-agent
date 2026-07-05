@@ -144,6 +144,11 @@ export function GoldMacroOverviewPanel({ overview }: GoldMacroOverviewPanelProps
           <p className="mt-2 line-clamp-2 text-[11px] leading-5 text-[var(--fg-3)]">
             {overview.one_line_conclusion || conflict?.explanation || "后端暂未返回主线结论。"}
           </p>
+          {overview.priority_reason ? (
+            <p className="mt-1 line-clamp-2 text-[10px] leading-4 text-[var(--fg-5)]">
+              {overview.priority_reason}
+            </p>
+          ) : null}
         </div>
 
         {topRankings.length ? (
@@ -156,9 +161,9 @@ export function GoldMacroOverviewPanel({ overview }: GoldMacroOverviewPanelProps
               >
                 <span className="fa-num text-[10px] text-[var(--fg-5)]">#{item.rank}</span>
                 <div className="min-w-0">
-	                  <div className="truncate text-[11px] font-semibold text-[var(--fg-2)]">
-	                    {item.label || formatGoldMainlineLabel(rankingMainlineId(item))}
-	                  </div>
+                  <div className="truncate text-[11px] font-semibold text-[var(--fg-2)]">
+                    {item.label || formatGoldMainlineLabel(rankingMainlineId(item))}
+                  </div>
                   <div className="truncate text-[10px] text-[var(--fg-5)]">{formatGoldNetBiasLabel(item.direction)}</div>
                 </div>
                 <div className="text-right">
@@ -188,23 +193,6 @@ export function GoldMacroOverviewPanel({ overview }: GoldMacroOverviewPanelProps
             </p>
           </div>
         ) : null}
-
-        <div className="rounded border px-2.5 py-2" style={{ borderColor: "var(--border-faint)", background: "var(--bg-card-inner)" }}>
-          <div className="mb-1.5 text-[10px] font-semibold text-[var(--fg-5)]">关键位</div>
-          <div className="grid grid-cols-4 gap-1.5">
-            {[
-              { level: "3900", label: "风险线" },
-              { level: "4000", label: "分水岭" },
-              { level: "4100-4120", label: "修复确认" },
-              { level: "4300", label: "趋势确认" },
-            ].map((item) => (
-              <div key={item.level} className="min-w-0 rounded border border-[var(--border-faint)] px-1.5 py-1 text-center">
-                <div className="fa-num truncate text-[10px] font-semibold text-[var(--fg-2)]">{item.level}</div>
-                <div className="mt-0.5 truncate text-[8px] text-[var(--fg-5)]">{item.label}</div>
-              </div>
-            ))}
-          </div>
-        </div>
 
         {verificationItems.length ? (
           <div className="rounded border px-2.5 py-2" style={{ borderColor: "var(--border-faint)", background: "var(--bg-card-inner)" }}>

@@ -22,12 +22,12 @@ function StatBox({ label, value }: { label: string; value: string }) {
 
 export function RealRatePanel({ metrics }: RealRatePanelProps) {
   const metric = findMetric(metrics, TARGET_KEY);
-  const companionKeys = ["US10Y", "T10YIE", "DXY"] as const;
+  const companionKeys = ["US10Y", "T10YIE", "YIELD_SPREAD_2Y_3M", "DXY"] as const;
 
   return (
     <FACard
-      title="实际利率约束"
-      eyebrow="Primary Constraint"
+      title="利率结构约束"
+      eyebrow="Rates Structure"
       accent={metric?.status === "warn" || metric?.status === "error" ? "down" : "info"}
       action={<FAStatusPill tone={metric?.status === "ok" ? "up" : metric?.status === "warn" ? "warn" : metric?.status === "error" ? "down" : "neutral"}>{metric?.status ?? "unavailable"}</FAStatusPill>}
     >
@@ -75,14 +75,14 @@ export function RealRatePanel({ metrics }: RealRatePanelProps) {
           <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-terminal)] px-3 py-3">
             <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">Market Readout</div>
             <p className="mt-2 text-[11px] leading-5 text-[var(--fg-3)]">
-              {metric.interpretation || "暂无实际利率诊断。"}
+              {metric.interpretation || "暂无利率结构诊断。"}
             </p>
           </div>
         </div>
       ) : (
         <FAEmptyState
           title="暂无 REAL_10Y 数据"
-          description="当前快照缺少实际利率主导指标，页面保留工作台结构并显式标记 unavailable。"
+          description="当前快照缺少利率结构主导指标，页面保留工作台结构并显式标记 unavailable。"
         />
       )}
     </FACard>

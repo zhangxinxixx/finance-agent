@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.api.main import (
+    api_prompt_evolution_proposal,
     api_prompt_feedback_create,
     api_prompt_feedback_list,
     api_prompt_versions_activate,
@@ -200,3 +201,121 @@ def test_prompt_feedback_list_filters_before_limit() -> None:
 
     assert response["count"] == 1
     assert response["feedback"][0]["agent_id"] == "jin10_report_analysis_agent"
+
+
+def test_prompt_evolution_proposal_preview_uses_outputs_feedback_and_reviews_without_writes() -> None:
+    db = _session()
+    agent_id = "event_attribution_agent"
+
+    first = AgentOutput(
+        snapshot_id="gold-v3:run-1",
+        asset="XAUUSD",
+        trade_date=date(2026, 6, 30),
+        run_id="run-1",
+        agent_name=agent_id,
+        module="gold_v3",
+        version="1.0",
+        status="success",
+        bias="mixed",
+        confidence=0.64,
+        input_snapshot_ids={"event_flow": "event-flow-1"},
+        source_refs=[{"source": "fixture", "source_ref": "event:1"}],
+        key_findings=[],
+        risk_points=[],
+        watchlist=[],
+        invalid_conditions=[],
+        summary="Hormuz event missed oil_price.",
+        payload={
+            "quality_issues": [
+                {
+                    "issue_code": "missing_oil_price_mainline",
+                    "description": "Hormuz event missed oil_price mainline",
+                    "likely_root_cause": "prompt",
+                }
+            ]
+        },
+        payload_sha256="agent-output-1",
+    )
+    second = AgentOutput(
+        snapshot_id="gold-v3:run-2",
+        asset="XAUUSD",
+        trade_date=date(2026, 7, 1),
+        run_id="run-2",
+        agent_name=agent_id,
+        module="gold_v3",
+        version="1.0",
+        status="success",
+        bias="mixed",
+        confidence=0.66,
+        input_snapshot_ids={"event_flow": "event-flow-2"},
+        source_refs=[{"source": "fixture", "source_ref": "event:2"}],
+        key_findings=[],
+        risk_points=[],
+        watchlist=[],
+        invalid_conditions=[],
+        summary="Red Sea event missed oil_price.",
+        payload={
+            "quality_issues": [
+                {
+                    "issue_code": "missing_oil_price_mainline",
+                    "description": "Red Sea event missed oil_price mainline",
+                    "likely_root_cause": "prompt",
+                }
+            ]
+        },
+        payload_sha256="agent-output-2",
+    )
+    db.add_all([first, second])
+    db.commit()
+
+    api_prompt_feedback_create(
+        PromptFeedbackCreate(
+            agent_id=agent_id,
+            agent_output_id=str(second.id),
+            run_id=second.run_id,
+            rating=2,
+            category="prompt_quality",
+            comment="Repeated geopolitical events did not check oil_price",
+            suggested_changes={
+                "issue_code": "missing_oil_price_mainline",
+                "likely_root_cause": "prompt",
+            },
+            submitted_by="tester",
+        ),
+        db=db,
+    )
+    db.add(
+        ReviewItem(
+            review_id="rv-review-gate-001",
+            run_id=second.run_id,
+            source_module="review_gate",
+            source_step_id="missing_oil_price_mainline",
+            agent_output_id=str(second.id),
+            severity="warning",
+            reason="ReviewGate: geopolitical event did not include oil_price mainline.",
+            impact_modules=["gold_mainlines"],
+            impact_report_ids=[],
+            source_refs=[],
+            evidence_refs=[],
+            suggested_action="Review prompt rule for oil linkage.",
+            status="pending",
+        )
+    )
+    db.commit()
+    before_feedback_count = db.query(PromptFeedback).count()
+    before_review_items = db.query(ReviewItem).count()
+
+    response = api_prompt_evolution_proposal(agent_id, recent_limit=10, db=db)
+
+    assert response["source"] == "prompt_evolution_preview"
+    assert response["proposal_only"] is True
+    assert response["writes"] == []
+    assert response["recent_run_count"] == 2
+    assert response["feedback_count"] == 1
+    assert response["review_gate_finding_count"] == 1
+    proposal = response["proposal"]
+    assert proposal["prompt_update_proposal"]["proposal_type"] == "prompt_update"
+    assert proposal["prompt_update_proposal"]["test_cases"]
+    assert proposal["manual_review_required"] is True
+    assert db.query(PromptFeedback).count() == before_feedback_count
+    assert db.query(ReviewItem).count() == before_review_items

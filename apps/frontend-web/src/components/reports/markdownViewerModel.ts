@@ -289,9 +289,13 @@ export function parseMarkdown(content: string): MarkdownBlock[] {
   return blocks;
 }
 
-export function resolveAssetUrl(src: string, assetBaseUrl?: string): string {
+export function resolveAssetUrl(src: string, assetBaseUrl?: string, assetVersion?: string): string {
   if (!assetBaseUrl || /^(https?:|data:|blob:|\/)/i.test(src)) {
     return src;
   }
-  return new URL(src, new URL(assetBaseUrl, window.location.origin)).toString()
+  const url = new URL(src, new URL(assetBaseUrl, window.location.origin));
+  if (assetVersion) {
+    url.searchParams.set("v", assetVersion);
+  }
+  return url.toString();
 }

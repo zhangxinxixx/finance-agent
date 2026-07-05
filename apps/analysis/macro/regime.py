@@ -1,9 +1,11 @@
-"""P4-05: Deterministic macro regime engine for gold (XAUUSD).
+"""Deterministic macro regime engine for gold (XAUUSD).
 
-Classifies the current macro environment into one of three gold-relevant phases:
+Classifies the current macro environment into v2.1 gold-relevant phases:
   - rate_pressure: Rising rates, tight liquidity — bearish headwind for gold.
   - transition_release: Rate cuts beginning / liquidity easing — neutral-bullish.
   - trend_tailwind: Falling rates, ample liquidity — bullish tailwind for gold.
+  - liquidity_crunch: USD cash scramble/liquidity stress can pressure gold first.
+  - monetary_credit_repricing: Gold rises despite rates/USD headwinds.
   - unavailable: Insufficient macro data to classify.
 
 This is a pure-in-memory, deterministic classifier. It does NOT read files,
@@ -25,7 +27,8 @@ def classify_macro_regime(indicators: dict[str, Any]) -> dict[str, Any]:
 
     Returns:
         {
-            "market_phase": "rate_pressure" | "transition_release" | "trend_tailwind" | "unavailable",
+            "market_phase": "rate_pressure" | "transition_release" | "trend_tailwind" |
+                            "liquidity_crunch" | "monetary_credit_repricing" | "unavailable",
             "confidence": float (0.0–1.0),
             "drivers": {
                 "real_yield": {...},
@@ -47,7 +50,7 @@ def classify_macro_regime(indicators: dict[str, Any]) -> dict[str, Any]:
     missing: list[str] = []
     confidence = 0.5
 
-    # ── 1. Real yield (prefer FRED:DFII10; fallback can compute nominal - breakeven) ──
+    # ── 1. Real yield (main口径: nominal 10Y - T10YIE; TIPS is supplementary) ──
     real_yield_data = _eval_real_yield(indicators)
     drivers["real_yield"] = real_yield_data
     if real_yield_data["status"] == "available":
@@ -162,9 +165,17 @@ def classify_macro_regime(indicators: dict[str, Any]) -> dict[str, Any]:
         missing.append("liquidity_price")
 
     # ── Classify ────────────────────────────────────────────────────────
+    liquidity_crunch = _is_liquidity_crunch(drivers)
+    monetary_credit_repricing = _is_monetary_credit_repricing(indicators, drivers)
     if len(missing) >= 4:
         market_phase = "unavailable"
         confidence = 0.0
+    elif liquidity_crunch:
+        market_phase = "liquidity_crunch"
+        confidence += 0.08
+    elif monetary_credit_repricing:
+        market_phase = "monetary_credit_repricing"
+        confidence += 0.04
     elif score >= 3.0:
         market_phase = "trend_tailwind"
     elif score <= -3.0:
@@ -188,7 +199,7 @@ def classify_macro_regime(indicators: dict[str, Any]) -> dict[str, Any]:
         "drivers": drivers,
         "gold_interpretation": gold_interpretation,
         "change_conditions": change_conditions,
-        "source_refs": [{"source": "macro_regime_engine", "version": "1.0.0", "method": "deterministic"}],
+        "source_refs": [{"source": "macro_regime_engine", "version": "2.1.0", "method": "deterministic"}],
     }
 
 
@@ -204,8 +215,30 @@ _US02Y_KEYS = ("US02Y", "DGS2")
 
 
 def _eval_real_yield(indicators: dict[str, Any]) -> dict[str, Any]:
-    """Evaluate real yield from direct field, or compute from nominal - breakeven."""
-    # Direct real yield field
+    """Evaluate real yield using US10Y/DGS10 - T10YIE as the main口径.
+
+    Direct TIPS fields such as DFII10/REAL_10Y are treated as supplementary
+    fallback only. This keeps the report scoring口径 stable with the liquidity
+    daily framework.
+    """
+    # Main口径: nominal 10Y minus 10Y breakeven.
+    nominal = _extract_value(indicators, _NOMINAL_10Y_KEYS)
+    breakeven = _extract_value(indicators, _BREAKEVEN_KEYS)
+    if nominal is not None and breakeven is not None:
+        value = nominal - breakeven
+        n_change = _extract_change(indicators, _NOMINAL_10Y_KEYS)
+        b_change = _extract_change(indicators, _BREAKEVEN_KEYS)
+        change = (n_change - b_change) if (n_change is not None and b_change is not None) else None
+        return {
+            "status": "available",
+            "source": "US10Y - T10YIE (computed_main)",
+            "value": value,
+            "daily_change": change,
+            "direction": _direction(change),
+            "note": "Main report口径: nominal 10Y minus T10YIE.",
+        }
+
+    # Supplementary fallback: direct real-yield/TIPS field.
     for key in _REAL_YIELD_KEYS:
         item = indicators.get(key)
         if isinstance(item, dict):
@@ -220,24 +253,8 @@ def _eval_real_yield(indicators: dict[str, Any]) -> dict[str, Any]:
                     "daily_change": item.get("daily_change"),
                     "weekly_change": item.get("weekly_change"),
                     "direction": direction,
+                    "note": "Supplementary fallback; main口径 requires US10Y/DGS10 and T10YIE.",
                 }
-
-    # Compute from nominal - breakeven
-    nominal = _extract_value(indicators, _NOMINAL_10Y_KEYS)
-    breakeven = _extract_value(indicators, _BREAKEVEN_KEYS)
-    if nominal is not None and breakeven is not None:
-        value = nominal - breakeven
-        n_change = _extract_change(indicators, _NOMINAL_10Y_KEYS)
-        b_change = _extract_change(indicators, _BREAKEVEN_KEYS)
-        change = (n_change - b_change) if (n_change is not None and b_change is not None) else None
-        return {
-            "status": "available",
-            "source": f"{_NOMINAL_10Y_KEYS[0]} - {_BREAKEVEN_KEYS[0]} (computed)",
-            "value": value,
-            "daily_change": change,
-            "direction": _direction(change),
-            "note": "Computed from nominal 10Y minus breakeven",
-        }
 
     return {"status": "unavailable", "reason": "Neither direct real yield nor nominal+breakeven available"}
 
@@ -283,10 +300,13 @@ def _eval_liquidity_quantity(indicators: dict[str, Any]) -> dict[str, Any]:
     signs: list[str] = []
     rrp_change = _extract_change(indicators, ("ON_RRP_USAGE", "RRPONTSYD"))
     tga_change = _extract_change(indicators, ("TGA",))
+    reserves_change = _extract_change(indicators, ("RESERVES", "WRESBAL"))
     if rrp_change is not None:
         signs.append("easing" if rrp_change < 0 else "tightening")
     if tga_change is not None:
         signs.append("easing" if tga_change < 0 else "tightening")
+    if reserves_change is not None:
+        signs.append("easing" if reserves_change > 0 else "tightening")
 
     easing_count = signs.count("easing")
     tightening_count = signs.count("tightening")
@@ -327,6 +347,38 @@ def _eval_liquidity_price(indicators: dict[str, Any]) -> dict[str, Any]:
     if sofr is not None and effr is not None:
         result["sofr_effr_spread"] = sofr - effr
     return result
+
+
+def _is_liquidity_crunch(drivers: dict[str, Any]) -> bool:
+    us10y = drivers.get("us10y", {})
+    real_yield = drivers.get("real_yield", {})
+    dxy = drivers.get("dxy", {})
+    liq_quantity = drivers.get("liquidity_quantity", {})
+    us10y_value = us10y.get("value")
+    dxy_change = dxy.get("daily_change")
+    dxy_weekly = dxy.get("weekly_change")
+    dollar_surge = (
+        dxy.get("direction") == "rising"
+        and ((isinstance(dxy_change, (int, float)) and dxy_change >= 0.3) or (isinstance(dxy_weekly, (int, float)) and dxy_weekly >= 1.0))
+    )
+    rate_break = isinstance(us10y_value, (int, float)) and us10y_value >= 4.7
+    real_pressure = real_yield.get("direction") == "rising"
+    liquidity_not_easing = liq_quantity.get("trend") != "easing"
+    return bool(rate_break and dollar_surge and real_pressure and liquidity_not_easing)
+
+
+def _is_monetary_credit_repricing(indicators: dict[str, Any], drivers: dict[str, Any]) -> bool:
+    gold_change = _extract_change(indicators, ("XAUUSD", "GOLD", "GC"))
+    if gold_change is None or gold_change <= 0:
+        return False
+    real_yield = drivers.get("real_yield", {})
+    dxy = drivers.get("dxy", {})
+    us10y = drivers.get("us10y", {})
+    return (
+        real_yield.get("direction") == "rising"
+        and dxy.get("direction") != "falling"
+        and us10y.get("direction") == "rising"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -375,6 +427,10 @@ def _render_gold_interpretation(
         prefix = "MACRO HEADWIND: Rising real yields and tight liquidity conditions create a rate-pressure environment for gold. "
     elif phase == "trend_tailwind":
         prefix = "MACRO TAILWIND: Falling real yields and ample liquidity provide a supportive trend-tailwind for gold. "
+    elif phase == "liquidity_crunch":
+        prefix = "LIQUIDITY CRUNCH: Long-end yields and USD strength are stressing cash conditions; gold can be sold first before safe-haven demand returns. "
+    elif phase == "monetary_credit_repricing":
+        prefix = "MONETARY CREDIT REPRICING: Gold is holding up despite rates/USD pressure, suggesting fiscal-credit or reserve-diversification demand is overriding the classic real-rate channel. "
     else:
         prefix = "MACRO TRANSITION: Mixed signals with rates stabilizing or in transition. Gold direction depends on breakout confirmation. "
 
@@ -386,17 +442,29 @@ def _render_gold_interpretation(
 def _change_conditions(phase: str) -> list[str]:
     if phase == "rate_pressure":
         return [
-            "Real yields turn lower (FRED:DFII10 declining 2+ weeks)",
+            "US10Y - T10YIE turns lower for 2+ weeks",
             "DXY breaks below 50-day moving average",
             "Fed signals rate cut timeline",
             "ON RRP usage drops significantly (liquidity injection)",
         ]
     if phase == "trend_tailwind":
         return [
-            "Real yields begin rising (FRED:DFII10 increasing 2+ weeks)",
+            "US10Y - T10YIE begins rising for 2+ weeks",
             "DXY strengthens above resistance",
             "Fed signals pause or rate hike",
             "ON RRP usage surges (liquidity drain)",
+        ]
+    if phase == "liquidity_crunch":
+        return [
+            "US10Y falls back below the 4.5%-4.7% stress band",
+            "DXY stops rising and funding spreads normalize",
+            "Risk assets stabilize without forced USD liquidation",
+        ]
+    if phase == "monetary_credit_repricing":
+        return [
+            "Gold stops outperforming while real yields and DXY remain firm",
+            "Fiscal-credit or reserve-diversification evidence fades",
+            "Classic real-rate sensitivity reasserts itself for multiple sessions",
         ]
     # transition_release
     return [

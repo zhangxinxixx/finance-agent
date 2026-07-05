@@ -251,6 +251,7 @@ export interface DashboardSummary {
     US02Y: DashboardMetric;
     T10YIE: DashboardMetric;
     REAL_10Y: DashboardMetric;
+    YIELD_SPREAD_2Y_3M?: DashboardMetric;
   };
   macro_liquidity: {
     RRP: DashboardMetric;

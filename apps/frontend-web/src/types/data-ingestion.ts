@@ -189,6 +189,9 @@ export interface DataSourceItem {
   last_run_id?: string | null;
   next_run_time?: string | null;
   metadata: DataSourceMetadata;
+  affected_modules: string[];
+  artifact_evidence?: DataSourceArtifactEvidence | null;
+  pipeline_health?: SourcePipelineHealth | null;
 }
 
 export interface DataSourceStatuses {
@@ -303,12 +306,19 @@ export interface DataSourceStatusViewModel {
   artifact_layers: string[];
   polling_strategy?: DataSourcePollingStrategy | null;
   pressure_profile?: DataSourcePressureProfile | null;
-  artifact_evidence?: DataSourceArtifactEvidence | null;
+  artifact_evidence: DataSourceArtifactEvidence | null;
   news_runtime?: NewsSourceRuntimeViewModel | null;
   source_refs: SourceRef[];
   /** 7-stage pipeline health for the health matrix view */
-  pipeline_health?: SourcePipelineHealth;
+  pipeline_health: SourcePipelineHealth;
 }
+
+type RequireDataSourceReadModelFields<T extends {
+  artifact_evidence: DataSourceArtifactEvidence | null;
+  pipeline_health: SourcePipelineHealth;
+}> = T;
+
+type _DataSourceStatusViewModelReadModelContract = RequireDataSourceReadModelFields<DataSourceStatusViewModel>;
 
 export interface PipelineLayerStatus {
   id: "configured" | "raw_ingested" | "parsed" | "analysis_ready";

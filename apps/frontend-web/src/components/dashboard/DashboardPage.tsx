@@ -98,7 +98,7 @@ export function DashboardPage() {
             viewModel={dashboard.data.view_model}
           />
 
-          {/* KPI Strip: 6 columns */}
+          {/* KPI Strip */}
           <div className="dashboard-kpi-strip">
             {kpiMetrics.map((m) => (
               <CompactKPICard

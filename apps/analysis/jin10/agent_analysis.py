@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from apps.analysis.jin10.agent_prompt_profiles import typed_report_prompt_spec
 from apps.documents.schemas import Jin10AgentAnalysisReport, Jin10DailyAnalysisReport, Jin10RawArticleReport
 
 MISSING = "未从识别结果中稳定提取"
@@ -63,6 +64,38 @@ def build_agent_analysis_prompt(
         if chart_render_mode == "fallback_compact"
         else "当前图表证据可按正常结构化图表/截图摘要使用，但仍需区分事实、观点和推论。"
     )
+    if _is_market_observation_report(raw_report=raw_report, daily_report=daily_report):
+        return _build_market_observation_prompt(
+            raw_report=raw_report,
+            daily_report=daily_report,
+            daily_block=daily_block,
+            chart_block=chart_block,
+            paragraph_block=paragraph_block,
+            key_sentence_block=key_sentence_block,
+            section_block=section_block,
+            chart_anchor_block=chart_anchor_block,
+            level_snippet_block=level_snippet_block,
+            chart_summary_block=chart_summary_block,
+            chart_render_mode=chart_render_mode,
+            chart_mode_note=chart_mode_note,
+        )
+    prompt_profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
+    if prompt_profile != "default_daily":
+        return _build_typed_report_analysis_prompt(
+            prompt_profile=prompt_profile,
+            raw_report=raw_report,
+            daily_report=daily_report,
+            daily_block=daily_block,
+            chart_block=chart_block,
+            paragraph_block=paragraph_block,
+            key_sentence_block=key_sentence_block,
+            section_block=section_block,
+            chart_anchor_block=chart_anchor_block,
+            level_snippet_block=level_snippet_block,
+            chart_summary_block=chart_summary_block,
+            chart_render_mode=chart_render_mode,
+            chart_mode_note=chart_mode_note,
+        )
     return f"""你是一名专业的宏观市场与贵金属分析 Agent，默认使用简体中文。
 
 任务：仅基于下方 Jin10 报告识别结果、图表清单与结构化摘要，写一份更接近日报研究会话风格的黄金市场二次分析报告。
@@ -194,6 +227,251 @@ chart_render_mode: {chart_render_mode}
 - 如果 `previous_daily_analysis` 明确给出了阶段、关键位或目标区，而本次报告又没有直接推翻，允许把它们保留为“前序框架”；但必须明确哪些内容已经被本次报告降温、延后或改为条件成立后才有效。
 - 传导链、黄金路径、白银路径可以由模型自行组织，不必机械套模板。
 - 不要出现“当前会话形成的核心判断脉络”“当前会话形成的关键位体系”这类会话内元表述。
+
+请只输出 Markdown 报告正文。"""
+
+
+def _agent_analysis_prompt_profile(*, raw_report: dict[str, Any], daily_report: dict[str, Any] | None) -> str:
+    if _is_market_observation_report(raw_report=raw_report, daily_report=daily_report):
+        return "market_observation"
+    daily = daily_report or {}
+    text = " ".join(
+        str(item or "")
+        for item in (
+            raw_report.get("title"),
+            raw_report.get("article_markdown"),
+            daily.get("title"),
+            daily.get("family"),
+            daily.get("report_type"),
+            (daily.get("generated_from") or {}).get("report_type") if isinstance(daily.get("generated_from"), dict) else "",
+        )
+    )
+    generated_from = daily.get("generated_from") if isinstance(daily.get("generated_from"), dict) else {}
+    report_type = str(daily.get("report_type") or generated_from.get("report_type") or "").strip().lower()
+    family = str(daily.get("family") or "").strip()
+    if report_type in {"market_observation", "positioning", "technical_levels", "oil", "fx"}:
+        return report_type
+    if family == "jin10_positioning_report" or "持仓报告" in text:
+        return "positioning"
+    if family == "jin10_technical_levels_report" or "技术刘" in text or "点位报告" in text:
+        return "technical_levels"
+    if family == "jin10_oil_report" or "原油报告" in text:
+        return "oil"
+    if family == "jin10_fx_report" or "外汇报告" in text:
+        return "fx"
+    return "default_daily"
+
+
+def agent_analysis_prompt_version(raw_report: dict[str, Any], daily_report: dict[str, Any] | None = None) -> str:
+    if _is_market_observation_report(raw_report=raw_report, daily_report=daily_report):
+        return "jin10_agent_analysis_market_observation_v1"
+    profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
+    return f"jin10_agent_analysis_{profile}_v1" if profile != "default_daily" else "jin10_agent_analysis_v2"
+
+
+def _is_market_observation_report(*, raw_report: dict[str, Any], daily_report: dict[str, Any] | None) -> bool:
+    daily = daily_report or {}
+    text = " ".join(
+        str(item or "")
+        for item in (
+            raw_report.get("title"),
+            daily.get("title"),
+            raw_report.get("article_markdown"),
+            daily.get("family"),
+            daily.get("report_type"),
+        )
+    )
+    return (
+        daily.get("family") == "jin10_market_observation_report"
+        or daily.get("report_type") == "market_observation"
+        or any(marker in text for marker in ("每日市场观察", "VIP每日市场观察", "市场赔率表", "市场赔率数据表"))
+    )
+
+
+def _market_observation_kind(*values: str | None) -> str:
+    text = " ".join(value or "" for value in values)
+    if any(marker in text for marker in ("市场赔率数据表", "市场赔率表", "赔率表")):
+        return "市场赔率"
+    if any(marker in text for marker in ("每日市场观察", "VIP每日市场观察")):
+        return "市场观察"
+    return "市场观察"
+
+
+def _typed_report_prompt_spec(prompt_profile: str) -> dict[str, str]:
+    return typed_report_prompt_spec(prompt_profile)
+
+
+def _build_typed_report_analysis_prompt(
+    *,
+    prompt_profile: str,
+    raw_report: dict[str, Any],
+    daily_report: dict[str, Any] | None,
+    daily_block: str,
+    chart_block: str,
+    paragraph_block: str,
+    key_sentence_block: str,
+    section_block: str,
+    chart_anchor_block: str,
+    level_snippet_block: str,
+    chart_summary_block: str,
+    chart_render_mode: str,
+    chart_mode_note: str,
+) -> str:
+    spec = _typed_report_prompt_spec(prompt_profile)
+    return f"""你是一名专业的{spec['persona']}，默认使用简体中文。
+
+任务：{spec['task']}
+
+材料类型：{spec['name']}
+
+专用分析规则：
+{spec['rules']}
+
+通用硬规则：
+1. 不主动联网，不引入输入材料之外的实时行情、价格、概率或新闻。
+2. 必须区分：报告明确事实、图表/页图线索、报告作者观点、Agent 辅助解读、仍需确认部分。
+3. 不给确定性预测；任何交易或观察含义都必须绑定触发条件、失效条件和风险点。
+4. 缺失内容写“{MISSING}”，不要补造。
+5. 不输出 YAML、JSON 或 Agent 入库字段。
+6. 这不是固定金银日报 prompt；不要机械输出“最新判断发生了什么变化 / 黄金为什么涨跌 / 三条路径推演”。
+
+推荐主框架如下，标题可以贴合材料，但章节语义必须覆盖：
+{spec['framework']}
+
+写作要求：
+- `一句话结论` 直接说明这份专项报告最重要的结构变化，必须体现材料类型。
+- `分析溯源 / 数据来源` 最多 3 句，只说明用了哪些归档输入、是否有图像/OCR 限制。
+- 专项章节要优先引用报告内明确数字、点位、手数、百分比、概率或指标；没有就写缺失。
+- 对黄金的影响必须按该报告类型的传导链写，不能把所有报告都改写成每日金银报告。
+- 如果 `chart_render_mode = fallback_compact`，必须把图表部分当成“页图 fallback 线索”，不要写成已经完整结构化确认。
+
+=== raw_report 基本信息 ===
+trade_date: {raw_report.get('trade_date') or MISSING}
+article_id: {raw_report.get('article_id') or MISSING}
+title: {raw_report.get('title') or MISSING}
+source_url: {raw_report.get('source_url') or MISSING}
+
+=== raw_report article_markdown ===
+{str(raw_report.get('article_markdown') or '').strip()}
+
+=== 正文关键片段 ===
+{paragraph_block}
+
+=== 关键句 / 导读 / 关键位片段 ===
+{key_sentence_block}
+
+=== 正文章节摘要 ===
+{section_block}
+
+=== 图表前后文锚点 ===
+{chart_anchor_block}
+
+=== 关键位 / 利率 / 期权证据片段 ===
+{level_snippet_block}
+
+=== 图表清单 ===
+{chart_block}
+
+=== 图表摘要线索 ===
+{chart_summary_block}
+
+=== 图表渲染模式 ===
+chart_render_mode: {chart_render_mode}
+- {chart_mode_note}
+
+=== structured_analysis 摘要 ===
+{daily_block}
+
+请只输出 Markdown 报告正文。"""
+
+
+def _build_market_observation_prompt(
+    *,
+    raw_report: dict[str, Any],
+    daily_report: dict[str, Any] | None,
+    daily_block: str,
+    chart_block: str,
+    paragraph_block: str,
+    key_sentence_block: str,
+    section_block: str,
+    chart_anchor_block: str,
+    level_snippet_block: str,
+    chart_summary_block: str,
+    chart_render_mode: str,
+    chart_mode_note: str,
+) -> str:
+    kind = _market_observation_kind(str(raw_report.get("title") or ""), str(raw_report.get("article_markdown") or ""))
+    return f"""你是一名专业的宏观市场观察与赔率数据分析 Agent，默认使用简体中文。
+
+任务：仅基于下方 Jin10 市场观察 / 市场赔率材料，写一份“辅助决策证据”分析。不要套用每日金银报告，不要把它写成黄金日报，不要沿用“黄金为什么涨 / 为什么跌”“三条路径推演”“前序日报判断”这些固定日报模板。
+
+材料类型：{kind}
+
+市场观察 / 市场赔率专用分析规则：
+1. 不主动联网，不引入输入材料之外的实时行情、概率、价格或新闻。
+2. 先看材料本身：它在观察哪几个市场，概率/赔率变化指向什么，哪些只是触及概率而不是方向预测。
+3. 必须区分“赔率隐含预期”“作者观察”“Agent 辅助解读”“仍需盘面确认”。
+4. 这是辅助证据，不是主判断；不能把单源赔率或观察直接升级为交易结论。
+5. 市场赔率要按品种拆读：黄金、白银、原油、美元/日元、就业/美联储路径、航运/地缘或其他报告中出现的变量。
+6. 每个变量尽量写“赔率变化 -> 市场预期 -> 对黄金/风险偏好/美元/原油的辅助含义 -> 失效条件”。
+7. 如果材料只有图片或页图 fallback，明确写“图像证据可见但结构化抽取有限”；如果正文已提供概率数据，必须优先引用正文里的具体概率，不得再说没有内容。
+8. 不输出 YAML、JSON 或 Agent 入库字段。
+
+推荐主框架如下，标题可以贴合材料，但章节语义必须覆盖：
+# <标题>｜市场观察辅助分析
+## 一句话结论
+# 分析溯源 / 数据来源
+# 1. 这份材料在观察什么？
+# 2. 核心赔率 / 观察信号
+# 3. 赔率和观察信号怎么读？
+# 4. 对黄金、原油、美元/日元和风险资产的辅助含义
+# 5. 作为辅助决策依据怎么用？
+# 6. 需要继续确认什么？
+# 最终综合判断
+
+写作要求：
+- `一句话结论` 必须直接说明这份材料偏“市场观察”还是“市场赔率”，以及最核心的辅助信号。
+- `核心赔率 / 观察信号` 要列出材料中明确出现的概率、价位、时间窗口或市场变量；没有就写缺失，不补造。
+- `赔率和观察信号怎么读？` 要强调赔率是预期分布和触及概率，不等于价格路径承诺。
+- `辅助含义` 只写对主决策的支持、削弱或风险提示，不输出确定性多空。
+- `需要继续确认什么？` 写后续要看哪些行情、利率、美元、就业或地缘变量验证这份辅助信号。
+
+=== raw_report 基本信息 ===
+trade_date: {raw_report.get('trade_date') or MISSING}
+article_id: {raw_report.get('article_id') or MISSING}
+title: {raw_report.get('title') or MISSING}
+source_url: {raw_report.get('source_url') or MISSING}
+
+=== raw_report article_markdown ===
+{str(raw_report.get('article_markdown') or '').strip()}
+
+=== 正文关键片段 ===
+{paragraph_block}
+
+=== 关键句 / 导读 / 关键位片段 ===
+{key_sentence_block}
+
+=== 正文章节摘要 ===
+{section_block}
+
+=== 图表前后文锚点 ===
+{chart_anchor_block}
+
+=== 关键位 / 利率 / 期权证据片段 ===
+{level_snippet_block}
+
+=== 图表清单 ===
+{chart_block}
+
+=== 图表摘要线索 ===
+{chart_summary_block}
+
+=== 图表渲染模式 ===
+chart_render_mode: {chart_render_mode}
+- {chart_mode_note}
+
+=== structured_analysis 摘要 ===
+{daily_block}
 
 请只输出 Markdown 报告正文。"""
 
@@ -1000,6 +1278,7 @@ def build_jin10_agent_analysis_report_with_llm(
     raw = _to_dict(raw_report)
     daily = _to_dict(daily_report) if daily_report is not None else {}
     fallback = build_jin10_agent_analysis_report(raw_report, daily_report)
+    prompt_version = agent_analysis_prompt_version(raw, daily)
     previous_daily_analysis = load_previous_jin10_agent_analysis(
         trade_date=str(fallback.trade_date or raw.get("trade_date") or ""),
         run_id=str(fallback.run_id or raw.get("article_id") or ""),
@@ -1062,6 +1341,8 @@ def build_jin10_agent_analysis_report_with_llm(
                 "tokens": response.usage,
                 "raw_report_family": fallback.generated_from.get("raw_report_family") or raw.get("family"),
                 "daily_report_family": fallback.generated_from.get("daily_report_family") or daily.get("family"),
+                "prompt_version": prompt_version,
+                "prompt_profile": _agent_analysis_prompt_profile(raw_report=raw, daily_report=daily),
                 "prompt_ready": True,
                 "narrative_markdown": llm_markdown,
                 "fallback_generated_from": fallback.generated_from,
@@ -1070,6 +1351,8 @@ def build_jin10_agent_analysis_report_with_llm(
     except Exception:
         # Fallback to deterministic analysis
         fallback.generated_from["source"] = "jin10_agent_analysis_fallback_after_llm_error"
+        fallback.generated_from["prompt_version"] = prompt_version
+        fallback.generated_from["prompt_profile"] = _agent_analysis_prompt_profile(raw_report=raw, daily_report=daily)
         return fallback
 
 

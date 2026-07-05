@@ -32,6 +32,7 @@ def build_daily_market_brief(
     market_reactions: list[Any] | None,
     as_of: str,
     source_refs: list[dict[str, Any]] | None = None,
+    report_input_artifacts: list[dict[str, Any]] | None = None,
 ) -> DailyMarketBrief:
     events = _event_dicts(event_bundle)
     assessment_by_event_id = {
@@ -43,7 +44,13 @@ def build_daily_market_brief(
         for reaction in (_dict(item) for item in (market_reactions or []))
     }
     bundle_refs = _bundle_source_refs(event_bundle)
-    merged_refs = _dedupe_refs([*bundle_refs, *(source_refs or []), *[ref for event in events for ref in event.get("source_refs", []) if isinstance(ref, dict)]])
+    report_input_refs = _report_input_source_refs(report_input_artifacts or [])
+    merged_refs = _dedupe_refs([
+        *bundle_refs,
+        *(source_refs or []),
+        *report_input_refs,
+        *[ref for event in events for ref in event.get("source_refs", []) if isinstance(ref, dict)],
+    ])
 
     next_7d_calendar = _next_7d_calendar(events, assessment_by_event_id=assessment_by_event_id, as_of=as_of)
     confirmed_events = [
@@ -76,6 +83,12 @@ def build_daily_market_brief(
     )
     warnings = _warnings(events=events, next_7d_calendar=next_7d_calendar)
 
+    report_inputs = {
+        "news_highlights": news_highlights,
+        "watchlist": watchlist,
+        "risk_points": risk_points,
+        **_supplemental_report_inputs(report_input_artifacts or []),
+    }
     return DailyMarketBrief(
         as_of=as_of,
         market_mainline=_market_mainline(news_highlights=news_highlights, unconfirmed_risks=unconfirmed_risks, confirmed_events=confirmed_events),
@@ -84,17 +97,16 @@ def build_daily_market_brief(
         candidate_events=candidate_events,
         unconfirmed_risks=unconfirmed_risks,
         asset_reactions=asset_reactions,
-        report_inputs={
-            "news_highlights": news_highlights,
-            "watchlist": watchlist,
-            "risk_points": risk_points,
-        },
+        report_inputs=report_inputs,
         data_quality={
             "event_candidate_count": len(events),
             "confirmed_event_count": len(confirmed_events),
             "candidate_event_count": len(candidate_events),
             "unconfirmed_risk_count": len(unconfirmed_risks),
             "asset_reaction_count": len(asset_reactions),
+            "positioning_input_count": len(report_inputs.get("positioning") or []),
+            "technical_level_input_count": len(report_inputs.get("technical_levels") or []),
+            "market_observation_input_count": len(report_inputs.get("market_observations") or []),
             "source_ref_count": len(merged_refs),
         },
         source_refs=merged_refs,
@@ -153,6 +165,40 @@ def _bundle_source_refs(event_bundle: Any) -> list[dict[str, Any]]:
     else:
         refs = getattr(event_bundle, "source_refs", []) or []
     return [dict(ref) for ref in refs if isinstance(ref, dict)]
+
+
+def _supplemental_report_inputs(artifacts: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {
+        "positioning": [],
+        "technical_levels": [],
+        "market_observations": [],
+    }
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        source_key = str(artifact.get("source_key") or "").strip()
+        items = [dict(item) for item in artifact.get("items") or artifact.get("inputs") or [] if isinstance(item, dict)]
+        if not items:
+            continue
+        if "positioning" in source_key:
+            result["positioning"].extend(items)
+        elif "technical" in source_key or "level" in source_key:
+            result["technical_levels"].extend(items)
+        elif "market_observation" in source_key or "market_observ" in source_key:
+            result["market_observations"].extend(items)
+    return {key: value for key, value in result.items() if value}
+
+
+def _report_input_source_refs(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        refs.extend(dict(ref) for ref in artifact.get("source_refs") or [] if isinstance(ref, dict))
+        for item in artifact.get("items") or artifact.get("inputs") or []:
+            if isinstance(item, dict):
+                refs.extend(dict(ref) for ref in item.get("source_refs") or [] if isinstance(ref, dict))
+    return refs
 
 
 def _next_7d_calendar(

@@ -7,6 +7,9 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from apps.api.data_service import (
     _latest_date_dir,
@@ -14,11 +17,14 @@ from apps.api.data_service import (
     get_macro_latest,
     get_macro_report_md,
 )
+from database.models.analysis import ensure_analysis_tables
+from database.queries.feature_snapshots import upsert_feature_snapshot
 
 
 # ── helpers ──
 
 _PROJECT_ROOT_PATCH = "apps.api.data_service._PROJECT_ROOT"
+_TRY_DB_SESSION_PATCH = "apps.api.data_service._try_db_session"
 
 
 def _make_tree(root: Path, files: dict[str, str | None]) -> None:
@@ -28,6 +34,17 @@ def _make_tree(root: Path, files: dict[str, str | None]) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         if content is not None:
             p.write_text(content, encoding="utf-8")
+
+
+def _make_db_session():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    ensure_analysis_tables(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    return factory()
 
 
 # ── _latest_date_dir ──
@@ -106,6 +123,34 @@ def test_get_macro_latest_new_format(tmp_path: Path):
     assert data is not None
     assert data["as_of"] == "2026-05-14"
     assert data["indicators"]["SPX"] == 5900
+
+
+def test_get_macro_latest_prefers_feature_snapshot_db(tmp_path: Path):
+    db = _make_db_session()
+    upsert_feature_snapshot(
+        db,
+        {
+            "snapshot_id": "feature:macro:macro_snapshot:2026-07-04:run-db",
+            "domain": "macro",
+            "snapshot_kind": "macro_snapshot",
+            "asset": "XAUUSD",
+            "trade_date": "2026-07-04",
+            "run_id": "run-db",
+            "payload": {"as_of": "2026-07-04", "indicators": {"DXY": {"value": 101.2}}},
+        },
+    )
+    db.commit()
+    _make_tree(tmp_path, {
+        "storage/features/macro/2026-05-14/auto-v2/macro_snapshot.json":
+            json.dumps({"as_of": "2026-05-14", "indicators": {"SPX": 5900}}),
+    })
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch(_TRY_DB_SESSION_PATCH, return_value=db):
+        data = get_macro_latest()
+
+    assert data is not None
+    assert data["as_of"] == "2026-07-04"
+    assert data["indicators"]["DXY"]["value"] == 101.2
 
 
 def test_get_macro_latest_old_format_direct(tmp_path: Path):

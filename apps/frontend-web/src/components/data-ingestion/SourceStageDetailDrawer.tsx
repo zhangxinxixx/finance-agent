@@ -40,9 +40,9 @@ export function SourceStageDetailDrawer({ source, stageKey, onClose, onRetry }: 
   if (!source || !stageKey) return null;
 
   const health = source.pipeline_health;
-  const stage = health?.stages[stageKey];
-  const status = stage?.status ?? "NO_DATA";
-  const message = stage?.message;
+  const stage = health.stages[stageKey];
+  const status = stage.status;
+  const message = stage.message;
 
   return (
     <>
@@ -102,29 +102,27 @@ export function SourceStageDetailDrawer({ source, stageKey, onClose, onRetry }: 
           </div>
 
           {/* Stage chain (all stages for this source) */}
-          {health && (
-            <div className="rounded-[var(--radius-md)] bg-[var(--bg-card)] border border-[var(--border)] p-2.5">
-              <div className="text-[8px] font-semibold uppercase tracking-wider text-[var(--fg-6)] mb-2">完整链路状态</div>
-              <div className="max-h-[220px] overflow-y-auto">
-                <div className="flex flex-col gap-1.5">
-                  {(Object.keys(health.stages) as PipelineStageKey[]).map((key) => {
-                    const s = health.stages[key];
-                    return (
-                      <div key={key} className="flex items-center gap-2">
-                        <StageNode status={s.status} compact />
-                        <span className={`text-[9px] ${key === stageKey ? "font-bold text-[var(--fg-1)]" : "text-[var(--fg-4)]"}`}>
-                          {STAGE_LABELS[key]}
-                        </span>
-                        {s.message && (
-                          <span className="text-[8px] text-[var(--fg-6)] truncate flex-1">{s.message}</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+          <div className="rounded-[var(--radius-md)] bg-[var(--bg-card)] border border-[var(--border)] p-2.5">
+            <div className="text-[8px] font-semibold uppercase tracking-wider text-[var(--fg-6)] mb-2">完整链路状态</div>
+            <div className="max-h-[220px] overflow-y-auto">
+              <div className="flex flex-col gap-1.5">
+                {(Object.keys(health.stages) as PipelineStageKey[]).map((key) => {
+                  const s = health.stages[key];
+                  return (
+                    <div key={key} className="flex items-center gap-2">
+                      <StageNode status={s.status} compact />
+                      <span className={`text-[9px] ${key === stageKey ? "font-bold text-[var(--fg-1)]" : "text-[var(--fg-4)]"}`}>
+                        {STAGE_LABELS[key]}
+                      </span>
+                      {s.message && (
+                        <span className="text-[8px] text-[var(--fg-6)] truncate flex-1">{s.message}</span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
-          )}
+          </div>
 
           {/* Metadata */}
           <div className="rounded-[var(--radius-md)] bg-[var(--bg-card)] border border-[var(--border)] p-2.5 space-y-1.5">
@@ -134,7 +132,7 @@ export function SourceStageDetailDrawer({ source, stageKey, onClose, onRetry }: 
             <MetaRow label="latest_raw" value={source.latest_raw_time ?? "—"} />
             <MetaRow label="latest_parsed" value={source.latest_parsed_time ?? "—"} />
             <MetaRow label="row_count" value={String(source.row_count)} />
-            {health?.affectedModules && (
+            {health.affectedModules.length > 0 && (
               <MetaRow label="影响模块" value={health.affectedModules.join(", ")} />
             )}
           </div>

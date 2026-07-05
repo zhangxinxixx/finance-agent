@@ -434,6 +434,64 @@ def test_data_service_exposes_readiness_and_gate_states() -> None:
     assert sources["blocked_source"]["gating_reason"] == "error_message"
 
 
+def test_data_service_exposes_backend_pipeline_health_artifact_evidence_and_modules() -> None:
+    """Data Ingestion should receive backend-built health/evidence instead of inferring from metadata."""
+    from apps.api.services.source_service import get_data_source_statuses
+
+    session = _db_session()
+    _seed_source(
+        session,
+        source_key="fed_rss",
+        source_name="Federal Reserve RSS",
+        source_group="news",
+        source_type="rss",
+        access_method="feedparser+httpx",
+        configured=True,
+        raw_ingested=True,
+        parsed=True,
+        analysis_ready=False,
+        latest_raw_time=datetime(2026, 6, 12, 9, 30, tzinfo=timezone.utc),
+        latest_parsed_time=datetime(2026, 6, 12, 9, 35, tzinfo=timezone.utc),
+        latest_snapshot_id=None,
+        status="partial",
+        source_metadata={
+            "collector_raw_artifact_path": "storage/raw/news/fed_rss/2026-06-12/feed-raw.json",
+            "collector_parsed_artifact_path": "storage/parsed/news/fed_rss/2026-06-12/feed-parsed.json",
+            "brief_artifact_path": "storage/features/news/2026-06-12/run-news/daily_market_brief.json",
+            "artifact_path": "storage/features/news/2026-06-12/run-news/daily_market_brief.json",
+        },
+    )
+
+    with patch("apps.api.services.source_service._try_db_session", return_value=session):
+        result = get_data_source_statuses()
+
+    fed_rss = _sources_by_key(result)["fed_rss"]
+    assert fed_rss["affected_modules"] == ["event_flow", "news_monitor", "premarket"]
+
+    health = fed_rss["pipeline_health"]
+    assert health["source_id"] == "fed_rss"
+    assert health["domain"] == "news"
+    assert health["priority"] == "official_primary"
+    assert health["downstream_status"] == "DEGRADED"
+    assert health["latest_data_date"] == "2026-06-12"
+    assert health["stages"]["connection"]["status"] == "OK"
+    assert health["stages"]["collect"]["output_ref"] == "storage/raw/news/fed_rss/2026-06-12/feed-raw.json"
+    assert health["stages"]["raw_landing"]["status"] == "OK"
+    assert health["stages"]["parse"]["output_ref"] == "storage/parsed/news/fed_rss/2026-06-12/feed-parsed.json"
+    assert health["stages"]["snapshot"]["status"] == "NO_SNAPSHOT"
+    assert health["stages"]["consumer_ready"]["status"] == "WARN"
+
+    evidence = fed_rss["artifact_evidence"]
+    assert evidence["preferred_artifact_path"] == "storage/features/news/2026-06-12/run-news/daily_market_brief.json"
+    assert evidence["collector_raw_artifact_path"] == "storage/raw/news/fed_rss/2026-06-12/feed-raw.json"
+    assert evidence["collector_parsed_artifact_path"] == "storage/parsed/news/fed_rss/2026-06-12/feed-parsed.json"
+    assert [item["path"] for item in evidence["raw_artifacts"]] == ["storage/raw/news/fed_rss/2026-06-12/feed-raw.json"]
+    assert [item["path"] for item in evidence["parsed_artifacts"]] == ["storage/parsed/news/fed_rss/2026-06-12/feed-parsed.json"]
+    assert [item["path"] for item in evidence["feature_artifacts"]] == [
+        "storage/features/news/2026-06-12/run-news/daily_market_brief.json"
+    ]
+
+
 def test_data_service_demotes_stale_freshness_to_degraded_gate() -> None:
     from apps.api.services.source_service import get_data_source_statuses
 
@@ -987,6 +1045,7 @@ def test_api_route_each_source_has_required_fields() -> None:
             "last_run_id", "next_run_time", "metadata",
             "readiness_state", "gate_state", "gating_reason",
             "freshness_status", "freshness_reason",
+            "pipeline_health", "artifact_evidence", "affected_modules",
         ]
         for field in required_fields:
             assert field in src, f"Missing field: {field}"

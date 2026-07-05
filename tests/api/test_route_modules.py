@@ -566,6 +566,7 @@ def test_main_reexports_agent_governance_read_handlers() -> None:
     from apps.api.main import (
         api_agent_registry_detail,
         api_agents_registry,
+        api_prompt_evolution_proposal,
         api_prompt_versions_active,
         api_prompt_versions_by_agent,
         api_prompt_versions_list,
@@ -573,6 +574,7 @@ def test_main_reexports_agent_governance_read_handlers() -> None:
     from apps.api.routes.agent_governance_read_routes import (
         api_agent_registry_detail as modular_api_agent_registry_detail,
         api_agents_registry as modular_api_agents_registry,
+        api_prompt_evolution_proposal as modular_api_prompt_evolution_proposal,
         api_prompt_versions_active as modular_api_prompt_versions_active,
         api_prompt_versions_by_agent as modular_api_prompt_versions_by_agent,
         api_prompt_versions_list as modular_api_prompt_versions_list,
@@ -583,6 +585,7 @@ def test_main_reexports_agent_governance_read_handlers() -> None:
     assert api_prompt_versions_list is modular_api_prompt_versions_list
     assert api_prompt_versions_by_agent is modular_api_prompt_versions_by_agent
     assert api_prompt_versions_active is modular_api_prompt_versions_active
+    assert api_prompt_evolution_proposal is modular_api_prompt_evolution_proposal
 
 
 def test_main_reexports_agent_governance_write_handlers() -> None:
@@ -1136,6 +1139,7 @@ def test_app_registers_modular_agent_governance_read_routes() -> None:
     from apps.api.routes.agent_governance_read_routes import (
         api_agent_registry_detail as modular_api_agent_registry_detail,
         api_agents_registry as modular_api_agents_registry,
+        api_prompt_evolution_proposal as modular_api_prompt_evolution_proposal,
         api_prompt_versions_active as modular_api_prompt_versions_active,
         api_prompt_versions_by_agent as modular_api_prompt_versions_by_agent,
         api_prompt_versions_list as modular_api_prompt_versions_list,
@@ -1149,6 +1153,29 @@ def test_app_registers_modular_agent_governance_read_routes() -> None:
     assert route_map["/api/agents/prompts"] is modular_api_prompt_versions_list
     assert route_method_map[("/api/agents/prompts/{agent_id}", "GET")] is modular_api_prompt_versions_by_agent
     assert route_map["/api/agents/prompts/{agent_id}/active"] is modular_api_prompt_versions_active
+    assert route_map["/api/agents/prompt-evolution/proposal/{agent_id}"] is modular_api_prompt_evolution_proposal
+
+
+def test_app_registers_modular_processing_monitor_routes() -> None:
+    from apps.api.routes.processing_monitor_routes import (
+        api_processing_overview as modular_api_processing_overview,
+        api_processing_trace as modular_api_processing_trace,
+        api_processing_trace_by_event as modular_api_processing_trace_by_event,
+        api_processing_trace_by_input as modular_api_processing_trace_by_input,
+        api_processing_trace_by_mainline as modular_api_processing_trace_by_mainline,
+        api_processing_trace_by_source_ref as modular_api_processing_trace_by_source_ref,
+        api_processing_trace_by_transmission_chain as modular_api_processing_trace_by_transmission_chain,
+    )
+
+    route_map = _route_endpoint_map()
+
+    assert route_map["/api/processing/overview"] is modular_api_processing_overview
+    assert route_map["/api/processing/trace/{trace_id}"] is modular_api_processing_trace
+    assert route_map["/api/processing/trace-by-event/{event_id}"] is modular_api_processing_trace_by_event
+    assert route_map["/api/processing/trace-by-input/{input_id}"] is modular_api_processing_trace_by_input
+    assert route_map["/api/processing/trace-by-source-ref/{source_ref}"] is modular_api_processing_trace_by_source_ref
+    assert route_map["/api/processing/trace-by-mainline/{mainline}"] is modular_api_processing_trace_by_mainline
+    assert route_map["/api/processing/trace-by-chain/{chain_id}"] is modular_api_processing_trace_by_transmission_chain
 
 
 def test_app_registers_modular_agent_governance_write_routes() -> None:

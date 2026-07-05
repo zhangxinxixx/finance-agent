@@ -72,6 +72,7 @@ def test_api_agents_registry_includes_gold_v3_development_governance_agents() ->
         "schema_agent": "TypeScript / 后端 schema 字段治理",
         "dag_lineage_agent": "DAG 和 trace mode 链路治理",
         "test_validation_agent": "schema / DAG / mixed / 页面绑定测试治理",
+        "prompt_evolution_agent": "固定 Agent Prompt 质量评估与优化提案",
     }
 
     for agent_id, governance_scope in expected_agents.items():
@@ -92,6 +93,10 @@ def test_api_agents_registry_includes_gold_v3_development_governance_agents() ->
     dag_prompt = agents["dag_lineage_agent"]["prompt"]["template"]
     assert "source_ref" in dag_prompt["output_schema"]["checks"]
     assert "frontend_slot" in dag_prompt["output_schema"]["checks"]
+    prompt_evolution_prompt = agents["prompt_evolution_agent"]["prompt"]["template"]
+    assert "failure_patterns" in prompt_evolution_prompt["output_schema"]
+    assert "prompt_update_proposal" in prompt_evolution_prompt["output_schema"]
+    assert prompt_evolution_prompt["output_schema"]["manual_review_required"] is True
 
 
 def test_api_agent_registry_detail_404_for_unknown_agent() -> None:

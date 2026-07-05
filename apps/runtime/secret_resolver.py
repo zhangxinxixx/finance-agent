@@ -32,6 +32,40 @@ _SECRET_ENV_TO_SOURCE_KEY: dict[str, str] = {
 }
 
 
+def _candidate_env_paths() -> list[Path]:
+    paths = [_PROJECT_ROOT / ".env"]
+    git_marker = _PROJECT_ROOT / ".git"
+    if not git_marker.is_file():
+        return paths
+
+    with suppress(OSError):
+        raw = git_marker.read_text(encoding="utf-8").strip()
+        prefix = "gitdir:"
+        if raw.startswith(prefix):
+            git_dir = Path(raw[len(prefix):].strip())
+            if not git_dir.is_absolute():
+                git_dir = (git_marker.parent / git_dir).resolve()
+            for parent in git_dir.parents:
+                if parent.name != ".git":
+                    continue
+                fallback = parent.parent / ".env"
+                if fallback not in paths:
+                    paths.append(fallback)
+                break
+
+    return paths
+
+
+def _env_value_from_candidate_files(secret_env: str) -> str:
+    for env_path in _candidate_env_paths():
+        if not env_path.exists():
+            continue
+        value = str(dotenv_values(str(env_path)).get(secret_env) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def resolve_runtime_secret(secret_env: str, *, session: Session | None = None) -> str | None:
     """Resolve a runtime secret with env-first, DB-backed fallback.
 
@@ -42,9 +76,7 @@ def resolve_runtime_secret(secret_env: str, *, session: Session | None = None) -
 
     env_value = (os.getenv(secret_env) or "").strip()
     if not env_value:
-        env_path = _PROJECT_ROOT / ".env"
-        if env_path.exists():
-            env_value = str(dotenv_values(str(env_path)).get(secret_env) or "").strip()
+        env_value = _env_value_from_candidate_files(secret_env)
     if env_value:
         return env_value
 
@@ -83,10 +115,4 @@ def _get_settings_master_key() -> str:
     key = (os.getenv("SETTINGS_MASTER_KEY") or "").strip()
     if key:
         return key
-
-    env_path = _PROJECT_ROOT / ".env"
-    if not env_path.exists():
-        return ""
-
-    values = dotenv_values(str(env_path))
-    return str(values.get("SETTINGS_MASTER_KEY") or "").strip()
+    return _env_value_from_candidate_files("SETTINGS_MASTER_KEY")

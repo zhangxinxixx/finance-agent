@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from hashlib import sha256
 
 import pytest
 from sqlalchemy import create_engine
@@ -9,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.runtime.artifact_storage import LocalFileSystemArtifactStorage
-from apps.runtime.artifact_registry import register_step_artifacts
+from apps.runtime.artifact_registry import register_artifact, register_step_artifacts
 from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.task import StepStatus, TaskRun, TaskStep, TaskStatus, ensure_task_tables
 
@@ -35,6 +36,164 @@ def test_local_artifact_storage_reads_text_and_bytes(tmp_path) -> None:
 
     assert storage.read_text(relative_path) == "slice2-read"
     assert storage.open_bytes(relative_path) == b"slice2-read"
+
+
+def test_register_artifact_persists_canonical_metadata_and_file_stats(tmp_path) -> None:
+    session = _make_session()
+    run = TaskRun(name="premarket", status=TaskStatus.pending, snapshot_id="snap-registry-001")
+    session.add(run)
+    session.flush()
+    content = "# Registry Report\n"
+    file_path = f"storage/outputs/final_report/XAUUSD/2026-07-04/{run.id}/analysis.md"
+    artifact_path = tmp_path / file_path
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(content, encoding="utf-8")
+
+    row = register_artifact(
+        session,
+        run_id=str(run.id),
+        artifact_type="analysis_md",
+        file_path=file_path,
+        source_refs=[
+            {
+                "source_id": "src-report-001",
+                "source_name": "analysis_snapshot",
+                "source_type": "snapshot",
+                "snapshot_id": "snap-registry-001",
+            }
+        ],
+        input_snapshot_ids={"analysis_snapshot": "snap-registry-001"},
+        metadata={"source_key": "final_report"},
+        storage=LocalFileSystemArtifactStorage(root=tmp_path),
+    )
+    session.commit()
+
+    saved = session.query(RunArtifact).one()
+    assert row is not None
+    assert saved.artifact_id == row.artifact_id
+    assert saved.task_id is None
+    assert saved.file_path == file_path
+    assert saved.sha256 == sha256(content.encode("utf-8")).hexdigest()
+    assert saved.byte_size == len(content.encode("utf-8"))
+    assert saved.content_type in {"text/markdown", "text/x-markdown"}
+    assert saved.source_refs_data == [
+        {
+            "source_id": "src-report-001",
+            "source_name": "analysis_snapshot",
+            "source_type": "snapshot",
+            "snapshot_id": "snap-registry-001",
+        }
+    ]
+    metadata = saved.artifact_metadata
+    assert metadata["layer"] == "outputs"
+    assert metadata["domain"] == "final_report"
+    assert metadata["trade_date"] == "2026-07-04"
+    assert metadata["path_run_id"] == str(run.id)
+    assert metadata["path_context"] == ["XAUUSD"]
+    assert metadata["artifact_name"] == "analysis.md"
+    assert metadata["canonical_path"] is True
+    assert metadata["source_key"] == "final_report"
+
+
+def test_register_artifact_rejects_non_run_partitioned_path_by_default() -> None:
+    session = _make_session()
+    run = TaskRun(name="premarket", status=TaskStatus.pending)
+    session.add(run)
+    session.flush()
+
+    with pytest.raises(ValueError, match="canonical artifact path violation"):
+        register_artifact(
+            session,
+            run_id=str(run.id),
+            artifact_type="raw_file",
+            file_path="storage/raw/macro/legacy.json",
+        )
+
+    assert session.query(RunArtifact).count() == 0
+
+
+def test_register_artifact_rejects_missing_task_run_parent() -> None:
+    session = _make_session()
+    run_id = uuid.uuid4()
+
+    with pytest.raises(ValueError, match="does not match an existing TaskRun"):
+        register_artifact(
+            session,
+            run_id=str(run_id),
+            artifact_type="raw_file",
+            file_path=f"storage/raw/macro/2026-07-04/{run_id}/payload.json",
+        )
+
+    assert session.query(RunArtifact).count() == 0
+
+
+def test_register_artifact_accepts_step_binding_and_dedupes(tmp_path) -> None:
+    session = _make_session()
+    run = TaskRun(name="premarket", status=TaskStatus.pending)
+    session.add(run)
+    session.flush()
+    step = TaskStep(task_run_id=run.id, name="macro_features", status=StepStatus.success)
+    session.add(step)
+    session.flush()
+    file_path = f"storage/features/macro/2026-07-04/{run.id}/macro_snapshot.json"
+    artifact_path = tmp_path / file_path
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text('{"status":"ok"}', encoding="utf-8")
+
+    first = register_artifact(
+        session,
+        run_id=str(run.id),
+        step=step,
+        artifact_type="feature_json",
+        file_path=file_path,
+        storage=LocalFileSystemArtifactStorage(root=tmp_path),
+    )
+    second = register_artifact(
+        session,
+        run_id=str(run.id),
+        step=step,
+        artifact_type="feature_json",
+        file_path=file_path,
+        storage=LocalFileSystemArtifactStorage(root=tmp_path),
+    )
+    session.commit()
+
+    saved = session.query(RunArtifact).one()
+    assert first is not None
+    assert second is not None
+    assert first.artifact_id == second.artifact_id == saved.artifact_id
+    assert saved.task_id == step.id
+    assert saved.artifact_metadata["canonical_path"] is True
+
+
+def test_register_artifact_accepts_storage_root_relative_path(tmp_path) -> None:
+    session = _make_session()
+    run = TaskRun(name="premarket", status=TaskStatus.pending)
+    session.add(run)
+    session.flush()
+    file_path = f"features/macro/2026-07-04/{run.id}/macro_snapshot.json"
+    artifact_path = tmp_path / file_path
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text('{"status":"ok"}', encoding="utf-8")
+
+    register_artifact(
+        session,
+        run_id=str(run.id),
+        artifact_type="feature_json",
+        file_path=file_path,
+        storage=LocalFileSystemArtifactStorage(root=tmp_path),
+    )
+    session.commit()
+
+    saved = session.query(RunArtifact).one()
+    assert saved.file_path == file_path
+    assert saved.artifact_metadata["layer"] == "features"
+    assert saved.artifact_metadata["domain"] == "macro"
+    assert saved.artifact_metadata["trade_date"] == "2026-07-04"
+    assert saved.artifact_metadata["path_run_id"] == str(run.id)
+    assert saved.artifact_metadata["path_context"] == []
+    assert saved.artifact_metadata["artifact_name"] == "macro_snapshot.json"
+    assert saved.artifact_metadata["canonical_path"] is True
 
 
 def test_register_step_artifacts_rejects_mismatched_run_id() -> None:

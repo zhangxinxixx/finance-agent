@@ -10,6 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from apps.collectors.news.base import NewsCollectionResult, RawNewsItem
+from apps.features.news.event_candidates import build_event_candidates
 from apps.worker.pipelines.news import NewsPipelineState, run_news_step
 from database.models.analysis import MarketCandle, ensure_analysis_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
@@ -444,3 +445,78 @@ def test_run_premarket_executes_news_steps_and_snapshot_contains_brief(tmp_path:
     assert snapshot["news"]["data"]["gold_macro_overview"]["input_snapshot_ids"]["gold_event_mainlines"].endswith("/gold_event_mainlines.json")
     assert snapshot["news"]["data"]["daily_brief_input_snapshot"]["report_mode"] == "news_driven"
     assert snapshot["news"]["data"]["daily_brief_output"]["status"] == "available"
+
+
+def test_news_brief_step_loads_jin10_report_input_artifacts(tmp_path: Path) -> None:
+    state = NewsPipelineState(retrieved_date="2026-06-10")
+    state.event_bundle = build_event_candidates([], as_of="2026-06-10T10:00:00+00:00")
+    feature_dir = tmp_path / "features" / "news" / "2026-06-10" / "run-news"
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    (feature_dir / "positioning.json").write_text(
+        json.dumps(
+            {
+                "source_key": "jin10_positioning",
+                "items": [
+                    {
+                        "asset": "XAUUSD",
+                        "direction": "bullish",
+                        "strike_or_level": "3350",
+                        "position_change": "increase",
+                        "verification_status": "single_source",
+                        "provider_role": "supplemental_source",
+                        "source_refs": [{"source_ref": "jin10:274:223700"}],
+                    }
+                ],
+                "source_refs": [{"source_ref": "jin10_positioning:2026-06-10/run-news"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (feature_dir / "technical_levels.json").write_text(
+        json.dumps(
+            {
+                "source_key": "jin10_technical_levels",
+                "items": [
+                    {
+                        "symbol": "XAUUSD",
+                        "level_type": "VAH",
+                        "price": 3378.5,
+                        "verification_status": "single_source",
+                        "provider_role": "supplemental_source",
+                        "source_refs": [{"source_ref": "jin10:301:223701"}],
+                    }
+                ],
+                "source_refs": [{"source_ref": "jin10_technical_levels:2026-06-10/run-news"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (feature_dir / "market_observations.json").write_text(
+        json.dumps(
+            {
+                "source_key": "jin10_market_observation",
+                "items": [
+                    {
+                        "topic": "market_odds",
+                        "summary": "市场赔率表显示降息概率上行。",
+                        "source_refs": [{"source_ref": "jin10:458:224000"}],
+                    }
+                ],
+                "source_refs": [{"source_ref": "jin10_market_observation:2026-06-10/run-news"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    run_news_step("news_brief", state, storage_root=tmp_path, run_id="run-news")
+
+    payload = json.loads((feature_dir / "daily_market_brief.json").read_text(encoding="utf-8"))
+    report_inputs = payload["daily_market_brief"]["report_inputs"]
+    assert report_inputs["positioning"][0]["strike_or_level"] == "3350"
+    assert report_inputs["technical_levels"][0]["level_type"] == "VAH"
+    assert report_inputs["market_observations"][0]["topic"] == "market_odds"
+    assert state.snapshot_dict is not None
+    assert state.snapshot_dict["daily_market_brief"]["report_inputs"]["positioning"][0]["provider_role"] == "supplemental_source"

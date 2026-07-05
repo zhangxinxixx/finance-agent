@@ -382,6 +382,7 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
       US02Y: metricFromIndicator(mappedIndicators.US02Y, "US02Y", "%"),
       T10YIE: metricFromIndicator(mappedIndicators.T10YIE, "T10YIE", "%"),
       REAL_10Y: metricFromIndicator(mappedIndicators.REAL_10Y, "10Y Real", "%"),
+      YIELD_SPREAD_2Y_3M: metricFromIndicator(mappedIndicators.YIELD_SPREAD_2Y_3M, "2Y-3M Spread", "%"),
     },
     macro_liquidity: {
       RRP: metricFromIndicator(mappedIndicators.RRP, "RRP", "B"),
@@ -542,6 +543,7 @@ function isRenderableDashboardSummary(summary: DashboardSummary, source: "api" |
         summary.market_summary.US02Y,
         summary.market_summary.T10YIE,
         summary.market_summary.REAL_10Y,
+        summary.market_summary.YIELD_SPREAD_2Y_3M,
       ].filter(metricHasValue).length >= 1 ||
       [
         summary.macro_liquidity.RRP,
@@ -574,6 +576,7 @@ function isRenderableDashboardSummary(summary: DashboardSummary, source: "api" |
     summary.market_summary.US02Y,
     summary.market_summary.T10YIE,
     summary.market_summary.REAL_10Y,
+    summary.market_summary.YIELD_SPREAD_2Y_3M,
   ].filter(metricHasValue).length;
 
   const macroSignalCount = [

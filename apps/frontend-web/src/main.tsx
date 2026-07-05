@@ -21,6 +21,7 @@ const KnowledgeBasePage = lazy(() => import("./pages/KnowledgeBasePage").then((m
 const SchedulerCenterPage = lazy(() => import("./pages/SchedulerCenterPage").then((module) => ({ default: module.SchedulerCenterPage })));
 const TaskScheduleListPage = lazy(() => import("./pages/TaskScheduleListPage").then((module) => ({ default: module.TaskScheduleListPage })));
 const PipelineDagPage = lazy(() => import("./pages/PipelineDagPage").then((module) => ({ default: module.PipelineDagPage })));
+const ProcessingMonitorPage = lazy(() => import("./pages/ProcessingMonitorPage").then((module) => ({ default: module.ProcessingMonitorPage })));
 const AgentTasksPage = lazy(() => import("./pages/AgentTasksPage").then((module) => ({ default: module.AgentTasksPage })));
 const AgentTaskDetailPage = lazy(() => import("./pages/AgentTaskDetailPage").then((module) => ({ default: module.AgentTaskDetailPage })));
 const ReviewCenterPage = lazy(() => import("./pages/ReviewCenterPage").then((module) => ({ default: module.ReviewCenterPage })));
@@ -74,6 +75,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/scheduler" element={lazyPage(<PipelineDagPage />)} />
           <Route path="/scheduler/grid" element={lazyPage(<SchedulerCenterPage />)} />
           <Route path="/scheduler/tasks" element={lazyPage(<TaskScheduleListPage />)} />
+          <Route path="/processing-monitor" element={lazyPage(<ProcessingMonitorPage />)} />
+          <Route path="/scheduler/processing-monitor" element={<Navigate to="/processing-monitor" replace />} />
           <Route path="/review-center" element={lazyPage(<ReviewCenterPage />)} />
           <Route path="/strategy" element={lazyPage(<StrategyPage />)} />
           <Route path="/settings" element={lazyPage(<SettingsPage />)} />

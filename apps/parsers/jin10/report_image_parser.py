@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -15,6 +16,9 @@ import cv2
 import numpy as np
 
 from apps.parsers.jin10.qwen_vl_markdown import (
+    DEFAULT_MIMO_VL_MODEL,
+    DEFAULT_QWEN_VL_MODEL,
+    DEFAULT_VISION_PROVIDER,
     MissingDashScopeApiKey,
     normalize_page_markdown,
     recognize_figure_title_bands,
@@ -46,6 +50,7 @@ def parse_report_images(
     title: str,
     published_at: str | None,
     image_entries: list[dict[str, Any]],
+    report_type: str | None = None,
     vision_markdown_runner: VisionMarkdownRunner | None = None,
     vision_layout_runner: VisionLayoutRunner | None = None,
     vision_title_runner: VisionTitleRunner | None = None,
@@ -102,7 +107,7 @@ def parse_report_images(
             continue
         prepared_pages[page_no] = prepared
 
-        is_cover_page = _is_visual_cover_page(page_no=page_no)
+        is_cover_page = _is_visual_cover_page(page_no=page_no, report_type=report_type)
         if is_cover_page:
             cover_page_count += 1
             warnings.append(f"page_{page_no:03d} cover_page_skipped")
@@ -136,23 +141,27 @@ def parse_report_images(
     body_markdown = render_report_structured_markdown(structured)
 
     try:
-        vision_pages = _vision_target_pages(page_payloads)
+        vision_pages = _vision_target_pages(page_payloads, report_type=report_type)
         vision_candidate_count = sum(
             1
             for page in page_payloads
-            if not _is_visual_cover_page(page_no=int(page.get("page_no") or 0))
+            if not _is_visual_cover_page(page_no=int(page.get("page_no") or 0), report_type=report_type)
         )
         if len(vision_pages) < vision_candidate_count:
             warnings.append(
                 f"vision_page_limit_applied:{len(vision_pages)}/{vision_candidate_count}"
             )
-        provisional_figures = _provisional_figures_from_pages(vision_pages)
+        provisional_figures = _provisional_figures_from_pages(vision_pages, report_type=report_type)
         layout_failed = False
         unified_payload: dict[str, Any] | None = None
         layout_runner = vision_layout_runner
         if layout_runner is None and vision_markdown_runner is None:
             try:
-                unified_payload = recognize_pages_unified(vision_pages)
+                unified_payload = _run_vision_unified_runner(
+                    recognize_pages_unified,
+                    vision_pages,
+                    report_type=report_type,
+                )
                 vision_layout_payload = _sanitize_layout_payload_for_report(unified_payload)
                 warnings.append("vision_unified_page_recognition_primary")
             except MissingDashScopeApiKey:
@@ -182,6 +191,7 @@ def parse_report_images(
         if vision_layout_payload:
             figures = _merge_layout_figures(figures=[], layout_payload=vision_layout_payload)
             figures = _dedupe_and_prune_figures(figures=figures, page_payloads=page_payloads)
+            figures = _snap_figures_to_white_chart_panels(figures=figures, prepared_pages=prepared_pages)
             figures = _fill_missing_titles_from_title_bands(
                 figures=figures,
                 prepared_pages=prepared_pages,
@@ -213,7 +223,12 @@ def parse_report_images(
             if unified_payload is None:
                 legacy_runner = vision_markdown_runner or recognize_pages_as_markdown
                 try:
-                    markdown_ocr_payload = legacy_runner(vision_pages, figures)
+                    markdown_ocr_payload = _run_vision_markdown_runner(
+                        legacy_runner,
+                        vision_pages,
+                        figures,
+                        report_type=report_type,
+                    )
                     markdown_ocr_payload = _normalize_vision_markdown_payload(
                         markdown_ocr_payload,
                         figures,
@@ -245,6 +260,7 @@ def parse_report_images(
             fallback_pages = _pages_requiring_markdown_ocr(
                 page_payloads=vision_pages,
                 vision_markdown=vision_markdown_payload,
+                report_type=report_type,
             )
             if fallback_pages:
                 fallback_page_nos = [int(page["page_no"]) for page in fallback_pages]
@@ -253,7 +269,12 @@ def parse_report_images(
                     + ",".join(str(page_no) for page_no in fallback_page_nos)
                 )
                 legacy_runner = vision_markdown_runner or recognize_pages_as_markdown
-                fallback_payload = legacy_runner(fallback_pages, figures)
+                fallback_payload = _run_vision_markdown_runner(
+                    legacy_runner,
+                    fallback_pages,
+                    figures,
+                    report_type=report_type,
+                )
                 fallback_payload = _normalize_vision_markdown_payload(
                     fallback_payload,
                     figures,
@@ -280,7 +301,12 @@ def parse_report_images(
 
         if not _has_substantive_vision_markdown(vision_body_markdown, title=title):
             legacy_runner = vision_markdown_runner or recognize_pages_as_markdown
-            legacy_payload = legacy_runner(vision_pages, figures)
+            legacy_payload = _run_vision_markdown_runner(
+                legacy_runner,
+                vision_pages,
+                figures,
+                report_type=report_type,
+            )
             legacy_payload = _normalize_vision_markdown_payload(
                 legacy_payload,
                 figures,
@@ -296,7 +322,7 @@ def parse_report_images(
                 vision_markdown_payload = legacy_payload
                 vision_body_markdown = legacy_body_markdown
 
-        if vision_markdown_payload and vision_layout_payload is None:
+        if vision_markdown_payload:
             figures = _merge_missing_fallback_figures(
                 figures=figures,
                 page_payloads=page_payloads,
@@ -304,6 +330,7 @@ def parse_report_images(
                 vision_markdown=vision_markdown_payload,
             )
             figures = _dedupe_and_prune_figures(figures=figures, page_payloads=page_payloads)
+            figures = _snap_figures_to_white_chart_panels(figures=figures, prepared_pages=prepared_pages)
             vision_markdown_payload = _normalize_vision_markdown_payload(
                 vision_markdown_payload,
                 figures,
@@ -316,7 +343,11 @@ def parse_report_images(
                 vision_markdown=vision_markdown_payload,
             )
         if not figures and vision_layout_payload is None and not layout_failed:
-            figures = _fallback_detect_visual_figures(page_payloads=page_payloads, prepared_pages=prepared_pages)
+            figures = _fallback_detect_visual_figures(
+                page_payloads=page_payloads,
+                prepared_pages=prepared_pages,
+                report_type=report_type,
+            )
         if figures:
             sections = _rebuild_sections_with_figures(article_id=article_id, figures=figures, sections=sections)
             structured["sections"] = sections
@@ -340,12 +371,20 @@ def parse_report_images(
 
     figure_count = len(figures)
     finished_at = _utc_now()
+    vision_provider = os.getenv("JIN10_VISION_PROVIDER", DEFAULT_VISION_PROVIDER).strip().lower() or DEFAULT_VISION_PROVIDER
+    vision_model = (
+        os.getenv("JIN10_QWEN_VL_MODEL", DEFAULT_QWEN_VL_MODEL)
+        if vision_provider in {"dashscope", "qwen"}
+        else os.getenv("JIN10_MIMO_VL_MODEL", DEFAULT_MIMO_VL_MODEL)
+    )
     status = {
         "article_id": article_id,
         "parser_version": PARSER_VERSION,
         "parser_run_id": parser_run_id,
         "status": "success" if page_payloads else "empty",
         "recognition_mode": "vlm",
+        "vision_provider": vision_provider,
+        "vision_model": vision_model,
         "started_at": started_at,
         "finished_at": finished_at,
         "pages_total": len(page_payloads),
@@ -384,11 +423,12 @@ def _fallback_detect_visual_figures(
     *,
     page_payloads: list[dict[str, Any]],
     prepared_pages: dict[int, PreparedPage],
+    report_type: str | None = None,
 ) -> list[dict[str, Any]]:
     figures: list[dict[str, Any]] = []
     for page in page_payloads:
         page_no = int(page.get("page_no") or 0)
-        if _is_visual_cover_page(page_no=page_no):
+        if _is_visual_cover_page(page_no=page_no, report_type=report_type):
             continue
         prepared = prepared_pages.get(page_no)
         if prepared is None:
@@ -397,11 +437,36 @@ def _fallback_detect_visual_figures(
     return figures
 
 
-def _provisional_figures_from_pages(page_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _run_vision_markdown_runner(
+    runner: VisionMarkdownRunner,
+    pages: list[dict[str, Any]],
+    figures: list[dict[str, Any]],
+    *,
+    report_type: str | None = None,
+) -> dict[str, Any]:
+    if runner is recognize_pages_as_markdown:
+        return recognize_pages_as_markdown(pages, figures, report_type=report_type)
+    if "report_type" in inspect.signature(runner).parameters:
+        return runner(pages, figures, report_type=report_type)
+    return runner(pages, figures)
+
+
+def _run_vision_unified_runner(
+    runner: VisionLayoutRunner,
+    pages: list[dict[str, Any]],
+    *,
+    report_type: str | None = None,
+) -> dict[str, Any]:
+    if "report_type" in inspect.signature(runner).parameters:
+        return runner(pages, report_type=report_type)
+    return runner(pages)
+
+
+def _provisional_figures_from_pages(page_payloads: list[dict[str, Any]], *, report_type: str | None = None) -> list[dict[str, Any]]:
     figures: list[dict[str, Any]] = []
     for page in page_payloads:
         page_no = int(page.get("page_no") or 0)
-        if page_no <= 0 or _is_visual_cover_page(page_no=page_no):
+        if page_no <= 0 or _is_visual_cover_page(page_no=page_no, report_type=report_type):
             continue
         width = int(page.get("width") or 0)
         height = int(page.get("height") or 0)
@@ -539,6 +604,7 @@ def render_vision_markdown(
     published_at: str | None,
     vision_markdown: dict[str, Any],
 ) -> str:
+    normalized_title = _normalize_report_title(title)
     raw_page_chunks = []
     for page in sorted(vision_markdown.get("pages", []), key=lambda item: int(item.get("page_no") or 0)):
         markdown = str(page.get("markdown") or "").strip()
@@ -548,13 +614,14 @@ def render_vision_markdown(
         if _is_cover_page_markdown(page_no, markdown) or _should_skip_vision_page_markdown(page_no, markdown):
             continue
         cleaned = _clean_vision_page_chunk(markdown)
+        cleaned = _strip_report_shell_lines(cleaned, title=title, published_at=published_at)
         if not cleaned:
             continue
         raw_page_chunks.append(cleaned)
     page_chunks = _stitch_vision_page_chunks(raw_page_chunks)
     if not page_chunks:
         return ""
-    lines = [f"# {title}", ""]
+    lines = [f"# {normalized_title or title}", ""]
     if published_at:
         lines.extend([f"- 发布时间: {published_at}", ""])
     lines.extend(page_chunks)
@@ -598,7 +665,7 @@ def _layout_payload_to_vision_markdown_payload(
             page_payload["image_size"] = image_size
         normalized_pages.append(page_payload)
     return {
-        "provider": "dashscope",
+        "provider": layout_payload.get("provider"),
         "model": layout_payload.get("model"),
         "pages": normalized_pages,
     }
@@ -820,6 +887,8 @@ def _is_generic_chart_title(text: str) -> bool:
     normalized = str(text or "").strip()
     if not normalized:
         return False
+    if normalized == "图表标题":
+        return True
     return re.fullmatch(r"图表\s*\d+(?:-\d+)?", normalized) is not None
 
 
@@ -892,21 +961,62 @@ def _clean_vision_page_chunk(markdown: str) -> str:
         if _is_noise_line(stripped):
             skip_blank = True
             continue
+        if _looks_like_directory_item(stripped):
+            skip_blank = True
+            continue
         if _is_low_value_technical_indicator_text(stripped):
             skip_blank = True
             continue
         if skip_blank and not stripped:
             continue
         skip_blank = False
-        cleaned_lines.append(raw_line)
-    return "\n".join(cleaned_lines).strip()
+        cleaned_lines.append(_normalize_markdown_heading_line(raw_line) if stripped.startswith("#") else raw_line)
+    cleaned = "\n".join(cleaned_lines).strip()
+    if not cleaned:
+        return ""
+
+    normalized_lines = cleaned.splitlines()
+    first_index = _first_content_line_index(normalized_lines)
+    if first_index is not None:
+        first_line = normalized_lines[first_index].strip()
+        if first_line.startswith("#"):
+            normalized_lines[first_index] = _normalize_markdown_heading_line(normalized_lines[first_index])
+        elif _is_plain_section_heading_candidate(first_line):
+            normalized_lines[first_index] = f"## {first_line}"
+    return "\n".join(normalized_lines).strip()
 
 
-def _vision_target_pages(page_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _strip_report_shell_lines(markdown: str, *, title: str, published_at: str | None) -> str:
+    if not markdown.strip():
+        return ""
+    title_compact = _compact_report_shell_text(title)
+    published_date = _compact_report_shell_date(published_at)
+    cleaned: list[str] = []
+    last_blank = False
+    for raw_line in markdown.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            if not last_blank:
+                cleaned.append("")
+            last_blank = True
+            continue
+        compact = _compact_report_shell_text(stripped.lstrip("#").strip())
+        if title_compact and compact == title_compact:
+            continue
+        if published_date and compact == published_date:
+            continue
+        if _looks_like_report_shell_date_line(stripped):
+            continue
+        cleaned.append(raw_line)
+        last_blank = False
+    return "\n".join(cleaned).strip()
+
+
+def _vision_target_pages(page_payloads: list[dict[str, Any]], *, report_type: str | None = None) -> list[dict[str, Any]]:
     page_payloads = [
         page
         for page in page_payloads
-        if not _is_visual_cover_page(page_no=int(page.get("page_no") or 0))
+        if not _is_visual_cover_page(page_no=int(page.get("page_no") or 0), report_type=report_type)
     ]
     limit = _vision_page_limit()
     if limit <= 0 or len(page_payloads) <= limit:
@@ -994,6 +1104,10 @@ def _normalize_vision_markdown_payload(
                 figure_map.get(page_no, []),
             )
         normalized_markdown = _promote_plain_chart_titles_before_images(normalized_markdown)
+        normalized_markdown = _repair_multi_chart_gallery_sections(
+            normalized_markdown,
+            figure_map.get(page_no, []),
+        )
         page_copy["markdown"] = normalized_markdown
         _attach_markdown_titles_to_figures(
             figures=figure_map.get(page_no, []),
@@ -1013,6 +1127,7 @@ def _pages_requiring_markdown_ocr(
     *,
     page_payloads: list[dict[str, Any]],
     vision_markdown: dict[str, Any] | None,
+    report_type: str | None = None,
 ) -> list[dict[str, Any]]:
     if not vision_markdown:
         return list(page_payloads)
@@ -1021,7 +1136,7 @@ def _pages_requiring_markdown_ocr(
     seen: set[int] = set()
     for page in vision_markdown.get("pages", []):
         page_no = int(page.get("page_no") or 0)
-        if page_no <= 0 or _is_visual_cover_page(page_no=page_no):
+        if page_no <= 0 or _is_visual_cover_page(page_no=page_no, report_type=report_type):
             continue
         if not _vision_page_markdown_is_usable(page) or _layout_page_needs_markdown_ocr(page):
             page_payload = page_map.get(page_no)
@@ -1029,7 +1144,7 @@ def _pages_requiring_markdown_ocr(
                 targets.append(page_payload)
                 seen.add(page_no)
     for page_no, page_payload in sorted(page_map.items()):
-        if page_no <= 0 or page_no in seen or _is_visual_cover_page(page_no=page_no):
+        if page_no <= 0 or page_no in seen or _is_visual_cover_page(page_no=page_no, report_type=report_type):
             continue
         if not any(int(page.get("page_no") or 0) == page_no for page in vision_markdown.get("pages", [])):
             targets.append(page_payload)
@@ -1178,21 +1293,174 @@ def _promote_plain_chart_titles_before_images(markdown: str) -> str:
         current_line = line
         match = image_pattern.fullmatch(line.strip())
         if match:
-            previous_index = _last_output_content_line_index(output)
-            if previous_index is not None:
-                previous = output[previous_index].strip()
-                title = ""
-                if previous.startswith("#"):
-                    title = previous.lstrip("#").strip()
-                elif _is_plain_chart_title_candidate(previous):
-                    title = previous
-                    output[previous_index] = f"## {title}"
-                alt_text = match.group(1).strip()
-                image_path = match.group(2).strip()
-                if title and (not alt_text or _is_generic_chart_title(alt_text)):
-                    current_line = f"![{title}]({image_path})"
+            title, promote_index, drop_indexes = _extract_chart_title_context(output)
+            section_title = _nearest_chart_section_heading(output)
+            if promote_index is not None:
+                output[promote_index] = f"## {title}"
+            for drop_index in drop_indexes:
+                output[drop_index] = ""
+            alt_text = match.group(1).strip()
+            image_path = match.group(2).strip()
+            if not title and section_title:
+                title = section_title
+            if title and _should_prefer_heading_over_image_alt(title=title, alt_text=alt_text):
+                current_line = f"![{title}]({image_path})"
         output.append(current_line)
+    return _collapse_blank_lines("\n".join(output))
+
+
+def _repair_multi_chart_gallery_sections(markdown: str, figures: list[dict[str, Any]]) -> str:
+    if not markdown.strip() or len(figures) < 2:
+        return markdown
+    lines = markdown.splitlines()
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped.startswith("#") and _is_generic_markdown_figure_heading(stripped.lstrip("#").strip()):
+            section_lines = [lines[index]]
+            index += 1
+            while index < len(lines):
+                candidate = lines[index].strip()
+                if candidate.startswith("#") and not _belongs_to_chart_gallery_section(
+                    candidate.lstrip("#").strip(),
+                    figures,
+                ):
+                    break
+                section_lines.append(lines[index])
+                index += 1
+            output.extend(_rebuild_multi_chart_gallery_section(section_lines, figures))
+            continue
+        output.append(lines[index])
+        index += 1
     return "\n".join(output).strip()
+
+
+def _belongs_to_chart_gallery_section(title: str, figures: list[dict[str, Any]]) -> bool:
+    stripped = str(title or "").strip()
+    if not stripped:
+        return False
+    if _is_generic_markdown_figure_heading(stripped):
+        return True
+    if _is_plain_chart_title_candidate(stripped):
+        return True
+    for figure in figures:
+        figure_title = str(figure.get("title") or "").strip()
+        if figure_title and stripped == figure_title:
+            return True
+    return False
+
+
+def _rebuild_multi_chart_gallery_section(section_lines: list[str], figures: list[dict[str, Any]]) -> list[str]:
+    image_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+    figure_by_path = {
+        str(figure.get("chart_image_path")): figure
+        for figure in figures
+        if figure.get("chart_image_path")
+    }
+    present_paths: list[str] = []
+    generic_alt_found = False
+    title_stuck_to_body_found = False
+    title_candidates: list[str] = []
+    body_lines: list[str] = []
+
+    for raw_line in section_lines[1:]:
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        image_match = image_pattern.fullmatch(stripped)
+        if image_match:
+            image_path = image_match.group(2).strip()
+            if image_path in figure_by_path and image_path not in present_paths:
+                present_paths.append(image_path)
+                if _is_generic_chart_title(image_match.group(1).strip()) or image_match.group(1).strip() == "图表标题":
+                    generic_alt_found = True
+            continue
+
+        matched_title, remainder = _extract_gallery_title_and_remainder(stripped, figures)
+        if matched_title:
+            title_candidates.append(matched_title)
+            if remainder:
+                title_stuck_to_body_found = True
+                body_lines.append(remainder)
+            continue
+        body_lines.append(raw_line)
+
+    ordered_figures = [
+        figure
+        for figure in figures
+        if str(figure.get("chart_image_path")) in set(present_paths)
+    ]
+    image_order_mismatch = present_paths != [str(figure.get("chart_image_path")) for figure in ordered_figures]
+    if not ordered_figures or not (generic_alt_found or image_order_mismatch or title_stuck_to_body_found):
+        return section_lines
+
+    rebuilt: list[str] = [section_lines[0], ""]
+    for figure in ordered_figures:
+        title = str(figure.get("title") or "").strip()
+        image_path = str(figure.get("chart_image_path") or "").strip()
+        if not title or _is_generic_chart_title(title):
+            title = _next_unused_gallery_title(title_candidates, rebuilt)
+        if title and not _is_noise_line(title):
+            rebuilt.append(f"## {title}")
+            rebuilt.append("")
+        if image_path:
+            caption = title or "图表"
+            rebuilt.append(f"![{caption}]({image_path})")
+            rebuilt.append("")
+    if body_lines:
+        if rebuilt and rebuilt[-1] != "":
+            rebuilt.append("")
+        rebuilt.extend(_normalize_gallery_body_lines(body_lines))
+    return rebuilt
+
+
+def _extract_gallery_title_and_remainder(text: str, figures: list[dict[str, Any]]) -> tuple[str, str]:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return "", ""
+    for figure in figures:
+        title = str(figure.get("title") or "").strip()
+        if not title or _is_generic_chart_title(title):
+            continue
+        if stripped == title:
+            return title, ""
+        if stripped.startswith(title):
+            remainder = stripped[len(title) :].strip()
+            if remainder:
+                return title, remainder
+    if _is_plain_chart_title_candidate(stripped):
+        return stripped, ""
+    return "", ""
+
+
+def _next_unused_gallery_title(candidates: list[str], rebuilt_lines: list[str]) -> str:
+    used_titles = {
+        line.strip().lstrip("#").strip()
+        for line in rebuilt_lines
+        if line.strip().startswith("#")
+    }
+    for candidate in candidates:
+        if candidate not in used_titles:
+            return candidate
+    return ""
+
+
+def _normalize_gallery_body_lines(lines: list[str]) -> list[str]:
+    normalized: list[str] = []
+    last_blank = False
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped:
+            if not last_blank:
+                normalized.append("")
+            last_blank = True
+            continue
+        normalized.append(stripped)
+        last_blank = False
+    while normalized and not normalized[-1].strip():
+        normalized.pop()
+    return normalized
 
 
 def _last_output_content_line_index(lines: list[str]) -> int | None:
@@ -1212,6 +1480,104 @@ def _is_plain_chart_title_candidate(text: str) -> bool:
         return False
     title_tokens = ("机构动向", "CFTC", "ETF", "PMI", "持仓", "净多", "消费者信心", "美联储")
     return any(token in stripped for token in title_tokens)
+
+
+def _extract_chart_title_context(lines: list[str]) -> tuple[str, int | None, list[int]]:
+    drop_indexes: list[int] = []
+    for index in range(len(lines) - 1, -1, -1):
+        stripped = lines[index].strip()
+        if not stripped:
+            continue
+        if _looks_like_chart_date_heading(stripped.lstrip("#").strip()):
+            drop_indexes.append(index)
+            continue
+        if stripped.startswith("#"):
+            title = stripped.lstrip("#").strip()
+            if _is_plain_chart_title_candidate(title):
+                return title, None, sorted(drop_indexes)
+            return "", None, []
+        if _is_plain_chart_title_candidate(stripped):
+            return stripped, index, sorted(drop_indexes)
+        return "", None, []
+    return "", None, []
+
+
+def _nearest_chart_section_heading(lines: list[str]) -> str:
+    for index in range(len(lines) - 1, -1, -1):
+        stripped = lines[index].strip()
+        if not stripped:
+            continue
+        if stripped.startswith("!["):
+            return ""
+        if stripped.startswith("#"):
+            title = stripped.lstrip("#").strip()
+            return title if _is_plain_section_heading_candidate(title) else ""
+    return ""
+
+
+def _looks_like_chart_date_heading(text: str) -> bool:
+    stripped = str(text or "").strip()
+    return re.fullmatch(r"20\d{6}", stripped) is not None
+
+
+def _should_prefer_heading_over_image_alt(*, title: str, alt_text: str) -> bool:
+    if not title:
+        return False
+    if not alt_text or _is_generic_chart_title(alt_text) or _looks_like_chart_date_heading(alt_text):
+        return True
+    if alt_text == title:
+        return False
+    if alt_text in {"CFTC商品类净/空/多头仓位", "CFTC商品类净多头仓位"} and "CFTC" in title:
+        return True
+    anchor_tokens = ("黄金", "白银", "原油", "铜", "铂金", "钯金")
+    if any(token in title for token in anchor_tokens) and not any(token in alt_text for token in anchor_tokens):
+        return True
+    return False
+
+
+def _is_plain_section_heading_candidate(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if _is_role_name_heading_candidate(stripped):
+        return True
+    if not _is_plain_chart_title_candidate(stripped):
+        return False
+    section_tokens = ("机构动向", "CFTC", "ETF", "PMI", "持仓", "净多", "消费者信心", "初请", "图表")
+    return any(token in stripped for token in section_tokens)
+
+
+def _is_role_name_heading_candidate(text: str) -> bool:
+    stripped = str(text or "").strip().lstrip("#").strip()
+    if not stripped or len(stripped) > 48:
+        return False
+    if stripped.startswith(("分析师", "策略师", "交易员")):
+        return True
+    return any(token in stripped for token in ("总裁", "首席商业官", "固定收益策略师"))
+
+
+def _normalize_markdown_heading_line(line: str) -> str:
+    stripped = str(line or "").strip()
+    if not stripped.startswith("#"):
+        return str(line or "")
+    level = len(stripped) - len(stripped.lstrip("#"))
+    title = stripped[level:].strip().lstrip("#").strip()
+    if not title:
+        return ""
+    return f"{'#' * level} {title}"
+
+
+def _collapse_blank_lines(markdown: str) -> str:
+    collapsed: list[str] = []
+    last_blank = False
+    for raw_line in markdown.splitlines():
+        if not raw_line.strip():
+            if last_blank:
+                continue
+            collapsed.append("")
+            last_blank = True
+            continue
+        collapsed.append(raw_line)
+        last_blank = False
+    return "\n".join(collapsed).strip()
 
 
 def _pages_requiring_layout_fallback(
@@ -1656,12 +2022,7 @@ def _snap_figures_to_white_chart_panels(
         for index, (figure, panel_bbox) in enumerate(zip(ordered_figures, panels)):
             current_bbox = figure.get("bbox") or []
             if _should_snap_to_white_panel(current_bbox, panel_bbox):
-                previous_panel = panels[index - 1] if index > 0 else None
-                figure["bbox"] = _expand_panel_bbox_with_heading(
-                    panel_bbox=panel_bbox,
-                    previous_panel_bbox=previous_panel,
-                    page_height=prepared.original.shape[0],
-                )
+                figure["bbox"] = panel_bbox
                 figure["confidence"] = max(float(figure.get("confidence") or 0.0), 0.7)
             snapped.append(figure)
     snapped.sort(key=lambda item: (int(item["page_no"]), item["bbox"][1], item["bbox"][0], item["figure_id"]))
@@ -1773,7 +2134,21 @@ def _should_snap_to_white_panel(current_bbox: list[Any], panel_bbox: list[int]) 
         return True
     current_width = max(0, current[2] - current[0])
     panel_width = max(0, panel_bbox[2] - panel_bbox[0])
-    return panel_width > current_width * 1.5
+    if panel_width > current_width * 1.5:
+        return True
+    current_height = max(0, current[3] - current[1])
+    panel_height = max(0, panel_bbox[3] - panel_bbox[1])
+    horizontal_overlap = max(0, min(current[2], panel_bbox[2]) - max(current[0], panel_bbox[0]))
+    vertical_overlap = max(0, min(current[3], panel_bbox[3]) - max(current[1], panel_bbox[1]))
+    horizontal_overlap_ratio = horizontal_overlap / max(1, min(current_width, panel_width))
+    vertical_overlap_ratio = vertical_overlap / max(1, min(current_height, panel_height))
+    panel_extends_below = panel_bbox[3] > current[3] + max(24, int(panel_height * 0.12))
+    current_starts_above_panel = current[1] < panel_bbox[1] - max(24, int(panel_height * 0.08))
+    return (
+        horizontal_overlap_ratio >= 0.75
+        and vertical_overlap_ratio >= 0.20
+        and (panel_extends_below or current_starts_above_panel)
+    )
 
 
 def _next_available_figure_id(*, page_no: int, used_ids: set[str]) -> str:
@@ -1923,10 +2298,20 @@ def _has_substantive_body_lines(markdown: str) -> bool:
 
 
 def _is_noise_line(text: str) -> bool:
-    compact = "".join(str(text).split()).lower()
+    normalized = str(text).strip()
+    if normalized.startswith("#"):
+        normalized = normalized.lstrip("#").strip()
+    compact = "".join(normalized.split()).lower()
     if not compact:
         return False
+    if "请提供第" in compact and "页的图片" in compact and "进行转录" in compact:
+        return True
+    if "@" in compact and "jin10.com" in compact:
+        return True
     noise_tokens = (
+        "联系方式",
+        "vipteam",
+        "content",
         "目录",
         "vip专属报告系列",
         "金十vip专享",
@@ -1935,8 +2320,59 @@ def _is_noise_line(text: str) -> bool:
         "来看今天最新的金银报告",
         "金十数据research",
         "每日金银报告",
+        "即时市场展望",
+        "即时市场洞察",
+        "每日市场观察",
+        "本材料中的信息来自其撰写者的观点",
+        "本文中的意见仅代表",
     )
     return any(token in compact for token in noise_tokens)
+
+
+def _looks_like_directory_item(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    if len(stripped) > 24:
+        return False
+    if re.fullmatch(r"\d{2}\s+\S.*", stripped) is None:
+        return False
+    directory_tokens = (
+        "隔夜要闻",
+        "市场聚焦",
+        "市场分析",
+        "关键图表",
+        "机构动向",
+        "技术指标",
+        "行情回顾",
+        "观点分享",
+    )
+    return any(token in stripped for token in directory_tokens)
+
+
+def _looks_like_report_shell_date_line(text: str) -> bool:
+    stripped = str(text or "").strip()
+    return re.fullmatch(r"\d{4}年\d{2}月\d{2}日", stripped) is not None
+
+
+def _normalize_report_title(title: str) -> str:
+    normalized = str(title or "").strip()
+    normalized = re.sub(r"\s*[-－—–]\s*金十数据VIP\s*$", "", normalized)
+    return normalized.strip()
+
+
+def _compact_report_shell_text(text: str) -> str:
+    return "".join(str(text or "").split()).replace("-金十数据VIP", "").lower()
+
+
+def _compact_report_shell_date(published_at: str | None) -> str:
+    value = str(published_at or "").strip()
+    if not value:
+        return ""
+    match = re.search(r"(\d{4})-(\d{2})-(\d{2})", value)
+    if not match:
+        return ""
+    return f"{match.group(1)}年{match.group(2)}月{match.group(3)}日"
 
 
 def _prepare_page(image_path: Path) -> PreparedPage | None:
@@ -1969,7 +2405,9 @@ def _crop_page_borders(image: np.ndarray) -> np.ndarray:
     return image[top : bottom + 1, left : right + 1]
 
 
-def _is_visual_cover_page(*, page_no: int) -> bool:
+def _is_visual_cover_page(*, page_no: int, report_type: str | None = None) -> bool:
+    if str(report_type or "").strip().lower() in {"positioning", "technical_levels", "oil", "fx"}:
+        return False
     return page_no == 1
 
 

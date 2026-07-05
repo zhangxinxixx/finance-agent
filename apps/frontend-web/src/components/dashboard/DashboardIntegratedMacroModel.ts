@@ -88,6 +88,12 @@ function metricState(metric: DashboardMetric | undefined, label: string): string
   return `${label}${trend}至 ${value}${unit}`;
 }
 
+function mergeRateStructureState(readModelState: string | null, fallbackState: string, shortCurveState: string): string {
+  if (!readModelState) return fallbackState;
+  if (/2Y-3M|利差|短端/.test(readModelState)) return readModelState;
+  return `${readModelState}；${shortCurveState}`;
+}
+
 function strongestWall(walls: DashboardSummary["cme_options"]["upper_resistance_walls"]): number | null {
   if (walls.length === 0) return null;
   return [...walls].sort((a, b) => b.score - a.score)[0]?.strike ?? null;
@@ -157,9 +163,11 @@ export function buildIntegratedMacroSummary(
     ? rawMacroRegime
     : "宏观阶段待综合报告确认";
   const dollarState = metricState(summary.market_summary.DXY, "美元指数");
+  const shortCurveState = metricState(summary.market_summary.YIELD_SPREAD_2Y_3M, "2Y-3M利差");
   const ratesState = [
     metricState(summary.market_summary.REAL_10Y, "10Y实际利率"),
     metricState(summary.market_summary.US10Y, "10Y美债收益率"),
+    shortCurveState,
   ].join("，");
   const liquidityState = [
     metricState(summary.macro_liquidity.TGA, "TGA"),
@@ -205,7 +213,7 @@ export function buildIntegratedMacroSummary(
     macroRegime,
     dominantDrivers,
     liquidityState: cleanText(readModel?.liquidity_state) ?? liquidityState,
-    ratesState: cleanText(readModel?.rates_state) ?? ratesState,
+    ratesState: mergeRateStructureState(cleanText(readModel?.rates_state), ratesState, shortCurveState),
     dollarState: cleanText(readModel?.dollar_state) ?? dollarState,
     optionsAlignment,
     confidence,

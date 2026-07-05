@@ -122,3 +122,55 @@ export interface PromptFeedbackCreateRequest {
   submitted_by?: string;
   request_id?: string;
 }
+
+// ── Gold v3 Prompt Evolution Preview ──
+
+export interface PromptEvolutionFailurePattern {
+  pattern_id?: string | null;
+  description?: string | null;
+  frequency?: number | null;
+  examples?: unknown[];
+  likely_root_cause?: string | null;
+}
+
+export interface PromptEvolutionProposalDetail {
+  proposal_id?: string | null;
+  proposal_type?: string | null;
+  before_summary?: string | null;
+  after_summary?: string | null;
+  patch?: string | null;
+  rationale?: string | null;
+  risk?: string | null;
+  rollback_plan?: string | null;
+  test_cases?: unknown[];
+}
+
+export interface PromptEvolutionProposal {
+  agent_name?: string | null;
+  problem_summary?: string | null;
+  failure_patterns?: PromptEvolutionFailurePattern[];
+  prompt_update_proposal?: PromptEvolutionProposalDetail;
+  requires_schema_change?: boolean;
+  requires_data_source_change?: boolean;
+  requires_dag_change?: boolean;
+  manual_review_required?: boolean;
+}
+
+export interface PromptEvolutionInputRefs {
+  agent_output_ids: string[];
+  feedback_ids: string[];
+  review_ids: string[];
+}
+
+export interface PromptEvolutionPreviewResponse {
+  source: string;
+  agent_id: string;
+  proposal_only: boolean;
+  current_prompt_source: string;
+  recent_run_count: number;
+  feedback_count: number;
+  review_gate_finding_count: number;
+  input_refs: PromptEvolutionInputRefs;
+  proposal: PromptEvolutionProposal;
+  writes: unknown[];
+}

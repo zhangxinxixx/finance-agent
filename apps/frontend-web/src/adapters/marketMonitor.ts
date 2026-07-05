@@ -372,6 +372,7 @@ function buildMetrics(
     buildMacroMetric("US10Y", "US10Y", "rates", "%", indicators, latestDate),
     buildMacroMetric("US02Y", "US02Y", "rates", "%", indicators, latestDate),
     buildMacroMetric("T10YIE", "T10YIE", "rates", "%", indicators, latestDate, ["BREAKEVEN_10Y"]),
+    buildMacroMetric("YIELD_SPREAD_2Y_3M", "2Y-3M Spread", "rates", "%", indicators, latestDate),
     buildMacroMetric("REAL_10Y", "10Y Real Rate", "rates", "%", indicators, latestDate),
     buildMacroMetric("RRP", "RRP", "liquidity", "B", indicators, latestDate, ["ON_RRP_USAGE"]),
     buildMacroMetric("SOFR", "SOFR", "funding", "%", indicators, latestDate),

@@ -240,10 +240,13 @@ def test_get_gold_mainlines_latest_loads_overview_and_event_mainlines(tmp_path: 
                     "REAL_10Y": {"value": 2.2, "weekly_change": -0.09},
                     "US10Y": {"value": 4.44, "weekly_change": -0.06},
                     "BREAKEVEN_10Y": {"value": 2.23, "weekly_change": 0.05},
+                    "YIELD_SPREAD_2Y_3M": {"value": -0.45, "weekly_change": 0.12},
                     "DXY": {"value": 100.7, "weekly_change": -0.4},
                 },
                 "source_refs": {
                     "REAL_10Y": {"source": "fred", "raw_path": "raw/macro/real.json"},
+                    "DGS2": {"source": "fred", "raw_path": "raw/macro/dgs2.json"},
+                    "DGS3MO": {"source": "fred", "raw_path": "raw/macro/dgs3mo.json"},
                     "DXY": {"source": "cnbc", "raw_path": "raw/macro/dxy.json"},
                 },
             },
@@ -289,6 +292,9 @@ def test_get_gold_mainlines_latest_loads_overview_and_event_mainlines(tmp_path: 
     assert overview_ranking["evidence_count"] >= 3
     assert overview_ranking["missing_data"] == []
     assert overview_ranking["feature_fields"]["real_rate_level"] == 2.2
+    assert overview_ranking["feature_fields"]["yield_spread_2y_3m_level"] == -0.45
+    assert overview_ranking["feature_fields"]["yield_curve_2y3m_signal"] == "pivot_window_improving"
+    assert "黄金低点确认概率提高" in overview_ranking["feature_fields"]["yield_curve_2y3m_market_meaning"]
     assert overview_ranking["feature_fields"]["dxy_trend"] == "falling"
     assert overview_ranking["related_event_ids"] == ["event:fed"]
     oil_ranking = next(
@@ -453,6 +459,490 @@ def test_get_gold_mainlines_exact_infers_overview_from_event_mainlines(tmp_path:
         row["mainline_id"] == "oil_prices"
         for row in payload["gold_macro_overview"]["theme_rankings"]
     )
+
+
+def test_get_gold_mainlines_uses_persisted_market_context_without_live_service(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-16",
+        run_id="run-persisted-market",
+        dominant_mainline="fed_policy_path",
+    )
+    market_context_path = (
+        tmp_path
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / "2026-06-16"
+        / "run-persisted-market"
+        / "market_context.json"
+    )
+    market_context_path.write_text(
+        json.dumps(
+            {
+                "gold_spot_price": 4077.0,
+                "source_refs": [{"source": "market_candles", "source_ref": "XAUUSD:1d"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    overview_payload = json.loads(overview_path.read_text(encoding="utf-8"))
+    overview_payload["input_snapshot_ids"]["market_context"] = (
+        "analysis/gold_mainlines/2026-06-16/run-persisted-market/market_context.json"
+    )
+    overview_path.write_text(json.dumps(overview_payload, ensure_ascii=False), encoding="utf-8")
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(
+            "apps.api.services.gold_mainline_service._get_market_monitor_overview",
+            side_effect=AssertionError("live market service should not be called"),
+        ),
+    ):
+        payload = get_gold_mainlines(date="2026-06-16", run_id="run-persisted-market")
+
+    technical_ranking = next(
+        row for row in payload["gold_macro_overview"]["theme_rankings"] if row["mainline_id"] == "gold_technical_levels"
+    )
+    assert technical_ranking["missing_data"] == []
+    assert technical_ranking["feature_fields"]["gold_spot_price"] == 4077.0
+    technical_requirement = next(
+        item for item in payload["gold_macro_overview"]["mainline_requirements"] if item["mainline_id"] == "gold_technical_levels"
+    )
+    assert technical_requirement["readiness_status"] == "ready"
+
+
+def test_get_gold_mainlines_uses_persisted_oil_context_for_chain_and_oil_features(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-17",
+        run_id="run-persisted-oil",
+        dominant_mainline="oil_prices",
+    )
+    mainlines_path = tmp_path / "storage" / "features" / "news" / "2026-06-17" / "run-persisted-oil" / "gold_event_mainlines.json"
+    mainlines_payload = json.loads(mainlines_path.read_text(encoding="utf-8"))
+    mainlines_payload["event_links"][0].update(
+        {
+            "primary_mainline": "oil_prices",
+            "mainline_ids": ["oil_prices", "geopolitical_war_risk"],
+            "transmission_path_ids": ["geopolitics_to_oil_to_rates"],
+            "direction_by_asset": {"XAUUSD": "mixed"},
+            "verification_status": "multi_source",
+            "bullish_drivers": ["safe_haven_bid"],
+            "bearish_drivers": ["oil_inflation_rate_pressure"],
+            "verification_needed": ["oil_price_reaction_needed", "real_rate_response_needed"],
+        }
+    )
+    mainlines_path.write_text(json.dumps(mainlines_payload, ensure_ascii=False), encoding="utf-8")
+    oil_context_path = (
+        tmp_path
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / "2026-06-17"
+        / "run-persisted-oil"
+        / "oil_context.json"
+    )
+    oil_context_path.write_text(
+        json.dumps(
+            {
+                "brent_price": 92.4,
+                "wti_price": 88.1,
+                "brent_weekly_change": 4.8,
+                "wti_weekly_change": 4.2,
+                "inventory_weekly_change": -6.5,
+                "source_refs": [{"source": "energy_context", "source_ref": "oil:weekly"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    macro_dir = tmp_path / "storage" / "features" / "macro" / "2026-06-17" / "macro-run"
+    macro_dir.mkdir(parents=True, exist_ok=True)
+    (macro_dir / "macro_snapshot.json").write_text(
+        json.dumps(
+            {
+                "as_of": "2026-06-17",
+                "indicators": {
+                    "REAL_10Y": {"value": 2.2, "weekly_change": -0.09},
+                    "US10Y": {"value": 4.44, "weekly_change": -0.06},
+                    "BREAKEVEN_10Y": {"value": 2.23, "weekly_change": 0.05},
+                    "YIELD_SPREAD_2Y_3M": {"value": -0.45, "weekly_change": 0.12},
+                    "DXY": {"value": 100.7, "weekly_change": -0.4},
+                },
+                "source_refs": {
+                    "REAL_10Y": {"source": "fred", "raw_path": "raw/macro/real.json"},
+                    "DGS2": {"source": "fred", "raw_path": "raw/macro/dgs2.json"},
+                    "DGS3MO": {"source": "fred", "raw_path": "raw/macro/dgs3mo.json"},
+                    "DXY": {"source": "cnbc", "raw_path": "raw/macro/dxy.json"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    overview_payload = json.loads(overview_path.read_text(encoding="utf-8"))
+    overview_payload["input_snapshot_ids"]["oil_context"] = (
+        "analysis/gold_mainlines/2026-06-17/run-persisted-oil/oil_context.json"
+    )
+    overview_path.write_text(json.dumps(overview_payload, ensure_ascii=False), encoding="utf-8")
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = get_gold_mainlines(date="2026-06-17", run_id="run-persisted-oil")
+
+    oil_ranking = next(
+        row for row in payload["gold_macro_overview"]["theme_rankings"] if row["mainline_id"] == "oil_prices"
+    )
+    assert oil_ranking["missing_data"] == []
+    assert oil_ranking["feature_fields"]["oil_price_trend"] == "rising"
+    assert oil_ranking["feature_fields"]["oil_to_fed_pressure"] == "safe_haven_offset"
+    oil_requirement = next(
+        item for item in payload["gold_macro_overview"]["mainline_requirements"] if item["mainline_id"] == "oil_prices"
+    )
+    assert oil_requirement["readiness_status"] == "ready"
+    assert payload["gold_macro_overview"]["war_oil_rate_chain"]["conclusion_code"] == "A"
+
+
+def test_get_gold_mainlines_uses_persisted_flow_context_for_etf_features(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-18",
+        run_id="run-persisted-flow",
+        dominant_mainline="etf_flows",
+    )
+    flow_context_path = (
+        tmp_path
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / "2026-06-18"
+        / "run-persisted-flow"
+        / "flow_context.json"
+    )
+    flow_context_path.write_text(
+        json.dumps(
+            {
+                "global_etf_flow": 18.4,
+                "north_america_etf_flow": 11.2,
+                "asia_etf_flow": 4.6,
+                "source_refs": [{"source": "wgc", "source_ref": "gold_etf:weekly"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    overview_payload = json.loads(overview_path.read_text(encoding="utf-8"))
+    overview_payload["input_snapshot_ids"]["flow_context"] = (
+        "analysis/gold_mainlines/2026-06-18/run-persisted-flow/flow_context.json"
+    )
+    overview_path.write_text(json.dumps(overview_payload, ensure_ascii=False), encoding="utf-8")
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = get_gold_mainlines(date="2026-06-18", run_id="run-persisted-flow")
+
+    etf_ranking = next(
+        row for row in payload["gold_macro_overview"]["theme_rankings"] if row["mainline_id"] == "etf_flows"
+    )
+    assert etf_ranking["missing_data"] == []
+    assert etf_ranking["feature_fields"]["global_etf_flow"] == 18.4
+    assert etf_ranking["feature_fields"]["etf_flow_trend"] == "inflow"
+    assert etf_ranking["feature_fields"]["flow_confirmation_status"] == "confirmed_inflow"
+    etf_requirement = next(
+        item for item in payload["gold_macro_overview"]["mainline_requirements"] if item["mainline_id"] == "etf_flows"
+    )
+    assert etf_requirement["readiness_status"] == "ready"
+
+
+def test_get_gold_mainlines_loads_context_from_artifact_refs_when_snapshot_id_missing(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-18",
+        run_id="run-artifact-ref-flow",
+        dominant_mainline="etf_flows",
+    )
+    flow_context_rel_path = "analysis/gold_mainlines/2026-06-18/run-artifact-ref-flow/flow_context.json"
+    flow_context_path = tmp_path / "storage" / flow_context_rel_path
+    flow_context_path.write_text(
+        json.dumps(
+            {
+                "global_etf_flow": 22.0,
+                "north_america_etf_flow": 15.5,
+                "asia_etf_flow": 3.8,
+                "source_refs": [{"source": "wgc", "source_ref": "gold_etf:artifact-ref"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    overview_payload = json.loads(overview_path.read_text(encoding="utf-8"))
+    overview_payload["artifact_refs"] = [
+        {"artifact_type": "flow_context", "path": flow_context_rel_path},
+    ]
+    overview_path.write_text(json.dumps(overview_payload, ensure_ascii=False), encoding="utf-8")
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = get_gold_mainlines(date="2026-06-18", run_id="run-artifact-ref-flow")
+
+    etf_ranking = next(
+        row for row in payload["gold_macro_overview"]["theme_rankings"] if row["mainline_id"] == "etf_flows"
+    )
+    assert etf_ranking["missing_data"] == []
+    assert etf_ranking["feature_fields"]["global_etf_flow"] == 22.0
+    flow_ref = next(
+        ref
+        for ref in etf_ranking["source_refs"]
+        if ref.get("source") == "wgc" and ref.get("source_ref") == "gold_etf:artifact-ref"
+    )
+    assert flow_ref["source_tier"] == "official"
+    assert flow_ref["evidence_role"] == "flow_context"
+    assert flow_ref["lineage_type"] == "context_artifact"
+    etf_requirement = next(
+        item for item in payload["gold_macro_overview"]["mainline_requirements"] if item["mainline_id"] == "etf_flows"
+    )
+    assert etf_requirement["readiness_status"] == "ready"
+
+
+def test_get_gold_mainlines_uses_persisted_reserve_and_asia_contexts(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-19",
+        run_id="run-persisted-structural",
+        dominant_mainline="central_bank_gold",
+    )
+    reserve_context_path = (
+        tmp_path
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / "2026-06-19"
+        / "run-persisted-structural"
+        / "reserve_context.json"
+    )
+    reserve_context_path.write_text(
+        json.dumps(
+            {
+                "central_bank_net_buying": 61.0,
+                "pboc_gold_holdings_change": 2.4,
+                "reserve_diversification_signal": "broadening",
+                "monetary_credit_repricing": "usd_confidence_erosion",
+                "long_term_support_score": 8.2,
+                "source_refs": [{"source": "wgc", "source_ref": "central_bank:monthly"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    asia_context_path = (
+        tmp_path
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / "2026-06-19"
+        / "run-persisted-structural"
+        / "asia_context.json"
+    )
+    asia_context_path.write_text(
+        json.dumps(
+            {
+                "usdcnh_weekly_change": -0.18,
+                "shanghai_gold_premium": 42.5,
+                "china_gold_etf_flow": 6.3,
+                "asia_demand_score": 7.4,
+                "india_physical_demand": 5.1,
+                "source_refs": [{"source": "sge", "source_ref": "premium:weekly"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    overview_payload = json.loads(overview_path.read_text(encoding="utf-8"))
+    overview_payload["input_snapshot_ids"]["reserve_context"] = (
+        "analysis/gold_mainlines/2026-06-19/run-persisted-structural/reserve_context.json"
+    )
+    overview_payload["input_snapshot_ids"]["asia_context"] = (
+        "analysis/gold_mainlines/2026-06-19/run-persisted-structural/asia_context.json"
+    )
+    overview_path.write_text(json.dumps(overview_payload, ensure_ascii=False), encoding="utf-8")
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = get_gold_mainlines(date="2026-06-19", run_id="run-persisted-structural")
+
+    central = next(
+        row for row in payload["gold_macro_overview"]["theme_rankings"] if row["mainline_id"] == "central_bank_gold"
+    )
+    assert central["missing_data"] == []
+    assert central["feature_fields"]["central_bank_net_buying"] == 61.0
+    assert central["feature_fields"]["long_term_support_score"] == 8.2
+    central_requirement = next(
+        item for item in payload["gold_macro_overview"]["mainline_requirements"] if item["mainline_id"] == "central_bank_gold"
+    )
+    assert central_requirement["readiness_status"] == "ready"
+
+    asia = next(
+        row for row in payload["gold_macro_overview"]["theme_rankings"] if row["mainline_id"] == "china_asia_demand"
+    )
+    assert asia["missing_data"] == []
+    assert asia["feature_fields"]["usdcnh_trend"] == "falling"
+    assert asia["feature_fields"]["shanghai_gold_premium"] == 42.5
+    assert asia["feature_fields"]["cny_gold_relative_strength"] == "supportive"
+    asia_requirement = next(
+        item for item in payload["gold_macro_overview"]["mainline_requirements"] if item["mainline_id"] == "china_asia_demand"
+    )
+    assert asia_requirement["readiness_status"] == "ready"
+
+
+def test_get_gold_mainlines_uses_persisted_positioning_context(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-20",
+        run_id="run-persisted-positioning",
+        dominant_mainline="institutional_sentiment",
+    )
+    positioning_context_path = (
+        tmp_path
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / "2026-06-20"
+        / "run-persisted-positioning"
+        / "positioning_context.json"
+    )
+    positioning_context_path.write_text(
+        json.dumps(
+            {
+                "comex_net_long": 185000,
+                "cot_positioning": "stretched_long",
+                "option_skew": 1.35,
+                "call_put_oi_ratio": 0.82,
+                "institutional_sentiment": "cautious_bullish",
+                "positioning_crowding": "crowded_long",
+                "source_refs": [{"source": "cme_cot", "source_ref": "comex:weekly"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    overview_payload = json.loads(overview_path.read_text(encoding="utf-8"))
+    overview_payload["input_snapshot_ids"]["positioning_context"] = (
+        "analysis/gold_mainlines/2026-06-20/run-persisted-positioning/positioning_context.json"
+    )
+    overview_path.write_text(json.dumps(overview_payload, ensure_ascii=False), encoding="utf-8")
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = get_gold_mainlines(date="2026-06-20", run_id="run-persisted-positioning")
+
+    positioning = next(
+        row for row in payload["gold_macro_overview"]["theme_rankings"] if row["mainline_id"] == "institutional_sentiment"
+    )
+    assert positioning["missing_data"] == []
+    assert positioning["feature_fields"]["comex_net_long"] == 185000
+    assert positioning["feature_fields"]["call_put_oi_ratio"] == 0.82
+    assert positioning["feature_fields"]["positioning_crowding"] == "crowded_long"
+    positioning_requirement = next(
+        item for item in payload["gold_macro_overview"]["mainline_requirements"] if item["mainline_id"] == "institutional_sentiment"
+    )
+    assert positioning_requirement["readiness_status"] == "ready"
+
+
+def test_get_gold_mainlines_uses_persisted_policy_and_geopolitical_contexts(tmp_path: Path) -> None:
+    overview_path, _mainlines_path = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-21",
+        run_id="run-persisted-verification",
+        dominant_mainline="fed_policy_path",
+    )
+    policy_context_path = (
+        tmp_path
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / "2026-06-21"
+        / "run-persisted-verification"
+        / "policy_context.json"
+    )
+    policy_context_path.write_text(
+        json.dumps(
+            {
+                "fed_policy_bias": "higher_for_longer",
+                "rate_expectation_delta": 0.32,
+                "cut_hike_probability": 0.18,
+                "fomc_tone": "hawkish",
+                "policy_surprise": "hawkish_repricing",
+                "treasury_2y_change": 0.11,
+                "treasury_10y_change": 0.08,
+                "source_refs": [{"source": "fed", "source_ref": "fomc:2026-06"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    geopolitical_context_path = (
+        tmp_path
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / "2026-06-21"
+        / "run-persisted-verification"
+        / "geopolitical_context.json"
+    )
+    geopolitical_context_path.write_text(
+        json.dumps(
+            {
+                "geopolitical_status": "escalating",
+                "war_escalation_level": "regional_risk",
+                "safe_haven_score": 7.6,
+                "energy_channel_risk": "elevated",
+                "war_oil_rate_chain_status": "active",
+                "vix_reaction": "risk_off",
+                "equity_reaction": "selloff",
+                "treasury_yield_reaction": "bull_flattening",
+                "source_refs": [
+                    {"source": "reuters", "source_ref": "geo:1"},
+                    {"source": "ap", "source_ref": "geo:2"},
+                    {"source": "market_volatility", "source_ref": "vix:reaction"},
+                    {"source": "equity_market", "source_ref": "spx:reaction"},
+                    {"source": "treasury", "source_ref": "ust:reaction"},
+                    {"source": "energy_market", "source_ref": "oil:reaction"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    overview_payload = json.loads(overview_path.read_text(encoding="utf-8"))
+    overview_payload["input_snapshot_ids"]["policy_context"] = (
+        "analysis/gold_mainlines/2026-06-21/run-persisted-verification/policy_context.json"
+    )
+    overview_payload["input_snapshot_ids"]["geopolitical_context"] = (
+        "analysis/gold_mainlines/2026-06-21/run-persisted-verification/geopolitical_context.json"
+    )
+    overview_path.write_text(json.dumps(overview_payload, ensure_ascii=False), encoding="utf-8")
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = get_gold_mainlines(date="2026-06-21", run_id="run-persisted-verification")
+
+    fed = next(
+        row for row in payload["gold_macro_overview"]["theme_rankings"] if row["mainline_id"] == "fed_policy_path"
+    )
+    assert fed["missing_data"] == []
+    assert fed["feature_fields"]["fed_policy_bias"] == "higher_for_longer"
+    assert fed["feature_fields"]["fomc_tone"] == "hawkish"
+    fed_requirement = next(
+        item for item in payload["gold_macro_overview"]["mainline_requirements"] if item["mainline_id"] == "fed_policy_path"
+    )
+    assert fed_requirement["readiness_status"] == "ready"
+
+    geo = next(
+        row for row in payload["gold_macro_overview"]["theme_rankings"] if row["mainline_id"] == "geopolitical_war_risk"
+    )
+    assert geo["missing_data"] == []
+    assert geo["feature_fields"]["geopolitical_status"] == "escalating"
+    assert geo["feature_fields"]["war_oil_rate_chain_status"] == "active"
+    geo_requirement = next(
+        item for item in payload["gold_macro_overview"]["mainline_requirements"] if item["mainline_id"] == "geopolitical_war_risk"
+    )
+    assert geo_requirement["readiness_status"] == "ready"
 
 
 def test_get_gold_mainlines_fills_mainline_id_alias_from_mainline_only_artifacts(tmp_path: Path) -> None:

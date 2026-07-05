@@ -11,7 +11,7 @@ export interface DashboardKpiMetric {
   sparkColor?: string;
   accent: string;
   subtitle?: string;
-  impactLabel: DashboardGoldImpactLabel;
+  impactLabel?: DashboardGoldImpactLabel;
   dataStatus: string;
 }
 
@@ -83,27 +83,10 @@ function formatChangePct(changePct: number | null | undefined): string | undefin
   return `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%`;
 }
 
-const backendImpactMap: Record<string, DashboardGoldImpactLabel> = {
-  利多黄金: "利多黄金",
-  利多: "利多黄金",
-  利空黄金: "利空黄金",
-  利空: "利空黄金",
-  混合: "混合",
-  mixed: "混合",
-  "neutral-bullish": "混合",
-  "neutral-bearish": "混合",
-  中性: "中性",
-  neutral: "中性",
-};
-
-function impactFromBackendKey(metric: DashboardMetric | undefined, subtitle?: string): DashboardGoldImpactLabel {
-  if (metric == null || metric.value === null || metric.value === undefined || metric.value === "") return "数据不足";
-
-  const rawNote = metric.note?.trim();
-  const rawSubtitle = subtitle?.trim();
-  return backendImpactMap[rawNote ?? ""] ?? backendImpactMap[rawSubtitle ?? ""] ?? "数据不足";
+function fixedImpact(value: unknown, impact: Exclude<DashboardGoldImpactLabel, "数据不足">): DashboardGoldImpactLabel {
+  if (value === null || value === undefined || value === "") return "数据不足";
+  return impact;
 }
-
 
 export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKpiMetric[] {
   const { market_summary: market, macro_liquidity: liquidity } = summary;
@@ -119,13 +102,16 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
   const dxySubtitle = translateSubtitle(market.DXY.note) ?? (dxyRT?.change_pct != null ? "实时行情" : undefined);
   const us10ySubtitle = translateSubtitle(market.US10Y.note);
   const real10ySubtitle = translateSubtitle(market.REAL_10Y.note);
-  const t10yieSubtitle = translateSubtitle(market.T10YIE.note);
+  const shortCurve = market.YIELD_SPREAD_2Y_3M;
+  const shortCurveSubtitle = translateSubtitle(shortCurve?.note) ?? "短端政策拐点";
   const rrpSubtitle = translateSubtitle(liquidity.RRP.note);
   const tgaSubtitle = translateSubtitle(liquidity.TGA.note);
   const bankReservesSubtitle = translateSubtitle(liquidity.BANK_RESERVES.note);
 
-  function macroImpact(metric: DashboardMetric | undefined): DashboardGoldImpactLabel {
+  function shortCurveImpact(metric: DashboardMetric | undefined): DashboardGoldImpactLabel {
     if (metric == null || metric.value === null || metric.value === undefined || metric.value === "") return "数据不足";
+    if (metric.trend === "up") return "利多黄金";
+    if (metric.trend === "down") return "利空黄金";
     return metric.status === "ok" ? "中性" : "数据不足";
   }
 
@@ -137,9 +123,8 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       trend: xauTrend,
       unit: translateUnit(market.XAUUSD.unit),
       sparkColor: market.XAUUSD.trend === "up" ? "var(--up)" : market.XAUUSD.trend === "down" ? "var(--down)" : undefined,
-      accent: "#b45309",
+      accent: "#d4af37",
       subtitle: xauSubtitle,
-      impactLabel: impactFromBackendKey(market.XAUUSD, xauSubtitle),
       dataStatus: xauRT ? realtimeStatusOf(summary, "XAUUSD") : metricStatusOf(market.XAUUSD),
     },
     {
@@ -151,7 +136,7 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       sparkColor: market.DXY.trend === "up" ? "var(--up)" : market.DXY.trend === "down" ? "var(--down)" : undefined,
       accent: "#2563eb",
       subtitle: dxySubtitle,
-      impactLabel: impactFromBackendKey(market.DXY, dxySubtitle),
+      impactLabel: fixedImpact(dxyValue ?? market.DXY.value, "利空黄金"),
       dataStatus: dxyRT ? realtimeStatusOf(summary, "DXY") : metricStatusOf(market.DXY),
     },
     {
@@ -163,7 +148,7 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       sparkColor: market.US10Y.trend === "up" ? "var(--up)" : market.US10Y.trend === "down" ? "var(--down)" : undefined,
       accent: "#06b6d4",
       subtitle: us10ySubtitle,
-      impactLabel: macroImpact(market.US10Y),
+      impactLabel: fixedImpact(market.US10Y.value, "利空黄金"),
       dataStatus: metricStatusOf(market.US10Y),
     },
     {
@@ -175,20 +160,20 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       sparkColor: market.REAL_10Y.trend === "up" ? "var(--up)" : market.REAL_10Y.trend === "down" ? "var(--down)" : undefined,
       accent: "#a78bfa",
       subtitle: real10ySubtitle,
-      impactLabel: macroImpact(market.REAL_10Y),
+      impactLabel: fixedImpact(market.REAL_10Y.value, "利空黄金"),
       dataStatus: metricStatusOf(market.REAL_10Y),
     },
     {
-      label: "T10YIE",
-      value: metricValue(market.T10YIE.value, 2),
-      delta: market.T10YIE.change ?? undefined,
-      trend: trendOf(market.T10YIE),
+      label: "2Y-3M",
+      value: metricValue(shortCurve?.value ?? null, 2),
+      delta: shortCurve?.change ?? undefined,
+      trend: trendOf(shortCurve),
       unit: "%",
-      sparkColor: market.T10YIE.trend === "up" ? "var(--up)" : market.T10YIE.trend === "down" ? "var(--down)" : undefined,
-      accent: "#f59e0b",
-      subtitle: t10yieSubtitle,
-      impactLabel: macroImpact(market.T10YIE),
-      dataStatus: metricStatusOf(market.T10YIE),
+      sparkColor: shortCurve?.trend === "up" ? "var(--up)" : shortCurve?.trend === "down" ? "var(--down)" : undefined,
+      accent: "#22c55e",
+      subtitle: shortCurveSubtitle,
+      impactLabel: shortCurveImpact(shortCurve),
+      dataStatus: metricStatusOf(shortCurve),
     },
     {
       label: "RRP",
@@ -199,7 +184,7 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       sparkColor: liquidity.RRP.trend === "up" ? "var(--up)" : liquidity.RRP.trend === "down" ? "var(--down)" : undefined,
       accent: "#14b8a6",
       subtitle: rrpSubtitle,
-      impactLabel: macroImpact(liquidity.RRP),
+      impactLabel: fixedImpact(liquidity.RRP.value, "混合"),
       dataStatus: metricStatusOf(liquidity.RRP),
     },
     {
@@ -211,7 +196,7 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       sparkColor: liquidity.TGA.trend === "up" ? "var(--up)" : liquidity.TGA.trend === "down" ? "var(--down)" : undefined,
       accent: "#0ea5e9",
       subtitle: tgaSubtitle,
-      impactLabel: macroImpact(liquidity.TGA),
+      impactLabel: fixedImpact(liquidity.TGA.value, "混合"),
       dataStatus: metricStatusOf(liquidity.TGA),
     },
     {
@@ -223,7 +208,7 @@ export function buildDashboardKpiMetrics(summary: DashboardSummary): DashboardKp
       sparkColor: liquidity.BANK_RESERVES.trend === "up" ? "var(--up)" : liquidity.BANK_RESERVES.trend === "down" ? "var(--down)" : undefined,
       accent: "#64748b",
       subtitle: bankReservesSubtitle,
-      impactLabel: macroImpact(liquidity.BANK_RESERVES),
+      impactLabel: fixedImpact(liquidity.BANK_RESERVES.value, "混合"),
       dataStatus: metricStatusOf(liquidity.BANK_RESERVES),
     },
   ];

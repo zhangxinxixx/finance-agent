@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+from apps.collectors.jin10.classifier import classify_jin10_report
+
 XNEWS_CATEGORY_URL = "https://xnews.jin10.com/category/{category_code}"
 SVIP_DETAIL_URL = "https://svip.jin10.com/news/{article_id}"
 DEFAULT_HEADERS = {
@@ -26,6 +28,7 @@ REPORT_BODY_CLASSES = (
 )
 REPORT_SECTION_PATTERN = re.compile(r"\d+[、.．](行情回顾|关键指标|观点分享|核心逻辑|技术分析|操作建议)[：:]")
 REPORT_PLACEHOLDER_PATTERN = re.compile(r"\d+[、.．][^：:]{1,20}[：:](?:\.{2,}|…+)")
+WEEKLY_TITLE_MARKERS = ("一周热榜精选",)
 
 
 @dataclass(slots=True)
@@ -43,7 +46,7 @@ class Jin10FetchedReport:
     date: str
     title: str
     category: str
-    report_type: str  # "daily" | "weekly"
+    report_type: str
     source_url: str
     report_markdown: str
     raw_html: str
@@ -174,9 +177,11 @@ def parse_svip_report_html(html: str, *, article_id: str, source_url: str) -> Ji
         or f"Jin10 report {article_id}"
     )
     date = _extract_report_date(html) or datetime.now(timezone.utc).date().isoformat()
-    category = _match_group(html, r"(金银报告|黄金周报|报告)") or "报告"
-    # 确定 report_type：日报(270/金银报告) vs 周报(536/黄金周报)
-    report_type = "weekly" if category == "黄金周报" else "daily"
+    title = title.strip()
+    category = _match_group(html, r"(金银报告|黄金周报|持仓报告|点位报告|原油报告|外汇报告|挂单报告|市场观察|VIP智库|报告)") or "报告"
+    classification = classify_jin10_report(category=category, title=title)
+    category = classification.category
+    report_type = classification.report_type
     article_html = _extract_article_body_html(html)
     reduced_html = _extract_reduced_content(html)
     content_html = _select_report_content_html(html, article_html=article_html, reduced_html=reduced_html)
@@ -202,7 +207,7 @@ def parse_svip_report_html(html: str, *, article_id: str, source_url: str) -> Ji
     return Jin10FetchedReport(
         article_id=article_id,
         date=date,
-        title=title.strip(),
+        title=title,
         category=category,
         report_type=report_type,
         source_url=source_url,
@@ -211,6 +216,10 @@ def parse_svip_report_html(html: str, *, article_id: str, source_url: str) -> Ji
         image_urls=image_urls,
         fetched_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+def _looks_like_weekly_report_title(title: str) -> bool:
+    return any(marker in title for marker in WEEKLY_TITLE_MARKERS)
 
 
 def _extract_report_date(html: str) -> str | None:

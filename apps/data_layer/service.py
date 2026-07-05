@@ -446,7 +446,7 @@ class NewsDataService:
 # ── Default symbols ────────────────────────────────────────────────────
 
 _DEFAULT_FRED_SYMBOLS: tuple[str, ...] = (
-    "DGS10", "DGS2", "DGS30", "DFII10", "DFII5",
+    "DGS10", "DGS2", "DGS3MO", "DGS30", "DFII10", "DFII5",
     "FEDFUNDS", "SOFR", "T10Y2Y", "T10YIE",
 )
 

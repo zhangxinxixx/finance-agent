@@ -60,8 +60,7 @@ function compactDateLabel(value: string): string {
 }
 
 /** Compute overall status from pipeline_health for the status dot */
-function overallDotColor(health: SourcePipelineHealth | undefined): string {
-  if (!health) return "var(--fg-6)";
+function overallDotColor(health: SourcePipelineHealth): string {
   const { stages } = health;
   if (stages.connection.status === "ERROR") return "var(--down)";
   if (stages.collect.status === "ERROR" || stages.parse.status === "ERROR") return "var(--down)";
@@ -118,7 +117,7 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
 
       {/* Latest data date badge */}
       <div className="flex min-w-0 flex-col items-center">
-        {health?.latestDataDate ? (
+        {health.latestDataDate ? (
           <>
           <span className="fa-num text-[10px] text-[var(--fg-4)]" title={health.latestDataDate}>
             {compactDateLabel(health.latestDataDate)}
@@ -142,63 +141,45 @@ export function SourcePipelineRow({ source, selected, onSelect, onStageClick }: 
 
       {/* 7-stage pipeline chain */}
       <div className="data-ingestion-stage-chain">
-        {health ? (
-          STAGE_KEYS.map((key, idx) => {
-            const stage = health.stages[key];
-            return (
-              <div key={key} className="flex items-center">
-                <StageNode
-                  status={stage.status}
-                  label={STAGE_LABELS[key]}
-                  message={stage.message}
+        {STAGE_KEYS.map((key, idx) => {
+          const stage = health.stages[key];
+          return (
+            <div key={key} className="flex items-center">
+              <StageNode
+                status={stage.status}
+                label={STAGE_LABELS[key]}
+                message={stage.message}
+                compact
+                onClick={() => onStageClick?.(source.id, key)}
+              />
+              {idx < STAGE_KEYS.length - 1 && (
+                <StageConnector
+                  fromStatus={stage.status}
+                  toStatus={health.stages[STAGE_KEYS[idx + 1]].status}
                   compact
-                  onClick={() => onStageClick?.(source.id, key)}
                 />
-                {idx < STAGE_KEYS.length - 1 && (
-                  <StageConnector
-                    fromStatus={stage.status}
-                    toStatus={health.stages[STAGE_KEYS[idx + 1]].status}
-                    compact
-                  />
-                )}
-              </div>
-            );
-          })
-        ) : (
-          /* Fallback: show boolean flags as simple indicators */
-          <div className="flex items-center gap-1 text-[10px]">
-            {source.configured ? <span className="text-[var(--up)]">●</span> : <span className="text-[var(--down)]">●</span>}
-            <span className="text-[var(--fg-6)]">配置</span>
-            {source.raw_ingested ? <span className="text-[var(--up)]">●</span> : <span className="text-[var(--down)]">●</span>}
-            <span className="text-[var(--fg-6)]">采集</span>
-            {source.parsed ? <span className="text-[var(--up)]">●</span> : <span className="text-[var(--down)]">●</span>}
-            <span className="text-[var(--fg-6)]">解析</span>
-            {source.analysis_ready ? <span className="text-[var(--up)]">●</span> : <span className="text-[var(--down)]">●</span>}
-            <span className="text-[var(--fg-6)]">就绪</span>
-          </div>
-        )}
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Affected modules */}
       <div className="data-ingestion-module-cell">
-        {health ? (
-          <>
-          {health.affectedModules.slice(0, 3).map((mod) => (
-            <span
-              key={mod}
-              className="text-[10px] font-medium px-1.5 py-px rounded"
-              title={mod}
-              style={{
-                background: "var(--bg-card-inner)",
-                color: "var(--fg-5)",
-                border: "1px solid var(--border-faint)",
-              }}
-            >
-              {mod}
-            </span>
-          ))}
-          </>
-        ) : null}
+        {health.affectedModules.slice(0, 3).map((mod) => (
+          <span
+            key={mod}
+            className="text-[10px] font-medium px-1.5 py-px rounded"
+            title={mod}
+            style={{
+              background: "var(--bg-card-inner)",
+              color: "var(--fg-5)",
+              border: "1px solid var(--border-faint)",
+            }}
+          >
+            {mod}
+          </span>
+        ))}
       </div>
     </div>
   );

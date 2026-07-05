@@ -39,6 +39,8 @@ def test_parse_datacenter_js_normalizes_etf_gold_rows() -> None:
     assert data["min_no"] == 4268
     assert data["max_no"] == 4270
     assert data["checksum"] == "2b538ad24c22c4803ed9db17faee6717"
+    assert data["freshness_status"] == "ok_stale"
+    assert data["freshness_reason"] == "as_of_older_than_sla"
     assert data["rows"] == [
         {
             "date": "2020-02-16",
@@ -142,6 +144,8 @@ def test_parse_datacenter_js_normalizes_nonfarm_payrolls_rows() -> None:
     assert data["slug"] == "dc_nonfarm_payrolls"
     assert data["types"] == ["美国非农"]
     assert data["kinds"] == ["前值(万人)", "预期(万人)", "公布值(万人)"]
+    assert data["freshness_status"] == "ok_current"
+    assert data["freshness_reason"] == "within_sla"
     assert len(data["rows"]) == 1
     assert data["rows"][0]["values"][0] == {"type": "美国非农", "kind": "前值(万人)", "value": "18.5"}
 
@@ -226,10 +230,14 @@ def test_datacenter_report_input_summary_marks_supplemental_source() -> None:
     assert summary["verification_status"] == "single_source"
     assert summary["official_primary"] is False
     assert summary["status"] == "ok"
+    assert summary["freshness_status"] == "ok_stale"
+    assert summary["freshness_reason"] == "as_of_older_than_sla"
+    assert summary["usable_for_production_conclusions"] is False
     assert summary["as_of"] == "2020-02-16 08:01:03"
     assert summary["row_count"] == 1
     assert summary["latest_values"]["总库存(吨)"] == "923.99"
     assert "official facts must be confirmed" in summary["warnings"][0]
+    assert "stale" in summary["warnings"][1]
 
 
 def test_datacenter_report_input_summary_includes_source_refs() -> None:

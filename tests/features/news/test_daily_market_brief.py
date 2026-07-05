@@ -193,6 +193,95 @@ def test_daily_market_brief_report_inputs_do_not_repeat_same_events() -> None:
     assert len(risk_points) == len(set(risk_points))
 
 
+def test_daily_market_brief_merges_positioning_and_technical_level_report_inputs() -> None:
+    bundle = build_event_candidates([], as_of="2026-06-10T10:00:00+00:00")
+
+    brief = build_daily_market_brief(
+        event_bundle=bundle,
+        impact_assessments=[],
+        market_reactions=[],
+        as_of="2026-06-10T10:00:00+00:00",
+        report_input_artifacts=[
+            {
+                "source_key": "jin10_positioning",
+                "items": [
+                    {
+                        "asset": "XAUUSD",
+                        "direction": "bullish",
+                        "strike_or_level": "3350",
+                        "position_change": "increase",
+                        "verification_status": "single_source",
+                        "provider_role": "supplemental_source",
+                        "source_refs": [{"source_ref": "jin10:274:223700"}],
+                    }
+                ],
+                "source_refs": [{"source_ref": "jin10_positioning:2026-06-10/223700"}],
+            },
+            {
+                "source_key": "jin10_technical_levels",
+                "items": [
+                    {
+                        "symbol": "XAUUSD",
+                        "level_type": "VAH",
+                        "price": 3378.5,
+                        "verification_status": "single_source",
+                        "provider_role": "supplemental_source",
+                        "source_refs": [{"source_ref": "jin10:301:223701"}],
+                    }
+                ],
+                "source_refs": [{"source_ref": "jin10_technical_levels:2026-06-10/223701"}],
+            },
+        ],
+    )
+
+    data = brief.to_dict()
+
+    assert data["report_inputs"]["positioning"][0]["asset"] == "XAUUSD"
+    assert data["report_inputs"]["positioning"][0]["provider_role"] == "supplemental_source"
+    assert data["report_inputs"]["technical_levels"][0]["level_type"] == "VAH"
+    assert data["report_inputs"]["technical_levels"][0]["verification_status"] == "single_source"
+    assert data["data_quality"]["positioning_input_count"] == 1
+    assert data["data_quality"]["technical_level_input_count"] == 1
+    assert {"jin10_positioning:2026-06-10/223700", "jin10_technical_levels:2026-06-10/223701"} <= {
+        ref["source_ref"] for ref in data["source_refs"]
+    }
+
+
+def test_daily_market_brief_merges_market_observation_report_inputs() -> None:
+    bundle = build_event_candidates([], as_of="2026-06-10T10:00:00+00:00")
+
+    brief = build_daily_market_brief(
+        event_bundle=bundle,
+        impact_assessments=[],
+        market_reactions=[],
+        as_of="2026-06-10T10:00:00+00:00",
+        report_input_artifacts=[
+            {
+                "source_key": "jin10_market_observation",
+                "items": [
+                    {
+                        "topic": "market_odds",
+                        "summary": "市场赔率表显示降息概率上行，风险偏好边际改善。",
+                        "verification_status": "single_source",
+                        "provider_role": "supplemental_source",
+                        "source_refs": [{"source_ref": "jin10:458:224000"}],
+                    }
+                ],
+                "source_refs": [{"source_ref": "jin10_market_observation:2026-06-10/224000"}],
+            }
+        ],
+    )
+
+    data = brief.to_dict()
+
+    assert data["report_inputs"]["market_observations"][0]["topic"] == "market_odds"
+    assert data["report_inputs"]["market_observations"][0]["provider_role"] == "supplemental_source"
+    assert data["data_quality"]["market_observation_input_count"] == 1
+    assert {"jin10_market_observation:2026-06-10/224000", "jin10:458:224000"} <= {
+        ref["source_ref"] for ref in data["source_refs"]
+    }
+
+
 def test_archive_daily_market_brief_writes_feature_artifact(tmp_path: Path) -> None:
     bundle = build_event_candidates(
         [

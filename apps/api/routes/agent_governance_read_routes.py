@@ -101,3 +101,15 @@ def api_prompt_versions_active(agent_id: str, db: Session = Depends(get_db)):
     if row is None:
         raise HTTPException(status_code=404, detail=f"No active prompt version for agent: {agent_id}")
     return api_main._prompt_version_item(row)
+
+
+@router.get("/api/agents/prompt-evolution/proposal/{agent_id}")
+def api_prompt_evolution_proposal(agent_id: str, recent_limit: int = 10, db: Session = Depends(get_db)):
+    """Preview a PromptEvolutionAgent proposal from existing prompt governance evidence.
+
+    This is read-only: it does not create PromptVersion, PromptFeedback, ReviewItem,
+    or mutate the active production prompt.
+    """
+    from apps.api.services.prompt_evolution_service import build_prompt_evolution_preview
+
+    return build_prompt_evolution_preview(db, agent_id=agent_id, recent_limit=recent_limit)

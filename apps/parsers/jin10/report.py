@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -37,15 +38,12 @@ def _parse_report(report: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
         title=report["title"],
         published_at=meta.get("published_at"),
         image_entries=report["images"],
+        report_type=str(report.get("report_type") or ""),
     )
-    parse_status = artifacts["parse_status"]
-    parsed_body_markdown = str(artifacts.get("body_markdown") or "").strip()
-    use_structured_markdown = bool(
-        parse_status.get("recognition_mode") == "vlm" and parsed_body_markdown
-    ) or bool(artifacts["report_structured"]["sections"])
+    report_text = _select_report_text(markdown_text=markdown_text, artifacts=artifacts)
     source_document = _build_source_document(
         report,
-        report_text=parsed_body_markdown if use_structured_markdown else markdown_text,
+        report_text=report_text,
     )
     parsed_document = build_parsed_document(source_document)
     images = [
@@ -72,6 +70,9 @@ def _parse_report(report: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
         "parser_run_id": artifacts["parse_status"]["parser_run_id"],
         "parse_status": artifacts["parse_status"]["status"],
         "vlm_status": artifacts["parse_status"].get("vision_markdown_status"),
+        "vision_provider": artifacts["parse_status"].get("vision_provider"),
+        "vision_model": artifacts["parse_status"].get("vision_model"),
+        "vision_layout_status": artifacts["parse_status"].get("vision_layout_status"),
         "section_count": artifacts["parse_status"]["section_count"],
         "figure_count": artifacts["parse_status"]["figures_total"],
         "meta_path": report["meta_json"]["path"],
@@ -86,6 +87,32 @@ def _parse_report(report: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
         "blocks": [block.to_dict() for block in parsed_document.blocks],
         "body_text": source_document.report_text,
     }, artifacts
+
+
+def _select_report_text(*, markdown_text: str, artifacts: dict[str, Any]) -> str:
+    parse_status = artifacts.get("parse_status") or {}
+    parsed_body_markdown = str(artifacts.get("body_markdown") or "").strip()
+    use_structured_markdown = bool(
+        parse_status.get("recognition_mode") == "vlm" and parsed_body_markdown
+    ) or bool((artifacts.get("report_structured") or {}).get("sections"))
+    if not use_structured_markdown:
+        return markdown_text
+    if _structured_body_likely_truncated(parsed_body_markdown, markdown_text):
+        return markdown_text
+    return parsed_body_markdown
+
+
+def _structured_body_likely_truncated(parsed_body_markdown: str, markdown_text: str) -> bool:
+    parsed_score = _text_signal_score(parsed_body_markdown)
+    markdown_score = _text_signal_score(markdown_text)
+    return markdown_score >= 1200 and parsed_score < 800 and parsed_score < markdown_score * 0.4
+
+
+def _text_signal_score(text: str) -> int:
+    text = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", text or "")
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"^[|:\-\s]+$", "", text, flags=re.MULTILINE)
+    return len(re.findall(r"[\w\u4e00-\u9fff]", text))
 
 
 def _build_source_document(report: dict[str, Any], *, report_text: str | None = None) -> SourceDocument:

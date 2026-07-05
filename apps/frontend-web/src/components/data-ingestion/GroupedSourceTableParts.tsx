@@ -85,7 +85,16 @@ export function SourceRow({ source }: { source: DataSourceStatusViewModel }) {
   const rs = source.raw_status;
   const latestUpdate = source.latest_update_time ?? source.latest_parsed_time ?? source.latest_raw_time ?? null;
   const primaryTable = source.database_tables[0] ?? "—";
-  const rawHref = source.latest_raw_ref?.url ?? source.latest_raw_ref?.raw_path ?? source.source_refs[0]?.artifact_path ?? null;
+  const evidence = source.artifact_evidence;
+  const rawHref =
+    evidence?.latest_raw_url ??
+    source.latest_raw_ref?.url ??
+    evidence?.collector_raw_artifact_path ??
+    source.latest_raw_ref?.raw_path ??
+    evidence?.collector_parsed_artifact_path ??
+    evidence?.preferred_artifact_path ??
+    source.source_refs[0]?.artifact_path ??
+    null;
 
   return (
     <div

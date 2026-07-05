@@ -56,8 +56,9 @@ MACRO_INDICATOR_SPECS: tuple[_MacroIndicatorSpec, ...] = (
     _MacroIndicatorSpec("US02Y", "US02Y", ("DGS2",), "rate", "%"),
     _MacroIndicatorSpec("US10Y", "US10Y", ("DGS10",), "rate", "%"),
     _MacroIndicatorSpec("BREAKEVEN_10Y", "10Y Breakeven", ("T10YIE",), "rate", "%"),
-    _MacroIndicatorSpec("REAL_10Y", "10Y 实际利率（10Y TIPS）", ("DFII10",), "rate", "%"),
+    _MacroIndicatorSpec("REAL_10Y", "10Y 实际利率 = US10Y - T10YIE", ("DGS10", "T10YIE"), "rate", "%"),
     _MacroIndicatorSpec("YIELD_SPREAD_10Y_2Y", "10Y-2Y 利差", ("DGS10", "DGS2"), "spread", "%"),
+    _MacroIndicatorSpec("YIELD_SPREAD_2Y_3M", "2Y-3M 利差", ("DGS2", "DGS3MO"), "spread", "%"),
     _MacroIndicatorSpec("DXY", "DXY", ("DXY",), "index", "index"),
 )
 
@@ -228,6 +229,8 @@ def _direction_note(
         return "短期波动有限，趋势暂不明确"
 
     if spec.kind == "index":
+        if spec.symbol == "DXY" and float(current["value"]) >= 101:
+            return "美元指数位于 101 上方，对黄金形成逆风"
         if negative and not positive:
             return "美元指数转弱，对黄金形成顺风"
         if positive and not negative:

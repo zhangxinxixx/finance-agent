@@ -204,6 +204,23 @@ def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
 
 _EVENT_RULES: tuple[dict[str, Any], ...] = (
     {
+        "event_type": "oil_supply_shock",
+        "feed_key": "jin10_report_oil_context",
+        "label": "原油/通胀风险观点",
+        "markers": ("原油", "opec", "供应", "减产", "eia", "库存", "wti", "布伦特", "通胀"),
+        "evidence_kind": "external_opinion_oil_context",
+        "matches": lambda text: _contains_any(text, ("原油", "wti", "布伦特", "opec", "eia"))
+        and _contains_any(text, ("供应", "减产", "库存", "地缘", "油价", "通胀")),
+    },
+    {
+        "event_type": "yen_intervention_risk",
+        "feed_key": "jin10_report_fx_yen_intervention",
+        "label": "外汇/日元干预风险观点",
+        "markers": ("外汇", "日元", "干预", "usdjpy", "美元兑日元"),
+        "evidence_kind": "external_opinion_fx_intervention_risk",
+        "matches": lambda text: _contains_any(text, ("日元", "usdjpy", "美元兑日元")) and "干预" in text,
+    },
+    {
         "event_type": "gold_fund_flow",
         "feed_key": "jin10_report_gold_fund_flow",
         "label": "黄金资金/ETF观点",

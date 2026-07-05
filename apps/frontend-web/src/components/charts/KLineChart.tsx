@@ -55,13 +55,17 @@ function toChartTime(iso: string): Time {
 }
 
 // ═══════════════════════════════════════
-// Dark theme
+// Light workstation theme
 // ═══════════════════════════════════════
 
-const CHART_BG = "#0c1222";
-const GRID_COLOR = "rgba(255,255,255,0.04)";
-const TEXT_COLOR = "rgba(255,255,255,0.35)";
-const CROSSHAIR_COLOR = "rgba(255,255,255,0.12)";
+const CHART_BG = "#f8fafc";
+const GRID_COLOR = "rgba(15, 23, 42, 0.07)";
+const TEXT_COLOR = "rgba(15, 23, 42, 0.58)";
+const VALUE_TEXT_COLOR = "#0f172a";
+const CROSSHAIR_COLOR = "rgba(15, 23, 42, 0.18)";
+const CROSSHAIR_LABEL_BG = "rgba(15, 23, 42, 0.82)";
+const TOOLTIP_BG = "rgba(255, 255, 255, 0.96)";
+const TOOLTIP_BORDER = "rgba(148, 163, 184, 0.35)";
 
 // ═══════════════════════════════════════
 // Component
@@ -113,14 +117,14 @@ export function KLineChart({
           color: CROSSHAIR_COLOR,
           width: 1,
           style: 2, // dashed
-          labelBackgroundColor: "rgba(0,0,0,0.7)",
+          labelBackgroundColor: CROSSHAIR_LABEL_BG,
           labelVisible: true,
         },
         horzLine: {
           color: CROSSHAIR_COLOR,
           width: 1,
           style: 2,
-          labelBackgroundColor: "rgba(0,0,0,0.7)",
+          labelBackgroundColor: CROSSHAIR_LABEL_BG,
           labelVisible: true,
         },
       },
@@ -303,7 +307,7 @@ export function KLineChart({
 
     let html = `<div style="font-size:11px;color:${TEXT_COLOR};margin-bottom:4px">${timeStr}</div>`;
     html += `<div style="display:flex;gap:12px;font-size:12px;font-family:var(--font-mono)">`;
-    html += `<div><span style="color:${TEXT_COLOR}">O </span><span style="color:#fff">${open.toFixed(2)}</span></div>`;
+    html += `<div><span style="color:${TEXT_COLOR}">O </span><span style="color:${VALUE_TEXT_COLOR}">${open.toFixed(2)}</span></div>`;
     html += `<div><span style="color:${TEXT_COLOR}">H </span><span style="color:${color}">${high.toFixed(2)}</span></div>`;
     html += `<div><span style="color:${TEXT_COLOR}">L </span><span style="color:${color}">${low.toFixed(2)}</span></div>`;
     html += `<div><span style="color:${TEXT_COLOR}">C </span><span style="color:${color}">${close.toFixed(2)}</span></div>`;
@@ -352,9 +356,11 @@ export function KLineChart({
           zIndex: 10,
           display: "flex",
           gap: 2,
-          background: "rgba(0,0,0,0.4)",
+          background: "rgba(255,255,255,0.92)",
+          border: "1px solid var(--border-faint)",
           borderRadius: "var(--radius-sm)",
           padding: 2,
+          boxShadow: "var(--shadow-card)",
         }}
       >
         {TIMEFRAMES.map((tf) => {
@@ -364,7 +370,7 @@ export function KLineChart({
               key={tf.key}
               onClick={() => onTimeframeChange?.(tf.key)}
               style={{
-                background: active ? "var(--brand-bg)" : "transparent",
+                background: active ? "var(--brand-dim)" : "transparent",
                 color: active ? "var(--brand-hover)" : TEXT_COLOR,
                 border: "none",
                 borderRadius: "var(--radius-sm)",
@@ -423,12 +429,13 @@ export function KLineChart({
           position: "absolute",
           zIndex: 20,
           display: "none",
-          background: "rgba(0,0,0,0.85)",
+          background: TOOLTIP_BG,
           borderRadius: "var(--radius-md)",
           padding: "8px 10px",
           pointerEvents: "none",
           minWidth: 150,
-          border: "1px solid rgba(255,255,255,0.08)",
+          border: `1px solid ${TOOLTIP_BORDER}`,
+          boxShadow: "var(--shadow-popover)",
         }}
       />
 

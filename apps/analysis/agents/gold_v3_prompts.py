@@ -374,6 +374,49 @@ def build_test_validation_governance_prompt_template() -> dict[str, Any]:
     )
 
 
+def build_prompt_evolution_governance_prompt_template() -> dict[str, Any]:
+    return _governance_template(
+        agent_id="prompt_evolution_agent",
+        system="你是 PromptEvolutionAgent，负责评估固定 Agent 的 Prompt 输出质量并生成可审核的 Prompt 更新提案。",
+        user="分析固定 Agent 最近 N 次输入输出、ReviewGate findings、人工反馈、失败测试、当前 schema 和数据源健康状态；只生成 prompt_update proposal，不直接修改生产 Prompt。",
+        checks=[
+            "repeated_failure_patterns",
+            "root_cause_classification",
+            "prompt_update_proposal",
+            "test_cases",
+            "rollback_plan",
+        ],
+        output_schema={
+            "agent_name": "",
+            "problem_summary": "",
+            "failure_patterns": [
+                {
+                    "pattern_id": "",
+                    "description": "",
+                    "frequency": 0,
+                    "examples": [],
+                    "likely_root_cause": "prompt | schema | data_missing | rule_gap | frontend_binding | dag | unknown",
+                }
+            ],
+            "prompt_update_proposal": {
+                "proposal_id": "",
+                "proposal_type": "prompt_update | schema_update | data_source_change | dag_update | insufficient_evidence",
+                "before_summary": "",
+                "after_summary": "",
+                "patch": "",
+                "rationale": "",
+                "risk": "",
+                "rollback_plan": "",
+                "test_cases": [],
+            },
+            "requires_schema_change": False,
+            "requires_data_source_change": False,
+            "requires_dag_change": False,
+            "manual_review_required": True,
+        },
+    )
+
+
 _GOLD_V3_AGENT_SPECS: list[dict[str, Any]] = [
     {
         "agent_id": "source_health_agent",
@@ -522,6 +565,25 @@ _GOLD_V3_GOVERNANCE_AGENT_SPECS: list[dict[str, Any]] = [
         "input_sections": ["issue_acceptance", "changed_files", "test_results"],
         "output_targets": ["TestValidationReview 提案", "Verification command matrix"],
         "prompt_builder": build_test_validation_governance_prompt_template,
+    },
+    {
+        "agent_id": "prompt_evolution_agent",
+        "name": "PromptEvolutionAgent",
+        "agent_type": "development_governance_agent",
+        "priority": "P1",
+        "description": "评估固定 Agent Prompt 输出质量，生成可审核、可测试、可回滚的 Prompt 更新提案。",
+        "governance_scope": "固定 Agent Prompt 质量评估与优化提案",
+        "proposal_only": True,
+        "input_sections": [
+            "current_prompt",
+            "recent_runs",
+            "review_gate_findings",
+            "manual_feedback",
+            "failed_test_cases",
+            "data_source_health",
+        ],
+        "output_targets": ["PromptUpdateProposal 提案", "ReviewGate 人工复核项", "Prompt regression test cases"],
+        "prompt_builder": build_prompt_evolution_governance_prompt_template,
     },
 ]
 

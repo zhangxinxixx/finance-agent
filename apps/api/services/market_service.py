@@ -468,7 +468,14 @@ def get_market_tickers() -> dict[str, Any]:
         macro = get_macro_latest()
         if macro:
             indicators = macro.get("indicators", {})
-            macro_map = {"dxy": ["DXY", "dxy"], "real_10y": ["REAL_10Y", "real_10y", "REAL10Y"], "t10yie": ["T10YIE", "t10yie"], "on_rrp": ["ON_RRP", "on_rrp"], "tga": ["TGA", "tga"]}
+            macro_map = {
+                "dxy": ["DXY", "dxy"],
+                "real_10y": ["REAL_10Y", "real_10y", "REAL10Y"],
+                "t10yie": ["T10YIE", "t10yie"],
+                "yield_spread_2y_3m": ["YIELD_SPREAD_2Y_3M", "yield_spread_2y_3m"],
+                "on_rrp": ["ON_RRP", "on_rrp"],
+                "tga": ["TGA", "tga"],
+            }
             for ticker_key, sym_keys in macro_map.items():
                 for sym_key in sym_keys:
                     if sym_key in indicators:
@@ -522,6 +529,7 @@ def get_market_monitor_overview() -> dict[str, Any]:
     dxy = indicators.get("DXY", {}) or (tickers_payload.get("tickers") or {}).get("dxy", {})
     us10y = indicators.get("US10Y", {}) or indicators.get("DGS10", {})
     us02y = indicators.get("US02Y", {}) or indicators.get("DGS2", {})
+    spread_2y_3m = indicators.get("YIELD_SPREAD_2Y_3M", {})
     real10 = indicators.get("REAL_10Y", {})
     t10yie = indicators.get("T10YIE", {}) or indicators.get("BREAKEVEN_10Y", {})
     tga = indicators.get("TGA", {})
@@ -544,6 +552,7 @@ def get_market_monitor_overview() -> dict[str, Any]:
         metric_item("DXY", "DXY", dxy.get("value"), dxy.get("unit", "index"), dxy.get("weekly_change"), dxy.get("monthly_change"), "ok" if dxy.get("value") is not None else "unavailable", dxy.get("direction_note", "")),
         metric_item("US10Y", "US10Y", us10y.get("value"), us10y.get("unit", "%"), us10y.get("weekly_change"), us10y.get("monthly_change"), "ok" if us10y.get("value") is not None else "unavailable", us10y.get("direction_note", "")),
         metric_item("US02Y", "US02Y", us02y.get("value"), us02y.get("unit", "%"), us02y.get("weekly_change"), us02y.get("monthly_change"), "ok" if us02y.get("value") is not None else "unavailable", us02y.get("direction_note", "")),
+        metric_item("YIELD_SPREAD_2Y_3M", "2Y-3M Spread", spread_2y_3m.get("value"), spread_2y_3m.get("unit", "%"), spread_2y_3m.get("weekly_change"), spread_2y_3m.get("monthly_change"), "ok" if spread_2y_3m.get("value") is not None else "unavailable", spread_2y_3m.get("direction_note", "")),
         metric_item("REAL_10Y", "10Y Real Rate", real10.get("value"), real10.get("unit", "%"), real10.get("weekly_change"), real10.get("monthly_change"), "ok" if real10.get("value") is not None else "unavailable", real10.get("direction_note", "")),
         metric_item("T10YIE", "T10YIE", t10yie.get("value"), t10yie.get("unit", "%"), t10yie.get("weekly_change"), t10yie.get("monthly_change"), "ok" if t10yie.get("value") is not None else "unavailable", t10yie.get("direction_note", "")),
         metric_item("TGA", "TGA", tga.get("value"), tga.get("unit", "B"), tga.get("weekly_change"), tga.get("monthly_change"), "ok" if tga.get("value") is not None else "unavailable", tga.get("direction_note", "")),
@@ -787,6 +796,7 @@ def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") ->
                 "US10Y": (indicators.get("US10Y") or indicators.get("DGS10") or {}).get("value"),
                 "REAL_10Y": (indicators.get("REAL_10Y") or {}).get("value"),
                 "T10YIE": (indicators.get("T10YIE") or indicators.get("BREAKEVEN_10Y") or {}).get("value"),
+                "YIELD_SPREAD_2Y_3M": (indicators.get("YIELD_SPREAD_2Y_3M") or {}).get("value"),
             }
 
     session_factory = _market_session_factory()
@@ -835,7 +845,7 @@ def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") ->
         "source_timeframe": "1d",
         "series": points,
         "available_points": len(points),
-        "available_fields": ["XAUUSD", "DXY", "US10Y", "REAL_10Y", "T10YIE"],
+        "available_fields": ["XAUUSD", "DXY", "US10Y", "REAL_10Y", "T10YIE", "YIELD_SPREAD_2Y_3M"],
         "degraded": len(points) < 5,
         "message": "历史序列当前基于本地 macro snapshots；若点数不足，则页面应显式提示历史深度不足。",
         "data_gaps": gap_dates,

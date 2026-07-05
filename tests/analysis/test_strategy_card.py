@@ -361,7 +361,15 @@ def test_build_strategy_card_uses_gold_macro_overview_as_conditional_signal():
                 "as_of": "2026-06-30T00:00:00Z",
                 "phase": "macro_verification",
                 "dominant_mainline": "real_rates_usd",
+                "priority_regime": "policy_event_cycle",
+                "priority_reason": "FOMC window prioritizes Fed path.",
                 "net_bias": "mixed",
+                "analysis_readiness": {"status": "partial", "ready_count": 4, "total_count": 9},
+                "war_oil_rate_chain": {
+                    "conclusion_code": "C",
+                    "conclusion_label": "两者抵消，黄金震荡",
+                    "net_effect": "mixed",
+                },
                 "driver_conflict": {"verification_needed": ["real_rate_response_needed"]},
                 "verification_matrix": [
                     {"label": "多源确认", "status": "pending"},
@@ -379,10 +387,14 @@ def test_build_strategy_card_uses_gold_macro_overview_as_conditional_signal():
 
     assert card.gold_macro_conditions is not None
     assert card.gold_macro_conditions["dominant_mainline"] == "real_rates_usd"
+    assert card.gold_macro_conditions["priority_regime"] == "policy_event_cycle"
+    assert card.gold_macro_conditions["analysis_readiness"]["ready_count"] == 4
+    assert card.gold_macro_conditions["war_oil_rate_chain"]["conclusion_code"] == "C"
     assert card.gold_macro_conditions["net_bias"] == "mixed"
-    assert card.trigger_conditions == [
-        "Gold macro context remains mixed with dominant mainline real_rates_usd."
-    ]
+    assert "Gold macro context remains mixed with dominant mainline real_rates_usd." in card.trigger_conditions
+    assert "Gold macro priority regime is policy_event_cycle." in card.trigger_conditions
+    assert any("Gold macro readiness partial: 4/9 mainlines ready." in item for item in card.confirmation_conditions)
+    assert any("Gold war-oil-rate chain C" in item for item in card.confirmation_conditions)
     assert any("pending verification" in item for item in card.watchlist)
     assert any("GoldMacroOverview dominant mainline changes" in item for item in card.invalid_conditions)
     combined = " ".join(card.trigger_conditions + card.confirmation_conditions + card.invalid_conditions)

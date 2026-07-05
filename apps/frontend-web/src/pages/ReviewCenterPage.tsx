@@ -6,7 +6,7 @@ import {
   ReviewCenterErrorBanner,
   ReviewCenterLoadingState,
 } from "@/components/review-center/ReviewCenterPageStates";
-import { ReviewCard, ReviewCenterSummaryCard } from "@/components/review-center/ReviewCenterSections";
+import { PromptEvolutionProposalCard, ReviewCard, ReviewCenterSummaryCard } from "@/components/review-center/ReviewCenterSections";
 import type { FATabOption } from "@/components/shared/FATabBar";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { FAWorkspaceHeader } from "@/components/shared/FAWorkspaceHeader";
@@ -17,12 +17,24 @@ import {
   listReviewModules,
 } from "@/components/review-center/reviewCenterPageModel";
 import { useReviewCenter } from "@/hooks/useReviewCenter";
+import { usePromptEvolutionProposal } from "@/hooks/usePromptEvolutionProposal";
+
+const PROMPT_EVOLUTION_AGENT_OPTIONS = [
+  { value: "event_attribution_agent", label: "EventAttribution" },
+  { value: "transmission_chain_agent", label: "TransmissionChain" },
+  { value: "driver_decomposition_agent", label: "DriverDecomposition" },
+  { value: "mainline_ranking_agent", label: "MainlineRanking" },
+  { value: "gold_macro_overview_agent", label: "GoldMacroOverview" },
+  { value: "report_render_agent", label: "ReportRender" },
+];
 
 export function ReviewCenterPage() {
   const [status, setStatus] = useState<string>("pending");
   const [sourceModule, setSourceModule] = useState("");
   const [query, setQuery] = useState("");
+  const [proposalAgentId, setProposalAgentId] = useState(PROMPT_EVOLUTION_AGENT_OPTIONS[0].value);
   const reviewCenter = useReviewCenter({ status: status === "all" ? undefined : status, sourceModule: sourceModule || undefined });
+  const promptEvolution = usePromptEvolutionProposal(proposalAgentId, 10);
 
   const filteredReviews = useMemo(() => filterReviewItems(reviewCenter.reviews, query), [query, reviewCenter.reviews]);
   const modules = useMemo(() => listReviewModules(reviewCenter.reviews), [reviewCenter.reviews]);
@@ -91,6 +103,17 @@ export function ReviewCenterPage() {
         source={reviewCenter.source}
         total={reviewCenter.total}
         filteredCount={filteredReviews.length}
+      />
+
+      <PromptEvolutionProposalCard
+        preview={promptEvolution.preview}
+        selectedAgentId={proposalAgentId}
+        agentOptions={PROMPT_EVOLUTION_AGENT_OPTIONS}
+        isLoading={promptEvolution.isLoading}
+        isError={promptEvolution.isError}
+        errorMessage={promptEvolution.error?.message}
+        onAgentChange={setProposalAgentId}
+        onRefresh={promptEvolution.refetch}
       />
 
       {filteredReviews.length > 0 ? (

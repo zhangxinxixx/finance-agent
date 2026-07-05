@@ -11,6 +11,7 @@ export const HEATMAP_GRID: HeatmapCell[][] = [
     { key: "US02Y", name: "2Y 国债", symbol: "US02Y", group: "rates" },
     { key: "REAL_10Y", name: "实际利率", symbol: "TIPS", group: "rates" },
     { key: "T10YIE", name: "通胀预期", symbol: "T10YIE", group: "rates" },
+    { key: "YIELD_SPREAD_2Y_3M", name: "短端利差", symbol: "2Y-3M", group: "rates" },
   ],
   [
     { key: "TGA", name: "财政账户", symbol: "TGA", group: "liquidity" },

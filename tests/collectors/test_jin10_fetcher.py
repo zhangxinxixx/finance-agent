@@ -65,6 +65,25 @@ def test_parse_svip_report_html_builds_markdown_with_images():
     ]
 
 
+def test_parse_svip_report_html_classifies_market_observation_report():
+    html = """
+    <html><head>
+      <meta property="og:title" content="VIP每日市场观察：市场赔率表提示降息预期升温" />
+    </head>
+    <body>
+      <div class="jin10vip-news-details-article-body">
+        <p>VIP智库每日市场观察，市场赔率表显示降息概率上行。</p>
+      </div>
+    </body></html>
+    """
+
+    report = parse_svip_report_html(html, article_id="224000", source_url="https://svip.jin10.com/news/224000")
+
+    assert report.report_type == "market_observation"
+    assert report.category == "市场观察"
+    assert "- 分类: 市场观察" in report.report_markdown
+
+
 def test_parse_svip_report_html_drops_first_title_and_last_disclaimer_images_when_enough_pages():
     html = """
     <html><body>
@@ -307,6 +326,48 @@ def test_parse_svip_report_weekly_type():
     </body></html>
     """
     report = parse_svip_report_html(html, article_id="220071", source_url="https://svip.jin10.com/news/220071")
+    assert report.report_type == "weekly"
+    assert report.category == "黄金周报"
+
+
+def test_parse_svip_report_html_classifies_stable_non_daily_categories() -> None:
+    cases = [
+        ("黄金期权持仓报告-金十数据VIP", "positioning", "持仓报告"),
+        ("现货黄金点位报告-金十数据VIP", "technical_levels", "点位报告"),
+        ("原油报告：供应端扰动升温-金十数据VIP", "oil", "原油报告"),
+        ("外汇报告：美元指数维持强势-金十数据VIP", "fx", "外汇报告"),
+    ]
+
+    for title, report_type, category in cases:
+        html = f"""
+        <html><head>
+          <meta property="og:title" content="{title}" />
+        </head>
+        <body>
+          <div class="jin10vip-news-details-article-body">
+            <p>{category}正文。</p>
+          </div>
+        </body></html>
+        """
+        report = parse_svip_report_html(html, article_id="230001", source_url="https://svip.jin10.com/news/230001")
+
+        assert report.report_type == report_type
+        assert report.category == category
+
+
+def test_parse_svip_report_weekly_hotlist_type():
+    html = """
+    <html><head>
+      <meta property="og:title" content="一周热榜精选：弱非农下加息押注退潮！大空头警告AI派对结束-金十数据VIP" />
+    </head>
+    <body>
+      <div class="jin10vip-news-details-article-body">
+        <p>现货黄金本周止跌反弹，五周来首次周线收涨。</p>
+      </div>
+    </body></html>
+    """
+    report = parse_svip_report_html(html, article_id="223594", source_url="https://svip.jin10.com/news/223594")
+
     assert report.report_type == "weekly"
     assert report.category == "黄金周报"
 

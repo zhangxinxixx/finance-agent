@@ -216,6 +216,8 @@ export interface GoldMacroOverview {
   as_of: string | null;
   phase: GoldPhase;
   dominant_mainline: GoldMainline | null;
+  priority_regime?: string;
+  priority_reason?: string;
   net_bias: GoldNetBias;
   risk_score: number | null;
   one_line_conclusion: string;

@@ -7,7 +7,7 @@ interface CorrelationMatrixProps {
   metrics: MarketMonitorMetric[];
 }
 
-const ASSET_KEYS = ["XAUUSD", "DXY", "US10Y", "REAL_10Y", "T10YIE", "TGA"] as const;
+const ASSET_KEYS = ["XAUUSD", "DXY", "US10Y", "REAL_10Y", "T10YIE", "YIELD_SPREAD_2Y_3M", "TGA"] as const;
 
 function toNumeric(value: string | number | null | undefined): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;

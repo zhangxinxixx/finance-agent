@@ -92,6 +92,15 @@ from apps.api.services.gold_mainline_service import (
     get_gold_mainlines,
     get_gold_mainlines_latest,
 )
+from apps.api.services.processing_monitor_service import (
+    get_processing_overview,
+    get_processing_trace,
+    get_processing_trace_by_event,
+    get_processing_trace_by_input,
+    get_processing_trace_by_mainline,
+    get_processing_trace_by_source_ref,
+    get_processing_trace_by_transmission_chain,
+)
 from apps.api.routes import data_source_routes
 from apps.api.routes import (
     agent_analysis_read_routes,
@@ -114,6 +123,7 @@ from apps.api.routes import (
     options_routes,
     premarket_routes,
     playbook_routes,
+    processing_monitor_routes,
     reports_routes,
     review_routes,
     settings_read_routes,
@@ -568,6 +578,7 @@ app.include_router(settings_write_routes.router)
 app.include_router(jin10_report_routes.router)
 app.include_router(news_routes.router)
 app.include_router(gold_mainline_routes.router)
+app.include_router(processing_monitor_routes.router)
 app.include_router(jin10_market_routes.router)
 app.include_router(premarket_routes.router)
 app.include_router(agent_governance_read_routes.router)
@@ -688,6 +699,13 @@ api_gold_mainlines_latest = gold_mainline_routes.api_gold_mainlines_latest
 api_gold_mainlines = gold_mainline_routes.api_gold_mainlines
 api_gold_runtime_orchestration_contract = gold_mainline_routes.api_gold_runtime_orchestration_contract
 api_gold_runtime_summary_preview = gold_mainline_routes.api_gold_runtime_summary_preview
+api_processing_overview = processing_monitor_routes.api_processing_overview
+api_processing_trace = processing_monitor_routes.api_processing_trace
+api_processing_trace_by_event = processing_monitor_routes.api_processing_trace_by_event
+api_processing_trace_by_input = processing_monitor_routes.api_processing_trace_by_input
+api_processing_trace_by_source_ref = processing_monitor_routes.api_processing_trace_by_source_ref
+api_processing_trace_by_mainline = processing_monitor_routes.api_processing_trace_by_mainline
+api_processing_trace_by_transmission_chain = processing_monitor_routes.api_processing_trace_by_transmission_chain
 api_jin10_quotes_latest = jin10_market_routes.api_jin10_quotes_latest
 api_jin10_calendar = jin10_market_routes.api_jin10_calendar
 api_jin10_flash = jin10_market_routes.api_jin10_flash
@@ -705,6 +723,7 @@ api_agent_registry_detail = agent_governance_read_routes.api_agent_registry_deta
 api_prompt_versions_list = agent_governance_read_routes.api_prompt_versions_list
 api_prompt_versions_by_agent = agent_governance_read_routes.api_prompt_versions_by_agent
 api_prompt_versions_active = agent_governance_read_routes.api_prompt_versions_active
+api_prompt_evolution_proposal = agent_governance_read_routes.api_prompt_evolution_proposal
 api_prompt_versions_create = agent_governance_write_routes.api_prompt_versions_create
 api_prompt_versions_activate = agent_governance_write_routes.api_prompt_versions_activate
 api_prompt_feedback_create = agent_governance_write_routes.api_prompt_feedback_create
@@ -834,6 +853,15 @@ _NEWS_ROUTE_DEPENDENCIES = (
 _GOLD_MAINLINE_ROUTE_DEPENDENCIES = (
     get_gold_mainlines_latest,
     get_gold_mainlines,
+)
+_PROCESSING_MONITOR_ROUTE_DEPENDENCIES = (
+    get_processing_overview,
+    get_processing_trace,
+    get_processing_trace_by_event,
+    get_processing_trace_by_input,
+    get_processing_trace_by_mainline,
+    get_processing_trace_by_source_ref,
+    get_processing_trace_by_transmission_chain,
 )
 
 

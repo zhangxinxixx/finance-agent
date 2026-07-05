@@ -259,6 +259,86 @@ class DataSourceStatus(AnalysisBase):
     )
 
 
+class MacroObservation(AnalysisBase):
+    """Queryable macro observation fact table derived from collected MacroPoint rows."""
+
+    __tablename__ = "macro_observations"
+    __table_args__ = (
+        UniqueConstraint("source_key", "symbol", "observation_date", name="uq_macro_observation_source_symbol_date"),
+        Index("ix_macro_observations_source_symbol_date", "source_key", "symbol", "observation_date"),
+        Index("ix_macro_observations_symbol_date", "symbol", "observation_date"),
+        Index("ix_macro_observations_run_id", "run_id"),
+        Index("ix_macro_observations_observation_date", "observation_date"),
+        Index("ix_macro_observations_source_refs_gin", "source_refs", postgresql_using="gin"),
+        Index("ix_macro_observations_metadata_gin", "metadata", postgresql_using="gin"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    source_key: Mapped[str] = mapped_column(String(64), nullable=False, doc="Collector/source key, e.g. fred or openbb_fred")
+    symbol: Mapped[str] = mapped_column(String(128), nullable=False, doc="Macro or market symbol")
+    observation_date: Mapped[date] = mapped_column(Date, nullable=False, doc="Observation date")
+    value: Mapped[float | None] = mapped_column(Float, nullable=True, doc="Observed numeric value")
+    unit: Mapped[str | None] = mapped_column(String(32), nullable=True, doc="Optional display/unit label")
+    frequency: Mapped[str | None] = mapped_column(String(32), nullable=True, doc="Optional observation frequency")
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True, doc="Source endpoint or public URL")
+    raw_path: Mapped[str | None] = mapped_column(String(512), nullable=True, doc="Raw artifact path when available")
+    raw_artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True, doc="Registered raw artifact id when available")
+    parsed_artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True, doc="Registered parsed artifact id when available")
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, doc="Collection timestamp")
+    run_id: Mapped[str | None] = mapped_column(String(255), nullable=True, doc="Producing run id")
+    source_refs: Mapped[list] = mapped_column(JSONB_COMPAT, nullable=False, default=list)
+    observation_metadata: Mapped[dict] = mapped_column("metadata", JSONB_COMPAT, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class FeatureSnapshot(AnalysisBase):
+    """Queryable feature snapshot table for generated feature-layer JSON artifacts."""
+
+    __tablename__ = "feature_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", name="uq_feature_snapshots_snapshot_id"),
+        UniqueConstraint(
+            "domain",
+            "snapshot_kind",
+            "asset",
+            "trade_date",
+            "run_id",
+            name="uq_feature_snapshots_domain_kind_asset_date_run",
+        ),
+        Index("ix_feature_snapshots_domain_asset_date", "domain", "asset", "trade_date"),
+        Index("ix_feature_snapshots_run_id", "run_id"),
+        Index("ix_feature_snapshots_status", "status"),
+        Index("ix_feature_snapshots_payload_gin", "payload", postgresql_using="gin"),
+        Index("ix_feature_snapshots_source_refs_gin", "source_refs", postgresql_using="gin"),
+        Index("ix_feature_snapshots_metadata_gin", "metadata", postgresql_using="gin"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    snapshot_id: Mapped[str] = mapped_column(String(255), nullable=False, doc="Stable feature snapshot id")
+    domain: Mapped[str] = mapped_column(String(64), nullable=False, doc="Feature domain, e.g. macro")
+    snapshot_kind: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="snapshot", doc="Feature artifact kind"
+    )
+    asset: Mapped[str] = mapped_column(String(32), nullable=False, default="XAUUSD")
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, doc="Feature snapshot date")
+    run_id: Mapped[str] = mapped_column(String(255), nullable=False, doc="Producing run id")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="generated")
+    payload: Mapped[dict] = mapped_column(JSONB_COMPAT, nullable=False, default=dict)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    artifact_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_refs: Mapped[list] = mapped_column(JSONB_COMPAT, nullable=False, default=list)
+    input_snapshot_ids: Mapped[dict] = mapped_column(JSONB_COMPAT, nullable=False, default=dict)
+    feature_metadata: Mapped[dict] = mapped_column("metadata", JSONB_COMPAT, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class DailySourceHealthSnapshot(AnalysisBase):
     """Persist a daily source-health snapshot derived from DataSourceStatus."""
 

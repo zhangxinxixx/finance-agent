@@ -4,6 +4,7 @@ import type {
   PromptFeedbackCreateRequest,
   PromptFeedbackItem,
   PromptFeedbackListResponse,
+  PromptEvolutionPreviewResponse,
   PromptVersionActivateRequest,
   PromptVersionCreateRequest,
   PromptVersionItem,
@@ -13,6 +14,7 @@ import type {
 const AGENT_REGISTRY_PATH = "/api/agents/registry";
 const AGENT_PROMPTS_PATH = "/api/agents/prompts";
 const AGENT_FEEDBACK_PATH = "/api/agents/feedback";
+const PROMPT_EVOLUTION_PATH = "/api/agents/prompt-evolution/proposal";
 
 export async function fetchAgentRegistry(): Promise<AgentRegistryResponse> {
   return fetchJson<AgentRegistryResponse>(AGENT_REGISTRY_PATH);
@@ -61,4 +63,11 @@ export async function fetchAgentPromptFeedback(params: {
   if (params.limit) search.set("limit", String(params.limit));
   const suffix = search.toString();
   return fetchJson<PromptFeedbackListResponse>(suffix ? `${AGENT_FEEDBACK_PATH}?${suffix}` : AGENT_FEEDBACK_PATH);
+}
+
+export async function fetchPromptEvolutionProposal(agentId: string, recentLimit = 10): Promise<PromptEvolutionPreviewResponse> {
+  const search = new URLSearchParams({ recent_limit: String(recentLimit) });
+  return fetchJson<PromptEvolutionPreviewResponse>(
+    `${PROMPT_EVOLUTION_PATH}/${encodeURIComponent(agentId)}?${search.toString()}`,
+  );
 }

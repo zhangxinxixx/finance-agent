@@ -19,8 +19,8 @@ const STAGES: Array<{ key: PipelineStageKey; label: string }> = [
 
 function countHealthy(sources: DataSourceStatusViewModel[], stageKey: PipelineStageKey): number {
   return sources.filter((s) => {
-    const h = s.pipeline_health?.stages[stageKey];
-    return h && (h.status === "OK" || h.status === "READY");
+    const h = s.pipeline_health.stages[stageKey];
+    return h.status === "OK" || h.status === "READY";
   }).length;
 }
 

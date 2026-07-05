@@ -336,6 +336,11 @@ def _step_brief(
     if not state.retrieved_date:
         state.retrieved_date = datetime.now(timezone.utc).date().isoformat()
     run_key = run_id or "manual"
+    report_input_artifacts = _load_report_input_artifacts(
+        storage_root=storage_root,
+        retrieved_date=state.retrieved_date,
+        run_id=run_key,
+    )
 
     brief = build_daily_market_brief(
         event_bundle=state.event_bundle,
@@ -343,6 +348,7 @@ def _step_brief(
         market_reactions=state.market_reactions,
         as_of=datetime.now(timezone.utc).isoformat(),
         source_refs=state.source_refs,
+        report_input_artifacts=report_input_artifacts,
     )
     brief_path = archive_daily_market_brief(
         storage_root=storage_root,
@@ -431,7 +437,25 @@ def _step_brief(
         "gold_mainline_count": len(gold_event_mainlines_payload.get("mainlines") or []),
         "gold_verification_item_count": len(gold_macro_overview.verification_matrix),
         "gold_dominant_mainline": gold_macro_overview.dominant_mainline,
+        "positioning_input_count": data_quality.get("positioning_input_count", 0),
+        "technical_level_input_count": data_quality.get("technical_level_input_count", 0),
     }
+
+
+def _load_report_input_artifacts(*, storage_root: Path, retrieved_date: str, run_id: str) -> list[dict[str, Any]]:
+    feature_dir = storage_root / "features" / "news" / retrieved_date / run_id
+    artifacts: list[dict[str, Any]] = []
+    for filename in ("positioning.json", "technical_levels.json", "market_observations.json"):
+        path = feature_dir / filename
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            artifacts.append(payload)
+    return artifacts
 
 
 def _collectors() -> list[tuple[str, Callable[..., NewsCollectionResult]]]:

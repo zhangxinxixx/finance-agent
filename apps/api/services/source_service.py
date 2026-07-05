@@ -752,6 +752,240 @@ def _source_readiness_state(source: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _stage_health(
+    status: str,
+    *,
+    message: str | None = None,
+    updated_at: str | None = None,
+    input_ref: str | None = None,
+    output_ref: str | None = None,
+) -> dict[str, Any]:
+    stage: dict[str, Any] = {"status": status}
+    if message:
+        stage["message"] = message
+    if updated_at:
+        stage["updated_at"] = updated_at
+    if input_ref:
+        stage["input_ref"] = input_ref
+    if output_ref:
+        stage["output_ref"] = output_ref
+    return stage
+
+
+def _artifact_item(key: str, label: str, layer: str, path: str | None) -> dict[str, str] | None:
+    if not isinstance(path, str) or not path.strip():
+        return None
+    return {"key": key, "label": label, "layer": layer, "path": path.strip()}
+
+
+def _dedupe_artifact_items(items: list[dict[str, str] | None]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        if not item:
+            continue
+        key = (item["layer"], item["path"])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _source_artifact_evidence(source: dict[str, Any]) -> dict[str, Any]:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    latest_raw_ref = metadata.get("latest_raw_ref") if isinstance(metadata.get("latest_raw_ref"), dict) else {}
+    collector_raw = _first_non_empty(
+        metadata.get("collector_raw_artifact_path"),
+        metadata.get("raw_artifact_path"),
+        metadata.get("raw_path"),
+        latest_raw_ref.get("raw_path"),
+    )
+    collector_parsed = _first_non_empty(
+        metadata.get("collector_parsed_artifact_path"),
+        metadata.get("parsed_artifact_path"),
+        metadata.get("parsed_path"),
+        latest_raw_ref.get("parsed_path"),
+    )
+    preferred = _first_non_empty(
+        metadata.get("artifact_path"),
+        metadata.get("brief_artifact_path"),
+        metadata.get("daily_analysis_triggers_artifact_path"),
+        metadata.get("article_briefs_artifact_path"),
+        metadata.get("event_candidates_artifact_path"),
+        metadata.get("impact_assessments_artifact_path"),
+        metadata.get("report_events_artifact_path"),
+        collector_parsed,
+        collector_raw,
+    )
+    raw_artifacts = _dedupe_artifact_items(
+        [
+            _artifact_item("collector_raw", "Collector raw", "raw", collector_raw),
+            _artifact_item("latest_raw_ref", "Latest raw ref", "raw", latest_raw_ref.get("raw_path")),
+        ]
+    )
+    parsed_artifacts = _dedupe_artifact_items(
+        [
+            _artifact_item("collector_parsed", "Collector parsed", "parsed", collector_parsed),
+            _artifact_item("latest_raw_ref_parsed", "Latest parsed ref", "parsed", latest_raw_ref.get("parsed_path")),
+        ]
+    )
+    feature_artifacts = _dedupe_artifact_items(
+        [
+            _artifact_item("brief", "Daily market brief", "features", metadata.get("brief_artifact_path")),
+            _artifact_item("daily_analysis_triggers", "Daily analysis triggers", "features", metadata.get("daily_analysis_triggers_artifact_path")),
+            _artifact_item("article_briefs", "Jin10 article briefs", "features", metadata.get("article_briefs_artifact_path")),
+            _artifact_item("event_candidates", "Event candidates", "features", metadata.get("event_candidates_artifact_path")),
+            _artifact_item("impact_assessments", "Impact assessments", "features", metadata.get("impact_assessments_artifact_path")),
+            _artifact_item("market_reactions", "Market reactions", "features", metadata.get("market_reactions_artifact_path")),
+            _artifact_item("report_events", "Report events", "features", metadata.get("report_events_artifact_path")),
+            _artifact_item("collection_diagnostics", "Collection diagnostics", "features", metadata.get("collection_diagnostics_artifact_path")),
+            _artifact_item("preferred", "Preferred artifact", "features", preferred if str(preferred or "").startswith("storage/features/") else None),
+        ]
+    )
+    analysis_artifacts = _dedupe_artifact_items(
+        [
+            _artifact_item("analysis", "Analysis artifact", "analysis", metadata.get("analysis_artifact_path")),
+            _artifact_item("snapshot", "Analysis snapshot", "analysis", metadata.get("snapshot_artifact_path")),
+        ]
+    )
+    return {
+        "preferred_artifact_path": preferred,
+        "collector_raw_artifact_path": collector_raw,
+        "collector_parsed_artifact_path": collector_parsed,
+        "latest_raw_url": metadata.get("latest_raw_url"),
+        "raw_artifacts": raw_artifacts,
+        "parsed_artifacts": parsed_artifacts,
+        "feature_artifacts": feature_artifacts,
+        "analysis_artifacts": analysis_artifacts,
+    }
+
+
+def _latest_data_date(source: dict[str, Any]) -> str | None:
+    latest = _max_iso_datetime(source.get("latest_update_time"), source.get("latest_parsed_time"), source.get("latest_raw_time"))
+    return latest[:10] if isinstance(latest, str) and len(latest) >= 10 else None
+
+
+def _staleness_days(latest_data_date: str | None) -> int | None:
+    if not latest_data_date:
+        return None
+    try:
+        latest_dt = datetime.fromisoformat(latest_data_date).date()
+    except ValueError:
+        return None
+    return (_utc_now().date() - latest_dt).days
+
+
+def _affected_modules_for_source(source: dict[str, Any]) -> list[str]:
+    source_group = str(source.get("source_group") or "")
+    return list(_SOURCE_REQUIRED_FOR_BY_GROUP.get(source_group, [source_group or "unknown"]))
+
+
+def _source_pipeline_health(source: dict[str, Any], artifact_evidence: dict[str, Any]) -> dict[str, Any]:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    source_key = str(source.get("source_key") or "")
+    source_group = str(source.get("source_group") or "unknown")
+    source_name = str(metadata.get("frontend_label") or source.get("source_name") or source_key)
+    configured = bool(source.get("configured"))
+    raw_ingested = bool(source.get("raw_ingested"))
+    parsed = bool(source.get("parsed"))
+    analysis_ready = bool(source.get("analysis_ready"))
+    status = str(source.get("status") or "").strip().lower()
+    error_message = str(source.get("error_message") or "").strip()
+    snapshot_id = source.get("latest_snapshot_id")
+    raw_ref = artifact_evidence.get("collector_raw_artifact_path")
+    parsed_ref = artifact_evidence.get("collector_parsed_artifact_path")
+    preferred_ref = artifact_evidence.get("preferred_artifact_path")
+    latest_raw_time = source.get("latest_raw_time")
+    latest_parsed_time = source.get("latest_parsed_time")
+    latest_update_time = source.get("latest_update_time")
+
+    has_raw_evidence = raw_ingested or bool(raw_ref) or bool(latest_raw_time)
+    has_parsed_evidence = parsed or bool(parsed_ref) or bool(latest_parsed_time)
+    failed = status in {"error", "failed", "not_connected", "unavailable"}
+
+    connection = _stage_health("OK" if configured else "ERROR", message=None if configured else "not configured")
+    if not configured:
+        collect = _stage_health("BLOCKED", message="upstream not configured")
+        raw_landing = _stage_health("BLOCKED")
+        parse = _stage_health("BLOCKED")
+        validate = _stage_health("BLOCKED")
+        snapshot = _stage_health("BLOCKED")
+        consumer_ready = _stage_health("BLOCKED")
+    else:
+        if has_raw_evidence:
+            collect = _stage_health("OK", updated_at=latest_raw_time, output_ref=raw_ref)
+            raw_landing = _stage_health("OK", updated_at=latest_raw_time, output_ref=raw_ref)
+        elif failed:
+            collect = _stage_health("ERROR", message=error_message or "collection failed")
+            raw_landing = _stage_health("NO_DATA")
+        else:
+            collect = _stage_health("NO_DATA", message="no data collected")
+            raw_landing = _stage_health("NO_DATA")
+
+        if has_parsed_evidence:
+            parse = _stage_health("OK", updated_at=latest_parsed_time, input_ref=raw_ref, output_ref=parsed_ref)
+        elif has_raw_evidence:
+            parse = _stage_health("WARN" if status in {"partial", "stale", "warn", "rate_limited"} else "ERROR", message="raw ingested but parse incomplete", input_ref=raw_ref)
+        else:
+            parse = _stage_health("BLOCKED", message="no raw data")
+
+        if has_parsed_evidence:
+            validate = _stage_health("OK" if status == "ok" else "WARN", message=None if status == "ok" else "degraded quality", input_ref=parsed_ref)
+        else:
+            validate = _stage_health("BLOCKED", message="parse not ready")
+
+        if analysis_ready:
+            snapshot = _stage_health("READY", message="analysis ready", input_ref=preferred_ref, output_ref=snapshot_id)
+            consumer_ready = _stage_health("READY", input_ref=snapshot_id or preferred_ref)
+        elif snapshot_id:
+            snapshot = _stage_health("READY", message="snapshot available", input_ref=preferred_ref, output_ref=snapshot_id)
+            consumer_ready = _stage_health("WARN", message="using snapshot without analysis_ready", input_ref=snapshot_id)
+        elif has_parsed_evidence:
+            snapshot = _stage_health("NO_SNAPSHOT", message="parsed but no snapshot yet", input_ref=parsed_ref)
+            consumer_ready = _stage_health("WARN", message="partial availability", input_ref=parsed_ref)
+        else:
+            snapshot = _stage_health("BLOCKED", message="upstream incomplete")
+            consumer_ready = _stage_health("BLOCKED", message="upstream incomplete")
+
+    gate_state = str(source.get("gate_state") or metadata.get("gate_state") or "").lower()
+    if analysis_ready and gate_state in {"", "open"}:
+        downstream_status = "READY"
+    elif gate_state == "closed" and not has_parsed_evidence:
+        downstream_status = "BLOCKED"
+    elif has_parsed_evidence or snapshot_id or analysis_ready:
+        downstream_status = "DEGRADED"
+    else:
+        downstream_status = "BLOCKED"
+
+    latest_data_date = _latest_data_date(source)
+    return {
+        "source_id": source_key,
+        "source_name": source_name,
+        "source_type": str(source.get("source_type") or "unknown"),
+        "domain": source_group,
+        "priority": str(metadata.get("provider_role") or "derived"),
+        "stages": {
+            "connection": connection,
+            "collect": collect,
+            "raw_landing": raw_landing,
+            "parse": parse,
+            "validate": validate,
+            "snapshot": snapshot,
+            "consumer_ready": consumer_ready,
+        },
+        "latest_run_id": source.get("last_run_id"),
+        "snapshot_id": snapshot_id,
+        "raw_artifact_ref": raw_ref,
+        "fact_table": next(iter(metadata.get("database_tables") or []), None),
+        "affected_modules": _affected_modules_for_source(source),
+        "downstream_status": downstream_status,
+        "latest_data_date": latest_data_date,
+        "staleness_days": _staleness_days(latest_data_date),
+        "latest_update_time": latest_update_time,
+    }
+
+
 def _source_latest_health_at(source: dict[str, Any]) -> str | None:
     metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
     cooldown = metadata.get("latest_cooldown") if isinstance(metadata.get("latest_cooldown"), dict) else {}
@@ -969,6 +1203,10 @@ def _augment_source_observability(source: dict[str, Any]) -> dict[str, Any]:
     readiness = _source_readiness_state(result)
     metadata.update(readiness)
     result.update(readiness)
+    artifact_evidence = _source_artifact_evidence(result)
+    result["artifact_evidence"] = artifact_evidence
+    result["affected_modules"] = _affected_modules_for_source(result)
+    result["pipeline_health"] = _source_pipeline_health(result, artifact_evidence)
     return result
 
 

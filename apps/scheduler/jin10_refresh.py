@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,8 @@ _CACHE_PATH = Path("./storage/outputs/jin10/quotes_cache.json")
 _CALENDAR_CACHE_PATH = Path("./storage/outputs/jin10/calendar_cache.json")
 _JIN10_MCP_URL = "https://mcp.jin10.com/mcp"
 _JIN10_MCP_KEY_ENV = "JIN10_MCP_KEY"
+_JIN10_CALENDAR_PAST_WINDOW_DAYS = 7
+_JIN10_CALENDAR_FUTURE_WINDOW_DAYS = 14
 
 QUOTE_SYMBOLS = [
     "XAUUSD",
@@ -67,6 +69,41 @@ def _coerce_float(value: Any) -> float | None:
         return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return None
+
+
+def _parse_jin10_calendar_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    normalized = value.strip().replace("Z", "+00:00")
+    if "T" not in normalized and " " in normalized:
+        normalized = normalized.replace(" ", "T", 1)
+
+    candidates = [normalized]
+    if len(normalized) == 16:
+        candidates.append(f"{normalized}:00")
+
+    for candidate in candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _jin10_calendar_window(now: datetime | None = None) -> tuple[datetime, datetime]:
+    anchor = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+    start = datetime.combine(anchor - timedelta(days=_JIN10_CALENDAR_PAST_WINDOW_DAYS), datetime.min.time(), timezone.utc)
+    end = datetime.combine(anchor + timedelta(days=_JIN10_CALENDAR_FUTURE_WINDOW_DAYS), datetime.max.time(), timezone.utc)
+    return start, end
+
+
+def _is_jin10_calendar_event_in_window(event: dict[str, Any], *, window_start: datetime, window_end: datetime) -> bool:
+    parsed_time = _parse_jin10_calendar_time(event.get("pub_time"))
+    return parsed_time is not None and window_start <= parsed_time <= window_end
 
 
 def refresh_jin10_quotes_cache() -> None:
@@ -329,10 +366,11 @@ def refresh_jin10_calendar_cache() -> None:
                 sc = result.get("structuredContent", {})
                 if isinstance(sc, dict) and sc.get("status") == 200:
                     events = sc.get("data", [])
-                    # Filter to future/high-impact events, sort by time
+                    window_start, window_end = _jin10_calendar_window()
                     filtered = [
                         e for e in events
-                        if e.get("actual") is None or (e.get("star", 0) >= 3)
+                        if isinstance(e, dict)
+                        and _is_jin10_calendar_event_in_window(e, window_start=window_start, window_end=window_end)
                     ]
                     _CALENDAR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
                     payload = {

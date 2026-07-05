@@ -66,6 +66,7 @@ def _temporary_env_var(key: str, value: str | None):
 FRED_RATE_SYMBOLS: tuple[str, ...] = (
     "DGS10",
     "DGS2",
+    "DGS3MO",
     "DGS30",
     "DFII10",
     "DFII5",

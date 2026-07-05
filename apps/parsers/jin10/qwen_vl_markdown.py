@@ -13,12 +13,16 @@ import cv2
 import httpx
 from dotenv import load_dotenv
 
+from apps.llm.gateway import chat_sync
 from apps.runtime.secret_resolver import resolve_runtime_secret
 
 
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_VISION_PROVIDER = "mimo"
+DEFAULT_MIMO_VL_MODEL = "mimo-v2.5"
 DEFAULT_QWEN_VL_MODEL = "qwen3-vl-flash"
-DEFAULT_QWEN_VL_TIMEOUT = 90.0
+DEFAULT_VISION_MODEL = DEFAULT_MIMO_VL_MODEL
+DEFAULT_VISION_TIMEOUT = 90.0
 MAX_IMAGE_DATA_URL_CHARS = 9_500_000
 SUPPORTED_RAW_IMAGE_MIME_TYPES = {
     ".png": "image/png",
@@ -29,7 +33,7 @@ SUPPORTED_RAW_IMAGE_MIME_TYPES = {
 
 
 class MissingDashScopeApiKey(RuntimeError):
-    """Raised when Qwen VL recognition is requested but no API key is configured."""
+    """Raised when legacy DashScope / Qwen VL recognition is requested but no API key is configured."""
 
 
 @dataclass(slots=True)
@@ -40,7 +44,7 @@ class EncodedImage:
 
 
 class DashScopeChatCompletionClient:
-    """Minimal DashScope compatible-mode client for Jin10 Qwen VLM."""
+    """Legacy DashScope-compatible client kept for compatibility tests."""
 
     def __init__(self, *, api_key: str, base_url: str, timeout: float) -> None:
         self._url = base_url.rstrip("/") + "/chat/completions"
@@ -50,7 +54,14 @@ class DashScopeChatCompletionClient:
             "Content-Type": "application/json",
         }
 
-    def create(self, *, model: str, messages: list[dict[str, Any]], temperature: float = 0, extra_body: dict[str, Any] | None = None) -> str:
+    def create(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        temperature: float = 0,
+        extra_body: dict[str, Any] | None = None,
+    ) -> str:
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -69,21 +80,25 @@ class DashScopeChatCompletionClient:
 
 
 class DashScopeVisionMarkdownClient:
+    """Vision markdown client that now defaults to MiMo multi-modal."""
+
     def __init__(
         self,
         *,
-        api_key: str | None = None,
-        base_url: str = DASHSCOPE_BASE_URL,
+        provider: str | None = None,
         model: str | None = None,
         timeout: float | None = None,
     ) -> None:
         load_dotenv()
-        resolved_api_key = (api_key or resolve_runtime_secret("DASHSCOPE_API_KEY") or "").strip()
-        if not resolved_api_key:
-            raise MissingDashScopeApiKey("DASHSCOPE_API_KEY is not configured")
-        self.model = model or os.getenv("JIN10_QWEN_VL_MODEL", DEFAULT_QWEN_VL_MODEL)
-        self.timeout = float(timeout or os.getenv("JIN10_QWEN_VL_TIMEOUT", DEFAULT_QWEN_VL_TIMEOUT))
-        self._client = DashScopeChatCompletionClient(api_key=resolved_api_key, base_url=base_url, timeout=self.timeout)
+        self.provider = self._resolve_provider(provider)
+        self.model = self._resolve_model(model)
+        self.timeout = float(timeout or os.getenv("JIN10_VISION_TIMEOUT", DEFAULT_VISION_TIMEOUT))
+        self._legacy_qwen_enabled = self.provider in {"dashscope", "qwen"}
+        if self._legacy_qwen_enabled:
+            resolved_api_key = (resolve_runtime_secret("DASHSCOPE_API_KEY") or "").strip()
+            if not resolved_api_key:
+                raise MissingDashScopeApiKey("DASHSCOPE_API_KEY is not configured")
+        self._base_url = self._resolve_base_url()
 
     def recognize_page_markdown(
         self,
@@ -91,6 +106,7 @@ class DashScopeVisionMarkdownClient:
         image_path: Path,
         page_no: int,
         figures: list[dict[str, Any]],
+        report_type: str | None = None,
     ) -> dict[str, Any]:
         if not image_path.is_file():
             return {
@@ -112,27 +128,13 @@ class DashScopeVisionMarkdownClient:
                 "model": self.model,
             }
 
-        content = self._client.create(
-            model=self.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": encoded_image.data_url,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": _build_page_markdown_prompt(page_no=page_no, figures=figures),
-                        },
-                    ],
-                }
-            ],
-            temperature=0,
-            extra_body={"enable_thinking": False},
+        content = self._chat_with_image(
+            image_data_url=encoded_image.data_url,
+            text_prompt=_build_page_markdown_prompt(
+                page_no=page_no,
+                figures=figures,
+                prompt_profile=_prompt_profile_for_report_type(report_type),
+            ),
         )
         normalized = normalize_page_markdown(_strip_markdown_fences(content), figures)
         return {
@@ -176,35 +178,17 @@ class DashScopeVisionMarkdownClient:
                 "model": self.model,
             }
 
-        content = self._client.create(
-            model=self.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": encoded_image.data_url,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": _build_page_layout_prompt(
-                                page_no=page_no,
-                                page_width=encoded_image.width,
-                                page_height=encoded_image.height,
-                                original_page_width=page_width,
-                                original_page_height=page_height,
-                                expected_chart_count=expected_chart_count,
-                                hint_titles=hint_titles or [],
-                            ),
-                        },
-                    ],
-                }
-            ],
-            temperature=0,
-            extra_body={"enable_thinking": False},
+        content = self._chat_with_image(
+            image_data_url=encoded_image.data_url,
+            text_prompt=_build_page_layout_prompt(
+                page_no=page_no,
+                page_width=encoded_image.width,
+                page_height=encoded_image.height,
+                original_page_width=page_width,
+                original_page_height=page_height,
+                expected_chart_count=expected_chart_count,
+                hint_titles=hint_titles or [],
+            ),
         )
         payload = _parse_layout_json(content)
         blocks = _normalize_layout_blocks(
@@ -243,6 +227,7 @@ class DashScopeVisionMarkdownClient:
         page_no: int,
         page_width: int,
         page_height: int,
+        report_type: str | None = None,
     ) -> dict[str, Any]:
         if not image_path.is_file():
             return {
@@ -270,33 +255,16 @@ class DashScopeVisionMarkdownClient:
                 "model": self.model,
             }
 
-        content = self._client.create(
-            model=self.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": encoded_image.data_url,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": _build_page_unified_prompt(
-                                page_no=page_no,
-                                page_width=encoded_image.width,
-                                page_height=encoded_image.height,
-                                original_page_width=page_width,
-                                original_page_height=page_height,
-                            ),
-                        },
-                    ],
-                }
-            ],
-            temperature=0,
-            extra_body={"enable_thinking": False},
+        content = self._chat_with_image(
+            image_data_url=encoded_image.data_url,
+            text_prompt=_build_page_unified_prompt(
+                page_no=page_no,
+                page_width=encoded_image.width,
+                page_height=encoded_image.height,
+                original_page_width=page_width,
+                original_page_height=page_height,
+                prompt_profile=_prompt_profile_for_report_type(report_type),
+            ),
         )
         payload = _parse_layout_json(content)
         blocks = _normalize_layout_blocks(
@@ -336,32 +304,68 @@ class DashScopeVisionMarkdownClient:
         image: Any,
     ) -> str:
         encoded_image = _image_array_to_data_url(image)
-        content = self._client.create(
-            model=self.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": encoded_image.data_url,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": _build_title_band_prompt(
-                                page_width=encoded_image.width,
-                                page_height=encoded_image.height,
-                            ),
-                        },
-                    ],
-                }
-            ],
-            temperature=0,
-            extra_body={"enable_thinking": False},
+        content = self._chat_with_image(
+            image_data_url=encoded_image.data_url,
+            text_prompt=_build_title_band_prompt(
+                page_width=encoded_image.width,
+                page_height=encoded_image.height,
+            ),
         )
         return _normalize_title_band_text(content)
+
+    def _resolve_provider(self, provider: str | None) -> str:
+        value = (provider or os.getenv("JIN10_VISION_PROVIDER") or DEFAULT_VISION_PROVIDER).strip().lower()
+        if value in {"dashscope", "qwen"}:
+            return "dashscope"
+        if value in {"mimo", "mi-mo", "mimo2.5", "mimo-2.5"}:
+            return "mimo"
+        return "mimo"
+
+    def _resolve_model(self, model: str | None) -> str:
+        if model:
+            return model.strip()
+        if self.provider == "dashscope":
+            legacy = os.getenv("JIN10_QWEN_VL_MODEL", "").strip()
+            if legacy:
+                return legacy
+            return DEFAULT_QWEN_VL_MODEL
+        modern = os.getenv("JIN10_MIMO_VL_MODEL", "").strip()
+        if modern:
+            return modern
+        legacy = os.getenv("JIN10_QWEN_VL_MODEL", "").strip()
+        if legacy:
+            return legacy
+        return DEFAULT_VISION_MODEL
+
+    def _resolve_base_url(self) -> str:
+        if self.provider == "dashscope":
+            return os.getenv("JIN10_QWEN_VL_BASE_URL", DASHSCOPE_BASE_URL)
+        return os.getenv("JIN10_MIMO_VL_BASE_URL", "").strip() or ""
+
+    def _chat_with_image(self, *, image_data_url: str, text_prompt: str) -> str:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_data_url},
+                    },
+                    {"type": "text", "text": text_prompt},
+                ],
+            }
+        ]
+        kwargs: dict[str, Any] = {
+            "messages": messages,
+            "model": self.model,
+            "temperature": 0,
+            "max_tokens": 4096,
+            "provider": self.provider,
+        }
+        if self.provider == "dashscope":
+            kwargs["max_retries"] = 0
+        response = chat_sync(**kwargs)
+        return response.content
 
 
 def recognize_pages_as_markdown(
@@ -369,8 +373,10 @@ def recognize_pages_as_markdown(
     figures: list[dict[str, Any]],
     *,
     client: DashScopeVisionMarkdownClient | None = None,
+    report_type: str | None = None,
 ) -> dict[str, Any]:
     recognizer = client or DashScopeVisionMarkdownClient()
+    prompt_profile = _prompt_profile_for_report_type(report_type)
     figure_map: dict[int, list[dict[str, Any]]] = {}
     for figure in figures:
         figure_map.setdefault(int(figure["page_no"]), []).append(figure)
@@ -385,7 +391,12 @@ def recognize_pages_as_markdown(
             model=recognizer.model,
             image_path=image_path,
             page_no=page_no,
-            payload_hint={"figures": page_figures},
+            payload_hint={
+                "prompt_version": "markdown-v2-shell-aware",
+                "prompt_profile": prompt_profile,
+                "report_type": _normalize_report_type(report_type),
+                "figures": page_figures,
+            },
         )
         if cached is not None:
             print(f"[jin10-vlm] markdown page {page_no}: cache hit", file=sys.stderr, flush=True)
@@ -396,6 +407,7 @@ def recognize_pages_as_markdown(
             image_path=image_path,
             page_no=page_no,
             figures=page_figures,
+            report_type=report_type,
         )
         print(
             f"[jin10-vlm] markdown page {page_no}: {result.get('status') or 'done'}",
@@ -407,12 +419,17 @@ def recognize_pages_as_markdown(
             model=recognizer.model,
             image_path=image_path,
             page_no=page_no,
-            payload_hint={"figures": page_figures},
+            payload_hint={
+                "prompt_version": "markdown-v2-shell-aware",
+                "prompt_profile": prompt_profile,
+                "report_type": _normalize_report_type(report_type),
+                "figures": page_figures,
+            },
             result=result,
         )
         page_results.append(result)
     return {
-        "provider": "dashscope",
+        "provider": recognizer.provider,
         "model": recognizer.model,
         "pages": page_results,
     }
@@ -422,14 +439,18 @@ def recognize_pages_unified(
     pages: list[dict[str, Any]],
     *,
     client: DashScopeVisionMarkdownClient | None = None,
+    report_type: str | None = None,
 ) -> dict[str, Any]:
     recognizer = client or DashScopeVisionMarkdownClient()
+    prompt_profile = _prompt_profile_for_report_type(report_type)
     page_results: list[dict[str, Any]] = []
     for page in pages:
         page_no = int(page["page_no"])
         image_path = Path(str(page["image_path"]))
         payload_hint = {
-            "prompt_version": "unified-v1-markdown-and-layout",
+            "prompt_version": "unified-v2-shell-aware-markdown-and-layout",
+            "prompt_profile": prompt_profile,
+            "report_type": _normalize_report_type(report_type),
             "page_width": int(page.get("width") or 0),
             "page_height": int(page.get("height") or 0),
         }
@@ -450,6 +471,7 @@ def recognize_pages_unified(
             page_no=page_no,
             page_width=payload_hint["page_width"],
             page_height=payload_hint["page_height"],
+            report_type=report_type,
         )
         print(
             f"[jin10-vlm] unified page {page_no}: {result.get('status') or 'done'}",
@@ -466,7 +488,7 @@ def recognize_pages_unified(
         )
         page_results.append(result)
     return {
-        "provider": "dashscope",
+        "provider": recognizer.provider,
         "model": recognizer.model,
         "pages": page_results,
     }
@@ -483,7 +505,7 @@ def recognize_pages_layout(
         page_no = int(page["page_no"])
         image_path = Path(str(page["image_path"]))
         payload_hint = {
-            "prompt_version": "layout-v4-sent-image-or-normalized-coordinate-space",
+            "prompt_version": "layout-v5-shell-aware-image-or-normalized-coordinate-space",
             "page_width": int(page.get("width") or 0),
             "page_height": int(page.get("height") or 0),
             "expected_chart_count": int(page.get("expected_chart_count") or 0),
@@ -524,7 +546,7 @@ def recognize_pages_layout(
         )
         page_results.append(result)
     return {
-        "provider": "dashscope",
+        "provider": recognizer.provider,
         "model": recognizer.model,
         "pages": page_results,
     }
@@ -634,12 +656,44 @@ def _page_cache_key(*, kind: str, model: str, image_path: Path, page_no: int, pa
     return hasher.hexdigest()[:24]
 
 
-def _build_page_markdown_prompt(*, page_no: int, figures: list[dict[str, Any]]) -> str:
+def _normalize_report_type(report_type: str | None) -> str:
+    return str(report_type or "").strip().lower()
+
+
+def _prompt_profile_for_report_type(report_type: str | None) -> str:
+    value = _normalize_report_type(report_type)
+    if value in {"positioning", "technical_levels", "oil", "fx"}:
+        return value
+    return "default"
+
+
+def _build_page_markdown_prompt(
+    *,
+    page_no: int,
+    figures: list[dict[str, Any]],
+    prompt_profile: str = "default",
+) -> str:
+    if prompt_profile == "positioning":
+        return _build_positioning_page_markdown_prompt(page_no=page_no, figures=figures)
+    if prompt_profile == "technical_levels":
+        return _build_technical_levels_page_markdown_prompt(page_no=page_no, figures=figures)
+    if prompt_profile == "oil":
+        return _build_oil_page_markdown_prompt(page_no=page_no, figures=figures)
+    if prompt_profile == "fx":
+        return _build_fx_page_markdown_prompt(page_no=page_no, figures=figures)
+    return _build_default_page_markdown_prompt(page_no=page_no, figures=figures)
+
+
+def _figure_prompt_block(figures: list[dict[str, Any]]) -> str:
     figure_lines = []
     for figure in figures:
         title = figure.get("title") or figure.get("figure_id") or "图表"
         figure_lines.append(f"- {title}: ![{title}]({figure['chart_image_path']})")
-    figure_block = "\n".join(figure_lines) if figure_lines else "- 本页没有已裁剪图表"
+    return "\n".join(figure_lines) if figure_lines else "- 本页没有已裁剪图表"
+
+
+def _build_default_page_markdown_prompt(*, page_no: int, figures: list[dict[str, Any]]) -> str:
+    figure_block = _figure_prompt_block(figures)
     return f"""请把这张金十金银报告第 {page_no} 页逐字转写为 Markdown 原文。你是 OCR 转写器，不是摘要器，不要做市场分析。
 
 要求：
@@ -649,6 +703,77 @@ def _build_page_markdown_prompt(*, page_no: int, figures: list[dict[str, Any]]) 
 4. 如果页面没有图表，只输出识别到的文字。
 5. 不要概括、不要压缩、不要改写、不要把多段内容合并成一句话。
 6. 不要编造缺失内容，不要解释你的处理过程，只输出 Markdown。
+7. 如果这一页是“封面/日期/导语/目录/免责声明”的壳页，只保留真正可读的导语或摘要正文。
+8. 对壳页不要输出重复的报告总标题、日期、目录条目、联系方式、VIP 系列列表、免责声明。
+9. 如果除了这些壳信息外没有正文，就返回空字符串。
+
+本页可用图表图片：
+{figure_block}
+"""
+
+
+def _build_positioning_page_markdown_prompt(*, page_no: int, figures: list[dict[str, Any]]) -> str:
+    figure_block = _figure_prompt_block(figures)
+    return f"""请把这张金十持仓/期权分布报告第 {page_no} 页转写为 Markdown。你是结构化 OCR，不是分析师，不要给交易建议。
+
+要求：
+1. 页面标题类似“黄金持仓报告/白银持仓报告/欧元持仓报告/英镑持仓报告/澳元持仓报告”时，不要判定为封面，必须转写。
+2. 对左右两栏“看涨期权/看跌期权”的图页，必须保留资产名称、两栏名称、图例含义（存量、单日新增/减）、价格/行权价轴范围和单位。
+3. 图内最突出的单日新增/减柱、最大存量峰值、明显行权价/价格位要用项目符号列出；不确定图内数值写“约”，不要编造精确值。
+4. 文字总结页必须逐项原样保留“期货持仓量、期货成交量、期权布局变化、期现价差、总结”中的数字、百分比、手数、价格位、增减方向和单位。
+5. 不输出页眉、页脚、免责声明、网址和联系方式。
+6. 不要概括、压缩或改写原文；只输出 Markdown。
+
+本页可用图表图片：
+{figure_block}
+"""
+
+
+def _build_technical_levels_page_markdown_prompt(*, page_no: int, figures: list[dict[str, Any]]) -> str:
+    figure_block = _figure_prompt_block(figures)
+    return f"""请把这张金十技术刘Pro/点位报告第 {page_no} 页转写为 Markdown。你是 OCR 转写器，不是摘要器，不做市场分析。
+
+要求：
+1. 保留品种名称，例如国际现货黄金、国际现货白银，以及“筹码形态”“形态解释”等栏目。
+2. 必须保留图中明确标注的关键点位和缩写：VAH、VAL、POC、OTC、开/高/低/收、涨跌幅、时间周期、报价。
+3. TradingHero/筹码分布图可插入给定 Markdown 图片，但正文里要同步保留图上可读的 VAH/VAL/POC 和形态结论文字。
+4. 对图表内部难以精确读取的蜡烛细节不要编造；可读标签和正文精确数字必须原样保留。
+5. 不输出页眉、页脚、免责声明、网址、联系方式。
+6. 不要概括、压缩、改写；只输出 Markdown。
+
+本页可用图表图片：
+{figure_block}
+"""
+
+
+def _build_oil_page_markdown_prompt(*, page_no: int, figures: list[dict[str, Any]]) -> str:
+    figure_block = _figure_prompt_block(figures)
+    return f"""请把这张金十每日原油报告第 {page_no} 页转写为 Markdown。你是 OCR 转写器，不做市场分析。
+
+要求：
+1. 封面/目录页只保留报告标题、日期、导语核心句和目录；不要输出联系方式、VIP 系列列表和免责声明。
+2. 正文页按原顺序保留栏目标题，例如行情回顾、隔夜要闻、今日原油市场聚焦、市场分析、关键图表、技术指标。
+3. 原样保留 WTI、布伦特、EIA、API、OPEC、CFTC、霍尔木兹海峡、库存、钻井、裂解价差、期限结构等原油相关实体和指标。
+4. 必须保留价格、百分比、桶/日、万桶、日期、合约月份、价差等数字和单位。
+5. 图表页插入给定 Markdown 图片，并保留图表标题、数据来源、可读坐标轴名称和图后说明；不要编造看不清的序列数值。
+6. 不输出页眉、页脚、免责声明、网址、联系方式；只输出 Markdown。
+
+本页可用图表图片：
+{figure_block}
+"""
+
+
+def _build_fx_page_markdown_prompt(*, page_no: int, figures: list[dict[str, Any]]) -> str:
+    figure_block = _figure_prompt_block(figures)
+    return f"""请把这张金十每日外汇报告第 {page_no} 页转写为 Markdown。你是 OCR 转写器，不做市场分析。
+
+要求：
+1. 封面/目录页只保留报告标题、日期、导语核心句和目录；不要输出联系方式、VIP 系列列表和免责声明。
+2. 正文页按原顺序保留栏目标题，例如行情回顾、隔夜要闻、中东局势、市场分析、关键图表、技术指标。
+3. 原样保留美元指数、美债收益率、FedWatch、PCE、核心PCE、实际利率、欧洲央行、主要货币和央行相关实体。
+4. 必须保留指数点位、收益率、百分比、日期、预期概率、利差、通胀指标等数字和单位。
+5. 图表页插入给定 Markdown 图片，并保留图表标题、数据来源、坐标轴名称和图后说明；不要编造看不清的序列数值。
+6. 不输出页眉、页脚、免责声明、网址、联系方式；只输出 Markdown。
 
 本页可用图表图片：
 {figure_block}
@@ -662,8 +787,37 @@ def _build_page_unified_prompt(
     page_height: int,
     original_page_width: int,
     original_page_height: int,
+    prompt_profile: str = "default",
 ) -> str:
-    return f"""你是金十金银图片报告的单页 OCR 与图表定位器，不做市场分析。
+    if prompt_profile == "positioning":
+        profile_rules = """分类规则：持仓/期权分布报告。
+1. 标题类似“黄金持仓报告/白银持仓报告/欧元持仓报告/英镑持仓报告/澳元持仓报告”时，不要判定为封面。
+2. markdown 必须保留资产名称、看涨期权/看跌期权两栏、图例（存量、单日新增/减）、行权价/价格轴范围、最突出的存量峰值和单日增减位置；图内难以精确读取的数值用“约”。
+3. 文字总结页必须逐字保留期货持仓量、期货成交量、期权布局变化、期现价差、总结及其中数字/百分比/手数/价格位。
+4. blocks 中左右两栏可以分别作为 chart block，也可以返回覆盖两栏的 chart block，但要有 title/text block 标明资产和两栏名称。"""
+    elif prompt_profile == "technical_levels":
+        profile_rules = """分类规则：技术刘Pro/点位报告。
+1. markdown 必须保留品种名称、筹码形态、形态解释、VAH、VAL、POC、OTC、开/高/低/收、报价、涨跌幅和周期。
+2. TradingHero/筹码分布图插入图片占位，同时保留图上可读关键点位和正文形态结论。
+3. blocks 要把图表本体框为 chart，下面的形态解释文字框为 text，不要把整张浅色说明卡合成一个 chart。"""
+    elif prompt_profile == "oil":
+        profile_rules = """分类规则：每日原油报告。
+1. markdown 按栏目保留行情回顾、隔夜要闻、今日原油市场聚焦、市场分析、关键图表、技术指标。
+2. 原样保留 WTI、布伦特、EIA、API、OPEC、CFTC、霍尔木兹海峡、库存、钻井、裂解价差、期限结构等实体和指标。
+3. 必须保留价格、百分比、桶/日、万桶、日期、合约月份、价差等数字和单位。
+4. 封面/目录页只保留报告标题、日期、导语核心句和目录，不要输出联系方式、VIP 系列列表和免责声明。"""
+    elif prompt_profile == "fx":
+        profile_rules = """分类规则：每日外汇报告。
+1. markdown 按栏目保留行情回顾、隔夜要闻、中东局势、市场分析、关键图表、技术指标。
+2. 原样保留美元指数、美债收益率、FedWatch、PCE、核心PCE、实际利率、欧洲央行、主要货币和央行相关实体。
+3. 必须保留指数点位、收益率、百分比、日期、预期概率、利差、通胀指标等数字和单位。
+4. 封面/目录页只保留报告标题、日期、导语核心句和目录，不要输出联系方式、VIP 系列列表和免责声明。"""
+    else:
+        profile_rules = """分类规则：默认金银日报/周报。
+1. 普通行情图不要转写图表内部坐标轴、图例、刻度和 tooltip 数值。
+2. 如果页面是封面/日期/导语/目录/免责声明的壳页，只保留导语或摘要正文。"""
+
+    return f"""你是金十图片报告的单页 OCR 与图表定位器，不做市场分析。
 
 请对第 {page_no} 页一次性输出完整 JSON，只返回 JSON，不要解释，不要 Markdown 代码块。
 
@@ -679,8 +833,13 @@ markdown 要求：
 1. 不要输出页眉、页脚、免责声明、网址、联系方式、目录广告。
 2. 不要总结、不要改写、不要压缩段落。
 3. 页面有图表时，在图表位置插入本地图片占位：`![图表标题](figures/fig_p{page_no}_001.png)`、`![图表标题](figures/fig_p{page_no}_002.png)`，按从上到下顺序编号。
-4. 不要转写图表内部坐标轴、图例、刻度和 tooltip 数值。
+4. 普通行情图不要转写图表内部坐标轴、图例、刻度和 tooltip 数值；分类规则要求保留的关键点位和指标除外。
 5. 纯文字页 markdown 只输出正文。
+6. 如果页面是“封面/日期/导语/目录/免责声明”的壳页，只保留导语或摘要正文。
+7. 不要输出重复的报告总标题、日期、目录条目、联系方式、VIP Team、VIP 系列列表、免责声明。
+8. 如果除了这些壳信息外没有正文，`markdown` 返回空字符串。
+
+{profile_rules}
 
 blocks 要求：
 1. bbox 使用你当前看到的输入图片像素坐标 [x1, y1, x2, y2]。
@@ -688,6 +847,7 @@ blocks 要求：
 3. 图表标题作为 title block 返回，不要并进 chart bbox。
 4. 纯文字页可以只返回 title/text blocks，完全没有图表时不要编造 chart。
 5. 如果不确定某区域类型，type 写 unknown。
+6. 对壳页中的封面标题、日期、目录、联系方式、免责声明，不必返回 blocks。
 
 JSON 结构：
 {{
@@ -737,6 +897,8 @@ def _build_page_layout_prompt(
 14. 不要漏掉图表上方的金色大标题，例如“黄金机构动向”“白银机构动向”；它们必须作为 title block 返回，不要纳入 chart bbox。
 15. 不要把白色图表面板只截左半边；bbox 的 x2 应覆盖到图表面板右边界。
 16. 不要把页脚免责声明、网址、顶部栏目名、报告名称纳入 chart bbox。
+17. 如果页面主要是封面、导语、目录、联系方式或免责声明壳页，不要返回 chart block，除非页面里真的有独立图表面板。
+18. 持仓/期权分布页中左右两栏“看涨期权/看跌期权”可以作为两个 chart block；若整页是一个连续分布图，也可以返回一个覆盖两栏的 chart block，但必须另有 title/text block 标明资产和两栏名称。
 
 图表 bbox 正例：
 - 白色折线图矩形整体：[左边界, 上边界, 右边界, 下边界]

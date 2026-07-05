@@ -25,7 +25,8 @@ def test_current_manual_macro_doc_generates_target_conclusion() -> None:
     assert "过渡释放态" in markdown
     assert "XAUUSD 宏观交易引擎" not in markdown
     assert "US10Y - T10YIE" in markdown
-    assert "黄金五因子评分" in markdown
+    assert "黄金六因子模型" in markdown
+    assert "利率曲线 / 2Y-3M利差" in markdown
     assert "回踩接多" in markdown
 
 
@@ -55,6 +56,7 @@ def test_recent_trade_day_macro_doc_maps_to_rate_pressure() -> None:
     assert "DXY 跌破 100.8" in markdown
     assert "10Y 实际利率跌回 2.10% 下方" in markdown
     assert "实际收益率 | 高位压制 | 待LLM判断" in markdown
+    assert "利率曲线 / 2Y-3M利差" in markdown
     assert "规则预判更接近：**利率压制态**。" in markdown
     assert "规则预判更接近：**利率压制态**。" in markdown
     assert "## 系统性风险雷达" in markdown

@@ -22,6 +22,7 @@ import type {
   ReportDetailResponse,
   ReportDetailTabKey,
   ReportDetailView,
+  ReportGenerationTrace,
   ReportDeterministicInputResponse,
   ReportsDatesResponse,
   ReportsIndexResponse,
@@ -182,6 +183,48 @@ function mapSourceRef(source: BackendSourceRef): SourceRef {
     source_url: source.url,
     status: normalizeDataStatus(source.status),
   };
+}
+
+function mapPayloadSourceRef(source: Record<string, unknown>, index: number): SourceRef {
+  const sourceName = String(source.source_name ?? source.source ?? source.source_id ?? `source-${index}`);
+  return {
+    source_ref: String(source.source_id ?? `${sourceName}:${index}`),
+    label: sourceName,
+    endpoint: typeof source.endpoint === "string" ? source.endpoint : null,
+    artifact_path: typeof source.file_path === "string" ? source.file_path : typeof source.path === "string" ? source.path : null,
+    trade_date: typeof source.data_date === "string" ? source.data_date : typeof source.report_date === "string" ? source.report_date : null,
+    dataDate: typeof source.data_date === "string" ? source.data_date : typeof source.report_date === "string" ? source.report_date : null,
+    asOf: typeof source.captured_at === "string" ? source.captured_at : null,
+    generated_at: typeof source.captured_at === "string" ? source.captured_at : null,
+    provider: typeof source.source_type === "string" ? source.source_type : typeof source.asset_type === "string" ? source.asset_type : null,
+    source_url: typeof source.url === "string" ? source.url : typeof source.source_url === "string" ? source.source_url : null,
+    status: normalizeDataStatus(typeof source.status === "string" ? source.status : "available"),
+  };
+}
+
+function extractPayloadSourceRefs(payload: Record<string, unknown> | null | undefined): SourceRef[] {
+  const refs = Array.isArray(payload?.source_refs) ? payload.source_refs : [];
+  return refs
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    .map(mapPayloadSourceRef);
+}
+
+function dedupeSourceRefViews(refs: SourceRef[]): SourceRef[] {
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = ref.source_url ? `url:${ref.source_url}` : [ref.source_ref, ref.artifact_path ?? ""].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function extractGenerationTrace(payload: Record<string, unknown> | null | undefined): ReportGenerationTrace | null {
+  const trace = payload?._generation_trace;
+  if (!trace || typeof trace !== "object" || Array.isArray(trace)) {
+    return null;
+  }
+  return trace as ReportGenerationTrace;
 }
 
 function mapArtifactRef(artifact: BackendArtifactRef | ReportArtifactResponse): ArtifactRef {
@@ -360,7 +403,10 @@ export async function fetchReportDetailView(reportId: string): Promise<ReportDet
     availableTabs.push("inputs");
   }
   const dataStatus = normalizeDataStatus(detail.data_status) as DataStatus;
-  const sourceRefs = (detail.source_refs ?? []).map(mapSourceRef);
+  const sourceRefs = dedupeSourceRefViews([
+    ...(detail.source_refs ?? []).map(mapSourceRef),
+    ...extractPayloadSourceRefs(detail.structured_payload),
+  ]);
   const artifactRefs = (detail.artifact_refs ?? detail.artifacts ?? []).map(mapArtifactRef);
   const warnings = [...(detail.warnings ?? []), ...(analysisInputs?.warnings ?? [])]
     .filter((item, index, array) => array.findIndex((candidate) => candidate.code === item.code && candidate.message === item.message) === index)
@@ -398,6 +444,7 @@ export async function fetchReportDetailView(reportId: string): Promise<ReportDet
     tabs,
     available_tabs: availableTabs,
     structured_payload: detail.structured_payload ?? null,
+    generation_trace: extractGenerationTrace(detail.structured_payload),
     gold_macro_overview: detail.gold_macro_overview ?? null,
   };
 }

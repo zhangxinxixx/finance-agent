@@ -18,6 +18,7 @@ FRED_SERIES = (
     "EFFR",
     "IORB",
     "DGS2",
+    "DGS3MO",
     "DGS10",
     "DFII10",
     "T10YIE",

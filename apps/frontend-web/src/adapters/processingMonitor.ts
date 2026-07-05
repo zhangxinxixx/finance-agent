@@ -1,0 +1,194 @@
+import { fetchJson } from "@/adapters/apiClient";
+import type {
+  ProcessingInputCoverage,
+  ProcessingMixedHealth,
+  ProcessingOverviewResponse,
+  ProcessingSourceFreshness,
+  ProcessingSourceHealth,
+  ProcessingTraceMode,
+  ProcessingTracePathNode,
+  ProcessingTraceResponse,
+} from "@/types/processing-monitor";
+
+const OVERVIEW_PATH = "/api/processing/overview";
+
+type RawRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): RawRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as RawRecord) : {};
+}
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function recordList(value: unknown): RawRecord[] {
+  return Array.isArray(value) ? value.filter((item): item is RawRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
+}
+
+function normalizeTracePath(value: unknown): ProcessingTracePathNode[] {
+  return recordList(value).map((item) => ({
+    node_id: stringValue(item.node_id),
+    label: stringValue(item.label, stringValue(item.node_id)),
+    stage: stringValue(item.stage, "unknown"),
+    status: stringValue(item.status, "missing"),
+    source_ref_count: numberValue(item.source_ref_count),
+    artifact_ref_count: numberValue(item.artifact_ref_count),
+  }));
+}
+
+function normalizeInputCoverage(value: unknown): ProcessingInputCoverage {
+  const item = asRecord(value);
+  return {
+    news_input_count: numberValue(item.news_input_count),
+    report_input_count: numberValue(item.report_input_count),
+    followup_count: numberValue(item.followup_count),
+    article_brief_count: numberValue(item.article_brief_count),
+    source_ref_count: numberValue(item.source_ref_count),
+    artifact_ref_count: numberValue(item.artifact_ref_count),
+    without_source_ref_count: numberValue(item.without_source_ref_count),
+  };
+}
+
+function normalizeMixedHealth(value: unknown): ProcessingMixedHealth {
+  const item = asRecord(value);
+  return {
+    status: stringValue(item.status, "unknown"),
+    mixed_events_total: numberValue(item.mixed_events_total),
+    mixed_without_bullish_drivers: numberValue(item.mixed_without_bullish_drivers),
+    mixed_without_bearish_drivers: numberValue(item.mixed_without_bearish_drivers),
+    mixed_without_dominant_driver: numberValue(item.mixed_without_dominant_driver),
+    mixed_without_verification_needed: numberValue(item.mixed_without_verification_needed),
+  };
+}
+
+function normalizeSourceFreshness(value: unknown): ProcessingSourceFreshness {
+  const item = asRecord(value);
+  return {
+    source_freshness: stringValue(item.source_freshness, "unknown"),
+    feature_freshness: stringValue(item.feature_freshness, "unknown"),
+    analysis_freshness: stringValue(item.analysis_freshness, "unknown"),
+    frontend_freshness: stringValue(item.frontend_freshness, "unknown"),
+  };
+}
+
+function normalizeSourceHealth(value: unknown): ProcessingSourceHealth {
+  const item = asRecord(value);
+  return {
+    overall_status: stringValue(item.overall_status, "unknown"),
+    as_of: nullableString(item.as_of),
+    p0_missing: stringList(item.p0_missing),
+    p1_missing: stringList(item.p1_missing),
+    p2_missing: stringList(item.p2_missing),
+    stale_sources: stringList(item.stale_sources),
+    fresh_sources: stringList(item.fresh_sources),
+    can_build_gold_macro_overview: item.can_build_gold_macro_overview === true,
+    blocking_reasons: stringList(item.blocking_reasons),
+    warnings: stringList(item.warnings),
+  };
+}
+
+export function normalizeProcessingOverview(raw: unknown): ProcessingOverviewResponse {
+  const item = asRecord(raw);
+  return {
+    status: stringValue(item.status, "unavailable"),
+    date: nullableString(item.date),
+    run_id: nullableString(item.run_id),
+    asset: stringValue(item.asset, "XAUUSD"),
+    generated_from: nullableString(item.generated_from),
+    trace_modes: stringList(item.trace_modes) as ProcessingTraceMode[],
+    trace_path: normalizeTracePath(item.trace_path),
+    input_coverage: normalizeInputCoverage(item.input_coverage),
+    mainline_coverage: recordList(item.mainline_coverage).map((row) => ({
+      mainline_id: stringValue(row.mainline_id),
+      status: stringValue(row.status, "missing"),
+      event_count: numberValue(row.event_count),
+      source_ref_count: numberValue(row.source_ref_count),
+      missing_data: stringList(row.missing_data),
+    })),
+    transmission_chain_coverage: recordList(item.transmission_chain_coverage).map((row) => ({
+      chain_id: stringValue(row.chain_id),
+      status: stringValue(row.status, "missing"),
+      verification_needed: stringList(row.verification_needed),
+    })),
+    mixed_health: normalizeMixedHealth(item.mixed_health),
+    source_freshness: normalizeSourceFreshness(item.source_freshness),
+    source_health: normalizeSourceHealth(item.source_health),
+    view_bindings: recordList(item.view_bindings).map((row) => ({
+      view: stringValue(row.view),
+      status: stringValue(row.status, "missing"),
+    })),
+    source_refs: recordList(item.source_refs) as unknown as ProcessingOverviewResponse["source_refs"],
+    artifact_refs: recordList(item.artifact_refs) as ProcessingOverviewResponse["artifact_refs"],
+    warnings: stringList(item.warnings),
+  };
+}
+
+export function normalizeProcessingTrace(raw: unknown): ProcessingTraceResponse {
+  const item = asRecord(raw);
+  const matchedEvent = asRecord(item.matched_event);
+  return {
+    status: stringValue(item.status, "not_found"),
+    date: nullableString(item.date),
+    run_id: nullableString(item.run_id),
+    asset: stringValue(item.asset, "XAUUSD"),
+    query: asRecord(item.query) as ProcessingTraceResponse["query"],
+    matched_event: item.matched_event
+      ? {
+          event_id: nullableString(matchedEvent.event_id),
+          input_id: nullableString(matchedEvent.input_id),
+          primary_mainline: nullableString(matchedEvent.primary_mainline),
+          processing_trace_id: nullableString(matchedEvent.processing_trace_id),
+        }
+      : null,
+    mainlines: stringList(item.mainlines),
+    transmission_chains: stringList(item.transmission_chains),
+    trace_path: normalizeTracePath(item.trace_path),
+    source_refs: recordList(item.source_refs) as unknown as ProcessingTraceResponse["source_refs"],
+    artifact_refs: recordList(item.artifact_refs) as ProcessingTraceResponse["artifact_refs"],
+    view_bindings: recordList(item.view_bindings).map((row) => ({
+      view: stringValue(row.view),
+      status: stringValue(row.status, "missing"),
+    })),
+  };
+}
+
+export async function fetchProcessingOverview(): Promise<ProcessingOverviewResponse> {
+  return normalizeProcessingOverview(await fetchJson<unknown>(OVERVIEW_PATH));
+}
+
+export async function fetchProcessingTrace(traceId: string): Promise<ProcessingTraceResponse> {
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace/${encodeURIComponent(traceId)}`));
+}
+
+export async function fetchProcessingTraceByEvent(eventId: string): Promise<ProcessingTraceResponse> {
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-event/${encodeURIComponent(eventId)}`));
+}
+
+export async function fetchProcessingTraceBySourceRef(sourceRef: string): Promise<ProcessingTraceResponse> {
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-source-ref/${encodeURIComponent(sourceRef)}`));
+}
+
+export async function fetchProcessingTraceByInput(inputId: string): Promise<ProcessingTraceResponse> {
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-input/${encodeURIComponent(inputId)}`));
+}
+
+export async function fetchProcessingTraceByMainline(mainline: string): Promise<ProcessingTraceResponse> {
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-mainline/${encodeURIComponent(mainline)}`));
+}
+
+export async function fetchProcessingTraceByChain(chainId: string): Promise<ProcessingTraceResponse> {
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-chain/${encodeURIComponent(chainId)}`));
+}

@@ -297,7 +297,11 @@ def _source_refs(
     for item in anchor_report_refs:
         source_ref = str(item.get("path") or "")
         if source_ref:
-            _append_source_ref(result, seen, {"source_type": "report", "ref": source_ref})
+            _append_source_ref(
+                result,
+                seen,
+                {"source": "macro_anchor_report", "source_type": "report", "ref": source_ref},
+            )
 
     for ref in daily_market_brief.get("source_refs") or []:
         if isinstance(ref, Mapping):

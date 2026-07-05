@@ -7,7 +7,6 @@ from pathlib import Path
 
 from dagster import Config, Out, Output, op
 
-from dagster_finance.ops.artifact_registration import register_dagster_output_artifacts
 from apps.worker.pipelines.macro import MacroPipelineState, run_macro_step
 
 
@@ -58,7 +57,6 @@ def macro_feature_op(context, state: MacroPipelineState, config: MacroConfig) ->
 
 
 @op(
-    required_resource_keys={"db_session"},
     tags={"pipeline": "macro", "step": "report_render"},
 )
 def report_render_op(context, state: MacroPipelineState, config: MacroConfig) -> MacroPipelineState:
@@ -67,25 +65,7 @@ def report_render_op(context, state: MacroPipelineState, config: MacroConfig) ->
     context.log.info("Starting report_render")
     summary = run_macro_step(
         "report_render", state,
-        storage_root=storage, run_id=run_id, db_session=context.resources.db_session,
-    )
-    register_dagster_output_artifacts(
-        context,
-        db=context.resources.db_session,
-        paths=[
-            summary["json_path"],
-            summary["md_path"],
-            summary["conclusion_path"],
-            summary["full_md_path"],
-        ],
-        step_name="report_render",
-        stage="macro",
-        task_kind="render",
-        source_refs=[ref for ref in state.all_source_refs if isinstance(ref, dict)],
-        input_snapshot_ids={"macro_snapshot": f"macro:{state.as_of}"},
-        snapshot_id=f"macro:{state.as_of}",
-        trade_date=state.as_of,
-        json_artifact_type="feature_json",
+        storage_root=storage, run_id=run_id,
     )
     context.log.info(f"report_render done: {summary.get('status', 'ok')}")
     return state

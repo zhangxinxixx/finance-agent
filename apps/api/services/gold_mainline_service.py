@@ -118,6 +118,13 @@ def _load_inferred_gold_mainlines(*, date: str, run_id: str, project_root: Path)
         mainlines,
         macro_context=_latest_macro_context_for_overview(overview=seed_overview, project_root=project_root),
         market_context=_latest_market_context_for_overview(overview=seed_overview, project_root=project_root),
+        oil_context=_latest_oil_context_for_overview(overview=seed_overview, project_root=project_root),
+        flow_context=_latest_flow_context_for_overview(overview=seed_overview, project_root=project_root),
+        reserve_context=_latest_reserve_context_for_overview(overview=seed_overview, project_root=project_root),
+        asia_context=_latest_asia_context_for_overview(overview=seed_overview, project_root=project_root),
+        positioning_context=_latest_positioning_context_for_overview(overview=seed_overview, project_root=project_root),
+        policy_context=_latest_policy_context_for_overview(overview=seed_overview, project_root=project_root),
+        geopolitical_context=_latest_geopolitical_context_for_overview(overview=seed_overview, project_root=project_root),
     ).to_dict()
     overview["retrieved_date"] = str(overview.get("retrieved_date") or date)
     overview["run_id"] = str(overview.get("run_id") or run_id)
@@ -201,20 +208,48 @@ def _normalize_gold_requirement_contract(*, overview: dict[str, Any], mainlines:
         and overview.get("analysis_readiness")
         and overview.get("architecture_gaps") is not None
         and _has_context_feature_fields_for(overview, "real_rates_usd")
+        and _has_context_feature_fields_for(overview, "oil_prices")
+        and _has_context_feature_fields_for(overview, "etf_flows")
+        and _has_context_feature_fields_for(overview, "central_bank_gold")
+        and _has_context_feature_fields_for(overview, "china_asia_demand")
+        and _has_context_feature_fields_for(overview, "institutional_sentiment")
+        and _has_context_feature_fields_for(overview, "fed_policy_path")
+        and _has_context_feature_fields_for(overview, "geopolitical_war_risk")
         and _has_context_feature_fields_for(overview, "gold_technical_levels")
     ):
         return
     source_payload: dict[str, Any] = mainlines if mainlines.get("status") != "unavailable" else overview
     macro_context = _latest_macro_context_for_overview(overview=overview, project_root=project_root)
     market_context = _latest_market_context_for_overview(overview=overview, project_root=project_root)
+    oil_context = _latest_oil_context_for_overview(overview=overview, project_root=project_root)
+    flow_context = _latest_flow_context_for_overview(overview=overview, project_root=project_root)
+    reserve_context = _latest_reserve_context_for_overview(overview=overview, project_root=project_root)
+    asia_context = _latest_asia_context_for_overview(overview=overview, project_root=project_root)
+    positioning_context = _latest_positioning_context_for_overview(overview=overview, project_root=project_root)
+    policy_context = _latest_policy_context_for_overview(overview=overview, project_root=project_root)
+    geopolitical_context = _latest_geopolitical_context_for_overview(overview=overview, project_root=project_root)
     inferred = build_gold_macro_overview(
         source_payload,
         macro_context=macro_context,
         market_context=market_context,
+        oil_context=oil_context,
+        flow_context=flow_context,
+        reserve_context=reserve_context,
+        asia_context=asia_context,
+        positioning_context=positioning_context,
+        policy_context=policy_context,
+        geopolitical_context=geopolitical_context,
     ).to_dict()
     inferred_has_context = _has_context_feature_fields(inferred)
     needs_context_update = not (
         _has_context_feature_fields_for(overview, "real_rates_usd")
+        and _has_context_feature_fields_for(overview, "oil_prices")
+        and _has_context_feature_fields_for(overview, "etf_flows")
+        and _has_context_feature_fields_for(overview, "central_bank_gold")
+        and _has_context_feature_fields_for(overview, "china_asia_demand")
+        and _has_context_feature_fields_for(overview, "institutional_sentiment")
+        and _has_context_feature_fields_for(overview, "fed_policy_path")
+        and _has_context_feature_fields_for(overview, "geopolitical_war_risk")
         and _has_context_feature_fields_for(overview, "gold_technical_levels")
     )
     if needs_context_update and inferred_has_context:
@@ -243,6 +278,8 @@ def _merge_inferred_context_contract(*, overview: dict[str, Any], inferred: dict
         if mainline_id not in seen:
             overview_rows.append(dict(inferred_row))
     overview["theme_rankings"] = overview_rows
+    if inferred.get("war_oil_rate_chain") is not None:
+        overview["war_oil_rate_chain"] = inferred.get("war_oil_rate_chain")
     overview["verification_matrix"] = inferred.get("verification_matrix") or overview.get("verification_matrix") or []
     overview["mainline_requirements"] = inferred.get("mainline_requirements") or []
     overview["analysis_readiness"] = inferred.get("analysis_readiness") or {}
@@ -311,7 +348,7 @@ def _has_context_feature_fields(overview: dict[str, Any]) -> bool:
             continue
         mainline_id = _ranking_mainline_id(row)
         fields = row.get("feature_fields")
-        if mainline_id in {"real_rates_usd", "gold_technical_levels"} and isinstance(fields, dict) and fields:
+        if mainline_id in {"fed_policy_path", "real_rates_usd", "oil_prices", "geopolitical_war_risk", "etf_flows", "central_bank_gold", "china_asia_demand", "institutional_sentiment", "gold_technical_levels"} and isinstance(fields, dict) and fields:
             return True
     return False
 
@@ -327,14 +364,14 @@ def _has_context_feature_fields_for(overview: dict[str, Any], mainline_id: str) 
 
 
 def _latest_macro_context_for_overview(*, overview: dict[str, Any], project_root: Path) -> dict[str, Any]:
-    input_snapshot_ids = overview.get("input_snapshot_ids")
-    if isinstance(input_snapshot_ids, dict):
-        macro_path = input_snapshot_ids.get("macro_snapshot")
-        if isinstance(macro_path, str) and macro_path:
-            resolved = _resolve_storage_relative_path(project_root=project_root, value=macro_path)
-            payload = _load_json_dict(resolved) if resolved and resolved.exists() else None
-            if payload is not None:
-                return payload
+    payload = _load_context_artifact_for_overview(
+        overview=overview,
+        project_root=project_root,
+        snapshot_key="macro_snapshot",
+        artifact_types={"macro_snapshot"},
+    )
+    if payload is not None:
+        return payload
     date = str(overview.get("retrieved_date") or overview.get("as_of") or "")[:10]
     base = project_root / "storage" / "features" / "macro"
     date_dirs = [base / date] if date else []
@@ -351,14 +388,14 @@ def _latest_macro_context_for_overview(*, overview: dict[str, Any], project_root
 
 
 def _latest_market_context_for_overview(*, overview: dict[str, Any], project_root: Path) -> dict[str, Any]:
-    input_snapshot_ids = overview.get("input_snapshot_ids")
-    if isinstance(input_snapshot_ids, dict):
-        market_path = input_snapshot_ids.get("market_context")
-        if isinstance(market_path, str) and market_path:
-            resolved = _resolve_storage_relative_path(project_root=project_root, value=market_path)
-            payload = _load_json_dict(resolved) if resolved and resolved.exists() else None
-            if payload is not None:
-                return payload
+    payload = _load_context_artifact_for_overview(
+        overview=overview,
+        project_root=project_root,
+        snapshot_key="market_context",
+        artifact_types={"market_context"},
+    )
+    if payload is not None:
+        return payload
     try:
         return _get_market_monitor_overview()
     except Exception as exc:
@@ -368,6 +405,105 @@ def _latest_market_context_for_overview(*, overview: dict[str, Any], project_roo
             extra={"service": "gold_mainline_service", "stage": "market_context"},
         )
     return {}
+
+
+def _latest_oil_context_for_overview(*, overview: dict[str, Any], project_root: Path) -> dict[str, Any]:
+    return _load_context_artifact_for_overview(
+        overview=overview,
+        project_root=project_root,
+        snapshot_key="oil_context",
+        artifact_types={"oil_context"},
+    ) or {}
+
+
+def _latest_flow_context_for_overview(*, overview: dict[str, Any], project_root: Path) -> dict[str, Any]:
+    return _load_context_artifact_for_overview(
+        overview=overview,
+        project_root=project_root,
+        snapshot_key="flow_context",
+        artifact_types={"flow_context"},
+    ) or {}
+
+
+def _latest_reserve_context_for_overview(*, overview: dict[str, Any], project_root: Path) -> dict[str, Any]:
+    return _load_context_artifact_for_overview(
+        overview=overview,
+        project_root=project_root,
+        snapshot_key="reserve_context",
+        artifact_types={"reserve_context"},
+    ) or {}
+
+
+def _latest_asia_context_for_overview(*, overview: dict[str, Any], project_root: Path) -> dict[str, Any]:
+    return _load_context_artifact_for_overview(
+        overview=overview,
+        project_root=project_root,
+        snapshot_key="asia_context",
+        artifact_types={"asia_context"},
+    ) or {}
+
+
+def _latest_positioning_context_for_overview(*, overview: dict[str, Any], project_root: Path) -> dict[str, Any]:
+    return _load_context_artifact_for_overview(
+        overview=overview,
+        project_root=project_root,
+        snapshot_key="positioning_context",
+        artifact_types={"positioning_context"},
+    ) or {}
+
+
+def _latest_policy_context_for_overview(*, overview: dict[str, Any], project_root: Path) -> dict[str, Any]:
+    return _load_context_artifact_for_overview(
+        overview=overview,
+        project_root=project_root,
+        snapshot_key="policy_context",
+        artifact_types={"policy_context"},
+    ) or {}
+
+
+def _latest_geopolitical_context_for_overview(*, overview: dict[str, Any], project_root: Path) -> dict[str, Any]:
+    return _load_context_artifact_for_overview(
+        overview=overview,
+        project_root=project_root,
+        snapshot_key="geopolitical_context",
+        artifact_types={"geopolitical_context"},
+    ) or {}
+
+
+def _load_context_artifact_for_overview(
+    *,
+    overview: dict[str, Any],
+    project_root: Path,
+    snapshot_key: str,
+    artifact_types: set[str],
+) -> dict[str, Any] | None:
+    input_snapshot_ids = overview.get("input_snapshot_ids")
+    if isinstance(input_snapshot_ids, dict):
+        payload = _load_context_path(project_root=project_root, value=input_snapshot_ids.get(snapshot_key))
+        if payload is not None:
+            return payload
+
+    accepted_types = {snapshot_key, *artifact_types}
+    for ref in overview.get("artifact_refs") or []:
+        if not isinstance(ref, dict):
+            continue
+        artifact_type = str(ref.get("artifact_type") or ref.get("type") or "").strip()
+        if artifact_type not in accepted_types:
+            continue
+        payload = _load_context_path(
+            project_root=project_root,
+            value=ref.get("path") or ref.get("artifact_path"),
+        )
+        if payload is not None:
+            return payload
+    return None
+
+
+def _load_context_path(*, project_root: Path, value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    resolved = _resolve_storage_relative_path(project_root=project_root, value=value)
+    return _load_json_dict(resolved) if resolved and resolved.exists() else None
 
 
 def _get_market_monitor_overview() -> dict[str, Any]:

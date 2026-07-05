@@ -610,6 +610,33 @@ def test_parse_report_images_vlm_skips_cover_page_figures(tmp_path: Path):
     assert all(figure["page_no"] != 1 for figure in artifacts["figures"]["figures"])
 
 
+def test_parse_report_images_positioning_does_not_skip_first_page(tmp_path: Path):
+    first_path = tmp_path / "01.png"
+    second_path = tmp_path / "02.png"
+    _write_page_image(first_path, include_chart=True)
+    _write_page_image(second_path, include_chart=True)
+    layout_pages_seen: list[int] = []
+
+    artifacts = parse_report_images(
+        article_id="223032",
+        title="黄金持仓报告",
+        published_at=None,
+        image_entries=[
+            {"seq": 1, "file": first_path.name, "path": str(first_path)},
+            {"seq": 2, "file": second_path.name, "path": str(second_path)},
+        ],
+        report_type="positioning",
+        vision_markdown_runner=lambda pages, figures: {"pages": []},
+        vision_layout_runner=lambda pages: (
+            layout_pages_seen.extend(int(page["page_no"]) for page in pages)
+            or {"pages": []}
+        ),
+    )
+
+    assert artifacts["parse_status"]["cover_page_count"] == 0
+    assert layout_pages_seen == [1, 2]
+
+
 def test_parse_report_images_vlm_detects_second_lower_chart(tmp_path: Path):
     image_path = tmp_path / "double-chart.png"
     _write_double_chart_page_image(image_path)
@@ -1090,7 +1117,7 @@ def test_white_panel_detection_drops_nested_panels() -> None:
     assert panels == [[100, 300, 901, 1501]]
 
 
-def test_parse_report_images_keeps_vlm_layout_bbox_without_opencv_panel_snap(tmp_path: Path):
+def test_parse_report_images_snaps_vlm_layout_bbox_to_white_chart_panel(tmp_path: Path):
     image_path = tmp_path / "three-panel-page.png"
     _write_three_white_panel_page_image(image_path)
 
@@ -1121,7 +1148,7 @@ def test_parse_report_images_keeps_vlm_layout_bbox_without_opencv_panel_snap(tmp
                     "blocks": [
                         {"id": "chart_001", "type": "chart", "text": "图表 12-1", "bbox": [100, 260, 900, 500]},
                         {"id": "chart_002", "type": "chart", "text": "图表 12-2", "bbox": [100, 820, 900, 1060]},
-                        {"id": "table_001", "type": "table", "text": "图表 12-3", "bbox": [260, 1510, 760, 1650]},
+                        {"id": "table_001", "type": "table", "text": "图表 12-3", "bbox": [100, 1260, 900, 1650]},
                     ],
                 }
             ]
@@ -1130,7 +1157,7 @@ def test_parse_report_images_keeps_vlm_layout_bbox_without_opencv_panel_snap(tmp
 
     figures = artifacts["figures"]["figures"]
     assert [figure["figure_id"] for figure in figures] == ["fig_p12_001", "fig_p12_002", "fig_p12_003"]
-    assert figures[2]["bbox"] == [260, 1510, 760, 1650]
+    assert figures[2]["bbox"] == [100, 1340, 901, 1880]
 
 
 def test_parse_report_images_outputs_chart_title_as_text_before_image(tmp_path: Path):
@@ -1936,6 +1963,23 @@ def test_recognize_pages_unified_uses_page_cache(monkeypatch, tmp_path: Path):
     assert list((cache_dir / "unified" / "qwen3-vl-flash").glob("page_001_*.json"))
 
 
+def test_recognize_pages_unified_cache_is_scoped_by_report_type(monkeypatch, tmp_path: Path):
+    cache_dir = tmp_path / "vision-cache"
+    image_path = tmp_path / "page.png"
+    _write_page_image(image_path, include_chart=True)
+    monkeypatch.setenv("JIN10_VISION_CACHE_DIR", str(cache_dir))
+    client = _FakeVisionClient()
+    pages = [{"page_no": 1, "image_path": str(image_path), "width": 1000, "height": 1400}]
+
+    recognize_pages_unified(pages, client=client, report_type="positioning")
+    recognize_pages_unified(pages, client=client, report_type="positioning")
+    recognize_pages_unified(pages, client=client, report_type="technical_levels")
+
+    assert client.unified_calls == 2
+    assert client.unified_report_types == ["positioning", "technical_levels"]
+    assert len(list((cache_dir / "unified" / "qwen3-vl-flash").glob("page_001_*.json"))) == 2
+
+
 def test_normalize_chart_bbox_accepts_short_white_chart_on_tall_page():
     bbox = _normalize_chart_bbox(
         [72, 183, 932, 444],
@@ -1992,9 +2036,19 @@ class _FakeVisionClient:
         self.markdown_calls = 0
         self.layout_calls = 0
         self.unified_calls = 0
+        self.markdown_report_types: list[str | None] = []
+        self.unified_report_types: list[str | None] = []
 
-    def recognize_page_markdown(self, *, image_path: Path, page_no: int, figures: list[dict]) -> dict:
+    def recognize_page_markdown(
+        self,
+        *,
+        image_path: Path,
+        page_no: int,
+        figures: list[dict],
+        report_type: str | None = None,
+    ) -> dict:
         self.markdown_calls += 1
+        self.markdown_report_types.append(report_type)
         assert image_path.is_file()
         assert figures
         return {
@@ -2036,8 +2090,10 @@ class _FakeVisionClient:
         page_no: int,
         page_width: int,
         page_height: int,
+        report_type: str | None = None,
     ) -> dict:
         self.unified_calls += 1
+        self.unified_report_types.append(report_type)
         assert image_path.is_file()
         assert page_width == 1000
         assert page_height == 1400

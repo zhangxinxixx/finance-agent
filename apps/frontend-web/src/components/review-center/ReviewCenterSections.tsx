@@ -7,6 +7,7 @@ import { getStatusTone } from "@/components/shared/statusMeta";
 import { formatDateTime } from "@/lib/date";
 import { compactId } from "@/lib/format";
 import type { TaskReviewViewModel } from "@/types/agent-task";
+import type { PromptEvolutionPreviewResponse } from "@/types/agent-registry";
 
 function statusTone(status: string): FAStatusTone {
   return getStatusTone(status, "review");
@@ -141,6 +142,146 @@ export function ReviewCenterSummaryCard({
           <div className="mt-1 text-[11px] text-[var(--fg-3)]">继续保持只读，并承接事实审查问题项的追溯字段</div>
         </div>
       </div>
+    </FACard>
+  );
+}
+
+function booleanTone(value?: boolean): FAStatusTone {
+  return value ? "warn" : "dim";
+}
+
+function formatProposalValue(value: unknown, fallback = "暂无"): string {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return fallback;
+}
+
+export function PromptEvolutionProposalCard({
+  preview,
+  selectedAgentId,
+  agentOptions,
+  isLoading,
+  isError,
+  errorMessage,
+  onAgentChange,
+  onRefresh,
+}: {
+  preview: PromptEvolutionPreviewResponse | null;
+  selectedAgentId: string;
+  agentOptions: Array<{ value: string; label: string }>;
+  isLoading: boolean;
+  isError: boolean;
+  errorMessage?: string | null;
+  onAgentChange: (agentId: string) => void;
+  onRefresh: () => void;
+}) {
+  const proposal = preview?.proposal;
+  const proposalDetail = proposal?.prompt_update_proposal;
+  const failurePatterns = proposal?.failure_patterns ?? [];
+  const inputRefs = preview?.input_refs;
+  const testCaseCount = proposalDetail?.test_cases?.length ?? 0;
+
+  return (
+    <FACard
+      title="PromptEvolution 提案预览"
+      eyebrow="只读治理"
+      description="从现有 AgentOutput、PromptFeedback 和 ReviewGate findings 生成可审核提案，不写入生产 Prompt。"
+      accent="info"
+      action={(
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={selectedAgentId}
+            onChange={(event) => onAgentChange(event.target.value)}
+            className="h-8 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 text-[length:var(--type-label)] text-[var(--fg-2)]"
+            aria-label="选择 PromptEvolution 目标 Agent"
+          >
+            {agentOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <button type="button" onClick={onRefresh} className="fa-workspace-toolbar-button">
+            刷新提案
+          </button>
+        </div>
+      )}
+      bodyClassName="space-y-3"
+    >
+      {isError ? (
+        <div className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[length:var(--type-body-sm)] text-[var(--warn)]">
+          {errorMessage ?? "无法加载 PromptEvolution 提案预览"}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <FAStatusPill tone={preview?.proposal_only ? "info" : "warn"}>{preview?.proposal_only ? "proposal_only" : "未确认只读"}</FAStatusPill>
+        <FAStatusPill tone={preview && preview.writes.length === 0 ? "up" : "warn"}>writes {preview?.writes.length ?? "?"}</FAStatusPill>
+        <FAStatusPill tone={booleanTone(proposal?.manual_review_required)}>人工复核</FAStatusPill>
+        {isLoading ? <FAStatusPill tone="dim">加载中</FAStatusPill> : null}
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[1.15fr_0.85fr]">
+        <div className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
+          <div className="fa-label text-[var(--fg-4)]">问题摘要</div>
+          <p className="mt-2 text-[length:var(--type-body)] leading-6 text-[var(--fg-2)]">
+            {formatProposalValue(proposal?.problem_summary, isLoading ? "正在生成预览..." : "暂无足够证据生成提案。")}
+          </p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <div>
+              <div className="fa-compact-label text-[var(--fg-5)]">proposal_type</div>
+              <div className="mt-1 text-[length:var(--type-label)] text-[var(--fg-2)]">
+                {formatProposalValue(proposalDetail?.proposal_type)}
+              </div>
+            </div>
+            <div>
+              <div className="fa-compact-label text-[var(--fg-5)]">failure_patterns</div>
+              <div className="fa-num mt-1 text-[length:var(--type-card-title)] text-[var(--fg-2)]">{failurePatterns.length}</div>
+            </div>
+            <div>
+              <div className="fa-compact-label text-[var(--fg-5)]">test_cases</div>
+              <div className="fa-num mt-1 text-[length:var(--type-card-title)] text-[var(--fg-2)]">{testCaseCount}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
+          <div className="fa-label text-[var(--fg-4)]">证据输入</div>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            <div>
+              <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{preview?.recent_run_count ?? 0}</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">AgentOutput</div>
+            </div>
+            <div>
+              <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{preview?.feedback_count ?? 0}</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">Feedback</div>
+            </div>
+            <div>
+              <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{preview?.review_gate_finding_count ?? 0}</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">Review</div>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <FAStatusPill tone={booleanTone(proposal?.requires_schema_change)}>schema</FAStatusPill>
+            <FAStatusPill tone={booleanTone(proposal?.requires_data_source_change)}>data_source</FAStatusPill>
+            <FAStatusPill tone={booleanTone(proposal?.requires_dag_change)}>dag</FAStatusPill>
+          </div>
+          <div className="mt-3 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
+            prompt: {preview?.current_prompt_source ?? "unknown"} · refs: {inputRefs?.agent_output_ids.length ?? 0}/
+            {inputRefs?.feedback_ids.length ?? 0}/{inputRefs?.review_ids.length ?? 0}
+          </div>
+        </div>
+      </div>
+
+      {proposalDetail?.patch ? (
+        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-panel)] p-3">
+          <div className="fa-label text-[var(--fg-4)]">建议补丁</div>
+          <p className="mt-2 max-h-[120px] overflow-y-auto whitespace-pre-wrap text-[length:var(--type-body-sm)] leading-6 text-[var(--fg-2)]">
+            {proposalDetail.patch}
+          </p>
+        </div>
+      ) : null}
     </FACard>
   );
 }

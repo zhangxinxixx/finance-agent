@@ -7,7 +7,6 @@ from typing import Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
 from apps.analysis.agents.macro_liquidity_prompt import build_macro_liquidity_prompt_template
-from apps.analysis.evidence import EvidenceItem
 from apps.analysis.macro.regime import classify_macro_regime
 
 _AGENT_NAME = "macro_liquidity_agent"
@@ -17,13 +16,15 @@ _SYSTEM_PROMPT = "你是一位专业的宏观流动性研究员。只输出 Mark
 _PROMPT_VERSION = "macro_liquidity_agent_v1"
 
 _DXY_KEYS = ("DXY", "dxy")
-_REAL_YIELD_KEYS = ("REAL_YIELD_10Y", "real_yield_10y", "US10Y_REAL", "10Y_REAL_YIELD")
+_REAL_YIELD_KEYS = ("REAL_10Y", "REAL_YIELD_10Y", "real_yield_10y", "US10Y_REAL", "10Y_REAL_YIELD")
 _NOMINAL_YIELD_KEYS = ("US10Y", "DGS10", "10Y", "10Y_NOMINAL_YIELD")
-_BREAKEVEN_KEYS = ("T10YIE", "10Y_BREAKEVEN")
-_WATCHLIST = ["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "SOFR", "EFFR", "IORB"]
+_BREAKEVEN_KEYS = ("T10YIE", "BREAKEVEN_10Y", "10Y_BREAKEVEN")
+_US02Y_KEYS = ("US02Y", "DGS2")
+_WATCHLIST = ["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "WRESBAL", "DGS2", "SOFR", "EFFR", "IORB"]
 _LIQUIDITY_GROUPS = {
     "ON RRP": ("RRPONTSYD", "ON_RRP", "ON_RRP_USAGE"),
     "TGA": ("TGA",),
+    "Reserve Balances": ("RESERVES", "WRESBAL"),
     "SOFR": ("SOFR",),
     "EFFR": ("EFFR",),
     "IORB": ("IORB",),
@@ -156,6 +157,26 @@ def build_macro_liquidity_structured_payload(
         "confidence": float(deterministic_output.confidence),
         "market_phase": deterministic_output.market_phase,
         "regime_drivers": deterministic_output.regime_drivers,
+        "v21_execution_order": [
+            "liquidity_table",
+            "liquidity_quantity",
+            "liquidity_price",
+            "real_yield",
+            "dxy",
+            "phase",
+            "dominant_variable",
+            "five_factor_score",
+            "trading_configuration_meaning",
+        ],
+        "real_yield_policy": {
+            "main": "US10Y - T10YIE",
+            "supplementary": "DFII10 / TIPS only as observation, not the main score口径",
+        },
+        "external_web_policy": {
+            "use_full_available_capability": True,
+            "rule": "联网获取到但 source_refs 未覆盖的数据，必须标注为外部联网补充 / 待系统化接入，不得混作系统已确认数据。",
+        },
+        "system_data_gaps": _system_data_gaps(indicators, _source_refs(snapshot)),
         "macro_status": str(macro.get("status") or "unavailable"),
         "indicators": _compact_indicators(indicators),
         "key_findings": list(deterministic_output.key_findings),
@@ -172,6 +193,45 @@ def build_macro_liquidity_structured_payload(
             },
         },
     }
+
+
+def _system_data_gaps(indicators: dict[str, Any], source_refs: list[dict[str, Any]]) -> list[dict[str, str]]:
+    refs_text = " ".join(
+        f"{ref.get('symbol', '')} {ref.get('source', '')} {ref.get('source_url', '')}"
+        for ref in source_refs
+        if isinstance(ref, dict)
+    ).lower()
+    gaps: list[dict[str, str]] = []
+
+    dxy = _indicator_snapshot(indicators, _DXY_KEYS)
+    if dxy is None:
+        gaps.append({
+            "item": "DXY",
+            "current_status": "missing_from_system_snapshot",
+            "optimization": "接入 TradingView DXY 最新值、1周变化、1月变化，CNBC 仅作兜底。",
+        })
+    elif "tradingview" not in refs_text:
+        gaps.append({
+            "item": "DXY TradingView weekly/monthly",
+            "current_status": "system_snapshot_has_dxy_but_not_confirmed_tradingview_source",
+            "optimization": "修复 TradingView source_ref 与周/月变化映射。",
+        })
+
+    required = [
+        ("ETF / GLD flows", ("etf", "gld"), "接入 WGC / GLD 持仓或可信 ETF flow 数据源。"),
+        ("COT managed money", ("cot", "cftc"), "接入 CFTC / COTData 持仓结构。"),
+        ("CME delivery / physical", ("cme_delivery", "delivery"), "复用 CME Daily Bulletin 解析链路输出交割观察。"),
+        ("HY OAS", ("hy_oas", "bamlh0a0hym2"), "接入 FRED BAMLH0A0HYM2 作为系统风险雷达输入。"),
+        ("VIX", ("vix",), "接入 FRED / CBOE VIX 作为风险溢价输入。"),
+    ]
+    for item, needles, optimization in required:
+        if not any(needle in refs_text for needle in needles):
+            gaps.append({
+                "item": item,
+                "current_status": "not_in_system_source_refs",
+                "optimization": optimization,
+            })
+    return gaps
 
 
 def _merge_macro_liquidity_output(
@@ -278,7 +338,25 @@ def _indicators(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def _compact_indicators(indicators: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for key in ("DGS10", "T10YIE", "REAL_YIELD_10Y", "DXY", "TGA", "RRPONTSYD", "SOFR", "EFFR", "IORB"):
+    for key in (
+        "DGS10",
+        "US10Y",
+        "DGS2",
+        "US02Y",
+        "T10YIE",
+        "BREAKEVEN_10Y",
+        "REAL_10Y",
+        "REAL_YIELD_10Y",
+        "DXY",
+        "TGA",
+        "RRPONTSYD",
+        "ON_RRP_USAGE",
+        "WRESBAL",
+        "RESERVES",
+        "SOFR",
+        "EFFR",
+        "IORB",
+    ):
         item = _indicator_snapshot(indicators, (key,))
         if item is not None:
             result[key] = item
@@ -368,23 +446,24 @@ def _build_deterministic_output(
     key_findings: list[str] = []
     risk_points: list[str] = []
     invalid_conditions: list[str] = []
-    watchlist = ["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "SOFR", "EFFR", "IORB"]
+    watchlist = ["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "WRESBAL", "DGS2", "SOFR", "EFFR", "IORB"]
     score = 0
     confidence = 0.45
     status = AgentStatus.SUCCESS
 
-    real_change = _first_change(indicators, _REAL_YIELD_KEYS)
-    real_value = _first_value(indicators, _REAL_YIELD_KEYS)
+    real_change = _computed_real_yield_change(indicators)
+    real_value = _computed_real_yield_value(indicators)
     if real_change is None:
-        nominal_change = _first_change(indicators, _NOMINAL_YIELD_KEYS)
-        breakeven_change = _first_change(indicators, _BREAKEVEN_KEYS)
-        if nominal_change is not None and breakeven_change is not None:
-            real_change = nominal_change - breakeven_change
-            key_findings.append(f"Estimated 10Y real-yield change from nominal yield and T10YIE: {real_change:.2f}.")
+        real_change = _first_change(indicators, _REAL_YIELD_KEYS)
+        real_value = real_value if real_value is not None else _first_value(indicators, _REAL_YIELD_KEYS)
+        if real_change is not None:
+            key_findings.append("10Y real-yield change is using supplementary TIPS/direct field because US10Y-T10YIE change is incomplete.")
         else:
             status = AgentStatus.PARTIAL
             confidence -= 0.12
             invalid_conditions.append("10Y real-yield signal is missing; checked real-yield fields, nominal yield and T10YIE.")
+    else:
+        key_findings.append(f"10Y real-yield main口径 uses US10Y - T10YIE; weekly/directional change is {real_change:.2f}.")
     if real_change is not None:
         if real_change < 0:
             score += 1
@@ -461,7 +540,6 @@ def _build_deterministic_output(
         market_phase=regime.get("market_phase", "unavailable") if regime else "unavailable",
         regime_drivers=regime if regime else None,
         data_category=DataCategory.CONFIRMED_DATA,
-        evidence_items=_macro_evidence_items(indicators, source_refs),
     )
 
 
@@ -491,90 +569,6 @@ def _first_indicator(indicators: dict[str, Any], keys: tuple[str, ...]) -> dict[
     return None
 
 
-def _macro_evidence_items(indicators: dict[str, Any], source_refs: list[dict[str, Any]]) -> list[EvidenceItem]:
-    items: list[EvidenceItem] = []
-
-    real_change = _first_change(indicators, _REAL_YIELD_KEYS)
-    real_value = _first_value(indicators, _REAL_YIELD_KEYS)
-    if real_change is not None or real_value is not None:
-        items.append(
-            EvidenceItem(
-                factor="real_yield_pressure",
-                direction=_direction_from_change(real_change, bullish_when_falling=True),
-                strength=_strength_from_change(real_change, fallback_value=real_value),
-                confidence=0.78 if real_change is not None else 0.55,
-                freshness=1.0,
-                source_tier="official",
-                source_refs=_refs_for_symbols(source_refs, ("REAL_YIELD_10Y", "DGS10", "T10YIE")),
-                data_category=DataCategory.CONFIRMED_DATA.value,
-                invalidation_hint="Real yields reverse higher." if real_change is not None and real_change < 0 else None,
-                notes="10Y real-yield direction derived from macro indicators.",
-            )
-        )
-
-    dxy_change = _first_change(indicators, _DXY_KEYS)
-    dxy_value = _first_value(indicators, _DXY_KEYS)
-    if dxy_change is not None or dxy_value is not None:
-        items.append(
-            EvidenceItem(
-                factor="dollar_pressure",
-                direction=_direction_from_change(dxy_change, bullish_when_falling=True),
-                strength=_strength_from_change(dxy_change, fallback_value=dxy_value),
-                confidence=0.74 if dxy_change is not None else 0.52,
-                freshness=1.0,
-                source_tier="market",
-                source_refs=_refs_for_symbols(source_refs, _DXY_KEYS),
-                data_category=DataCategory.CONFIRMED_DATA.value,
-                invalidation_hint="DXY turns higher." if dxy_change is not None and dxy_change < 0 else None,
-                notes="Dollar direction is a primary macro pressure input for gold.",
-            )
-        )
-
-    present_liquidity = [name for name, keys in _LIQUIDITY_GROUPS.items() if _first_indicator(indicators, keys) is not None]
-    if present_liquidity:
-        items.append(
-            EvidenceItem(
-                factor="liquidity_condition",
-                direction="neutral",
-                strength=round(len(present_liquidity) / len(_LIQUIDITY_GROUPS), 2),
-                confidence=0.6,
-                freshness=1.0,
-                source_tier="official",
-                source_refs=_refs_for_symbols(source_refs, tuple(key for keys in _LIQUIDITY_GROUPS.values() for key in keys)),
-                data_category=DataCategory.CONFIRMED_DATA.value,
-                notes="Liquidity evidence reflects availability and cross-check coverage of core liquidity indicators.",
-            )
-        )
-
-    return items
-
-
-def _direction_from_change(change: float | None, *, bullish_when_falling: bool) -> str:
-    if change is None or change == 0:
-        return "neutral"
-    if change < 0:
-        return "bullish" if bullish_when_falling else "bearish"
-    return "bearish" if bullish_when_falling else "bullish"
-
-
-def _strength_from_change(change: float | None, *, fallback_value: float | None) -> float:
-    if change is not None:
-        return _clamp(abs(change) / 1.0, 0.1, 1.0)
-    if fallback_value is not None:
-        return 0.35
-    return 0.0
-
-
-def _refs_for_symbols(source_refs: list[dict[str, Any]], symbols: tuple[str, ...]) -> list[dict[str, Any]]:
-    symbol_set = {symbol.upper() for symbol in symbols}
-    matched = [
-        dict(ref)
-        for ref in source_refs
-        if str(ref.get("symbol") or "").upper() in symbol_set
-    ]
-    return matched or [dict(ref) for ref in source_refs]
-
-
 def _first_value(indicators: dict[str, Any], keys: tuple[str, ...]) -> float | None:
     item = _first_indicator(indicators, keys)
     if item is None:
@@ -591,6 +585,22 @@ def _first_change(indicators: dict[str, Any], keys: tuple[str, ...]) -> float | 
         if value is not None:
             return value
     return None
+
+
+def _computed_real_yield_value(indicators: dict[str, Any]) -> float | None:
+    nominal = _first_value(indicators, _NOMINAL_YIELD_KEYS)
+    breakeven = _first_value(indicators, _BREAKEVEN_KEYS)
+    if nominal is None or breakeven is None:
+        return None
+    return nominal - breakeven
+
+
+def _computed_real_yield_change(indicators: dict[str, Any]) -> float | None:
+    nominal_change = _first_change(indicators, _NOMINAL_YIELD_KEYS)
+    breakeven_change = _first_change(indicators, _BREAKEVEN_KEYS)
+    if nominal_change is None or breakeven_change is None:
+        return None
+    return nominal_change - breakeven_change
 
 
 def _to_float(value: Any) -> float | None:

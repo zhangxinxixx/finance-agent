@@ -39,6 +39,7 @@ export function ReportArtifactPanel({ tab }: { tab: ReportArtifactContentView | 
       <MarkdownViewer
         content={tab.content}
         assetBaseUrl={tab.asset_base_url ?? undefined}
+        assetVersion={tab.path ?? undefined}
         blockListClassName="min-h-[78vh] max-h-none overflow-visible pr-2"
         fallbackClassName="min-h-[78vh] max-h-none overflow-x-auto overflow-y-visible pr-2"
       />

@@ -12,6 +12,7 @@ export const ASSET_ROWS: AssetRow[] = [
   { key: "US02Y", symbol: "US02Y", name: "2Y 国债", group: "rates" },
   { key: "REAL_10Y", symbol: "TIPS", name: "10Y 实际利率", group: "rates" },
   { key: "T10YIE", symbol: "T10YIE", name: "通胀预期", group: "rates" },
+  { key: "YIELD_SPREAD_2Y_3M", symbol: "2Y-3M", name: "短端利差", group: "rates" },
   { key: "TGA", symbol: "TGA", name: "财政现金账户", group: "liquidity" },
   { key: "REPO", symbol: "REPO", name: "逆回购", group: "liquidity" },
   { key: "FED_BS", symbol: "FedBS", name: "联储资产负债表", group: "liquidity" },

@@ -6,8 +6,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from apps.analysis.evidence import EvidenceItem
-
 
 class AgentBias(StrEnum):
     BULLISH = "bullish"
@@ -54,7 +52,10 @@ class AgentOutput(BaseModel):
     # ── P4-05: Macro regime engine fields (optional, backward-compatible) ──
     market_phase: str | None = Field(
         default=None,
-        description="Macro regime classification: rate_pressure | transition_release | trend_tailwind | unavailable",
+        description=(
+            "Macro regime classification: rate_pressure | transition_release | trend_tailwind | "
+            "liquidity_crunch | monetary_credit_repricing | unavailable"
+        ),
     )
     regime_drivers: dict[str, Any] | None = Field(
         default=None,
@@ -73,10 +74,6 @@ class AgentOutput(BaseModel):
     data_quality: list[str] = Field(
         default_factory=list,
         description="Data quality tags: stale_data, proxy_gex, prelim_data, etc.",
-    )
-    evidence_items: list[EvidenceItem] = Field(
-        default_factory=list,
-        description="Structured evidence factors for downstream reducers and decisions.",
     )
     # ── LLM metadata (optional, only for LLM-powered agents) ──
     llm_model: str | None = Field(default=None, description="LLM model used for this analysis")

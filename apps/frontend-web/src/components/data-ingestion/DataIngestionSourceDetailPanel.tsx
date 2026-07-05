@@ -131,13 +131,13 @@ function SourceDetailSections({
   const latestSuccess = source.latest_parsed_time ?? source.latest_raw_time ?? null;
   const latestUpdate = source.latest_update_time ?? latestSuccess;
   const issue = source.error_message ?? source.status_reason ?? (source.configured ? null : "source not configured");
-  const affectedModules = health?.affectedModules ?? [source.group];
+  const affectedModules = health.affectedModules;
   const sourceRefs = source.source_refs.slice(0, 4);
   const artifactEvidence = source.artifact_evidence;
   const newsSummary = artifactEvidence?.news_feature_summary ?? null;
   const newsRuntime = source.news_runtime;
   const feishuPreferredDate = source.latest_parsed_time ?? source.latest_raw_time ?? null;
-  const stages = health ? Object.entries(health.stages) : [];
+  const stages = Object.entries(health.stages);
   const stageRefs = stages
     .flatMap(([key, stage]) => [
       stage.inputRef ? { key: `${key}-input`, label: `${key}.input`, value: stage.inputRef } : null,
@@ -181,7 +181,7 @@ function SourceDetailSections({
     <div className="flex flex-col gap-2">
       <SourceDetailMetricsGrid
         configured={source.configured}
-        downstreamStatus={health?.downstreamStatus}
+        downstreamStatus={health.downstreamStatus}
         analysisReady={source.analysis_ready}
         lastRunId={source.last_run_id}
         latestSuccess={latestSuccess}
@@ -246,7 +246,7 @@ function SourceDetailSections({
       {source.id === "jin10_feishu" ? <DataIngestionFeishuMessagesBlock preferredDate={feishuPreferredDate} /> : null}
 
       <SourceDrilldownBlockWithLinks lastRunId={source.last_run_id} monitorHref={monitorHref} />
-      <SourceRawAndStageRefsBlock rawArtifactRef={health?.rawArtifactRef} stageRefs={stageRefs} />
+      <SourceRawAndStageRefsBlock rawArtifactRef={health.rawArtifactRef} stageRefs={stageRefs} />
       <SourceRefsBlock sourceRefs={sourceRefs} />
       {canRunSourceTest ? (
         <SourceTestPreviewBlock

@@ -5,6 +5,7 @@ from pathlib import Path
 from apps.analysis.jin10.agent_analysis import (
     MISSING,
     _parse_llm_output_to_fields,
+    agent_analysis_prompt_version,
     build_agent_analysis_prompt,
     build_jin10_agent_analysis_report,
     parse_agent_analysis_markdown,
@@ -151,6 +152,166 @@ def test_build_agent_analysis_prompt_marks_compacted_fallback_chart_mode() -> No
 
     assert "chart_render_mode: fallback_compact" in prompt
     assert "当前图表为页图 fallback：仅代表归档页面截图" in prompt
+
+
+def test_build_agent_analysis_prompt_uses_market_observation_framework() -> None:
+    raw_report = {
+        "trade_date": "2026-07-03",
+        "article_id": "223555",
+        "title": "加息跌破半数，黄金赔率变脸｜市场赔率数据表-金十数据VIP",
+        "source_url": "https://svip.jin10.com/news/223555",
+        "article_markdown": (
+            "# 加息跌破半数，黄金赔率变脸｜市场赔率数据表-金十数据VIP\n\n"
+            "截至7月3日14点，今日赔率市场的核心变化，是利率压力边际缓和之后，贵金属率先拿回一段修复空间。\n\n"
+            "黄金7月触及4200美元的概率升至94%，4300美元概率也达到65%，但4600美元仅5%。\n\n"
+            "WTI向下触及65美元概率达到64%，美元兑日元165仍是高位锚，概率达到68%。\n"
+        ),
+        "charts": [],
+    }
+    daily_report = {
+        "family": "jin10_market_observation_report",
+        "report_type": "market_observation",
+        "core_conclusion": "解析已完成，但正文与图表证据仍不足以形成稳定结论。",
+    }
+
+    prompt = build_agent_analysis_prompt(raw_report, daily_report)
+
+    assert "市场观察 / 市场赔率专用分析" in prompt
+    assert "不要套用每日金银报告" in prompt
+    assert "# 3. 赔率和观察信号怎么读？" in prompt
+    assert "# 5. 作为辅助决策依据怎么用？" in prompt
+    assert "黄金7月触及4200美元的概率升至94%" in prompt
+    assert "# 3. 黄金为什么涨 / 为什么跌？" not in prompt
+    assert "# 7. 三条路径推演" not in prompt
+    assert "previous_daily_analysis" not in prompt
+
+
+def test_build_agent_analysis_prompt_uses_positioning_framework() -> None:
+    raw_report = {
+        "trade_date": "2026-06-29",
+        "article_id": "223032",
+        "title": "黄金上方看涨总增持逾千手，资金中期乐观预期有所升温-金十数据VIP",
+        "source_url": "https://svip.jin10.com/news/223032",
+        "article_markdown": (
+            "# 黄金持仓报告\n\n"
+            "期货持仓量：主力合约增加535手或0.20%。\n"
+            "期权布局变化：4250 看涨期权+624手，看跌期权-2手。\n"
+            "# 白银持仓报告\n\n64 看涨期权+40手，看跌期权-10手。"
+        ),
+        "charts": [{"seq": 1, "title": "黄金持仓报告", "summary": "看涨期权和看跌期权分布", "image_path": "figures/fig_p1_001.png"}],
+    }
+    daily_report = {
+        "family": "jin10_positioning_report",
+        "report_type": "positioning",
+        "core_conclusion": "黄金期权上方增仓。",
+    }
+
+    prompt = build_agent_analysis_prompt(raw_report, daily_report)
+
+    assert "持仓 / 期权分布专用分析" in prompt
+    assert "期货持仓量、期货成交量、期权 OI" in prompt
+    assert "# 2. 黄金期权结构：Call / Put / OI / 行权价" in prompt
+    assert "不要套用每日金银报告" in prompt
+    assert "# 3. 黄金为什么涨 / 为什么跌？" not in prompt
+    assert "# 7. 三条路径推演" not in prompt
+
+
+def test_build_agent_analysis_prompt_uses_technical_levels_framework() -> None:
+    raw_report = {
+        "trade_date": "2026-06-29",
+        "article_id": "223073",
+        "title": "技术刘Pro：黄金波段低点呈下移之势，白银两端筹码逐步收细-金十数据VIP",
+        "source_url": "https://svip.jin10.com/news/223073",
+        "article_markdown": (
+            "# 国际现货黄金\n\nVAH 4092.61，POC 4064.95，VAL 4032.76。\n"
+            "筹码形态：双筹码峰。形态解释：短期关注价值区间突破。"
+        ),
+        "charts": [{"seq": 1, "title": "国际现货黄金筹码分布", "summary": "双筹码峰", "image_path": "figures/fig_p1_001.png"}],
+    }
+    daily_report = {
+        "family": "jin10_technical_levels_report",
+        "report_type": "technical_levels",
+        "core_conclusion": "黄金波段低点继续下移。",
+    }
+
+    prompt = build_agent_analysis_prompt(raw_report, daily_report)
+
+    assert "点位 / 技术刘Pro专用分析" in prompt
+    assert "VAH / VAL / POC" in prompt
+    assert "# 2. 黄金：VAH / POC / VAL 与筹码形态" in prompt
+    assert "不要写成宏观传导日报" in prompt
+    assert "# 3. 黄金为什么涨 / 为什么跌？" not in prompt
+    assert "previous_daily_analysis" not in prompt
+
+
+def test_build_agent_analysis_prompt_uses_oil_framework() -> None:
+    raw_report = {
+        "trade_date": "2026-06-29",
+        "article_id": "223009",
+        "title": "美伊同意停火并重启会晤，航运数据指向低强度扰动-金十数据VIP",
+        "source_url": "https://svip.jin10.com/news/223009",
+        "article_markdown": (
+            "# 每日原油报告\n\nWTI原油最终收跌1.76%，报70.08美元/桶；布伦特收跌2.8%，报72.58美元/桶。\n"
+            "霍尔木兹海峡仍处于低强度扰动。美国油气钻井总数升至573口。"
+        ),
+        "charts": [{"seq": 14, "title": "WTI原油技术指标", "summary": "恐惧贪婪指标", "image_path": "figures/fig_p14_001.png"}],
+    }
+    daily_report = {
+        "family": "jin10_oil_report",
+        "report_type": "oil",
+        "core_conclusion": "油价几乎跌回战前水平。",
+    }
+
+    prompt = build_agent_analysis_prompt(raw_report, daily_report)
+
+    assert "原油报告专用分析" in prompt
+    assert "供需、航运/地缘、库存、钻井、裂解价差" in prompt
+    assert "# 5. 对通胀、利率、美元和黄金的间接含义" in prompt
+    assert "不要使用“黄金为什么涨/跌”的固定日报章节" in prompt
+    assert "# 3. 黄金为什么涨 / 为什么跌？" not in prompt
+    assert "# 7. 三条路径推演" not in prompt
+
+
+def test_build_agent_analysis_prompt_uses_fx_framework() -> None:
+    raw_report = {
+        "trade_date": "2026-06-29",
+        "article_id": "223012",
+        "title": "油价下跌难掩通胀黏性，更高更久成美元最强支撑-金十数据VIP",
+        "source_url": "https://svip.jin10.com/news/223012",
+        "article_markdown": (
+            "# 每日外汇报告\n\n美元指数收跌0.07%，报101.39。10年期美债收益率收报4.371%，2年期美债收益率收报4.098%。\n"
+            "CME FedWatch显示，市场已开始将9月潜在加息纳入情景。"
+        ),
+        "charts": [{"seq": 11, "title": "消费者信心指数", "summary": "信心回升但不及预期", "image_path": "figures/fig_p11_001.png"}],
+    }
+    daily_report = {
+        "family": "jin10_fx_report",
+        "report_type": "fx",
+        "core_conclusion": "美元实际利率重新压盘。",
+    }
+
+    prompt = build_agent_analysis_prompt(raw_report, daily_report)
+
+    assert "外汇报告专用分析" in prompt
+    assert "美元指数、美债收益率、FedWatch、PCE/通胀" in prompt
+    assert "# 2. 美元指数和美债收益率" in prompt
+    assert "# 5. 对黄金的间接影响" in prompt
+    assert "# 3. 黄金为什么涨 / 为什么跌？" not in prompt
+    assert "不要沿用前序金银日报的价位链" in prompt
+
+
+def test_agent_analysis_prompt_version_tracks_report_type() -> None:
+    raw_report = {"title": "测试", "article_markdown": ""}
+
+    assert (
+        agent_analysis_prompt_version(raw_report, {"report_type": "market_observation"})
+        == "jin10_agent_analysis_market_observation_v1"
+    )
+    assert agent_analysis_prompt_version(raw_report, {"report_type": "positioning"}) == "jin10_agent_analysis_positioning_v1"
+    assert agent_analysis_prompt_version(raw_report, {"report_type": "technical_levels"}) == "jin10_agent_analysis_technical_levels_v1"
+    assert agent_analysis_prompt_version(raw_report, {"report_type": "oil"}) == "jin10_agent_analysis_oil_v1"
+    assert agent_analysis_prompt_version(raw_report, {"report_type": "fx"}) == "jin10_agent_analysis_fx_v1"
+    assert agent_analysis_prompt_version(raw_report, {"report_type": "daily"}) == "jin10_agent_analysis_v2"
 
 
 def test_build_jin10_agent_analysis_report_outputs_core_sections() -> None:

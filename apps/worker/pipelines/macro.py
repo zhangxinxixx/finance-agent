@@ -15,6 +15,8 @@ Never fabricates data; missing sources flow through as
 from __future__ import annotations
 
 import json
+import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +32,12 @@ from apps.data_layer.service import MacroDataService
 from apps.features.macro.snapshot import MacroIndicator, MacroSnapshot, build_macro_snapshot
 from apps.output.artifacts import artifact_run_dir
 from apps.parsers.macro.models import MacroPoint
+from apps.runtime.artifact_registry import register_artifact
+from apps.runtime.artifact_storage import LocalFileSystemArtifactStorage
 from database.queries.data_source_status import upsert_data_source_status
+from database.queries.feature_snapshots import upsert_feature_snapshots as upsert_feature_snapshot_rows
+from database.queries.macro_observations import upsert_macro_observations as upsert_macro_observation_rows
+from database.queries.report import upsert_report_artifact, upsert_report_item
 
 # ---------------------------------------------------------------------------
 # Step names that belong to the macro pipeline
@@ -41,6 +48,7 @@ MACRO_STEPS = {"macro_collect", "macro_feature", "report_render"}
 _MARKET_PROXY_SYMBOL_MAP = {
     "DX-Y.NYB": "DXY",
 }
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +66,7 @@ class MacroPipelineState:
     as_of: str = ""
     snapshot_dict: dict[str, Any] | None = None
     conclusion_dict: dict[str, Any] | None = None
+    macro_output: Any | None = None
     report_md: str | None = None
     full_report_md: str | None = None
     step_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -408,11 +417,20 @@ def _step_collect(
     state.all_source_refs = all_refs
 
     data_source_status_upserts = 0
+    macro_observation_upserts = 0
+    raw_artifact_registry_upserts = 0
     if db_session is not None:
         data_source_status_upserts = _upsert_macro_data_source_statuses(
             db_session,
             collector_statuses=collector_statuses,
             as_of=today,
+            run_id=run_id,
+        )
+        macro_observation_upserts, raw_artifact_registry_upserts = _upsert_macro_point_observations(
+            db_session,
+            storage_root=storage_root,
+            all_points=all_points,
+            all_refs=all_refs,
             run_id=run_id,
         )
 
@@ -424,6 +442,8 @@ def _step_collect(
         "total_unavailable": len(state.all_unavailable),
         "collectors": collector_statuses,
         "data_source_status_upserts": data_source_status_upserts,
+        "macro_observation_upserts": macro_observation_upserts,
+        "raw_artifact_registry_upserts": raw_artifact_registry_upserts,
     }
 
 
@@ -582,6 +602,144 @@ def _upsert_macro_data_source_statuses(
     )
     upserted += 1
     return upserted
+
+
+def _upsert_macro_point_observations(
+    db_session: Session,
+    *,
+    storage_root: Path,
+    all_points: list[MacroPoint],
+    all_refs: list[dict[str, str]],
+    run_id: str | None,
+) -> tuple[int, int]:
+    raw_artifact_ids = _register_macro_raw_artifacts(
+        db_session,
+        storage_root=storage_root,
+        all_points=all_points,
+        all_refs=all_refs,
+        run_id=run_id,
+    )
+    rows = upsert_macro_observation_rows(
+        db_session,
+        [
+            {
+                "source_key": point.source,
+                "symbol": point.symbol,
+                "observation_date": point.date,
+                "value": point.value,
+                "source_url": point.source_url,
+                "raw_path": point.raw_path,
+                "raw_artifact_id": raw_artifact_ids.get(_macro_point_raw_artifact_key(point)),
+                "retrieved_at": point.retrieved_at,
+                "run_id": run_id,
+                "source_refs": _source_refs_for_macro_point(point, all_refs),
+                "metadata": {
+                    "collector_source": point.source,
+                    "point_date": point.date,
+                    "raw_path": point.raw_path,
+                },
+            }
+            for point in all_points
+        ],
+    )
+    return len(rows), len(set(raw_artifact_ids.values()))
+
+
+def _register_macro_raw_artifacts(
+    db_session: Session,
+    *,
+    storage_root: Path,
+    all_points: list[MacroPoint],
+    all_refs: list[dict[str, str]],
+    run_id: str | None,
+) -> dict[tuple[str, str, str, str], str]:
+    if not run_id:
+        return {}
+
+    storage = LocalFileSystemArtifactStorage(root=storage_root)
+    registered_by_raw_path: dict[str, str] = {}
+    artifact_ids: dict[tuple[str, str, str, str], str] = {}
+
+    for point in all_points:
+        raw_path = str(point.raw_path or "").strip()
+        if not raw_path:
+            continue
+        if raw_path not in registered_by_raw_path:
+            try:
+                row = register_artifact(
+                    db_session,
+                    run_id=run_id,
+                    artifact_type="raw_file",
+                    file_path=raw_path,
+                    sha256=None,
+                    source_refs=_artifact_source_refs_for_macro_point(point, all_refs),
+                    metadata={
+                        "source_key": point.source,
+                        "symbol": point.symbol,
+                        "observation_date": point.date,
+                        "collector_stage": "macro_collect",
+                    },
+                    require_canonical_path=False,
+                    storage=storage,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to register macro raw artifact: run_id=%s raw_path=%s error=%s",
+                    run_id,
+                    raw_path,
+                    exc,
+                )
+                continue
+            if row is None:
+                continue
+            registered_by_raw_path[raw_path] = str(row.artifact_id)
+        artifact_ids[_macro_point_raw_artifact_key(point)] = registered_by_raw_path[raw_path]
+
+    return artifact_ids
+
+
+def _macro_point_raw_artifact_key(point: MacroPoint) -> tuple[str, str, str, str]:
+    return (point.source, point.symbol, point.date, point.raw_path)
+
+
+def _source_refs_for_macro_point(point: MacroPoint, refs: list[dict[str, str]]) -> list[dict[str, str]]:
+    matched: list[dict[str, str]] = []
+    for ref in refs:
+        ref_symbol = ref.get("symbol")
+        ref_source = ref.get("source")
+        ref_raw_path = ref.get("raw_path")
+        if ref_symbol and ref_symbol != point.symbol:
+            continue
+        if ref_source and ref_source != point.source:
+            continue
+        if ref_raw_path and ref_raw_path != point.raw_path:
+            continue
+        if ref_symbol or ref_source or ref_raw_path:
+            matched.append(dict(ref))
+
+    if matched:
+        return matched
+
+    return [
+        {
+            "symbol": point.symbol,
+            "source": point.source,
+            "source_url": point.source_url,
+            "raw_path": point.raw_path,
+        }
+    ]
+
+
+def _artifact_source_refs_for_macro_point(point: MacroPoint, refs: list[dict[str, str]]) -> list[dict[str, str]]:
+    artifact_refs: list[dict[str, str]] = []
+    for ref in _source_refs_for_macro_point(point, refs):
+        enriched = dict(ref)
+        enriched.setdefault("symbol", point.symbol)
+        enriched.setdefault("source", point.source)
+        enriched.setdefault("source_url", point.source_url)
+        enriched.setdefault("raw_path", point.raw_path)
+        artifact_refs.append(enriched)
+    return artifact_refs
 
 
 def _build_source_status_payload(
@@ -827,7 +985,7 @@ def _step_render(
     snapshot = _snapshot_from_dict(state.snapshot_dict)
     conclusion = build_macro_conclusion(snapshot)
     report_md = render_macro_snapshot_markdown(snapshot)
-    full_report_md = render_macro_full_report_markdown(snapshot, conclusion)
+    full_report_md = render_macro_full_report_markdown(snapshot, conclusion, macro_output=state.macro_output)
     state.conclusion_dict = conclusion.to_dict()
     state.report_md = report_md
     state.full_report_md = full_report_md
@@ -867,6 +1025,43 @@ def _step_render(
     full_md_path = outputs_dir / "macro_full_report.md"
     full_md_path.write_text(full_report_md, encoding="utf-8")
 
+    feature_snapshot_upserts = 0
+    render_artifact_registry_upserts = 0
+    report_registry_upserts = 0
+    if db_session is not None:
+        feature_snapshot_upserts = _upsert_macro_feature_snapshots(
+            db_session,
+            snapshot_payload=state.snapshot_dict,
+            conclusion_payload=state.conclusion_dict,
+            snapshot_artifact_path=json_path,
+            conclusion_artifact_path=conclusion_path,
+            trade_date=state.as_of,
+            run_id=run_id,
+            source_refs=state.all_source_refs,
+            unavailable_symbols=state.all_unavailable,
+        )
+        render_artifact_registry_upserts = _register_macro_render_artifacts(
+            db_session,
+            storage_root=storage_root,
+            run_id=run_id,
+            trade_date=state.as_of,
+            snapshot_path=json_path,
+            conclusion_path=conclusion_path,
+            report_path=md_path,
+            full_report_path=full_md_path,
+            source_refs=state.all_source_refs,
+        )
+        report_registry_upserts = _register_macro_report_registry_entries(
+            db_session,
+            run_id=run_id,
+            trade_date=state.as_of,
+            snapshot_path=json_path,
+            conclusion_path=conclusion_path,
+            report_path=md_path,
+            full_report_path=full_md_path,
+            source_refs=state.all_source_refs,
+        )
+
     return {
         "step": "report_render",
         "status": "success",
@@ -877,12 +1072,305 @@ def _step_render(
         "full_md_path": str(full_md_path),
         "source_refs_count": len(state.all_source_refs),
         "unavailable_count": len(state.all_unavailable),
+        "feature_snapshot_upserts": feature_snapshot_upserts,
+        "render_artifact_registry_upserts": render_artifact_registry_upserts,
+        "report_registry_upserts": report_registry_upserts,
     }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _upsert_macro_feature_snapshots(
+    db_session: Session,
+    *,
+    snapshot_payload: dict[str, Any],
+    conclusion_payload: dict[str, Any],
+    snapshot_artifact_path: Path,
+    conclusion_artifact_path: Path,
+    trade_date: str,
+    run_id: str | None,
+    source_refs: list[dict[str, Any]],
+    unavailable_symbols: list[str],
+) -> int:
+    if not run_id:
+        return 0
+
+    snapshot_id = _feature_snapshot_id("macro", "macro_snapshot", trade_date, run_id)
+    conclusion_snapshot_id = _feature_snapshot_id("macro", "macro_conclusion", trade_date, run_id)
+    snapshot_source_refs = _feature_snapshot_source_refs(snapshot_payload, source_refs)
+    status = "partial" if unavailable_symbols else "success"
+
+    rows = upsert_feature_snapshot_rows(
+        db_session,
+        [
+            {
+                "snapshot_id": snapshot_id,
+                "domain": "macro",
+                "snapshot_kind": "macro_snapshot",
+                "asset": "XAUUSD",
+                "trade_date": trade_date,
+                "run_id": run_id,
+                "status": status,
+                "payload": snapshot_payload,
+                "artifact_path": str(snapshot_artifact_path),
+                "source_refs": snapshot_source_refs,
+                "input_snapshot_ids": {},
+                "metadata": {
+                    "pipeline_step": "report_render",
+                    "artifact_name": "macro_snapshot.json",
+                    "unavailable_count": len(unavailable_symbols),
+                    "source_refs_count": len(snapshot_source_refs),
+                },
+            },
+            {
+                "snapshot_id": conclusion_snapshot_id,
+                "domain": "macro",
+                "snapshot_kind": "macro_conclusion",
+                "asset": "XAUUSD",
+                "trade_date": trade_date,
+                "run_id": run_id,
+                "status": status,
+                "payload": conclusion_payload,
+                "artifact_path": str(conclusion_artifact_path),
+                "source_refs": snapshot_source_refs,
+                "input_snapshot_ids": {"macro_snapshot": snapshot_id},
+                "metadata": {
+                    "pipeline_step": "report_render",
+                    "artifact_name": "macro_conclusion.json",
+                    "unavailable_count": len(unavailable_symbols),
+                    "source_refs_count": len(snapshot_source_refs),
+                },
+            },
+        ],
+    )
+    return len(rows)
+
+
+def _register_macro_render_artifacts(
+    db_session: Session,
+    *,
+    storage_root: Path,
+    run_id: str | None,
+    trade_date: str,
+    snapshot_path: Path,
+    conclusion_path: Path,
+    report_path: Path,
+    full_report_path: Path,
+    source_refs: list[dict[str, Any]],
+) -> int:
+    if not _is_uuid_string(run_id):
+        return 0
+
+    snapshot_id = _feature_snapshot_id("macro", "macro_snapshot", trade_date, str(run_id))
+    conclusion_snapshot_id = _feature_snapshot_id("macro", "macro_conclusion", trade_date, str(run_id))
+    registry_storage = _macro_registry_storage(storage_root)
+    artifact_specs = [
+        ("macro_snapshot", "feature_json", snapshot_path, snapshot_id, {}),
+        ("macro_conclusion", "feature_json", conclusion_path, conclusion_snapshot_id, {"macro_snapshot": snapshot_id}),
+        ("macro_snapshot_report", "analysis_md", report_path, snapshot_id, {"macro_snapshot": snapshot_id}),
+        ("macro_full_report", "analysis_md", full_report_path, conclusion_snapshot_id, {"macro_snapshot": snapshot_id}),
+    ]
+
+    upserted = 0
+    for artifact_name, artifact_type, artifact_path, feature_snapshot_id, input_snapshot_ids in artifact_specs:
+        try:
+            row = register_artifact(
+                db_session,
+                run_id=str(run_id),
+                artifact_type=artifact_type,
+                file_path=_macro_registry_file_path(artifact_path, storage_root=storage_root),
+                source_refs=source_refs,
+                input_snapshot_ids=input_snapshot_ids,
+                metadata={
+                    "source_key": "macro",
+                    "pipeline_step": "report_render",
+                    "artifact_name": artifact_path.name,
+                    "macro_artifact_name": artifact_name,
+                    "feature_snapshot_id": feature_snapshot_id,
+                },
+                storage=registry_storage,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to register macro render artifact: run_id=%s artifact_path=%s error=%s",
+                run_id,
+                artifact_path,
+                exc,
+            )
+            continue
+        if row is not None:
+            upserted += 1
+    return upserted
+
+
+def _register_macro_report_registry_entries(
+    db_session: Session,
+    *,
+    run_id: str | None,
+    trade_date: str,
+    snapshot_path: Path,
+    conclusion_path: Path,
+    report_path: Path,
+    full_report_path: Path,
+    source_refs: list[dict[str, Any]],
+) -> int:
+    if not run_id:
+        return 0
+
+    report_id = f"macro_report:{run_id}"
+    input_snapshot_ids = {
+        "macro_snapshot": _feature_snapshot_id("macro", "macro_snapshot", trade_date, run_id),
+        "macro_conclusion": _feature_snapshot_id("macro", "macro_conclusion", trade_date, run_id),
+    }
+    artifact_specs = [
+        ("macro_snapshot_report", "analysis_md", report_path, False, "text/markdown"),
+        ("macro_full_report", "analysis_md", full_report_path, True, "text/markdown"),
+        ("macro_snapshot", "structured_json", snapshot_path, False, "application/json"),
+        ("macro_conclusion", "structured_json", conclusion_path, False, "application/json"),
+    ]
+
+    try:
+        with db_session.begin_nested():
+            upsert_report_item(
+                db_session,
+                {
+                    "report_id": report_id,
+                    "family": "macro_report",
+                    "report_type": "macro_report",
+                    "title": f"XAUUSD 宏观分析报告（{trade_date}）",
+                    "asset": "XAUUSD",
+                    "trade_date": trade_date,
+                    "run_id": run_id,
+                    "snapshot_id": input_snapshot_ids["macro_snapshot"],
+                    "data_status": "live",
+                    "lifecycle_status": "generated",
+                    "source_refs": source_refs,
+                    "metadata": {
+                        "input_snapshot_ids": input_snapshot_ids,
+                        "writer": "macro.report_render",
+                    },
+                },
+            )
+            artifact_count = 0
+            for artifact_name, artifact_type, artifact_path, is_primary, content_type in artifact_specs:
+                upsert_report_artifact(
+                    db_session,
+                    _macro_report_artifact_payload(
+                        report_id=report_id,
+                        artifact_name=artifact_name,
+                        artifact_type=artifact_type,
+                        artifact_path=artifact_path,
+                        content_type=content_type,
+                        is_primary=is_primary,
+                        source_refs=source_refs,
+                        input_snapshot_ids=input_snapshot_ids,
+                    ),
+                )
+                artifact_count += 1
+            db_session.flush()
+            return 1 + artifact_count
+    except Exception as exc:
+        logger.warning(
+            "Failed to register macro report registry entries: run_id=%s trade_date=%s error=%s",
+            run_id,
+            trade_date,
+            exc,
+        )
+        return 0
+
+
+def _macro_report_artifact_payload(
+    *,
+    report_id: str,
+    artifact_name: str,
+    artifact_type: str,
+    artifact_path: Path,
+    content_type: str,
+    is_primary: bool,
+    source_refs: list[dict[str, Any]],
+    input_snapshot_ids: dict[str, str],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "artifact_id": f"{report_id}:{artifact_name}",
+        "report_id": report_id,
+        "artifact_type": artifact_type,
+        "file_path": str(artifact_path),
+        "storage_backend": "local_fs",
+        "status": "generated",
+        "content_type": content_type,
+        "is_primary": is_primary,
+        "source_refs": source_refs,
+        "metadata": {
+            "input_snapshot_ids": input_snapshot_ids,
+            "macro_artifact_name": artifact_name,
+            "pipeline_step": "report_render",
+        },
+    }
+    try:
+        stat_result = artifact_path.stat()
+    except OSError:
+        return payload
+
+    payload["byte_size"] = stat_result.st_size
+    payload["generated_at"] = datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc).isoformat()
+    payload["sha256"] = LocalFileSystemArtifactStorage().compute_sha256(str(artifact_path))
+    return payload
+
+
+def _macro_registry_storage(storage_root: Path) -> LocalFileSystemArtifactStorage:
+    root = storage_root.resolve()
+    if root.name == "storage":
+        return LocalFileSystemArtifactStorage(root=root.parent)
+    return LocalFileSystemArtifactStorage(root=root)
+
+
+def _macro_registry_file_path(path: Path, *, storage_root: Path) -> str:
+    root = storage_root.resolve()
+    relative_path = path.resolve().relative_to(root)
+    if root.name == "storage":
+        return (Path(root.name) / relative_path).as_posix()
+    return relative_path.as_posix()
+
+
+def _is_uuid_string(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        uuid.UUID(str(value))
+    except ValueError:
+        return False
+    return True
+
+
+def _feature_snapshot_id(domain: str, snapshot_kind: str, trade_date: str, run_id: str) -> str:
+    return f"feature:{domain}:{snapshot_kind}:{trade_date}:{run_id}"
+
+
+def _feature_snapshot_source_refs(
+    snapshot_payload: dict[str, Any],
+    source_refs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if source_refs:
+        return [dict(ref) for ref in source_refs]
+
+    raw_refs = snapshot_payload.get("source_refs") or {}
+    if isinstance(raw_refs, dict):
+        normalized: list[dict[str, Any]] = []
+        for symbol, ref in raw_refs.items():
+            if not isinstance(ref, dict):
+                continue
+            item = dict(ref)
+            item.setdefault("symbol", symbol)
+            normalized.append(item)
+        return normalized
+
+    if isinstance(raw_refs, list):
+        return [dict(ref) for ref in raw_refs if isinstance(ref, dict)]
+
+    return []
 
 
 def _snapshot_from_dict(data: dict[str, Any]) -> MacroSnapshot:

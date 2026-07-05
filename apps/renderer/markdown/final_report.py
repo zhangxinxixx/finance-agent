@@ -40,17 +40,20 @@ _DATA_CATEGORY_LABELS = {
 
 _PROFESSIONAL_REPORT_ORDER = ["macro", "technical", "positioning", "options", "news", "risk"]
 _MACRO_INDICATOR_ORDER = [
-    "DXY",
-    "REAL_10Y",
-    "US10Y",
-    "US02Y",
-    "BREAKEVEN_10Y",
+    "ON_RRP_USAGE",
+    "ON_RRP_AWARD_RATE",
     "TGA",
     "RESERVES",
-    "ON_RRP_USAGE",
     "SOFR",
     "EFFR",
     "IORB",
+    "US02Y",
+    "US10Y",
+    "BREAKEVEN_10Y",
+    "REAL_10Y",
+    "YIELD_SPREAD_10Y_2Y",
+    "YIELD_SPREAD_2Y_3M",
+    "DXY",
 ]
 
 _BIAS_LABELS = {
@@ -118,6 +121,7 @@ def render_final_report_markdown(
     lines.extend(_render_executive_summary(snapshot_data, outputs, warnings, heading_level=3))
     lines.extend(_render_market_view(outputs, heading_level=3))
     lines.extend(_render_evidence_chain(outputs, heading_level=3))
+    lines.extend(_render_gold_macro_overview(snapshot_data, heading_level=3))
     lines.extend(_render_scenarios(outputs, heading_level=3))
     lines.extend(_render_data_quality(warnings, heading_level=3))
     lines.extend(_render_list_section("观察列表", _collect_list(outputs, "watchlist"), limit=12, heading_level=3))
@@ -196,6 +200,7 @@ def _render_macro_data_report(
             lines.extend([macro.summary, ""])
 
     lines.extend(_render_macro_indicator_table(snapshot))
+    lines.extend(_render_v21_macro_framework(snapshot, macro))
     if macro and macro.key_findings:
         lines.extend(["### 宏观结论", ""])
         lines.extend(_bullets(macro.key_findings[:6]))
@@ -304,6 +309,93 @@ def _render_evidence_chain(outputs: Mapping[str, AgentOutput | None], *, heading
         lines.extend(_render_professional_agent_section(name, outputs.get(name), heading_level=heading_level + 1))
     lines.extend(_render_news_event_highlights(outputs.get("news"), limit=6, heading_level=heading_level + 1))
     return lines
+
+
+def _render_gold_macro_overview(snapshot: Mapping[str, Any], *, heading_level: int = 2) -> list[str]:
+    overview = _find_gold_macro_overview(snapshot)
+    if not overview:
+        return []
+    readiness = overview.get("analysis_readiness") if isinstance(overview.get("analysis_readiness"), Mapping) else {}
+    chain = overview.get("war_oil_rate_chain") if isinstance(overview.get("war_oil_rate_chain"), Mapping) else {}
+    rankings = [item for item in overview.get("theme_rankings") or [] if isinstance(item, Mapping)]
+    requirements = [item for item in overview.get("mainline_requirements") or [] if isinstance(item, Mapping)]
+
+    lines = [_heading(heading_level, "黄金九主线总览"), ""]
+    lines.append(
+        "- 主导主线: "
+        f"{overview.get('dominant_mainline') or 'unknown'}；"
+        f"优先环境: {overview.get('priority_regime') or 'unknown'}；"
+        f"净影响: {overview.get('net_bias') or 'unknown'}。"
+    )
+    if overview.get("priority_reason"):
+        lines.append(f"- 优先级原因: {overview.get('priority_reason')}")
+    if readiness:
+        lines.append(
+            "- 能力覆盖: "
+            f"{readiness.get('status') or 'unknown'}，"
+            f"ready {readiness.get('ready_count', 0)}/"
+            f"{readiness.get('total_count', 0)}，"
+            f"partial {readiness.get('partial_count', 0)}，"
+            f"missing {readiness.get('missing_count', 0)}。"
+        )
+    if chain:
+        lines.append(
+            "- 战争-石油-利率链: "
+            f"{chain.get('conclusion_code') or 'unknown'} / "
+            f"{chain.get('conclusion_label') or chain.get('net_effect') or 'unknown'}。"
+        )
+    if rankings:
+        lines.extend(["", "| Rank | 主线 | 方向 | 分数 | 证据 |", "| --- | --- | --- | --- | --- |"])
+        for item in rankings[:5]:
+            lines.append(
+                "| "
+                f"{item.get('rank') or '-'} | "
+                f"{item.get('label') or item.get('mainline_id') or '-'} | "
+                f"{item.get('direction') or '-'} | "
+                f"{item.get('theme_score') if item.get('theme_score') is not None else item.get('score') or '-'} | "
+                f"{item.get('evidence_count', 0)} |"
+            )
+    gaps = _gold_macro_gaps(requirements, overview)
+    if gaps:
+        lines.extend(["", "待补证据："])
+        lines.extend(_bullets(gaps[:6]))
+    lines.append("")
+    return lines
+
+
+def _find_gold_macro_overview(snapshot: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    direct = snapshot.get("gold_macro_overview")
+    if isinstance(direct, Mapping) and direct:
+        return direct
+    news = snapshot.get("news")
+    if isinstance(news, Mapping):
+        news_data = news.get("data")
+        if isinstance(news_data, Mapping):
+            nested = news_data.get("gold_macro_overview")
+            if isinstance(nested, Mapping) and nested:
+                return nested
+    payload = snapshot.get("payload")
+    if isinstance(payload, Mapping):
+        nested = payload.get("gold_macro_overview")
+        if isinstance(nested, Mapping) and nested:
+            return nested
+    return None
+
+
+def _gold_macro_gaps(requirements: list[Mapping[str, Any]], overview: Mapping[str, Any]) -> list[str]:
+    gaps: list[str] = []
+    for item in requirements:
+        if item.get("readiness_status") == "ready":
+            continue
+        label = item.get("label") or item.get("mainline_id") or "unknown"
+        missing_sources = ", ".join(str(source) for source in item.get("missing_sources") or [])
+        missing_fields = ", ".join(str(field) for field in item.get("missing_fields") or [])
+        detail = missing_sources or missing_fields
+        if detail:
+            gaps.append(f"{label}: {detail}")
+    if not gaps:
+        gaps.extend(str(item) for item in overview.get("architecture_gaps") or [] if str(item))
+    return gaps
 
 
 def _render_professional_agent_section(name: str, output: AgentOutput | None, *, heading_level: int = 3) -> list[str]:
@@ -627,9 +719,9 @@ def _status_label(value: str | None) -> str:
 
 def _market_phase_text(macro: AgentOutput | None, coordinator: AgentOutput | None) -> str:
     if macro and macro.market_phase and macro.market_phase != "unavailable":
-        return macro.market_phase
+        return _phase_label(macro.market_phase)
     if coordinator and coordinator.market_phase and coordinator.market_phase != "unavailable":
-        return coordinator.market_phase
+        return _phase_label(coordinator.market_phase)
     if coordinator:
         return f"{_bias_label(coordinator.bias.value)}研究视图"
     if macro:
@@ -704,6 +796,269 @@ def _format_change(item: Mapping[str, Any], key: str, *, fallback: str | None = 
     sign = "+" if number > 0 else ""
     rendered = f"{sign}{number:.3f}".rstrip("0").rstrip(".")
     return rendered or "0"
+
+
+def _render_v21_macro_framework(snapshot: Mapping[str, Any], macro: AgentOutput | None) -> list[str]:
+    indicators = _macro_indicators(snapshot)
+    drivers = macro.regime_drivers.get("drivers", {}) if macro and isinstance(macro.regime_drivers, Mapping) else {}
+    phase = _phase_label(macro.market_phase if macro else None)
+    lines = ["### v2.1 流动性数据底座判断", ""]
+    lines.extend(
+        [
+            f"- 数量层：{_liquidity_quantity_label(drivers.get('liquidity_quantity'))}",
+            f"- 价格层：{_liquidity_price_label(drivers.get('liquidity_price'), indicators)}",
+            f"- 实际利率：{_driver_direction_label(drivers.get('real_yield'), rising='上行', falling='下行', flat='横盘')}",
+            f"- 美元：{_driver_direction_label(drivers.get('dxy'), rising='逆风', falling='顺风', flat='中性')}",
+            "- 判断规则：流动性数量层只作为底座，必须继续经过实际利率、DXY 和阶段判断后才进入交易/配置含义。",
+            "",
+            "### 当前阶段判断",
+            "",
+            f"- 当前阶段：{phase}",
+            f"- 置信度：{macro.confidence:.2f}" if macro else "- 置信度：unavailable",
+            f"- 当前主导变量：{_dominant_macro_variable(drivers, macro)}",
+            f"- 是否处于切换区：{_is_switch_zone(macro)}",
+            "",
+            "### 当前主导变量排序",
+            "",
+            "| 排名 | 主导变量 | 当前方向 | 对黄金影响 |",
+            "|---:|---|---|---|",
+        ]
+    )
+    for idx, row in enumerate(_dominant_variable_rows(drivers), 1):
+        lines.append(f"| {idx} | {row[0]} | {row[1]} | {row[2]} |")
+    lines.extend(
+        [
+            "",
+            "### 利率结构模块",
+            "",
+            f"- 第一层 10Y 名义收益率：{_indicator_value_by_keys(indicators, ('US10Y', 'DGS10'))}；判断长端压力和财政/期限溢价。",
+            f"- 是否接近 4.5%-4.7% 政策敏感区：{_rate_game_zone(indicators)}",
+            f"- 第二层 10Y 实际收益率 / TIPS：{_real_yield_pressure(drivers)}；判断黄金机会成本。",
+            f"- 第三层 2Y-3M 利差：{_short_curve_label(indicators)}；判断短端政策拐点和周期低点窗口。",
+            f"- 利率结构规则：{_rate_structure_label(indicators)}",
+            f"- DXY 是否配合：{_driver_direction_label(drivers.get('dxy'), rising='美元逆风', falling='美元顺风', flat='中性')}",
+            "",
+            "### 黄金六因子模型",
+            "",
+            "| 因子 | 状态 | 评分 | 含义 |",
+            "|---|---|---:|---|",
+            f"| 实际收益率 | {_factor_state(indicators, ('REAL_10Y', 'REAL_YIELD_10Y'))} | {_factor_score(indicators, ('REAL_10Y', 'REAL_YIELD_10Y'), positive_is_bullish=False, weight=3)} | 权重 +3/-3；主口径为 US10Y - T10YIE |",
+            f"| 通胀预期 | {_factor_state(indicators, ('BREAKEVEN_10Y', 'T10YIE'))} | {_factor_score(indicators, ('BREAKEVEN_10Y', 'T10YIE'), positive_is_bullish=True, weight=2)} | 权重 +2/-2；T10YIE 是主通胀预期口径 |",
+            f"| 利率曲线 / 2Y-3M利差 | {_factor_state(indicators, ('YIELD_SPREAD_2Y_3M',))} | {_factor_score(indicators, ('YIELD_SPREAD_2Y_3M',), positive_is_bullish=True, weight=2)} | 权重 +2/-2；改善提高周期低点确认概率 |",
+            "| ETF / COT 资金 | 未从识别结果中稳定提取 | 0 | 权重 +2/-2；未进入本宏观快照 |",
+            "| 期权结构 | 未从识别结果中稳定提取 | 0 | 权重 +1/-1；短线节奏，由 CME options Agent 单独确认 |",
+            "| 央行 / 实物需求 | 未从识别结果中稳定提取 | 0 | 权重 +2/-1；未进入本宏观快照 |",
+            "",
+            "### 关键触发条件与失效条件",
+            "",
+        ]
+    )
+    change_conditions = macro.regime_drivers.get("change_conditions", []) if macro and isinstance(macro.regime_drivers, Mapping) else []
+    if change_conditions:
+        lines.extend(_bullets([str(item) for item in change_conditions[:5]]))
+    else:
+        lines.append("- unavailable")
+    lines.extend(
+        [
+            "",
+            "### 交易 / 配置含义",
+            "",
+            f"- 研究含义：{_phase_research_meaning(macro.market_phase if macro else None)}",
+            "- 执行边界：本报告只输出研究和配置含义，不输出下单、止损、止盈或仓位比例。",
+            "",
+        ]
+    )
+    return lines
+
+
+def _phase_label(value: str | None) -> str:
+    labels = {
+        "rate_pressure": "利率压制态",
+        "transition_release": "过渡释放态",
+        "trend_tailwind": "趋势顺风态",
+        "liquidity_crunch": "流动性踩踏态",
+        "monetary_credit_repricing": "货币信用重估态",
+        "unavailable": "不可用",
+    }
+    if not value:
+        return "输入不足"
+    return labels.get(value, value)
+
+
+def _phase_research_meaning(value: str | None) -> str:
+    meanings = {
+        "rate_pressure": "反弹先按修复观察，趋势反转需要实际利率和 DXY 同步确认。",
+        "transition_release": "进入反转观察区，优先等待确认或回踩后的研究性试探。",
+        "trend_tailwind": "宏观顺风增强，回踩与突破的研究价值上升。",
+        "liquidity_crunch": "先防流动性踩踏，不用避险逻辑盲目追多。",
+        "monetary_credit_repricing": "中长期配置逻辑增强，短线仍需触发位确认。",
+    }
+    return meanings.get(value or "", "数据不足，保持观察。")
+
+
+def _liquidity_quantity_label(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "输入不足"
+    trend = value.get("trend")
+    if trend == "easing":
+        return "偏松"
+    if trend == "tightening":
+        return "偏紧"
+    if trend == "neutral":
+        return "分裂 / 中性"
+    return "输入不足"
+
+
+def _liquidity_price_label(value: Any, indicators: Mapping[str, Any]) -> str:
+    if not isinstance(value, Mapping):
+        return "输入不足"
+    high_count = 0
+    for key in ("SOFR", "EFFR", "IORB", "US02Y"):
+        metric = indicators.get(key)
+        raw = metric.get("value") if isinstance(metric, Mapping) else None
+        try:
+            high_count += 1 if raw is not None and float(raw) >= 3.5 else 0
+        except (TypeError, ValueError):
+            continue
+    if high_count >= 3:
+        return "钱贵"
+    return "稳定"
+
+
+def _driver_direction_label(value: Any, *, rising: str, falling: str, flat: str) -> str:
+    if not isinstance(value, Mapping):
+        return "输入不足"
+    direction = value.get("direction")
+    if direction == "rising":
+        return rising
+    if direction == "falling":
+        return falling
+    if direction == "flat":
+        return flat
+    return "方向不明"
+
+
+def _dominant_macro_variable(drivers: Mapping[str, Any], macro: AgentOutput | None) -> str:
+    phase = macro.market_phase if macro else None
+    if phase in {"rate_pressure", "liquidity_crunch"}:
+        return "实际利率 / DXY"
+    if phase == "monetary_credit_repricing":
+        return "货币信用"
+    if phase == "trend_tailwind":
+        return "实际利率下行 / 美元转弱"
+    if isinstance(drivers.get("real_yield"), Mapping):
+        return "实际利率"
+    return "输入不足"
+
+
+def _is_switch_zone(macro: AgentOutput | None) -> str:
+    return "是" if macro and macro.market_phase == "transition_release" else "否"
+
+
+def _dominant_variable_rows(drivers: Mapping[str, Any]) -> list[tuple[str, str, str]]:
+    return [
+        ("10Y实际利率", _driver_direction_label(drivers.get("real_yield"), rising="上行", falling="下行", flat="横盘"), "核心机会成本"),
+        ("DXY", _driver_direction_label(drivers.get("dxy"), rising="上行", falling="下行", flat="横盘"), "美元计价压力"),
+        ("US02Y", _driver_direction_label(drivers.get("us02y"), rising="上行", falling="下行", flat="横盘"), "短端政策预期"),
+        ("流动性数量层", _liquidity_quantity_label(drivers.get("liquidity_quantity")), "底座，不是直接信号"),
+        ("Breakeven", _driver_direction_label(drivers.get("breakeven"), rising="上行", falling="下行", flat="横盘"), "通胀预期"),
+        ("风险溢价 / 货币信用", "未稳定提取", "只在触发时展开"),
+    ]
+
+
+def _indicator_value_by_keys(indicators: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        item = indicators.get(key)
+        if isinstance(item, Mapping):
+            return _format_indicator_value(item)
+    return "unavailable"
+
+
+def _rate_game_zone(indicators: Mapping[str, Any]) -> str:
+    value = _indicator_float(indicators, ("US10Y", "DGS10"))
+    if value is None:
+        return "无法判断"
+    if 4.5 <= value < 4.7:
+        return "是，处于政策敏感区"
+    if value >= 4.7:
+        return "已进入流动性踩踏风险区"
+    return "否"
+
+
+def _real_yield_pressure(drivers: Mapping[str, Any]) -> str:
+    label = _driver_direction_label(drivers.get("real_yield"), rising="继续压制", falling="压制缓和", flat="横盘")
+    return label
+
+
+def _short_curve_label(indicators: Mapping[str, Any]) -> str:
+    value = _indicator_value_by_keys(indicators, ("YIELD_SPREAD_2Y_3M",))
+    change = _indicator_change(indicators, ("YIELD_SPREAD_2Y_3M",))
+    if change is None:
+        return f"{value}，方向待确认"
+    if change > 0:
+        return f"{value}，利差改善"
+    if change < 0:
+        return f"{value}，利差恶化"
+    return f"{value}，横盘"
+
+
+def _rate_structure_label(indicators: Mapping[str, Any]) -> str:
+    real = _indicator_float(indicators, ("REAL_10Y", "REAL_YIELD_10Y"))
+    real_change = _indicator_change(indicators, ("REAL_10Y", "REAL_YIELD_10Y"))
+    spread_change = _indicator_change(indicators, ("YIELD_SPREAD_2Y_3M",))
+    if real is None or real_change is None or spread_change is None:
+        return "10Y 实际收益率或 2Y-3M 利差缺失，不能确认短端政策拐点。"
+    if real_change < 0 and spread_change > 0:
+        return "10Y 实际收益率下行 + 2Y-3M 利差改善，黄金低点确认概率提高。"
+    if real >= 2.1 and spread_change < 0:
+        return "10Y 实际收益率高企 + 2Y-3M 利差恶化，4100 低点失败概率提高，警惕 3720 剧本。"
+    return "利率结构尚未形成明确共振，继续等待实际收益率与短端利差同向确认。"
+
+
+def _factor_state(indicators: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+    change = _indicator_change(indicators, keys)
+    if change is None:
+        return "方向不明"
+    if change > 0:
+        return "上行"
+    if change < 0:
+        return "下行"
+    return "横盘"
+
+
+def _factor_score(indicators: Mapping[str, Any], keys: tuple[str, ...], *, positive_is_bullish: bool, weight: int = 2) -> int:
+    change = _indicator_change(indicators, keys)
+    if change is None or change == 0:
+        return 0
+    bullish = change > 0 if positive_is_bullish else change < 0
+    return weight if bullish else -weight
+
+
+def _indicator_float(indicators: Mapping[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        item = indicators.get(key)
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get("value")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _indicator_change(indicators: Mapping[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        item = indicators.get(key)
+        if not isinstance(item, Mapping):
+            continue
+        for field in ("weekly_change", "change_1w", "daily_change", "monthly_change"):
+            value = item.get(field)
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 def _is_macro_warning(value: str) -> bool:

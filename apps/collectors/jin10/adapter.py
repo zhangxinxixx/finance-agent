@@ -17,7 +17,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from apps.collectors.jin10.fetcher import parse_svip_report_html
+from apps.collectors.jin10.classifier import classify_jin10_report, report_type_by_category
 from apps.analysis.jin10.agent_analysis import (
+    agent_analysis_prompt_version,
     build_agent_analysis_prompt,
     build_jin10_agent_analysis_report_with_llm,
 )
@@ -39,13 +41,16 @@ from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 
 logger = logging.getLogger(__name__)
 
+JIN10_OUTPUT_REPORT_TYPES = {"daily", "weekly", "positioning", "technical_levels", "oil", "fx", "market_observation"}
+
 JIN10_CATEGORY_ALIASES: dict[str, list[str]] = {
     "270": ["金银报告", "报告", "daily"],
-    "271": ["外汇报告"],
-    "272": ["原油报告"],
-    "274": ["持仓报告"],
-    "301": ["点位报告"],
-    "380": ["挂单报告"],
+    "271": ["外汇报告", "fx"],
+    "272": ["原油报告", "oil"],
+    "274": ["持仓报告", "positioning"],
+    "301": ["点位报告", "technical_levels"],
+    "380": ["挂单报告", "pending_orders"],
+    "458": ["市场观察", "market_observation", "VIP智库"],
     "536": ["周报", "报告", "weekly"],
 }
 
@@ -56,13 +61,11 @@ JIN10_CATEGORY_NAMES: dict[str, str] = {
     "274": "持仓报告",
     "301": "点位报告",
     "380": "挂单报告",
+    "458": "市场观察",
     "536": "周报",
 }
 
-JIN10_REPORT_TYPE_BY_CATEGORY: dict[str, str] = {
-    "270": "daily",
-    "536": "weekly",
-}
+JIN10_REPORT_TYPE_BY_CATEGORY: dict[str, str] = report_type_by_category()
 
 def build_jin10_outputs(
     *,
@@ -86,6 +89,7 @@ def build_jin10_outputs(
     daily_reports = [
         _build_daily_report_bundle(report, parsed_report_map.get(report["article_id"]), raw["source_refs"])
         for report in raw["reports"]
+        if _report_type_for_raw_report(report) in JIN10_OUTPUT_REPORT_TYPES
     ]
     return {"raw": raw, "parsed": parsed, "analysis": analysis, "daily_reports": daily_reports}
 
@@ -164,6 +168,7 @@ def build_jin10_agent_output_payload(
     agent_report = dict(report["agent_analysis_json"])
     agent_markdown = str(report["agent_analysis_markdown"])
     prompt = build_agent_analysis_prompt(raw_report, daily_report)
+    prompt_version = agent_analysis_prompt_version(raw_report, daily_report)
 
     generated_from = dict(agent_report.get("generated_from") or {})
     generated_source = str(generated_from.get("source") or "")
@@ -242,7 +247,7 @@ def build_jin10_agent_output_payload(
             "family": agent_report.get("family"),
             "generated_by": generated_by,
             "generated_from": generated_from,
-            "prompt_version": "jin10_agent_analysis_v2",
+            "prompt_version": prompt_version,
             "prompt_messages": [
                 {"role": "system", "content": "你是一名专业的宏观市场与贵金属分析 Agent，默认使用简体中文。"},
                 {"role": "user", "content": prompt},
@@ -805,6 +810,8 @@ def _category_parent_priority(parent_name: str, requested_category: str | None) 
         order = {"weekly": 0, "周报": 1, "报告": 2}
     elif requested_category == "270":
         order = {"daily": 0, "金银报告": 1, "报告": 2}
+    elif requested_category == "458":
+        order = {"market_observation": 0, "市场观察": 1, "VIP智库": 2, "research": 3, "报告": 4}
     else:
         order = {"daily": 0, "weekly": 0, "金银报告": 1, "周报": 1, "报告": 2}
     return order.get(parent_name, 9)
@@ -829,7 +836,8 @@ def _read_report_dir(
     report_type = str(meta.get("report_type") or "").strip().lower()
     expected_report_type = JIN10_REPORT_TYPE_BY_CATEGORY.get(category_code or "")
     if expected_report_type and report_type and report_type != expected_report_type:
-        return None
+        if not (category_code == "458" and report_type == "market_observation"):
+            return None
     images = _image_refs(report_dir / "images", meta.get("images", []))
     detail_html_path = report_dir / "detail.html"
     if _is_incomplete_vip_summary_report(report_path=report_path, detail_html_path=detail_html_path, images=images):
@@ -1112,7 +1120,11 @@ def _build_daily_report_bundle(
     source_refs: list[dict[str, Any]],
 ) -> dict[str, Any]:
     raw_report_markdown = Path(report["report_md"]["path"]).read_text(encoding="utf-8")
-    report_text = parsed_report["body_text"] if parsed_report and parsed_report.get("body_text") else raw_report_markdown
+    report_text = _select_report_text_for_analysis(
+        raw_report_markdown=raw_report_markdown,
+        parsed_report=parsed_report,
+        report=report,
+    )
     document = SourceDocument(
         document_id=f"jin10-{report['date']}-{report['article_id']}",
         source="jin10_external",
@@ -1139,10 +1151,13 @@ def _build_daily_report_bundle(
         article_markdown_override=raw_article_text,
         charts=_charts_for_raw_article(report=report, parsed_report=parsed_report),
     )
+    raw_article.generated_from = {
+        **raw_article.generated_from,
+        "parser_trace": _jin10_parser_trace(parsed_report),
+    }
     visual = build_jin10_daily_analysis_report(snapshot)
     report_type = _report_type_for_raw_report(report)
-    if report_type == "weekly":
-        visual.family = "jin10_weekly_visual"
+    visual.family = _report_family_for_raw_report(report)
     visual.generated_from = {**visual.generated_from, "report_type": report_type}
     quality_audit = _build_report_quality_audit(
         report=report,
@@ -1168,6 +1183,39 @@ def _build_daily_report_bundle(
         "html": render_jin10_daily_html(visual),
         "agent_analysis_json": agent_analysis_json,
         "agent_analysis_markdown": render_jin10_agent_analysis_markdown(agent_analysis),
+    }
+
+
+def _select_report_text_for_analysis(
+    *,
+    raw_report_markdown: str,
+    parsed_report: dict[str, Any] | None,
+    report: dict[str, Any],
+) -> str:
+    parsed_body = str((parsed_report or {}).get("body_text") or "").strip()
+    raw_body = str(raw_report_markdown or "").strip()
+    report_type = _report_type_for_raw_report(report)
+    if report_type == "market_observation" and len(raw_body) > len(parsed_body) + 80:
+        return raw_body
+    return parsed_body or raw_body
+
+
+def _jin10_parser_trace(parsed_report: dict[str, Any] | None) -> dict[str, Any]:
+    if not parsed_report:
+        return {"status": "missing", "reason": "parsed_report_missing"}
+    artifacts = parsed_report.get("artifacts") if isinstance(parsed_report.get("artifacts"), dict) else {}
+    return {
+        "status": parsed_report.get("parse_status"),
+        "parser_version": parsed_report.get("parser_version"),
+        "parser_run_id": parsed_report.get("parser_run_id"),
+        "recognition_mode": "vlm",
+        "vision_markdown_status": parsed_report.get("vlm_status"),
+        "vision_layout_status": parsed_report.get("vision_layout_status")
+        or ("present" if artifacts.get("vision_layout") else "missing"),
+        "vision_provider": parsed_report.get("vision_provider"),
+        "vision_model": parsed_report.get("vision_model"),
+        "figures_total": parsed_report.get("figure_count"),
+        "section_count": parsed_report.get("section_count"),
     }
 
 
@@ -1226,15 +1274,27 @@ def _build_report_quality_audit(
 
 
 def _report_type_for_raw_report(report: dict[str, Any]) -> str:
-    category_code = str(report.get("category_code") or "")
-    if category_code in JIN10_REPORT_TYPE_BY_CATEGORY:
-        return JIN10_REPORT_TYPE_BY_CATEGORY[category_code]
-    category = str(report.get("category") or "")
-    title = str(report.get("title") or "")
-    if "黄金周报" in category or "黄金周报" in title:
-        return "weekly"
-    explicit = str(report.get("report_type") or "").strip().lower()
-    return explicit if explicit == "daily" else "daily"
+    classification = classify_jin10_report(
+        category_code=str(report.get("category_code") or ""),
+        category=str(report.get("category") or ""),
+        title=str(report.get("title") or ""),
+        report_type=str(report.get("report_type") or ""),
+    )
+    return classification.report_type
+
+
+def _report_family_for_raw_report(report: dict[str, Any]) -> str:
+    classification = classify_jin10_report(
+        category_code=str(report.get("category_code") or ""),
+        category=str(report.get("category") or ""),
+        title=str(report.get("title") or ""),
+        report_type=str(report.get("report_type") or ""),
+    )
+    if classification.report_type == "daily":
+        return "jin10_daily_visual"
+    if classification.report_type == "weekly":
+        return "jin10_weekly_visual"
+    return classification.report_family
 
 
 def _jin10_agent_status(agent_report: dict[str, Any], generated_source: str) -> AgentStatus:
@@ -1378,7 +1438,7 @@ def _charts_from_parsed_figures(parsed_report: dict[str, Any]) -> list[dict[str,
                 "image_path": figure.get("chart_image_path"),
                 "caption": title,
                 "bbox": figure.get("bbox"),
-                "recognized_text": nearby_text or layout_block_text or (page_markdown[:500] if page_markdown else ""),
+                "recognized_text": layout_block_text,
                 "summary": _chart_summary_from_markdown(
                     title,
                     page_markdown or layout_block_text,

@@ -316,15 +316,32 @@ def _extract_gold_macro_conditions(snapshot: dict[str, Any]) -> dict[str, Any] |
     net_bias = str(overview.get("net_bias") or "").strip() or "unknown"
     as_of = str(overview.get("as_of") or "").strip() or None
     phase = str(overview.get("phase") or "").strip() or None
+    priority_regime = str(overview.get("priority_regime") or "").strip() or None
+    priority_reason = str(overview.get("priority_reason") or "").strip() or None
+    readiness = overview.get("analysis_readiness") if isinstance(overview.get("analysis_readiness"), dict) else {}
+    chain = overview.get("war_oil_rate_chain") if isinstance(overview.get("war_oil_rate_chain"), dict) else {}
     verification_needed = _verification_needed(overview)
     changed_theme = bool(overview.get("changed_dominant_theme"))
 
     trigger_conditions = [
         f"Gold macro context remains {net_bias} with dominant mainline {dominant}.",
     ]
+    if priority_regime:
+        trigger_conditions.append(f"Gold macro priority regime is {priority_regime}.")
     confirmation_conditions = [
         "Gold macro condition can raise conviction only after pending verification items are resolved.",
     ]
+    if readiness:
+        confirmation_conditions.append(
+            "Gold macro readiness "
+            f"{readiness.get('status') or 'unknown'}: "
+            f"{readiness.get('ready_count', 0)}/{readiness.get('total_count', 0)} mainlines ready."
+        )
+    if chain:
+        confirmation_conditions.append(
+            "Gold war-oil-rate chain "
+            f"{chain.get('conclusion_code') or 'unknown'}: {chain.get('conclusion_label') or chain.get('net_effect') or 'unknown'}."
+        )
     invalidation_conditions = [
         "Strategy card must be rechecked if GoldMacroOverview dominant mainline changes.",
     ]
@@ -340,7 +357,11 @@ def _extract_gold_macro_conditions(snapshot: dict[str, Any]) -> dict[str, Any] |
         "as_of": as_of,
         "phase": phase,
         "dominant_mainline": dominant,
+        "priority_regime": priority_regime,
+        "priority_reason": priority_reason,
         "net_bias": net_bias,
+        "analysis_readiness": dict(readiness),
+        "war_oil_rate_chain": dict(chain),
         "trigger_conditions": trigger_conditions,
         "confirmation_conditions": confirmation_conditions,
         "invalidation_conditions": invalidation_conditions,

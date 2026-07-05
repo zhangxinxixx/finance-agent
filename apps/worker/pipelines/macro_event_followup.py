@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+import logging
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy.orm import Session
 
 from apps.api.services.daily_analysis_followup_service import get_daily_analysis_followups
 from apps.analysis.agents.macro_event_followup import invoke_macro_event_followup_llm
@@ -13,6 +16,10 @@ from apps.renderer.markdown.macro_event_followup import (
     render_macro_event_followup_analysis_markdown,
     render_macro_event_followup_source_markdown,
 )
+from apps.runtime.artifact_storage import LocalFileSystemArtifactStorage
+from database.queries.report import upsert_report_artifact, upsert_report_item
+
+logger = logging.getLogger(__name__)
 
 
 def build_macro_event_followup_input_snapshot(
@@ -115,13 +122,14 @@ def render_and_write_macro_event_followup(
     storage_root: Path = Path("./storage"),
     asset: str = "XAUUSD",
     run_id: str,
+    db_session: Session | None = None,
 ) -> dict[str, Any]:
     trade_date = str(input_snapshot.get("trade_date") or "")
     structured = build_macro_event_followup_structured_payload(input_snapshot)
     deterministic_analysis = render_macro_event_followup_analysis_markdown(structured.model_dump(mode="python"))
     llm_result = invoke_macro_event_followup_llm(input_snapshot)
     analysis_markdown = llm_result.get("markdown") or deterministic_analysis
-    return write_macro_event_followup(
+    result = write_macro_event_followup(
         storage_root=storage_root,
         asset=asset,
         trade_date=trade_date,
@@ -130,6 +138,16 @@ def render_and_write_macro_event_followup(
         analysis_markdown=analysis_markdown,
         structured_payload=structured.model_dump(mode="json"),
     )
+    result["report_registry_upserts"] = _register_macro_event_followup_report(
+        db_session,
+        result=result,
+        structured_payload=structured.model_dump(mode="json"),
+        asset=asset,
+        trade_date=trade_date,
+        run_id=run_id,
+        input_status=str(input_snapshot.get("status") or "ready"),
+    )
+    return result
 
 
 def generate_macro_event_followup(
@@ -138,6 +156,7 @@ def generate_macro_event_followup(
     asset: str = "XAUUSD",
     storage_root: Path = Path("./storage"),
     run_id: str,
+    db_session: Session | None = None,
 ) -> dict[str, Any]:
     snapshot = build_macro_event_followup_input_snapshot(
         trade_date=trade_date,
@@ -152,11 +171,127 @@ def generate_macro_event_followup(
         storage_root=storage_root,
         asset=asset,
         run_id=run_id,
+        db_session=db_session,
     )
     return {
         **snapshot,
         **result,
     }
+
+
+def _register_macro_event_followup_report(
+    db_session: Session | None,
+    *,
+    result: dict[str, Any],
+    structured_payload: dict[str, Any],
+    asset: str,
+    trade_date: str,
+    run_id: str,
+    input_status: str,
+) -> int:
+    if db_session is None:
+        return 0
+
+    paths = [Path(path) for path in result.get("paths") or [] if isinstance(path, str) and path]
+    by_name = {path.name: path for path in paths}
+    required_paths = [by_name.get("source.md"), by_name.get("analysis.md"), by_name.get("report_structured.json")]
+    if any(path is None for path in required_paths):
+        return 0
+
+    report_id = f"macro_event_followup:{trade_date}:{run_id}"
+    source_refs = list(structured_payload.get("source_refs") or [])
+    data_status = "partial" if input_status == "degraded" else "live"
+
+    try:
+        with db_session.begin_nested():
+            upsert_report_item(
+                db_session,
+                {
+                    "report_id": report_id,
+                    "family": "macro_event_followup_supplement",
+                    "report_type": "macro_event_followup",
+                    "title": f"{asset} 宏观事件跟进补充（{trade_date}）",
+                    "asset": asset,
+                    "trade_date": trade_date,
+                    "run_id": run_id,
+                    "snapshot_id": None,
+                    "data_status": data_status,
+                    "lifecycle_status": "generated",
+                    "source_refs": source_refs,
+                    "metadata": {
+                        "writer": "macro_event_followup",
+                        "anchor_trade_date": structured_payload.get("anchor_trade_date"),
+                        "anchor_report_refs": list(structured_payload.get("anchor_report_refs") or []),
+                    },
+                },
+            )
+            artifact_count = 0
+            for artifact_name, artifact_type, path, is_primary, content_type in (
+                ("source", "source_md", by_name["source.md"], True, "text/markdown"),
+                ("analysis", "analysis_md", by_name["analysis.md"], False, "text/markdown"),
+                ("structured", "structured_json", by_name["report_structured.json"], False, "application/json"),
+            ):
+                upsert_report_artifact(
+                    db_session,
+                    _macro_event_followup_report_artifact_payload(
+                        report_id=report_id,
+                        artifact_name=artifact_name,
+                        artifact_type=artifact_type,
+                        path=path,
+                        content_type=content_type,
+                        is_primary=is_primary,
+                        source_refs=source_refs,
+                        structured_payload=structured_payload,
+                    ),
+                )
+                artifact_count += 1
+            db_session.flush()
+            return 1 + artifact_count
+    except Exception as exc:
+        logger.warning(
+            "Failed to register macro event followup report: run_id=%s trade_date=%s error=%s",
+            run_id,
+            trade_date,
+            exc,
+        )
+        return 0
+
+
+def _macro_event_followup_report_artifact_payload(
+    *,
+    report_id: str,
+    artifact_name: str,
+    artifact_type: str,
+    path: Path,
+    content_type: str,
+    is_primary: bool,
+    source_refs: list[dict[str, Any]],
+    structured_payload: dict[str, Any],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "artifact_id": f"{report_id}:{artifact_name}",
+        "report_id": report_id,
+        "artifact_type": artifact_type,
+        "file_path": str(path),
+        "storage_backend": "local_fs",
+        "status": "generated",
+        "content_type": content_type,
+        "is_primary": is_primary,
+        "source_refs": source_refs,
+        "metadata": {
+            "macro_artifact_name": artifact_name,
+            "anchor_trade_date": structured_payload.get("anchor_trade_date"),
+        },
+    }
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return payload
+
+    payload["byte_size"] = stat_result.st_size
+    payload["generated_at"] = datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc).isoformat()
+    payload["sha256"] = LocalFileSystemArtifactStorage().compute_sha256(str(path))
+    return payload
 
 
 def _find_anchor_trade_date(*, storage_root: Path, asset: str, request_date: date) -> dict[str, Any] | None:

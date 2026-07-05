@@ -84,7 +84,7 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
     ? `0 0 0 1px rgba(240, 200, 80, 0.95), 0 0 28px rgba(240, 200, 80, 0.28), inset 0 0 0 1px rgba(240, 200, 80, 0.85)`
     : hl === "upstream" || hl === "downstream"
     ? "0 0 0 1px rgba(240, 200, 80, 0.35), 0 0 18px rgba(240, 200, 80, 0.12)"
-    : `0 18px 34px -26px ${color}88`;
+    : `0 18px 34px -24px ${color}bb, inset 0 0 0 1px ${color}55`;
 
   // Progress: use execution duration as proxy
   const durationStr = formatDuration(spec.execution.duration_ms);
@@ -103,8 +103,9 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
     <div
       className="group relative overflow-visible rounded-[16px] border cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:scale-[1.015]"
       style={{
-        background: `linear-gradient(165deg, ${hexToRgba(color, 0.14)} 0%, var(--bg-card) 42%, ${hexToRgba(color, 0.08)} 100%)`,
-        borderColor: `${color}55`,
+        background: `linear-gradient(165deg, ${hexToRgba(color, 0.28)} 0%, color-mix(in srgb, var(--bg-card) 82%, ${color} 18%) 44%, ${hexToRgba(color, 0.20)} 100%)`,
+        borderColor: `${color}aa`,
+        borderWidth: 1.5,
         minWidth: 196,
         maxWidth: 206,
         boxShadow: borderHl,
@@ -138,9 +139,9 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
         <div
           className="shrink-0 rounded-[10px] border px-2 py-1.5 text-[13px] leading-none shadow-sm"
           style={{
-            background: `${color}18`,
-            borderColor: `${color}4d`,
-            boxShadow: `inset 0 1px 0 rgba(255,255,255,0.12), 0 10px 18px -18px ${color}`,
+            background: `${color}30`,
+            borderColor: `${color}88`,
+            boxShadow: `inset 0 1px 0 rgba(255,255,255,0.22), 0 10px 18px -17px ${color}`,
           }}
         >
           {icon}
@@ -186,7 +187,13 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
       </div>
 
       <div className="relative px-3 pt-2.5">
-        <div className="min-h-[34px] rounded-[10px] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-1.5">
+        <div
+          className="min-h-[34px] rounded-[10px] border px-2.5 py-1.5"
+          style={{
+            background: `color-mix(in srgb, var(--bg-card-inner) 80%, ${color} 20%)`,
+            borderColor: `${color}50`,
+          }}
+        >
           <div
             className="text-[10.5px] font-medium leading-snug text-[var(--fg-3)]"
             style={{

@@ -143,30 +143,13 @@ def merge_analysis_snapshot_op(
     return snapshot
 
 
-@op(
-    tags={"pipeline": "premarket", "step": "market_state"},
-)
-def build_market_state_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Build MarketState as the typed decision-input layer."""
-    from apps.analysis.state import build_market_state
-
-    context.log.info("Building MarketState from analysis snapshot")
-    market_state = build_market_state(snapshot)
-    context.log.info(
-        "MarketState built: snapshot_id=%s coverage=%.3f",
-        market_state.snapshot_id,
-        market_state.data_completeness.coverage_ratio,
-    )
-    return market_state.model_dump(mode="json")
-
-
 # ── C4 agent sub-pipeline ───────────────────────────────────────
 
 @graph(
     name="c4_agent_pipeline",
     description="C3 agents (parallel) → coordinator → strategy card",
 )
-def c4_agent_pipeline(snapshot: dict[str, Any], market_state: dict[str, Any]):
+def c4_agent_pipeline(snapshot: dict[str, Any]):
     # C3 agents run in parallel where possible
     macro_out = macro_liquidity_agent_op(snapshot)
     options_out = cme_options_agent_op(snapshot)
@@ -183,7 +166,7 @@ def c4_agent_pipeline(snapshot: dict[str, Any], market_state: dict[str, Any]):
     )
 
     # Strategy card
-    card = strategy_card_op(market_state, coord_out, risk_out)
+    card = strategy_card_op(snapshot, coord_out, risk_out)
     return card
 
 
@@ -201,7 +184,6 @@ def premarket_graph():
 
     # Merge into unified snapshot
     snapshot = merge_analysis_snapshot_op(macro_state, cme_state, news_state)
-    market_state = build_market_state_op(snapshot)
 
     # C4 agent pipeline
-    c4_agent_pipeline(snapshot, market_state)
+    c4_agent_pipeline(snapshot)

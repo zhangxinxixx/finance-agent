@@ -80,6 +80,7 @@ def test_seed_prompt_versions_includes_gold_v3_development_governance_agents(mon
         "schema_agent",
         "dag_lineage_agent",
         "test_validation_agent",
+        "prompt_evolution_agent",
     }
     rows = db.query(PromptVersion).filter(PromptVersion.agent_id.in_(expected_agent_ids)).all()
 

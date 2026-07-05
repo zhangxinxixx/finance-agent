@@ -22,11 +22,15 @@ def main() -> int:
     parser.add_argument("--category", default="270", help="Jin10 category code, default 270 for 金银报告.")
     parser.add_argument("--external-root", default="~/jin10-reports", help="External Jin10 output root.")
     parser.add_argument("--storage-root", default="storage", help="finance-agent storage root.")
-    parser.add_argument("--qwen-model", default=None, help="DashScope Qwen vision model, for example qwen3-vl-plus.")
+    parser.add_argument("--vision-provider", default="mimo", choices=("mimo", "dashscope", "qwen"), help="Vision provider for page parsing.")
+    parser.add_argument("--mimo-model", default="mimo-v2.5", help="MiMo vision model, for example mimo-v2.5.")
+    parser.add_argument("--qwen-model", default=None, help="Legacy DashScope/Qwen vision model for compatibility.")
     parser.add_argument("--article-id", action="append", default=None, help="Only process the given Jin10 article id. Repeatable.")
     args = parser.parse_args()
     os.environ["JIN10_IMAGE_RECOGNITION"] = "vlm"
     os.environ.setdefault("JIN10_VISION_CACHE_DIR", str(Path(args.storage_root) / "parsed" / "jin10" / "vision_cache"))
+    os.environ["JIN10_VISION_PROVIDER"] = args.vision_provider
+    os.environ["JIN10_MIMO_VL_MODEL"] = args.mimo_model
     if args.qwen_model:
         os.environ["JIN10_QWEN_VL_MODEL"] = args.qwen_model
 

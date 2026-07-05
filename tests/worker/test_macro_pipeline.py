@@ -26,8 +26,9 @@ from apps.worker.pipelines.macro import (
     MacroPipelineState,
     run_macro_step,
 )
-from database.models.analysis import DataSourceStatus, ensure_analysis_tables
-from database.models.execution import ExecutionEvent, ensure_execution_tables
+from database.models.analysis import DataSourceStatus, FeatureSnapshot, MacroObservation, ensure_analysis_tables
+from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
+from database.models.report import ReportArtifact, ReportItem, ensure_report_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 
 
@@ -42,6 +43,7 @@ def _make_db_session(tmp_path: Path):
     Base.metadata.create_all(engine)
     ensure_analysis_tables(engine)
     ensure_execution_tables(engine)
+    ensure_report_tables(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
@@ -287,6 +289,8 @@ class TestStepCollect:
             summary = run_macro_step("macro_collect", state, storage_root=tmp_path, run_id="run-status-001", db_session=db)
 
         assert summary["data_source_status_upserts"] == 8
+        assert summary["macro_observation_upserts"] == 5
+        assert summary["raw_artifact_registry_upserts"] == 0
 
         rows = {row.source_key: row for row in db.query(DataSourceStatus).all()}
         assert {"fred", "fed", "treasury", "dxy", "technical_yahoo", "positioning_cot", "openbb_macro", "jin10_news"}.issubset(rows)
@@ -314,6 +318,118 @@ class TestStepCollect:
         assert rows["technical_yahoo"].raw_ingested is False
         assert rows["positioning_cot"].status == "ok"
         assert rows["positioning_cot"].raw_ingested is False
+
+        observations = db.query(MacroObservation).order_by(MacroObservation.source_key.asc(), MacroObservation.symbol.asc()).all()
+        assert len(observations) == 5
+        dgs10 = [
+            row
+            for row in observations
+            if row.source_key == "fred" and row.symbol == "DGS10" and row.observation_date.isoformat() == "2026-05-06"
+        ][0]
+        assert dgs10.value == 4.30
+        assert dgs10.run_id == "run-status-001"
+        assert dgs10.source_refs == [
+            {"symbol": "DGS10", "source": "fred", "source_url": "https://api.stlouisfed.org/"}
+        ]
+        assert dgs10.observation_metadata["collector_source"] == "fred"
+
+        news_event = [row for row in observations if row.symbol.startswith("NEWS_EVENT:")][0]
+        assert news_event.source_key == "jin10_mcp"
+        assert news_event.observation_date.isoformat() == "2026-05-06"
+        assert news_event.source_refs == [{"source": "jin10_mcp", "method": "list_calendar"}]
+
+    def test_collect_links_macro_observations_to_registered_raw_artifacts(self, tmp_path):
+        state = MacroPipelineState()
+        db = _make_db_session(tmp_path)
+        run = TaskRun(name="premarket", status=TaskStatus.pending)
+        db.add(run)
+        db.flush()
+        dgs10_raw_path = "raw/macro/fred/2026-05-06/DGS10.json"
+        dgs2_raw_path = "raw/macro/fred/2026-05-06/DGS2.json"
+        for raw_path in (dgs10_raw_path, dgs2_raw_path):
+            target = tmp_path / raw_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('{"observations":[]}\n', encoding="utf-8")
+        fred_result = CollectorResult(
+            points=[
+                MacroPoint(
+                    symbol="DGS10",
+                    date="2026-05-06",
+                    value=4.30,
+                    source="fred",
+                    source_url="https://api.stlouisfed.org/",
+                    retrieved_at="2026-05-06T12:00:00+00:00",
+                    raw_path=dgs10_raw_path,
+                ),
+                MacroPoint(
+                    symbol="DGS10",
+                    date="2026-04-29",
+                    value=4.20,
+                    source="fred",
+                    source_url="https://api.stlouisfed.org/",
+                    retrieved_at="2026-05-06T12:00:00+00:00",
+                    raw_path=dgs10_raw_path,
+                ),
+                MacroPoint(
+                    symbol="DGS2",
+                    date="2026-05-06",
+                    value=4.00,
+                    source="fred",
+                    source_url="https://api.stlouisfed.org/",
+                    retrieved_at="2026-05-06T12:00:00+00:00",
+                    raw_path=dgs2_raw_path,
+                ),
+            ],
+            unavailable_symbols=[],
+            source_refs=[
+                {"symbol": "DGS10", "source": "fred", "source_url": "https://api.stlouisfed.org/", "raw_path": dgs10_raw_path},
+                {"symbol": "DGS2", "source": "fred"},
+            ],
+        )
+
+        with (
+            patch("apps.collectors.fred.collector.collect_fred_series", return_value=fred_result),
+            patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_empty_result()),
+            patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_empty_result()),
+            patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
+            patch("apps.collectors.news.collector.collect_news", return_value=_make_empty_result()),
+            patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=_make_data_layer_fred_result()),
+            patch("apps.data_layer.service.MacroDataService.collect_market_prices", return_value=_make_data_layer_market_result()),
+        ):
+            summary = run_macro_step("macro_collect", state, storage_root=tmp_path, run_id=str(run.id), db_session=db)
+        db.commit()
+
+        assert summary["macro_observation_upserts"] == 3
+        assert summary["raw_artifact_registry_upserts"] == 2
+
+        artifacts = db.query(RunArtifact).order_by(RunArtifact.file_path.asc()).all()
+        assert [artifact.file_path for artifact in artifacts] == [dgs10_raw_path, dgs2_raw_path]
+        assert all(artifact.artifact_type == "raw_file" for artifact in artifacts)
+        assert all(artifact.artifact_metadata["canonical_path"] is False for artifact in artifacts)
+        assert all(artifact.artifact_metadata["collector_stage"] == "macro_collect" for artifact in artifacts)
+        dgs2_artifact = next(artifact for artifact in artifacts if artifact.file_path == dgs2_raw_path)
+        assert dgs2_artifact.source_refs_data == [
+            {
+                "symbol": "DGS2",
+                "source": "fred",
+                "source_url": "https://api.stlouisfed.org/",
+                "raw_path": dgs2_raw_path,
+            }
+        ]
+
+        observations = {
+            (row.symbol, row.observation_date.isoformat()): row
+            for row in db.query(MacroObservation).all()
+        }
+        assert observations[("DGS10", "2026-05-06")].raw_artifact_id == str(
+            next(artifact.artifact_id for artifact in artifacts if artifact.file_path == dgs10_raw_path)
+        )
+        assert observations[("DGS10", "2026-04-29")].raw_artifact_id == observations[("DGS10", "2026-05-06")].raw_artifact_id
+        assert observations[("DGS2", "2026-05-06")].raw_artifact_id == str(
+            next(artifact.artifact_id for artifact in artifacts if artifact.file_path == dgs2_raw_path)
+        )
 
     def test_collect_official_source_keeps_existing_symbols_without_data_layer_duplicates(self, tmp_path):
         state = MacroPipelineState()
@@ -573,6 +689,7 @@ class TestStepRender:
 
         assert summary["step"] == "report_render"
         assert summary["status"] == "success"
+        assert summary["feature_snapshot_upserts"] == 0
 
         json_path = tmp_path / "features" / "macro" / "2026-05-06" / "run-a" / "macro_snapshot.json"
         conclusion_path = tmp_path / "features" / "macro" / "2026-05-06" / "run-a" / "macro_conclusion.json"
@@ -599,6 +716,116 @@ class TestStepRender:
         assert "bias" in conclusion_content
         full_md_content = full_md_path.read_text()
         assert "XAUUSD 宏观 / 流动性更新" in full_md_content
+
+    def test_render_upserts_feature_snapshots_when_db_session_is_provided(self, tmp_path):
+        state = MacroPipelineState()
+        state.as_of = "2026-05-06"
+        state.all_points = _make_fred_result().points
+        state.all_unavailable = ["TGA", "DXY"]
+        state.all_source_refs = [{"symbol": "DGS10", "source": "fred", "source_url": "https://api.stlouisfed.org/"}]
+        db = _make_db_session(tmp_path)
+
+        run_macro_step("macro_feature", state, storage_root=tmp_path)
+        summary = run_macro_step(
+            "report_render",
+            state,
+            storage_root=tmp_path,
+            run_id="run-feature-001",
+            db_session=db,
+        )
+        db.commit()
+
+        assert summary["feature_snapshot_upserts"] == 2
+        assert summary["render_artifact_registry_upserts"] == 0
+        assert summary["report_registry_upserts"] == 5
+        rows = {
+            row.snapshot_kind: row
+            for row in db.query(FeatureSnapshot).order_by(FeatureSnapshot.snapshot_kind.asc()).all()
+        }
+        assert set(rows) == {"macro_snapshot", "macro_conclusion"}
+
+        snapshot = rows["macro_snapshot"]
+        conclusion = rows["macro_conclusion"]
+        assert snapshot.snapshot_id == "feature:macro:macro_snapshot:2026-05-06:run-feature-001"
+        assert snapshot.domain == "macro"
+        assert snapshot.asset == "XAUUSD"
+        assert snapshot.trade_date.isoformat() == "2026-05-06"
+        assert snapshot.run_id == "run-feature-001"
+        assert snapshot.status == "partial"
+        assert snapshot.payload["as_of"] == "2026-05-06"
+        assert len(snapshot.payload_sha256) == 64
+        assert snapshot.artifact_path == summary["json_path"]
+        assert snapshot.source_refs == [
+            {"symbol": "DGS10", "source": "fred", "source_url": "https://api.stlouisfed.org/"}
+        ]
+        assert snapshot.feature_metadata["artifact_name"] == "macro_snapshot.json"
+
+        assert conclusion.snapshot_id == "feature:macro:macro_conclusion:2026-05-06:run-feature-001"
+        assert conclusion.payload["bias"]
+        assert conclusion.artifact_path == summary["conclusion_path"]
+        assert conclusion.input_snapshot_ids == {"macro_snapshot": snapshot.snapshot_id}
+        assert conclusion.feature_metadata["artifact_name"] == "macro_conclusion.json"
+
+        report_item = db.query(ReportItem).filter_by(report_id="macro_report:run-feature-001").one()
+        assert report_item.family == "macro_report"
+        assert report_item.report_type == "macro_report"
+        assert report_item.title == "XAUUSD 宏观分析报告（2026-05-06）"
+        assert report_item.run_id == "run-feature-001"
+        assert report_item.snapshot_id == snapshot.snapshot_id
+        assert report_item.report_metadata["input_snapshot_ids"]["macro_conclusion"] == conclusion.snapshot_id
+
+        report_artifacts = db.query(ReportArtifact).filter_by(report_id=report_item.report_id).all()
+        assert len(report_artifacts) == 4
+        assert {artifact.artifact_type for artifact in report_artifacts} == {"analysis_md", "structured_json"}
+        primary_artifacts = [artifact for artifact in report_artifacts if artifact.is_primary]
+        assert len(primary_artifacts) == 1
+        assert primary_artifacts[0].file_path == summary["full_md_path"]
+        assert primary_artifacts[0].content_type == "text/markdown"
+        assert all(artifact.sha256 for artifact in report_artifacts)
+        assert all(artifact.byte_size and artifact.byte_size > 0 for artifact in report_artifacts)
+        assert all(artifact.source_refs == state.all_source_refs for artifact in report_artifacts)
+
+    def test_render_registers_output_artifacts_for_real_task_run(self, tmp_path):
+        state = MacroPipelineState()
+        state.as_of = "2026-05-06"
+        state.all_points = _make_fred_result().points
+        state.all_unavailable = ["TGA", "DXY"]
+        state.all_source_refs = [{"symbol": "DGS10", "source": "fred", "source_url": "https://api.stlouisfed.org/"}]
+        db = _make_db_session(tmp_path)
+        run = TaskRun(name="premarket", status=TaskStatus.pending)
+        db.add(run)
+        db.flush()
+
+        run_macro_step("macro_feature", state, storage_root=tmp_path)
+        summary = run_macro_step(
+            "report_render",
+            state,
+            storage_root=tmp_path,
+            run_id=str(run.id),
+            db_session=db,
+        )
+        db.commit()
+
+        assert summary["feature_snapshot_upserts"] == 2
+        assert summary["render_artifact_registry_upserts"] == 4
+        assert summary["report_registry_upserts"] == 5
+
+        artifacts = db.query(RunArtifact).order_by(RunArtifact.file_path.asc()).all()
+        assert [artifact.file_path for artifact in artifacts] == [
+            f"features/macro/2026-05-06/{run.id}/macro_conclusion.json",
+            f"features/macro/2026-05-06/{run.id}/macro_snapshot.json",
+            f"outputs/macro/2026-05-06/{run.id}/macro_full_report.md",
+            f"outputs/macro/2026-05-06/{run.id}/macro_snapshot.md",
+        ]
+        assert {artifact.artifact_type for artifact in artifacts} == {"feature_json", "analysis_md"}
+        assert all(artifact.run_id == run.id for artifact in artifacts)
+        assert all(artifact.task_id is None for artifact in artifacts)
+        assert all(artifact.sha256 for artifact in artifacts)
+        assert all(artifact.byte_size and artifact.byte_size > 0 for artifact in artifacts)
+        assert all(artifact.source_refs_data == state.all_source_refs for artifact in artifacts)
+        assert all(artifact.artifact_metadata["canonical_path"] is True for artifact in artifacts)
+        assert all(artifact.artifact_metadata["source_key"] == "macro" for artifact in artifacts)
+        assert all(artifact.artifact_metadata["pipeline_step"] == "report_render" for artifact in artifacts)
 
     def test_render_requires_feature(self, tmp_path):
         """Render step raises if feature hasn't run."""

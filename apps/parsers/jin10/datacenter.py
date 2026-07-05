@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -21,6 +22,8 @@ class Jin10DatacenterParsedReport:
     source_refs: list[dict[str, Any]] = field(default_factory=list)
     provider_role: str = "supplemental_source"
     status: str = "ok"
+    freshness_status: str = "schema_changed"
+    freshness_reason: str = "schema_changed"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -32,6 +35,8 @@ def parse_datacenter_js(
     slug: str,
     report_name: str = "",
     source_refs: list[dict[str, Any]] | None = None,
+    reference_date: str | None = None,
+    stale_after_days: int = 45,
 ) -> Jin10DatacenterParsedReport:
     """Parse ``var dataCenter_data = {...}`` into a normalized report."""
     refs = list(source_refs or [])
@@ -77,10 +82,12 @@ def parse_datacenter_js(
     types = _string_list(payload.get("types"))
     kinds = _string_list(payload.get("kinds"))
     rows = [_normalize_row(item, types=types, kinds=kinds) for item in items if isinstance(item, dict)]
+    as_of = _latest_as_of(rows)
+    freshness_status, freshness_reason = _freshness(as_of, reference_date=reference_date, stale_after_days=stale_after_days)
     return Jin10DatacenterParsedReport(
         slug=slug,
         report_name=report_name,
-        as_of=_latest_as_of(rows),
+        as_of=as_of,
         types=types,
         kinds=kinds,
         rows=rows,
@@ -88,6 +95,8 @@ def parse_datacenter_js(
         max_no=_coerce_int(payload.get("maxNo") or payload.get("max_no")),
         checksum=_coerce_str(payload.get("md5") or payload.get("checksum")),
         source_refs=refs,
+        freshness_status=freshness_status,
+        freshness_reason=freshness_reason,
     )
 
 
@@ -190,6 +199,35 @@ def _latest_as_of(rows: list[dict[str, Any]]) -> str | None:
     return max(candidates) if candidates else None
 
 
+def _freshness(as_of: str | None, *, reference_date: str | None, stale_after_days: int) -> tuple[str, str]:
+    if not as_of:
+        return "schema_changed", "missing_as_of"
+    parsed_as_of = _parse_datetime(as_of)
+    if parsed_as_of is None:
+        return "schema_changed", "invalid_as_of"
+    reference = _parse_datetime(reference_date) if reference_date else datetime.now(timezone.utc)
+    if reference is None:
+        reference = datetime.now(timezone.utc)
+    age_days = (reference.date() - parsed_as_of.date()).days
+    if age_days < 0:
+        return "ok_current", "future_or_same_period"
+    if age_days > stale_after_days:
+        return "ok_stale", "as_of_older_than_sla"
+    return "ok_current", "within_sla"
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:19] if fmt.endswith("%S") else text[:10], fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
 def _normalize_date(value: Any) -> str:
     raw = str(value or "")
     if len(raw) == 8 and raw.isdigit():
@@ -237,9 +275,12 @@ def datacenter_report_input_summary(
         "report_name": data["report_name"],
         "as_of": data.get("as_of"),
         "status": data["status"],
+        "freshness_status": data.get("freshness_status"),
+        "freshness_reason": data.get("freshness_reason"),
         "provider_role": "supplemental_source",
         "verification_status": "single_source",
         "official_primary": False,
+        "usable_for_production_conclusions": data.get("freshness_status") == "ok_current",
         "latest_values": latest_values,
         "row_count": len(data["rows"]),
         "types": data.get("types", []),
@@ -247,5 +288,10 @@ def datacenter_report_input_summary(
         "source_refs": list(source_refs or data.get("source_refs", [])),
         "warnings": [
             "Jin10 datacenter data is supplemental only; official facts must be confirmed by FRED/CFTC/CME/BLS.",
+            *(
+                [f"Jin10 datacenter freshness is stale: as_of={data.get('as_of')}."]
+                if data.get("freshness_status") == "ok_stale"
+                else []
+            ),
         ],
     }

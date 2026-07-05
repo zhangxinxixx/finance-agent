@@ -12,11 +12,11 @@ export function computePipelineStats(sources: DataSourceStatusViewModel[]) {
   let consumerReady = 0;
 
   for (const source of sources) {
-    const stages = source.pipeline_health?.stages;
-    if (stages?.rawLanding.status === "OK") rawReady++;
-    if (stages?.parse.status === "OK") parseReady++;
-    if (stages?.snapshot.status === "READY" || stages?.snapshot.status === "OK") snapshotReady++;
-    if (stages?.consumerReady.status === "READY" || stages?.consumerReady.status === "OK") consumerReady++;
+    const stages = source.pipeline_health.stages;
+    if (stages.rawLanding.status === "OK") rawReady++;
+    if (stages.parse.status === "OK") parseReady++;
+    if (stages.snapshot.status === "READY" || stages.snapshot.status === "OK") snapshotReady++;
+    if (stages.consumerReady.status === "READY" || stages.consumerReady.status === "OK") consumerReady++;
   }
 
   return { total, rawReady, parseReady, snapshotReady, consumerReady };
@@ -27,7 +27,7 @@ export function getGlobalDataFreshness(
   systemStatus: DataIngestionSystemStatusViewModel | null,
 ) {
   const allDates = sources
-    .map((source) => source.pipeline_health?.latestDataDate)
+    .map((source) => source.pipeline_health.latestDataDate)
     .filter((date): date is string => Boolean(date))
     .sort()
     .reverse();
@@ -44,7 +44,7 @@ export function filterSourcesByStage(
 ) {
   if (!stageFilter) return sources;
   return sources.filter((source) => {
-    const stage = source.pipeline_health?.stages[stageFilter];
-    return stage && stage.status !== "OK" && stage.status !== "READY";
+    const stage = source.pipeline_health.stages[stageFilter];
+    return stage.status !== "OK" && stage.status !== "READY";
   });
 }

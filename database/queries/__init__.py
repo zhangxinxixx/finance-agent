@@ -39,7 +39,9 @@ from .data_source_status import (
     list_data_source_statuses,
     upsert_data_source_status,
 )
+from .feature_snapshots import list_feature_snapshots, upsert_feature_snapshot, upsert_feature_snapshots
 from .market import list_market_candles, list_market_candles_by_assets, upsert_market_candle
+from .macro_observations import list_macro_observations, upsert_macro_observation, upsert_macro_observations
 from .review import get_review_item, list_review_items, update_review_status, upsert_review_item
 
 __all__ = [
@@ -66,8 +68,10 @@ __all__ = [
     "list_app_setting_events",
     "list_app_settings",
     "list_data_source_statuses",
+    "list_feature_snapshots",
     "list_market_candles",
     "list_market_candles_by_assets",
+    "list_macro_observations",
     "list_playbook_templates",
     "list_playbook_template_versions",
     "list_review_items",
@@ -80,6 +84,10 @@ __all__ = [
     "upsert_app_secret",
     "upsert_analysis_snapshot",
     "upsert_data_source_status",
+    "upsert_feature_snapshot",
+    "upsert_feature_snapshots",
+    "upsert_macro_observation",
+    "upsert_macro_observations",
     "upsert_market_candle",
     "upsert_final_analysis_result",
     "upsert_review_item",

@@ -17,6 +17,7 @@ const spaRoutes = new Set([
   "/event-flow",
   "/knowledge-base",
   "/agent-tasks",
+  "/processing-monitor",
   "/review-center",
   "/settings",
   "/scheduler",
@@ -32,6 +33,7 @@ const spaRoutePrefixes = [
   "/dashboard/analysis",
   "/settings/audit",
   "/scheduler/",
+  "/processing-monitor/",
   "/knowledge/",
 ];
 

@@ -37,7 +37,10 @@ const DATA_INGESTION_STATUS_PATH = "/api/data-sources/status";
 const DATA_STATUS_SUMMARY_PATH = "/api/data-status/summary";
 const DATA_INGESTION_RETRY_PATH = "/api/ingestion/sources";
 
-type ApiDataSourceStatus = Omit<DataSourceItem, "endpoint" | "row_count" | "status" | "source_refs" | "snapshot_id"> & {
+type ApiDataSourceStatus = Omit<
+  DataSourceItem,
+  "endpoint" | "row_count" | "status" | "source_refs" | "snapshot_id" | "affected_modules" | "artifact_evidence" | "pipeline_health"
+> & {
   access_method?: string | null;
   latest_snapshot_id?: string | null;
   latest_update_time?: string | null;
@@ -48,6 +51,9 @@ type ApiDataSourceStatus = Omit<DataSourceItem, "endpoint" | "row_count" | "stat
   last_run_id?: string | null;
   next_run_time?: string | null;
   metadata?: Record<string, unknown> | null;
+  affected_modules?: unknown;
+  artifact_evidence?: unknown;
+  pipeline_health?: unknown;
 };
 
 type ApiDataSourceStatuses = {
@@ -110,6 +116,133 @@ function normalizePressureProfile(value: unknown): DataSourcePressureProfile | n
   };
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function normalizeArtifactLayer(value: unknown, fallback: DataSourceArtifactLayer): DataSourceArtifactLayer {
+  return value === "raw" || value === "parsed" || value === "features" || value === "analysis" ? value : fallback;
+}
+
+function normalizeBackendArtifactItem(value: unknown, fallbackLayer: DataSourceArtifactLayer): DataSourceArtifactItem | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const path = typeof raw.path === "string" && raw.path.trim().length > 0 ? raw.path : null;
+  if (!path) return null;
+  return {
+    key: typeof raw.key === "string" && raw.key.trim().length > 0 ? raw.key : path,
+    label: typeof raw.label === "string" && raw.label.trim().length > 0 ? raw.label : path.split("/").pop() ?? path,
+    layer: normalizeArtifactLayer(raw.layer, fallbackLayer),
+    path,
+  };
+}
+
+function normalizeBackendArtifactItems(value: unknown, fallbackLayer: DataSourceArtifactLayer): DataSourceArtifactItem[] {
+  return Array.isArray(value)
+    ? value
+        .map((item) => normalizeBackendArtifactItem(item, fallbackLayer))
+        .filter((item): item is DataSourceArtifactItem => item !== null)
+    : [];
+}
+
+function normalizeBackendArtifactEvidence(value: unknown): DataSourceArtifactEvidence | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const evidence: DataSourceArtifactEvidence = {
+    preferred_artifact_path: typeof raw.preferred_artifact_path === "string" ? raw.preferred_artifact_path : null,
+    collector_raw_artifact_path: typeof raw.collector_raw_artifact_path === "string" ? raw.collector_raw_artifact_path : null,
+    collector_parsed_artifact_path: typeof raw.collector_parsed_artifact_path === "string" ? raw.collector_parsed_artifact_path : null,
+    latest_raw_url: typeof raw.latest_raw_url === "string" ? raw.latest_raw_url : null,
+    raw_artifacts: normalizeBackendArtifactItems(raw.raw_artifacts, "raw"),
+    parsed_artifacts: normalizeBackendArtifactItems(raw.parsed_artifacts, "parsed"),
+    feature_artifacts: normalizeBackendArtifactItems(raw.feature_artifacts, "features"),
+    analysis_artifacts: normalizeBackendArtifactItems(raw.analysis_artifacts, "analysis"),
+  };
+
+  const hasEvidence =
+    Boolean(evidence.preferred_artifact_path) ||
+    Boolean(evidence.collector_raw_artifact_path) ||
+    Boolean(evidence.collector_parsed_artifact_path) ||
+    Boolean(evidence.latest_raw_url) ||
+    evidence.raw_artifacts.length > 0 ||
+    evidence.parsed_artifacts.length > 0 ||
+    evidence.feature_artifacts.length > 0 ||
+    evidence.analysis_artifacts.length > 0;
+  return hasEvidence ? evidence : null;
+}
+
+const PIPELINE_STAGE_STATUSES = new Set<PipelineStageStatus>([
+  "OK",
+  "WARN",
+  "ERROR",
+  "BLOCKED",
+  "WAITING",
+  "NO_DATA",
+  "PARTIAL",
+  "READY",
+  "NO_SNAPSHOT",
+  "SKIPPED",
+]);
+
+function normalizeStageStatus(value: unknown): PipelineStageStatus {
+  const normalized = typeof value === "string" ? value.toUpperCase() : "";
+  return PIPELINE_STAGE_STATUSES.has(normalized as PipelineStageStatus) ? (normalized as PipelineStageStatus) : "NO_DATA";
+}
+
+function normalizeBackendStage(value: unknown): StageHealth {
+  if (!value || typeof value !== "object") return { status: "NO_DATA" };
+  const raw = value as Record<string, unknown>;
+  return {
+    status: normalizeStageStatus(raw.status),
+    message: typeof raw.message === "string" ? raw.message : undefined,
+    updatedAt: typeof raw.updated_at === "string" ? raw.updated_at : typeof raw.updatedAt === "string" ? raw.updatedAt : undefined,
+    durationMs: typeof raw.duration_ms === "number" ? raw.duration_ms : typeof raw.durationMs === "number" ? raw.durationMs : undefined,
+    errorCode: typeof raw.error_code === "string" ? raw.error_code : typeof raw.errorCode === "string" ? raw.errorCode : undefined,
+    inputRef: typeof raw.input_ref === "string" ? raw.input_ref : typeof raw.inputRef === "string" ? raw.inputRef : undefined,
+    outputRef: typeof raw.output_ref === "string" ? raw.output_ref : typeof raw.outputRef === "string" ? raw.outputRef : undefined,
+  };
+}
+
+function normalizeDownstreamStatus(value: unknown): DownstreamStatus {
+  return value === "READY" || value === "DEGRADED" || value === "BLOCKED" ? value : "BLOCKED";
+}
+
+function normalizeBackendPipelineHealth(
+  value: unknown,
+  source: Pick<DataSourceItem, "source_key" | "source_name" | "source_group" | "source_type" | "metadata" | "last_run_id" | "snapshot_id" | "affected_modules">,
+): SourcePipelineHealth | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const stages = raw.stages && typeof raw.stages === "object" ? (raw.stages as Record<string, unknown>) : {};
+  const backendAffectedModules = normalizeStringArray(raw.affected_modules);
+  const affectedModules = backendAffectedModules.length > 0 ? backendAffectedModules : source.affected_modules;
+
+  return {
+    sourceId: typeof raw.source_id === "string" ? raw.source_id : source.source_key,
+    sourceName: typeof raw.source_name === "string" ? raw.source_name : source.metadata.frontend_label ?? source.source_name,
+    sourceType: (typeof raw.source_type === "string" ? raw.source_type : source.source_type) as SourcePipelineHealth["sourceType"],
+    domain: inferDomain(typeof raw.domain === "string" ? raw.domain : source.source_group),
+    priority: inferPriority(typeof raw.priority === "string" ? raw.priority : source.metadata.provider_role),
+    stages: {
+      connection: normalizeBackendStage(stages.connection),
+      collect: normalizeBackendStage(stages.collect),
+      rawLanding: normalizeBackendStage(stages.raw_landing ?? stages.rawLanding),
+      parse: normalizeBackendStage(stages.parse),
+      validate: normalizeBackendStage(stages.validate),
+      snapshot: normalizeBackendStage(stages.snapshot),
+      consumerReady: normalizeBackendStage(stages.consumer_ready ?? stages.consumerReady),
+    },
+    latestRunId: typeof raw.latest_run_id === "string" ? raw.latest_run_id : source.last_run_id ?? undefined,
+    snapshotId: typeof raw.snapshot_id === "string" ? raw.snapshot_id : source.snapshot_id ?? undefined,
+    rawArtifactRef: typeof raw.raw_artifact_ref === "string" ? raw.raw_artifact_ref : undefined,
+    factTable: typeof raw.fact_table === "string" ? raw.fact_table : undefined,
+    affectedModules,
+    downstreamStatus: normalizeDownstreamStatus(raw.downstream_status),
+    latestDataDate: typeof raw.latest_data_date === "string" ? raw.latest_data_date : undefined,
+    stalenessDays: typeof raw.staleness_days === "number" ? raw.staleness_days : null,
+  };
+}
+
 function toUiStatus(status: string | null | undefined): DataIngestionStatus {
   switch (status) {
     case "ok":
@@ -132,30 +265,40 @@ function normalizeApiStatuses(payload: ApiDataSourceStatuses): DataSourceStatuse
   return {
     generated_at: new Date().toISOString(),
     last_refresh_at: null,
-    sources: payload.sources.map((source) => ({
-      source_key: source.source_key,
-      source_name: source.source_name,
-      source_group: source.source_group,
-      source_type: source.source_type,
-      endpoint: source.access_method ?? null,
-      configured: Boolean(source.configured),
-      raw_ingested: Boolean(source.raw_ingested),
-      parsed: Boolean(source.parsed),
-      analysis_ready: Boolean(source.analysis_ready),
-      latest_raw_time: source.latest_raw_time ?? null,
-      latest_parsed_time: source.latest_parsed_time ?? null,
-      latest_update_time: source.latest_update_time ?? source.latest_parsed_time ?? source.latest_raw_time ?? null,
-      freshness_status: source.freshness_status ?? null,
-      freshness_reason: source.freshness_reason ?? null,
-      row_count: source.row_count ?? 0,
-      status: toUiStatus(source.status),
-      error_message: source.error_message ?? null,
-      source_refs: [`GET ${DATA_INGESTION_STATUS_PATH}#${source.source_key}`],
-      snapshot_id: source.latest_snapshot_id ?? null,
-      last_run_id: source.last_run_id ?? null,
-      next_run_time: source.next_run_time ?? null,
-      metadata: normalizeMetadata(source.metadata, source.source_name),
-    })),
+    sources: payload.sources.map((source) => {
+      const metadata = normalizeMetadata(source.metadata, source.source_name);
+      const affectedModules = normalizeStringArray(source.affected_modules);
+      const normalizedSource: DataSourceItem = {
+        source_key: source.source_key,
+        source_name: source.source_name,
+        source_group: source.source_group,
+        source_type: source.source_type,
+        endpoint: source.access_method ?? null,
+        configured: Boolean(source.configured),
+        raw_ingested: Boolean(source.raw_ingested),
+        parsed: Boolean(source.parsed),
+        analysis_ready: Boolean(source.analysis_ready),
+        latest_raw_time: source.latest_raw_time ?? null,
+        latest_parsed_time: source.latest_parsed_time ?? null,
+        latest_update_time: source.latest_update_time ?? source.latest_parsed_time ?? source.latest_raw_time ?? null,
+        freshness_status: source.freshness_status ?? null,
+        freshness_reason: source.freshness_reason ?? null,
+        row_count: source.row_count ?? 0,
+        status: toUiStatus(source.status),
+        error_message: source.error_message ?? null,
+        source_refs: [`GET ${DATA_INGESTION_STATUS_PATH}#${source.source_key}`],
+        snapshot_id: source.latest_snapshot_id ?? null,
+        last_run_id: source.last_run_id ?? null,
+        next_run_time: source.next_run_time ?? null,
+        metadata,
+        affected_modules: affectedModules,
+        artifact_evidence: normalizeBackendArtifactEvidence(source.artifact_evidence),
+      };
+      return {
+        ...normalizedSource,
+        pipeline_health: normalizeBackendPipelineHealth(source.pipeline_health, normalizedSource),
+      };
+    }),
   };
 }
 
@@ -168,6 +311,9 @@ function normalizeSourceItem(source: DataSourceItem): DataSourceItem {
     last_run_id: source.last_run_id ?? null,
     next_run_time: source.next_run_time ?? null,
     metadata: normalizeMetadata(source.metadata, source.source_name),
+    affected_modules: normalizeStringArray(source.affected_modules),
+    artifact_evidence: source.artifact_evidence ?? null,
+    pipeline_health: source.pipeline_health ?? null,
   };
 }
 
@@ -359,6 +505,9 @@ function dedupeArtifactItems(items: DataSourceArtifactItem[]): DataSourceArtifac
 }
 
 function sourceArtifactPath(source: DataSourceItem): string | null {
+  if (source.artifact_evidence?.preferred_artifact_path) {
+    return source.artifact_evidence.preferred_artifact_path;
+  }
   return readMetadataPath(source.metadata, [
     "artifact_path",
     "brief_artifact_path",
@@ -841,7 +990,7 @@ function inferPipelineHealth(source: DataSourceItem): SourcePipelineHealth {
     latestRunId: source.last_run_id ?? undefined,
     snapshotId: source.snapshot_id ?? undefined,
     rawArtifactRef: artifactPath ?? undefined,
-    affectedModules: SOURCE_AFFECTED_MODULES[source_key] ?? [source_group],
+    affectedModules: source.affected_modules.length > 0 ? source.affected_modules : SOURCE_AFFECTED_MODULES[source_key] ?? [source_group],
     downstreamStatus,
     latestDataDate,
     stalenessDays,
@@ -918,10 +1067,10 @@ function buildDataIngestionViewModel(
       artifact_layers: source.metadata.artifact_layers ?? [],
       polling_strategy: source.metadata.polling_strategy ?? null,
       pressure_profile: source.metadata.pressure_profile ?? null,
-      artifact_evidence: buildArtifactEvidence(source),
+      artifact_evidence: source.artifact_evidence ?? buildArtifactEvidence(source),
       news_runtime: buildNewsRuntime(source.metadata, source.source_group),
       source_refs: [sourceToSourceRef(source, responseSource)],
-      pipeline_health: inferPipelineHealth(source),
+      pipeline_health: source.pipeline_health ?? inferPipelineHealth(source),
     })),
     layers: buildLayerStatuses(summary, sourceRefs),
     source_refs: sourceRefs,

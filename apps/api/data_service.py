@@ -16,6 +16,7 @@ def _sync_project_root() -> None:
     _storage._PROJECT_ROOT = _PROJECT_ROOT
     options_service._PROJECT_ROOT = _PROJECT_ROOT
     macro_service._PROJECT_ROOT = _PROJECT_ROOT
+    macro_service._try_db_session = _try_db_session
     artifact_service._PROJECT_ROOT = _PROJECT_ROOT
     report_service._PROJECT_ROOT = _PROJECT_ROOT
     source_service._PROJECT_ROOT = _PROJECT_ROOT

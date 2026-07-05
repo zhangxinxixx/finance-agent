@@ -16,6 +16,7 @@ import {
   Settings,
   GitBranch,
   ShieldCheck,
+  Workflow,
   ChevronsLeft,
   ChevronsRight,
 } from "lucide-react";
@@ -34,6 +35,7 @@ const navItems = [
   { id: "reports", zh: "报告中心", icon: FileText, path: "/reports" },
   { id: "knowledge-base", zh: "知识库", icon: BookOpen, path: "/knowledge-base" },
   { id: "scheduler", zh: "调度中心", icon: Bot, path: "/scheduler" },
+  { id: "processing-monitor", zh: "加工监控", icon: Workflow, path: "/processing-monitor" },
   { id: "review-center", zh: "人工复核", icon: ShieldCheck, path: "/review-center" },
   { id: "strategy", zh: "每日策略", icon: Target, path: "/strategy" },
   { id: "settings", zh: "系统设置", icon: Settings, path: "/settings" },

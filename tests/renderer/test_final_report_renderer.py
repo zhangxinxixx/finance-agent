@@ -11,20 +11,22 @@ _REQUIRED_SECTIONS = [
     "## 宏观数据报告",
     "### 宏观数据主题",
     "### 核心宏观指标",
+    "### v2.1 流动性数据底座判断",
+    "### 当前阶段判断",
+    "### 当前主导变量排序",
+    "### 利率结构模块",
+    "### 黄金六因子模型",
+    "### 关键触发条件与失效条件",
+    "### 交易 / 配置含义",
     "### 宏观结论",
-    "### 宏观数据限制",
     "## 综合报告",
     "### 报告主题",
     "### 执行摘要",
     "### 核心判断",
     "### 分项证据链",
     "#### 宏观流动性视图",
-    "#### 技术面视图",
-    "#### CFTC COT 持仓视图",
     "#### CME 期权结构视图",
-    "#### 宏观事件风险视图",
     "#### 风险审计",
-    "#### 新闻与事件要点",
     "### 情景推演",
     "### 数据质量与限制",
     "### 观察列表",
@@ -65,6 +67,16 @@ def _snapshot() -> dict:
                         "weekly_change": -0.08,
                         "monthly_change": -0.12,
                         "direction_note": "实际利率回落，估值压力缓和",
+                    },
+                    "YIELD_SPREAD_2Y_3M": {
+                        "label": "2Y-3M 利差",
+                        "value": -0.45,
+                        "unit": "%",
+                        "date": "2026-05-14",
+                        "daily_change": 0.02,
+                        "weekly_change": 0.12,
+                        "monthly_change": 0.28,
+                        "direction_note": "短端利差改善，政策拐点定价升温",
                     },
                 }
             },
@@ -222,7 +234,11 @@ def test_render_final_report_markdown_contains_required_sections_lineage_and_sou
     assert "| 指标 | 最新值 | 日期 | 日变 | 周变 | 月变 | 解读 |" in markdown
     assert "| DXY | 99.2 index | 2026-05-14 | - | -0.4 | - | 美元走弱，边际利多黄金 |" in markdown
     assert "| 10Y 实际利率 | 1.85 % | 2026-05-14 | -0.03 | -0.08 | -0.12 | 实际利率回落，估值压力缓和 |" in markdown
-    assert "当前宏观阶段为 transition_release" in markdown
+    assert "| 2Y-3M 利差 | -0.45 % | 2026-05-14 | +0.02 | +0.12 | +0.28 | 短端利差改善，政策拐点定价升温 |" in markdown
+    assert "当前阶段：过渡释放态" in markdown
+    assert "主口径为 US10Y - T10YIE" in markdown
+    assert "利率曲线 / 2Y-3M利差" in markdown
+    assert "流动性数量层只作为底座" in markdown
     assert "| 协调器总结 | 部分可用 | 偏多 | 0.61 |" in markdown
     assert "Bullish research view with constrained confidence." in markdown
     assert "Real yields fell" in markdown
@@ -253,6 +269,67 @@ def test_render_final_report_markdown_adds_structured_news_event_highlights():
 
 def test_table_text_escapes_markdown_table_breakers():
     assert _table_text("A | B\nnext\rline") == "A \\| B next line"
+
+
+def test_render_final_report_markdown_includes_gold_macro_overview_context():
+    snapshot = {
+        **_snapshot(),
+        "gold_macro_overview": {
+            "dominant_mainline": "fed_policy_path",
+            "priority_regime": "policy_event_cycle",
+            "priority_reason": "FOMC window prioritizes Fed path.",
+            "net_bias": "neutral_bearish",
+            "analysis_readiness": {
+                "status": "partial",
+                "ready_count": 4,
+                "partial_count": 3,
+                "missing_count": 2,
+                "total_count": 9,
+            },
+            "war_oil_rate_chain": {
+                "conclusion_code": "C",
+                "conclusion_label": "两者抵消，黄金震荡",
+                "net_effect": "mixed",
+            },
+            "theme_rankings": [
+                {
+                    "rank": 1,
+                    "mainline_id": "fed_policy_path",
+                    "label": "美联储利率路径",
+                    "direction": "bearish",
+                    "theme_score": 18,
+                    "evidence_count": 3,
+                }
+            ],
+            "mainline_requirements": [
+                {
+                    "mainline_id": "etf_flows",
+                    "label": "ETF资金流",
+                    "readiness_status": "partial",
+                    "missing_sources": ["regional_etf_flows"],
+                    "missing_fields": [],
+                }
+            ],
+        },
+    }
+
+    markdown = render_final_report_markdown(
+        snapshot=snapshot,
+        macro_output=_macro(),
+        options_output=_options(),
+        risk_output=_risk(),
+        coordinator_output=_coordinator(),
+        created_at=_CREATED_AT,
+    )
+
+    assert "### 黄金九主线总览" in markdown
+    assert "主导主线: fed_policy_path" in markdown
+    assert "优先环境: policy_event_cycle" in markdown
+    assert "FOMC window prioritizes Fed path." in markdown
+    assert "ready 4/9" in markdown
+    assert "战争-石油-利率链: C / 两者抵消，黄金震荡" in markdown
+    assert "| 1 | 美联储利率路径 | bearish | 18 | 3 |" in markdown
+    assert "ETF资金流: regional_etf_flows" in markdown
 
 
 def test_render_final_report_markdown_summarizes_large_source_refs_without_dumping_all():

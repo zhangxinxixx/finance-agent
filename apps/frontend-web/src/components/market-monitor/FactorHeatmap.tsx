@@ -7,7 +7,7 @@ interface FactorHeatmapProps {
   metrics: MarketMonitorMetric[];
 }
 
-const FACTOR_KEYS = ["XAUUSD", "DXY", "US10Y", "REAL_10Y", "T10YIE", "TGA"] as const;
+const FACTOR_KEYS = ["XAUUSD", "DXY", "US10Y", "REAL_10Y", "T10YIE", "YIELD_SPREAD_2Y_3M", "TGA"] as const;
 
 function changeToNumber(value: unknown): number {
   if (typeof value === "number") return value;

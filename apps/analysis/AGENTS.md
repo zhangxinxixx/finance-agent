@@ -38,7 +38,7 @@ class AgentOutput(BaseModel):
     source_refs: list[dict]   # 必须包含所有上游数据引用
     status: AgentStatus       # SUCCESS / PARTIAL / UNAVAILABLE / FAILED
     # P4-05 fields:
-    market_phase: str | None  # rate_pressure / transition_release / trend_tailwind / unavailable
+    market_phase: str | None  # rate_pressure / transition_release / trend_tailwind / liquidity_crunch / monetary_credit_repricing / unavailable
     regime_drivers: dict | None
 ```
 
@@ -110,6 +110,8 @@ class AgentOutput(BaseModel):
 | `rate_pressure` | 实际利率上行 + 美元强 | 压力 |
 | `transition_release` | 利率见顶 + 美元转弱 | 释放 |
 | `trend_tailwind` | 实际利率下行 + 流动性宽松 | 顺风 |
+| `liquidity_crunch` | 10Y 接近/突破压力区 + DXY 急涨 + 流动性未放松 | 先防踩踏 |
+| `monetary_credit_repricing` | 收益率/美元不弱但黄金仍强 | 货币信用重估 |
 | `unavailable` | 数据不足 | 无法判断 |
 
 ## 数据要求
