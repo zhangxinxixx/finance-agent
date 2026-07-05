@@ -26,56 +26,6 @@ export function OverviewHero({
   );
 }
 
-export function OverviewEntryGrid({
-  latestDate,
-  historySummary,
-  sourceLabel,
-  realtimeRegime,
-  primaryDriver,
-}: {
-  latestDate: string;
-  historySummary: string | null;
-  sourceLabel: string;
-  realtimeRegime: MarketMonitorMockFile["realtime_regime"] | null | undefined;
-  primaryDriver: MarketMonitorMockFile["primary_driver"] | null | undefined;
-}) {
-  return (
-    <div className="market-monitor-overview-entry-layout">
-      <div className="market-monitor-overview-entry-grid">
-        {[
-          { title: "定价链", meta: `历史 ${historySummary ?? "不可用"}` },
-          { title: "跨资产", meta: `最新 ${latestDate}` },
-          { title: "日历 / 事件", meta: `主驱动 ${textOrDash(primaryDriver?.driver ?? null)}` },
-        ].map((entry) => (
-          <article key={entry.title} className="market-monitor-overview-entry-card">
-            <div className="market-monitor-overview-entry-title">{entry.title}</div>
-            <div className="market-monitor-overview-entry-meta">{entry.meta}</div>
-          </article>
-        ))}
-      </div>
-      <div className="market-monitor-overview-side-grid">
-        <div className="market-monitor-overview-side-card">
-          <div className="market-monitor-overview-entry-title">实时状态</div>
-          <div className="market-monitor-overview-entry-meta">
-            {textOrDash(realtimeRegime?.regime ?? null)}
-          </div>
-          <div className="market-monitor-overview-entry-meta">
-            置信度 {typeof realtimeRegime?.confidence === "number" ? `${(realtimeRegime.confidence * 100).toFixed(0)}%` : "—"}
-          </div>
-        </div>
-        <div className="market-monitor-overview-side-card">
-          <div className="market-monitor-overview-entry-title">主驱动</div>
-          <div className="market-monitor-overview-entry-meta">{textOrDash(primaryDriver?.secondary ?? null)}</div>
-        </div>
-        <div className="market-monitor-overview-side-card">
-          <div className="market-monitor-overview-entry-title">来源上下文</div>
-          <div className="market-monitor-overview-entry-meta">overview 只保留诊断摘要，详细数据转入分区查看</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function CalendarEventBrief({
   sourceLabel,
   latestDate,

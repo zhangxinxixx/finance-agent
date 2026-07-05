@@ -50,7 +50,7 @@ export function CalendarDataRow({
       <span className="fa-num" style={{ fontSize: 9.5, color: "var(--fg-5)" }}>
         {time}
       </span>
-      <span style={{ fontFamily: "var(--font-sans)", fontSize: 10, color: "var(--fg-3)" }}>{event}</span>
+      <span style={{ fontFamily: "var(--font-sans)", fontSize: 10, color: "var(--fg-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event}</span>
       <span
         style={{
           textAlign: "center",
@@ -91,7 +91,7 @@ export function StaticInfoCard({
   return (
     <div
       style={{
-        padding: "7px 9px",
+        padding: "7px 8px",
         background: "var(--bg-card-inner)",
         border: "1px solid var(--border-faint)",
         borderRadius: 3,
@@ -102,7 +102,7 @@ export function StaticInfoCard({
         {header}
         {badges}
       </div>
-      <div style={{ fontFamily: "var(--font-sans)", fontSize: 10.5, lineHeight: 1.4, color: "var(--fg-3)" }}>{children}</div>
+      <div style={{ fontFamily: "var(--font-sans)", fontSize: 10.5, lineHeight: 1.45, color: "var(--fg-3)" }}>{children}</div>
     </div>
   );
 }
@@ -120,7 +120,7 @@ export function StaticCompactRow({
       style={{
         padding: "5px 6px",
         borderRadius: 3,
-        background: "var(--bg-card-inner)",
+        background: "var(--bg-card)",
         border: "1px solid var(--border-faint)",
       }}
     >
@@ -151,9 +151,9 @@ export function StaticTag({ children }: { children: ReactNode }) {
         fontSize: 8.5,
         padding: "2px 6px",
         borderRadius: 3,
-        border: "1px solid var(--border-faint)",
-        color: "var(--fg-5)",
-        background: "var(--bg-card-inner)",
+        border: "1px solid color-mix(in srgb, var(--brand-hover) 18%, var(--border-faint))",
+        color: "var(--fg-4)",
+        background: "color-mix(in srgb, var(--brand-hover) 4%, var(--bg-card))",
       }}
     >
       {children}

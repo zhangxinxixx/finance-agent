@@ -1,12 +1,12 @@
 import type { CSSProperties } from "react";
 
 export const SECTION_STYLE: CSSProperties = {
-  padding: "10px 12px",
+  padding: "10px 11px",
   borderBottom: "1px solid var(--border-faint)",
 };
 
 export const FINAL_SECTION_STYLE: CSSProperties = {
-  padding: "10px 12px",
+  padding: "10px 11px",
 };
 
 export const CALENDAR_GRID_TEMPLATE = "40px 1fr 52px 52px";
@@ -21,14 +21,17 @@ export const CALENDAR_HEADER_STYLE: CSSProperties = {
   textTransform: "uppercase",
   color: "var(--fg-5)",
   marginBottom: 4,
+  padding: "0 2px",
 };
 
 export const CALENDAR_ROW_STYLE: CSSProperties = {
   display: "grid",
   gridTemplateColumns: CALENDAR_GRID_TEMPLATE,
-  padding: "5px 0",
-  borderBottom: "1px solid var(--border-faint)",
+  padding: "5px 6px",
+  border: "1px solid var(--border-faint)",
+  borderRadius: 3,
   alignItems: "center",
+  background: "var(--bg-card-inner)",
 };
 
 export const SECTION_LIST_STYLE: CSSProperties = {
@@ -47,7 +50,7 @@ export const SUBSECTION_TITLE_STYLE: CSSProperties = {
 export const REPORTS_KNOWLEDGE_GRID_STYLE: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "1fr 1fr",
-  gap: 10,
+  gap: 8,
 };
 
 export const TAG_LIST_STYLE: CSSProperties = {

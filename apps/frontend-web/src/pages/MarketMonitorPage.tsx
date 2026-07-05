@@ -40,7 +40,6 @@ export function MarketMonitorPage() {
   const snapshot = (data ?? {}) as MarketMonitorShape;
   const metrics = Array.isArray(snapshot.metrics) ? snapshot.metrics : [];
   const marketRegimes = (snapshot.market_regimes ?? {}) as MarketMonitorMockFile["market_regimes"];
-  const environmentFilters = (snapshot.environment_filters ?? {}) as MarketMonitorMockFile["environment_filters"];
   const sourceTrace = Array.isArray(snapshot.source_trace) ? snapshot.source_trace : [];
   const realtimeRegime = snapshot.realtime_regime;
   const primaryDriver = snapshot.primary_driver;
@@ -56,9 +55,6 @@ export function MarketMonitorPage() {
   const isCalendarTab = activeTab === "calendar";
   const isEmpty = !data || (!hasRenderableSnapshot && !isCalendarTab);
   const sourceLabel = textOrDash(snapshot.source ?? "mock");
-  const historySummary = history
-    ? `${history.available_points} pts / ${history.source_timeframe ?? "unknown"}${history.degraded ? " degraded" : ""}`
-    : null;
   const pageStatus = isError ? "error" : isLoading ? "info" : isEmpty ? "unavailable" : diagnosisStatus(metrics);
   const overviewSummary = agentMarketRegime?.summary
     ?? `${diagnosisText(pageStatus)}。主页面只保留黄金核心定价链、市场阶段和关键过滤器，详细联动拆到下方分区。`;
@@ -102,10 +98,8 @@ export function MarketMonitorPage() {
       snapshot={snapshot}
       metrics={metrics}
       marketRegimes={marketRegimes}
-      environmentFilters={environmentFilters}
       sourceTrace={sourceTrace}
       overviewSummary={overviewSummary}
-      historySummary={historySummary}
       calendarEvents={calendar.data}
       calendarGeneratedAt={calendar.generatedAt}
       calendarStatus={calendar.status}

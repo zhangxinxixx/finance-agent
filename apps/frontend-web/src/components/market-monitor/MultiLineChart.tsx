@@ -76,7 +76,7 @@ export function MultiLineChart({
           <KLineChart
             candles={liveCandles}
             lineSeries={lineSeries}
-            height={480}
+            height={430}
             loading={jin10Loading}
             emptyText="Jin10 实时 K 线数据加载中..."
             timeframe={chartTimeframe}

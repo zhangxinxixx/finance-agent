@@ -2,15 +2,12 @@ import { useState } from "react";
 import { Activity, Calendar, Layers3 } from "lucide-react";
 import { AssetTable } from "@/components/market-monitor/AssetTable";
 import { CorrelationMatrix } from "@/components/market-monitor/CorrelationMatrix";
-import { EnvironmentFilterPanel } from "@/components/market-monitor/EnvironmentFilterPanel";
 import { Heatmap } from "@/components/market-monitor/Heatmap";
 import { MarketPriceCards } from "@/components/market-monitor/MarketPriceCards";
-import { MarketRegimePanel } from "@/components/market-monitor/MarketRegimePanel";
-import { FactorPanel } from "@/components/market-monitor/FactorPanel";
+import { FactorPanel, PricingChainDiagnosticsPanel } from "@/components/market-monitor/FactorPanel";
 import { MultiLineChart } from "@/components/market-monitor/MultiLineChart";
 import {
   CalendarEventBrief,
-  OverviewEntryGrid,
   OverviewHero,
 } from "@/components/market-monitor/MarketMonitorOverviewBlocks";
 import { RightPanel } from "@/components/market-monitor/RightPanel";
@@ -42,9 +39,6 @@ export function MarketMonitorOverviewSection({
   sourceLabel,
   latestDate,
   overviewSummary,
-  historySummary,
-  realtimeRegime,
-  primaryDriver,
 }: {
   metrics: MarketMonitorMetric[];
   history: MarketMonitorHistoryResponse | null;
@@ -56,9 +50,6 @@ export function MarketMonitorOverviewSection({
   sourceLabel: string;
   latestDate: string;
   overviewSummary: string;
-  historySummary: string | null;
-  realtimeRegime: MarketMonitorMockFile["realtime_regime"] | null | undefined;
-  primaryDriver: MarketMonitorMockFile["primary_driver"] | null | undefined;
 }) {
   return (
     <>
@@ -78,13 +69,6 @@ export function MarketMonitorOverviewSection({
           agentMarketRegime={agentMarketRegime}
         />
       </div>
-      <OverviewEntryGrid
-        latestDate={latestDate}
-        historySummary={historySummary}
-        sourceLabel={sourceLabel}
-        realtimeRegime={realtimeRegime}
-        primaryDriver={primaryDriver}
-      />
     </>
   );
 }
@@ -92,13 +76,9 @@ export function MarketMonitorOverviewSection({
 export function MarketMonitorPricingChainSection({
   metrics,
   history,
-  marketRegimes,
-  environmentFilters,
 }: {
   metrics: MarketMonitorMetric[];
   history: MarketMonitorHistoryResponse | null;
-  marketRegimes: MarketMonitorMockFile["market_regimes"];
-  environmentFilters: MarketMonitorMockFile["environment_filters"];
 }) {
   return (
     <>
@@ -116,11 +96,10 @@ export function MarketMonitorPricingChainSection({
           metrics={metrics}
           history={history}
         />
-        <FactorPanel />
-      </div>
-      <div className="market-monitor-pricing-chain-support-grid">
-        <MarketRegimePanel marketRegimes={marketRegimes} />
-        <EnvironmentFilterPanel environmentFilters={environmentFilters} />
+        <div className="market-monitor-pricing-chain-rail">
+          <FactorPanel metrics={metrics} />
+          <PricingChainDiagnosticsPanel metrics={metrics} />
+        </div>
       </div>
     </>
   );

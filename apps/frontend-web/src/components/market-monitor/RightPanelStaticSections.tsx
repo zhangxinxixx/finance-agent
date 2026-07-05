@@ -30,15 +30,17 @@ export function CalendarSection() {
       <ContextPanelSectionHeader icon={Calendar} title="经济日历" iconColor="var(--fg-5)" className="mb-2" />
       <CalendarColumnHeader />
 
-      {CALENDAR_ITEMS.map((item) => (
-        <CalendarDataRow
-          key={`${item.time}-${item.event}`}
-          time={item.time}
-          event={item.event}
-          impact={item.impact}
-          change={item.change}
-        />
-      ))}
+      <div style={SECTION_LIST_STYLE}>
+        {CALENDAR_ITEMS.map((item) => (
+          <CalendarDataRow
+            key={`${item.time}-${item.event}`}
+            time={item.time}
+            event={item.event}
+            impact={item.impact}
+            change={item.change}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -56,12 +58,11 @@ export function EventDynamicsSection() {
               <span
                 style={{
                   fontFamily: "var(--font-sans)",
-                  fontWeight: 500,
+                  fontWeight: 600,
                   fontSize: 8.5,
-                  letterSpacing: "0.04em",
                   color: item.color,
-                  padding: "1px 4px",
-                  borderRadius: 2,
+                  padding: "2px 5px",
+                  borderRadius: 3,
                   background: `${item.color}15`,
                 }}
               >
@@ -73,9 +74,9 @@ export function EventDynamicsSection() {
                 <span
                   style={{
                     fontFamily: "var(--font-sans)",
-                    fontWeight: 500,
+                    fontWeight: 600,
                     fontSize: 8,
-                    padding: "1px 4px",
+                    padding: "2px 5px",
                     borderRadius: 3,
                     border: `1px solid ${EVENT_IMPACT_COLOR[item.impact]}40`,
                     color: EVENT_IMPACT_COLOR[item.impact],
@@ -87,13 +88,13 @@ export function EventDynamicsSection() {
                 <span
                   style={{
                     fontFamily: "var(--font-sans)",
-                    fontWeight: 500,
+                    fontWeight: 600,
                     fontSize: 8,
-                    padding: "1px 4px",
+                    padding: "2px 5px",
                     borderRadius: 3,
                     border: "1px solid var(--border)",
                     color: "var(--fg-5)",
-                    background: "rgba(255,255,255,0.03)",
+                    background: "var(--bg-card)",
                   }}
                 >
                   {item.pricing}

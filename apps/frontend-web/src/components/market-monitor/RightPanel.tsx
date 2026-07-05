@@ -14,7 +14,7 @@ interface RightPanelProps {
 
 export function RightPanel({ marketRegimes, agentMarketRegime }: RightPanelProps) {
   return (
-    <ContextPanelShell padded={false} className="market-monitor-side-panel" style={{ background: "var(--bg-card)" }}>
+    <ContextPanelShell padded={false} className="market-monitor-side-panel">
       <MarketDiagnosisSection marketRegimes={marketRegimes} agentMarketRegime={agentMarketRegime} />
       <CalendarSection />
       <EventDynamicsSection />

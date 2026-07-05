@@ -25,10 +25,8 @@ interface MarketMonitorPageContentProps {
   snapshot: MarketMonitorShape;
   metrics: MarketMonitorShape["metrics"] extends infer T ? Extract<T, any[]> : never;
   marketRegimes: MarketMonitorMockFile["market_regimes"];
-  environmentFilters: MarketMonitorMockFile["environment_filters"];
   sourceTrace: MarketMonitorSourceTraceItem[];
   overviewSummary: string;
-  historySummary: string | null;
   calendarEvents: Jin10CalendarEvent[];
   calendarGeneratedAt: string | null;
   calendarStatus: string;
@@ -56,10 +54,8 @@ export function MarketMonitorPageContent({
   snapshot,
   metrics,
   marketRegimes,
-  environmentFilters,
   sourceTrace,
   overviewSummary,
-  historySummary,
   calendarEvents,
   calendarGeneratedAt,
   calendarStatus,
@@ -108,9 +104,6 @@ export function MarketMonitorPageContent({
           sourceLabel={sourceLabel}
           latestDate={textOrDash(snapshot.latest_date)}
           overviewSummary={overviewSummary}
-          historySummary={historySummary}
-          realtimeRegime={realtimeRegime}
-          primaryDriver={primaryDriver}
         />
       ) : null}
 
@@ -118,8 +111,6 @@ export function MarketMonitorPageContent({
         <MarketMonitorPricingChainSection
           metrics={metrics}
           history={history}
-          marketRegimes={marketRegimes}
-          environmentFilters={environmentFilters}
         />
       ) : null}
 
