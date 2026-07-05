@@ -9,7 +9,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from apps.analysis.agents.source_health import build_gold_v3_source_health
 from apps.analysis.gold_mainline_engine import archive_gold_macro_overview, build_gold_macro_overview
+from apps.api.services.source_service import get_data_source_statuses
 from apps.features.news.gold_event_mainlines import archive_gold_event_mainlines, build_gold_event_mainlines
 
 
@@ -108,6 +110,10 @@ def main(argv: list[str] | None = None) -> int:
             overview=gold_macro_overview,
             input_snapshot_ids=input_snapshot_ids,
         )
+        runtime_gate = _attach_source_health_runtime_gate(
+            storage_root=storage_root,
+            gold_macro_overview_path=gold_macro_overview_path,
+        )
     except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False), file=sys.stderr)
         return 1
@@ -125,9 +131,85 @@ def main(argv: list[str] | None = None) -> int:
         "gold_verification_item_count": len(gold_macro_overview.verification_matrix),
         "gold_dominant_mainline": gold_macro_overview.dominant_mainline,
         "gold_readiness": gold_macro_overview.analysis_readiness.to_dict(),
+        "runtime_steps": {
+            "source_health_check": runtime_gate["source_health_check"],
+            "review_gate": runtime_gate["review_gate"],
+        },
+        "source_health_status": runtime_gate["source_health_check"]["status"],
+        "review_status": runtime_gate["review_gate"]["review_status"],
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
+
+
+def _attach_source_health_runtime_gate(*, storage_root: Path, gold_macro_overview_path: str) -> dict[str, Any]:
+    overview_path = storage_root / gold_macro_overview_path
+    overview = _read_json(overview_path)
+    try:
+        source_health = build_gold_v3_source_health(
+            get_data_source_statuses(),
+            as_of=str(overview.get("as_of") or "") or None,
+            gold_macro_overview=overview,
+        ).to_dict()
+    except Exception as exc:
+        source_health = {
+            "overall_status": "degraded",
+            "as_of": str(overview.get("as_of") or "") or None,
+            "p0_missing": [],
+            "p1_missing": [],
+            "p2_missing": [],
+            "stale_sources": [],
+            "fresh_sources": [],
+            "source_freshness": {},
+            "mainline_impact": {},
+            "can_build_gold_macro_overview": True,
+            "blocking_reasons": [],
+            "warnings": [f"source_health_unavailable: {exc.__class__.__name__}"],
+        }
+    review_gate = _review_gate_from_source_health(source_health=source_health)
+    overview["source_health"] = source_health
+    overview["review_gate"] = review_gate
+    overview["review_status"] = review_gate["review_status"]
+    overview["review_blocking_reasons"] = review_gate["blocking_reasons"]
+    if review_gate["review_status"] == "blocked":
+        overview["status"] = "blocked"
+    overview_path.write_text(json.dumps(overview, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {
+        "source_health_check": {
+            "node_id": "source_health_check",
+            "status": source_health["overall_status"],
+            "p0_missing": source_health["p0_missing"],
+            "p1_missing": source_health["p1_missing"],
+            "p2_missing": source_health["p2_missing"],
+            "blocking_reasons": source_health["blocking_reasons"],
+            "can_build_gold_macro_overview": source_health["can_build_gold_macro_overview"],
+        },
+        "review_gate": review_gate,
+    }
+
+
+def _review_gate_from_source_health(*, source_health: dict[str, Any]) -> dict[str, Any]:
+    blocking_reasons = [str(item) for item in source_health.get("blocking_reasons") or []]
+    warnings = [str(item) for item in source_health.get("warnings") or []]
+    strong_conflict = any("strong GoldMacroOverview conclusion" in reason for reason in blocking_reasons)
+    if strong_conflict:
+        review_status = "blocked"
+        reason = "SourceHealth blocked a strong GoldMacroOverview conclusion."
+    elif blocking_reasons or warnings:
+        review_status = "needs_review"
+        reason = "SourceHealth found missing or stale sources; downstream conclusion must be reviewed."
+    else:
+        review_status = "pass"
+        reason = "SourceHealth passed with no blocking reasons or warnings."
+    return {
+        "agent_id": "review_gate_agent",
+        "dag_node_id": "review_gate",
+        "review_status": review_status,
+        "source_health_status": source_health.get("overall_status"),
+        "blocking_reasons": blocking_reasons,
+        "warnings": warnings,
+        "reason": reason,
+    }
 
 
 def _resolve_source_run(*, storage_root: Path, date: str | None, run_id: str | None) -> tuple[str, str]:

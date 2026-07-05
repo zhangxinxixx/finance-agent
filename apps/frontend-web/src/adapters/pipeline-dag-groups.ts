@@ -130,6 +130,7 @@ export const DAG_GROUPS: Record<DagGroupId, DagGroupMeta> = {
       { id: "driver_decomposition", label: "驱动拆解", description: "bullish/bearish driver decomposition" },
       { id: "gold_macro_overview", label: "黄金总览模型", description: "gold macro overview read model" },
       { id: "verification_matrix", label: "待验证矩阵", description: "driver verification matrix" },
+      { id: "review_gate", label: "ReviewGate", description: "source health and conclusion quality gate" },
       { id: "conflict_check", label: "冲突检测", description: "bias/confidence conflicts" },
       { id: "bias_confidence", label: "Bias置信", description: "weighted bias and confidence" },
       { id: "final_report_json", label: "报告 JSON", description: "final report payload" },
@@ -264,8 +265,10 @@ export const DAG_TASK_DATA_FLOW_EDGES: DagTaskDataFlowEdge[] = [
   goldMainlineEdge({ from: "coordinator", to: "driver_decomposition", edge_type: "signal_flow", stage: "协调器→驱动拆解" }),
   goldMainlineEdge({ from: "driver_decomposition", to: "gold_macro_overview", edge_type: "signal_flow", stage: "驱动拆解→黄金总览模型" }),
   goldMainlineEdge({ from: "source_health_check", to: "gold_macro_overview", edge_type: "signal_flow", stage: "数据健康门控→黄金总览模型" }),
+  goldMainlineEdge({ from: "source_health_check", to: "review_gate", edge_type: "signal_flow", stage: "数据健康门控→ReviewGate" }),
   goldMainlineEdge({ from: "gold_macro_overview", to: "verification_matrix", edge_type: "signal_flow", stage: "黄金总览模型→待验证矩阵" }),
-  goldMainlineEdge({ from: "gold_macro_overview", to: "final_report_json", edge_type: "data_flow", stage: "黄金总览模型→报告 JSON" }),
+  goldMainlineEdge({ from: "gold_macro_overview", to: "review_gate", edge_type: "signal_flow", stage: "黄金总览模型→ReviewGate" }),
+  goldMainlineEdge({ from: "review_gate", to: "final_report_json", edge_type: "signal_flow", stage: "ReviewGate→报告 JSON" }),
   goldMainlineEdge({ from: "gold_macro_overview", to: "dashboard", edge_type: "data_flow", stage: "黄金总览模型→Dashboard" }),
   goldMainlineEdge({ from: "gold_macro_overview", to: "gold_mainlines_page", edge_type: "data_flow", stage: "黄金总览模型→黄金主线页" }),
   goldMainlineEdge({ from: "gold_macro_overview", to: "oil_geopolitics_page", edge_type: "data_flow", stage: "黄金总览模型→石油地缘页" }),
@@ -291,7 +294,7 @@ export function groupForOpName(opName: string): DagGroupId {
   if (opName.includes("raw") || opName.includes("archive")) return "raw_archive";
   if (opName.includes("parse") || opName.includes("ingest")) return "raw_parse";
   if (opName.includes("feature") || opName.includes("source_health") || opName.includes("option_wall") || opName.includes("merge_analysis_snapshot") || opName.includes("oil_geopolitical") || opName.includes("mainline_attribution") || opName.includes("transmission_chain") || opName.includes("market_validation")) return "feature_processing";
-  if (opName.includes("coordinator") || opName.includes("driver_decomposition") || opName.includes("gold_macro_overview") || opName.includes("verification_matrix")) return "decision_synthesis";
+  if (opName.includes("coordinator") || opName.includes("driver_decomposition") || opName.includes("gold_macro_overview") || opName.includes("verification_matrix") || opName.includes("review_gate")) return "decision_synthesis";
   if (opName.includes("strategy_card") || opName.includes("report_render") || opName.includes("brief") || opName.includes("gold_mainlines_page") || opName.includes("oil_geopolitics_page") || opName.includes("processing_monitor")) return "final_presentation";
   if (opName.includes("agent") || opName.includes("risk") || opName.includes("technical") || opName.includes("positioning")) return "analysis_agents";
   return "analysis_agents";
@@ -313,7 +316,7 @@ export function groupForTaskLike(taskType: string, category?: string | null): Da
   if (task.includes("feature") || task.includes("source_health") || task.includes("snapshot") || task.includes("merge") || task.includes("option") || task.includes("wall") || task.includes("compute") || task.includes("calculate") || task.includes("oil_geopolitical") || task.includes("mainline_attribution") || task.includes("transmission_chain") || task.includes("market_validation")) {
     return "feature_processing";
   }
-  if (task.includes("coordinator") || task.includes("final_analysis") || task.includes("synthesis") || task.includes("driver_decomposition") || task.includes("gold_macro_overview") || task.includes("verification_matrix")) {
+  if (task.includes("coordinator") || task.includes("final_analysis") || task.includes("synthesis") || task.includes("driver_decomposition") || task.includes("gold_macro_overview") || task.includes("verification_matrix") || task.includes("review_gate")) {
     return "decision_synthesis";
   }
   if (task.includes("strategy") || task.includes("render") || task.includes("report") || task.includes("output") || task.includes("dashboard") || task.includes("brief") || task.includes("gold_mainlines_page") || task.includes("oil_geopolitics_page") || task.includes("processing_monitor") || cat === "report") {
@@ -378,6 +381,7 @@ export function taskNodesForOpName(groupId: DagGroupId, opName: string): string[
     if (opName.includes("driver_decomposition")) return ["driver_decomposition"];
     if (opName.includes("gold_macro_overview")) return ["gold_macro_overview"];
     if (opName.includes("verification_matrix")) return ["verification_matrix"];
+    if (opName.includes("review_gate")) return ["review_gate"];
     if (opName.includes("coordinator")) return ["coordinator", "conflict_check", "bias_confidence"];
     if (opName.includes("merge") || opName.includes("snapshot")) return ["conflict_check", "bias_confidence"];
     return ["final_report_json"];
@@ -463,6 +467,7 @@ export function taskNodesForTaskLike(groupId: DagGroupId, taskType: string, cate
     if (task.includes("driver_decomposition")) return ["driver_decomposition"];
     if (task.includes("gold_macro_overview")) return ["gold_macro_overview"];
     if (task.includes("verification_matrix")) return ["verification_matrix"];
+    if (task.includes("review_gate")) return ["review_gate"];
     if (task.includes("conflict") || task.includes("merge")) return ["conflict_check", "bias_confidence"];
     if (task.includes("json") || task.includes("final")) return ["final_report_json"];
     return ["coordinator"];
