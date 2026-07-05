@@ -542,6 +542,26 @@ def test_main_reexports_health_handlers() -> None:
     assert api_memory_context is modular_api_memory_context
 
 
+def test_main_reexports_gold_mainline_handlers() -> None:
+    from apps.api.main import (
+        api_gold_mainlines,
+        api_gold_mainlines_latest,
+        api_gold_runtime_orchestration_contract,
+        api_gold_runtime_summary_preview,
+    )
+    from apps.api.routes.gold_mainline_routes import (
+        api_gold_mainlines as modular_api_gold_mainlines,
+        api_gold_mainlines_latest as modular_api_gold_mainlines_latest,
+        api_gold_runtime_orchestration_contract as modular_api_gold_runtime_orchestration_contract,
+        api_gold_runtime_summary_preview as modular_api_gold_runtime_summary_preview,
+    )
+
+    assert api_gold_mainlines_latest is modular_api_gold_mainlines_latest
+    assert api_gold_mainlines is modular_api_gold_mainlines
+    assert api_gold_runtime_orchestration_contract is modular_api_gold_runtime_orchestration_contract
+    assert api_gold_runtime_summary_preview is modular_api_gold_runtime_summary_preview
+
+
 def test_main_reexports_agent_governance_read_handlers() -> None:
     from apps.api.main import (
         api_agent_registry_detail,
@@ -1081,6 +1101,22 @@ def test_app_registers_modular_premarket_routes() -> None:
     assert route_map["/api/tasks/{task_id}"] is modular_get_task
     assert route_map["/tasks/{task_id}/logs"] is modular_get_task_logs
     assert route_map["/api/tasks/{task_id}/logs"] is modular_get_task_logs
+
+
+def test_app_registers_modular_gold_mainline_routes() -> None:
+    from apps.api.routes.gold_mainline_routes import (
+        api_gold_mainlines as modular_api_gold_mainlines,
+        api_gold_mainlines_latest as modular_api_gold_mainlines_latest,
+        api_gold_runtime_orchestration_contract as modular_api_gold_runtime_orchestration_contract,
+        api_gold_runtime_summary_preview as modular_api_gold_runtime_summary_preview,
+    )
+
+    route_map = _route_endpoint_map()
+
+    assert route_map["/api/gold/mainlines/latest"] is modular_api_gold_mainlines_latest
+    assert route_map["/api/gold/mainlines"] is modular_api_gold_mainlines
+    assert route_map["/api/gold/runtime-orchestration/contract"] is modular_api_gold_runtime_orchestration_contract
+    assert route_map["/api/gold/runtime-orchestration/summary-preview"] is modular_api_gold_runtime_summary_preview
 
 
 def test_app_registers_modular_health_routes() -> None:
