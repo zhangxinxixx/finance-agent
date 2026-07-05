@@ -642,8 +642,8 @@ def _first_text(items: list[str]) -> str:
 
 
 def _table_text(value: str) -> str:
-    text = " ".join(str(value).split())
-    text = text.replace("|", "/")
+    text = str(value or "-").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+    text = " ".join(text.split()).strip() or "-"
     if len(text) > 120:
         return text[:117].rstrip() + "..."
     return text
