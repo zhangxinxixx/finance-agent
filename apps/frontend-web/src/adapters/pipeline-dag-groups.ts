@@ -92,6 +92,11 @@ export const DAG_GROUPS: Record<DagGroupId, DagGroupMeta> = {
       { id: "positioning_feature", label: "持仓特征", description: "COT/positioning features" },
       { id: "technical_feature", label: "技术结构", description: "Technical trend/level features" },
       { id: "event_flow_feature", label: "事件特征", description: "Impact/sentiment/event flow" },
+      { id: "oil_geopolitical_feature", label: "石油地缘", description: "Oil and geopolitical shock features" },
+      { id: "source_health_check", label: "数据健康门控", description: "Gold v3 P0/P1/P2 source health gate" },
+      { id: "mainline_attribution", label: "主线归因", description: "Gold mainline driver attribution" },
+      { id: "transmission_chain_detection", label: "传导链识别", description: "Cross-market transmission chain detection" },
+      { id: "market_validation", label: "市场验证", description: "Market reaction validation" },
       { id: "snapshot_merge", label: "快照合并", description: "analysis snapshot merge" },
     ],
   },
@@ -110,6 +115,7 @@ export const DAG_GROUPS: Record<DagGroupId, DagGroupMeta> = {
       { id: "positioning_agent", label: "持仓 Agent", description: "positioning analysis" },
       { id: "news_agent", label: "新闻 Agent", description: "news/event impact" },
       { id: "market_odds_agent", label: "概率 Agent", description: "market odds analysis" },
+      { id: "gold_mainline_agent", label: "黄金主线 Agent", description: "gold mainline synthesis agent" },
     ],
   },
   decision_synthesis: {
@@ -121,6 +127,9 @@ export const DAG_GROUPS: Record<DagGroupId, DagGroupMeta> = {
     summary: "协调 Agent 聚合输出、冲突检测、置信度和风险归纳",
     tasks: [
       { id: "coordinator", label: "协调器", description: "agent output aggregation" },
+      { id: "driver_decomposition", label: "驱动拆解", description: "bullish/bearish driver decomposition" },
+      { id: "gold_macro_overview", label: "黄金总览模型", description: "gold macro overview read model" },
+      { id: "verification_matrix", label: "待验证矩阵", description: "driver verification matrix" },
       { id: "conflict_check", label: "冲突检测", description: "bias/confidence conflicts" },
       { id: "bias_confidence", label: "Bias置信", description: "weighted bias and confidence" },
       { id: "final_report_json", label: "报告 JSON", description: "final report payload" },
@@ -137,6 +146,9 @@ export const DAG_GROUPS: Record<DagGroupId, DagGroupMeta> = {
       { id: "daily_report", label: "日报", description: "markdown/json report" },
       { id: "strategy_card", label: "策略卡片", description: "strategy card artifact" },
       { id: "dashboard", label: "Dashboard", description: "frontend read model" },
+      { id: "gold_mainlines_page", label: "黄金主线页", description: "gold mainline analysis page" },
+      { id: "oil_geopolitics_page", label: "石油地缘页", description: "oil geopolitics analysis page" },
+      { id: "processing_monitor", label: "加工监控", description: "processing trace monitor" },
       { id: "market_monitor", label: "市场监控", description: "market monitor page" },
       { id: "feishu_monitor", label: "飞书监控", description: "message monitor view" },
       { id: "source_trace", label: "溯源面板", description: "source trace display" },
@@ -153,6 +165,36 @@ export interface DagTaskDataFlowEdge {
   to: string;
   edge_type: DagEdge["edge_type"];
   stage: string;
+  data_contract?: Pick<DagEdge["data_contract"], "fields">;
+}
+
+const GOLD_MAINLINE_DATA_CONTRACT_FIELDS = [
+  "mainlines",
+  "primary_mainline",
+  "transmission_chains",
+  "bullish_drivers",
+  "bearish_drivers",
+  "dominant_driver",
+  "verification_needed",
+  "theme_rankings",
+  "gold_phase",
+  "war_oil_rate_chain",
+  "source_health",
+  "p0_missing",
+  "p1_missing",
+  "p2_missing",
+  "mainline_impact",
+  "can_build_gold_macro_overview",
+  "processing_trace_id",
+];
+
+function goldMainlineEdge(edge: Omit<DagTaskDataFlowEdge, "data_contract">): DagTaskDataFlowEdge {
+  return {
+    ...edge,
+    data_contract: {
+      fields: [...GOLD_MAINLINE_DATA_CONTRACT_FIELDS],
+    },
+  };
 }
 
 export const DAG_TASK_DATA_FLOW_EDGES: DagTaskDataFlowEdge[] = [
@@ -183,6 +225,22 @@ export const DAG_TASK_DATA_FLOW_EDGES: DagTaskDataFlowEdge[] = [
   { from: "cme_options_parse", to: "option_wall", edge_type: "data_flow", stage: "期权解析→期权墙" },
   { from: "jin10_flash_parse", to: "event_flow_feature", edge_type: "data_flow", stage: "快讯解析→事件特征" },
   { from: "jin10_report_parse", to: "event_flow_feature", edge_type: "data_flow", stage: "报告解析→事件特征" },
+  goldMainlineEdge({ from: "jin10_flash_parse", to: "oil_geopolitical_feature", edge_type: "data_flow", stage: "快讯解析→石油地缘" }),
+  goldMainlineEdge({ from: "market_candle_parse", to: "oil_geopolitical_feature", edge_type: "data_flow", stage: "K线解析→石油地缘" }),
+  goldMainlineEdge({ from: "event_flow_feature", to: "source_health_check", edge_type: "signal_flow", stage: "事件特征→数据健康门控" }),
+  goldMainlineEdge({ from: "real_rate_feature", to: "source_health_check", edge_type: "signal_flow", stage: "实际利率→数据健康门控" }),
+  goldMainlineEdge({ from: "technical_feature", to: "source_health_check", edge_type: "signal_flow", stage: "技术结构→数据健康门控" }),
+  goldMainlineEdge({ from: "option_wall", to: "source_health_check", edge_type: "signal_flow", stage: "期权墙→数据健康门控" }),
+  goldMainlineEdge({ from: "positioning_feature", to: "source_health_check", edge_type: "signal_flow", stage: "持仓特征→数据健康门控" }),
+  goldMainlineEdge({ from: "oil_geopolitical_feature", to: "source_health_check", edge_type: "signal_flow", stage: "石油地缘→数据健康门控" }),
+  goldMainlineEdge({ from: "source_health_check", to: "mainline_attribution", edge_type: "signal_flow", stage: "数据健康门控→主线归因" }),
+  goldMainlineEdge({ from: "event_flow_feature", to: "mainline_attribution", edge_type: "signal_flow", stage: "事件特征→主线归因" }),
+  goldMainlineEdge({ from: "real_rate_feature", to: "mainline_attribution", edge_type: "signal_flow", stage: "实际利率→主线归因" }),
+  goldMainlineEdge({ from: "technical_feature", to: "mainline_attribution", edge_type: "signal_flow", stage: "技术结构→主线归因" }),
+  goldMainlineEdge({ from: "option_wall", to: "mainline_attribution", edge_type: "signal_flow", stage: "期权墙→主线归因" }),
+  goldMainlineEdge({ from: "positioning_feature", to: "mainline_attribution", edge_type: "signal_flow", stage: "持仓特征→主线归因" }),
+  goldMainlineEdge({ from: "oil_geopolitical_feature", to: "transmission_chain_detection", edge_type: "signal_flow", stage: "石油地缘→传导链识别" }),
+  goldMainlineEdge({ from: "mainline_attribution", to: "transmission_chain_detection", edge_type: "signal_flow", stage: "主线归因→传导链识别" }),
 
   { from: "real_rate_feature", to: "macro_agent", edge_type: "signal_flow", stage: "实际利率→宏观 Agent" },
   { from: "liquidity_feature", to: "macro_agent", edge_type: "signal_flow", stage: "流动性→宏观 Agent" },
@@ -192,6 +250,8 @@ export const DAG_TASK_DATA_FLOW_EDGES: DagTaskDataFlowEdge[] = [
   { from: "event_flow_feature", to: "news_agent", edge_type: "signal_flow", stage: "事件特征→新闻 Agent" },
   { from: "snapshot_merge", to: "risk_agent", edge_type: "signal_flow", stage: "快照合并→风险 Agent" },
   { from: "snapshot_merge", to: "market_odds_agent", edge_type: "signal_flow", stage: "快照合并→概率 Agent" },
+  goldMainlineEdge({ from: "source_health_check", to: "gold_mainline_agent", edge_type: "signal_flow", stage: "数据健康门控→黄金主线 Agent" }),
+  goldMainlineEdge({ from: "transmission_chain_detection", to: "gold_mainline_agent", edge_type: "signal_flow", stage: "传导链识别→黄金主线 Agent" }),
 
   { from: "macro_agent", to: "coordinator", edge_type: "signal_flow", stage: "宏观 Agent→协调器" },
   { from: "cme_agent", to: "coordinator", edge_type: "signal_flow", stage: "CME Agent→协调器" },
@@ -200,6 +260,18 @@ export const DAG_TASK_DATA_FLOW_EDGES: DagTaskDataFlowEdge[] = [
   { from: "positioning_agent", to: "coordinator", edge_type: "signal_flow", stage: "持仓 Agent→协调器" },
   { from: "news_agent", to: "coordinator", edge_type: "signal_flow", stage: "新闻 Agent→协调器" },
   { from: "market_odds_agent", to: "coordinator", edge_type: "signal_flow", stage: "概率 Agent→协调器" },
+  goldMainlineEdge({ from: "gold_mainline_agent", to: "coordinator", edge_type: "signal_flow", stage: "黄金主线 Agent→协调器" }),
+  goldMainlineEdge({ from: "coordinator", to: "driver_decomposition", edge_type: "signal_flow", stage: "协调器→驱动拆解" }),
+  goldMainlineEdge({ from: "driver_decomposition", to: "gold_macro_overview", edge_type: "signal_flow", stage: "驱动拆解→黄金总览模型" }),
+  goldMainlineEdge({ from: "source_health_check", to: "gold_macro_overview", edge_type: "signal_flow", stage: "数据健康门控→黄金总览模型" }),
+  goldMainlineEdge({ from: "gold_macro_overview", to: "verification_matrix", edge_type: "signal_flow", stage: "黄金总览模型→待验证矩阵" }),
+  goldMainlineEdge({ from: "gold_macro_overview", to: "final_report_json", edge_type: "data_flow", stage: "黄金总览模型→报告 JSON" }),
+  goldMainlineEdge({ from: "gold_macro_overview", to: "dashboard", edge_type: "data_flow", stage: "黄金总览模型→Dashboard" }),
+  goldMainlineEdge({ from: "gold_macro_overview", to: "gold_mainlines_page", edge_type: "data_flow", stage: "黄金总览模型→黄金主线页" }),
+  goldMainlineEdge({ from: "gold_macro_overview", to: "oil_geopolitics_page", edge_type: "data_flow", stage: "黄金总览模型→石油地缘页" }),
+  goldMainlineEdge({ from: "source_health_check", to: "processing_monitor", edge_type: "data_flow", stage: "数据健康门控→加工监控" }),
+  goldMainlineEdge({ from: "verification_matrix", to: "processing_monitor", edge_type: "data_flow", stage: "待验证矩阵→加工监控" }),
+  goldMainlineEdge({ from: "mainline_attribution", to: "source_trace", edge_type: "data_flow", stage: "主线归因→溯源面板" }),
   { from: "coordinator", to: "conflict_check", edge_type: "signal_flow", stage: "协调器→冲突检测" },
   { from: "conflict_check", to: "bias_confidence", edge_type: "signal_flow", stage: "冲突检测→Bias置信" },
   { from: "bias_confidence", to: "final_report_json", edge_type: "signal_flow", stage: "Bias置信→报告 JSON" },
@@ -218,9 +290,9 @@ export function groupForOpName(opName: string): DagGroupId {
   if (opName.includes("init") || opName.includes("collect") || opName.includes("download")) return "data_collection";
   if (opName.includes("raw") || opName.includes("archive")) return "raw_archive";
   if (opName.includes("parse") || opName.includes("ingest")) return "raw_parse";
-  if (opName.includes("feature") || opName.includes("option_wall") || opName.includes("merge_analysis_snapshot")) return "feature_processing";
-  if (opName.includes("coordinator")) return "decision_synthesis";
-  if (opName.includes("strategy_card") || opName.includes("report_render") || opName.includes("brief")) return "final_presentation";
+  if (opName.includes("feature") || opName.includes("source_health") || opName.includes("option_wall") || opName.includes("merge_analysis_snapshot") || opName.includes("oil_geopolitical") || opName.includes("mainline_attribution") || opName.includes("transmission_chain") || opName.includes("market_validation")) return "feature_processing";
+  if (opName.includes("coordinator") || opName.includes("driver_decomposition") || opName.includes("gold_macro_overview") || opName.includes("verification_matrix")) return "decision_synthesis";
+  if (opName.includes("strategy_card") || opName.includes("report_render") || opName.includes("brief") || opName.includes("gold_mainlines_page") || opName.includes("oil_geopolitics_page") || opName.includes("processing_monitor")) return "final_presentation";
   if (opName.includes("agent") || opName.includes("risk") || opName.includes("technical") || opName.includes("positioning")) return "analysis_agents";
   return "analysis_agents";
 }
@@ -238,13 +310,13 @@ export function groupForTaskLike(taskType: string, category?: string | null): Da
   if (task.includes("parse") || task.includes("parser") || task.includes("ingest") || cat === "data_parsing") {
     return "raw_parse";
   }
-  if (task.includes("feature") || task.includes("snapshot") || task.includes("merge") || task.includes("option") || task.includes("wall") || task.includes("compute") || task.includes("calculate")) {
+  if (task.includes("feature") || task.includes("source_health") || task.includes("snapshot") || task.includes("merge") || task.includes("option") || task.includes("wall") || task.includes("compute") || task.includes("calculate") || task.includes("oil_geopolitical") || task.includes("mainline_attribution") || task.includes("transmission_chain") || task.includes("market_validation")) {
     return "feature_processing";
   }
-  if (task.includes("coordinator") || task.includes("final_analysis") || task.includes("synthesis")) {
+  if (task.includes("coordinator") || task.includes("final_analysis") || task.includes("synthesis") || task.includes("driver_decomposition") || task.includes("gold_macro_overview") || task.includes("verification_matrix")) {
     return "decision_synthesis";
   }
-  if (task.includes("strategy") || task.includes("render") || task.includes("report") || task.includes("output") || task.includes("dashboard") || task.includes("brief") || cat === "report") {
+  if (task.includes("strategy") || task.includes("render") || task.includes("report") || task.includes("output") || task.includes("dashboard") || task.includes("brief") || task.includes("gold_mainlines_page") || task.includes("oil_geopolitics_page") || task.includes("processing_monitor") || cat === "report") {
     return "final_presentation";
   }
   if (task.includes("agent") || task.includes("analysis") || task.includes("regime") || task.includes("impact") || task.includes("technical") || task.includes("positioning") || task.includes("news") || task.includes("jin10") || task.includes("flash") || cat === "analysis") {
@@ -283,10 +355,16 @@ export function taskNodesForOpName(groupId: DagGroupId, opName: string): string[
     if (opName.includes("positioning")) return ["positioning_feature"];
     if (opName.includes("technical")) return ["technical_feature"];
     if (opName.includes("news_feature")) return ["event_flow_feature"];
+    if (opName.includes("oil_geopolitical")) return ["oil_geopolitical_feature"];
+    if (opName.includes("source_health")) return ["source_health_check"];
+    if (opName.includes("mainline_attribution")) return ["mainline_attribution"];
+    if (opName.includes("transmission_chain")) return ["transmission_chain_detection"];
+    if (opName.includes("market_validation")) return ["market_validation"];
     if (opName.includes("merge") || opName.includes("snapshot")) return ["snapshot_merge"];
     return [];
   }
   if (groupId === "analysis_agents") {
+    if (opName.includes("gold_mainline")) return ["gold_mainline_agent"];
     if (opName.includes("macro")) return ["macro_agent"];
     if (opName.includes("cme")) return ["cme_agent"];
     if (opName.includes("risk")) return ["risk_agent"];
@@ -297,11 +375,17 @@ export function taskNodesForOpName(groupId: DagGroupId, opName: string): string[
     return [];
   }
   if (groupId === "decision_synthesis") {
+    if (opName.includes("driver_decomposition")) return ["driver_decomposition"];
+    if (opName.includes("gold_macro_overview")) return ["gold_macro_overview"];
+    if (opName.includes("verification_matrix")) return ["verification_matrix"];
     if (opName.includes("coordinator")) return ["coordinator", "conflict_check", "bias_confidence"];
     if (opName.includes("merge") || opName.includes("snapshot")) return ["conflict_check", "bias_confidence"];
     return ["final_report_json"];
   }
   if (groupId === "final_presentation") {
+    if (opName.includes("gold_mainlines_page")) return ["gold_mainlines_page"];
+    if (opName.includes("oil_geopolitics_page")) return ["oil_geopolitics_page"];
+    if (opName.includes("processing_monitor")) return ["processing_monitor"];
     if (opName.includes("strategy_card")) return ["strategy_card"];
     if (opName.includes("report_render")) return ["daily_report"];
     if (opName.includes("dashboard")) return ["dashboard"];
@@ -356,10 +440,16 @@ export function taskNodesForTaskLike(groupId: DagGroupId, taskType: string, cate
     if (task.includes("positioning") || task.includes("cot")) return ["positioning_feature"];
     if (task.includes("technical")) return ["technical_feature"];
     if (task.includes("news") || task.includes("event") || task.includes("sentiment")) return ["event_flow_feature"];
+    if (task.includes("oil_geopolitical")) return ["oil_geopolitical_feature"];
+    if (task.includes("source_health")) return ["source_health_check"];
+    if (task.includes("mainline_attribution")) return ["mainline_attribution"];
+    if (task.includes("transmission_chain")) return ["transmission_chain_detection"];
+    if (task.includes("market_validation")) return ["market_validation"];
     if (task.includes("merge") || task.includes("snapshot")) return ["snapshot_merge"];
     return [];
   }
   if (groupId === "analysis_agents") {
+    if (task.includes("gold_mainline")) return ["gold_mainline_agent"];
     if (task.includes("macro")) return ["macro_agent"];
     if (task.includes("cme") || task.includes("option")) return ["cme_agent"];
     if (task.includes("positioning")) return ["positioning_agent"];
@@ -370,11 +460,17 @@ export function taskNodesForTaskLike(groupId: DagGroupId, taskType: string, cate
     return [];
   }
   if (groupId === "decision_synthesis") {
+    if (task.includes("driver_decomposition")) return ["driver_decomposition"];
+    if (task.includes("gold_macro_overview")) return ["gold_macro_overview"];
+    if (task.includes("verification_matrix")) return ["verification_matrix"];
     if (task.includes("conflict") || task.includes("merge")) return ["conflict_check", "bias_confidence"];
     if (task.includes("json") || task.includes("final")) return ["final_report_json"];
     return ["coordinator"];
   }
   if (groupId === "final_presentation") {
+    if (task.includes("gold_mainlines_page")) return ["gold_mainlines_page"];
+    if (task.includes("oil_geopolitics_page")) return ["oil_geopolitics_page"];
+    if (task.includes("processing_monitor")) return ["processing_monitor"];
     if (task.includes("strategy")) return ["strategy_card"];
     if (task.includes("market_monitor")) return ["market_monitor"];
     if (task.includes("dashboard")) return ["dashboard"];
@@ -410,7 +506,7 @@ export function buildFixedTaskDataFlowEdges(nodes: DagNodeSpec[]): DagEdge[] {
         to: edge.to,
         edge_type: edge.edge_type,
         data_contract: {
-          fields: [],
+          fields: edge.data_contract?.fields ?? [],
           stage: edge.stage,
           status,
         },
