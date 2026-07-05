@@ -824,6 +824,65 @@ def test_build_event_flow_report_inputs_from_brief_summary(tmp_path):
     assert result["actionable_inputs"][0]["title"] == "Fed hawkish"
 
 
+def test_build_event_flow_report_inputs_exposes_positioning_and_technical_levels(tmp_path):
+    brief_path = tmp_path / "storage" / "features" / "news" / "2026-06-12" / "run-news" / "daily_market_brief.json"
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    brief_path.write_text(
+        json.dumps(
+            {
+                "daily_market_brief": {
+                    "as_of": "2026-06-12T12:00:00+00:00",
+                    "report_inputs": {
+                        "news_highlights": [],
+                        "watchlist": [],
+                        "risk_points": [],
+                        "positioning": [
+                            {
+                                "asset": "XAUUSD",
+                                "direction": "bullish",
+                                "strike_or_level": "3350",
+                                "position_change": "increase",
+                                "evidence_text": "XAUUSD 在 3350 上方看涨期权新增",
+                                "verification_status": "single_source",
+                                "provider_role": "supplemental_source",
+                                "source_refs": [{"source_ref": "jin10:274:223700"}],
+                            }
+                        ],
+                        "technical_levels": [
+                            {
+                                "symbol": "XAUUSD",
+                                "level_type": "VAH",
+                                "price": 3378.5,
+                                "evidence_text": "VAH 3378.5",
+                                "verification_status": "single_source",
+                                "provider_role": "supplemental_source",
+                                "source_refs": [{"source_ref": "jin10:301:223701"}],
+                            }
+                        ],
+                    },
+                    "source_refs": [{"source_ref": "daily_market_brief:fixture"}],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_event_flow_report_inputs()
+
+    assert result["report_inputs"]["positioning"][0]["asset"] == "XAUUSD"
+    groups = {item["group"] for item in result["actionable_inputs"]}
+    assert {"持仓报告", "点位报告"} <= groups
+    positioning = next(item for item in result["actionable_inputs"] if item["group"] == "持仓报告")
+    technical = next(item for item in result["actionable_inputs"] if item["group"] == "点位报告")
+    assert positioning["verification_status"] == "single_source"
+    assert positioning["source_refs"][0]["source_ref"] == "jin10:274:223700"
+    assert "3350" in positioning["title"]
+    assert technical["verification_status"] == "single_source"
+    assert technical["source_refs"][0]["source_ref"] == "jin10:301:223701"
+    assert "VAH" in technical["title"]
+
+
 def test_api_event_flow_split_read_models(tmp_path):
     brief_path = tmp_path / "storage" / "features" / "news" / "2026-06-12" / "run-news" / "daily_market_brief.json"
     brief_path.parent.mkdir(parents=True, exist_ok=True)

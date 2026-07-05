@@ -1076,6 +1076,8 @@ def _build_actionable_report_inputs(
         ("news_highlights", "news_highlights", "新闻重点"),
         ("watchlist", "watchlist", "观察清单"),
         ("risk_points", "risk_points", "风险提示"),
+        ("positioning", "positioning", "持仓报告"),
+        ("technical_levels", "technical_levels", "点位报告"),
     ]
     for group_key, group_label, display_group in group_specs:
         raw_items = report_inputs.get(group_key)
@@ -1094,11 +1096,11 @@ def _build_actionable_report_inputs(
                     "group": display_group,
                     "title": _translate_long_english(title, field=f"report_input_title_{group_key}"),
                     "summary": _translate_long_english(summary, field=f"report_input_summary_{group_key}"),
-                    "verification_status": None,
+                    "verification_status": _report_input_verification_status(raw_item),
                     "access_status": None,
                     "artifact_path": None,
                     "source_url": None,
-                    "source_refs": [dict(ref) for ref in page_source_refs if isinstance(ref, dict)],
+                    "source_refs": _report_input_source_refs(raw_item, page_source_refs=page_source_refs),
                 }
             )
 
@@ -1149,6 +1151,14 @@ def _report_input_title(value: Any) -> str:
         return _translate_long_english(value.strip(), field="report_input_title")
     if not isinstance(value, dict):
         return ""
+    if "strike_or_level" in value or "position_change" in value:
+        text = _positioning_input_title(value)
+        if text:
+            return text
+    if "level_type" in value or "price" in value or "range" in value:
+        text = _technical_level_input_title(value)
+        if text:
+            return text
     for key in ("title", "what_happened", "event_name", "summary", "event_type"):
         text = str(value.get(key) or "").strip()
         if text:
@@ -1166,6 +1176,46 @@ def _report_input_summary(value: Any, *, fallback: str) -> str:
         if text:
             return _translate_long_english(text, field="report_input_summary")
     return _translate_long_english(fallback, field="report_input_summary")
+
+
+def _report_input_verification_status(value: Any) -> str | None:
+    if isinstance(value, dict):
+        return _string_or_none(value.get("verification_status"))
+    return None
+
+
+def _report_input_source_refs(value: Any, *, page_source_refs: list[Any]) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        refs = [dict(ref) for ref in value.get("source_refs") or [] if isinstance(ref, dict)]
+        if refs:
+            return refs
+    return [dict(ref) for ref in page_source_refs if isinstance(ref, dict)]
+
+
+def _positioning_input_title(value: dict[str, Any]) -> str:
+    asset = str(value.get("asset") or "").strip()
+    direction = str(value.get("direction") or "").strip()
+    level = str(value.get("strike_or_level") or "").strip()
+    change = str(value.get("position_change") or "").strip()
+    parts = [part for part in (asset, level, direction, change) if part]
+    return " / ".join(parts)
+
+
+def _technical_level_input_title(value: dict[str, Any]) -> str:
+    symbol = str(value.get("symbol") or "").strip()
+    level_type = str(value.get("level_type") or "").strip()
+    price = value.get("price")
+    price_range = value.get("range")
+    price_text = ""
+    if price is not None:
+        price_text = str(price)
+    elif isinstance(price_range, dict):
+        low = price_range.get("low")
+        high = price_range.get("high")
+        if low is not None and high is not None:
+            price_text = f"{low}-{high}"
+    parts = [part for part in (symbol, level_type, price_text) if part]
+    return " / ".join(parts)
 
 
 def _followup_summary(followup: dict[str, Any]) -> str:
