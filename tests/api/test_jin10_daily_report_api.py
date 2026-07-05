@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +16,7 @@ from apps.api.main import (
     api_jin10_weekly_report_latest,
 )
 _PROJECT_ROOT_PATCH = "apps.api.data_service._PROJECT_ROOT"
+_REPORT_EXTERNAL_ROOT_PATCH = "apps.api.services.report_service._JIN10_EXTERNAL_ROOT"
 
 
 def _make_tree(root: Path, files: dict[str, str | None]) -> None:
@@ -25,6 +27,14 @@ def _make_tree(root: Path, files: dict[str, str | None]) -> None:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+
+
+def _isolated_jin10_roots(root: Path) -> ExitStack:
+    stack = ExitStack()
+    stack.enter_context(mock.patch(_PROJECT_ROOT_PATCH, root))
+    stack.enter_context(mock.patch(_REPORT_EXTERNAL_ROOT_PATCH, root / "jin10-reports"))
+    stack.enter_context(mock.patch.dict(os.environ, {"HOME": str(root)}))
+    return stack
 
 
 def test_list_reports_index_includes_jin10_daily_report(tmp_path: Path):
@@ -67,7 +77,7 @@ def test_list_reports_index_includes_external_jin10_weekly_report(tmp_path: Path
             "jin10-reports/2026-06-05/weekly/220973/report.md": "# gold headline",
         },
     )
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+    with _isolated_jin10_roots(tmp_path):
         index = list_reports_index()
 
     weekly = [item for item in index["reports"] if item["type"] == "jin10_weekly_report"]
@@ -151,7 +161,7 @@ def test_weekly_report_reads_storage_rows_marked_weekly(tmp_path: Path):
             "storage/outputs/jin10/2026-05-07/weekly-run/daily_analysis.html": "<html>weekly</html>",
         },
     )
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+    with _isolated_jin10_roots(tmp_path):
         latest = api_jin10_weekly_report_latest()
         exact = api_jin10_weekly_report(date="2026-05-07", run_id="weekly-run")
 
@@ -186,7 +196,7 @@ def test_weekly_latest_prefers_newer_external_report_over_older_storage(tmp_path
             "jin10-reports/2026-06-14/weekly/221823/report.md": "# new weekly",
         },
     )
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
+    with _isolated_jin10_roots(tmp_path):
         latest = api_jin10_weekly_report_latest()
 
     assert latest["article_id"] == "221823"
