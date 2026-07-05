@@ -63,6 +63,37 @@ def test_api_agents_registry_includes_gold_v3_fixed_runtime_agents() -> None:
     assert "processing_traces" in overview_prompt["output_schema"]
 
 
+def test_api_agents_registry_includes_gold_v3_development_governance_agents() -> None:
+    response = api_agents_registry()
+    agents = {item["agent_id"]: item for item in response["agents"]}
+
+    expected_agents = {
+        "architecture_agent": "页面职责与能力落层治理",
+        "schema_agent": "TypeScript / 后端 schema 字段治理",
+        "dag_lineage_agent": "DAG 和 trace mode 链路治理",
+        "test_validation_agent": "schema / DAG / mixed / 页面绑定测试治理",
+    }
+
+    for agent_id, governance_scope in expected_agents.items():
+        agent = agents[agent_id]
+        assert agent["status"] == "planned_governance"
+        assert agent["agent_type"] == "development_governance_agent"
+        assert agent["governance_scope"] == governance_scope
+        assert agent["proposal_only"] is True
+        assert agent["prompt"]["kind"] == "llm"
+        assert agent["prompt"]["template"]["messages"]
+        assert agent["prompt"]["template"]["output_schema"]
+        assert agent["prompt"]["template"]["proposal_only"] is True
+        assert "raw" in agent["prompt"]["template"]["forbidden_mutation_layers"]
+        assert "parsed" in agent["prompt"]["template"]["forbidden_mutation_layers"]
+        assert "features" in agent["prompt"]["template"]["forbidden_mutation_layers"]
+        assert not any(str(target).startswith(("raw/", "parsed/", "features/")) for target in agent["output_targets"])
+
+    dag_prompt = agents["dag_lineage_agent"]["prompt"]["template"]
+    assert "source_ref" in dag_prompt["output_schema"]["checks"]
+    assert "frontend_slot" in dag_prompt["output_schema"]["checks"]
+
+
 def test_api_agent_registry_detail_404_for_unknown_agent() -> None:
     with pytest.raises(Exception) as exc:
         api_agent_registry_detail("missing_agent")

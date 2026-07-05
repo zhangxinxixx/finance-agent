@@ -144,6 +144,26 @@ _RUNTIME_AGENT_META: dict[str, dict[str, Any]] = {
         "role": "report_agent",
         "registry_id": "report_render_agent",
     },
+    "architecture_agent": {
+        "display_name": "ArchitectureAgent",
+        "role": "development_governance_agent",
+        "registry_id": "architecture_agent",
+    },
+    "schema_agent": {
+        "display_name": "SchemaAgent",
+        "role": "development_governance_agent",
+        "registry_id": "schema_agent",
+    },
+    "dag_lineage_agent": {
+        "display_name": "DagLineageAgent",
+        "role": "development_governance_agent",
+        "registry_id": "dag_lineage_agent",
+    },
+    "test_validation_agent": {
+        "display_name": "TestValidationAgent",
+        "role": "development_governance_agent",
+        "registry_id": "test_validation_agent",
+    },
 }
 
 

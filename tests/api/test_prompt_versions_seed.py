@@ -64,3 +64,27 @@ def test_seed_prompt_versions_includes_gold_v3_fixed_runtime_agents(monkeypatch)
     assert all(row.status == "active" for row in rows)
     assert all(row.enabled for row in rows)
     assert all(row.prompt_template.get("dag_node_id") for row in rows)
+
+
+def test_seed_prompt_versions_includes_gold_v3_development_governance_agents(monkeypatch) -> None:
+    db = _session()
+
+    def _session_local():
+        return db
+
+    monkeypatch.setattr("scripts.seed_prompt_versions.SessionLocal", _session_local)
+    seed()
+
+    expected_agent_ids = {
+        "architecture_agent",
+        "schema_agent",
+        "dag_lineage_agent",
+        "test_validation_agent",
+    }
+    rows = db.query(PromptVersion).filter(PromptVersion.agent_id.in_(expected_agent_ids)).all()
+
+    assert {row.agent_id for row in rows} == expected_agent_ids
+    assert all(row.version == "v1" for row in rows)
+    assert all(row.status == "active" for row in rows)
+    assert all(row.enabled for row in rows)
+    assert all(row.prompt_template.get("proposal_only") is True for row in rows)

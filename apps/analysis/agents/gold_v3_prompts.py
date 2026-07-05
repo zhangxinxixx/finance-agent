@@ -26,6 +26,8 @@ GOLD_V3_TRANSMISSION_CHAINS = [
     "technical_chain",
 ]
 
+FORBIDDEN_MUTATION_LAYERS = ["raw", "parsed", "features"]
+
 
 def _template(
     *,
@@ -47,6 +49,33 @@ def _template(
         ],
         "output_schema": output_schema,
         "rules": rules,
+    }
+
+
+def _governance_template(
+    *,
+    agent_id: str,
+    system: str,
+    user: str,
+    checks: list[str],
+    output_schema: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "agent_id": agent_id,
+        "proposal_only": True,
+        "forbidden_mutation_layers": FORBIDDEN_MUTATION_LAYERS,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "checks": checks,
+        "output_schema": output_schema,
+        "rules": [
+            "只生成检查结果、风险和改造提案，不直接修改生产数据或自动发布。",
+            "不得绕过 scheduler / worker / task_runs / task_steps。",
+            "不得写入 raw、parsed 或 features 层。",
+            "所有建议必须指向具体文件、接口、schema 或测试。",
+        ],
     }
 
 
@@ -251,6 +280,93 @@ def build_report_render_prompt_template() -> dict[str, Any]:
     )
 
 
+def build_architecture_governance_prompt_template() -> dict[str, Any]:
+    return _governance_template(
+        agent_id="architecture_agent",
+        system="你是 ArchitectureAgent，负责 Gold v3.0 页面职责、能力落层和主链边界治理。",
+        user="审查新增需求应落在哪一层，避免所有功能堆回 EventFlow 或绕过生产主链。",
+        checks=[
+            "page_responsibility",
+            "module_boundary",
+            "main_chain_alignment",
+            "frontend_read_model_only",
+        ],
+        output_schema={
+            "review_status": "pass | needs_change | blocked",
+            "placement_decisions": [],
+            "boundary_violations": [],
+            "recommended_tasks": [],
+            "source_refs": [],
+        },
+    )
+
+
+def build_schema_governance_prompt_template() -> dict[str, Any]:
+    return _governance_template(
+        agent_id="schema_agent",
+        system="你是 SchemaAgent，负责 Gold v3.0 TypeScript、后端 schema 和 JSON 字段名治理。",
+        user="审查 GoldMacroOverview、主线归因、ProcessingTrace、DAG contract 和前端类型是否字段漂移。",
+        checks=[
+            "typescript_schema",
+            "backend_schema",
+            "json_contract",
+            "field_name_drift",
+        ],
+        output_schema={
+            "review_status": "pass | needs_change | blocked",
+            "schema_drift": [],
+            "required_migrations": [],
+            "contract_updates": [],
+            "source_refs": [],
+        },
+    )
+
+
+def build_dag_lineage_governance_prompt_template() -> dict[str, Any]:
+    return _governance_template(
+        agent_id="dag_lineage_agent",
+        system="你是 DagLineageAgent，负责 Gold v3.0 DAG、trace mode 和 source_ref 到前端槽位链路治理。",
+        user="检查 DAG 节点、边、data_contract、source_ref、artifact_ref、frontend slot 是否能闭环。",
+        checks=[
+            "dag_node_mapping",
+            "edge_data_contract",
+            "source_ref",
+            "artifact_ref",
+            "frontend_slot",
+        ],
+        output_schema={
+            "review_status": "pass | needs_change | blocked",
+            "checks": ["dag_node_mapping", "edge_data_contract", "source_ref", "artifact_ref", "frontend_slot"],
+            "missing_edges": [],
+            "missing_trace_refs": [],
+            "frontend_binding_gaps": [],
+            "source_refs": [],
+        },
+    )
+
+
+def build_test_validation_governance_prompt_template() -> dict[str, Any]:
+    return _governance_template(
+        agent_id="test_validation_agent",
+        system="你是 TestValidationAgent，负责 Gold v3.0 schema、DAG、mixed 拆解、主线归因和页面绑定测试治理。",
+        user="根据变更范围提出最小但可执行的测试矩阵，并标记不能关闭 issue 的缺口。",
+        checks=[
+            "schema_tests",
+            "dag_contract_tests",
+            "mixed_decomposition_tests",
+            "mainline_attribution_tests",
+            "frontend_binding_tests",
+        ],
+        output_schema={
+            "review_status": "pass | needs_more_tests | blocked",
+            "required_tests": [],
+            "missing_coverage": [],
+            "issue_close_blockers": [],
+            "verification_commands": [],
+        },
+    )
+
+
 _GOLD_V3_AGENT_SPECS: list[dict[str, Any]] = [
     {
         "agent_id": "source_health_agent",
@@ -351,9 +467,61 @@ _GOLD_V3_AGENT_SPECS: list[dict[str, Any]] = [
 ]
 
 
+_GOLD_V3_GOVERNANCE_AGENT_SPECS: list[dict[str, Any]] = [
+    {
+        "agent_id": "architecture_agent",
+        "name": "ArchitectureAgent",
+        "agent_type": "development_governance_agent",
+        "priority": "P1",
+        "description": "维护页面职责和能力落层，避免所有功能堆回 EventFlow。",
+        "governance_scope": "页面职责与能力落层治理",
+        "proposal_only": True,
+        "input_sections": ["issues", "architecture_docs", "route_map", "module_boundaries"],
+        "output_targets": ["ArchitectureReview 提案", "Issue close blockers"],
+        "prompt_builder": build_architecture_governance_prompt_template,
+    },
+    {
+        "agent_id": "schema_agent",
+        "name": "SchemaAgent",
+        "agent_type": "development_governance_agent",
+        "priority": "P1",
+        "description": "维护 TypeScript、后端 schema 和 JSON contract，防止字段名漂移。",
+        "governance_scope": "TypeScript / 后端 schema 字段治理",
+        "proposal_only": True,
+        "input_sections": ["types", "api_schemas", "json_artifacts", "tests"],
+        "output_targets": ["SchemaReview 提案", "Contract drift report"],
+        "prompt_builder": build_schema_governance_prompt_template,
+    },
+    {
+        "agent_id": "dag_lineage_agent",
+        "name": "DagLineageAgent",
+        "agent_type": "development_governance_agent",
+        "priority": "P1",
+        "description": "维护 DAG 和 trace mode，检查 source_ref 到 frontend slot 的链路。",
+        "governance_scope": "DAG 和 trace mode 链路治理",
+        "proposal_only": True,
+        "input_sections": ["pipeline_dag", "source_refs", "artifact_refs", "frontend_slots"],
+        "output_targets": ["DAGLineageReview 提案", "Trace gap report"],
+        "prompt_builder": build_dag_lineage_governance_prompt_template,
+    },
+    {
+        "agent_id": "test_validation_agent",
+        "name": "TestValidationAgent",
+        "agent_type": "development_governance_agent",
+        "priority": "P1",
+        "description": "维护 schema、DAG、mixed、主线归因和页面绑定测试矩阵。",
+        "governance_scope": "schema / DAG / mixed / 页面绑定测试治理",
+        "proposal_only": True,
+        "input_sections": ["issue_acceptance", "changed_files", "test_results"],
+        "output_targets": ["TestValidationReview 提案", "Verification command matrix"],
+        "prompt_builder": build_test_validation_governance_prompt_template,
+    },
+]
+
+
 def list_gold_v3_agent_registry_entries() -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    for spec in _GOLD_V3_AGENT_SPECS:
+    for spec in [*_GOLD_V3_AGENT_SPECS, *_GOLD_V3_GOVERNANCE_AGENT_SPECS]:
         prompt_builder = spec["prompt_builder"]
         prompt_template = prompt_builder()
         entry = {
@@ -363,8 +531,8 @@ def list_gold_v3_agent_registry_entries() -> list[dict[str, Any]]:
         }
         entry.update(
             {
-                "status": "planned_prompt",
-                "status_label": "Gold v3 固定 Agent",
+                "status": "planned_governance" if entry.get("proposal_only") else "planned_prompt",
+                "status_label": "Gold v3 治理 Agent" if entry.get("proposal_only") else "Gold v3 固定 Agent",
                 "source_module": "apps.analysis.agents.gold_v3_prompts",
                 "runtime_agent_names": [entry["agent_id"]],
                 "prompt": {
