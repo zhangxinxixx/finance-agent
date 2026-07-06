@@ -257,18 +257,18 @@ def collect_xauusd_daily_candles(
             range_=range_,
         )
     except Exception:
-        local_candidates = sorted((storage_root / "raw" / "technical" / "yahoo").glob("*/GC=F-*.json"))
-        if local_candidates:
-            payload_path = local_candidates[-1]
-            payload = json.loads(payload_path.read_text(encoding="utf-8"))
-            raw_path = payload_path.relative_to(storage_root).as_posix()
-            return _parse_yahoo_daily_candles(payload), raw_path
         try:
             with httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False) as client:
                 response = client.get(YAHOO_GC_CHART_URL, params={"range": _normalize_yahoo_range(range_), "interval": "1d"})
                 response.raise_for_status()
                 payload = response.json()
         except Exception as exc:
+            local_candidates = sorted((storage_root / "raw" / "technical" / "yahoo").glob("*/GC=F-*.json"))
+            if local_candidates:
+                payload_path = local_candidates[-1]
+                payload = json.loads(payload_path.read_text(encoding="utf-8"))
+                raw_path = payload_path.relative_to(storage_root).as_posix()
+                return _parse_yahoo_daily_candles(payload), raw_path
             raise ValueError(f"unable to fetch XAUUSD daily candles and no local raw fallback found: {exc}") from exc
 
     today = datetime.now(UTC).date().isoformat()
@@ -305,16 +305,19 @@ def collect_dxy_daily_candles(
             range_=range_,
         )
     except Exception:
-        local_candidates = sorted((storage_root / "raw" / "macro" / "openbb_yfinance").glob("*/DX-Y.NYB-*.json"))
-        if local_candidates:
-            payload_path = local_candidates[-1]
-            payload = json.loads(payload_path.read_text(encoding="utf-8"))
-            raw_path = payload_path.relative_to(storage_root).as_posix()
-            return _parse_dxy_daily_payload(payload), raw_path
-        with httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False) as client:
-            response = client.get(YAHOO_DXY_CHART_URL, params={"range": _normalize_yahoo_range(range_), "interval": "1d"})
-            response.raise_for_status()
-            payload = response.json()
+        try:
+            with httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False) as client:
+                response = client.get(YAHOO_DXY_CHART_URL, params={"range": _normalize_yahoo_range(range_), "interval": "1d"})
+                response.raise_for_status()
+                payload = response.json()
+        except Exception:
+            local_candidates = sorted((storage_root / "raw" / "macro" / "openbb_yfinance").glob("*/DX-Y.NYB-*.json"))
+            if local_candidates:
+                payload_path = local_candidates[-1]
+                payload = json.loads(payload_path.read_text(encoding="utf-8"))
+                raw_path = payload_path.relative_to(storage_root).as_posix()
+                return _parse_dxy_daily_payload(payload), raw_path
+            raise
 
     today = datetime.now(UTC).date().isoformat()
     raw_path = archive_raw_payload(
@@ -363,7 +366,7 @@ def _fetch_openbb_daily_payload(
         "interval": "1d",
         "columns": list(df.columns),
         "row_count": len(df),
-        "latest": _jsonify_openbb_records(df.tail(90).reset_index().to_dict("records")),
+        "latest": _jsonify_openbb_records(df.reset_index().to_dict("records")),
     }
 
 
