@@ -25,7 +25,13 @@ export function MultiLineChart({
 }: MultiLineChartProps) {
   // ── Jin10 实时 K 线（图表内部管理时间周期）──
   const [chartTimeframe, setChartTimeframe] = useState<KlineTimeframe>("1m");
-  const { candles: jin10Candles, loading: jin10Loading } = useJin10Kline("XAUUSD", chartTimeframe, 200);
+  const {
+    candles: jin10Candles,
+    loading: jin10Loading,
+    coverage: klineCoverage,
+    provider: klineProvider,
+    sourceTimeframe,
+  } = useJin10Kline("XAUUSD", chartTimeframe, 200);
 
   // Jin10 实时 K 线数据
   const liveCandles: KLineCandle[] = useMemo(
@@ -69,6 +75,14 @@ export function MultiLineChart({
   }, [seriesData, visibleCandles]);
 
   const statusText = chartStatusText(history);
+  const klineStatus = klineCoverage?.degraded ? "降级" : klineCoverage ? "正常" : "待同步";
+  const klineStatusTone = klineCoverage?.degraded ? "warn" : klineCoverage ? "ok" : "pending";
+  const klineMeta = [
+    klineProvider ?? "market_candles",
+    sourceTimeframe ? `${sourceTimeframe} source` : null,
+    klineCoverage ? `${klineCoverage.returned} bars` : null,
+    klineCoverage?.gap_count ? `gap ${klineCoverage.gap_count}` : null,
+  ].filter(Boolean).join(" · ");
 
   return (
     <div className={className}>
@@ -78,9 +92,16 @@ export function MultiLineChart({
         <details className="market-monitor-local-kline-diagnostic">
           <summary>
             <span>本地 K 线诊断</span>
-            <span className="fa-compact-meta">Jin10 / market_candles · {chartTimeframe}</span>
+            <span className="market-monitor-local-kline-summary">
+              <span className="market-monitor-local-kline-chip" data-tone={klineStatusTone}>{klineStatus}</span>
+              <span className="fa-compact-meta">{klineMeta || `market_candles · ${chartTimeframe}`}</span>
+            </span>
           </summary>
           <div className="market-monitor-local-kline-body">
+            <div className="market-monitor-local-kline-coverage">
+              <span>{klineCoverage?.reason ?? "统一 K 线接口返回 coverage / source_trace；主图继续使用 TradingView。"}</span>
+              {klineCoverage?.max_gap_seconds ? <span>max gap {klineCoverage.max_gap_seconds}s</span> : null}
+            </div>
             <KLineChart
               candles={liveCandles}
               lineSeries={lineSeries}

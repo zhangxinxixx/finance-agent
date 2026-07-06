@@ -814,8 +814,55 @@
     content: "-";
   }
 
+  .market-monitor-local-kline-summary {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  .market-monitor-local-kline-chip {
+    flex: 0 0 auto;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-sm);
+    padding: 1px 6px;
+    font-size: var(--text-10);
+    font-weight: var(--fw-bold);
+    line-height: 1.5;
+  }
+
+  .market-monitor-local-kline-chip[data-tone="ok"] {
+    border-color: var(--up-border);
+    background: var(--up-soft);
+    color: var(--up);
+  }
+
+  .market-monitor-local-kline-chip[data-tone="warn"] {
+    border-color: var(--warn-border);
+    background: var(--warn-soft);
+    color: var(--warn);
+  }
+
+  .market-monitor-local-kline-chip[data-tone="pending"] {
+    color: var(--fg-4);
+  }
+
   .market-monitor-local-kline-body {
     border-top: 1px solid var(--border-faint);
+  }
+
+  .market-monitor-local-kline-coverage {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 12px;
+    border-bottom: 1px solid var(--border-faint);
+    padding: 7px 12px;
+    color: var(--fg-4);
+    font-size: var(--text-10);
+    line-height: 1.4;
   }
 
   .market-monitor-side-panel {
