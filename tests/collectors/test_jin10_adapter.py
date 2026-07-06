@@ -1028,6 +1028,10 @@ def test_build_jin10_agent_output_payload_exposes_prompt_claims_and_artifacts(tm
     assert "不输出 YAML、JSON 或 Agent 入库字段" in payload["payload"]["prompt_messages"][1]["content"]
     assert payload["payload"]["input_payload"]["raw_report"]["article_id"] == "218330"
     assert payload["payload"]["input_payload"]["daily_report"]["family"] == "jin10_daily_visual"
+    vlm_reparse_input = payload["payload"]["input_payload"]["vlm_reparse_input"]
+    assert vlm_reparse_input["article_id"] == "218330"
+    assert vlm_reparse_input["report_type"] == "daily"
+    assert vlm_reparse_input["image_entries"][0]["path"].endswith("/images/报告_2026-05-06_01.png")
     assert payload["payload"]["artifact_refs"][-1].endswith("/agent_analysis_report.md")
     assert Path(payload["payload"]["artifact_refs"][0]).is_file()
     assert payload["payload"]["claims"]

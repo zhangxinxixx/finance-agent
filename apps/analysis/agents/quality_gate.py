@@ -284,6 +284,8 @@ def _execute_dedicated_fallback_task(
     if task.task_type == "fallback_reparse":
         output = _cme_options_reparse_output(agent_outputs=agent_outputs, snapshot=snapshot, created_at=created_at)
         if output is None:
+            output = _jin10_vlm_reparse_output(agent_outputs=agent_outputs, created_at=created_at)
+        if output is None:
             output = _jin10_report_reparse_output(agent_outputs=agent_outputs, created_at=created_at)
         if output is not None:
             return (
@@ -487,6 +489,113 @@ def _fallback_reanalysis_output(
             "evidence_item_count": len(evidence_items),
             "independent_source_count": len(source_keys),
             "independent_source_keys": source_keys,
+        },
+    )
+
+
+def _jin10_vlm_reparse_output(
+    *,
+    agent_outputs: list[AgentOutput],
+    created_at: datetime,
+) -> AgentOutput | None:
+    primary = next((output for output in agent_outputs if output.agent_name == "jin10_report_analysis_agent"), None)
+    if primary is None:
+        return None
+    input_payload = primary.input_payload if isinstance(primary.input_payload, dict) else {}
+    reparse_input = input_payload.get("vlm_reparse_input")
+    if not isinstance(reparse_input, dict):
+        return None
+    image_entries = [dict(item) for item in reparse_input.get("image_entries") or [] if isinstance(item, dict)]
+    if not image_entries:
+        return None
+
+    from apps.parsers.jin10.report_image_parser import parse_report_images
+
+    artifacts = parse_report_images(
+        article_id=str(reparse_input.get("article_id") or "unknown"),
+        title=str(reparse_input.get("title") or "Jin10 report"),
+        published_at=str(reparse_input.get("published_at") or "") or None,
+        image_entries=image_entries,
+        report_type=str(reparse_input.get("report_type") or "") or None,
+    )
+    parse_status = dict(artifacts.get("parse_status") or {})
+    warnings = [str(item) for item in parse_status.get("warnings") or [] if str(item).strip()]
+    vision_status = str(parse_status.get("vision_markdown_status") or "")
+    status = AgentStatus.SUCCESS if vision_status == "success" else AgentStatus.PARTIAL
+    source_refs = [dict(ref) for ref in primary.source_refs if isinstance(ref, dict)]
+    evidence_refs = [
+        *[dict(ref) for ref in primary.evidence_refs if isinstance(ref, dict)],
+        *[
+            {
+                "artifact_path": str(item.get("path") or ""),
+                "asset_type": item.get("asset_type") or "image",
+                "seq": item.get("seq"),
+                "sha256": item.get("sha256"),
+            }
+            for item in image_entries
+            if str(item.get("path") or "").strip()
+        ],
+    ]
+    evidence_items = _dedupe_dicts(
+        [
+            *[dict(item) for item in primary.evidence_items if isinstance(item, dict)],
+            {
+                "factor": "jin10_vlm_reparse",
+                "direction": "parser_quality",
+                "confidence": 0.52 if status is AgentStatus.PARTIAL else 0.60,
+                "source_tier": "external_opinion",
+                "verification_status": "vlm_reparse_executed",
+                "pages_total": parse_status.get("pages_total"),
+                "figures_total": parse_status.get("figures_total"),
+            },
+        ]
+    )
+    return AgentOutput(
+        version=primary.version,
+        agent_name="jin10_vlm_reparse_agent",
+        module="agent_loop_fallback_jin10_vlm_reparse",
+        snapshot_id=f"{primary.snapshot_id}:fallback_vlm_reparse",
+        input_snapshot_ids={
+            **dict(primary.input_snapshot_ids),
+            "fallback_of": primary.snapshot_id,
+            "fallback_task": "fallback_reparse",
+        },
+        bias=AgentBias.NEUTRAL,
+        confidence=0.52 if status is AgentStatus.PARTIAL else 0.60,
+        key_findings=[
+            "Jin10 VLM parser fallback reparse executed from archived image inputs.",
+            f"VLM status: {vision_status or 'unavailable'}; pages={parse_status.get('pages_total') or 0}; figures={parse_status.get('figures_total') or 0}.",
+        ],
+        risk_points=[
+            *([f"VLM reparse warning: {warning}" for warning in warnings[:5]]),
+            *list(primary.risk_points),
+        ],
+        watchlist=[
+            "Review VLM parser status before restoring a strong directional conclusion.",
+            *list(primary.watchlist),
+        ],
+        invalid_conditions=[],
+        summary="Jin10 VLM parser fallback reparse executed; use parser status as quality evidence.",
+        source_refs=source_refs,
+        status=status,
+        created_at=created_at,
+        evidence_refs=evidence_refs,
+        evidence_items=evidence_items,
+        data_quality=[*_dedupe_strings(primary.data_quality), "fallback_reparse", "jin10_vlm_reparse"],
+        input_payload={
+            "fallback_task": "fallback_reparse",
+            "fallback_of": {
+                "agent_name": primary.agent_name,
+                "snapshot_id": primary.snapshot_id,
+            },
+            "vlm_reparse_input": reparse_input,
+            "parse_status": parse_status,
+            "page_images": artifacts.get("page_images"),
+            "figures": artifacts.get("figures"),
+            "vision_markdown": artifacts.get("vision_markdown"),
+            "vision_layout": artifacts.get("vision_layout"),
+            "source_ref_count": len(source_refs),
+            "evidence_item_count": len(evidence_items),
         },
     )
 

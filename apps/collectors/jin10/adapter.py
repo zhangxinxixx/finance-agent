@@ -255,6 +255,7 @@ def build_jin10_agent_output_payload(
             "input_payload": {
                 "raw_report": raw_report,
                 "daily_report": daily_report,
+                "vlm_reparse_input": report.get("vlm_reparse_input"),
             },
             "llm_raw_output": agent_markdown if generated_by == "llm" else None,
             "narrative_md": agent_markdown,
@@ -1177,12 +1178,30 @@ def _build_daily_report_bundle(
         "trade_date": report["date"],
         "run_id": report["article_id"],
         "quality_audit": quality_audit,
+        "vlm_reparse_input": _jin10_vlm_reparse_input(report),
         "raw_article_json": raw_article_json,
         "raw_article_markdown": render_jin10_raw_article_markdown(raw_article),
         "json": visual_json,
         "html": render_jin10_daily_html(visual),
         "agent_analysis_json": agent_analysis_json,
         "agent_analysis_markdown": render_jin10_agent_analysis_markdown(agent_analysis),
+    }
+
+
+def _jin10_vlm_reparse_input(report: dict[str, Any]) -> dict[str, Any]:
+    meta: dict[str, Any] = {}
+    meta_path = Path(str((report.get("meta_json") or {}).get("path") or ""))
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    return {
+        "article_id": str(report.get("article_id") or ""),
+        "title": str(report.get("title") or ""),
+        "published_at": meta.get("published_at"),
+        "report_type": _report_type_for_raw_report(report),
+        "image_entries": [dict(item) for item in report.get("images") or [] if isinstance(item, dict)],
     }
 
 

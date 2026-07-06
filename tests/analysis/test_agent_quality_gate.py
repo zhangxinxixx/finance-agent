@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
+from pathlib import Path
 
 from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate, execute_agent_loop_fallback_tasks
 from apps.analysis.agents.schemas import AgentBias, AgentStatus
@@ -505,3 +507,101 @@ def test_execute_agent_loop_fallback_tasks_runs_jin10_report_reparse_from_archiv
     assert reparse.source_refs == [{"source": "jin10_external", "article_id": "218330"}]
     assert any(item["factor"] == "jin10_report_reparse" for item in reparse.evidence_items)
     assert execution.task_results[1]["task_type"] == "fallback_conservative_synthesis"
+
+
+def test_execute_agent_loop_fallback_tasks_runs_jin10_vlm_reparse_from_image_inputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from apps.analysis.agents.schemas import AgentOutput
+    from apps.parsers.jin10.qwen_vl_markdown import MissingDashScopeApiKey
+
+    image_path = tmp_path / "page-002.png"
+    image_path.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        )
+    )
+
+    def no_live_vlm(*_: object, **__: object) -> dict:
+        raise MissingDashScopeApiKey("test disables live VLM")
+
+    monkeypatch.setattr("apps.parsers.jin10.report_image_parser.recognize_pages_unified", no_live_vlm)
+
+    primary = AgentOutput.model_validate(
+        {
+            "version": "1.0",
+            "agent_name": "jin10_report_analysis_agent",
+            "module": "jin10_reports",
+            "snapshot_id": "jin10:2026-05-06:218330:agent_analysis",
+            "input_snapshot_ids": {"jin10_raw_article_report": "jin10:2026-05-06:218330:raw_article_report"},
+            "bias": "neutral",
+            "confidence": 0.64,
+            "key_findings": ["Primary Jin10 conclusion."],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "summary": "Primary Jin10 report analysis.",
+            "source_refs": [{"source": "jin10_external", "article_id": "218330"}],
+            "status": "partial",
+            "created_at": "2026-07-06T09:30:00+00:00",
+            "evidence_items": [{"factor": "jin10_report", "source_tier": "single_source"}],
+            "data_quality": ["parse_suspect"],
+            "input_payload": {
+                "vlm_reparse_input": {
+                    "article_id": "218330",
+                    "title": "黄金报告图表重识别",
+                    "published_at": "2026-05-06T08:00:00+08:00",
+                    "report_type": "daily",
+                    "image_entries": [
+                        {
+                            "seq": 2,
+                            "file": image_path.name,
+                            "path": str(image_path),
+                            "size_bytes": image_path.stat().st_size,
+                            "sha256": "fixture",
+                            "width": 1,
+                            "height": 1,
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    primary_decision = QualityGateDecision(
+        action=QualityGateAction.FALLBACK,
+        review_status="needs_review",
+        publish_allowed=True,
+        fallback_recommended=True,
+        manual_review_required=True,
+        findings=[
+            {
+                "code": "parse_or_required_field_quality_gap",
+                "severity": "fallback",
+                "message": "Parse gap.",
+                "evidence": {},
+            }
+        ],
+        fallback_actions=["fallback_reparse"],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.64,
+    )
+
+    execution = execute_agent_loop_fallback_tasks(
+        agent_outputs=[primary],
+        primary_quality_gate_decision=primary_decision,
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+
+    assert execution.task_results[0]["task_type"] == "fallback_reparse"
+    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["fallback_output_agent"] == "jin10_vlm_reparse_agent"
+    reparse = execution.fallback_agent_outputs["jin10_vlm_reparse_agent"]
+    assert reparse.agent_name == "jin10_vlm_reparse_agent"
+    assert reparse.module == "agent_loop_fallback_jin10_vlm_reparse"
+    assert reparse.input_payload["parse_status"]["recognition_mode"] == "vlm"
+    assert reparse.input_payload["parse_status"]["pages_total"] == 1
+    assert reparse.input_payload["vlm_reparse_input"]["image_entries"][0]["path"] == str(image_path)
+    assert any(item["factor"] == "jin10_vlm_reparse" for item in reparse.evidence_items)
