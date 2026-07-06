@@ -3,17 +3,9 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-GOLD_V3_MAINLINES = [
-    "fed_policy_path",
-    "real_rates_dollar",
-    "oil_price",
-    "geopolitical_war",
-    "etf_flows",
-    "comex_options_institutional_sentiment",
-    "central_bank_monetary_credit",
-    "china_asia_demand",
-    "gold_technical_phase",
-]
+from apps.gold_mainline_contract import GOLD_MAINLINE_IDS
+
+GOLD_V3_MAINLINES = list(GOLD_MAINLINE_IDS)
 
 GOLD_V3_TRANSMISSION_CHAINS = [
     "rate_chain",
@@ -96,6 +88,9 @@ def build_source_health_prompt_template() -> dict[str, Any]:
             "source_freshness": {},
             "mainline_impact": {},
             "can_build_gold_macro_overview": False,
+            "can_emit_strong_conclusion": False,
+            "blocked_mainlines": [],
+            "degraded_mainlines": [],
             "blocking_reasons": [],
             "warnings": [],
         },
@@ -284,6 +279,28 @@ def build_report_render_prompt_template() -> dict[str, Any]:
             "报告中的推断必须标明证据或条件。",
             "保留 source_refs 和 processing_trace_id。",
         ],
+    )
+
+
+def build_system_evolution_governance_prompt_template() -> dict[str, Any]:
+    return _governance_template(
+        agent_id="system_evolution_agent",
+        system="你是 SystemEvolutionAgent，负责汇总运行质量、复核结果和失败测试，生成系统演进提案。",
+        user="基于最近运行、ReviewGate 结果、SourceHealth、失败测试和 issue blockers，生成只读演进提案，不直接修改生产链路。",
+        checks=[
+            "runtime_quality",
+            "source_health_patterns",
+            "review_gate_findings",
+            "test_failures",
+            "issue_close_blockers",
+        ],
+        output_schema={
+            "review_status": "pass | needs_change | blocked",
+            "evolution_proposals": [],
+            "risk_items": [],
+            "required_followups": [],
+            "source_refs": [],
+        },
     )
 
 
@@ -518,6 +535,18 @@ _GOLD_V3_AGENT_SPECS: list[dict[str, Any]] = [
 
 
 _GOLD_V3_GOVERNANCE_AGENT_SPECS: list[dict[str, Any]] = [
+    {
+        "agent_id": "system_evolution_agent",
+        "name": "SystemEvolutionAgent",
+        "agent_type": "development_governance_agent",
+        "priority": "P1",
+        "description": "汇总运行质量、复核结果和失败测试，生成系统演进提案。",
+        "governance_scope": "运行质量与系统演进治理",
+        "proposal_only": True,
+        "input_sections": ["recent_runs", "review_gate_findings", "source_health", "failed_tests", "issues"],
+        "output_targets": ["SystemEvolutionReview 提案", "Issue close blockers"],
+        "prompt_builder": build_system_evolution_governance_prompt_template,
+    },
     {
         "agent_id": "architecture_agent",
         "name": "ArchitectureAgent",

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from apps.gold_mainline_contract import GOLD_MAINLINE_IDS
+
 GoldRunMode = Literal[
     "premarket_full_run",
     "intraday_event_update",
@@ -15,18 +17,6 @@ GoldRunMode = Literal[
 ]
 
 ReviewStatus = Literal["pass", "needs_review", "blocked"]
-
-_ALL_GOLD_MAINLINES = (
-    "real_rates_dollar",
-    "inflation_growth",
-    "central_bank_gold",
-    "geopolitical_war",
-    "oil_price",
-    "technical_structure",
-    "cme_options_positioning",
-    "etf_flow",
-    "liquidity_credit",
-)
 
 _ALL_GOLD_AGENTS = (
     "source_health_agent",
@@ -62,8 +52,8 @@ class GoldRuntimeModeContract:
             "run_mode": self.run_mode,
             "trigger_mode": self.trigger_mode,
             "default_trigger_reason": self.default_trigger_reason,
-            "agents_executed": list(self.agents_executed),
-            "agents_skipped": list(self.agents_skipped),
+            "planned_agents_executed": list(self.agents_executed),
+            "planned_agents_skipped": list(self.agents_skipped),
             "affected_mainlines": list(self.affected_mainlines),
             "affected_chains": list(self.affected_chains),
             "gold_macro_overview_updated": self.gold_macro_overview_updated,
@@ -71,6 +61,7 @@ class GoldRuntimeModeContract:
             "review_status": self.review_status,
             "warnings": list(self.warnings),
             "scheduler_entrypoint": self.scheduler_entrypoint,
+            "runtime_contract_only": True,
         }
 
 
@@ -81,7 +72,7 @@ _MODE_CONTRACTS: dict[GoldRunMode, GoldRuntimeModeContract] = {
         default_trigger_reason="daily_premarket_refresh",
         agents_executed=_ALL_GOLD_AGENTS,
         agents_skipped=(),
-        affected_mainlines=_ALL_GOLD_MAINLINES,
+        affected_mainlines=GOLD_MAINLINE_IDS,
         affected_chains=(
             "rate_chain",
             "dollar_chain",
@@ -108,7 +99,7 @@ _MODE_CONTRACTS: dict[GoldRunMode, GoldRuntimeModeContract] = {
             "review_gate_agent",
         ),
         agents_skipped=("report_render_agent",),
-        affected_mainlines=("geopolitical_war", "oil_price", "real_rates_dollar", "technical_structure"),
+        affected_mainlines=("geopolitical_war_risk", "oil_prices", "real_rates_usd", "gold_technical_levels"),
         affected_chains=("safe_haven_chain", "war_oil_rate_chain", "rate_chain", "technical_chain"),
         gold_macro_overview_updated=True,
         report_rendered=False,
@@ -129,7 +120,7 @@ _MODE_CONTRACTS: dict[GoldRunMode, GoldRuntimeModeContract] = {
             "review_gate_agent",
         ),
         agents_skipped=("report_render_agent",),
-        affected_mainlines=("geopolitical_war", "oil_price", "real_rates_dollar", "technical_structure"),
+        affected_mainlines=("geopolitical_war_risk", "oil_prices", "real_rates_usd", "gold_technical_levels"),
         affected_chains=("war_oil_rate_chain", "rate_chain", "technical_chain"),
         gold_macro_overview_updated=True,
         report_rendered=False,
@@ -149,7 +140,7 @@ _MODE_CONTRACTS: dict[GoldRunMode, GoldRuntimeModeContract] = {
             "system_evolution_agent",
         ),
         agents_skipped=("event_attribution_agent", "transmission_chain_agent", "driver_decomposition_agent"),
-        affected_mainlines=_ALL_GOLD_MAINLINES,
+        affected_mainlines=GOLD_MAINLINE_IDS,
         affected_chains=("daily_review_chain", "report_lineage_chain", "system_quality_chain"),
         gold_macro_overview_updated=True,
         report_rendered=True,
@@ -180,7 +171,15 @@ _MODE_CONTRACTS: dict[GoldRunMode, GoldRuntimeModeContract] = {
         trigger_mode="prompt_schema_dag_source_or_page_change",
         default_trigger_reason="version_change_validation",
         agents_executed=("schema_agent", "dag_lineage_agent", "test_validation_agent", "review_gate_agent", "system_evolution_agent"),
-        agents_skipped=_ALL_GOLD_AGENTS,
+        agents_skipped=(
+            "source_health_agent",
+            "event_attribution_agent",
+            "transmission_chain_agent",
+            "driver_decomposition_agent",
+            "mainline_ranking_agent",
+            "gold_macro_overview_agent",
+            "report_render_agent",
+        ),
         affected_mainlines=(),
         affected_chains=("schema_contract_chain", "dag_lineage_chain", "frontend_binding_chain"),
         gold_macro_overview_updated=False,
@@ -234,10 +233,11 @@ def build_gold_runtime_summary_preview(
         "trigger_reason": trigger_reason or contract.default_trigger_reason,
         "affected_mainlines": list(contract.affected_mainlines),
         "affected_chains": list(contract.affected_chains),
-        "agents_executed": list(contract.agents_executed),
-        "agents_skipped": list(contract.agents_skipped),
+        "planned_agents_executed": list(contract.agents_executed),
+        "planned_agents_skipped": list(contract.agents_skipped),
         "gold_macro_overview_updated": contract.gold_macro_overview_updated,
         "review_status": contract.review_status,
         "warnings": list(contract.warnings),
+        "runtime_contract_only": True,
         "writes": [],
     }

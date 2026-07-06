@@ -180,9 +180,13 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     summary = json.loads(capsys.readouterr().out)
     assert summary["run_mode"] == "premarket_full_run"
     assert summary["trigger_reason"] == "daily_premarket_refresh"
-    assert "source_health_agent" in summary["agents_executed"]
-    assert "report_render_agent" in summary["agents_executed"]
-    assert "real_rates_dollar" in summary["affected_mainlines"]
+    assert "agents_executed" not in summary
+    assert "agents_skipped" not in summary
+    assert summary["runtime_contract_only"] is True
+    assert "source_health_agent" in summary["planned_agents_executed"]
+    assert "report_render_agent" in summary["planned_agents_executed"]
+    assert "real_rates_usd" in summary["affected_mainlines"]
+    assert "real_rates_dollar" not in summary["affected_mainlines"]
     assert "war_oil_rate_chain" in summary["affected_chains"]
     assert summary["gold_macro_overview_updated"] is True
     assert summary["retrieved_date"] == "2026-06-30"
@@ -321,9 +325,9 @@ def test_run_gold_mainline_pipeline_emits_major_event_runtime_summary(tmp_path: 
     assert summary["run_mode"] == "major_event_reprice"
     assert summary["trigger_reason"] == "hormuz_brent_shock"
     assert "war_oil_rate_chain" in summary["affected_chains"]
-    assert "oil_price" in summary["affected_mainlines"]
-    assert "geopolitical_war" in summary["affected_mainlines"]
-    assert "report_render_agent" in summary["agents_skipped"]
+    assert "oil_prices" in summary["affected_mainlines"]
+    assert "geopolitical_war_risk" in summary["affected_mainlines"]
+    assert "report_render_agent" in summary["planned_agents_skipped"]
     assert summary["review_status"] == "needs_review"
 
 

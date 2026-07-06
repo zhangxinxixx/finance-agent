@@ -1,4 +1,5 @@
 from apps.analysis.agents.registry import get_agent_registry, list_agent_registry, resolve_agent_runtime_meta
+from apps.gold_runtime_orchestration import get_gold_runtime_mode_contracts
 
 
 def test_agent_registry_prioritizes_jin10_and_options_prompts() -> None:
@@ -51,3 +52,12 @@ def test_resolve_agent_runtime_meta_for_jin10_report_agent() -> None:
     assert meta["display_name"] == "金十报告分析"
     assert meta["role"] == "report_agent"
     assert meta["registry_id"] == "jin10_report_analysis_agent"
+
+
+def test_gold_runtime_contract_agent_ids_resolve_in_registry_without_overlap() -> None:
+    for contract in get_gold_runtime_mode_contracts():
+        executed = set(contract.agents_executed)
+        skipped = set(contract.agents_skipped)
+        assert not executed & skipped, contract.run_mode
+        for agent_id in sorted(executed | skipped):
+            assert get_agent_registry(agent_id) is not None, f"{contract.run_mode}: {agent_id}"

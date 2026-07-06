@@ -6,20 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from apps.gold_mainline_contract import GOLD_MAINLINE_IDS
+
 SCHEMA_VERSION = "gold-event-mainlines-v1"
 RULE_VERSION = "gold-event-mainlines-rules-v2"
 
-MAINLINE_ORDER = [
-    "fed_policy_path",
-    "real_rates_usd",
-    "oil_prices",
-    "geopolitical_war_risk",
-    "etf_flows",
-    "institutional_sentiment",
-    "central_bank_gold",
-    "china_asia_demand",
-    "gold_technical_levels",
-]
+MAINLINE_ORDER = list(GOLD_MAINLINE_IDS)
 
 MAINLINE_META: dict[str, dict[str, Any]] = {
     "fed_policy_path": {

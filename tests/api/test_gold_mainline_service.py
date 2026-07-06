@@ -352,7 +352,7 @@ def test_get_gold_mainlines_latest_loads_overview_and_event_mainlines(tmp_path: 
     assert payload["source_refs"] == [{"source": "fed_rss", "source_ref": "fed:test"}]
 
 
-def test_get_gold_mainlines_attaches_source_health_without_overriding_partial(tmp_path: Path) -> None:
+def test_get_gold_mainlines_returns_read_time_source_health_without_overriding_artifact(tmp_path: Path) -> None:
     _write_gold_artifacts(
         tmp_path,
         date="2026-06-12",
@@ -370,16 +370,17 @@ def test_get_gold_mainlines_attaches_source_health_without_overriding_partial(tm
         payload = get_gold_mainlines_latest()
 
     overview = payload["gold_macro_overview"]
-    source_health = overview["source_health"]
+    source_health = payload["read_time_source_health"]
     assert payload["status"] == "partial"
     assert overview["status"] == "partial"
     assert source_health["overall_status"] == "blocked"
     assert source_health["p0_missing"] == ["xauusd_price"]
     assert source_health["can_build_gold_macro_overview"] is False
+    assert overview.get("source_health") is None
     assert "source_health blocked strong GoldMacroOverview conclusion" not in payload["warnings"]
 
 
-def test_get_gold_mainlines_blocks_strong_overview_when_source_health_conflicts(tmp_path: Path) -> None:
+def test_get_gold_mainlines_read_time_source_health_does_not_block_historical_strong_overview(tmp_path: Path) -> None:
     overview_path, _mainlines_path = _write_gold_artifacts(
         tmp_path,
         date="2026-06-13",
@@ -401,11 +402,12 @@ def test_get_gold_mainlines_blocks_strong_overview_when_source_health_conflicts(
         payload = get_gold_mainlines_latest()
 
     overview = payload["gold_macro_overview"]
-    assert payload["status"] == "blocked"
-    assert overview["status"] == "blocked"
-    assert overview["review_status"] == "blocked"
-    assert "P0 source gap conflicts with strong GoldMacroOverview conclusion" in overview["review_blocking_reasons"]
-    assert "source_health blocked strong GoldMacroOverview conclusion" in payload["warnings"]
+    assert payload["status"] == "partial"
+    assert overview["status"] == "partial"
+    assert overview.get("review_status") != "blocked"
+    assert overview.get("review_blocking_reasons") is None
+    assert "P0 source gap conflicts with strong GoldMacroOverview conclusion" in payload["read_time_source_health"]["blocking_reasons"]
+    assert "read_time_source_health would block strong GoldMacroOverview conclusion" in payload["read_time_warnings"]
 
 
 def test_get_gold_mainlines_latest_infers_overview_from_event_mainlines(tmp_path: Path) -> None:

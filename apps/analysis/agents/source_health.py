@@ -207,6 +207,8 @@ MAINLINE_REQUIRED_SOURCES: dict[str, list[str]] = {
     "gold_technical_levels": ["xauusd_price", "technical_levels"],
 }
 
+CORE_RATE_USD_STACK_SOURCE_IDS = ("dxy", "treasury_10y", "tips_10y")
+
 
 @dataclass(frozen=True)
 class SourceFreshness:
@@ -243,6 +245,9 @@ class SourceHealthSnapshot:
     source_freshness: dict[str, SourceFreshness]
     mainline_impact: dict[str, MainlineHealthImpact]
     can_build_gold_macro_overview: bool
+    can_emit_strong_conclusion: bool
+    blocked_mainlines: list[str]
+    degraded_mainlines: list[str]
     blocking_reasons: list[str]
     warnings: list[str] = field(default_factory=list)
 
@@ -258,6 +263,9 @@ class SourceHealthSnapshot:
             "source_freshness": {key: value.to_dict() for key, value in self.source_freshness.items()},
             "mainline_impact": {key: value.to_dict() for key, value in self.mainline_impact.items()},
             "can_build_gold_macro_overview": self.can_build_gold_macro_overview,
+            "can_emit_strong_conclusion": self.can_emit_strong_conclusion,
+            "blocked_mainlines": self.blocked_mainlines,
+            "degraded_mainlines": self.degraded_mainlines,
             "blocking_reasons": self.blocking_reasons,
             "warnings": self.warnings,
         }
@@ -300,17 +308,42 @@ def build_gold_v3_source_health(
         for mainline_id, source_ids in MAINLINE_REQUIRED_SOURCES.items()
     }
 
-    blocking_reasons = [f"P0 source missing: {source_id}" for source_id in p0_missing]
-    blocking_reasons.extend(f"P0 source stale: {source_id}" for source_id in stale_sources if source_id in P0_SOURCE_IDS)
-    blocking_reasons.extend(_strong_conclusion_blockers(gold_macro_overview=gold_macro_overview, p0_missing=p0_missing, stale_sources=stale_sources))
+    blocked_mainlines = [
+        mainline_id
+        for mainline_id, impact in mainline_impact.items()
+        if impact.status == "blocked"
+    ]
+    degraded_mainlines = [
+        mainline_id
+        for mainline_id, impact in mainline_impact.items()
+        if impact.status == "degraded"
+    ]
+    core_unavailable = [
+        source_id
+        for source_id in CORE_RATE_USD_STACK_SOURCE_IDS
+        if source_freshness[source_id].status in {"missing", "stale"}
+    ]
+    blocking_reasons: list[str] = []
+    if source_freshness["xauusd_price"].status in {"missing", "stale"}:
+        blocking_reasons.append("global P0 source unavailable: xauusd_price")
+    if len(core_unavailable) == len(CORE_RATE_USD_STACK_SOURCE_IDS):
+        blocking_reasons.append(f"core rate/USD stack unavailable: {', '.join(core_unavailable)}")
+    blocking_reasons.extend(
+        _strong_conclusion_blockers(
+            gold_macro_overview=gold_macro_overview,
+            has_global_blocker=bool(blocking_reasons),
+        )
+    )
 
-    warnings = [f"P1 source missing: {source_id}" for source_id in p1_missing]
+    warnings = [f"Mainline-scoped P0 source missing: {source_id}" for source_id in p0_missing]
+    warnings.extend(f"Mainline-scoped P0 source stale: {source_id}" for source_id in stale_sources if source_id in P0_SOURCE_IDS)
+    warnings.extend(f"P1 source missing: {source_id}" for source_id in p1_missing)
     warnings.extend(f"P2 source missing: {source_id}" for source_id in p2_missing)
     warnings.extend(f"Non-P0 source stale: {source_id}" for source_id in stale_sources if source_id not in P0_SOURCE_IDS)
 
     if blocking_reasons:
         overall_status = "blocked"
-    elif p1_missing or p2_missing or stale_sources:
+    elif p0_missing or p1_missing or p2_missing or stale_sources:
         overall_status = "degraded"
     else:
         overall_status = "ready"
@@ -326,6 +359,9 @@ def build_gold_v3_source_health(
         source_freshness=source_freshness,
         mainline_impact=mainline_impact,
         can_build_gold_macro_overview=not blocking_reasons,
+        can_emit_strong_conclusion=not blocked_mainlines,
+        blocked_mainlines=blocked_mainlines,
+        degraded_mainlines=degraded_mainlines,
         blocking_reasons=blocking_reasons,
         warnings=warnings,
     )
@@ -412,7 +448,7 @@ def _source_status(source: dict[str, Any]) -> str:
         return "missing"
     if normalized & {"stale", "degraded", "partial", "warn", "cooldown", "manual"}:
         return "stale"
-    if normalized & {"ready", "healthy", "fresh", "ok"}:
+    if normalized & {"ready", "healthy", "fresh", "ok", "success", "available", "enabled", "active", "configured", "connected"}:
         return "ready"
     if source.get("analysis_ready") or source.get("parsed") or source.get("raw_ingested"):
         return "ready"
@@ -488,8 +524,8 @@ def _mainline_health_impact(*, source_ids: list[str], source_freshness: dict[str
     )
 
 
-def _strong_conclusion_blockers(*, gold_macro_overview: Any | None, p0_missing: list[str], stale_sources: list[str]) -> list[str]:
-    if not gold_macro_overview or not (p0_missing or any(source_id in P0_SOURCE_IDS for source_id in stale_sources)):
+def _strong_conclusion_blockers(*, gold_macro_overview: Any | None, has_global_blocker: bool) -> list[str]:
+    if not gold_macro_overview or not has_global_blocker:
         return []
     overview = gold_macro_overview.to_dict() if hasattr(gold_macro_overview, "to_dict") else dict(gold_macro_overview)
     strong_values = {"strong_uptrend", "strong_bullish", "strong_downtrend", "strong_bearish"}

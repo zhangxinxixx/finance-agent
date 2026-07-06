@@ -44,7 +44,7 @@ def test_gold_v3_source_health_allows_build_with_p0_ready_and_degraded_p1_p2() -
     assert snapshot["mainline_impact"]["fed_policy_path"]["status"] == "degraded"
 
 
-def test_gold_v3_source_health_blocks_mainlines_when_p0_sources_missing() -> None:
+def test_gold_v3_source_health_blocks_impacted_mainlines_when_p0_sources_missing() -> None:
     sources = [
         source
         for source in _p0_sources()
@@ -53,12 +53,69 @@ def test_gold_v3_source_health_blocks_mainlines_when_p0_sources_missing() -> Non
 
     snapshot = build_gold_v3_source_health(sources, as_of=AS_OF).to_dict()
 
-    assert snapshot["overall_status"] == "blocked"
-    assert snapshot["can_build_gold_macro_overview"] is False
+    assert snapshot["overall_status"] == "degraded"
+    assert snapshot["can_build_gold_macro_overview"] is True
+    assert snapshot["can_emit_strong_conclusion"] is False
     assert snapshot["p0_missing"] == ["dxy", "tips_10y", "brent_wti"]
     assert snapshot["mainline_impact"]["real_rates_usd"]["status"] == "blocked"
     assert snapshot["mainline_impact"]["oil_prices"]["status"] == "blocked"
-    assert "P0 source missing: dxy" in snapshot["blocking_reasons"]
+    assert "real_rates_usd" in snapshot["blocked_mainlines"]
+    assert "oil_prices" in snapshot["blocked_mainlines"]
+    assert snapshot["blocking_reasons"] == []
+
+
+def test_gold_v3_source_health_keeps_overview_buildable_when_p0_gap_is_mainline_scoped() -> None:
+    sources = [source for source in _p0_sources() if source["source_key"] != "brent_wti"]
+
+    snapshot = build_gold_v3_source_health(sources, as_of=AS_OF).to_dict()
+
+    assert snapshot["overall_status"] == "degraded"
+    assert snapshot["can_build_gold_macro_overview"] is True
+    assert snapshot["can_emit_strong_conclusion"] is False
+    assert "oil_prices" in snapshot["blocked_mainlines"]
+    assert "geopolitical_war_risk" in snapshot["blocked_mainlines"]
+    assert "P0 source missing: brent_wti" not in snapshot["blocking_reasons"]
+
+
+def test_gold_v3_source_health_globally_blocks_when_core_rate_stack_is_unavailable() -> None:
+    sources = [
+        source
+        for source in _p0_sources()
+        if source["source_key"] not in {"dxy", "treasury_10y", "tips_10y"}
+    ]
+
+    snapshot = build_gold_v3_source_health(sources, as_of=AS_OF).to_dict()
+
+    assert snapshot["overall_status"] == "blocked"
+    assert snapshot["can_build_gold_macro_overview"] is False
+    assert "core rate/USD stack unavailable: dxy, treasury_10y, tips_10y" in snapshot["blocking_reasons"]
+
+
+def test_gold_v3_source_health_treats_available_success_enabled_as_ready() -> None:
+    sources = [
+        _source("xauusd_price", status="available"),
+        {
+            **_source("dxy"),
+            "status": None,
+            "health_state": "success",
+            "readiness_state": None,
+        },
+        {
+            **_source("treasury_2y"),
+            "status": None,
+            "health_state": None,
+            "readiness_state": "enabled",
+        },
+    ]
+
+    snapshot = build_gold_v3_source_health(sources, as_of=AS_OF).to_dict()
+
+    assert snapshot["source_freshness"]["xauusd_price"]["status"] == "fresh"
+    assert snapshot["source_freshness"]["dxy"]["status"] == "fresh"
+    assert snapshot["source_freshness"]["treasury_2y"]["status"] == "fresh"
+    assert "xauusd_price" not in snapshot["p0_missing"]
+    assert "dxy" not in snapshot["p0_missing"]
+    assert "treasury_2y" not in snapshot["p0_missing"]
 
 
 def test_gold_v3_source_health_blocks_strong_overview_when_p0_missing() -> None:

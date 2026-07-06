@@ -510,6 +510,9 @@ def _source_health(*, overview: dict[str, Any]) -> dict[str, Any]:
             "source_freshness": {},
             "mainline_impact": {},
             "can_build_gold_macro_overview": True,
+            "can_emit_strong_conclusion": True,
+            "blocked_mainlines": [],
+            "degraded_mainlines": [],
             "blocking_reasons": [],
             "warnings": [f"source_health_unavailable: {exc.__class__.__name__}"],
         }
