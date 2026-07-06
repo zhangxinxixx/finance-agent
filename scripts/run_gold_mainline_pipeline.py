@@ -411,6 +411,31 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _persist_context_payload(*, storage_root: Path, rel_path: Path, kind: str, payload: dict[str, Any]) -> str:
+    payload["artifact_path"] = rel_path.as_posix()
+    _validate_context_payload(kind=kind, payload=payload)
+    target = storage_root / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return rel_path.as_posix()
+
+
+def _validate_context_payload(*, kind: str, payload: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    source_refs = payload.get("source_refs")
+    if not isinstance(source_refs, list) or not any(isinstance(item, dict) for item in source_refs):
+        missing.append("source_refs")
+    for field in ["provider_role", "verification_status", "as_of", "artifact_path"]:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            missing.append(field)
+    warnings = [str(item) for item in payload.get("warnings") or [] if str(item).strip()]
+    warnings.extend(f"{kind}_context_missing_{field}" for field in missing)
+    if warnings:
+        payload["warnings"] = sorted(set(warnings))
+    return missing
+
+
 def _resolve_macro_context(*, storage_root: Path, source_date: str, macro_date: str | None, macro_run_id: str | None) -> tuple[dict[str, Any], str | None]:
     if bool(macro_date) != bool(macro_run_id) and macro_run_id:
         raise ValueError("--macro-date must be provided when --macro-run-id is provided.")
@@ -460,10 +485,7 @@ def _resolve_market_context(
 
 def _persist_market_context(*, storage_root: Path, retrieved_date: str, run_id: str, payload: dict[str, Any]) -> str:
     rel_path = Path("analysis") / "gold_mainlines" / retrieved_date / run_id / "market_context.json"
-    target = storage_root / rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return rel_path.as_posix()
+    return _persist_context_payload(storage_root=storage_root, rel_path=rel_path, kind="market", payload=payload)
 
 
 def _resolve_oil_context(
@@ -477,10 +499,7 @@ def _resolve_oil_context(
         return {}, None
     payload = _read_json(Path(value))
     rel_path = Path("analysis") / "gold_mainlines" / retrieved_date / run_id / "oil_context.json"
-    target = storage_root / rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return payload, rel_path.as_posix()
+    return payload, _persist_context_payload(storage_root=storage_root, rel_path=rel_path, kind="oil", payload=payload)
 
 
 def _resolve_flow_context(
@@ -497,10 +516,7 @@ def _resolve_flow_context(
     if not payload:
         return {}, None
     rel_path = Path("analysis") / "gold_mainlines" / retrieved_date / run_id / "flow_context.json"
-    target = storage_root / rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return payload, rel_path.as_posix()
+    return payload, _persist_context_payload(storage_root=storage_root, rel_path=rel_path, kind="flow", payload=payload)
 
 
 def _latest_jin10_gold_etf_flow_context(*, storage_root: Path, source_date: str) -> dict[str, Any]:
@@ -595,10 +611,7 @@ def _resolve_reserve_context(
     if not payload:
         return {}, None
     rel_path = Path("analysis") / "gold_mainlines" / retrieved_date / run_id / "reserve_context.json"
-    target = storage_root / rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return payload, rel_path.as_posix()
+    return payload, _persist_context_payload(storage_root=storage_root, rel_path=rel_path, kind="reserve", payload=payload)
 
 
 def _resolve_asia_context(
@@ -614,10 +627,7 @@ def _resolve_asia_context(
     if not payload:
         return {}, None
     rel_path = Path("analysis") / "gold_mainlines" / retrieved_date / run_id / "asia_context.json"
-    target = storage_root / rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return payload, rel_path.as_posix()
+    return payload, _persist_context_payload(storage_root=storage_root, rel_path=rel_path, kind="asia", payload=payload)
 
 
 def _news_reserve_context(*, events: list[dict[str, Any]], impacts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -707,10 +717,7 @@ def _resolve_positioning_context(
     if not payload:
         return {}, None
     rel_path = Path("analysis") / "gold_mainlines" / retrieved_date / run_id / "positioning_context.json"
-    target = storage_root / rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return payload, rel_path.as_posix()
+    return payload, _persist_context_payload(storage_root=storage_root, rel_path=rel_path, kind="positioning", payload=payload)
 
 
 def _merge_positioning_contexts(*contexts: dict[str, Any]) -> dict[str, Any]:
@@ -1009,10 +1016,7 @@ def _resolve_policy_context(
     if not payload:
         return {}, None
     rel_path = Path("analysis") / "gold_mainlines" / retrieved_date / run_id / "policy_context.json"
-    target = storage_root / rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return payload, rel_path.as_posix()
+    return payload, _persist_context_payload(storage_root=storage_root, rel_path=rel_path, kind="policy", payload=payload)
 
 
 def _macro_policy_context(*, macro_context: dict[str, Any], macro_snapshot_path: str | None) -> dict[str, Any]:
@@ -1115,10 +1119,7 @@ def _resolve_geopolitical_context(
     if not payload:
         return {}, None
     rel_path = Path("analysis") / "gold_mainlines" / retrieved_date / run_id / "geopolitical_context.json"
-    target = storage_root / rel_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return payload, rel_path.as_posix()
+    return payload, _persist_context_payload(storage_root=storage_root, rel_path=rel_path, kind="geopolitical", payload=payload)
 
 
 def _news_geopolitical_context(*, events: list[dict[str, Any]], impacts: list[dict[str, Any]]) -> dict[str, Any]:

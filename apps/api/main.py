@@ -182,8 +182,10 @@ def _run_premarket_scheduled() -> None:
 
 
 def _should_skip_background_jobs() -> bool:
-    """Keep FastAPI startup deterministic in pytest and explicitly disabled envs."""
+    """Keep FastAPI startup deterministic; API background refresh is opt-in."""
     if os.getenv("FINANCE_AGENT_DISABLE_BACKGROUND_JOBS") == "1":
+        return True
+    if os.getenv("FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH") != "1":
         return True
     if os.getenv("PYTEST_CURRENT_TEST"):
         return True

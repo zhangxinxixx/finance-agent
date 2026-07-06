@@ -87,6 +87,20 @@ def _write_news_artifacts(root: Path, *, date: str, run_id: str, events: list[di
     )
 
 
+def test_context_payload_validator_adds_lineage_warnings() -> None:
+    payload = {"gold_spot_price": 4115.0, "artifact_path": "analysis/gold_mainlines/run/market_context.json"}
+
+    missing = run_gold_mainline_pipeline._validate_context_payload(kind="market", payload=payload)
+
+    assert missing == ["source_refs", "provider_role", "verification_status", "as_of"]
+    assert payload["warnings"] == [
+        "market_context_missing_as_of",
+        "market_context_missing_provider_role",
+        "market_context_missing_source_refs",
+        "market_context_missing_verification_status",
+    ]
+
+
 def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: Path, capsys) -> None:
     _write_input_artifacts(tmp_path, date="2026-06-30", run_id="source-run")
     macro_dir = tmp_path / "features" / "macro" / "2026-06-30" / "macro-run"
@@ -617,6 +631,8 @@ def test_run_gold_mainline_pipeline_auto_loads_jin10_gold_etf_flow_context(tmp_p
     assert flow_context["global_etf_flow"] == 5.7
     assert flow_context["north_america_etf_flow"] is None
     assert flow_context["asia_etf_flow"] is None
+    assert flow_context["artifact_path"] == expected_flow_context_path
+    assert "warnings" not in flow_context
     assert flow_context["source_refs"][0]["source"] == "jin10_datacenter"
     assert flow_context["source_refs"][0]["parsed_path"] == "parsed/jin10/datacenter/2026-06-30/dc_etf_gold/parsed.json"
     assert flow_context["source_refs"][0]["source_tier"] == "supplemental"

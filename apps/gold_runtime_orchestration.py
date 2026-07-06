@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from apps.gold_mainline_contract import GOLD_MAINLINE_IDS
+from apps.gold_mainline_contract import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
 
 GoldRunMode = Literal[
     "premarket_full_run",
@@ -73,14 +73,7 @@ _MODE_CONTRACTS: dict[GoldRunMode, GoldRuntimeModeContract] = {
         agents_executed=_ALL_GOLD_AGENTS,
         agents_skipped=(),
         affected_mainlines=GOLD_MAINLINE_IDS,
-        affected_chains=(
-            "rate_chain",
-            "dollar_chain",
-            "safe_haven_chain",
-            "war_oil_rate_chain",
-            "technical_chain",
-            "options_positioning_chain",
-        ),
+        affected_chains=GOLD_TRANSMISSION_CHAIN_IDS,
         gold_macro_overview_updated=True,
         report_rendered=True,
         review_status="needs_review",

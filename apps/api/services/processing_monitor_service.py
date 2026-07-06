@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
-from apps.api.services.source_service import get_data_source_statuses
-from apps.analysis.agents.source_health import build_gold_v3_source_health
+from apps.gold_mainline_contract import (
+    GOLD_MAINLINE_IDS,
+    GOLD_TRANSMISSION_CHAIN_IDS,
+    normalize_gold_mainline_id,
+    normalize_gold_transmission_chain_id,
+)
 
 TRACE_MODES = [
     "source_ref",
@@ -18,62 +23,8 @@ TRACE_MODES = [
     "transmission_chain",
 ]
 
-MAINLINE_ALIASES = {
-    "fed_policy_path": "fed_policy_path",
-    "real_rates_usd": "real_rates_dollar",
-    "real_rates_dollar": "real_rates_dollar",
-    "oil_prices": "oil_price",
-    "oil_price": "oil_price",
-    "geopolitical_war_risk": "geopolitical_war",
-    "geopolitical_war": "geopolitical_war",
-    "etf_flows": "etf_flows",
-    "institutional_sentiment": "comex_options_institutional_sentiment",
-    "comex_options_institutional_sentiment": "comex_options_institutional_sentiment",
-    "central_bank_gold": "central_bank_monetary_credit",
-    "central_bank_monetary_credit": "central_bank_monetary_credit",
-    "china_asia_demand": "china_asia_demand",
-    "gold_technical_levels": "gold_technical_phase",
-    "gold_technical_phase": "gold_technical_phase",
-}
-
-MAINLINES = [
-    "fed_policy_path",
-    "real_rates_dollar",
-    "oil_price",
-    "geopolitical_war",
-    "etf_flows",
-    "comex_options_institutional_sentiment",
-    "central_bank_monetary_credit",
-    "china_asia_demand",
-    "gold_technical_phase",
-]
-
-TRANSMISSION_CHAINS = [
-    "rate_chain",
-    "dollar_chain",
-    "war_oil_rate_chain",
-    "safe_haven_chain",
-    "flow_chain",
-    "reserve_chain",
-    "asia_demand_chain",
-    "technical_chain",
-]
-
-TRANSMISSION_CHAIN_ALIASES = {
-    "rate_chain": "rate_chain",
-    "rates_chain": "rate_chain",
-    "dollar_chain": "dollar_chain",
-    "usd_chain": "dollar_chain",
-    "war_oil_rate_chain": "war_oil_rate_chain",
-    "geopolitics_to_oil_to_rates": "war_oil_rate_chain",
-    "geopolitical_oil_rate_chain": "war_oil_rate_chain",
-    "safe_haven_chain": "safe_haven_chain",
-    "haven_bid": "safe_haven_chain",
-    "flow_chain": "flow_chain",
-    "reserve_chain": "reserve_chain",
-    "asia_demand_chain": "asia_demand_chain",
-    "technical_chain": "technical_chain",
-}
+MAINLINES = list(GOLD_MAINLINE_IDS)
+TRANSMISSION_CHAINS = list(GOLD_TRANSMISSION_CHAIN_IDS)
 
 TRACE_PATH = [
     {"node_id": "source_health_check", "label": "Source Health", "stage": "health"},
@@ -102,7 +53,8 @@ def get_processing_overview(*, project_root: Path | None = None) -> dict[str, An
     event_links = context["event_links"]
     source_refs = context["source_refs"]
     artifact_refs = context["artifact_refs"]
-    source_health = _source_health(overview=overview)
+    source_health = _artifact_source_health(overview=overview)
+    read_time_source_health = _dict(gold_payload.get("read_time_source_health"))
 
     return {
         "status": str(gold_payload.get("status") or "unavailable"),
@@ -129,6 +81,9 @@ def get_processing_overview(*, project_root: Path | None = None) -> dict[str, An
         "mixed_health": _mixed_health(overview=overview),
         "source_freshness": _source_freshness(source_health=source_health),
         "source_health": source_health,
+        "read_time_source_health": read_time_source_health,
+        "read_time_warnings": list(gold_payload.get("read_time_warnings") or []),
+        "read_time_generated_at": gold_payload.get("read_time_generated_at") or datetime.now(timezone.utc).isoformat(),
         "view_bindings": _view_bindings(gold_payload=gold_payload, overview=overview, event_links=event_links, source_refs=source_refs),
         "source_refs": source_refs,
         "artifact_refs": artifact_refs,
@@ -234,7 +189,8 @@ def _find_event_link(
 def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, query: dict[str, str]) -> dict[str, Any]:
     gold_payload = context["gold_payload"]
     overview = context["overview"]
-    source_health = _source_health(overview=overview)
+    source_health = _artifact_source_health(overview=overview)
+    read_time_source_health = _dict(gold_payload.get("read_time_source_health"))
     if event is None:
         return {
             "status": "not_found",
@@ -250,6 +206,10 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
                 artifact_refs=context["artifact_refs"],
                 source_health=source_health,
             ),
+            "source_health": source_health,
+            "read_time_source_health": read_time_source_health,
+            "read_time_warnings": list(gold_payload.get("read_time_warnings") or []),
+            "read_time_generated_at": gold_payload.get("read_time_generated_at") or datetime.now(timezone.utc).isoformat(),
             "source_refs": [],
             "artifact_refs": context["artifact_refs"],
             "view_bindings": _view_bindings(gold_payload=gold_payload, overview=overview, event_links=[], source_refs=[]),
@@ -285,6 +245,10 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
             artifact_refs=context["artifact_refs"],
             source_health=source_health,
         ),
+        "source_health": source_health,
+        "read_time_source_health": read_time_source_health,
+        "read_time_warnings": list(gold_payload.get("read_time_warnings") or []),
+        "read_time_generated_at": gold_payload.get("read_time_generated_at") or datetime.now(timezone.utc).isoformat(),
         "source_refs": event_source_refs,
         "artifact_refs": context["artifact_refs"],
         "view_bindings": _view_bindings(gold_payload=gold_payload, overview=overview, event_links=[event], source_refs=event_source_refs),
@@ -490,32 +454,27 @@ def _mixed_health(*, overview: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _source_health(*, overview: dict[str, Any]) -> dict[str, Any]:
-    try:
-        snapshot = build_gold_v3_source_health(
-            get_data_source_statuses(),
-            as_of=str(overview.get("as_of") or "") or None,
-            gold_macro_overview=overview,
-        )
-        return snapshot.to_dict()
-    except Exception as exc:
-        return {
-            "overall_status": "degraded",
-            "as_of": str(overview.get("as_of") or "") or None,
-            "p0_missing": [],
-            "p1_missing": [],
-            "p2_missing": [],
-            "stale_sources": [],
-            "fresh_sources": [],
-            "source_freshness": {},
-            "mainline_impact": {},
-            "can_build_gold_macro_overview": True,
-            "can_emit_strong_conclusion": True,
-            "blocked_mainlines": [],
-            "degraded_mainlines": [],
-            "blocking_reasons": [],
-            "warnings": [f"source_health_unavailable: {exc.__class__.__name__}"],
-        }
+def _artifact_source_health(*, overview: dict[str, Any]) -> dict[str, Any]:
+    source_health = overview.get("source_health")
+    if isinstance(source_health, dict):
+        return dict(source_health)
+    return {
+        "overall_status": "unavailable",
+        "as_of": str(overview.get("as_of") or "") or None,
+        "p0_missing": [],
+        "p1_missing": [],
+        "p2_missing": [],
+        "stale_sources": [],
+        "fresh_sources": [],
+        "source_freshness": {},
+        "mainline_impact": {},
+        "can_build_gold_macro_overview": True,
+        "can_emit_strong_conclusion": True,
+        "blocked_mainlines": [],
+        "degraded_mainlines": [],
+        "blocking_reasons": [],
+        "warnings": ["artifact source_health unavailable; read_time_source_health is exposed separately"],
+    }
 
 
 def _coverage_from_source_health(source_health: dict[str, Any]) -> str:
@@ -568,11 +527,12 @@ def _coverage_from_status(row: dict[str, Any]) -> str:
 def _canonical_mainline(value: Any) -> str | None:
     if value is None:
         return None
-    return MAINLINE_ALIASES.get(str(value), str(value))
+    normalized = normalize_gold_mainline_id(value)
+    return normalized or None
 
 
 def _canonical_transmission_chain(value: Any) -> str:
-    return TRANSMISSION_CHAIN_ALIASES.get(str(value), str(value))
+    return normalize_gold_transmission_chain_id(value)
 
 
 def _raw_overview_mainlines(*, root: Path, artifact_path: Any) -> set[str]:

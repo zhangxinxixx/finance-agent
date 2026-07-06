@@ -151,9 +151,10 @@ def coordinate_agent_outputs(
         bias = AgentBias.UNAVAILABLE
 
     confidence = _confidence(prior_outputs, status, unavailable_modules, risk_points, invalid_conditions)
+    evidence_items = _confidence_evidence_items(snapshot, prior_outputs)
     confidence_kernel = compute_confidence_kernel(
         market_state=snapshot,
-        evidence_items=_confidence_evidence_items(snapshot, prior_outputs),
+        evidence_items=evidence_items,
         agent_outputs=prior_outputs,
     )
     if risk is not None:
@@ -187,6 +188,7 @@ def coordinate_agent_outputs(
         status=status,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
+        evidence_items=evidence_items,
         input_payload={"confidence_kernel": confidence_kernel.model_dump(mode="json")},
     )
 
@@ -236,10 +238,20 @@ def _source_refs(snapshot: dict[str, Any], outputs: list[AgentOutput]) -> list[d
 
 def _confidence_evidence_items(snapshot: dict[str, Any], outputs: list[AgentOutput]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    for output in outputs:
+        for item in output.evidence_items:
+            if isinstance(item, dict):
+                enriched = dict(item)
+                enriched.setdefault("agent", output.agent_name)
+                enriched.setdefault("module", output.module)
+                enriched.setdefault("direction", output.bias.value)
+                enriched.setdefault("confidence", output.confidence)
+                items.append(enriched)
     for ref in _source_refs(snapshot, outputs):
         item = dict(ref)
         item.setdefault("source_type", item.get("source") or item.get("type") or "structured")
         item.setdefault("status", item.get("verification_status") or item.get("status") or "confirmed")
+        item.setdefault("factor", item.get("source_type"))
         items.append(item)
     return items
 

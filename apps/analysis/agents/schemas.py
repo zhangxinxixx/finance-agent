@@ -71,6 +71,13 @@ class AgentOutput(BaseModel):
         default_factory=list,
         description="Evidence references pointing to source data supporting this conclusion",
     )
+    evidence_items: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Structured evidence factors used by confidence, quality gates, and source trace. "
+            "Each item may include factor, direction, strength, confidence, freshness, source_tier, and invalidation_hint."
+        ),
+    )
     data_quality: list[str] = Field(
         default_factory=list,
         description="Data quality tags: stale_data, proxy_gex, prelim_data, etc.",

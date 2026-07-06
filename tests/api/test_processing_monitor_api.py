@@ -49,7 +49,7 @@ def _gold_v3_source_status_payload() -> dict[str, list[dict[str, object]]]:
 
 def _patch_source_statuses():
     return mock.patch(
-        "apps.api.services.processing_monitor_service.get_data_source_statuses",
+        "apps.api.services.gold_mainline_service.get_data_source_statuses",
         return_value=_gold_v3_source_status_payload(),
     )
 
@@ -152,6 +152,23 @@ def _write_gold_processing_artifacts(root: Path) -> None:
                         "status": "pending",
                     }
                 ],
+                "source_health": {
+                    "overall_status": "ready",
+                    "as_of": "2026-06-25T12:00:00+00:00",
+                    "p0_missing": [],
+                    "p1_missing": [],
+                    "p2_missing": [],
+                    "stale_sources": [],
+                    "fresh_sources": ["xauusd_price"],
+                    "source_freshness": {},
+                    "mainline_impact": {},
+                    "can_build_gold_macro_overview": True,
+                    "can_emit_strong_conclusion": True,
+                    "blocked_mainlines": [],
+                    "degraded_mainlines": [],
+                    "blocking_reasons": [],
+                    "warnings": [],
+                },
                 "source_refs": source_refs,
                 "artifact_refs": [{"artifact_type": "json", "file_path": "analysis/gold_mainlines/overview.json"}],
             },
@@ -186,7 +203,7 @@ def test_get_processing_overview_derives_monitoring_read_model(tmp_path: Path) -
     mainline_status = {item["mainline_id"]: item["status"] for item in payload["mainline_coverage"]}
     assert len(mainline_status) == 9
     assert mainline_status["fed_policy_path"] == "covered"
-    assert mainline_status["oil_price"] == "covered"
+    assert mainline_status["oil_prices"] == "covered"
     assert mainline_status["etf_flows"] == "degraded"
     assert mainline_status["china_asia_demand"] == "missing"
 
@@ -205,11 +222,13 @@ def test_get_processing_overview_derives_monitoring_read_model(tmp_path: Path) -
     assert bindings["GoldMainlinesPage"] == "bound"
     assert bindings["OilGeopoliticsPage"] == "bound"
     assert bindings["SourceTrace"] == "bound"
-    assert payload["source_health"]["overall_status"] == "degraded"
+    assert payload["source_health"]["overall_status"] == "ready"
     assert payload["source_health"]["can_build_gold_macro_overview"] is True
-    assert "fedwatch_ois" in payload["source_health"]["p1_missing"]
+    assert payload["read_time_source_health"]["overall_status"] == "degraded"
+    assert "fedwatch_ois" in payload["read_time_source_health"]["p1_missing"]
+    assert payload["read_time_generated_at"]
     assert payload["trace_path"][0]["node_id"] == "source_health_check"
-    assert payload["trace_path"][0]["status"] == "degraded"
+    assert payload["trace_path"][0]["status"] == "covered"
     assert payload["trace_path"][1]["node_id"] == "jin10_message_raw"
     assert payload["trace_path"][1]["status"] == "covered"
     assert payload["trace_path"][1]["source_ref_count"] == 1
@@ -248,12 +267,12 @@ def test_processing_trace_lookup_by_trace_event_and_source_ref(tmp_path: Path) -
         assert payload["run_id"] == "run-processing"
         assert payload["query"]["processing_trace_id"] == "trace:oil"
         assert payload["matched_event"]["event_id"] == "event:oil"
-        assert payload["matched_event"]["primary_mainline"] == "oil_price"
-        assert payload["mainlines"] == ["oil_price", "geopolitical_war"]
+        assert payload["matched_event"]["primary_mainline"] == "oil_prices"
+        assert payload["mainlines"] == ["oil_prices", "geopolitical_war_risk"]
         assert payload["transmission_chains"] == ["war_oil_rate_chain", "safe_haven_chain"]
         assert payload["source_refs"] == [{"source": "jin10_flash", "source_ref": "jin10:flash:001"}]
         assert payload["trace_path"][0]["node_id"] == "source_health_check"
-        assert payload["trace_path"][0]["status"] == "degraded"
+        assert payload["trace_path"][0]["status"] == "covered"
         assert payload["trace_path"][1]["node_id"] == "jin10_message_raw"
         assert payload["trace_path"][1]["status"] == "covered"
         assert payload["trace_path"][1]["source_ref_count"] == 1
@@ -294,7 +313,7 @@ def test_processing_trace_lookup_by_input_mainline_and_chain(tmp_path: Path) -> 
         assert payload["matched_event"]["event_id"] == "event:oil"
         assert payload["matched_event"]["input_id"] == "input:oil"
         assert payload["query"]["processing_trace_id"] == "trace:oil"
-        assert "geopolitical_war" in payload["mainlines"]
+        assert "geopolitical_war_risk" in payload["mainlines"]
         assert payload["transmission_chains"] == ["war_oil_rate_chain", "safe_haven_chain"]
 
 

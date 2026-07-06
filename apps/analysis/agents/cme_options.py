@@ -176,6 +176,7 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
         status=status,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
+        evidence_items=_options_evidence_items(options=options, bias=bias, confidence=confidence, source_refs=source_refs),
     )
 
 
@@ -191,6 +192,68 @@ def _input_snapshot_ids(snapshot: dict[str, Any]) -> dict[str, Any]:
 def _source_refs(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     refs = snapshot.get("source_refs")
     return [dict(item) for item in refs if isinstance(item, dict)] if isinstance(refs, list) else []
+
+
+def _options_evidence_items(
+    *,
+    options: dict[str, Any],
+    bias: AgentBias,
+    confidence: float,
+    source_refs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    source_tier = "exchange" if str(_source_status(options) or "").upper() == "FINAL" else "exchange_prelim"
+    base = {
+        "agent": _AGENT_NAME,
+        "module": _MODULE,
+        "source_tier": source_tier,
+        "confidence": confidence,
+        "source_refs": [dict(ref) for ref in source_refs],
+    }
+    items: list[dict[str, Any]] = []
+    intent = _dict(options.get("intent"))
+    intent_score = _to_float(intent.get("score"))
+    if intent_score is not None or intent.get("type"):
+        items.append(
+            {
+                **base,
+                "factor": "options_intent",
+                "direction": _bias_from_score(intent_score or 0.0).value,
+                "strength": min(abs(intent_score or 0.0), 1.0),
+                "freshness": 1.0,
+                "invalidation_hint": "Intent score changes sign or source status is not FINAL.",
+            }
+        )
+    wall_scores = _list_of_dicts(options.get("wall_scores"))
+    if wall_scores:
+        top_wall = wall_scores[0]
+        wall_score = _to_float(top_wall.get("wall_score"))
+        direction_score = _direction_from_wall(top_wall) * (wall_score or 0.5)
+        items.append(
+            {
+                **base,
+                "factor": "option_wall",
+                "direction": _bias_from_score(direction_score).value,
+                "strength": min(abs(wall_score or 0.5), 1.0),
+                "freshness": 1.0,
+                "strike_or_level": top_wall.get("strike") or top_wall.get("price") or top_wall.get("level"),
+                "invalidation_hint": "Top wall migrates, loses OI support, or volume confirms the opposite side.",
+            }
+        )
+    gamma_zero = _dict(_dict(_dict(_dict(options.get("gex")).get("netgex_aggregate")).get("gamma_zero")))
+    gamma_zero_price = _to_float(gamma_zero.get("price") or gamma_zero.get("level"))
+    if gamma_zero_price is not None:
+        items.append(
+            {
+                **base,
+                "factor": "gamma_positioning",
+                "direction": bias.value,
+                "strength": confidence,
+                "freshness": 1.0,
+                "strike_or_level": gamma_zero_price,
+                "invalidation_hint": "Price crosses gamma zero or net GEX regime flips.",
+            }
+        )
+    return items
 
 
 def _add_support_resistance(

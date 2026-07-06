@@ -120,10 +120,20 @@ def test_conflicting_macro_options_exposes_conflict_and_caps_confidence():
 
 
 def test_coordinator_attaches_confidence_kernel_debug_payload():
+    options = _options(AgentBias.BEARISH, 0.80)
+    options.evidence_items.append(
+        {
+            "factor": "option_wall",
+            "direction": "bearish",
+            "strength": 0.7,
+            "confidence": 0.8,
+            "source_tier": "exchange",
+        }
+    )
     output = coordinate_agent_outputs(
         _snapshot(unavailable_modules=["technical"]),
         macro_output=_macro(AgentBias.BULLISH, 0.82),
-        options_output=_options(AgentBias.BEARISH, 0.80),
+        options_output=options,
         risk_output=_risk(AgentBias.MIXED, 0.62),
         created_at=_CREATED_AT,
     )
@@ -134,6 +144,7 @@ def test_coordinator_attaches_confidence_kernel_debug_payload():
     assert kernel["overall"] <= 0.55
     assert "macro_options_conflict" in kernel["caps"]
     assert "technical_unavailable" in kernel["caps"]
+    assert any(item.get("factor") == "option_wall" for item in output.evidence_items)
 
 
 def test_missing_risk_output_returns_partial_without_exception():

@@ -14,6 +14,28 @@ GOLD_MAINLINE_IDS = (
     "gold_technical_levels",
 )
 
+GOLD_TRANSMISSION_CHAIN_IDS = (
+    "rate_chain",
+    "dollar_chain",
+    "war_oil_rate_chain",
+    "safe_haven_chain",
+    "flow_chain",
+    "reserve_chain",
+    "asia_demand_chain",
+    "technical_chain",
+)
+
+GOLD_TRANSMISSION_PATH_IDS = (
+    "inflation_to_real_rates",
+    "usd_pressure",
+    "geopolitics_to_oil_to_rates",
+    "haven_bid",
+    "capital_confirmation",
+    "reserve_reallocation",
+    "asia_demand",
+    "technical_confirmation",
+)
+
 MAINLINE_ALIAS_MAP = {
     "real_rates_dollar": "real_rates_usd",
     "oil_price": "oil_prices",
@@ -28,7 +50,34 @@ MAINLINE_ALIAS_MAP = {
     "gold_technical_phase": "gold_technical_levels",
 }
 
+TRANSMISSION_CHAIN_ALIAS_MAP = {
+    "rate_chain": "rate_chain",
+    "rates_chain": "rate_chain",
+    "inflation_to_real_rates": "rate_chain",
+    "dollar_chain": "dollar_chain",
+    "usd_chain": "dollar_chain",
+    "usd_pressure": "dollar_chain",
+    "war_oil_rate_chain": "war_oil_rate_chain",
+    "geopolitics_to_oil_to_rates": "war_oil_rate_chain",
+    "geopolitical_oil_rate_chain": "war_oil_rate_chain",
+    "safe_haven_chain": "safe_haven_chain",
+    "haven_bid": "safe_haven_chain",
+    "flow_chain": "flow_chain",
+    "capital_confirmation": "flow_chain",
+    "reserve_chain": "reserve_chain",
+    "reserve_reallocation": "reserve_chain",
+    "asia_demand_chain": "asia_demand_chain",
+    "asia_demand": "asia_demand_chain",
+    "technical_chain": "technical_chain",
+    "technical_confirmation": "technical_chain",
+}
+
 
 def normalize_gold_mainline_id(value: object) -> str:
     mainline_id = str(value or "").strip()
     return MAINLINE_ALIAS_MAP.get(mainline_id, mainline_id)
+
+
+def normalize_gold_transmission_chain_id(value: object) -> str:
+    chain_id = str(value or "").strip()
+    return TRANSMISSION_CHAIN_ALIAS_MAP.get(chain_id, chain_id)

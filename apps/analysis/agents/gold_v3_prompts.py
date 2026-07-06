@@ -3,20 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from apps.gold_mainline_contract import GOLD_MAINLINE_IDS
+from apps.gold_mainline_contract import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
 
 GOLD_V3_MAINLINES = list(GOLD_MAINLINE_IDS)
 
-GOLD_V3_TRANSMISSION_CHAINS = [
-    "rate_chain",
-    "dollar_chain",
-    "war_oil_rate_chain",
-    "safe_haven_chain",
-    "flow_chain",
-    "reserve_chain",
-    "asia_demand_chain",
-    "technical_chain",
-]
+GOLD_V3_TRANSMISSION_CHAINS = list(GOLD_TRANSMISSION_CHAIN_IDS)
 
 FORBIDDEN_MUTATION_LAYERS = ["raw", "parsed", "features"]
 

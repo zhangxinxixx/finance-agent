@@ -45,6 +45,7 @@ def test_agent_output_accepts_required_schema_and_serializes_to_json():
     assert output.invalid_conditions == ["analysis snapshot is stale"]
     assert output.summary == "Macro backdrop is neutral."
     assert output.source_refs == []
+    assert output.evidence_items == []
     assert output.status is AgentStatus.SUCCESS
     assert isinstance(output.created_at, datetime)
 
@@ -52,7 +53,28 @@ def test_agent_output_accepts_required_schema_and_serializes_to_json():
     assert encoded["bias"] == "neutral"
     assert encoded["status"] == "success"
     assert encoded["source_refs"] == []
+    assert encoded["evidence_items"] == []
     json.dumps(encoded, ensure_ascii=False)
+
+
+def test_agent_output_accepts_structured_evidence_items():
+    payload = _valid_payload()
+    payload["evidence_items"] = [
+        {
+            "factor": "option_wall",
+            "direction": "bullish",
+            "strength": 0.7,
+            "confidence": 0.82,
+            "freshness": 1.0,
+            "source_tier": "exchange",
+            "invalidation_hint": "Top wall migrates.",
+        }
+    ]
+
+    output = AgentOutput.model_validate(payload)
+
+    assert output.evidence_items[0]["factor"] == "option_wall"
+    assert output.evidence_items[0]["source_tier"] == "exchange"
 
 
 @pytest.mark.parametrize("confidence", [0.0, 1.0])

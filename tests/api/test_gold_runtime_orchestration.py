@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from apps.gold_mainline_contract import GOLD_MAINLINE_IDS
+from apps.gold_mainline_contract import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
 from apps.gold_runtime_orchestration import (
     build_gold_runtime_orchestration_contract,
     build_gold_runtime_summary_preview,
@@ -31,6 +31,7 @@ def test_gold_runtime_orchestration_contract_declares_required_run_modes() -> No
     assert premarket["gold_macro_overview_updated"] is True
     assert premarket["report_rendered"] is True
     assert premarket["affected_mainlines"] == list(GOLD_MAINLINE_IDS)
+    assert premarket["affected_chains"] == list(GOLD_TRANSMISSION_CHAIN_IDS)
     assert "source_health_agent" in premarket["planned_agents_executed"]
     assert "gold_macro_overview_agent" in premarket["planned_agents_executed"]
     assert "review_gate_agent" in premarket["planned_agents_executed"]

@@ -89,6 +89,9 @@ def test_available_options_returns_schema_valid_agent_output_bound_to_snapshot_a
     assert any("wall" in finding.lower() for finding in output.key_findings)
     assert any("gamma zero" in item.lower() for item in output.watchlist + output.key_findings)
     assert any("IV skew" in finding or "skew" in finding.lower() for finding in output.key_findings)
+    factors = {item["factor"] for item in output.evidence_items}
+    assert {"options_intent", "option_wall", "gamma_positioning"} <= factors
+    assert all(item["source_tier"] == "exchange" for item in output.evidence_items)
 
 
 def test_prelim_source_uncertainty_reduces_confidence_or_records_risk_note():

@@ -8,12 +8,21 @@ from typing import Any
 import pytest
 
 from apps.analysis.agents import source_health
-from apps.analysis.agents.gold_v3_prompts import GOLD_V3_MAINLINES
+from apps.analysis.agents.gold_v3_prompts import GOLD_V3_MAINLINES, GOLD_V3_TRANSMISSION_CHAINS
 from apps.analysis.agents.registry import get_agent_registry
+from apps.analysis.gold_mainline_engine import build_gold_macro_overview
 from apps.api.services import event_flow_service, report_service
 from apps.api.services import gold_mainline_service
-from apps.features.news.gold_event_mainlines import MAINLINE_ORDER
-from apps.gold_mainline_contract import GOLD_MAINLINE_IDS, MAINLINE_ALIAS_MAP
+from apps.api.services import processing_monitor_service
+from apps.features.news.gold_event_mainlines import MAINLINE_ORDER, build_gold_event_mainlines
+from apps.gold_mainline_contract import (
+    GOLD_MAINLINE_IDS,
+    GOLD_TRANSMISSION_CHAIN_IDS,
+    GOLD_TRANSMISSION_PATH_IDS,
+    MAINLINE_ALIAS_MAP,
+    TRANSMISSION_CHAIN_ALIAS_MAP,
+    normalize_gold_transmission_chain_id,
+)
 from apps.gold_runtime_orchestration import (
     build_gold_runtime_orchestration_contract,
     build_gold_runtime_summary_preview,
@@ -41,6 +50,22 @@ def _frontend_gold_mainline_order_ids() -> list[str]:
     match = re.search(r"export const GOLD_MAINLINE_ORDER: GoldMainline\[] = \[(?P<body>.*?)\];", text, re.S)
     assert match is not None
     return _quoted_strings(match.group("body"))
+
+
+def _frontend_transmission_path_type_ids() -> set[str]:
+    path = PROJECT_ROOT / "apps/frontend-web/src/types/gold-mainlines.ts"
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r"export type TransmissionPath =(?P<body>.*?);", text, re.S)
+    assert match is not None
+    return set(_quoted_strings(match.group("body")))
+
+
+def _frontend_transmission_path_label_ids() -> set[str]:
+    path = PROJECT_ROOT / "apps/frontend-web/src/components/shared/goldMainlineFormat.ts"
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r"export const TRANSMISSION_PATH_LABELS: Record<TransmissionPath, string> = \{(?P<body>.*?)\};", text, re.S)
+    assert match is not None
+    return set(re.findall(r"^\s*([a-zA-Z0-9_]+):", match.group("body"), re.M))
 
 
 def _walk_strings(value: Any) -> list[str]:
@@ -89,6 +114,19 @@ def test_gold_runtime_contract_and_prompt_payloads_do_not_emit_legacy_mainline_i
     assert set(MAINLINE_ALIAS_MAP.values()).issubset(set(GOLD_MAINLINE_IDS))
 
 
+def test_gold_transmission_chain_ids_are_canonical_across_prompts_monitor_and_frontend_paths() -> None:
+    canonical_chains = list(GOLD_TRANSMISSION_CHAIN_IDS)
+    canonical_paths = set(GOLD_TRANSMISSION_PATH_IDS)
+
+    assert GOLD_V3_TRANSMISSION_CHAINS == canonical_chains
+    assert processing_monitor_service.TRANSMISSION_CHAINS == canonical_chains
+    assert _frontend_transmission_path_type_ids() == canonical_paths
+    assert _frontend_transmission_path_label_ids() == canonical_paths
+    assert set(TRANSMISSION_CHAIN_ALIAS_MAP.values()).issubset(set(canonical_chains))
+    assert normalize_gold_transmission_chain_id("geopolitics_to_oil_to_rates") == "war_oil_rate_chain"
+    assert normalize_gold_transmission_chain_id("technical_confirmation") == "technical_chain"
+
+
 def test_runtime_preview_uses_planned_agent_fields_and_never_claims_execution() -> None:
     contract_payload = build_gold_runtime_orchestration_contract()
     for mode_payload in contract_payload["run_modes"]:
@@ -106,6 +144,24 @@ def test_runtime_preview_uses_planned_agent_fields_and_never_claims_execution() 
         assert "planned_agents_skipped" in summary
         assert summary["runtime_contract_only"] is True
         assert summary["writes"] == []
+        assert set(summary["affected_mainlines"]).issubset(set(GOLD_MAINLINE_IDS))
+
+
+def test_gold_mainline_outputs_cover_canonical_nine_mainlines() -> None:
+    bundle = build_gold_event_mainlines([], as_of="2026-07-06T09:30:00+00:00").to_dict()
+    overview = build_gold_macro_overview(bundle).to_dict()
+
+    assert [row["mainline_id"] for row in bundle["mainlines"]] == list(GOLD_MAINLINE_IDS)
+    assert [row["mainline_id"] for row in overview["theme_rankings"]] == list(GOLD_MAINLINE_IDS)
+
+
+def test_source_health_output_mainline_impact_uses_canonical_mainlines() -> None:
+    snapshot = source_health.build_gold_v3_source_health(
+        {"sources": []},
+        as_of="2026-07-06T09:30:00+00:00",
+    ).to_dict()
+
+    assert list(snapshot["mainline_impact"]) == list(GOLD_MAINLINE_IDS)
 
 
 def test_runtime_agent_ids_resolve_in_registry_and_executed_skipped_sets_do_not_overlap() -> None:
@@ -241,3 +297,33 @@ def test_jin10_chart_text_audit_does_not_flag_dense_chart_text_by_length_only() 
         [{"figure_id": "article", "recognized_text": article_like_text}]
     )
     assert issues[0]["figure_id"] == "article"
+
+
+def test_processing_monitor_routes_do_not_import_api_main_callbacks() -> None:
+    path = PROJECT_ROOT / "apps/api/routes/processing_monitor_routes.py"
+    text = path.read_text(encoding="utf-8")
+
+    assert "from apps.api import main" not in text
+    assert "api_main." not in text
+    assert "apps.api.services.processing_monitor_service" in text
+
+
+def test_processing_monitor_uses_canonical_gold_mainline_ids() -> None:
+    assert processing_monitor_service.MAINLINES == list(GOLD_MAINLINE_IDS)
+    assert processing_monitor_service._canonical_mainline("oil_price") == "oil_prices"
+    assert processing_monitor_service._canonical_mainline("geopolitical_war") == "geopolitical_war_risk"
+
+
+def test_api_background_refresh_is_opt_in_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from apps.api import main as api_main
+
+    monkeypatch.delenv("FINANCE_AGENT_DISABLE_BACKGROUND_JOBS", raising=False)
+    monkeypatch.delenv("FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    assert api_main._should_skip_background_jobs() is True
+
+    monkeypatch.setenv("FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH", "1")
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(api_main, "sys", SimpleNamespace(modules={}))
+    assert api_main._should_skip_background_jobs() is False

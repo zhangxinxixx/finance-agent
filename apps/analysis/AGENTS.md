@@ -36,6 +36,7 @@ class AgentOutput(BaseModel):
     invalid_conditions: list[str]
     summary: str
     source_refs: list[dict]   # 必须包含所有上游数据引用
+    evidence_items: list[dict] # 结构化证据因子：factor/direction/strength/confidence/freshness/source_tier 等
     status: AgentStatus       # SUCCESS / PARTIAL / UNAVAILABLE / FAILED
     # P4-05 fields:
     market_phase: str | None  # rate_pressure / transition_release / trend_tailwind / liquidity_crunch / monetary_credit_repricing / unavailable
@@ -130,6 +131,7 @@ class AgentOutput(BaseModel):
 1. 保留输入端 snapshot 中的 `source_refs`
 2. 追加自己的计算步骤到 `source_refs`
 3. 标注数据类别（confirmed_data / external_opinion / system_inference）
+4. 对会参与 confidence / quality gate / source trace 的结论，保留结构化 `evidence_items`
 
 ## LLM 调用规范
 
