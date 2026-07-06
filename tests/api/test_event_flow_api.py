@@ -833,7 +833,12 @@ def test_build_event_flow_report_inputs_exposes_positioning_and_technical_levels
                 "daily_market_brief": {
                     "as_of": "2026-06-12T12:00:00+00:00",
                     "report_inputs": {
-                        "news_highlights": [],
+                        "news_highlights": [
+                            {
+                                "summary": "Fed repricing",
+                                "price": 3378.5,
+                            }
+                        ],
                         "watchlist": [],
                         "risk_points": [],
                         "positioning": [
@@ -843,7 +848,7 @@ def test_build_event_flow_report_inputs_exposes_positioning_and_technical_levels
                                 "strike_or_level": "3350",
                                 "position_change": "increase",
                                 "evidence_text": "XAUUSD 在 3350 上方看涨期权新增",
-                                "verification_status": "single_source",
+                                "data_quality": {"verification_status": "single_source"},
                                 "provider_role": "supplemental_source",
                                 "source_refs": [{"source_ref": "jin10:274:223700"}],
                             }
@@ -854,7 +859,7 @@ def test_build_event_flow_report_inputs_exposes_positioning_and_technical_levels
                                 "level_type": "VAH",
                                 "price": 3378.5,
                                 "evidence_text": "VAH 3378.5",
-                                "verification_status": "single_source",
+                                "data_quality": {"verification_status": "single_source"},
                                 "provider_role": "supplemental_source",
                                 "source_refs": [{"source_ref": "jin10:301:223701"}],
                             }
@@ -873,6 +878,8 @@ def test_build_event_flow_report_inputs_exposes_positioning_and_technical_levels
     assert result["report_inputs"]["positioning"][0]["asset"] == "XAUUSD"
     groups = {item["group"] for item in result["actionable_inputs"]}
     assert {"持仓报告", "点位报告"} <= groups
+    news = next(item for item in result["actionable_inputs"] if item["group"] == "新闻重点")
+    assert news["title"] == "Fed repricing"
     positioning = next(item for item in result["actionable_inputs"] if item["group"] == "持仓报告")
     technical = next(item for item in result["actionable_inputs"] if item["group"] == "点位报告")
     assert positioning["verification_status"] == "single_source"

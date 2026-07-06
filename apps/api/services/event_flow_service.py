@@ -1084,7 +1084,7 @@ def _build_actionable_report_inputs(
         if not isinstance(raw_items, list):
             continue
         for raw_item in raw_items:
-            title = _report_input_title(raw_item)
+            title = _report_input_title(raw_item, group_key=group_key)
             if not title:
                 continue
             summary = _report_input_summary(raw_item, fallback=title)
@@ -1146,16 +1146,16 @@ def _build_actionable_report_inputs(
     return items
 
 
-def _report_input_title(value: Any) -> str:
+def _report_input_title(value: Any, *, group_key: str = "") -> str:
     if isinstance(value, str):
         return _translate_long_english(value.strip(), field="report_input_title")
     if not isinstance(value, dict):
         return ""
-    if "strike_or_level" in value or "position_change" in value:
+    if group_key == "positioning":
         text = _positioning_input_title(value)
         if text:
             return text
-    if "level_type" in value or "price" in value or "range" in value:
+    if group_key == "technical_levels":
         text = _technical_level_input_title(value)
         if text:
             return text
@@ -1180,6 +1180,11 @@ def _report_input_summary(value: Any, *, fallback: str) -> str:
 
 def _report_input_verification_status(value: Any) -> str | None:
     if isinstance(value, dict):
+        data_quality = value.get("data_quality")
+        if isinstance(data_quality, dict):
+            nested = _string_or_none(data_quality.get("verification_status"))
+            if nested:
+                return nested
         return _string_or_none(value.get("verification_status"))
     return None
 

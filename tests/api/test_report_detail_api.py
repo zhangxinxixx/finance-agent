@@ -655,7 +655,7 @@ def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: P
                             "figure_id": "fig_p1_001",
                             "image_path": "figures/fig_p1_001.png",
                             "title": "图表 1",
-                            "recognized_text": "这是一段过长的正文混入图表识别文本，需要触发语义复核。" * 5,
+                            "recognized_text": "这是一段过长的正文混入图表识别文本，需要触发语义复核。" * 12,
                         }
                     ],
                     "generated_from": {
@@ -814,3 +814,46 @@ def test_report_detail_jin10_chart_asset_mismatch_requires_agent_loop_review(
     assert trace["asset_audit"]["figure_files"] == 2
     assert trace["asset_audit"]["parser_figures_total"] == 1
     assert trace["asset_audit"]["count_issues"][0]["code"] == "parser_figure_count_mismatch"
+
+
+def test_jin10_asset_audit_normalizes_equivalent_image_refs(tmp_path: Path) -> None:
+    from apps.api.services.report_service import _build_jin10_asset_audit
+
+    run_dir = tmp_path / "storage" / "outputs" / "jin10" / "2026-07-05" / "223609"
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/jin10/2026-07-05/223609/raw_article_report.md": (
+                "# Source\n\n"
+                "![图表 1](./figures/fig_p1_001.png)\n\n"
+                "![图表 2](/api/reports/223609/asset/fig_p2_001.png?raw=1)\n"
+            ),
+            "storage/outputs/jin10/2026-07-05/223609/figures/fig_p1_001.png": "png",
+            "storage/outputs/jin10/2026-07-05/223609/figures/fig_p2_001.png": "png",
+        },
+    )
+    raw_payload = {
+        "charts": [
+            {"figure_id": "fig_p1_001", "image_path": "figures/fig_p1_001.png?raw=1"},
+            {"figure_id": "fig_p2_001", "image_path": "figures/fig_p2_001.png"},
+        ],
+        "generated_from": {"parser_trace": {"figures_total": 2}},
+    }
+
+    audit = _build_jin10_asset_audit(run_dir=run_dir, raw_payload=raw_payload)
+
+    assert audit["status"] == "pass"
+    assert audit["missing_refs"] == []
+    assert audit["extra_files"] == []
+    assert audit["count_issues"] == []
+
+
+def test_jin10_chart_text_audit_uses_compound_noise_signals() -> None:
+    from apps.api.services.report_service import _jin10_chart_text_issues
+
+    dense_table_text = "A" * 121
+    article_like_text = "黄金价格继续震荡。" * 24
+
+    assert _jin10_chart_text_issues([{"figure_id": "table", "recognized_text": dense_table_text}]) == []
+    issues = _jin10_chart_text_issues([{"figure_id": "article", "recognized_text": article_like_text}])
+    assert issues[0]["figure_id"] == "article"

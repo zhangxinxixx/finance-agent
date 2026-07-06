@@ -927,14 +927,16 @@ def _build_jin10_generation_trace(
 
 def _build_jin10_asset_audit(*, run_dir: Path, raw_payload: dict[str, Any]) -> dict[str, Any]:
     markdown_image_refs = _extract_markdown_image_refs(run_dir / "raw_article_report.md")
-    markdown_refs = set(markdown_image_refs)
+    markdown_refs = {_normalize_jin10_image_ref(ref) for ref in markdown_image_refs}
+    markdown_refs.discard("")
     charts = raw_payload.get("charts") if isinstance(raw_payload.get("charts"), list) else []
     chart_refs = {
-        str(chart.get("image_path"))
+        _normalize_jin10_image_ref(str(chart.get("image_path")))
         for chart in charts
         if isinstance(chart, dict) and chart.get("image_path")
     }
-    figure_paths = {f"figures/{path.name}" for path in (run_dir / "figures").glob("*.png")}
+    chart_refs.discard("")
+    figure_paths = {_normalize_jin10_image_ref(f"figures/{path.name}") for path in (run_dir / "figures").glob("*.png")}
     expected_refs = markdown_refs | chart_refs
     parser_figures_total = _jin10_parser_figures_total(raw_payload)
     count_issues: list[dict[str, Any]] = []
@@ -1005,6 +1007,19 @@ def _extract_markdown_image_refs(path: Path) -> list[str]:
     return [match.strip() for match in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", text) if match.strip()]
 
 
+def _normalize_jin10_image_ref(ref: str) -> str:
+    value = str(ref or "").split("?", 1)[0].strip().replace("\\", "/")
+    if not value:
+        return ""
+    if "/asset/" in value:
+        value = "figures/" + value.rsplit("/", 1)[-1]
+    if value.startswith("./"):
+        value = value[2:]
+    if value.startswith("/"):
+        value = f"figures/{value.rsplit('/', 1)[-1]}"
+    return value
+
+
 def _jin10_parser_figures_total(raw_payload: dict[str, Any]) -> int | None:
     generated_from = raw_payload.get("generated_from")
     if not isinstance(generated_from, dict):
@@ -1030,7 +1045,10 @@ def _jin10_chart_text_issues(charts: Any) -> list[dict[str, Any]]:
         if not isinstance(chart, dict):
             continue
         recognized_text = str(chart.get("recognized_text") or "")
-        if len(recognized_text) >= 120 or "\n\n" in recognized_text:
+        too_long = len(recognized_text) >= 240
+        paragraph_like = recognized_text.count("\n\n") >= 2
+        looks_like_article = "。" in recognized_text and len(recognized_text) >= 160
+        if too_long or paragraph_like or looks_like_article:
             issues.append(
                 {
                     "figure_id": chart.get("figure_id"),

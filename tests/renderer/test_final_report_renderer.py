@@ -268,6 +268,9 @@ def test_render_final_report_markdown_adds_structured_news_event_highlights():
 
 
 def test_table_text_escapes_markdown_table_breakers():
+    assert _table_text(None) == "-"
+    assert _table_text("  \n  ") == "-"
+    assert _table_text("A | B | C") == "A \\| B \\| C"
     assert _table_text("A | B\nnext\rline") == "A \\| B next line"
 
 
