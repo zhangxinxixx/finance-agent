@@ -29,3 +29,11 @@ def api_market_monitor_history(limit: int = 30, timeframe: str = "1M"):
     from apps.api import main as api_main
 
     return api_main.get_market_monitor_history(limit=limit, timeframe=timeframe)
+
+
+@router.get("/api/market/candles")
+def api_market_candles(asset: str = "XAUUSD", timeframe: str = "1m", limit: int = 500):
+    """返回统一 K 线 read model，包含覆盖率、缺口和来源追踪。"""
+    from apps.api.services.market_candle_service import get_market_candles
+
+    return get_market_candles(asset=asset, timeframe=timeframe, limit=limit)
