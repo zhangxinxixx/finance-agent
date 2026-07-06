@@ -54,6 +54,7 @@ export interface EventFlowTimelineItem {
   risk_level?: string | null;
   event_kind?: string | null;
   raw_event_type?: string | null;
+  processing_trace_id?: string | null;
   source_refs?: import("@/types/common").SourceRef[];
   affected_assets?: string[];
   impact_path?: string | null;

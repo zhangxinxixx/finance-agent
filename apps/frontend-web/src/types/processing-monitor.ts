@@ -11,6 +11,37 @@ export type ProcessingTraceMode =
 
 export type ProcessingCoverageStatus = "covered" | "degraded" | "missing" | "stale" | "pass" | "needs_review" | "blocked" | string;
 
+export type ProcessingStageStatus =
+  | "raw"
+  | "parsed"
+  | "normalized"
+  | "attributed"
+  | "validated"
+  | "projected"
+  | "rendered"
+  | string;
+
+export interface ProcessingStage {
+  stage_id: string;
+  status: ProcessingStageStatus;
+  started_at?: string | null;
+  finished_at?: string | null;
+  source_refs?: SourceRef[];
+  artifact_refs?: ArtifactRef[];
+  warnings?: string[];
+}
+
+export interface ProcessingTrace {
+  trace_id: string;
+  entity_type: "news" | "report_input" | "event" | "analysis_signal" | string;
+  entity_id: string;
+  source_refs: SourceRef[];
+  artifact_refs: ArtifactRef[];
+  stages: ProcessingStage[];
+  current_status: ProcessingStageStatus;
+  warnings: string[];
+}
+
 export interface ProcessingTracePathNode {
   node_id: string;
   label: string;

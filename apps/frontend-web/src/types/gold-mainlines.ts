@@ -1,5 +1,6 @@
 import type { ArtifactRef } from "@/types/artifact";
 import type { DataStatus, SourceRef } from "@/types/common";
+import type { ProcessingTrace } from "@/types/processing-monitor";
 
 export type GoldAsset = "XAUUSD" | "gold";
 
@@ -129,6 +130,8 @@ export interface TransmissionChainSummary {
   artifact_refs?: ArtifactRef[];
 }
 
+export type TransmissionChain = TransmissionChainSummary;
+
 export interface DriverConflict {
   status: "aligned" | "conflicted" | "mixed" | "unknown";
   dominant_driver: string | null;
@@ -231,5 +234,6 @@ export interface GoldMacroOverview {
   key_events: string[];
   source_refs: SourceRef[];
   artifact_refs: ArtifactRef[];
+  processing_traces?: ProcessingTrace[];
   warnings?: string[];
 }

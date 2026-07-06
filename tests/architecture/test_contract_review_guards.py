@@ -68,6 +68,10 @@ def _frontend_transmission_path_label_ids() -> set[str]:
     return set(re.findall(r"^\s*([a-zA-Z0-9_]+):", match.group("body"), re.M))
 
 
+def _frontend_type_file(relative_path: str) -> str:
+    return (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+
+
 def _walk_strings(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
@@ -125,6 +129,21 @@ def test_gold_transmission_chain_ids_are_canonical_across_prompts_monitor_and_fr
     assert set(TRANSMISSION_CHAIN_ALIAS_MAP.values()).issubset(set(canonical_chains))
     assert normalize_gold_transmission_chain_id("geopolitics_to_oil_to_rates") == "war_oil_rate_chain"
     assert normalize_gold_transmission_chain_id("technical_confirmation") == "technical_chain"
+
+
+def test_gold_v3_frontend_type_contract_exposes_processing_trace_models() -> None:
+    gold_types = _frontend_type_file("apps/frontend-web/src/types/gold-mainlines.ts")
+    event_types = _frontend_type_file("apps/frontend-web/src/types/event-flow.ts")
+    processing_types = _frontend_type_file("apps/frontend-web/src/types/processing-monitor.ts")
+
+    assert "import type { ProcessingTrace }" in gold_types
+    assert "export type TransmissionChain = TransmissionChainSummary;" in gold_types
+    assert re.search(r"processing_traces\?:\s*ProcessingTrace\[];", gold_types) is not None
+    assert re.search(r"processing_trace_id\?:\s*string\s*\|\s*null;", event_types) is not None
+    assert "export interface ProcessingStage" in processing_types
+    assert "export interface ProcessingTrace" in processing_types
+    assert re.search(r"stages:\s*ProcessingStage\[];", processing_types) is not None
+    assert re.search(r"current_status:\s*ProcessingStageStatus;", processing_types) is not None
 
 
 def test_runtime_preview_uses_planned_agent_fields_and_never_claims_execution() -> None:
