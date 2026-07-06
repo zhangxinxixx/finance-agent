@@ -1,4 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
+import {
+  KLINE_TIMEFRAMES,
+  classifyMarketCandleCoverage,
+  mergeKlineCandles,
+  type KlineTimeframe,
+  type MarketCandleCoverage,
+  type MarketCandleTimeframeAvailability,
+} from "@/components/market-monitor/klineCoverageModel";
 
 export interface Jin10KlineCandle {
   time: string;
@@ -11,17 +19,7 @@ export interface Jin10KlineCandle {
   partial?: boolean;
 }
 
-export interface MarketCandleCoverage {
-  returned: number;
-  first_time: string | null;
-  last_time: string | null;
-  expected_interval_seconds: number;
-  gap_count: number;
-  max_gap_seconds: number | null;
-  gap_ranges?: Array<{ from: string; to: string; gap_seconds: number }>;
-  degraded: boolean;
-  reason?: string | null;
-}
+export type { KlineTimeframe, MarketCandleCoverage, MarketCandleTimeframeAvailability };
 
 export interface MarketCandleSourceTrace {
   primary_source: string;
@@ -44,8 +42,6 @@ export interface Jin10KlineResponse {
   error?: string;
 }
 
-export type KlineTimeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1D";
-
 const POLL_INTERVAL = 10_000; // 10s
 
 /**
@@ -64,7 +60,6 @@ export function useJin10Kline(
   const [provider, setProvider] = useState<string | null>(null);
   const [sourceTimeframe, setSourceTimeframe] = useState<string | null>(null);
   const [sourceTrace, setSourceTrace] = useState<MarketCandleSourceTrace | null>(null);
-  const prevTimeframeRef = useRef<KlineTimeframe>(timeframe);
 
   const fetchKline = useCallback(async (replace: boolean = false) => {
     try {
@@ -77,26 +72,7 @@ export function useJin10Kline(
         return;
       }
 
-      setCandles((prev) => {
-        if (replace || prev.length === 0) return data.candles;
-
-        // 增量合并
-        const existingTimes = new Set(prev.map((c) => c.time));
-        const newCandles = data.candles.filter((c) => !existingTimes.has(c.time));
-        if (newCandles.length === 0) return prev;
-
-        // 更新最后一根（可能还在变动中）
-        const merged = [...prev, ...newCandles];
-        if (merged.length > 0) {
-          const lastNew = data.candles[data.candles.length - 1];
-          const lastMerged = merged[merged.length - 1];
-          if (lastNew && lastMerged.time === lastNew.time) {
-            merged[merged.length - 1] = lastNew;
-          }
-        }
-
-        return merged.slice(-limit);
-      });
+      setCandles((prev) => mergeKlineCandles(prev, data.candles, limit, replace));
       setCoverage(data.coverage ?? null);
       setProvider(data.provider ?? null);
       setSourceTimeframe(data.source_timeframe ?? data.timeframe ?? null);
@@ -112,7 +88,7 @@ export function useJin10Kline(
     setLoading(true);
     setCoverage(null);
     fetchKline(true).finally(() => setLoading(false));
-  }, [timeframe]); // 切换周期时重新加载
+  }, [fetchKline]); // 切换标的、周期或数量时重新加载
 
   // 定时轮询
   useEffect(() => {
@@ -132,4 +108,58 @@ export function useJin10Kline(
     sourceTrace,
     refetch: () => fetchKline(true),
   };
+}
+
+export function useMarketCandleTimeframeAvailability(
+  symbol: string = "XAUUSD",
+  limit: number = 200,
+) {
+  const [availability, setAvailability] = useState<Partial<Record<KlineTimeframe, MarketCandleTimeframeAvailability>>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setAvailability(Object.fromEntries(
+      KLINE_TIMEFRAMES.map(({ key }) => [
+        key,
+        {
+          timeframe: key,
+          status: "loading",
+          label: "检测中",
+          reason: "正在检测本地 K 线覆盖",
+          returned: 0,
+        },
+      ]),
+    ) as Partial<Record<KlineTimeframe, MarketCandleTimeframeAvailability>>);
+
+    Promise.all(KLINE_TIMEFRAMES.map(async ({ key }) => {
+      try {
+        const url = `/api/market/candles?asset=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(key)}&limit=${limit}`;
+        const resp = await fetch(url);
+        const data: Jin10KlineResponse = await resp.json();
+        return classifyMarketCandleCoverage({
+          timeframe: key,
+          coverage: data.coverage ?? null,
+          error: data.error ?? (!resp.ok ? `HTTP ${resp.status}` : null),
+          sourceTimeframe: data.source_timeframe ?? data.timeframe ?? null,
+        });
+      } catch (error) {
+        return classifyMarketCandleCoverage({
+          timeframe: key,
+          error: error instanceof Error ? error.message : "覆盖检测失败",
+        });
+      }
+    })).then((items) => {
+      if (cancelled) return;
+      setAvailability(Object.fromEntries(items.map((item) => [item.timeframe, item])) as Partial<Record<KlineTimeframe, MarketCandleTimeframeAvailability>>);
+      setLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, limit]);
+
+  return { availability, loading };
 }

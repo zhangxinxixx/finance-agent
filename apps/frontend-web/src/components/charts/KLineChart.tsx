@@ -13,6 +13,11 @@ import {
   ColorType,
   CrosshairMode,
 } from "lightweight-charts";
+import {
+  KLINE_TIMEFRAMES,
+  type KlineTimeframe,
+  type MarketCandleTimeframeAvailability,
+} from "@/components/market-monitor/klineCoverageModel";
 
 // ═══════════════════════════════════════
 // Types
@@ -35,17 +40,7 @@ export interface KLineSeries {
   dashed?: boolean;
 }
 
-export type KLineTimeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1D";
-
-const TIMEFRAMES: { key: KLineTimeframe; label: string }[] = [
-  { key: "1m", label: "1分" },
-  { key: "5m", label: "5分" },
-  { key: "15m", label: "15分" },
-  { key: "30m", label: "30分" },
-  { key: "1h", label: "1时" },
-  { key: "4h", label: "4时" },
-  { key: "1D", label: "日" },
-];
+export type KLineTimeframe = KlineTimeframe;
 
 // ── Convert ISO string → Unix timestamp (seconds) ──
 function toChartTime(iso: string): Time {
@@ -79,6 +74,7 @@ interface KLineChartProps {
   emptyText?: string;
   timeframe?: KLineTimeframe;
   onTimeframeChange?: (tf: KLineTimeframe) => void;
+  timeframeAvailability?: Partial<Record<KLineTimeframe, MarketCandleTimeframeAvailability>>;
 }
 
 export function KLineChart({
@@ -89,6 +85,7 @@ export function KLineChart({
   emptyText = "暂无 K 线数据",
   timeframe = "1m",
   onTimeframeChange,
+  timeframeAvailability,
 }: KLineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -363,26 +360,54 @@ export function KLineChart({
           boxShadow: "var(--shadow-card)",
         }}
       >
-        {TIMEFRAMES.map((tf) => {
+        {KLINE_TIMEFRAMES.map((tf) => {
           const active = tf.key === timeframe;
+          const availability = timeframeAvailability?.[tf.key];
+          const status = availability?.status ?? "available";
+          const disabled = status === "unavailable";
+          const statusLabel = status === "degraded" ? "降" : status === "unavailable" ? "停" : status === "loading" ? "…" : "";
           return (
             <button
               key={tf.key}
-              onClick={() => onTimeframeChange?.(tf.key)}
+              onClick={() => {
+                if (!disabled) onTimeframeChange?.(tf.key);
+              }}
+              disabled={disabled}
+              aria-label={`${tf.label} ${availability?.label ?? "可用"}`}
+              title={availability ? `${tf.label}：${availability.label} · ${availability.reason}` : tf.label}
+              data-coverage-status={status}
               style={{
-                background: active ? "var(--brand-dim)" : "transparent",
-                color: active ? "var(--brand-hover)" : TEXT_COLOR,
+                display: "inline-flex",
+                minWidth: 34,
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 3,
+                background: active ? "var(--brand-dim)" : status === "degraded" ? "var(--warn-soft)" : "transparent",
+                color: disabled ? "var(--fg-6)" : active ? "var(--brand-hover)" : status === "degraded" ? "var(--warn)" : TEXT_COLOR,
                 border: "none",
                 borderRadius: "var(--radius-sm)",
                 padding: "2px 7px",
-                fontSize: 11,
+                fontSize: "var(--type-caption)",
                 fontWeight: active ? 600 : 400,
-                cursor: "pointer",
+                cursor: disabled ? "not-allowed" : "pointer",
                 fontFamily: "inherit",
+                opacity: disabled ? 0.58 : 1,
                 transition: "all 0.15s",
               }}
             >
-              {tf.label}
+              <span>{tf.label}</span>
+              {statusLabel ? (
+                <span
+                  aria-hidden="true"
+                  style={{
+                    fontSize: "var(--text-10)",
+                    fontWeight: 700,
+                    lineHeight: 1,
+                  }}
+                >
+                  {statusLabel}
+                </span>
+              ) : null}
             </button>
           );
         })}

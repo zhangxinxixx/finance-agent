@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { MarketMonitorMetric } from "@/types/market-monitor";
 import type { MarketMonitorHistoryResponse } from "@/adapters/marketMonitor";
-import { useJin10Kline, type KlineTimeframe } from "@/hooks/useJin10Kline";
+import { useJin10Kline, useMarketCandleTimeframeAvailability, type KlineTimeframe } from "@/hooks/useJin10Kline";
 import { KLineChart, type KLineCandle, type KLineSeries } from "@/components/charts/KLineChart";
 import { TradingViewChart } from "@/components/charts/TradingViewChart";
 import {
@@ -10,6 +10,7 @@ import {
   visibleHistorySeries,
   type ChartSeriesData,
 } from "@/components/market-monitor/marketMonitorChart";
+import { availabilitySummary } from "@/components/market-monitor/klineCoverageModel";
 import { MultiLineChartLegend } from "./MultiLineChartLegend";
 
 interface MultiLineChartProps {
@@ -32,6 +33,10 @@ export function MultiLineChart({
     provider: klineProvider,
     sourceTimeframe,
   } = useJin10Kline("XAUUSD", chartTimeframe, 200);
+  const {
+    availability: timeframeAvailability,
+    loading: availabilityLoading,
+  } = useMarketCandleTimeframeAvailability("XAUUSD", 200);
 
   // Jin10 实时 K 线数据
   const liveCandles: KLineCandle[] = useMemo(
@@ -82,13 +87,12 @@ export function MultiLineChart({
     sourceTimeframe ? `${sourceTimeframe} source` : null,
     klineCoverage ? `${klineCoverage.returned} bars` : null,
     klineCoverage?.gap_count ? `gap ${klineCoverage.gap_count}` : null,
+    availabilityLoading ? "checking periods" : availabilitySummary(timeframeAvailability),
   ].filter(Boolean).join(" · ");
 
   return (
     <div className={className}>
       <div className="market-monitor-chart-shell">
-        <TradingViewChart symbol="OANDA:XAUUSD" interval="15" theme="dark" height={430} />
-        <MultiLineChartLegend metrics={metrics} seriesData={seriesData} statusText={statusText} />
         <details className="market-monitor-local-kline-diagnostic">
           <summary>
             <span>本地 K 线诊断</span>
@@ -110,9 +114,12 @@ export function MultiLineChart({
               emptyText="Jin10 实时 K 线数据加载中..."
               timeframe={chartTimeframe}
               onTimeframeChange={setChartTimeframe}
+              timeframeAvailability={timeframeAvailability}
             />
           </div>
         </details>
+        <TradingViewChart symbol="OANDA:XAUUSD" interval="15" theme="dark" height={400} />
+        <MultiLineChartLegend metrics={metrics} seriesData={seriesData} statusText={statusText} />
       </div>
     </div>
   );
