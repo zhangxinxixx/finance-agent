@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _RECORD_INTERVAL_SECONDS: dict[str, int] = {
     "jin10_quotes": 900,
     "jin10_kline": 900,
+    "market_candles_daily": 3600,
     "jin10_calendar": 3600,
     "jin10_flash": 900,
 }

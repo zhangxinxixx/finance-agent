@@ -50,6 +50,7 @@ QUOTE_SYMBOLS = [
 ]
 
 KLINE_SYMBOLS = ["XAUUSD"]
+DAILY_MARKET_CANDLE_ASSETS = ("XAUUSD", "DXY")
 _JIN10_MCP_MARKET_SOURCE_KEY = "jin10_mcp_market"
 
 
@@ -256,6 +257,61 @@ def refresh_jin10_kline_cache(*, count: int = 100) -> None:
             logger.debug("Jin10 kline cache refreshed: imported=%d", imported)
     except Exception as exc:
         logger.warning("Jin10 MCP kline refresh failed: %s", exc)
+
+
+def refresh_market_candle_daily_cache(*, range_: str = "10d") -> None:
+    """Refresh recent daily market candles for local coverage and gap repair."""
+    try:
+        storage_root = Path("./storage").resolve()
+        with SessionLocal() as session:
+            ensure_analysis_tables(session)
+            imported = 0
+            scanned = 0
+            for asset in DAILY_MARKET_CANDLE_ASSETS:
+                candles, raw_path, source, source_ref = _collect_daily_market_candles(
+                    storage_root=storage_root,
+                    asset=asset,
+                    range_=range_,
+                )
+                for candle in candles:
+                    scanned += 1
+                    upsert_market_candle(
+                        session,
+                        asset=asset,
+                        timeframe="1d",
+                        open_time=candle["open_time"],
+                        open=candle["open"],
+                        high=candle["high"],
+                        low=candle["low"],
+                        close=candle["close"],
+                        volume=candle["volume"],
+                        source=source,
+                        source_ref={
+                            **source_ref,
+                            "refresh_role": "scheduled_daily_gap_repair",
+                        },
+                        raw_path=raw_path,
+                    )
+                    imported += 1
+            session.commit()
+            logger.debug("Daily market candle refresh completed: scanned=%d upserted=%d", scanned, imported)
+    except Exception as exc:
+        logger.warning("Daily market candle refresh failed: %s", exc)
+
+
+def _collect_daily_market_candles(
+    *,
+    storage_root: Path,
+    asset: str,
+    range_: str,
+) -> tuple[list[dict[str, Any]], str, str, dict[str, Any]]:
+    from scripts.backfill_market_candles import collect_daily_candles
+
+    return collect_daily_candles(
+        storage_root=storage_root,
+        asset=asset,
+        range_=range_,
+    )
 
 
 def _extract_kline_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:

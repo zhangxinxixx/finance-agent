@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -71,6 +71,43 @@ def test_refresh_jin10_kline_cache_inserts_only_new_rows(monkeypatch):
         assert rows[-1].source == "jin10_mcp_kline_1m"
         assert rows[-1].source_ref["source_key"] == "jin10_mcp_market"
         assert rows[-1].source_ref["source"] == "jin10_mcp"
+
+
+def test_refresh_market_candle_daily_cache_upserts_daily_assets(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    base_time = datetime(2026, 7, 6, tzinfo=UTC)
+
+    def fake_collect_daily_market_candles(*, storage_root, asset: str, range_: str):
+        assert range_ == "10d"
+        offset = 0 if asset == "XAUUSD" else 1
+        return (
+            [
+                {
+                    "open_time": base_time - timedelta(days=offset),
+                    "open": 4100.0 + offset,
+                    "high": 4120.0 + offset,
+                    "low": 4090.0 + offset,
+                    "close": 4110.0 + offset,
+                    "volume": 100.0 + offset,
+                }
+            ],
+            f"raw/{asset.lower()}.json",
+            f"test_source_{asset.lower()}",
+            {"ticker": asset},
+        )
+
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler, "_collect_daily_market_candles", fake_collect_daily_market_candles)
+
+    scheduler.refresh_market_candle_daily_cache()
+
+    with session_factory() as session:
+        rows = session.query(MarketCandle).order_by(MarketCandle.asset.asc()).all()
+        assert [row.asset for row in rows] == ["DXY", "XAUUSD"]
+        assert {row.timeframe for row in rows} == {"1d"}
+        assert rows[0].source_ref["refresh_role"] == "scheduled_daily_gap_repair"
+        assert rows[1].source_ref["refresh_role"] == "scheduled_daily_gap_repair"
 
 
 class _FakeHttpResponse:

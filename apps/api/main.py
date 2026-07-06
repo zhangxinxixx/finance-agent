@@ -486,6 +486,7 @@ async def lifespan(_app: FastAPI):
             from apscheduler.schedulers.background import BackgroundScheduler
             from apps.scheduler.jin10_refresh import (
                 refresh_jin10_kline_cache,
+                refresh_market_candle_daily_cache,
                 refresh_jin10_quotes_cache,
                 refresh_jin10_calendar_cache,
                 refresh_jin10_flash_cache,
@@ -498,6 +499,10 @@ async def lifespan(_app: FastAPI):
             def _recorded_jin10_kline():
                 from apps.scheduler.task_wrapper import record_jin10_refresh
                 record_jin10_refresh("jin10_kline", "Jin10 K线刷新", refresh_jin10_kline_cache)
+
+            def _recorded_market_candles_daily():
+                from apps.scheduler.task_wrapper import record_jin10_refresh
+                record_jin10_refresh("market_candles_daily", "市场日线补缺刷新", refresh_market_candle_daily_cache)
 
             def _recorded_jin10_calendar():
                 from apps.scheduler.task_wrapper import record_jin10_refresh
@@ -523,6 +528,13 @@ async def lifespan(_app: FastAPI):
                 replace_existing=True,
             )
             scheduler.add_job(
+                _recorded_market_candles_daily,
+                "interval",
+                minutes=60,
+                id="market_candles_daily_refresh",
+                replace_existing=True,
+            )
+            scheduler.add_job(
                 _recorded_jin10_calendar,
                 "interval",
                 minutes=60,
@@ -541,9 +553,11 @@ async def lifespan(_app: FastAPI):
             import threading as _threading
             _threading.Thread(target=refresh_jin10_quotes_cache, daemon=True, name="startup-quotes").start()
             _threading.Thread(target=refresh_jin10_kline_cache, daemon=True, name="startup-kline").start()
+            _threading.Thread(target=refresh_market_candle_daily_cache, daemon=True, name="startup-market-candles").start()
             _threading.Thread(target=refresh_jin10_flash_cache, daemon=True, name="startup-flash").start()
             logger.info("Jin10 quotes refresh scheduler started (interval=15min)")
             logger.info("Jin10 kline refresh scheduler started (interval=1min)")
+            logger.info("Market daily candle refresh scheduler started (interval=60min)")
             logger.info("Jin10 flash refresh scheduler started (interval=15min)")
             logger.info("Premarket scheduling handled by Dagster (premarket_daily)")
             _app.state.jin10_scheduler = scheduler

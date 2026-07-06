@@ -176,6 +176,7 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   jin10_refresh_jin10_flash: "金十快讯刷新",
   jin10_refresh_jin10_quotes: "金十行情刷新",
   jin10_refresh_jin10_kline: "金十 K 线刷新",
+  jin10_refresh_market_candles_daily: "市场日线补缺刷新",
   jin10_refresh_jin10_calendar: "金十日历刷新",
   feishu: "飞书消息采集",
 };
