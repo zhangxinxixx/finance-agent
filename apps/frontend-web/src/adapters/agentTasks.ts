@@ -31,6 +31,8 @@ const REVIEWS_PATH = "/api/reviews";
 const AGENT_ANALYSIS_INSPECT_PATH = "/api/agent-analysis/inspect";
 const AGENT_TASKS_MOCK_URL = new URL("../mocks/agent-runs.json", import.meta.url);
 
+export type ReviewActionKind = "approve" | "reject" | "rerun" | "use-fallback";
+
 function taskStatusToDataStatus(status: TaskRunStatus): DataStatus {
   const value = String(status ?? "").toLowerCase();
   if (value === "success") return "available";
@@ -321,6 +323,41 @@ export async function fetchReviewCenterReviews(params: {
     total: payload.total ?? 0,
     source: "api",
   };
+}
+
+function reviewActionPath(reviewId: string, action: ReviewActionKind): string {
+  const endpointByAction: Record<ReviewActionKind, string> = {
+    approve: "approve",
+    reject: "reject",
+    rerun: "rerun",
+    "use-fallback": "use-fallback",
+  };
+  return `${REVIEWS_PATH}/${encodeURIComponent(reviewId)}/${endpointByAction[action]}`;
+}
+
+export async function resolveReviewCenterReview(
+  reviewId: string,
+  action: ReviewActionKind,
+  body: {
+    reason?: string | null;
+    note?: string | null;
+    actor?: string | null;
+    requestId?: string | null;
+    expectedStatus?: string | null;
+  } = {},
+): Promise<TaskReviewViewModel> {
+  const payload = await fetchJson<ApiReviewItem>(reviewActionPath(reviewId, action), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      reason: body.reason ?? undefined,
+      note: body.note ?? undefined,
+      actor: body.actor ?? "review_center",
+      request_id: body.requestId ?? `review-center:${reviewId}:${action}`,
+      expected_status: body.expectedStatus ?? undefined,
+    }),
+  });
+  return mapReview(payload);
 }
 
 function dedupeSourceRefs(refs: SourceRef[]): SourceRef[] {

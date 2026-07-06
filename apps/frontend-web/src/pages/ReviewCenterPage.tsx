@@ -98,6 +98,7 @@ export function ReviewCenterPage() {
       bodyClassName="fa-page-stack"
     >
       {reviewCenter.isError ? <ReviewCenterErrorBanner message={reviewCenter.error?.message ?? "无法加载 /api/reviews"} /> : null}
+      {reviewCenter.actionError ? <ReviewCenterErrorBanner message={reviewCenter.actionError.message} /> : null}
 
       <ReviewCenterSummaryCard
         source={reviewCenter.source}
@@ -118,7 +119,14 @@ export function ReviewCenterPage() {
 
       {filteredReviews.length > 0 ? (
         <div className="space-y-3">
-          {filteredReviews.map((review) => <ReviewCard key={review.review_id} review={review} />)}
+          {filteredReviews.map((review) => (
+            <ReviewCard
+              key={review.review_id}
+              review={review}
+              onAction={reviewCenter.resolveReview}
+              actionReviewId={reviewCenter.actionReviewId}
+            />
+          ))}
         </div>
       ) : (
         <ReviewCenterEmptyState />

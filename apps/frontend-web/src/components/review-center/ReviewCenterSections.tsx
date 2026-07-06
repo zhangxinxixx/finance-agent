@@ -7,6 +7,7 @@ import { getStatusTone } from "@/components/shared/statusMeta";
 import { formatDateTime } from "@/lib/date";
 import { compactId } from "@/lib/format";
 import type { TaskReviewViewModel } from "@/types/agent-task";
+import type { ReviewActionKind } from "@/adapters/agentTasks";
 import type { PromptEvolutionPreviewResponse } from "@/types/agent-registry";
 
 function statusTone(status: string): FAStatusTone {
@@ -17,8 +18,35 @@ function severityTone(severity: string): FAStatusTone {
   return getStatusTone(severity);
 }
 
-export function ReviewCard({ review }: { review: TaskReviewViewModel }) {
+const REVIEW_ACTIONS: Array<{ action: ReviewActionKind; label: string }> = [
+  { action: "use-fallback", label: "采用备用结果" },
+  { action: "rerun", label: "重新运行" },
+  { action: "approve", label: "通过" },
+  { action: "reject", label: "驳回" },
+];
+
+function reviewActionLabel(value: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    approve: "通过",
+    reject: "驳回",
+    rerun: "重新运行",
+    use_fallback: "采用备用结果",
+  };
+  return value ? labels[value] ?? value : "待处理";
+}
+
+export function ReviewCard({
+  review,
+  onAction,
+  actionReviewId,
+}: {
+  review: TaskReviewViewModel;
+  onAction?: (review: TaskReviewViewModel, action: ReviewActionKind) => void;
+  actionReviewId?: string | null;
+}) {
   const isFactReviewIssue = Boolean(review.claim_id || review.agent_output_id);
+  const isPending = review.status === "pending";
+  const isActing = actionReviewId === review.review_id;
 
   return (
     <article className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] p-4">
@@ -36,6 +64,7 @@ export function ReviewCard({ review }: { review: TaskReviewViewModel }) {
         <div className="text-right text-[10px] text-[var(--fg-5)]">
           <div>{review.created_at ? formatDateTime(review.created_at) : "创建时间不可用"}</div>
           <div className="mt-1 font-mono">{review.run_id ?? "run 不可用"}</div>
+          {review.action_status ? <div className="mt-1">{review.action_status}</div> : null}
         </div>
       </div>
 
@@ -62,6 +91,26 @@ export function ReviewCard({ review }: { review: TaskReviewViewModel }) {
         {review.impact_modules.map((module) => (
           <FASourceTraceBadge key={`${review.review_id}-${module}`} source={module} status="impact" tone="warn" />
         ))}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
+        <div className="min-w-0 text-[10px] leading-4 text-[var(--fg-4)]">
+          <span className="font-semibold text-[var(--fg-5)]">处理结果：</span>
+          {review.resolution_action ? `${reviewActionLabel(review.resolution_action)}${review.resolution_note ? ` · ${review.resolution_note}` : ""}` : "待处理"}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {REVIEW_ACTIONS.map((item) => (
+            <button
+              key={item.action}
+              type="button"
+              disabled={!isPending || isActing || !onAction}
+              onClick={() => onAction?.(review, item.action)}
+              className="inline-flex h-7 items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card)] px-2 text-[10px] font-semibold text-[var(--fg-3)] transition hover:border-[var(--border-strong)] hover:text-[var(--fg-1)] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {isActing ? "处理中" : item.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {review.impact_report_ids.length > 0 ? (

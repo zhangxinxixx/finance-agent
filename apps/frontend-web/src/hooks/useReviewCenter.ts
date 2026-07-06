@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchReviewCenterReviews } from "@/adapters/agentTasks";
+import { fetchReviewCenterReviews, resolveReviewCenterReview, type ReviewActionKind } from "@/adapters/agentTasks";
 import type { TaskReviewViewModel } from "@/types/agent-task";
 
 interface ReviewCenterState {
@@ -9,6 +9,9 @@ interface ReviewCenterState {
   isLoading: boolean;
   isError: boolean;
   error: Error | null;
+  actionReviewId: string | null;
+  actionError: Error | null;
+  resolveReview: (review: TaskReviewViewModel, action: ReviewActionKind) => Promise<void>;
   refetch: () => void;
 }
 
@@ -18,6 +21,8 @@ export function useReviewCenter(params: { status?: string; sourceModule?: string
   const [source, setSource] = useState<ReviewCenterState["source"]>("unavailable");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [actionReviewId, setActionReviewId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<Error | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
@@ -61,6 +66,24 @@ export function useReviewCenter(params: { status?: string; sourceModule?: string
     isLoading,
     isError: error !== null,
     error,
+    actionReviewId,
+    actionError,
+    resolveReview: async (review, action) => {
+      setActionReviewId(review.review_id);
+      setActionError(null);
+      try {
+        await resolveReviewCenterReview(review.review_id, action, {
+          actor: "review_center",
+          reason: action === "use-fallback" ? "采用 AgentLoop 备用输出" : action,
+          expectedStatus: review.status,
+        });
+        setReloadToken((value) => value + 1);
+      } catch (cause) {
+        setActionError(cause instanceof Error ? cause : new Error("复核动作执行失败"));
+      } finally {
+        setActionReviewId(null);
+      }
+    },
     refetch: () => setReloadToken((value) => value + 1),
   };
 }
