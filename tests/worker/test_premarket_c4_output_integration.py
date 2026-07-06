@@ -297,6 +297,62 @@ def test_c4_pipeline_executes_fallback_synthesis_before_rendering_when_gate_requ
     assert c4_outputs["gold_runtime_summary"]["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
 
 
+def test_c4_pipeline_executes_cme_options_reparse_when_gate_requires_reparse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision
+    from apps.worker import runner
+    from apps.worker.runner import _run_c4_agent_pipeline
+
+    primary_decision = QualityGateDecision(
+        action=QualityGateAction.FALLBACK,
+        review_status="needs_review",
+        publish_allowed=True,
+        fallback_recommended=True,
+        manual_review_required=True,
+        findings=[
+            {
+                "code": "parse_or_required_field_quality_gap",
+                "severity": "fallback",
+                "message": "Parse gap.",
+                "evidence": {},
+            }
+        ],
+        fallback_actions=["fallback_reparse"],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.58,
+    )
+    fallback_decision = QualityGateDecision(
+        action=QualityGateAction.PASS,
+        review_status="pass",
+        publish_allowed=True,
+        findings=[],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.55,
+    )
+    monkeypatch.setattr(runner, "evaluate_quality_gate", lambda **_: primary_decision)
+    monkeypatch.setattr("apps.analysis.agents.quality_gate.evaluate_quality_gate", lambda **_: fallback_decision)
+
+    snapshot = _make_rich_snapshot(run_id="run-c4-reparse")
+    summaries, c4_outputs = _run_c4_agent_pipeline(
+        storage_root=tmp_path,
+        snapshot=snapshot,
+        run_id="run-c4-reparse",
+        created_at=_CREATED_AT,
+    )
+
+    task_results = summaries["final_report"]["fallback_task_results"]
+    assert task_results[0]["task_type"] == "fallback_reparse"
+    assert task_results[0]["status"] == "success"
+    assert task_results[0]["fallback_output_agent"] == "cme_options_reparse_agent"
+    assert "cme_options_reparse_agent" in c4_outputs["agents"]
+    assert c4_outputs["agents"]["cme_options_reparse_agent"].input_payload["fallback_task"] == "fallback_reparse"
+    assert task_results[1]["task_type"] == "fallback_conservative_synthesis"
+
+
 def test_c4_pipeline_binds_snapshot_id_to_outputs(tmp_path: Path) -> None:
     """All C4 outputs must bind to the input snapshot_id."""
     from apps.worker.runner import _run_c4_agent_pipeline

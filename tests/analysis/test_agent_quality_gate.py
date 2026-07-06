@@ -175,3 +175,89 @@ def test_execute_agent_loop_fallback_tasks_does_not_mark_unimplemented_reparse_s
     assert execution.task_results[0]["fallback_output_agent"] is None
     assert execution.task_results[1]["task_type"] == "fallback_conservative_synthesis"
     assert execution.task_results[1]["status"] == "success"
+
+
+def test_execute_agent_loop_fallback_tasks_runs_cme_options_reparse_when_snapshot_available() -> None:
+    from apps.analysis.agents.schemas import AgentOutput
+
+    primary = AgentOutput.model_validate(
+        {
+            "version": "1.0",
+            "agent_name": "cme_options_agent",
+            "module": "cme_options",
+            "snapshot_id": "snap-primary",
+            "input_snapshot_ids": {"analysis_snapshot": "snap-primary"},
+            "bias": "bullish",
+            "confidence": 0.58,
+            "key_findings": ["Parse suspect primary."],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "summary": "Parse-suspect options output.",
+            "source_refs": [{"source": "cme", "source_ref": "cme:bulletin"}],
+            "status": "partial",
+            "created_at": "2026-07-06T09:30:00+00:00",
+            "evidence_items": [{"factor": "gamma_wall", "source_tier": "exchange"}],
+            "data_quality": ["parse_suspect"],
+        }
+    )
+    primary_decision = QualityGateDecision(
+        action=QualityGateAction.FALLBACK,
+        review_status="needs_review",
+        publish_allowed=True,
+        fallback_recommended=True,
+        retry_recommended=False,
+        manual_review_required=True,
+        findings=[
+            {
+                "code": "parse_or_required_field_quality_gap",
+                "severity": "fallback",
+                "message": "Parse gap.",
+                "evidence": {},
+            }
+        ],
+        fallback_actions=["fallback_reparse"],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.58,
+    )
+    snapshot = {
+        "snapshot_id": "snap-primary",
+        "input_snapshot_ids": {"analysis_snapshot": "snap-primary"},
+        "source_refs": [{"source": "cme", "source_ref": "cme:bulletin"}],
+        "options": {
+            "status": "available",
+            "data": {
+                "source_status": "FINAL",
+                "intent": {"type": "call_buying", "score": 0.7},
+                "wall_scores": [{"strike": 3450, "wall_score": 0.8, "side": "call"}],
+                "support_resistance": {
+                    "support": [{"strike": 3380}],
+                    "resistance": [{"strike": 3500}],
+                },
+                "gex": {
+                    "netgex_aggregate": {"gamma_zero": {"price": 3425}},
+                    "by_expiry": {},
+                },
+                "data_quality": {"categories": {"prelim_data": 0}, "warnings": []},
+            },
+        },
+    }
+
+    execution = execute_agent_loop_fallback_tasks(
+        agent_outputs=[primary],
+        primary_quality_gate_decision=primary_decision,
+        snapshot=snapshot,
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+
+    assert execution.task_results[0]["task_type"] == "fallback_reparse"
+    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["fallback_output_agent"] == "cme_options_reparse_agent"
+    assert "cme_options_reparse_agent" in execution.fallback_agent_outputs
+    reparse = execution.fallback_agent_outputs["cme_options_reparse_agent"]
+    assert reparse.agent_name == "cme_options_reparse_agent"
+    assert reparse.input_payload["fallback_of"]["agent_name"] == "cme_options_agent"
+    assert reparse.input_payload["fallback_task"] == "fallback_reparse"
+    assert execution.task_results[1]["task_type"] == "fallback_conservative_synthesis"

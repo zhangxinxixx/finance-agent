@@ -201,6 +201,7 @@ def execute_agent_loop_fallback_tasks(
     *,
     agent_outputs: list[AgentOutput],
     primary_quality_gate_decision: QualityGateDecision,
+    snapshot: dict[str, Any] | None = None,
     gold_macro_overview: dict[str, Any] | None = None,
     source_health: dict[str, Any] | None = None,
     created_at: datetime | None = None,
@@ -218,11 +219,26 @@ def execute_agent_loop_fallback_tasks(
         return AgentLoopFallbackExecution(attempted=False)
 
     primary = _preferred_primary_output(agent_outputs)
+    created_at = created_at or datetime.now(timezone.utc)
+    fallback_agent_outputs: dict[str, AgentOutput] = {}
+    task_results: list[dict[str, Any]] = []
+    for task in tasks:
+        result, output = _execute_dedicated_fallback_task(
+            task=task,
+            agent_outputs=agent_outputs,
+            snapshot=snapshot,
+            created_at=created_at,
+        )
+        task_results.append(result)
+        if output is not None:
+            fallback_agent_outputs[output.agent_name] = output
+
     fallback = _conservative_fallback_output(
         primary=primary,
         tasks=tasks,
-        created_at=created_at or datetime.now(timezone.utc),
+        created_at=created_at,
     )
+    fallback_agent_outputs[fallback.agent_name] = fallback
     overview = dict(gold_macro_overview or {})
     overview["net_bias"] = "neutral"
     overview["source_refs"] = fallback.source_refs
@@ -231,18 +247,6 @@ def execute_agent_loop_fallback_tasks(
         gold_macro_overview=overview,
         source_health=source_health,
     )
-    task_results = [
-        {
-            "task_type": task.task_type,
-            "reason": task.reason,
-            "status": "queued_not_implemented",
-            "fallback_output_agent": None,
-            "fallback_of": f"{primary.agent_name}:{primary.snapshot_id}",
-            "note": "Dedicated fallback task execution is not wired; conservative synthesis was used instead.",
-        }
-        for task in tasks
-        if task.task_type != "fallback_conservative_synthesis"
-    ]
     task_results.append(
         {
             "task_type": "fallback_conservative_synthesis",
@@ -255,7 +259,7 @@ def execute_agent_loop_fallback_tasks(
     return AgentLoopFallbackExecution(
         attempted=True,
         task_results=task_results,
-        fallback_agent_outputs={fallback.agent_name: fallback},
+        fallback_agent_outputs=fallback_agent_outputs,
         fallback_quality_gate_decision=fallback_quality_gate_decision,
     )
 
@@ -268,6 +272,80 @@ def _preferred_primary_output(agent_outputs: list[AgentOutput]) -> AgentOutput:
     if not agent_outputs:
         raise ValueError("fallback execution requires at least one primary agent output")
     return agent_outputs[-1]
+
+
+def _execute_dedicated_fallback_task(
+    *,
+    task: AgentLoopFallbackTask,
+    agent_outputs: list[AgentOutput],
+    snapshot: dict[str, Any] | None,
+    created_at: datetime,
+) -> tuple[dict[str, Any], AgentOutput | None]:
+    if task.task_type == "fallback_reparse":
+        output = _cme_options_reparse_output(agent_outputs=agent_outputs, snapshot=snapshot, created_at=created_at)
+        if output is not None:
+            return (
+                {
+                    "task_type": task.task_type,
+                    "reason": task.reason,
+                    "status": "success",
+                    "fallback_output_agent": output.agent_name,
+                    "fallback_of": str(output.input_payload.get("fallback_of", {}).get("snapshot_id") or "unknown"),
+                },
+                output,
+            )
+    return (
+        {
+            "task_type": task.task_type,
+            "reason": task.reason,
+            "status": "queued_not_implemented",
+            "fallback_output_agent": None,
+            "fallback_of": _fallback_target_ref(agent_outputs),
+            "note": "Dedicated fallback task execution is not wired; conservative synthesis was used instead.",
+        },
+        None,
+    )
+
+
+def _cme_options_reparse_output(
+    *,
+    agent_outputs: list[AgentOutput],
+    snapshot: dict[str, Any] | None,
+    created_at: datetime,
+) -> AgentOutput | None:
+    if not isinstance(snapshot, dict):
+        return None
+    if not isinstance(snapshot.get("options"), dict):
+        return None
+    primary = next((output for output in agent_outputs if output.agent_name == "cme_options_agent"), None)
+    if primary is None:
+        return None
+    from apps.analysis.agents.cme_options import analyze_cme_options
+
+    reparsed = analyze_cme_options(snapshot, created_at=created_at)
+    return reparsed.model_copy(
+        update={
+            "agent_name": "cme_options_reparse_agent",
+            "module": "agent_loop_fallback_reparse",
+            "snapshot_id": f"{reparsed.snapshot_id}:fallback_reparse",
+            "data_quality": [*list(reparsed.data_quality), "fallback_reparse"],
+            "input_payload": {
+                **dict(reparsed.input_payload or {}),
+                "fallback_task": "fallback_reparse",
+                "fallback_of": {
+                    "agent_name": primary.agent_name,
+                    "snapshot_id": primary.snapshot_id,
+                },
+            },
+        }
+    )
+
+
+def _fallback_target_ref(agent_outputs: list[AgentOutput]) -> str:
+    target = next((output for output in agent_outputs if output.agent_name == "cme_options_agent"), None)
+    if target is None:
+        target = _preferred_primary_output(agent_outputs)
+    return f"{target.agent_name}:{target.snapshot_id}"
 
 
 def _conservative_fallback_output(

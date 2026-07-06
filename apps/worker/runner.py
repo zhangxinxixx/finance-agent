@@ -1127,6 +1127,7 @@ def _run_c4_agent_pipeline(
     fallback_execution = execute_agent_loop_fallback_tasks(
         agent_outputs=agent_outputs,
         primary_quality_gate_decision=quality_gate_decision,
+        snapshot=snapshot,
         gold_macro_overview=_gold_macro_overview_from_snapshot(snapshot),
         source_health=_source_health_from_snapshot(snapshot),
         created_at=created_at,
