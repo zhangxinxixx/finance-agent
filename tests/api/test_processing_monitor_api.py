@@ -169,6 +169,18 @@ def _write_gold_processing_artifacts(root: Path) -> None:
                     "blocking_reasons": [],
                     "warnings": [],
                 },
+                "review_gate": {
+                    "agent_id": "review_gate_agent",
+                    "dag_node_id": "review_gate",
+                    "review_status": "needs_review",
+                    "quality_gate_action": "manual_review",
+                    "publish_allowed": True,
+                    "manual_review_required": True,
+                    "fallback_recommended": False,
+                    "retry_recommended": False,
+                    "blocking_reasons": [],
+                    "warnings": ["mixed drivers require verification"],
+                },
                 "source_refs": source_refs,
                 "artifact_refs": [{"artifact_type": "json", "file_path": "analysis/gold_mainlines/overview.json"}],
             },
@@ -224,6 +236,9 @@ def test_get_processing_overview_derives_monitoring_read_model(tmp_path: Path) -
     assert bindings["SourceTrace"] == "bound"
     assert payload["source_health"]["overall_status"] == "ready"
     assert payload["source_health"]["can_build_gold_macro_overview"] is True
+    assert payload["quality_gate"]["status"] == "needs_review"
+    assert payload["quality_gate"]["quality_gate_action"] == "manual_review"
+    assert payload["quality_gate"]["manual_review_required"] is True
     assert payload["read_time_source_health"]["overall_status"] == "degraded"
     assert "fedwatch_ois" in payload["read_time_source_health"]["p1_missing"]
     assert payload["read_time_generated_at"]
@@ -238,6 +253,8 @@ def test_get_processing_overview_derives_monitoring_read_model(tmp_path: Path) -
     assert payload["trace_path"][6]["status"] == "needs_review"
     assert payload["trace_path"][7]["node_id"] == "gold_macro_overview"
     assert payload["trace_path"][7]["artifact_ref_count"] == 1
+    assert payload["trace_path"][8]["node_id"] == "review_gate"
+    assert payload["trace_path"][8]["status"] == "needs_review"
     assert payload["trace_path"][-1]["node_id"] == "source_trace"
 
 
@@ -278,6 +295,8 @@ def test_processing_trace_lookup_by_trace_event_and_source_ref(tmp_path: Path) -
         assert payload["trace_path"][1]["source_ref_count"] == 1
         assert payload["trace_path"][5]["node_id"] == "transmission_chain_detection"
         assert payload["trace_path"][5]["status"] == "covered"
+        assert any(item["node_id"] == "review_gate" and item["status"] == "needs_review" for item in payload["trace_path"])
+        assert payload["quality_gate"]["quality_gate_action"] == "manual_review"
         assert payload["trace_path"][-1]["node_id"] == "source_trace"
         assert payload["trace_path"][-1]["source_ref_count"] == 1
         assert any(item["view"] == "OilGeopoliticsPage" and item["status"] == "bound" for item in payload["view_bindings"])

@@ -35,6 +35,7 @@ TRACE_PATH = [
     {"node_id": "transmission_chain_detection", "label": "Transmission Chain", "stage": "agent"},
     {"node_id": "driver_decomposition", "label": "Driver Decomposition", "stage": "agent"},
     {"node_id": "gold_macro_overview", "label": "GoldMacroOverview", "stage": "read_model"},
+    {"node_id": "review_gate", "label": "ReviewGate", "stage": "quality_gate"},
     {"node_id": "dashboard", "label": "Dashboard", "stage": "frontend"},
     {"node_id": "gold_mainlines_page", "label": "GoldMainlinesPage", "stage": "frontend"},
     {"node_id": "oil_geopolitics_page", "label": "OilGeopoliticsPage", "stage": "frontend"},
@@ -81,6 +82,7 @@ def get_processing_overview(*, project_root: Path | None = None) -> dict[str, An
         "mixed_health": _mixed_health(overview=overview),
         "source_freshness": _source_freshness(source_health=source_health),
         "source_health": source_health,
+        "quality_gate": _quality_gate(overview=overview),
         "read_time_source_health": read_time_source_health,
         "read_time_warnings": list(gold_payload.get("read_time_warnings") or []),
         "read_time_generated_at": gold_payload.get("read_time_generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -207,6 +209,7 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
                 source_health=source_health,
             ),
             "source_health": source_health,
+            "quality_gate": _quality_gate(overview=overview),
             "read_time_source_health": read_time_source_health,
             "read_time_warnings": list(gold_payload.get("read_time_warnings") or []),
             "read_time_generated_at": gold_payload.get("read_time_generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -246,6 +249,7 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
             source_health=source_health,
         ),
         "source_health": source_health,
+        "quality_gate": _quality_gate(overview=overview),
         "read_time_source_health": read_time_source_health,
         "read_time_warnings": list(gold_payload.get("read_time_warnings") or []),
         "read_time_generated_at": gold_payload.get("read_time_generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -285,6 +289,7 @@ def _trace_path(
     has_mainlines = any(_event_mainlines(event) for event in event_links)
     has_transmission_chains = any(_event_transmission_chains(event) for event in event_links) or bool(overview.get("war_oil_rate_chain"))
     mixed_status = str(_mixed_health(overview=overview).get("status") or "missing")
+    quality_gate_status = str(_quality_gate(overview=overview).get("status") or "missing")
     binding_status = {
         item["view"]: item["status"]
         for item in _view_bindings(
@@ -332,6 +337,10 @@ def _trace_path(
             source_ref_count = len(source_refs)
         elif node_id == "gold_macro_overview":
             status = "covered" if has_overview else "missing"
+            source_ref_count = len(source_refs)
+            artifact_ref_count = len(artifact_refs)
+        elif node_id == "review_gate":
+            status = quality_gate_status
             source_ref_count = len(source_refs)
             artifact_ref_count = len(artifact_refs)
         elif node_id in frontend_node_views:
@@ -475,6 +484,45 @@ def _artifact_source_health(*, overview: dict[str, Any]) -> dict[str, Any]:
         "blocking_reasons": [],
         "warnings": ["artifact source_health unavailable; read_time_source_health is exposed separately"],
     }
+
+
+def _quality_gate(*, overview: dict[str, Any]) -> dict[str, Any]:
+    review_gate = _dict(overview.get("review_gate"))
+    if not review_gate:
+        return {
+            "status": "missing",
+            "review_status": "missing",
+            "quality_gate_action": None,
+            "publish_allowed": None,
+            "manual_review_required": None,
+            "fallback_recommended": None,
+            "retry_recommended": None,
+            "blocking_reasons": [],
+            "warnings": ["artifact review_gate unavailable"],
+        }
+    review_status = str(review_gate.get("review_status") or "needs_review")
+    return {
+        "status": _coverage_from_review_status(review_status),
+        "review_status": review_status,
+        "quality_gate_action": review_gate.get("quality_gate_action"),
+        "publish_allowed": review_gate.get("publish_allowed"),
+        "manual_review_required": review_gate.get("manual_review_required"),
+        "fallback_recommended": review_gate.get("fallback_recommended"),
+        "retry_recommended": review_gate.get("retry_recommended"),
+        "blocking_reasons": list(review_gate.get("blocking_reasons") or []),
+        "warnings": list(review_gate.get("warnings") or []),
+    }
+
+
+def _coverage_from_review_status(review_status: str) -> str:
+    status = review_status.lower()
+    if status == "pass":
+        return "covered"
+    if status == "blocked":
+        return "blocked"
+    if status == "needs_review":
+        return "needs_review"
+    return "missing"
 
 
 def _coverage_from_source_health(source_health: dict[str, Any]) -> str:
