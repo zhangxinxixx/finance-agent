@@ -3,6 +3,7 @@ import type {
   GoldMainline,
   GoldMainlinesViewModel,
   GoldNetBias,
+  TransmissionChain,
   TransmissionPath,
 } from "@/types/gold-mainlines";
 
@@ -68,7 +69,7 @@ export interface EventFlowTimelineItem {
   related_news_items?: EventFlowRelatedNewsItem[];
   mainlines?: GoldMainline[];
   primary_mainline?: GoldMainline | null;
-  transmission_chains?: TransmissionPath[];
+  transmission_chains?: Array<TransmissionPath | TransmissionChain>;
   dominant_driver?: string | null;
   bullish_drivers?: string[];
   bearish_drivers?: string[];

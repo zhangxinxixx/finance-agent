@@ -11,7 +11,7 @@ import {
   goldVerificationStatusTone,
 } from "@/components/shared/goldMainlineFormat";
 import type { EventFlowTimelineItem } from "@/types/event-flow";
-import type { GoldMainline, TransmissionPath } from "@/types/gold-mainlines";
+import type { GoldMainline, TransmissionChain, TransmissionPath } from "@/types/gold-mainlines";
 
 interface EventGoldMainlineTraceProps {
   event: EventFlowTimelineItem;
@@ -36,7 +36,7 @@ function mainlineList(event: EventFlowTimelineItem): GoldMainline[] {
   ]);
 }
 
-function pathList(event: EventFlowTimelineItem): TransmissionPath[] {
+function pathList(event: EventFlowTimelineItem): Array<TransmissionPath | TransmissionChain> {
   return uniqueList(event.transmission_chains ?? []);
 }
 

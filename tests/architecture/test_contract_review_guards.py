@@ -60,6 +60,14 @@ def _frontend_transmission_path_type_ids() -> set[str]:
     return set(_quoted_strings(match.group("body")))
 
 
+def _frontend_transmission_chain_type_ids() -> set[str]:
+    path = PROJECT_ROOT / "apps/frontend-web/src/types/gold-mainlines.ts"
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r"export type TransmissionChain =(?P<body>.*?);", text, re.S)
+    assert match is not None
+    return set(_quoted_strings(match.group("body")))
+
+
 def _frontend_transmission_path_label_ids() -> set[str]:
     path = PROJECT_ROOT / "apps/frontend-web/src/components/shared/goldMainlineFormat.ts"
     text = path.read_text(encoding="utf-8")
@@ -124,6 +132,7 @@ def test_gold_transmission_chain_ids_are_canonical_across_prompts_monitor_and_fr
 
     assert GOLD_V3_TRANSMISSION_CHAINS == canonical_chains
     assert processing_monitor_service.TRANSMISSION_CHAINS == canonical_chains
+    assert _frontend_transmission_chain_type_ids() == set(canonical_chains)
     assert _frontend_transmission_path_type_ids() == canonical_paths
     assert _frontend_transmission_path_label_ids() == canonical_paths
     assert set(TRANSMISSION_CHAIN_ALIAS_MAP.values()).issubset(set(canonical_chains))
@@ -137,7 +146,9 @@ def test_gold_v3_frontend_type_contract_exposes_processing_trace_models() -> Non
     processing_types = _frontend_type_file("apps/frontend-web/src/types/processing-monitor.ts")
 
     assert "import type { ProcessingTrace }" in gold_types
-    assert "export type TransmissionChain = TransmissionChainSummary;" in gold_types
+    assert "export type WarOilRateChain = TransmissionChainSummary;" in gold_types
+    assert "export type DriverDecomposition = DriverConflict;" in gold_types
+    assert re.search(r"transmission_chains\?:\s*Array<TransmissionPath\s*\|\s*TransmissionChain>;", event_types) is not None
     assert re.search(r"processing_traces\?:\s*ProcessingTrace\[];", gold_types) is not None
     assert re.search(r"processing_trace_id\?:\s*string\s*\|\s*null;", event_types) is not None
     assert "export interface ProcessingStage" in processing_types

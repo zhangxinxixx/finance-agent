@@ -37,6 +37,16 @@ export type TransmissionPath =
   | "asia_demand"
   | "technical_confirmation";
 
+export type TransmissionChain =
+  | "rate_chain"
+  | "dollar_chain"
+  | "war_oil_rate_chain"
+  | "safe_haven_chain"
+  | "flow_chain"
+  | "reserve_chain"
+  | "asia_demand_chain"
+  | "technical_chain";
+
 export type GoldPhase =
   | "strong_uptrend"
   | "high_level_range"
@@ -54,6 +64,8 @@ export type GoldNetBias =
   | "bearish"
   | "strong_bearish"
   | "mixed"
+  | "mixed_bullish"
+  | "mixed_bearish"
   | "unknown";
 
 export type GoldMainlineTrend = "rising" | "falling" | "stable" | "new" | "unknown";
@@ -85,7 +97,7 @@ export interface GoldMainlineRanking {
   confidence: number | null;
   verification_status: GoldVerificationStatus;
   trend: GoldMainlineTrend;
-  impact_strength?: "high" | "medium" | "low" | string | null;
+  impact_strength?: "high" | "medium" | "low" | "weak" | "strong" | string | null;
   freshness?: GoldMainlineStatus | string | null;
   evidence_count?: number | null;
   missing_data?: string[] | null;
@@ -130,7 +142,7 @@ export interface TransmissionChainSummary {
   artifact_refs?: ArtifactRef[];
 }
 
-export type TransmissionChain = TransmissionChainSummary;
+export type WarOilRateChain = TransmissionChainSummary;
 
 export interface DriverConflict {
   status: "aligned" | "conflicted" | "mixed" | "unknown";
@@ -142,6 +154,8 @@ export interface DriverConflict {
   verification_needed: string[];
   source_refs: SourceRef[];
 }
+
+export type DriverDecomposition = DriverConflict;
 
 export interface VerificationItem {
   id: string;

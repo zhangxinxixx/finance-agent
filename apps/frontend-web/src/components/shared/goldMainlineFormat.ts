@@ -170,6 +170,8 @@ export const GOLD_NET_BIAS_LABELS: Record<GoldNetBias, string> = {
   bearish: "利空",
   strong_bearish: "强利空",
   mixed: "多空混合",
+  mixed_bullish: "混合偏多",
+  mixed_bearish: "混合偏空",
   unknown: "未知",
 };
 
@@ -342,8 +344,8 @@ export function formatGoldVerificationStatusLabel(value: GoldVerificationStatus 
 }
 
 export function goldNetBiasTone(value: GoldNetBias | string | null | undefined): FAStatusTone {
-  if (value === "strong_bullish" || value === "bullish" || value === "neutral_bullish") return "up";
-  if (value === "strong_bearish" || value === "bearish" || value === "neutral_bearish") return "down";
+  if (value === "strong_bullish" || value === "bullish" || value === "neutral_bullish" || value === "mixed_bullish") return "up";
+  if (value === "strong_bearish" || value === "bearish" || value === "neutral_bearish" || value === "mixed_bearish") return "down";
   if (value === "mixed") return "warn";
   if (value === "unknown") return "dim";
   return "neutral";
