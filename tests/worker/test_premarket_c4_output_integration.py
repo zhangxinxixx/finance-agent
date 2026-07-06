@@ -172,6 +172,7 @@ def test_c4_pipeline_writes_final_report_and_strategy_card(tmp_path: Path) -> No
     assert summaries["final_report"]["status"] == "success"
     assert len(summaries["final_report"]["paths"]) >= 1  # P4-04: may include structured_report.json
     assert "quality_gate_decision" in summaries["final_report"]
+    assert "agent_loop_decision" in summaries["final_report"]
     assert summaries["final_report"]["quality_gate_action"] == summaries["final_report"]["quality_gate_decision"]["action"]
     assert isinstance(summaries["final_report"]["publish_allowed"], bool)
 
@@ -236,6 +237,7 @@ def test_c4_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) 
     assert summaries["final_report"]["publish_allowed"] == decision.publish_allowed
     runtime_summary = c4_outputs["gold_runtime_summary"]
     assert runtime_summary["quality_gate_decision"] == decision.model_dump(mode="json")
+    assert runtime_summary["agent_loop_decision"] == c4_outputs["agent_loop_decision"].model_dump(mode="json")
     assert runtime_summary["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
     assert runtime_summary["accepted_outputs"]["strategy_card_paths"] == summaries["strategy_card"]["paths"]
     assert runtime_summary["fallback_attempts"] == 0

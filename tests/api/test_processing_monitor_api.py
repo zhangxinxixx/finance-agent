@@ -178,6 +178,20 @@ def _write_gold_processing_artifacts(root: Path) -> None:
                     "manual_review_required": True,
                     "fallback_recommended": False,
                     "retry_recommended": False,
+                    "quality_gate_decision": {
+                        "fallback_actions": ["fallback_reanalyze"],
+                    },
+                    "agent_loop_decision": {
+                        "decision": "fallback_required",
+                        "reasons": ["unsupported_claim"],
+                        "fallback_tasks": [
+                            {
+                                "task_type": "fallback_reanalyze",
+                                "reason": "quality_gate_finding",
+                                "source": "agent_quality_gate",
+                            }
+                        ],
+                    },
                     "blocking_reasons": [],
                     "warnings": ["mixed drivers require verification"],
                 },
@@ -239,6 +253,9 @@ def test_get_processing_overview_derives_monitoring_read_model(tmp_path: Path) -
     assert payload["quality_gate"]["status"] == "needs_review"
     assert payload["quality_gate"]["quality_gate_action"] == "manual_review"
     assert payload["quality_gate"]["manual_review_required"] is True
+    assert payload["quality_gate"]["fallback_reasons"] == ["unsupported_claim"]
+    assert payload["quality_gate"]["fallback_actions"] == ["fallback_reanalyze"]
+    assert payload["quality_gate"]["agent_loop_decision"]["decision"] == "fallback_required"
     assert payload["read_time_source_health"]["overall_status"] == "degraded"
     assert "fedwatch_ois" in payload["read_time_source_health"]["p1_missing"]
     assert payload["read_time_generated_at"]

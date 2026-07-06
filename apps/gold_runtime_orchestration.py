@@ -242,6 +242,7 @@ def build_gold_runtime_execution_summary(
     run_mode: str,
     trigger_reason: str | None = None,
     quality_gate_decision: Any = None,
+    agent_loop_decision: Any = None,
     accepted_outputs: dict[str, Any] | None = None,
     fallback_tasks_created: list[dict[str, Any]] | None = None,
     fallback_attempts: int = 0,
@@ -251,6 +252,8 @@ def build_gold_runtime_execution_summary(
 
     summary = build_gold_runtime_summary_preview(run_mode=run_mode, trigger_reason=trigger_reason)
     decision = _quality_gate_decision_dict(quality_gate_decision)
+    agent_loop = _agent_loop_decision_dict(agent_loop_decision)
+    effective_outputs = _accepted_outputs(accepted_outputs=accepted_outputs, agent_loop=agent_loop)
     quality_gate_status = _quality_gate_status(decision)
     review_status = _review_status_from_quality_gate(quality_gate_status, decision)
     merged_warnings = {
@@ -271,13 +274,18 @@ def build_gold_runtime_execution_summary(
             "quality_gate_status": quality_gate_status,
             "quality_gate_action": decision.get("action"),
             "quality_gate_decision": decision,
-            "fallback_tasks_created": list(fallback_tasks_created or []),
+            "agent_loop_decision": agent_loop,
+            "fallback_tasks_created": _fallback_tasks(
+                explicit=fallback_tasks_created,
+                agent_loop=agent_loop,
+            ),
             "fallback_attempts": int(fallback_attempts),
-            "accepted_outputs": dict(accepted_outputs or {}),
-            "no_strong_conclusion": quality_gate_status == "blocked",
+            "accepted_outputs": effective_outputs,
+            "no_strong_conclusion": quality_gate_status == "blocked" or bool(agent_loop.get("no_strong_conclusion")),
+            "strategy_card_override": dict(agent_loop.get("strategy_card_override") or {}),
             "review_item_ids": [],
             "runtime_contract_only": False,
-            "writes": _accepted_output_paths(accepted_outputs or {}),
+            "writes": _accepted_output_paths(effective_outputs),
             "warnings": sorted(merged_warnings),
         }
     )
@@ -293,6 +301,33 @@ def _quality_gate_decision_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _agent_loop_decision_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump(mode="json")
+        return dict(dumped) if isinstance(dumped, dict) else {}
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _accepted_outputs(*, accepted_outputs: dict[str, Any] | None, agent_loop: dict[str, Any]) -> dict[str, Any]:
+    loop_outputs = agent_loop.get("accepted_outputs")
+    if isinstance(loop_outputs, dict) and loop_outputs:
+        return dict(loop_outputs)
+    return dict(accepted_outputs or {})
+
+
+def _fallback_tasks(*, explicit: list[dict[str, Any]] | None, agent_loop: dict[str, Any]) -> list[dict[str, Any]]:
+    if explicit is not None:
+        return list(explicit)
+    tasks = agent_loop.get("fallback_tasks")
+    if isinstance(tasks, list):
+        return [dict(item) for item in tasks if isinstance(item, dict)]
+    return []
 
 
 def _quality_gate_status(decision: dict[str, Any]) -> QualityGateStatus:

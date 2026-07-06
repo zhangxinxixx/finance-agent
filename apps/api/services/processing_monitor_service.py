@@ -497,9 +497,14 @@ def _quality_gate(*, overview: dict[str, Any]) -> dict[str, Any]:
             "manual_review_required": None,
             "fallback_recommended": None,
             "retry_recommended": None,
+            "fallback_actions": [],
+            "fallback_reasons": [],
+            "agent_loop_decision": {},
             "blocking_reasons": [],
             "warnings": ["artifact review_gate unavailable"],
         }
+    decision = _dict(review_gate.get("quality_gate_decision"))
+    agent_loop_decision = _dict(review_gate.get("agent_loop_decision"))
     review_status = str(review_gate.get("review_status") or "needs_review")
     return {
         "status": _coverage_from_review_status(review_status),
@@ -509,6 +514,9 @@ def _quality_gate(*, overview: dict[str, Any]) -> dict[str, Any]:
         "manual_review_required": review_gate.get("manual_review_required"),
         "fallback_recommended": review_gate.get("fallback_recommended"),
         "retry_recommended": review_gate.get("retry_recommended"),
+        "fallback_actions": list(decision.get("fallback_actions") or agent_loop_decision.get("fallback_tasks") or []),
+        "fallback_reasons": list(agent_loop_decision.get("reasons") or []),
+        "agent_loop_decision": agent_loop_decision,
         "blocking_reasons": list(review_gate.get("blocking_reasons") or []),
         "warnings": list(review_gate.get("warnings") or []),
     }

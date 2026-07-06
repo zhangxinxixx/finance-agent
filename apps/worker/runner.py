@@ -45,6 +45,7 @@ from apps.analysis.agents.technical import analyze_technical
 from apps.analysis.agents.positioning import analyze_positioning
 from apps.analysis.agents.news import analyze_news
 from apps.analysis.agents.market_odds import analyze_market_odds
+from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate
 from apps.api.services.quality_gate_service import evaluate_quality_gate
 from apps.analysis.strategy.card import build_strategy_card
 from apps.output.final_report import write_final_report, write_strategy_card
@@ -1123,6 +1124,12 @@ def _run_c4_agent_pipeline(
         gold_macro_overview=_gold_macro_overview_from_snapshot(snapshot),
         source_health=_source_health_from_snapshot(snapshot),
     )
+    agent_loop_decision = evaluate_agent_quality_gate(
+        agent_outputs=agent_outputs,
+        gold_macro_overview=_gold_macro_overview_from_snapshot(snapshot),
+        source_health=_source_health_from_snapshot(snapshot),
+        primary_quality_gate_decision=quality_gate_decision,
+    )
 
     summaries["c3_agents"] = {
         "step": "c3_agents",
@@ -1188,6 +1195,7 @@ def _run_c4_agent_pipeline(
         "fallback_recommended": quality_gate_decision.fallback_recommended,
         "retry_recommended": quality_gate_decision.retry_recommended,
         "quality_gate_decision": quality_gate_decision.model_dump(mode="json"),
+        "agent_loop_decision": agent_loop_decision.model_dump(mode="json"),
     }
 
     # ── 3. Strategy card ──────────────────────────────────────────────────
@@ -1212,6 +1220,7 @@ def _run_c4_agent_pipeline(
         run_mode="premarket_full_run",
         trigger_reason="worker_premarket_task",
         quality_gate_decision=quality_gate_decision,
+        agent_loop_decision=agent_loop_decision,
         accepted_outputs={
             "analysis_snapshot": snapshot_id,
             "final_report_paths": report_result.get("paths", []),
@@ -1240,6 +1249,7 @@ def _run_c4_agent_pipeline(
         "report_result": report_result,
         "card_result": card_result,
         "quality_gate_decision": quality_gate_decision,
+        "agent_loop_decision": agent_loop_decision,
         "gold_runtime_summary": gold_runtime_summary,
     }
 
