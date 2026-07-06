@@ -204,6 +204,7 @@ def test_task_run_and_step_response_are_json_serializable() -> None:
         status=TaskStatus.running,
         current_stage="parser",
         progress=0.5,
+        runtime_summary={"run_mode": "premarket_full_run", "quality_gate_status": "passed"},
         steps=[step],
     )
 
@@ -213,6 +214,8 @@ def test_task_run_and_step_response_are_json_serializable() -> None:
     assert payload["steps"][0]["status"] == "running"
     assert payload["steps"][0]["task_kind"] == "pdf_parse"
     assert payload["steps"][0]["duration_ms"] == 1200
+    assert payload["runtime_summary"]["run_mode"] == "premarket_full_run"
+    assert payload["runtime_summary"]["quality_gate_status"] == "passed"
     assert payload["steps"][0]["input_refs"][0]["artifact_type"] == "raw_file"
     assert payload["steps"][0]["output_refs"][0]["artifact_type"] == "parsed_file"
     assert payload["steps"][0]["artifact_refs"][0]["artifact_type"] == "parsed_file"

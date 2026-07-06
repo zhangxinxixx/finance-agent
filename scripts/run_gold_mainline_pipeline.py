@@ -15,7 +15,7 @@ from apps.api.services.source_service import get_data_source_statuses
 from apps.api.services.quality_gate_service import QualityGateAction, evaluate_quality_gate
 from apps.collectors.positioning.collector import CFTC_COT_URL
 from apps.features.news.gold_event_mainlines import archive_gold_event_mainlines, build_gold_event_mainlines
-from apps.gold_runtime_orchestration import build_gold_runtime_summary_preview
+from apps.gold_runtime_orchestration import build_gold_runtime_execution_summary, build_gold_runtime_summary_preview
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -260,12 +260,15 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False), file=sys.stderr)
         return 1
 
-    runtime_summary["review_status"] = runtime_gate["review_gate"]["review_status"]
-    runtime_summary["warnings"] = sorted(
-        {
-            *[str(item) for item in runtime_summary.get("warnings") or []],
-            *[str(item) for item in runtime_gate["review_gate"].get("warnings") or []],
-        }
+    runtime_summary = build_gold_runtime_execution_summary(
+        run_mode=str(runtime_summary["run_mode"]),
+        trigger_reason=str(runtime_summary["trigger_reason"]),
+        quality_gate_decision=runtime_gate["review_gate"].get("quality_gate_decision"),
+        accepted_outputs={
+            "gold_event_mainlines_path": gold_event_mainlines_path,
+            "gold_macro_overview_path": gold_macro_overview_path,
+        },
+        warnings=[str(item) for item in runtime_gate["review_gate"].get("warnings") or []],
     )
     summary = {
         "status": "success",
@@ -277,6 +280,13 @@ def main(argv: list[str] | None = None) -> int:
         "planned_agents_skipped": runtime_summary["planned_agents_skipped"],
         "runtime_contract_only": runtime_summary["runtime_contract_only"],
         "gold_macro_overview_updated": runtime_summary["gold_macro_overview_updated"],
+        "quality_gate_status": runtime_summary["quality_gate_status"],
+        "quality_gate_action": runtime_summary["quality_gate_action"],
+        "fallback_tasks_created": runtime_summary["fallback_tasks_created"],
+        "fallback_attempts": runtime_summary["fallback_attempts"],
+        "accepted_outputs": runtime_summary["accepted_outputs"],
+        "no_strong_conclusion": runtime_summary["no_strong_conclusion"],
+        "review_item_ids": runtime_summary["review_item_ids"],
         "retrieved_date": source_date,
         "source_run_id": source_run_id,
         "output_run_id": output_run_id,

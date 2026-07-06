@@ -243,6 +243,22 @@ def test_db_sink_persists_final_analysis_result(tmp_path: Path) -> None:
     assert fr.final_report_path is not None, "final_report_path must be set"
     assert fr.strategy_card_json_path is not None, "strategy_card_json_path must be set"
     assert fr.strategy_card_md_path is not None, "strategy_card_md_path must be set"
+    assert fr.run_summaries["gold_runtime_summary"]["run_mode"] == "premarket_full_run"
+    assert fr.run_summaries["gold_runtime_summary"]["runtime_contract_only"] is False
+    assert "quality_gate_status" in fr.run_summaries["gold_runtime_summary"]
+
+    from apps.api.services.task_service import get_task_run_response
+
+    run_response = get_task_run_response(db, str(task.id))
+    assert run_response is not None
+    assert run_response.runtime_summary is not None
+    assert run_response.runtime_summary["run_mode"] == "premarket_full_run"
+    assert run_response.runtime_summary["quality_gate_status"] in {
+        "passed",
+        "fallback_required",
+        "needs_review",
+        "blocked",
+    }
 
 
 def test_db_sink_preserves_source_refs_and_snapshot_ids(tmp_path: Path) -> None:

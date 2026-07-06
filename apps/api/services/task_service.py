@@ -4,6 +4,7 @@ import json
 import uuid
 from collections.abc import Iterable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.exc import OperationalError, ProgrammingError
@@ -148,6 +149,7 @@ def build_task_run_response(db: Session, run: TaskRun) -> TaskRunResponse:
     run_artifact_source_refs = _run_artifact_source_refs(run_artifacts)
     started_at = run.started_at or _first_non_null(step.started_at for step in run.steps)
     ended_at = run.ended_at or _last_non_null(step.finished_at for step in run.steps)
+    runtime_summary = _gold_runtime_summary_from_run_artifacts(run_artifacts) or _gold_runtime_summary_from_final_result(db, run)
     return TaskRunResponse(
         run_id=str(run.id),
         snapshot_id=run.snapshot_id,
@@ -165,6 +167,7 @@ def build_task_run_response(db: Session, run: TaskRun) -> TaskRunResponse:
         token_out=run.token_out,
         final_result_id=run.final_result_id,
         error_summary=run.error_summary or run.error,
+        runtime_summary=runtime_summary,
         source_refs=dedupe_source_refs(
             [
                 *run_artifact_source_refs,
@@ -322,3 +325,49 @@ def _run_artifact_refs(rows: list[RunArtifact]) -> list[ArtifactRef]:
 
 def _run_artifact_source_refs(rows: list[RunArtifact]) -> list[SourceRef]:
     return dedupe_source_refs(source for row in rows for source in parse_source_refs(row.source_refs))
+
+
+def _gold_runtime_summary_from_run_artifacts(rows: list[RunArtifact]) -> dict[str, Any] | None:
+    for row in rows:
+        artifact_id = str(row.artifact_id or "")
+        file_path = str(row.file_path or "")
+        if not (artifact_id.endswith(":step_summaries") or file_path.endswith("step_summaries.json")):
+            continue
+        payload = _read_json_file(file_path)
+        if not isinstance(payload, dict):
+            continue
+        steps = payload.get("steps")
+        if not isinstance(steps, dict):
+            continue
+        summary = steps.get("gold_runtime_summary")
+        if isinstance(summary, dict):
+            return summary
+    return None
+
+
+def _gold_runtime_summary_from_final_result(db: Session, run: TaskRun) -> dict[str, Any] | None:
+    try:
+        from database.models.analysis import FinalAnalysisResult
+
+        result = (
+            db.query(FinalAnalysisResult)
+            .filter(FinalAnalysisResult.run_id == str(run.id))
+            .order_by(FinalAnalysisResult.created_at.desc())
+            .first()
+        )
+    except (OperationalError, ProgrammingError, TypeError, ValueError):
+        return None
+    if result is None or not isinstance(result.run_summaries, dict):
+        return None
+    summary = result.run_summaries.get("gold_runtime_summary")
+    return summary if isinstance(summary, dict) else None
+
+
+def _read_json_file(file_path: str) -> Any:
+    try:
+        path = Path(file_path)
+        if not path.exists() or not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None

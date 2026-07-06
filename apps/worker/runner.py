@@ -34,6 +34,7 @@ from apps.runtime.artifact_storage import get_artifact_storage
 from apps.runtime.execution_event_bridge import emit_task_event
 from apps.runtime.artifact_registry import register_step_artifacts
 from apps.runtime.state_machine import derive_task_run_status, transition_task_run, transition_task_step
+from apps.gold_runtime_orchestration import build_gold_runtime_execution_summary
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
 # ── C4 agent pipeline imports (deterministic, no LLM / network / file reads) ──
@@ -1207,6 +1208,21 @@ def _run_c4_agent_pipeline(
         "input_snapshot_ids": dict(card.input_snapshot_ids),
         "paths": card_result.get("paths", []),
     }
+    gold_runtime_summary = build_gold_runtime_execution_summary(
+        run_mode="premarket_full_run",
+        trigger_reason="worker_premarket_task",
+        quality_gate_decision=quality_gate_decision,
+        accepted_outputs={
+            "analysis_snapshot": snapshot_id,
+            "final_report_paths": report_result.get("paths", []),
+            "strategy_card_paths": card_result.get("paths", []),
+        },
+    )
+    summaries["gold_runtime_summary"] = {
+        "step": "gold_runtime_summary",
+        "status": "success",
+        **gold_runtime_summary,
+    }
 
     # ── Pack agent outputs for DB persistence ─────────────────────────
     c4_outputs: dict[str, Any] = {
@@ -1224,6 +1240,7 @@ def _run_c4_agent_pipeline(
         "report_result": report_result,
         "card_result": card_result,
         "quality_gate_decision": quality_gate_decision,
+        "gold_runtime_summary": gold_runtime_summary,
     }
 
     return summaries, c4_outputs
@@ -1347,6 +1364,7 @@ def _db_persist_final_result(
     report_result = c4_outputs["report_result"]
     card_result = c4_outputs["card_result"]
     agents = c4_outputs["agents"]
+    gold_runtime_summary = c4_outputs.get("gold_runtime_summary")
 
     trade_date = snapshot.get("trade_date", "")
     run_id = snapshot["run_id"]
@@ -1408,7 +1426,7 @@ def _db_persist_final_result(
         "watchlist": list(card.watchlist),
         "invalid_conditions": list(card.invalid_conditions),
         "strategy_card": card.model_dump(mode="json"),
-        "run_summaries": {},
+        "run_summaries": {"gold_runtime_summary": gold_runtime_summary} if isinstance(gold_runtime_summary, dict) else {},
         "payload": card.model_dump(mode="json"),
     }
 

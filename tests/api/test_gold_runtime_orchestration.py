@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from apps.api.main import app
 from apps.gold_mainline_contract import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
 from apps.gold_runtime_orchestration import (
+    build_gold_runtime_execution_summary,
     build_gold_runtime_orchestration_contract,
     build_gold_runtime_summary_preview,
 )
@@ -51,6 +52,29 @@ def test_intraday_mode_is_incremental_and_mixed_capable() -> None:
     assert "skip_low_frequency_mainlines_when_unaffected" in summary["warnings"]
     assert summary["writes"] == []
     assert summary["runtime_contract_only"] is True
+
+
+def test_gold_runtime_execution_summary_maps_quality_gate_fallback() -> None:
+    summary = build_gold_runtime_execution_summary(
+        run_mode="premarket_full_run",
+        trigger_reason="manual_premarket",
+        quality_gate_decision={
+            "action": "fallback",
+            "review_status": "needs_review",
+            "publish_allowed": True,
+            "fallback_recommended": True,
+        },
+        accepted_outputs={"final_report_paths": ["/tmp/final_report.md"]},
+    )
+
+    assert summary["source"] == "gold_runtime_execution_summary"
+    assert summary["runtime_contract_only"] is False
+    assert summary["quality_gate_status"] == "fallback_required"
+    assert summary["review_status"] == "needs_review"
+    assert summary["fallback_attempts"] == 0
+    assert summary["fallback_tasks_created"] == []
+    assert summary["accepted_outputs"] == {"final_report_paths": ["/tmp/final_report.md"]}
+    assert summary["writes"] == ["/tmp/final_report.md"]
 
 
 def test_major_event_reprice_routes_geopolitical_oil_events_to_war_oil_rate_chain() -> None:

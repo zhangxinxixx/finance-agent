@@ -178,6 +178,15 @@ def test_c4_pipeline_writes_final_report_and_strategy_card(tmp_path: Path) -> No
     assert "strategy_card" in summaries
     assert summaries["strategy_card"]["status"] == "success"
     assert len(summaries["strategy_card"]["paths"]) == 2
+    assert "gold_runtime_summary" in summaries
+    assert summaries["gold_runtime_summary"]["run_mode"] == "premarket_full_run"
+    assert summaries["gold_runtime_summary"]["runtime_contract_only"] is False
+    assert summaries["gold_runtime_summary"]["quality_gate_status"] in {
+        "passed",
+        "fallback_required",
+        "needs_review",
+        "blocked",
+    }
 
     # ── files exist ──
     report_path = Path(summaries["final_report"]["paths"][0])
@@ -225,6 +234,11 @@ def test_c4_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) 
     assert summaries["final_report"]["quality_gate_action"] == decision.action.value
     assert summaries["final_report"]["review_status"] == decision.review_status
     assert summaries["final_report"]["publish_allowed"] == decision.publish_allowed
+    runtime_summary = c4_outputs["gold_runtime_summary"]
+    assert runtime_summary["quality_gate_decision"] == decision.model_dump(mode="json")
+    assert runtime_summary["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
+    assert runtime_summary["accepted_outputs"]["strategy_card_paths"] == summaries["strategy_card"]["paths"]
+    assert runtime_summary["fallback_attempts"] == 0
 
 
 def test_c4_pipeline_binds_snapshot_id_to_outputs(tmp_path: Path) -> None:

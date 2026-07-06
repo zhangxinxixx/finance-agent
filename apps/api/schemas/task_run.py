@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import Field
 
@@ -45,6 +46,7 @@ class TaskRunResponse(TraceableResponse):
     token_out: int | None = None
     final_result_id: str | None = None
     error_summary: str | None = None
+    runtime_summary: dict[str, Any] | None = None
     steps: list[TaskStepResponse] = Field(default_factory=list)
 
 

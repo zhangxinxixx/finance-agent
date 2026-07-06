@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from apps.gold_mainline_contract import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
 
@@ -17,6 +17,7 @@ GoldRunMode = Literal[
 ]
 
 ReviewStatus = Literal["pass", "needs_review", "blocked"]
+QualityGateStatus = Literal["passed", "fallback_required", "needs_review", "blocked"]
 
 _ALL_GOLD_AGENTS = (
     "source_health_agent",
@@ -234,3 +235,92 @@ def build_gold_runtime_summary_preview(
         "runtime_contract_only": True,
         "writes": [],
     }
+
+
+def build_gold_runtime_execution_summary(
+    *,
+    run_mode: str,
+    trigger_reason: str | None = None,
+    quality_gate_decision: Any = None,
+    accepted_outputs: dict[str, Any] | None = None,
+    fallback_tasks_created: list[dict[str, Any]] | None = None,
+    fallback_attempts: int = 0,
+    warnings: list[str] | None = None,
+) -> dict[str, object]:
+    """Return a real run summary bound to scheduler/worker execution evidence."""
+
+    summary = build_gold_runtime_summary_preview(run_mode=run_mode, trigger_reason=trigger_reason)
+    decision = _quality_gate_decision_dict(quality_gate_decision)
+    quality_gate_status = _quality_gate_status(decision)
+    review_status = _review_status_from_quality_gate(quality_gate_status, decision)
+    merged_warnings = {
+        *[str(item) for item in summary.get("warnings") or []],
+        *[str(item) for item in warnings or []],
+    }
+    if quality_gate_status == "fallback_required":
+        merged_warnings.add("quality_gate_fallback_required")
+    elif quality_gate_status == "needs_review":
+        merged_warnings.add("quality_gate_needs_review")
+    elif quality_gate_status == "blocked":
+        merged_warnings.add("quality_gate_blocked")
+
+    summary.update(
+        {
+            "source": "gold_runtime_execution_summary",
+            "review_status": review_status,
+            "quality_gate_status": quality_gate_status,
+            "quality_gate_action": decision.get("action"),
+            "quality_gate_decision": decision,
+            "fallback_tasks_created": list(fallback_tasks_created or []),
+            "fallback_attempts": int(fallback_attempts),
+            "accepted_outputs": dict(accepted_outputs or {}),
+            "no_strong_conclusion": quality_gate_status == "blocked",
+            "review_item_ids": [],
+            "runtime_contract_only": False,
+            "writes": _accepted_output_paths(accepted_outputs or {}),
+            "warnings": sorted(merged_warnings),
+        }
+    )
+    return summary
+
+
+def _quality_gate_decision_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"action": "pass", "review_status": "pass", "publish_allowed": True}
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump(mode="json")
+        return dict(dumped) if isinstance(dumped, dict) else {}
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _quality_gate_status(decision: dict[str, Any]) -> QualityGateStatus:
+    action = str(decision.get("action") or "")
+    review_status = str(decision.get("review_status") or "")
+    if action == "block_publish" or review_status == "blocked" or decision.get("publish_allowed") is False:
+        return "blocked"
+    if action in {"fallback", "retry"} or decision.get("fallback_recommended") or decision.get("retry_recommended"):
+        return "fallback_required"
+    if action == "manual_review" or review_status == "needs_review" or decision.get("manual_review_required"):
+        return "needs_review"
+    return "passed"
+
+
+def _review_status_from_quality_gate(status: QualityGateStatus, decision: dict[str, Any]) -> ReviewStatus:
+    if status == "blocked":
+        return "blocked"
+    if status in {"fallback_required", "needs_review"}:
+        return "needs_review"
+    raw = str(decision.get("review_status") or "pass")
+    return raw if raw in {"pass", "needs_review", "blocked"} else "pass"  # type: ignore[return-value]
+
+
+def _accepted_output_paths(value: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for item in value.values():
+        if isinstance(item, str):
+            paths.append(item)
+        elif isinstance(item, list):
+            paths.extend(str(path) for path in item if isinstance(path, str))
+    return paths

@@ -196,7 +196,14 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     assert summary["trigger_reason"] == "daily_premarket_refresh"
     assert "agents_executed" not in summary
     assert "agents_skipped" not in summary
-    assert summary["runtime_contract_only"] is True
+    assert summary["runtime_contract_only"] is False
+    assert summary["quality_gate_status"] in {"passed", "fallback_required", "needs_review", "blocked"}
+    assert summary["fallback_tasks_created"] == []
+    assert summary["fallback_attempts"] == 0
+    assert summary["accepted_outputs"]["gold_event_mainlines_path"] == summary["gold_event_mainlines_path"]
+    assert summary["accepted_outputs"]["gold_macro_overview_path"] == summary["gold_macro_overview_path"]
+    assert isinstance(summary["no_strong_conclusion"], bool)
+    assert summary["review_item_ids"] == []
     assert "source_health_agent" in summary["planned_agents_executed"]
     assert "report_render_agent" in summary["planned_agents_executed"]
     assert "real_rates_usd" in summary["affected_mainlines"]
@@ -311,6 +318,8 @@ def test_run_gold_mainline_pipeline_blocks_review_gate_from_source_health_confli
     assert summary["runtime_steps"]["review_gate"]["quality_gate_action"] == "block_publish"
     assert summary["runtime_steps"]["review_gate"]["publish_allowed"] is False
     assert summary["review_status"] == "blocked"
+    assert summary["quality_gate_status"] == "blocked"
+    assert summary["no_strong_conclusion"] is True
 
     overview = json.loads((tmp_path / summary["gold_macro_overview_path"]).read_text(encoding="utf-8"))
     assert overview["status"] == "blocked"
