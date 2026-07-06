@@ -231,18 +231,30 @@ def execute_agent_loop_fallback_tasks(
         gold_macro_overview=overview,
         source_health=source_health,
     )
+    task_results = [
+        {
+            "task_type": task.task_type,
+            "reason": task.reason,
+            "status": "queued_not_implemented",
+            "fallback_output_agent": None,
+            "fallback_of": f"{primary.agent_name}:{primary.snapshot_id}",
+            "note": "Dedicated fallback task execution is not wired; conservative synthesis was used instead.",
+        }
+        for task in tasks
+        if task.task_type != "fallback_conservative_synthesis"
+    ]
+    task_results.append(
+        {
+            "task_type": "fallback_conservative_synthesis",
+            "reason": "conservative_fallback_after_quality_gate",
+            "status": "success",
+            "fallback_output_agent": fallback.agent_name,
+            "fallback_of": f"{primary.agent_name}:{primary.snapshot_id}",
+        }
+    )
     return AgentLoopFallbackExecution(
         attempted=True,
-        task_results=[
-            {
-                "task_type": task.task_type,
-                "reason": task.reason,
-                "status": "success",
-                "fallback_output_agent": fallback.agent_name,
-                "fallback_of": f"{primary.agent_name}:{primary.snapshot_id}",
-            }
-            for task in tasks
-        ],
+        task_results=task_results,
         fallback_agent_outputs={fallback.agent_name: fallback},
         fallback_quality_gate_decision=fallback_quality_gate_decision,
     )
