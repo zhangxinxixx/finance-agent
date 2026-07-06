@@ -285,6 +285,70 @@ def test_backfill_market_candles_dry_run_outputs_coverage_without_db_write(tmp_p
     assert db_path.exists() is False
 
 
+def test_backfill_market_candles_repair_gaps_dry_run_reads_existing_db_only(tmp_path: Path, capsys) -> None:
+    db_path = tmp_path / "market-candles.db"
+    database_url = f"sqlite:///{db_path}"
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from database.models.analysis import MarketCandle, ensure_analysis_tables
+    from database.queries.market import upsert_market_candle
+
+    engine = create_engine(database_url, echo=False)
+    ensure_analysis_tables(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    base_time = datetime(2026, 7, 1, 0, 0, tzinfo=UTC)
+    with factory() as session:
+        for minute in (0, 1, 10):
+            upsert_market_candle(
+                session,
+                asset="XAUUSD",
+                timeframe="1m",
+                open_time=base_time.replace(minute=minute),
+                open=3300.0 + minute,
+                high=3301.0 + minute,
+                low=3299.0 + minute,
+                close=3300.5 + minute,
+                source="jin10_mcp_kline_1m",
+            )
+        session.commit()
+
+    from scripts.backfill_market_candles import main
+    import sys
+
+    argv = sys.argv[:]
+    try:
+        sys.argv = [
+            "backfill_market_candles.py",
+            "--asset",
+            "XAUUSD",
+            "--timeframe",
+            "1m",
+            "--database-url",
+            database_url,
+            "--dry-run",
+            "--repair-gaps",
+        ]
+        main()
+    finally:
+        sys.argv = argv
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["dry_run"] is True
+    assert output["repair_gaps"] is True
+    assert output["scanned"] == 0
+    assert output["gap_count"] == 1
+    assert output["max_gap_seconds"] == 540
+    assert output["gap_ranges"] == [{
+        "from": "2026-07-01T00:01:00+00:00",
+        "to": "2026-07-01T00:10:00+00:00",
+        "gap_seconds": 540,
+    }]
+
+    with factory() as session:
+        assert session.query(MarketCandle).count() == 3
+
+
 def test_target_minutes_derives_jin10_batches() -> None:
     assert _target_minutes_to_batches(1) == 1
     assert _target_minutes_to_batches(100) == 1

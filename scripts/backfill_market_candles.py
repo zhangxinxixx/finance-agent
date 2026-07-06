@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 from sqlalchemy import create_engine
+from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
@@ -48,6 +49,7 @@ def main() -> None:
     parser.add_argument("--jin10-batches", type=int, default=1, help="For Jin10 intraday import, how many 100-minute batches to fetch sequentially.")
     parser.add_argument("--target-minutes", type=int, default=0, help="For 1m Jin10 import, derive batches from target minutes.")
     parser.add_argument("--dry-run", action="store_true", help="Parse and summarize candles without writing to the database.")
+    parser.add_argument("--repair-gaps", action="store_true", help="Inspect existing DB gaps; non-dry-run then upserts the configured fetch window.")
     parser.add_argument(
         "--storage-root",
         default=str(PROJECT_ROOT / "storage"),
@@ -79,6 +81,36 @@ def main() -> None:
     if not args.dry_run:
         session_factory = _session_factory(database_url)
         _ensure_sqlite_parent(database_url)
+
+    existing_gap_summary = inspect_existing_candle_gaps(
+        database_url=database_url,
+        asset=asset,
+        timeframe=timeframe,
+    ) if args.repair_gaps else {"gap_count": 0, "gap_ranges": [], "max_gap_seconds": None}
+
+    if args.repair_gaps and args.dry_run and not args.input_json:
+        print(
+            json.dumps(
+                {
+                    "asset": asset,
+                    "timeframe": timeframe,
+                    "dry_run": True,
+                    "repair_gaps": True,
+                    "scanned": 0,
+                    "imported": 0,
+                    "skipped": 0,
+                    "first_time": existing_gap_summary.get("first_time"),
+                    "last_time": existing_gap_summary.get("last_time"),
+                    "gap_count": existing_gap_summary["gap_count"],
+                    "max_gap_seconds": existing_gap_summary["max_gap_seconds"],
+                    "gap_ranges": existing_gap_summary["gap_ranges"],
+                    "database_url": _display_database_url(database_url),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return
 
     if timeframe == "1d":
         candles, raw_path, source, source_ref = collect_daily_candles(
@@ -156,10 +188,13 @@ def main() -> None:
                 "imported": result.imported,
                 "skipped": result.skipped,
                 "dry_run": bool(args.dry_run),
+                "repair_gaps": bool(args.repair_gaps),
                 "first_time": coverage["first_time"],
                 "last_time": coverage["last_time"],
                 "gap_count": coverage["gap_count"],
                 "max_gap_seconds": coverage["max_gap_seconds"],
+                "existing_gap_count": existing_gap_summary["gap_count"],
+                "existing_gap_ranges": existing_gap_summary["gap_ranges"],
                 "range": args.range_,
                 "start_date": start_date.isoformat() if start_date else None,
                 "end_date": end_date.isoformat() if end_date else None,
@@ -698,7 +733,11 @@ def _parse_jin10_hourly_candles(payload: dict[str, Any]) -> list[dict[str, Any]]
 
 def summarize_candles(candles: list[dict[str, Any]], *, timeframe: str) -> dict[str, Any]:
     sorted_candles = sorted(
-        (candle for candle in candles if isinstance(candle.get("open_time"), datetime)),
+        (
+            {**candle, "open_time": _utc_datetime(candle["open_time"])}
+            for candle in candles
+            if isinstance(candle.get("open_time"), datetime)
+        ),
         key=lambda candle: candle["open_time"],
     )
     if not sorted_candles:
@@ -708,18 +747,31 @@ def summarize_candles(candles: list[dict[str, Any]], *, timeframe: str) -> dict[
     threshold = expected_seconds * (3.5 if timeframe.lower() == "1d" else 1.5)
     gap_count = 0
     max_gap_seconds: int | None = None
+    gap_ranges: list[dict[str, Any]] = []
     for current, nxt in zip(sorted_candles, sorted_candles[1:]):
         gap_seconds = int((nxt["open_time"] - current["open_time"]).total_seconds())
         if gap_seconds > threshold:
             gap_count += 1
             max_gap_seconds = max(max_gap_seconds or gap_seconds, gap_seconds)
+            gap_ranges.append(
+                {
+                    "from": current["open_time"].isoformat(),
+                    "to": nxt["open_time"].isoformat(),
+                    "gap_seconds": gap_seconds,
+                }
+            )
 
     return {
         "first_time": sorted_candles[0]["open_time"].isoformat(),
         "last_time": sorted_candles[-1]["open_time"].isoformat(),
         "gap_count": gap_count,
         "max_gap_seconds": max_gap_seconds,
+        "gap_ranges": gap_ranges[:10],
     }
+
+
+def _utc_datetime(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _target_minutes_to_batches(target_minutes: int) -> int:
@@ -757,6 +809,32 @@ def _start_day_for_range(end_day: date, range_: str) -> date:
     if normalized == "max":
         return end_day - timedelta(days=3650)
     return end_day - timedelta(days=365)
+
+
+def inspect_existing_candle_gaps(*, database_url: str, asset: str, timeframe: str) -> dict[str, Any]:
+    if _sqlite_database_missing(database_url):
+        return {"first_time": None, "last_time": None, "gap_count": 0, "max_gap_seconds": None, "gap_ranges": []}
+    session_factory = _session_factory(database_url)
+    try:
+        with session_factory() as session:
+            rows = list(
+                session.scalars(
+                    select(MarketCandle)
+                    .where(MarketCandle.asset == asset, MarketCandle.timeframe == timeframe)
+                    .order_by(MarketCandle.open_time.asc(), MarketCandle.id.asc())
+                ).all()
+            )
+    except Exception:
+        return {"first_time": None, "last_time": None, "gap_count": 0, "max_gap_seconds": None, "gap_ranges": []}
+    candles = [{"open_time": row.open_time} for row in rows]
+    return summarize_candles(candles, timeframe=timeframe)
+
+
+def _sqlite_database_missing(database_url: str) -> bool:
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite" or not url.database or url.database == ":memory:":
+        return False
+    return not Path(url.database).exists()
 
 
 def _session_factory(database_url: str):
