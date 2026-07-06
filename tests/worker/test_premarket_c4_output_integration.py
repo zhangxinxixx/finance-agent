@@ -171,6 +171,9 @@ def test_c4_pipeline_writes_final_report_and_strategy_card(tmp_path: Path) -> No
     assert "final_report" in summaries
     assert summaries["final_report"]["status"] == "success"
     assert len(summaries["final_report"]["paths"]) >= 1  # P4-04: may include structured_report.json
+    assert "quality_gate_decision" in summaries["final_report"]
+    assert summaries["final_report"]["quality_gate_action"] == summaries["final_report"]["quality_gate_decision"]["action"]
+    assert isinstance(summaries["final_report"]["publish_allowed"], bool)
 
     assert "strategy_card" in summaries
     assert summaries["strategy_card"]["status"] == "success"
@@ -202,6 +205,26 @@ def test_c4_pipeline_writes_final_report_and_strategy_card(tmp_path: Path) -> No
     assert data["is_trade_instruction"] is False
     assert "analysis_snapshot" in data["input_snapshot_ids"]
     assert "coordinator" in data["input_snapshot_ids"]
+
+
+def test_c4_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) -> None:
+    from apps.api.services.quality_gate_service import QualityGateDecision
+    from apps.worker.runner import _run_c4_agent_pipeline
+
+    snapshot = _make_rich_snapshot(run_id="run-quality-gate")
+    summaries, c4_outputs = _run_c4_agent_pipeline(
+        storage_root=tmp_path,
+        snapshot=snapshot,
+        run_id="run-quality-gate",
+        created_at=_CREATED_AT,
+    )
+
+    decision = c4_outputs["quality_gate_decision"]
+    assert isinstance(decision, QualityGateDecision)
+    assert summaries["final_report"]["quality_gate_decision"] == decision.model_dump(mode="json")
+    assert summaries["final_report"]["quality_gate_action"] == decision.action.value
+    assert summaries["final_report"]["review_status"] == decision.review_status
+    assert summaries["final_report"]["publish_allowed"] == decision.publish_allowed
 
 
 def test_c4_pipeline_binds_snapshot_id_to_outputs(tmp_path: Path) -> None:

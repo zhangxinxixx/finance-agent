@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apps.analysis.agents.source_health import build_gold_v3_source_health
 from apps.analysis.gold_mainline_engine import archive_gold_macro_overview, build_gold_macro_overview
 from apps.api.services.source_service import get_data_source_statuses
+from apps.api.services.quality_gate_service import QualityGateAction, evaluate_quality_gate
 from apps.collectors.positioning.collector import CFTC_COT_URL
 from apps.features.news.gold_event_mainlines import archive_gold_event_mainlines, build_gold_event_mainlines
 from apps.gold_runtime_orchestration import build_gold_runtime_summary_preview
@@ -326,7 +327,7 @@ def _attach_source_health_runtime_gate(*, storage_root: Path, gold_macro_overvie
             "blocking_reasons": [],
             "warnings": [f"source_health_unavailable: {exc.__class__.__name__}"],
         }
-    review_gate = _review_gate_from_source_health(source_health=source_health)
+    review_gate = _review_gate_from_source_health(source_health=source_health, overview=overview)
     overview["source_health"] = source_health
     overview["review_gate"] = review_gate
     overview["review_status"] = review_gate["review_status"]
@@ -348,23 +349,40 @@ def _attach_source_health_runtime_gate(*, storage_root: Path, gold_macro_overvie
     }
 
 
-def _review_gate_from_source_health(*, source_health: dict[str, Any]) -> dict[str, Any]:
+def _review_gate_from_source_health(*, source_health: dict[str, Any], overview: dict[str, Any]) -> dict[str, Any]:
     blocking_reasons = [str(item) for item in source_health.get("blocking_reasons") or []]
     warnings = [str(item) for item in source_health.get("warnings") or []]
+    quality_decision = evaluate_quality_gate(
+        agent_outputs=[],
+        gold_macro_overview=overview,
+        source_health=source_health,
+    )
+    for finding in quality_decision.findings:
+        if finding.severity == "blocker":
+            if finding.message not in blocking_reasons:
+                blocking_reasons.append(finding.message)
+        elif finding.message not in warnings:
+            warnings.append(finding.message)
     strong_conflict = any("strong GoldMacroOverview conclusion" in reason for reason in blocking_reasons)
-    if strong_conflict:
+    if quality_decision.action is QualityGateAction.BLOCK_PUBLISH or strong_conflict:
         review_status = "blocked"
-        reason = "SourceHealth blocked a strong GoldMacroOverview conclusion."
+        reason = "QualityGate blocked publication for this GoldMacroOverview."
     elif blocking_reasons or warnings:
         review_status = "needs_review"
-        reason = "SourceHealth found missing or stale sources; downstream conclusion must be reviewed."
+        reason = "QualityGate found missing, stale, fallback, or review-required evidence."
     else:
         review_status = "pass"
-        reason = "SourceHealth passed with no blocking reasons or warnings."
+        reason = "QualityGate passed with no blocking reasons or warnings."
     return {
         "agent_id": "review_gate_agent",
         "dag_node_id": "review_gate",
         "review_status": review_status,
+        "quality_gate_action": quality_decision.action.value,
+        "publish_allowed": quality_decision.publish_allowed,
+        "manual_review_required": quality_decision.manual_review_required,
+        "fallback_recommended": quality_decision.fallback_recommended,
+        "retry_recommended": quality_decision.retry_recommended,
+        "quality_gate_decision": quality_decision.model_dump(mode="json"),
         "source_health_status": source_health.get("overall_status"),
         "blocking_reasons": blocking_reasons,
         "warnings": warnings,

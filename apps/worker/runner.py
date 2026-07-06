@@ -44,6 +44,7 @@ from apps.analysis.agents.technical import analyze_technical
 from apps.analysis.agents.positioning import analyze_positioning
 from apps.analysis.agents.news import analyze_news
 from apps.analysis.agents.market_odds import analyze_market_odds
+from apps.api.services.quality_gate_service import evaluate_quality_gate
 from apps.analysis.strategy.card import build_strategy_card
 from apps.output.final_report import write_final_report, write_strategy_card
 from apps.renderer.markdown.final_report import render_final_report_markdown, build_structured_report
@@ -1106,6 +1107,21 @@ def _run_c4_agent_pipeline(
         market_odds_output=market_odds_output,
         created_at=created_at,
     )
+    agent_outputs = [
+        macro_output,
+        options_output,
+        risk_output,
+        technical_output,
+        positioning_output,
+        news_output,
+        market_odds_output,
+        coordinator_output,
+    ]
+    quality_gate_decision = evaluate_quality_gate(
+        agent_outputs=agent_outputs,
+        gold_macro_overview=_gold_macro_overview_from_snapshot(snapshot),
+        source_health=_source_health_from_snapshot(snapshot),
+    )
 
     summaries["c3_agents"] = {
         "step": "c3_agents",
@@ -1164,6 +1180,13 @@ def _run_c4_agent_pipeline(
         "status": "success",
         "snapshot_id": str(snapshot_id),
         "paths": report_result.get("paths", []),
+        "quality_gate_action": quality_gate_decision.action.value,
+        "review_status": quality_gate_decision.review_status,
+        "publish_allowed": quality_gate_decision.publish_allowed,
+        "manual_review_required": quality_gate_decision.manual_review_required,
+        "fallback_recommended": quality_gate_decision.fallback_recommended,
+        "retry_recommended": quality_gate_decision.retry_recommended,
+        "quality_gate_decision": quality_gate_decision.model_dump(mode="json"),
     }
 
     # ── 3. Strategy card ──────────────────────────────────────────────────
@@ -1200,9 +1223,28 @@ def _run_c4_agent_pipeline(
         "strategy_card": card,
         "report_result": report_result,
         "card_result": card_result,
+        "quality_gate_decision": quality_gate_decision,
     }
 
     return summaries, c4_outputs
+
+
+def _gold_macro_overview_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    news_data = snapshot.get("news", {}).get("data") if isinstance(snapshot.get("news"), dict) else None
+    if isinstance(news_data, dict) and isinstance(news_data.get("gold_macro_overview"), dict):
+        return dict(news_data["gold_macro_overview"])
+    return {"source_refs": snapshot.get("source_refs") or []}
+
+
+def _source_health_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    news_data = snapshot.get("news", {}).get("data") if isinstance(snapshot.get("news"), dict) else None
+    if isinstance(news_data, dict):
+        overview = news_data.get("gold_macro_overview")
+        if isinstance(overview, dict) and isinstance(overview.get("source_health"), dict):
+            return dict(overview["source_health"])
+        if isinstance(news_data.get("source_health"), dict):
+            return dict(news_data["source_health"])
+    return {"overall_status": "unknown", "can_build_gold_macro_overview": True, "p0_missing": []}
 
 
 # ---------------------------------------------------------------------------

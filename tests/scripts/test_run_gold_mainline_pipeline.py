@@ -215,6 +215,12 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     assert summary["runtime_steps"]["source_health_check"]["p0_missing"] == []
     assert summary["runtime_steps"]["source_health_check"]["can_build_gold_macro_overview"] is True
     assert summary["runtime_steps"]["review_gate"]["review_status"] == "needs_review"
+    assert "quality_gate_decision" in summary["runtime_steps"]["review_gate"]
+    assert (
+        summary["runtime_steps"]["review_gate"]["quality_gate_action"]
+        == summary["runtime_steps"]["review_gate"]["quality_gate_decision"]["action"]
+    )
+    assert isinstance(summary["runtime_steps"]["review_gate"]["publish_allowed"], bool)
     assert summary["source_health_status"] == "degraded"
     assert summary["review_status"] == "needs_review"
     assert isinstance(summary["warnings"], list)
@@ -232,6 +238,9 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     assert overview["source_health"]["p0_missing"] == []
     assert "fedwatch_ois" in overview["source_health"]["p1_missing"]
     assert overview["review_gate"]["review_status"] == "needs_review"
+    assert "quality_gate_decision" in overview["review_gate"]
+    assert overview["review_gate"]["quality_gate_action"] == overview["review_gate"]["quality_gate_decision"]["action"]
+    assert isinstance(overview["review_gate"]["publish_allowed"], bool)
     assert overview["review_status"] == "needs_review"
     assert overview["input_snapshot_ids"]["gold_event_mainlines"] == summary["gold_event_mainlines_path"]
     assert overview["input_snapshot_ids"]["macro_snapshot"] == "features/macro/2026-06-30/macro-run/macro_snapshot.json"
@@ -299,15 +308,22 @@ def test_run_gold_mainline_pipeline_blocks_review_gate_from_source_health_confli
     summary = json.loads(capsys.readouterr().out)
     assert summary["runtime_steps"]["source_health_check"]["status"] == "blocked"
     assert summary["runtime_steps"]["review_gate"]["review_status"] == "blocked"
+    assert summary["runtime_steps"]["review_gate"]["quality_gate_action"] == "block_publish"
+    assert summary["runtime_steps"]["review_gate"]["publish_allowed"] is False
     assert summary["review_status"] == "blocked"
 
     overview = json.loads((tmp_path / summary["gold_macro_overview_path"]).read_text(encoding="utf-8"))
     assert overview["status"] == "blocked"
     assert overview["source_health"]["p0_missing"] == ["xauusd_price"]
     assert overview["review_status"] == "blocked"
-    assert overview["review_blocking_reasons"] == [
-        "P0 source gap conflicts with strong GoldMacroOverview conclusion"
-    ]
+    assert overview["review_gate"]["quality_gate_action"] == "block_publish"
+    assert overview["review_gate"]["quality_gate_decision"]["review_status"] == "blocked"
+    assert overview["review_gate"]["publish_allowed"] is False
+    assert "P0 source gap conflicts with strong GoldMacroOverview conclusion" in overview["review_blocking_reasons"]
+    assert (
+        "P0 source gap conflicts with a strong or high-confidence conclusion."
+        in overview["review_blocking_reasons"]
+    )
 
 
 def test_run_gold_mainline_pipeline_emits_major_event_runtime_summary(tmp_path: Path, capsys) -> None:
