@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from apps.features.news.gold_event_mainlines import MAINLINE_META, MAINLINE_ORDER
+from apps.features.news.gold_event_mainlines import MAINLINE_META, MAINLINE_ORDER, build_gold_event_mainlines
 
 SCHEMA_VERSION = "gold-macro-overview-v1"
 
@@ -275,6 +275,115 @@ def archive_gold_macro_overview(
     }
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return target.relative_to(storage_root).as_posix()
+
+
+def classify_mainlines(event_or_input: dict[str, Any]) -> dict[str, Any]:
+    """Classify one event/input into Gold v3 mainlines using the deterministic event rules."""
+    entity = _dict(event_or_input)
+    bundle = build_gold_event_mainlines([entity], impact_assessments=[entity], as_of=_nullable_str(entity.get("as_of")))
+    payload = bundle.to_dict()
+    links = payload.get("event_links") or []
+    link = dict(links[0]) if links and isinstance(links[0], dict) else {}
+    return {
+        "mainlines": link.get("mainline_ids") or [],
+        "primary_mainline": link.get("primary_mainline"),
+        "transmission_chains": link.get("transmission_path_ids") or [],
+        "bullish_drivers": link.get("bullish_drivers") or [],
+        "bearish_drivers": link.get("bearish_drivers") or [],
+        "dominant_driver": link.get("dominant_driver"),
+        "net_effect": (link.get("direction_by_asset") or {}).get("XAUUSD", "unknown"),
+        "verification_needed": link.get("verification_needed") or [],
+        "source_refs": link.get("source_refs") or [],
+        "event_link": link,
+    }
+
+
+def detect_transmission_chains(event_or_input: dict[str, Any]) -> list[str]:
+    return [str(item) for item in classify_mainlines(event_or_input).get("transmission_chains") or []]
+
+
+def decompose_mixed_drivers(event_or_input: dict[str, Any]) -> dict[str, Any]:
+    attribution = classify_mainlines(event_or_input)
+    bullish = [str(item) for item in attribution.get("bullish_drivers") or []]
+    bearish = [str(item) for item in attribution.get("bearish_drivers") or []]
+    dominant = _nullable_str(attribution.get("dominant_driver"))
+    net_effect = str(attribution.get("net_effect") or "unknown")
+    return {
+        "bullish_drivers": bullish,
+        "bearish_drivers": bearish,
+        "dominant_driver": dominant,
+        "net_effect": net_effect,
+        "verification_needed": [str(item) for item in attribution.get("verification_needed") or []],
+        "why_not_one_sided": _why_not_one_sided(
+            net_effect=net_effect,
+            bullish_drivers=bullish,
+            bearish_drivers=bearish,
+        ),
+        "source_refs": attribution.get("source_refs") or [],
+    }
+
+
+def score_theme_rankings(events: list[dict[str, Any]], features: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    overview = _overview_from_events_and_features(events=events, features=features)
+    return [dict(item) for item in overview.get("theme_rankings") or [] if isinstance(item, dict)]
+
+
+def classify_gold_phase(theme_rankings: list[dict[str, Any]], features: dict[str, Any] | None = None) -> str:
+    overview = _overview_from_rankings_and_features(theme_rankings=theme_rankings, features=features)
+    return str(overview.get("phase") or "unknown")
+
+
+def build_verification_matrix(theme_rankings: list[dict[str, Any]], features: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    overview = _overview_from_rankings_and_features(theme_rankings=theme_rankings, features=features)
+    return [dict(item) for item in overview.get("verification_matrix") or [] if isinstance(item, dict)]
+
+
+def _overview_from_events_and_features(*, events: list[dict[str, Any]], features: dict[str, Any] | None) -> dict[str, Any]:
+    feature_payload = _dict(features)
+    bundle = build_gold_event_mainlines(
+        [_dict(item) for item in events],
+        impact_assessments=[_dict(item) for item in events],
+        as_of=_nullable_str(feature_payload.get("as_of")),
+    )
+    return build_gold_macro_overview(bundle, **_overview_context_kwargs(feature_payload)).to_dict()
+
+
+def _overview_from_rankings_and_features(*, theme_rankings: list[dict[str, Any]], features: dict[str, Any] | None) -> dict[str, Any]:
+    feature_payload = _dict(features)
+    payload = {
+        "asset": str(feature_payload.get("asset") or "XAUUSD"),
+        "as_of": _nullable_str(feature_payload.get("as_of")),
+        "status": "partial",
+        "mainlines": [dict(item) for item in theme_rankings if isinstance(item, dict)],
+        "event_links": [dict(item) for item in feature_payload.get("event_links") or [] if isinstance(item, dict)],
+        "source_refs": [dict(item) for item in feature_payload.get("source_refs") or [] if isinstance(item, dict)],
+        "artifact_refs": [dict(item) for item in feature_payload.get("artifact_refs") or [] if isinstance(item, dict)],
+    }
+    return build_gold_macro_overview(payload, **_overview_context_kwargs(feature_payload)).to_dict()
+
+
+def _overview_context_kwargs(features: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "macro_context": _dict(features.get("macro_context")),
+        "market_context": _dict(features.get("market_context")),
+        "oil_context": _dict(features.get("oil_context")),
+        "flow_context": _dict(features.get("flow_context")),
+        "reserve_context": _dict(features.get("reserve_context")),
+        "asia_context": _dict(features.get("asia_context")),
+        "positioning_context": _dict(features.get("positioning_context")),
+        "policy_context": _dict(features.get("policy_context")),
+        "geopolitical_context": _dict(features.get("geopolitical_context")),
+    }
+
+
+def _why_not_one_sided(*, net_effect: str, bullish_drivers: list[str], bearish_drivers: list[str]) -> str | None:
+    if not bullish_drivers or not bearish_drivers:
+        return None
+    if "oil_inflation_rate_pressure" in bearish_drivers and "safe_haven_bid" in bullish_drivers:
+        return "safe_haven_bid offsets war risk while oil_inflation_rate_pressure can lift inflation expectations and real-rate pressure."
+    if net_effect.startswith("mixed"):
+        return "bullish and bearish drivers both have evidence and require market confirmation before a one-sided conclusion."
+    return None
 
 
 def _theme_rankings(mainlines: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2385,6 +2494,13 @@ def _dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     return dict(value)
+
+
+def _nullable_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _merge_source_refs(ref_groups: Any) -> list[dict[str, Any]]:
