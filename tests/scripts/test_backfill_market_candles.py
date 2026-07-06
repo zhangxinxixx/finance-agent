@@ -12,6 +12,9 @@ from scripts.backfill_market_candles import (
     _parse_jin10_minute_candles,
     _parse_jin10_minute_candles_from_payloads,
     _parse_yahoo_daily_candles,
+    _start_day_for_range,
+    _target_minutes_to_batches,
+    summarize_candles,
 )
 
 
@@ -226,6 +229,91 @@ def test_backfill_market_candles_offline_import(tmp_path: Path) -> None:
     assert rows[0].asset == "XAUUSD"
     assert rows[0].timeframe == "1d"
     assert rows[1].close == 3324.0
+
+
+def test_backfill_market_candles_dry_run_outputs_coverage_without_db_write(tmp_path: Path, capsys) -> None:
+    payload = {
+        "chart": {
+            "result": [{
+                "timestamp": [1746403200, 1746489600, 1747008000],
+                "indicators": {
+                    "quote": [{
+                        "open": [3300.0, 3310.0, 3320.0],
+                        "high": [3320.0, 3330.0, 3340.0],
+                        "low": [3290.0, 3305.0, 3315.0],
+                        "close": [3315.0, 3324.0, 3333.0],
+                        "volume": [100, 120, 130],
+                    }],
+                },
+            }],
+        },
+    }
+    storage_root = tmp_path / "storage"
+    input_json = storage_root / "raw" / "fixtures" / "gc-f-1y-1d.json"
+    input_json.parent.mkdir(parents=True, exist_ok=True)
+    input_json.write_text(json.dumps(payload), encoding="utf-8")
+    db_path = tmp_path / "market-candles.db"
+
+    from scripts.backfill_market_candles import main
+    import sys
+
+    argv = sys.argv[:]
+    try:
+        sys.argv = [
+            "backfill_market_candles.py",
+            "--database-url",
+            f"sqlite:///{db_path}",
+            "--storage-root",
+            str(storage_root),
+            "--input-json",
+            str(input_json),
+            "--dry-run",
+            "--range",
+            "1y",
+        ]
+        main()
+    finally:
+        sys.argv = argv
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["dry_run"] is True
+    assert output["scanned"] == 3
+    assert output["imported"] == 0
+    assert output["first_time"] == datetime.fromtimestamp(1746403200, tz=UTC).isoformat()
+    assert output["last_time"] == datetime.fromtimestamp(1747008000, tz=UTC).isoformat()
+    assert output["gap_count"] == 1
+    assert db_path.exists() is False
+
+
+def test_target_minutes_derives_jin10_batches() -> None:
+    assert _target_minutes_to_batches(1) == 1
+    assert _target_minutes_to_batches(100) == 1
+    assert _target_minutes_to_batches(101) == 2
+    assert _target_minutes_to_batches(3000) == 30
+
+
+def test_start_day_for_range_supports_daily_history_windows() -> None:
+    end_day = datetime(2026, 7, 6, tzinfo=UTC).date()
+
+    assert _start_day_for_range(end_day, "1y").isoformat() == "2025-07-06"
+    assert _start_day_for_range(end_day, "2y").isoformat() == "2024-07-06"
+    assert _start_day_for_range(end_day, "5d").isoformat() == "2026-07-01"
+    assert _start_day_for_range(end_day, "ytd").isoformat() == "2026-01-01"
+
+
+def test_summarize_candles_reports_gap_bounds() -> None:
+    candles = [
+        {"open_time": datetime(2026, 7, 1, 0, 0, tzinfo=UTC)},
+        {"open_time": datetime(2026, 7, 1, 0, 1, tzinfo=UTC)},
+        {"open_time": datetime(2026, 7, 1, 0, 10, tzinfo=UTC)},
+    ]
+
+    summary = summarize_candles(candles, timeframe="1m")
+
+    assert summary["first_time"] == "2026-07-01T00:00:00+00:00"
+    assert summary["last_time"] == "2026-07-01T00:10:00+00:00"
+    assert summary["gap_count"] == 1
+    assert summary["max_gap_seconds"] == 540
 
 
 def test_parse_jin10_hourly_candles_aggregates_minute_rows() -> None:

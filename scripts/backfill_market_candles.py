@@ -5,7 +5,8 @@ import json
 import sys
 from dataclasses import dataclass
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +41,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill market candles into market_candles.")
     parser.add_argument("--asset", default="XAUUSD", help="Supported: XAUUSD, DXY")
     parser.add_argument("--timeframe", default="1d", help="Supported now: 1d, 1h, 1m")
+    parser.add_argument("--range", dest="range_", default="1y", help="Historical range for 1d fallback fetches, for example 3mo/1y/2y/5y.")
+    parser.add_argument("--start-date", default="", help="Optional start date YYYY-MM-DD for OpenBB-backed 1d/1h fetches.")
+    parser.add_argument("--end-date", default="", help="Optional end date YYYY-MM-DD for OpenBB-backed 1d/1h fetches.")
     parser.add_argument("--input-json", default="", help="Optional local Yahoo chart payload JSON path for offline import")
     parser.add_argument("--jin10-batches", type=int, default=1, help="For Jin10 intraday import, how many 100-minute batches to fetch sequentially.")
+    parser.add_argument("--target-minutes", type=int, default=0, help="For 1m Jin10 import, derive batches from target minutes.")
+    parser.add_argument("--dry-run", action="store_true", help="Parse and summarize candles without writing to the database.")
     parser.add_argument(
         "--storage-root",
         default=str(PROJECT_ROOT / "storage"),
@@ -65,14 +71,23 @@ def main() -> None:
 
     storage_root = Path(args.storage_root).resolve()
     database_url = args.database_url or DATABASE_URL
-    session_factory = _session_factory(database_url)
-    _ensure_sqlite_parent(database_url)
+    start_date = _parse_optional_date(args.start_date, name="--start-date")
+    end_date = _parse_optional_date(args.end_date, name="--end-date")
+    if start_date and end_date and start_date > end_date:
+        raise SystemExit("--start-date must be earlier than or equal to --end-date")
+    session_factory = None
+    if not args.dry_run:
+        session_factory = _session_factory(database_url)
+        _ensure_sqlite_parent(database_url)
 
     if timeframe == "1d":
         candles, raw_path, source, source_ref = collect_daily_candles(
             storage_root=storage_root,
             asset=asset,
             input_json=args.input_json or None,
+            range_=args.range_,
+            start_date=start_date,
+            end_date=end_date,
         )
     elif timeframe == "1h":
         candles, raw_path = collect_intraday_hourly_candles(
@@ -80,49 +95,57 @@ def main() -> None:
             asset=asset,
             input_json=args.input_json or None,
             batches=max(args.jin10_batches, 1),
+            start_date=start_date,
+            end_date=end_date,
         )
         source = "openbb_yfinance_60m" if asset == "XAUUSD" else "jin10_mcp_kline"
         source_ref = {"symbol": asset, "source": "openbb_yfinance" if asset == "XAUUSD" else "jin10_mcp"}
     else:
+        jin10_batches = _target_minutes_to_batches(args.target_minutes) if args.target_minutes else max(args.jin10_batches, 1)
         candles, raw_path = collect_intraday_minute_candles(
             storage_root=storage_root,
             asset=asset,
             input_json=args.input_json or None,
-            batches=max(args.jin10_batches, 1),
+            batches=jin10_batches,
         )
         source = "jin10_mcp_kline_1m"
         source_ref = {"symbol": asset, "source": "jin10_mcp", "provider_timeframe": "1m"}
 
     result = ImportResult()
-    with session_factory() as session:
-        try:
-            ensure_analysis_tables(session)
-            for candle in candles:
-                result.scanned += 1
-                before = _candle_count(session)
-                upsert_market_candle(
-                    session,
-                    asset=asset,
-                    timeframe=timeframe,
-                    open_time=candle["open_time"],
-                    open=candle["open"],
-                    high=candle["high"],
-                    low=candle["low"],
-                    close=candle["close"],
-                    volume=candle["volume"],
-                    source=source,
-                    source_ref=source_ref,
-                    raw_path=raw_path,
-                )
-                after = _candle_count(session)
-                if after > before:
-                    result.imported += 1
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
+    if args.dry_run:
+        result.scanned = len(candles)
+    else:
+        assert session_factory is not None
+        with session_factory() as session:
+            try:
+                ensure_analysis_tables(session)
+                for candle in candles:
+                    result.scanned += 1
+                    before = _candle_count(session)
+                    upsert_market_candle(
+                        session,
+                        asset=asset,
+                        timeframe=timeframe,
+                        open_time=candle["open_time"],
+                        open=candle["open"],
+                        high=candle["high"],
+                        low=candle["low"],
+                        close=candle["close"],
+                        volume=candle["volume"],
+                        source=source,
+                        source_ref=source_ref,
+                        raw_path=raw_path,
+                    )
+                    after = _candle_count(session)
+                    if after > before:
+                        result.imported += 1
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
     result.skipped = max(result.scanned - result.imported, 0)
+    coverage = summarize_candles(candles, timeframe=timeframe)
     print(
         json.dumps(
             {
@@ -132,6 +155,14 @@ def main() -> None:
                 "scanned": result.scanned,
                 "imported": result.imported,
                 "skipped": result.skipped,
+                "dry_run": bool(args.dry_run),
+                "first_time": coverage["first_time"],
+                "last_time": coverage["last_time"],
+                "gap_count": coverage["gap_count"],
+                "max_gap_seconds": coverage["max_gap_seconds"],
+                "range": args.range_,
+                "start_date": start_date.isoformat() if start_date else None,
+                "end_date": end_date.isoformat() if end_date else None,
                 "database_url": _display_database_url(database_url),
             },
             ensure_ascii=False,
@@ -145,15 +176,37 @@ def collect_daily_candles(
     storage_root: Path,
     asset: str,
     input_json: str | None = None,
+    range_: str = "1y",
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> tuple[list[dict[str, Any]], str, str, dict[str, Any]]:
     if asset == "XAUUSD":
-        candles, raw_path = collect_xauusd_daily_candles(storage_root=storage_root, input_json=input_json)
+        candles, raw_path = collect_xauusd_daily_candles(
+            storage_root=storage_root,
+            input_json=input_json,
+            range_=range_,
+            start_date=start_date,
+            end_date=end_date,
+        )
         return candles, raw_path, "yahoo_finance_gc_f", {"ticker": "GC=F", "url": YAHOO_GC_CHART_URL}
-    candles, raw_path = collect_dxy_daily_candles(storage_root=storage_root, input_json=input_json)
+    candles, raw_path = collect_dxy_daily_candles(
+        storage_root=storage_root,
+        input_json=input_json,
+        range_=range_,
+        start_date=start_date,
+        end_date=end_date,
+    )
     return candles, raw_path, "yahoo_finance_dx_y_nyb", {"ticker": "DX-Y.NYB", "url": YAHOO_DXY_CHART_URL}
 
 
-def collect_xauusd_daily_candles(*, storage_root: Path, input_json: str | None = None) -> tuple[list[dict[str, Any]], str]:
+def collect_xauusd_daily_candles(
+    *,
+    storage_root: Path,
+    input_json: str | None = None,
+    range_: str = "1y",
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> tuple[list[dict[str, Any]], str]:
     if input_json:
         payload_path = Path(input_json).resolve()
         payload = json.loads(payload_path.read_text(encoding="utf-8"))
@@ -161,7 +214,13 @@ def collect_xauusd_daily_candles(*, storage_root: Path, input_json: str | None =
         return _parse_yahoo_daily_candles(payload), raw_path
 
     try:
-        payload = _fetch_openbb_daily_payload(symbol="GC=F", asset_type="equity")
+        payload = _fetch_openbb_daily_payload(
+            symbol="GC=F",
+            asset_type="equity",
+            start_date=start_date,
+            end_date=end_date,
+            range_=range_,
+        )
     except Exception:
         local_candidates = sorted((storage_root / "raw" / "technical" / "yahoo").glob("*/GC=F-*.json"))
         if local_candidates:
@@ -171,7 +230,7 @@ def collect_xauusd_daily_candles(*, storage_root: Path, input_json: str | None =
             return _parse_yahoo_daily_candles(payload), raw_path
         try:
             with httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False) as client:
-                response = client.get(YAHOO_GC_CHART_URL, params={"range": "3mo", "interval": "1d"})
+                response = client.get(YAHOO_GC_CHART_URL, params={"range": _normalize_yahoo_range(range_), "interval": "1d"})
                 response.raise_for_status()
                 payload = response.json()
         except Exception as exc:
@@ -188,7 +247,14 @@ def collect_xauusd_daily_candles(*, storage_root: Path, input_json: str | None =
     return _parse_dxy_daily_payload(payload), raw_path
 
 
-def collect_dxy_daily_candles(*, storage_root: Path, input_json: str | None = None) -> tuple[list[dict[str, Any]], str]:
+def collect_dxy_daily_candles(
+    *,
+    storage_root: Path,
+    input_json: str | None = None,
+    range_: str = "1y",
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> tuple[list[dict[str, Any]], str]:
     if input_json:
         payload_path = Path(input_json).resolve()
         payload = json.loads(payload_path.read_text(encoding="utf-8"))
@@ -196,7 +262,13 @@ def collect_dxy_daily_candles(*, storage_root: Path, input_json: str | None = No
         return _parse_dxy_daily_payload(payload), raw_path
 
     try:
-        payload = _fetch_openbb_daily_payload(symbol="DX-Y.NYB", asset_type="index")
+        payload = _fetch_openbb_daily_payload(
+            symbol="DX-Y.NYB",
+            asset_type="index",
+            start_date=start_date,
+            end_date=end_date,
+            range_=range_,
+        )
     except Exception:
         local_candidates = sorted((storage_root / "raw" / "macro" / "openbb_yfinance").glob("*/DX-Y.NYB-*.json"))
         if local_candidates:
@@ -205,7 +277,7 @@ def collect_dxy_daily_candles(*, storage_root: Path, input_json: str | None = No
             raw_path = payload_path.relative_to(storage_root).as_posix()
             return _parse_dxy_daily_payload(payload), raw_path
         with httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False) as client:
-            response = client.get(YAHOO_DXY_CHART_URL, params={"range": "3mo", "interval": "1d"})
+            response = client.get(YAHOO_DXY_CHART_URL, params={"range": _normalize_yahoo_range(range_), "interval": "1d"})
             response.raise_for_status()
             payload = response.json()
 
@@ -226,11 +298,18 @@ def _parse_dxy_daily_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return _parse_openbb_ohlcv_payload(payload)
 
 
-def _fetch_openbb_daily_payload(*, symbol: str, asset_type: str) -> dict[str, Any]:
+def _fetch_openbb_daily_payload(
+    *,
+    symbol: str,
+    asset_type: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    range_: str = "1y",
+) -> dict[str, Any]:
     from openbb import obb
 
-    end_day = datetime.now(UTC).date()
-    start_day = end_day.replace(month=max(end_day.month - 3, 1)) if end_day.month > 3 else end_day
+    end_day = end_date or datetime.now(UTC).date()
+    start_day = start_date or _start_day_for_range(end_day, range_)
     result = obb.equity.price.historical(
         symbol=symbol,
         provider="yfinance",
@@ -340,7 +419,13 @@ def _parse_openbb_ohlcv_payload(payload: dict[str, Any]) -> list[dict[str, Any]]
 
 
 def collect_intraday_hourly_candles(
-    *, storage_root: Path, asset: str, input_json: str | None = None, batches: int = 1
+    *,
+    storage_root: Path,
+    asset: str,
+    input_json: str | None = None,
+    batches: int = 1,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     if input_json:
         payload_path = Path(input_json).resolve()
@@ -350,7 +435,11 @@ def collect_intraday_hourly_candles(
 
     if asset == "XAUUSD":
         try:
-            return collect_xauusd_hourly_candles_via_openbb(storage_root=storage_root)
+            return collect_xauusd_hourly_candles_via_openbb(
+                storage_root=storage_root,
+                start_date=start_date,
+                end_date=end_date,
+            )
         except Exception:
             pass
 
@@ -383,13 +472,16 @@ def collect_intraday_minute_candles(
     return _parse_jin10_minute_candles_from_payloads(payloads), raw_paths[-1]
 
 
-def collect_xauusd_hourly_candles_via_openbb(*, storage_root: Path) -> tuple[list[dict[str, Any]], str]:
+def collect_xauusd_hourly_candles_via_openbb(
+    *,
+    storage_root: Path,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> tuple[list[dict[str, Any]], str]:
     from openbb import obb
 
-    from datetime import timedelta
-
-    end_day = datetime.now(UTC).date()
-    start_day = end_day - timedelta(days=92)
+    end_day = end_date or datetime.now(UTC).date()
+    start_day = start_date or (end_day - timedelta(days=92))
     end_date = end_day.isoformat()
     start_date = start_day.isoformat()
     result = obb.equity.price.historical(
@@ -602,6 +694,69 @@ def _parse_jin10_hourly_candles(payload: dict[str, Any]) -> list[dict[str, Any]]
     if not hourly:
         raise ValueError("jin10 kline payload produced no valid hourly candles")
     return hourly
+
+
+def summarize_candles(candles: list[dict[str, Any]], *, timeframe: str) -> dict[str, Any]:
+    sorted_candles = sorted(
+        (candle for candle in candles if isinstance(candle.get("open_time"), datetime)),
+        key=lambda candle: candle["open_time"],
+    )
+    if not sorted_candles:
+        return {"first_time": None, "last_time": None, "gap_count": 0, "max_gap_seconds": None}
+
+    expected_seconds = {"1m": 60, "1h": 3600, "1d": 86400}.get(timeframe.lower(), 60)
+    threshold = expected_seconds * (3.5 if timeframe.lower() == "1d" else 1.5)
+    gap_count = 0
+    max_gap_seconds: int | None = None
+    for current, nxt in zip(sorted_candles, sorted_candles[1:]):
+        gap_seconds = int((nxt["open_time"] - current["open_time"]).total_seconds())
+        if gap_seconds > threshold:
+            gap_count += 1
+            max_gap_seconds = max(max_gap_seconds or gap_seconds, gap_seconds)
+
+    return {
+        "first_time": sorted_candles[0]["open_time"].isoformat(),
+        "last_time": sorted_candles[-1]["open_time"].isoformat(),
+        "gap_count": gap_count,
+        "max_gap_seconds": max_gap_seconds,
+    }
+
+
+def _target_minutes_to_batches(target_minutes: int) -> int:
+    return max(1, ceil(max(int(target_minutes), 1) / 100))
+
+
+def _parse_optional_date(value: str, *, name: str) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must use YYYY-MM-DD format") from exc
+
+
+def _normalize_yahoo_range(value: str) -> str:
+    normalized = str(value or "1y").strip().lower()
+    allowed = {"5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
+    if normalized not in allowed:
+        raise SystemExit(f"unsupported --range {value!r}; expected one of {sorted(allowed)}")
+    return normalized
+
+
+def _start_day_for_range(end_day: date, range_: str) -> date:
+    normalized = _normalize_yahoo_range(range_)
+    if normalized.endswith("d") and normalized[:-1].isdigit():
+        return end_day - timedelta(days=int(normalized[:-1]))
+    if normalized.endswith("mo") and normalized[:-2].isdigit():
+        return end_day - timedelta(days=int(normalized[:-2]) * 31)
+    if normalized.endswith("y") and normalized[:-1].isdigit():
+        return end_day - timedelta(days=int(normalized[:-1]) * 365)
+    if normalized == "ytd":
+        return date(end_day.year, 1, 1)
+    if normalized == "max":
+        return end_day - timedelta(days=3650)
+    return end_day - timedelta(days=365)
 
 
 def _session_factory(database_url: str):
