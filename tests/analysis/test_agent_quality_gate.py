@@ -118,6 +118,153 @@ def test_execute_agent_loop_fallback_tasks_builds_conservative_synthesis_output(
     assert execution.fallback_quality_gate_decision is not None
 
 
+def test_execute_agent_loop_fallback_tasks_runs_independent_source_cross_check() -> None:
+    from apps.analysis.agents.schemas import AgentOutput
+
+    primary = AgentOutput.model_validate(
+        {
+            "version": "1.0",
+            "agent_name": "coordinator_agent",
+            "module": "coordinator",
+            "snapshot_id": "snap-primary",
+            "input_snapshot_ids": {"analysis_snapshot": "snap-primary"},
+            "bias": "bullish",
+            "confidence": 0.76,
+            "key_findings": ["Primary directional conclusion."],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "summary": "Strong bullish.",
+            "source_refs": [{"source": "fred", "source_ref": "fred:DGS10"}],
+            "status": "success",
+            "created_at": "2026-07-06T09:30:00+00:00",
+            "evidence_items": [{"factor": "real_rates", "source_tier": "official"}],
+            "data_quality": [],
+        }
+    )
+    secondary = AgentOutput.model_validate(
+        {
+            "version": "1.0",
+            "agent_name": "cme_options_agent",
+            "module": "cme_options",
+            "snapshot_id": "snap-options",
+            "input_snapshot_ids": {"analysis_snapshot": "snap-primary"},
+            "bias": "mixed",
+            "confidence": 0.62,
+            "key_findings": ["Options evidence is mixed."],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "summary": "Mixed options evidence.",
+            "source_refs": [{"source": "cme", "source_ref": "cme:bulletin"}],
+            "status": "success",
+            "created_at": "2026-07-06T09:30:00+00:00",
+            "evidence_items": [{"factor": "option_wall", "source_tier": "exchange"}],
+            "data_quality": [],
+        }
+    )
+    primary_decision = QualityGateDecision(
+        action=QualityGateAction.FALLBACK,
+        review_status="needs_review",
+        publish_allowed=True,
+        fallback_recommended=True,
+        manual_review_required=True,
+        findings=[
+            {
+                "code": "single_source_important_conclusion",
+                "severity": "fallback",
+                "message": "Important directional conclusion depends on single-source evidence.",
+                "evidence": {},
+            }
+        ],
+        fallback_actions=["cross_check_with_independent_source"],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.76,
+    )
+
+    execution = execute_agent_loop_fallback_tasks(
+        agent_outputs=[primary, secondary],
+        primary_quality_gate_decision=primary_decision,
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+
+    assert execution.task_results[0]["task_type"] == "cross_check_with_independent_source"
+    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["fallback_output_agent"] == "fallback_cross_check_agent"
+    assert "fallback_cross_check_agent" in execution.fallback_agent_outputs
+    cross_check = execution.fallback_agent_outputs["fallback_cross_check_agent"]
+    assert cross_check.status is AgentStatus.SUCCESS
+    assert cross_check.confidence == 0.6
+    assert cross_check.input_payload["independent_source_count"] == 2
+    assert cross_check.input_payload["checked_agents"] == ["coordinator_agent", "cme_options_agent"]
+    assert cross_check.input_payload["fallback_of"]["agent_name"] == "coordinator_agent"
+
+
+def test_execute_agent_loop_fallback_tasks_downgrades_single_source_context() -> None:
+    from apps.analysis.agents.schemas import AgentOutput
+
+    primary = AgentOutput.model_validate(
+        {
+            "version": "1.0",
+            "agent_name": "gold_macro_overview_agent",
+            "module": "gold_macro_overview",
+            "snapshot_id": "snap-primary",
+            "input_snapshot_ids": {"analysis_snapshot": "snap-primary"},
+            "bias": "bearish",
+            "confidence": 0.78,
+            "key_findings": ["Single-source directional conclusion."],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "summary": "Strong bearish.",
+            "source_refs": [{"source": "jin10", "source_ref": "jin10:article:1"}],
+            "status": "success",
+            "created_at": "2026-07-06T09:30:00+00:00",
+            "evidence_items": [{"factor": "headline", "source_tier": "media"}],
+            "data_quality": ["single_source"],
+        }
+    )
+    primary_decision = QualityGateDecision(
+        action=QualityGateAction.FALLBACK,
+        review_status="needs_review",
+        publish_allowed=True,
+        fallback_recommended=True,
+        manual_review_required=True,
+        findings=[
+            {
+                "code": "single_source_important_conclusion",
+                "severity": "fallback",
+                "message": "Important directional conclusion depends on single-source evidence.",
+                "evidence": {},
+            }
+        ],
+        fallback_actions=["downgrade_to_single_source_context_until_confirmed"],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.78,
+    )
+
+    execution = execute_agent_loop_fallback_tasks(
+        agent_outputs=[primary],
+        primary_quality_gate_decision=primary_decision,
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+
+    assert execution.task_results[0]["task_type"] == "downgrade_to_single_source_context_until_confirmed"
+    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["fallback_output_agent"] == "single_source_downgrade_agent"
+    downgrade = execution.fallback_agent_outputs["single_source_downgrade_agent"]
+    assert downgrade.bias is AgentBias.NEUTRAL
+    assert downgrade.status is AgentStatus.PARTIAL
+    assert downgrade.confidence == 0.5
+    assert "single_source_downgrade" in downgrade.data_quality
+    assert downgrade.input_payload["independent_source_count"] == 1
+    assert downgrade.input_payload["fallback_task"] == "downgrade_to_single_source_context_until_confirmed"
+
+
 def test_execute_agent_loop_fallback_tasks_does_not_mark_unimplemented_reparse_success() -> None:
     from apps.analysis.agents.schemas import AgentOutput
 

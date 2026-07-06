@@ -294,6 +294,12 @@ def _execute_dedicated_fallback_task(
                 },
                 output,
             )
+    if task.task_type in {"fallback_cross_check", "cross_check_with_independent_source"}:
+        output = _fallback_cross_check_output(agent_outputs=agent_outputs, task=task, created_at=created_at)
+        return _successful_fallback_task_result(task=task, output=output), output
+    if task.task_type in {"fallback_reanalyze", "downgrade_to_single_source_context_until_confirmed"}:
+        output = _fallback_reanalysis_output(agent_outputs=agent_outputs, task=task, created_at=created_at)
+        return _successful_fallback_task_result(task=task, output=output), output
     return (
         {
             "task_type": task.task_type,
@@ -305,6 +311,17 @@ def _execute_dedicated_fallback_task(
         },
         None,
     )
+
+
+def _successful_fallback_task_result(*, task: AgentLoopFallbackTask, output: AgentOutput) -> dict[str, Any]:
+    fallback_of = output.input_payload.get("fallback_of", {}) if output.input_payload else {}
+    return {
+        "task_type": task.task_type,
+        "reason": task.reason,
+        "status": "success",
+        "fallback_output_agent": output.agent_name,
+        "fallback_of": f"{fallback_of.get('agent_name', 'agent')}:{fallback_of.get('snapshot_id', 'unknown')}",
+    }
 
 
 def _cme_options_reparse_output(
@@ -338,6 +355,137 @@ def _cme_options_reparse_output(
                 },
             },
         }
+    )
+
+
+def _fallback_cross_check_output(
+    *,
+    agent_outputs: list[AgentOutput],
+    task: AgentLoopFallbackTask,
+    created_at: datetime,
+) -> AgentOutput:
+    primary = _preferred_primary_output(agent_outputs)
+    source_refs = _combined_source_refs(agent_outputs)
+    evidence_items = _combined_evidence_items(agent_outputs)
+    source_keys = _independent_source_keys(source_refs)
+    independent_source_count = len(source_keys)
+    confidence = 0.60 if independent_source_count >= 2 else 0.50
+    status = AgentStatus.SUCCESS if independent_source_count >= 2 else AgentStatus.PARTIAL
+    source_note = (
+        "Independent source cross-check found multiple source references."
+        if independent_source_count >= 2
+        else "Independent source cross-check did not find enough independent source references."
+    )
+    return AgentOutput(
+        version=primary.version,
+        agent_name="fallback_cross_check_agent",
+        module="agent_loop_fallback_cross_check",
+        snapshot_id=f"{primary.snapshot_id}:fallback_cross_check",
+        input_snapshot_ids={
+            **dict(primary.input_snapshot_ids),
+            "fallback_of": primary.snapshot_id,
+            "fallback_task": task.task_type,
+        },
+        bias=AgentBias.MIXED if independent_source_count >= 2 else AgentBias.NEUTRAL,
+        confidence=confidence,
+        key_findings=[
+            source_note,
+            f"Checked {len(agent_outputs)} agent outputs with {len(source_refs)} source refs and {len(evidence_items)} evidence items.",
+        ],
+        risk_points=[
+            "Cross-check output is deterministic and read-only; it does not replace domain reanalysis.",
+            *list(primary.risk_points),
+        ],
+        watchlist=[
+            "Require human or external-source confirmation before restoring a strong directional conclusion.",
+            *list(primary.watchlist),
+        ],
+        invalid_conditions=[],
+        summary=source_note,
+        source_refs=source_refs,
+        status=status,
+        created_at=created_at,
+        evidence_refs=_combined_evidence_refs(agent_outputs),
+        evidence_items=evidence_items,
+        data_quality=[*_dedupe_strings(primary.data_quality), "fallback_cross_check"],
+        input_payload={
+            "fallback_task": task.task_type,
+            "fallback_of": {
+                "agent_name": primary.agent_name,
+                "snapshot_id": primary.snapshot_id,
+            },
+            "checked_agents": [output.agent_name for output in agent_outputs],
+            "source_ref_count": len(source_refs),
+            "evidence_item_count": len(evidence_items),
+            "independent_source_count": independent_source_count,
+            "independent_source_keys": source_keys,
+        },
+    )
+
+
+def _fallback_reanalysis_output(
+    *,
+    agent_outputs: list[AgentOutput],
+    task: AgentLoopFallbackTask,
+    created_at: datetime,
+) -> AgentOutput:
+    primary = _preferred_primary_output(agent_outputs)
+    source_refs = _combined_source_refs(agent_outputs)
+    evidence_items = _combined_evidence_items(agent_outputs)
+    source_keys = _independent_source_keys(source_refs)
+    is_single_source_downgrade = task.task_type == "downgrade_to_single_source_context_until_confirmed"
+    agent_name = "single_source_downgrade_agent" if is_single_source_downgrade else "fallback_reanalysis_agent"
+    module = "agent_loop_single_source_downgrade" if is_single_source_downgrade else "agent_loop_fallback_reanalysis"
+    quality_tag = "single_source_downgrade" if is_single_source_downgrade else "fallback_reanalysis"
+    summary = (
+        "Single-source context downgraded; no strong directional conclusion is allowed until independently confirmed."
+        if is_single_source_downgrade
+        else "Deterministic fallback reanalysis generated; no strong directional conclusion is allowed."
+    )
+    return AgentOutput(
+        version=primary.version,
+        agent_name=agent_name,
+        module=module,
+        snapshot_id=f"{primary.snapshot_id}:{quality_tag}",
+        input_snapshot_ids={
+            **dict(primary.input_snapshot_ids),
+            "fallback_of": primary.snapshot_id,
+            "fallback_task": task.task_type,
+        },
+        bias=AgentBias.NEUTRAL,
+        confidence=min(float(primary.confidence), 0.50),
+        key_findings=[
+            summary,
+            f"Reanalysis preserved {len(source_refs)} source refs and {len(evidence_items)} evidence items for audit.",
+        ],
+        risk_points=[
+            "No strong conclusion: fallback reanalysis is conservative until the primary issue is resolved.",
+            *list(primary.risk_points),
+        ],
+        watchlist=[
+            "Confirm the primary finding with an independent source before publishing a directional conclusion.",
+            *list(primary.watchlist),
+        ],
+        invalid_conditions=[],
+        summary=summary,
+        source_refs=source_refs,
+        status=AgentStatus.PARTIAL,
+        created_at=created_at,
+        evidence_refs=_combined_evidence_refs(agent_outputs),
+        evidence_items=evidence_items,
+        data_quality=[*_dedupe_strings(primary.data_quality), quality_tag, "no_strong_conclusion"],
+        input_payload={
+            "fallback_task": task.task_type,
+            "fallback_of": {
+                "agent_name": primary.agent_name,
+                "snapshot_id": primary.snapshot_id,
+            },
+            "checked_agents": [output.agent_name for output in agent_outputs],
+            "source_ref_count": len(source_refs),
+            "evidence_item_count": len(evidence_items),
+            "independent_source_count": len(source_keys),
+            "independent_source_keys": source_keys,
+        },
     )
 
 
@@ -403,3 +551,63 @@ def _conservative_fallback_output(
             },
         },
     )
+
+
+def _combined_source_refs(agent_outputs: list[AgentOutput]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for output in agent_outputs:
+        refs.extend(dict(ref) for ref in output.source_refs if isinstance(ref, dict))
+    return _dedupe_dicts(refs)
+
+
+def _combined_evidence_refs(agent_outputs: list[AgentOutput]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for output in agent_outputs:
+        refs.extend(dict(ref) for ref in output.evidence_refs if isinstance(ref, dict))
+    return _dedupe_dicts(refs)
+
+
+def _combined_evidence_items(agent_outputs: list[AgentOutput]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for output in agent_outputs:
+        items.extend(dict(item) for item in output.evidence_items if isinstance(item, dict))
+    return _dedupe_dicts(items)
+
+
+def _dedupe_dicts(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for value in values:
+        marker = repr(sorted(value.items()))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(value)
+    return deduped
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+def _independent_source_keys(source_refs: list[dict[str, Any]]) -> list[str]:
+    keys = {_source_ref_key(ref) for ref in source_refs}
+    return sorted(key for key in keys if key)
+
+
+def _source_ref_key(ref: dict[str, Any]) -> str:
+    source = str(ref.get("source") or ref.get("provider") or ref.get("dataset") or "").strip()
+    for field in ("source_ref", "ref_id", "artifact_ref", "url", "path", "symbol", "id"):
+        value = str(ref.get(field) or "").strip()
+        if value:
+            return f"{source}:{value}" if source else value
+    if source:
+        return source
+    return repr(sorted(ref.items()))
