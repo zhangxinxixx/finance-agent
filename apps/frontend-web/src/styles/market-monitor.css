@@ -765,6 +765,59 @@
     background: var(--bg-card);
   }
 
+  .tradingview-chart-frame {
+    min-height: 320px;
+    overflow: hidden;
+    border-bottom: 1px solid var(--border-faint);
+    background: var(--bg-card-inner);
+  }
+
+  .tradingview-chart-frame__iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+  }
+
+  .market-monitor-local-kline-diagnostic {
+    border-top: 1px solid var(--border-faint);
+    background: var(--bg-card-inner);
+  }
+
+  .market-monitor-local-kline-diagnostic summary {
+    display: flex;
+    min-height: 34px;
+    cursor: pointer;
+    list-style: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 12px;
+    color: var(--fg-3);
+    font-size: var(--type-label);
+    font-weight: 700;
+  }
+
+  .market-monitor-local-kline-diagnostic summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .market-monitor-local-kline-diagnostic summary::after {
+    content: "+";
+    flex: 0 0 auto;
+    color: var(--fg-5);
+    font-family: var(--font-mono);
+    font-size: var(--type-label);
+  }
+
+  .market-monitor-local-kline-diagnostic[open] summary::after {
+    content: "-";
+  }
+
+  .market-monitor-local-kline-body {
+    border-top: 1px solid var(--border-faint);
+  }
+
   .market-monitor-side-panel {
     min-width: 0;
     align-self: start;

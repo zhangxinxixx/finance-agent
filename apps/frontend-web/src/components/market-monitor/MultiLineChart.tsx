@@ -3,6 +3,7 @@ import type { MarketMonitorMetric } from "@/types/market-monitor";
 import type { MarketMonitorHistoryResponse } from "@/adapters/marketMonitor";
 import { useJin10Kline, type KlineTimeframe } from "@/hooks/useJin10Kline";
 import { KLineChart, type KLineCandle, type KLineSeries } from "@/components/charts/KLineChart";
+import { TradingViewChart } from "@/components/charts/TradingViewChart";
 import {
   buildChartSeriesData,
   chartStatusText,
@@ -72,19 +73,25 @@ export function MultiLineChart({
   return (
     <div className={className}>
       <div className="market-monitor-chart-shell">
-        <div style={{ flex: 1, minHeight: 0 }}>
-          <KLineChart
-            candles={liveCandles}
-            lineSeries={lineSeries}
-            height={430}
-            loading={jin10Loading}
-            emptyText="Jin10 实时 K 线数据加载中..."
-            timeframe={chartTimeframe}
-            onTimeframeChange={setChartTimeframe}
-          />
-        </div>
-
+        <TradingViewChart symbol="OANDA:XAUUSD" interval="15" theme="dark" height={430} />
         <MultiLineChartLegend metrics={metrics} seriesData={seriesData} statusText={statusText} />
+        <details className="market-monitor-local-kline-diagnostic">
+          <summary>
+            <span>本地 K 线诊断</span>
+            <span className="fa-compact-meta">Jin10 / market_candles · {chartTimeframe}</span>
+          </summary>
+          <div className="market-monitor-local-kline-body">
+            <KLineChart
+              candles={liveCandles}
+              lineSeries={lineSeries}
+              height={260}
+              loading={jin10Loading}
+              emptyText="Jin10 实时 K 线数据加载中..."
+              timeframe={chartTimeframe}
+              onTimeframeChange={setChartTimeframe}
+            />
+          </div>
+        </details>
       </div>
     </div>
   );
