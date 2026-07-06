@@ -283,6 +283,8 @@ def _execute_dedicated_fallback_task(
 ) -> tuple[dict[str, Any], AgentOutput | None]:
     if task.task_type == "fallback_reparse":
         output = _cme_options_reparse_output(agent_outputs=agent_outputs, snapshot=snapshot, created_at=created_at)
+        if output is None:
+            output = _jin10_report_reparse_output(agent_outputs=agent_outputs, created_at=created_at)
         if output is not None:
             return (
                 {
@@ -487,6 +489,138 @@ def _fallback_reanalysis_output(
             "independent_source_keys": source_keys,
         },
     )
+
+
+def _jin10_report_reparse_output(
+    *,
+    agent_outputs: list[AgentOutput],
+    created_at: datetime,
+) -> AgentOutput | None:
+    primary = next((output for output in agent_outputs if output.agent_name == "jin10_report_analysis_agent"), None)
+    if primary is None:
+        return None
+    input_payload = primary.input_payload if isinstance(primary.input_payload, dict) else {}
+    raw_report = input_payload.get("raw_report")
+    daily_report = input_payload.get("daily_report")
+    if not isinstance(raw_report, dict) or not isinstance(daily_report, dict):
+        return None
+
+    from apps.analysis.jin10.agent_analysis import build_jin10_agent_analysis_report
+
+    reparsed = build_jin10_agent_analysis_report(raw_report, daily_report).to_dict()
+    source_refs = _dedupe_dicts(
+        [
+            *[dict(ref) for ref in reparsed.get("source_refs") or [] if isinstance(ref, dict)],
+            *[dict(ref) for ref in primary.source_refs if isinstance(ref, dict)],
+        ]
+    )
+    unresolved = [str(item).strip() for item in reparsed.get("unresolved_items") or [] if str(item).strip()]
+    key_variables = [item for item in reparsed.get("key_variables") or [] if isinstance(item, dict)]
+    key_levels = [item for item in reparsed.get("key_levels") or [] if isinstance(item, dict)]
+    logic_chain = [str(item).strip() for item in reparsed.get("logic_chain") or [] if str(item).strip()]
+    evidence_items = _dedupe_dicts(
+        [
+            *[dict(item) for item in primary.evidence_items if isinstance(item, dict)],
+            {
+                "factor": "jin10_report_reparse",
+                "direction": str(reparsed.get("market_stage", {}).get("label") or "neutral"),
+                "confidence": 0.58,
+                "source_tier": "external_opinion",
+                "verification_status": "archived_input_reparse",
+            },
+            *[
+                {
+                    "factor": "jin10_key_level",
+                    "direction": str(level.get("role") or level.get("label") or "level"),
+                    "strength": 0.5,
+                    "confidence": 0.55,
+                    "source_tier": "external_opinion",
+                    "value": level.get("value") or level.get("level"),
+                }
+                for level in key_levels[:6]
+            ],
+        ]
+    )
+    status = AgentStatus.PARTIAL if unresolved else AgentStatus.SUCCESS
+    return AgentOutput(
+        version=primary.version,
+        agent_name="jin10_report_reparse_agent",
+        module="agent_loop_fallback_jin10_reparse",
+        snapshot_id=f"{primary.snapshot_id}:fallback_reparse",
+        input_snapshot_ids={
+            **dict(primary.input_snapshot_ids),
+            "fallback_of": primary.snapshot_id,
+            "fallback_task": "fallback_reparse",
+        },
+        bias=_jin10_reparse_bias(reparsed, primary.bias),
+        confidence=min(float(primary.confidence), 0.58),
+        key_findings=_dedupe_strings(
+            [
+                "Jin10 archived report inputs were deterministically reparsed.",
+                f"Market stage: {str(reparsed.get('market_stage', {}).get('label') or 'unavailable')}.",
+                *logic_chain[:3],
+            ]
+        ),
+        risk_points=[
+            *[str(item).strip() for item in reparsed.get("risk_points") or [] if str(item).strip()],
+            *list(primary.risk_points),
+        ],
+        watchlist=[
+            *[
+                str(item.get("name") or item.get("label") or "").strip()
+                for item in key_variables
+                if str(item.get("name") or item.get("label") or "").strip()
+            ][:8],
+            *list(primary.watchlist),
+        ],
+        invalid_conditions=unresolved,
+        summary=str(reparsed.get("one_line_conclusion") or reparsed.get("final_summary") or primary.summary),
+        source_refs=source_refs,
+        status=status,
+        created_at=created_at,
+        evidence_refs=[
+            *[dict(ref) for ref in primary.evidence_refs if isinstance(ref, dict)],
+            *[
+                {"artifact_path": path}
+                for path in reparsed.get("source_artifact_refs") or []
+                if str(path).strip()
+            ],
+        ],
+        evidence_items=evidence_items,
+        data_quality=[*_dedupe_strings(primary.data_quality), "fallback_reparse", "jin10_archived_input_reparse"],
+        input_payload={
+            "fallback_task": "fallback_reparse",
+            "fallback_of": {
+                "agent_name": primary.agent_name,
+                "snapshot_id": primary.snapshot_id,
+            },
+            "raw_report": raw_report,
+            "daily_report": daily_report,
+            "report_json": reparsed,
+            "source_ref_count": len(source_refs),
+            "evidence_item_count": len(evidence_items),
+            "unresolved_item_count": len(unresolved),
+        },
+    )
+
+
+def _jin10_reparse_bias(reparsed: dict[str, Any], fallback: AgentBias) -> AgentBias:
+    text = " ".join(
+        [
+            str(reparsed.get("one_line_conclusion") or ""),
+            str(reparsed.get("final_summary") or ""),
+            str((reparsed.get("market_stage") or {}).get("label") or ""),
+        ]
+    )
+    positive = sum(word in text for word in ("反弹", "修复", "上行", "顺风", "突破", "看涨", "多头"))
+    negative = sum(word in text for word in ("承压", "压制", "下行", "失守", "看跌", "空头"))
+    if positive and negative:
+        return AgentBias.MIXED
+    if positive:
+        return AgentBias.BULLISH
+    if negative:
+        return AgentBias.BEARISH
+    return fallback if fallback in {AgentBias.BULLISH, AgentBias.BEARISH, AgentBias.MIXED} else AgentBias.NEUTRAL
 
 
 def _fallback_target_ref(agent_outputs: list[AgentOutput]) -> str:

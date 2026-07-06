@@ -408,3 +408,100 @@ def test_execute_agent_loop_fallback_tasks_runs_cme_options_reparse_when_snapsho
     assert reparse.input_payload["fallback_of"]["agent_name"] == "cme_options_agent"
     assert reparse.input_payload["fallback_task"] == "fallback_reparse"
     assert execution.task_results[1]["task_type"] == "fallback_conservative_synthesis"
+
+
+def test_execute_agent_loop_fallback_tasks_runs_jin10_report_reparse_from_archived_inputs() -> None:
+    from apps.analysis.agents.schemas import AgentOutput
+
+    primary = AgentOutput.model_validate(
+        {
+            "version": "1.0",
+            "agent_name": "jin10_report_analysis_agent",
+            "module": "jin10_reports",
+            "snapshot_id": "jin10:2026-05-06:218330:agent_analysis",
+            "input_snapshot_ids": {
+                "jin10_raw_article_report": "jin10:2026-05-06:218330:raw_article_report",
+                "jin10_daily_visual": "jin10:2026-05-06:218330:daily_analysis",
+            },
+            "bias": "bullish",
+            "confidence": 0.74,
+            "key_findings": ["Primary Jin10 conclusion."],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "summary": "Primary Jin10 report analysis.",
+            "source_refs": [{"source": "jin10_external", "article_id": "218330"}],
+            "status": "partial",
+            "created_at": "2026-07-06T09:30:00+00:00",
+            "evidence_items": [{"factor": "jin10_report", "source_tier": "single_source"}],
+            "data_quality": ["parse_suspect"],
+            "input_payload": {
+                "raw_report": {
+                    "document_id": "jin10-218330",
+                    "trade_date": "2026-05-06",
+                    "run_id": "218330",
+                    "article_id": "218330",
+                    "title": "黄金期权信号等待利率确认",
+                    "family": "jin10_raw_article",
+                    "article_markdown": "黄金期权看涨活动回升，10年期美债收益率有效跌破4.2%后，黄金有望重新测试2400美元。若失守2320美元，则修复路径降级。",
+                    "source_refs": [{"source": "jin10_external", "article_id": "218330"}],
+                    "source_artifact_refs": ["storage/outputs/jin10/2026-05-06/218330/raw_article_report.json"],
+                },
+                "daily_report": {
+                    "document_id": "jin10-daily-218330",
+                    "trade_date": "2026-05-06",
+                    "run_id": "218330",
+                    "article_id": "218330",
+                    "title": "黄金期权信号等待利率确认",
+                    "family": "jin10_daily_visual",
+                    "asset": "XAUUSD",
+                    "core_conclusion": "黄金修复需要利率确认。",
+                    "source_refs": [{"source": "jin10_external", "article_id": "218330"}],
+                    "logic_chains": [{"summary": "利率回落确认后，黄金修复弹性才更可信。"}],
+                    "watch_variables": [{"label": "10年期美债收益率", "status": "等待有效跌破4.2%"}],
+                    "key_levels": [{"asset": "XAUUSD", "level": "2400", "meaning": "修复目标"}],
+                    "risks": [{"summary": "2320美元失守会削弱修复路径。"}],
+                },
+            },
+        }
+    )
+    primary_decision = QualityGateDecision(
+        action=QualityGateAction.FALLBACK,
+        review_status="needs_review",
+        publish_allowed=True,
+        fallback_recommended=True,
+        manual_review_required=True,
+        findings=[
+            {
+                "code": "parse_or_required_field_quality_gap",
+                "severity": "fallback",
+                "message": "Parse gap.",
+                "evidence": {},
+            }
+        ],
+        fallback_actions=["fallback_reparse"],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.74,
+    )
+
+    execution = execute_agent_loop_fallback_tasks(
+        agent_outputs=[primary],
+        primary_quality_gate_decision=primary_decision,
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+
+    assert execution.task_results[0]["task_type"] == "fallback_reparse"
+    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["fallback_output_agent"] == "jin10_report_reparse_agent"
+    reparse = execution.fallback_agent_outputs["jin10_report_reparse_agent"]
+    assert reparse.agent_name == "jin10_report_reparse_agent"
+    assert reparse.module == "agent_loop_fallback_jin10_reparse"
+    assert reparse.snapshot_id == "jin10:2026-05-06:218330:agent_analysis:fallback_reparse"
+    assert reparse.input_payload["fallback_task"] == "fallback_reparse"
+    assert reparse.input_payload["fallback_of"]["agent_name"] == "jin10_report_analysis_agent"
+    assert reparse.input_payload["raw_report"]["article_id"] == "218330"
+    assert reparse.source_refs == [{"source": "jin10_external", "article_id": "218330"}]
+    assert any(item["factor"] == "jin10_report_reparse" for item in reparse.evidence_items)
+    assert execution.task_results[1]["task_type"] == "fallback_conservative_synthesis"
