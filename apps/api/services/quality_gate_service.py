@@ -121,6 +121,56 @@ def evaluate_quality_gate(
             )
         )
 
+    if _fact_review_needs_review(outputs=outputs, overview=overview):
+        findings.append(
+            QualityGateFinding(
+                code="fact_review_needs_review",
+                severity="manual_review",
+                message="Fact review marked the artifact as needs_review; strong publication must stop.",
+                evidence={"fact_review_status": overview.get("fact_review_status")},
+            )
+        )
+
+    claim_status = _claim_review_status(outputs=outputs, overview=overview)
+    if claim_status == "contradicted":
+        findings.append(
+            QualityGateFinding(
+                code="contradicted_claim",
+                severity="blocker",
+                message="Contradicted claim cannot be published without a corrected fallback output.",
+            )
+        )
+    elif claim_status == "unsupported":
+        findings.append(
+            QualityGateFinding(
+                code="unsupported_claim",
+                severity="fallback",
+                message="Unsupported claim requires fallback reanalysis or independent source check.",
+            )
+        )
+        fallback_actions.append("fallback_reanalyze")
+
+    if _critical_agent_low_confidence(outputs):
+        findings.append(
+            QualityGateFinding(
+                code="critical_agent_low_confidence",
+                severity="fallback",
+                message="Critical Gold v3 agent confidence is below the fallback threshold.",
+                evidence={"threshold": 0.60},
+            )
+        )
+        fallback_actions.append("fallback_reanalyze")
+
+    if _parse_or_required_field_quality_gap(outputs=outputs, overview=overview):
+        findings.append(
+            QualityGateFinding(
+                code="parse_or_required_field_quality_gap",
+                severity="fallback",
+                message="Parse-suspect or missing required fields require fallback reparse.",
+            )
+        )
+        fallback_actions.append("fallback_reparse")
+
     if _has_invalid_conditions(outputs):
         findings.append(
             QualityGateFinding(
@@ -253,6 +303,69 @@ def _has_invalid_conditions(outputs: list[AgentOutput]) -> bool:
 
 def _invalid_conditions(outputs: list[AgentOutput]) -> list[str]:
     return _dedupe(str(item) for output in outputs for item in output.invalid_conditions if str(item).strip())
+
+
+def _fact_review_needs_review(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:
+    statuses = [str(overview.get("fact_review_status") or "").lower()]
+    review_gate = overview.get("review_gate")
+    if isinstance(review_gate, dict):
+        statuses.append(str(review_gate.get("fact_review_status") or "").lower())
+    for output in outputs:
+        payload = output.input_payload if isinstance(output.input_payload, dict) else {}
+        statuses.append(str(payload.get("fact_review_status") or "").lower())
+        statuses.extend(str(item).lower() for item in output.data_quality)
+    return any(status in {"needs_review", "fact_review:needs_review"} for status in statuses)
+
+
+def _claim_review_status(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> str | None:
+    statuses: list[str] = []
+    for key in ("claim_review_status", "claim_status", "fact_review_status"):
+        value = overview.get(key)
+        if value:
+            statuses.append(str(value).lower())
+    for output in outputs:
+        payload = output.input_payload if isinstance(output.input_payload, dict) else {}
+        for key in ("claim_review_status", "claim_status", "fact_review_status"):
+            value = payload.get(key)
+            if value:
+                statuses.append(str(value).lower())
+        statuses.extend(str(item).lower() for item in output.invalid_conditions)
+    if any("contradicted" in status for status in statuses):
+        return "contradicted"
+    if any("unsupported" in status for status in statuses):
+        return "unsupported"
+    return None
+
+
+def _critical_agent_low_confidence(outputs: list[AgentOutput]) -> bool:
+    critical_agents = {
+        "source_health_agent",
+        "event_attribution_agent",
+        "transmission_chain_agent",
+        "driver_decomposition_agent",
+        "mainline_ranking_agent",
+        "gold_macro_overview_agent",
+        "review_gate_agent",
+    }
+    return any(output.agent_name in critical_agents and output.confidence < 0.60 for output in outputs)
+
+
+def _parse_or_required_field_quality_gap(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:
+    quality_tags: list[str] = []
+    data_quality = overview.get("data_quality")
+    if isinstance(data_quality, dict):
+        quality_tags.extend(str(value).lower() for value in data_quality.values() if value)
+    else:
+        quality_tags.extend(str(item).lower() for item in data_quality or [] if isinstance(item, str))
+    for output in outputs:
+        quality_tags.extend(str(item).lower() for item in output.data_quality)
+        payload = output.input_payload if isinstance(output.input_payload, dict) else {}
+        payload_quality = payload.get("data_quality")
+        if isinstance(payload_quality, dict):
+            quality_tags.extend(str(value).lower() for value in payload_quality.values() if value)
+        else:
+            quality_tags.extend(str(item).lower() for item in payload_quality or [] if isinstance(item, str))
+    return any(tag in {"parse_suspect", "missing_required_fields"} for tag in quality_tags)
 
 
 def _single_source_important_conclusion(*, outputs: list[AgentOutput], overview: dict[str, Any], max_confidence: float) -> bool:

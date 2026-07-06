@@ -152,6 +152,62 @@ def test_quality_gate_recommends_fallback_for_single_source_important_conclusion
     assert any(finding.code == "single_source_important_conclusion" for finding in decision.findings)
 
 
+def test_quality_gate_stops_fact_review_needs_review_from_strong_publication() -> None:
+    decision = evaluate_quality_gate(
+        agent_outputs=[_agent_output(confidence=0.71, bias="neutral")],
+        gold_macro_overview={
+            "net_bias": "bullish",
+            "fact_review_status": "needs_review",
+            "source_refs": [{"source": "event_flow", "source_ref": "event:1"}],
+        },
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+    )
+
+    assert decision.action is QualityGateAction.MANUAL_REVIEW
+    assert decision.publish_allowed is True
+    assert any(finding.code == "fact_review_needs_review" for finding in decision.findings)
+
+
+def test_quality_gate_fallbacks_unsupported_claims_and_blocks_contradicted_claims() -> None:
+    unsupported = evaluate_quality_gate(
+        agent_outputs=[_agent_output(invalid_conditions=["unsupported_claim"])],
+        gold_macro_overview={"net_bias": "bullish", "source_refs": [{"source": "wire", "source_ref": "event:1"}]},
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+    )
+    contradicted = evaluate_quality_gate(
+        agent_outputs=[_agent_output(invalid_conditions=["contradicted_claim"])],
+        gold_macro_overview={"net_bias": "bullish", "source_refs": [{"source": "wire", "source_ref": "event:1"}]},
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+    )
+
+    assert unsupported.action is QualityGateAction.FALLBACK
+    assert "fallback_reanalyze" in unsupported.fallback_actions
+    assert any(finding.code == "unsupported_claim" for finding in unsupported.findings)
+    assert contradicted.action is QualityGateAction.BLOCK_PUBLISH
+    assert contradicted.publish_allowed is False
+    assert any(finding.code == "contradicted_claim" for finding in contradicted.findings)
+
+
+def test_quality_gate_fallbacks_low_confidence_critical_agent_and_parse_gap() -> None:
+    decision = evaluate_quality_gate(
+        agent_outputs=[
+            _agent_output(
+                confidence=0.54,
+                data_quality=["parse_suspect", "missing_required_fields"],
+            )
+        ],
+        gold_macro_overview={"net_bias": "neutral", "source_refs": [{"source": "wire", "source_ref": "event:1"}]},
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+    )
+
+    assert decision.action is QualityGateAction.FALLBACK
+    assert {"fallback_reanalyze", "fallback_reparse"}.issubset(set(decision.fallback_actions))
+    assert {finding.code for finding in decision.findings} >= {
+        "critical_agent_low_confidence",
+        "parse_or_required_field_quality_gap",
+    }
+
+
 def test_quality_gate_passes_when_sources_and_structured_evidence_are_sufficient() -> None:
     decision = evaluate_quality_gate(
         agent_outputs=[_agent_output(confidence=0.68, bias="neutral")],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from apps.features.news.gold_event_mainlines import MAINLINE_ORDER, build_gold_event_mainlines
+from apps.gold_mainline_contract import normalize_gold_transmission_chain_id
 
 
 def _event(
@@ -231,3 +232,174 @@ def test_multi_source_event_verification_chain_counts_independent_sources() -> N
     assert chain["has_multi_source"] is True
     assert chain["required_status"] == "not_required"
     assert chain["missing_confirmations"] == ["real_rate_response_needed"]
+
+
+def _normalized_chains(link: dict) -> set[str]:
+    return {normalize_gold_transmission_chain_id(item) for item in link["transmission_path_ids"]}
+
+
+def test_issue35_sample_fomc_cpi_nfp_maps_to_fed_rate_chain() -> None:
+    bundle = build_gold_event_mainlines(
+        [
+            _event(
+                event_id="event:cpi-fed",
+                event_type="inflation_release",
+                title="美国 CPI 高于预期，美联储官员称不急于降息。",
+                verification_status="official_confirmed",
+                direction="bearish",
+            )
+        ],
+        impact_assessments=[
+            _impact(
+                event_id="event:cpi-fed",
+                impact_path="strong_data_to_higher_for_longer",
+                gold_impact="bearish",
+                dollar_impact="dollar_strength",
+                yield_impact="yield_up",
+                pricing_status="partially_priced",
+            )
+        ],
+        as_of="2026-07-06T09:30:00+00:00",
+    )
+
+    link = bundle.to_dict()["event_links"][0]
+    assert link["primary_mainline"] == "fed_policy_path"
+    assert "rate_chain" in _normalized_chains(link)
+    assert link["direction_by_asset"]["XAUUSD"] == "bearish"
+    assert link["bearish_drivers"] == ["higher_for_longer_rate_pressure", "usd_strength_pressure"]
+
+
+def test_issue35_sample_middle_east_oil_keeps_safe_haven_and_rate_paths() -> None:
+    bundle = build_gold_event_mainlines(
+        [
+            _event(
+                event_id="event:middle-east-oil",
+                event_type="middle_east_escalation",
+                title="中东冲突升级，市场担心霍尔木兹运输风险，Brent 油价上涨。",
+                direction="mixed",
+            )
+        ],
+        impact_assessments=[
+            _impact(
+                event_id="event:middle-east-oil",
+                impact_path="geo_risk_to_oil_to_inflation",
+                gold_impact="mixed",
+                dollar_impact="dollar_strength",
+                yield_impact="yield_up",
+                oil_impact="oil_up",
+                pricing_status="unpriced",
+            )
+        ],
+        as_of="2026-07-06T09:30:00+00:00",
+    )
+
+    link = bundle.to_dict()["event_links"][0]
+    assert set(link["mainline_ids"]) == {"geopolitical_war_risk", "oil_prices", "real_rates_usd"}
+    assert {"safe_haven_chain", "war_oil_rate_chain"}.issubset(_normalized_chains(link))
+    assert link["direction_by_asset"]["XAUUSD"] == "mixed"
+    assert link["bullish_drivers"]
+    assert link["bearish_drivers"]
+    assert {"oil_price_reaction_needed", "real_rate_response_needed"}.issubset(set(link["verification_needed"]))
+
+
+def test_issue35_sample_etf_inflow_maps_to_flow_chain() -> None:
+    bundle = build_gold_event_mainlines(
+        [
+            _event(
+                event_id="event:etf-inflow",
+                event_type="gold_fund_flow",
+                title="全球黄金 ETF 连续两周净流入，北美 ETF 流入明显。",
+                verification_status="multi_source",
+                direction="bullish",
+            )
+        ],
+        impact_assessments=[
+            _impact(
+                event_id="event:etf-inflow",
+                impact_path="capital_confirmation",
+                gold_impact="bullish",
+                pricing_status="partially_priced",
+            )
+        ],
+        as_of="2026-07-06T09:30:00+00:00",
+    )
+
+    link = bundle.to_dict()["event_links"][0]
+    assert link["primary_mainline"] == "etf_flows"
+    assert _normalized_chains(link) == {"flow_chain"}
+    assert link["direction_by_asset"]["XAUUSD"] == "bullish"
+
+
+def test_issue35_sample_central_bank_buying_is_structural_not_short_term_strong_bullish() -> None:
+    bundle = build_gold_event_mainlines(
+        [
+            _event(
+                event_id="event:central-bank",
+                event_type="central_bank_gold_buying",
+                title="新兴市场央行继续增持黄金储备。",
+                direction="bullish",
+            )
+        ],
+        impact_assessments=[
+            _impact(
+                event_id="event:central-bank",
+                impact_path="reserve_reallocation",
+                gold_impact="bullish",
+                pricing_status="unknown",
+            )
+        ],
+        as_of="2026-07-06T09:30:00+00:00",
+    )
+
+    data = bundle.to_dict()
+    link = data["event_links"][0]
+    central_bank = next(row for row in data["mainlines"] if row["mainline_id"] == "central_bank_gold")
+    assert link["primary_mainline"] == "central_bank_gold"
+    assert _normalized_chains(link) == {"reserve_chain"}
+    assert link["bullish_drivers"] == []
+    assert "official_reserve_data_needed" in link["verification_needed"]
+    assert central_bank["impact_strength"] != "high"
+
+
+def test_issue35_sample_technical_level_with_unconfirmed_etf_flow_requires_both_confirmations() -> None:
+    bundle = build_gold_event_mainlines(
+        [
+            _event(
+                event_id="event:technical-4100",
+                event_type="key_level_watchlist",
+                title="黄金重新站上4100-4120区间。",
+                direction="bullish",
+            ),
+            _event(
+                event_id="event:etf-unconfirmed",
+                event_type="gold_fund_flow",
+                title="ETF资金尚未确认回流。",
+                direction="neutral",
+            ),
+        ],
+        impact_assessments=[
+            _impact(
+                event_id="event:technical-4100",
+                impact_path="technical_confirmation",
+                gold_impact="bullish",
+                pricing_status="unpriced",
+            ),
+            _impact(
+                event_id="event:etf-unconfirmed",
+                impact_path="capital_confirmation",
+                gold_impact="neutral",
+                pricing_status="unknown",
+            ),
+        ],
+        as_of="2026-07-06T09:30:00+00:00",
+    )
+
+    links = {link["event_id"]: link for link in bundle.to_dict()["event_links"]}
+    covered_mainlines = {
+        row["mainline_id"] for row in bundle.to_dict()["mainlines"] if row["coverage_status"] == "covered"
+    }
+    assert {"gold_technical_levels", "etf_flows"}.issubset(covered_mainlines)
+    assert _normalized_chains(links["event:technical-4100"]) == {"technical_chain"}
+    assert _normalized_chains(links["event:etf-unconfirmed"]) == {"flow_chain"}
+    assert "price_level_confirmation_needed" in links["event:technical-4100"]["verification_needed"]
+    assert "flow_data_confirmation_needed" in links["event:etf-unconfirmed"]["verification_needed"]
