@@ -184,6 +184,7 @@ def _write_gold_processing_artifacts(root: Path) -> None:
                     "agent_loop_decision": {
                         "decision": "fallback_required",
                         "reasons": ["unsupported_claim"],
+                        "fallback_of": ["coordinator_agent:snap-primary"],
                         "fallback_tasks": [
                             {
                                 "task_type": "fallback_reanalyze",
@@ -191,6 +192,34 @@ def _write_gold_processing_artifacts(root: Path) -> None:
                                 "source": "agent_quality_gate",
                             }
                         ],
+                        "accepted_outputs": {
+                            "final_report_paths": ["storage/outputs/fallback/final_report.md"],
+                            "strategy_card_paths": ["storage/outputs/fallback/strategy_card.json"],
+                        },
+                        "fallback_trace": {
+                            "fallback_used": True,
+                            "accepted_output": "fallback",
+                            "reason": ["unsupported_claim"],
+                            "review_items": [{"review_id": "review-1", "reason": "unsupported_claim"}],
+                        },
+                    },
+                    "fallback_task_results": [
+                        {
+                            "task_type": "fallback_reanalyze",
+                            "reason": "quality_gate_finding",
+                            "status": "success",
+                            "fallback_output_agent": "fallback_synthesis_agent",
+                            "fallback_of": "coordinator_agent:snap-primary",
+                        }
+                    ],
+                    "fallback_outputs": {
+                        "fallback_synthesis_agent": {
+                            "agent_name": "fallback_synthesis_agent",
+                            "snapshot_id": "snap-primary:fallback",
+                            "bias": "neutral",
+                            "confidence": 0.55,
+                            "summary": "No strong conclusion: fallback conservative synthesis is in effect.",
+                        }
                     },
                     "blocking_reasons": [],
                     "warnings": ["mixed drivers require verification"],
@@ -256,6 +285,37 @@ def test_get_processing_overview_derives_monitoring_read_model(tmp_path: Path) -
     assert payload["quality_gate"]["fallback_reasons"] == ["unsupported_claim"]
     assert payload["quality_gate"]["fallback_actions"] == ["fallback_reanalyze"]
     assert payload["quality_gate"]["agent_loop_decision"]["decision"] == "fallback_required"
+    assert payload["quality_gate"]["fallback_review"] == {
+        "status": "needs_review",
+        "fallback_used": True,
+        "accepted_output": "fallback",
+        "manual_review_required": True,
+        "primary_outputs": ["coordinator_agent:snap-primary"],
+        "fallback_outputs": [
+            {
+                "agent_name": "fallback_synthesis_agent",
+                "snapshot_id": "snap-primary:fallback",
+                "bias": "neutral",
+                "confidence": 0.55,
+                "summary": "No strong conclusion: fallback conservative synthesis is in effect.",
+            }
+        ],
+        "accepted_outputs": {
+            "final_report_paths": ["storage/outputs/fallback/final_report.md"],
+            "strategy_card_paths": ["storage/outputs/fallback/strategy_card.json"],
+        },
+        "task_results": [
+            {
+                "task_type": "fallback_reanalyze",
+                "reason": "quality_gate_finding",
+                "status": "success",
+                "fallback_output_agent": "fallback_synthesis_agent",
+                "fallback_of": "coordinator_agent:snap-primary",
+            }
+        ],
+        "reasons": ["unsupported_claim"],
+        "review_items": [{"review_id": "review-1", "reason": "unsupported_claim"}],
+    }
     assert payload["read_time_source_health"]["overall_status"] == "degraded"
     assert "fedwatch_ois" in payload["read_time_source_health"]["p1_missing"]
     assert payload["read_time_generated_at"]

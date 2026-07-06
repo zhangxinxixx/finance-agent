@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
-import { ArrowRight, Network, RefreshCw, Search, Workflow } from "lucide-react";
+import { ArrowRight, Network, RefreshCw, Search, ShieldCheck, Workflow } from "lucide-react";
 
 import {
   fetchProcessingOverview,
@@ -21,6 +21,7 @@ import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
 import { LoadingSkeleton } from "@/components/shared/LoadingSkeleton";
 import type {
   ProcessingOverviewResponse,
+  ProcessingQualityGate,
   ProcessingTraceMode,
   ProcessingTracePathNode,
   ProcessingTraceResponse,
@@ -164,6 +165,87 @@ function OverviewSummary({ overview }: { overview: ProcessingOverviewResponse })
       <SummaryMetric label="Source Ref" value={coverage.source_ref_count} tone={coverage.without_source_ref_count ? "warn" : "up"} />
       <SummaryMetric label="视图绑定" value={`${boundViews}/${overview.view_bindings.length}`} tone={boundViews === overview.view_bindings.length ? "up" : "warn"} />
     </div>
+  );
+}
+
+function acceptedOutputSummary(outputs: Record<string, unknown>): string {
+  const values = Object.values(outputs)
+    .flatMap((value) => (Array.isArray(value) ? value : [value]))
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  return values.length ? values.slice(0, 3).join(" / ") : "—";
+}
+
+function QualityGatePanel({ qualityGate }: { qualityGate: ProcessingQualityGate }) {
+  const review = qualityGate.fallback_review;
+  const fallbackOutput = review.fallback_outputs[0];
+  const task = review.task_results[0];
+
+  return (
+    <FACard
+      title="质量门控"
+      eyebrow="AgentLoop"
+      accent={qualityGate.status === "blocked" ? "down" : qualityGate.status === "needs_review" ? "warn" : "up"}
+      action={<FAStatusPill tone={statusTone(qualityGate.status)}>{statusLabel(qualityGate.status)}</FAStatusPill>}
+    >
+      <div className="grid gap-3 xl:grid-cols-[0.9fr_1.1fr]">
+        <div className="grid gap-2">
+          <div className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <ShieldCheck size={14} className="shrink-0 text-[var(--warn)]" />
+              <span className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{qualityGate.quality_gate_action ?? "—"}</span>
+            </div>
+            <FAStatusPill tone={review.fallback_used ? "warn" : "up"} dot={false}>
+              {review.fallback_used ? "Fallback" : "Primary"}
+            </FAStatusPill>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-[10px] text-[var(--fg-4)]">
+            <div className="rounded-[var(--radius-sm)] bg-[var(--bg-card-inner)] px-3 py-2">
+              <div className="font-semibold text-[var(--fg-5)]">发布</div>
+              <div className="mt-1 text-[var(--fg-2)]">{qualityGate.publish_allowed ? "允许" : "受限"}</div>
+            </div>
+            <div className="rounded-[var(--radius-sm)] bg-[var(--bg-card-inner)] px-3 py-2">
+              <div className="font-semibold text-[var(--fg-5)]">复核</div>
+              <div className="mt-1 text-[var(--fg-2)]">{review.manual_review_required ? "需要" : "无需"}</div>
+            </div>
+          </div>
+          <div className="rounded-[var(--radius-sm)] bg-[var(--bg-card-inner)] px-3 py-2 text-[10px] leading-4 text-[var(--fg-4)]">
+            <div className="font-semibold text-[var(--fg-5)]">原因</div>
+            <div className="mt-1 break-words">{review.reasons.length ? review.reasons.join(" / ") : qualityGate.fallback_reasons.join(" / ") || "—"}</div>
+          </div>
+        </div>
+
+        <div className="grid gap-2">
+          <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
+            <div className="grid gap-2 text-[10px] leading-4 text-[var(--fg-4)] md:grid-cols-2">
+              <div>
+                <div className="font-semibold text-[var(--fg-5)]">Primary</div>
+                <div className="mt-1 break-all text-[var(--fg-2)]">{review.primary_outputs.length ? review.primary_outputs.join(" / ") : "—"}</div>
+              </div>
+              <div>
+                <div className="font-semibold text-[var(--fg-5)]">Accepted</div>
+                <div className="mt-1 break-all text-[var(--fg-2)]">{review.accepted_output ?? acceptedOutputSummary(review.accepted_outputs)}</div>
+              </div>
+            </div>
+          </div>
+          {task ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2 text-[10px]">
+              <span className="font-semibold text-[var(--fg-2)]">{task.task_type}</span>
+              <span className="text-[var(--fg-5)]">{task.fallback_output_agent ?? task.fallback_of ?? task.reason}</span>
+              <FAStatusPill tone={statusTone(task.status)} dot={false}>{statusLabel(task.status)}</FAStatusPill>
+            </div>
+          ) : null}
+          {fallbackOutput ? (
+            <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] font-semibold text-[var(--fg-2)]">{fallbackOutput.agent_name}</span>
+                <span className="fa-num text-[10px] text-[var(--fg-5)]">{fallbackOutput.confidence ?? "—"}</span>
+              </div>
+              <div className="mt-2 line-clamp-2 text-[10px] leading-4 text-[var(--fg-4)]">{fallbackOutput.summary ?? fallbackOutput.snapshot_id ?? "—"}</div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </FACard>
   );
 }
 
@@ -544,6 +626,7 @@ export function ProcessingMonitorPage() {
         {traceError ? <ErrorState title="Trace 查询失败" message={traceError} className="!p-4" /> : null}
         <TraceDetail trace={trace} />
 
+        <QualityGatePanel qualityGate={overview.quality_gate} />
         <CoverageMatrix overview={overview} />
         <ChainCoverage overview={overview} />
         <HealthAndBindings overview={overview} trace={trace} />

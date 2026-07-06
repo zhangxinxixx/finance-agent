@@ -3,6 +3,7 @@ import type {
   ProcessingInputCoverage,
   ProcessingMixedHealth,
   ProcessingOverviewResponse,
+  ProcessingQualityGate,
   ProcessingSourceFreshness,
   ProcessingSourceHealth,
   ProcessingTraceMode,
@@ -30,8 +31,27 @@ function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function nullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function nullableBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function fallbackActionList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") return item;
+      const record = asRecord(item);
+      return stringValue(record.task_type);
+    })
+    .filter((item) => item.length > 0);
 }
 
 function recordList(value: unknown): RawRecord[] {
@@ -100,6 +120,48 @@ function normalizeSourceHealth(value: unknown): ProcessingSourceHealth {
   };
 }
 
+function normalizeQualityGate(value: unknown): ProcessingQualityGate {
+  const item = asRecord(value);
+  const fallbackReview = asRecord(item.fallback_review);
+  return {
+    status: stringValue(item.status, "missing"),
+    review_status: stringValue(item.review_status, "missing"),
+    quality_gate_action: nullableString(item.quality_gate_action),
+    publish_allowed: nullableBoolean(item.publish_allowed),
+    manual_review_required: nullableBoolean(item.manual_review_required),
+    fallback_recommended: nullableBoolean(item.fallback_recommended),
+    retry_recommended: nullableBoolean(item.retry_recommended),
+    fallback_actions: fallbackActionList(item.fallback_actions),
+    fallback_reasons: stringList(item.fallback_reasons),
+    fallback_review: {
+      status: stringValue(fallbackReview.status, "missing"),
+      fallback_used: fallbackReview.fallback_used === true,
+      accepted_output: nullableString(fallbackReview.accepted_output),
+      manual_review_required: fallbackReview.manual_review_required === true,
+      primary_outputs: stringList(fallbackReview.primary_outputs),
+      fallback_outputs: recordList(fallbackReview.fallback_outputs).map((row) => ({
+        agent_name: stringValue(row.agent_name),
+        snapshot_id: nullableString(row.snapshot_id),
+        bias: nullableString(row.bias),
+        confidence: nullableNumber(row.confidence),
+        summary: nullableString(row.summary),
+      })),
+      accepted_outputs: asRecord(fallbackReview.accepted_outputs),
+      task_results: recordList(fallbackReview.task_results).map((row) => ({
+        task_type: stringValue(row.task_type),
+        reason: stringValue(row.reason),
+        status: stringValue(row.status, "unknown"),
+        fallback_output_agent: nullableString(row.fallback_output_agent),
+        fallback_of: nullableString(row.fallback_of),
+      })),
+      reasons: stringList(fallbackReview.reasons),
+      review_items: recordList(fallbackReview.review_items),
+    },
+    blocking_reasons: stringList(item.blocking_reasons),
+    warnings: stringList(item.warnings),
+  };
+}
+
 export function normalizeProcessingOverview(raw: unknown): ProcessingOverviewResponse {
   const item = asRecord(raw);
   return {
@@ -126,6 +188,7 @@ export function normalizeProcessingOverview(raw: unknown): ProcessingOverviewRes
     mixed_health: normalizeMixedHealth(item.mixed_health),
     source_freshness: normalizeSourceFreshness(item.source_freshness),
     source_health: normalizeSourceHealth(item.source_health),
+    quality_gate: normalizeQualityGate(item.quality_gate),
     view_bindings: recordList(item.view_bindings).map((row) => ({
       view: stringValue(row.view),
       status: stringValue(row.status, "missing"),

@@ -73,6 +73,50 @@ export interface ProcessingSourceHealth {
   warnings: string[];
 }
 
+export interface ProcessingFallbackOutput {
+  agent_name: string;
+  snapshot_id: string | null;
+  bias: string | null;
+  confidence: number | null;
+  summary: string | null;
+}
+
+export interface ProcessingFallbackTaskResult {
+  task_type: string;
+  reason: string;
+  status: string;
+  fallback_output_agent: string | null;
+  fallback_of: string | null;
+}
+
+export interface ProcessingFallbackReview {
+  status: string;
+  fallback_used: boolean;
+  accepted_output: string | null;
+  manual_review_required: boolean;
+  primary_outputs: string[];
+  fallback_outputs: ProcessingFallbackOutput[];
+  accepted_outputs: Record<string, unknown>;
+  task_results: ProcessingFallbackTaskResult[];
+  reasons: string[];
+  review_items: Array<Record<string, unknown>>;
+}
+
+export interface ProcessingQualityGate {
+  status: string;
+  review_status: string;
+  quality_gate_action: string | null;
+  publish_allowed: boolean | null;
+  manual_review_required: boolean | null;
+  fallback_recommended: boolean | null;
+  retry_recommended: boolean | null;
+  fallback_actions: string[];
+  fallback_reasons: string[];
+  fallback_review: ProcessingFallbackReview;
+  blocking_reasons: string[];
+  warnings: string[];
+}
+
 export interface ProcessingViewBinding {
   view: string;
   status: "bound" | "missing" | string;
@@ -108,6 +152,7 @@ export interface ProcessingOverviewResponse {
   mixed_health: ProcessingMixedHealth;
   source_freshness: ProcessingSourceFreshness;
   source_health: ProcessingSourceHealth;
+  quality_gate: ProcessingQualityGate;
   view_bindings: ProcessingViewBinding[];
   source_refs: SourceRef[];
   artifact_refs: ArtifactRef[];

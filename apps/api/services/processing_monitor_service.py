@@ -500,6 +500,7 @@ def _quality_gate(*, overview: dict[str, Any]) -> dict[str, Any]:
             "fallback_actions": [],
             "fallback_reasons": [],
             "agent_loop_decision": {},
+            "fallback_review": _fallback_review(review_gate={}),
             "blocking_reasons": [],
             "warnings": ["artifact review_gate unavailable"],
         }
@@ -517,9 +518,44 @@ def _quality_gate(*, overview: dict[str, Any]) -> dict[str, Any]:
         "fallback_actions": list(decision.get("fallback_actions") or agent_loop_decision.get("fallback_tasks") or []),
         "fallback_reasons": list(agent_loop_decision.get("reasons") or []),
         "agent_loop_decision": agent_loop_decision,
+        "fallback_review": _fallback_review(review_gate=review_gate),
         "blocking_reasons": list(review_gate.get("blocking_reasons") or []),
         "warnings": list(review_gate.get("warnings") or []),
     }
+
+
+def _fallback_review(*, review_gate: dict[str, Any]) -> dict[str, Any]:
+    agent_loop_decision = _dict(review_gate.get("agent_loop_decision"))
+    fallback_trace = _dict(agent_loop_decision.get("fallback_trace"))
+    fallback_outputs = _dict(review_gate.get("fallback_outputs"))
+    return {
+        "status": str(review_gate.get("review_status") or "missing"),
+        "fallback_used": bool(fallback_trace.get("fallback_used")),
+        "accepted_output": fallback_trace.get("accepted_output"),
+        "manual_review_required": bool(review_gate.get("manual_review_required")),
+        "primary_outputs": _unique_strings(str(item) for item in agent_loop_decision.get("fallback_of") or []),
+        "fallback_outputs": _fallback_output_summaries(fallback_outputs),
+        "accepted_outputs": _dict(agent_loop_decision.get("accepted_outputs")),
+        "task_results": _list_of_dicts(review_gate.get("fallback_task_results")),
+        "reasons": _unique_strings(str(item) for item in agent_loop_decision.get("reasons") or []),
+        "review_items": _list_of_dicts(fallback_trace.get("review_items")),
+    }
+
+
+def _fallback_output_summaries(outputs: dict[str, Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for agent_name, payload in outputs.items():
+        if not isinstance(payload, dict):
+            continue
+        summary = {
+            "agent_name": str(payload.get("agent_name") or agent_name),
+            "snapshot_id": payload.get("snapshot_id"),
+            "bias": payload.get("bias"),
+            "confidence": payload.get("confidence"),
+            "summary": payload.get("summary"),
+        }
+        summaries.append({key: value for key, value in summary.items() if value is not None})
+    return summaries
 
 
 def _coverage_from_review_status(review_status: str) -> str:
