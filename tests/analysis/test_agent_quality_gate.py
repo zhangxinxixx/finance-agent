@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate
+from datetime import datetime, timezone
+
+from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate, execute_agent_loop_fallback_tasks
+from apps.analysis.agents.schemas import AgentBias, AgentStatus
 from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision
 
 
@@ -69,3 +72,47 @@ def test_agent_loop_failed_fallback_degrades_to_observe_wait_and_no_strong_concl
         "action": "observe_wait",
         "reason": "fallback_failed_or_needs_review",
     }
+
+
+def test_execute_agent_loop_fallback_tasks_builds_conservative_synthesis_output() -> None:
+    primary = {
+        "version": "1.0",
+        "agent_name": "coordinator_agent",
+        "module": "coordinator",
+        "snapshot_id": "snap-primary",
+        "input_snapshot_ids": {"analysis_snapshot": "snap-primary"},
+        "bias": "bullish",
+        "confidence": 0.82,
+        "key_findings": ["Primary strong conclusion."],
+        "risk_points": [],
+        "watchlist": [],
+        "invalid_conditions": [],
+        "summary": "Strong bullish.",
+        "source_refs": [{"source": "fred", "source_ref": "DGS10"}],
+        "status": "success",
+        "created_at": "2026-07-06T09:30:00+00:00",
+        "evidence_items": [{"factor": "real_rates", "source_tier": "official"}],
+        "data_quality": [],
+    }
+    primary_decision = _decision(
+        QualityGateAction.FALLBACK,
+        findings=[{"code": "unsupported_claim", "severity": "fallback", "message": "Unsupported.", "evidence": {}}],
+    )
+
+    from apps.analysis.agents.schemas import AgentOutput
+
+    execution = execute_agent_loop_fallback_tasks(
+        agent_outputs=[AgentOutput.model_validate(primary)],
+        primary_quality_gate_decision=primary_decision,
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+
+    fallback = execution.fallback_agent_outputs["fallback_synthesis_agent"]
+    assert execution.attempted is True
+    assert execution.task_results[0]["task_type"] == "fallback_reanalyze"
+    assert fallback.bias is AgentBias.NEUTRAL
+    assert fallback.status is AgentStatus.PARTIAL
+    assert fallback.confidence == 0.55
+    assert fallback.input_payload["fallback_of"]["agent_name"] == "coordinator_agent"
+    assert execution.fallback_quality_gate_decision is not None

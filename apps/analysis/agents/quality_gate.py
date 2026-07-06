@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from apps.analysis.agents.schemas import AgentOutput
+from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
 from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision, evaluate_quality_gate
 
 
@@ -31,6 +32,15 @@ class AgentLoopDecision(BaseModel):
     strategy_card_override: dict[str, Any] = Field(default_factory=dict)
     primary_quality_gate_decision: dict[str, Any] = Field(default_factory=dict)
     fallback_quality_gate_decision: dict[str, Any] | None = None
+
+
+class AgentLoopFallbackExecution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempted: bool
+    task_results: list[dict[str, Any]] = Field(default_factory=list)
+    fallback_agent_outputs: dict[str, AgentOutput] = Field(default_factory=dict)
+    fallback_quality_gate_decision: QualityGateDecision | None = None
 
 
 def evaluate_agent_quality_gate(
@@ -185,3 +195,121 @@ def _strategy_override(decision: str) -> dict[str, Any]:
     if decision in {"blocked", "needs_review"}:
         return {"bias": "neutral", "action": "observe_wait", "reason": decision}
     return {}
+
+
+def execute_agent_loop_fallback_tasks(
+    *,
+    agent_outputs: list[AgentOutput],
+    primary_quality_gate_decision: QualityGateDecision,
+    gold_macro_overview: dict[str, Any] | None = None,
+    source_health: dict[str, Any] | None = None,
+    created_at: datetime | None = None,
+) -> AgentLoopFallbackExecution:
+    """Run deterministic fallback tasks for the C4 AgentLoop.
+
+    The first executable fallback is conservative synthesis: it preserves
+    source/evidence refs, downgrades bias to neutral, caps confidence, and marks
+    the result as a fallback so downstream reports can render no-strong-
+    conclusion output without silently overwriting the primary output.
+    """
+
+    tasks = _fallback_tasks(primary_quality_gate_decision)
+    if not tasks:
+        return AgentLoopFallbackExecution(attempted=False)
+
+    primary = _preferred_primary_output(agent_outputs)
+    fallback = _conservative_fallback_output(
+        primary=primary,
+        tasks=tasks,
+        created_at=created_at or datetime.now(timezone.utc),
+    )
+    overview = dict(gold_macro_overview or {})
+    overview["net_bias"] = "neutral"
+    overview["source_refs"] = fallback.source_refs
+    fallback_quality_gate_decision = evaluate_quality_gate(
+        agent_outputs=[fallback],
+        gold_macro_overview=overview,
+        source_health=source_health,
+    )
+    return AgentLoopFallbackExecution(
+        attempted=True,
+        task_results=[
+            {
+                "task_type": task.task_type,
+                "reason": task.reason,
+                "status": "success",
+                "fallback_output_agent": fallback.agent_name,
+                "fallback_of": f"{primary.agent_name}:{primary.snapshot_id}",
+            }
+            for task in tasks
+        ],
+        fallback_agent_outputs={fallback.agent_name: fallback},
+        fallback_quality_gate_decision=fallback_quality_gate_decision,
+    )
+
+
+def _preferred_primary_output(agent_outputs: list[AgentOutput]) -> AgentOutput:
+    for agent_name in ("coordinator_agent", "gold_macro_overview_agent", "cme_options_agent"):
+        for output in agent_outputs:
+            if output.agent_name == agent_name:
+                return output
+    if not agent_outputs:
+        raise ValueError("fallback execution requires at least one primary agent output")
+    return agent_outputs[-1]
+
+
+def _conservative_fallback_output(
+    *,
+    primary: AgentOutput,
+    tasks: list[AgentLoopFallbackTask],
+    created_at: datetime,
+) -> AgentOutput:
+    source_refs = [dict(ref) for ref in primary.source_refs if isinstance(ref, dict)]
+    evidence_items = [dict(item) for item in primary.evidence_items if isinstance(item, dict)]
+    confidence = min(float(primary.confidence), 0.55)
+    task_types = [task.task_type for task in tasks]
+    return AgentOutput(
+        version=primary.version,
+        agent_name="fallback_synthesis_agent",
+        module="agent_loop_fallback",
+        snapshot_id=f"{primary.snapshot_id}:fallback",
+        input_snapshot_ids={
+            **dict(primary.input_snapshot_ids),
+            "fallback_of": primary.snapshot_id,
+            "fallback_tasks": task_types,
+        },
+        bias=AgentBias.NEUTRAL,
+        confidence=confidence,
+        key_findings=[
+            "Fallback conservative synthesis generated; no strong directional conclusion is allowed.",
+            f"Fallback source: {primary.agent_name}.",
+        ],
+        risk_points=[
+            "No strong conclusion: primary output is unavailable for publication; keep the report in observe/wait mode.",
+            *list(primary.risk_points),
+        ],
+        watchlist=[
+            "Review primary vs fallback output before restoring any strong conclusion.",
+            *list(primary.watchlist),
+        ],
+        invalid_conditions=[],
+        summary="No strong conclusion: fallback conservative synthesis is in effect.",
+        source_refs=source_refs,
+        status=AgentStatus.PARTIAL,
+        created_at=created_at,
+        evidence_refs=[dict(ref) for ref in primary.evidence_refs if isinstance(ref, dict)],
+        evidence_items=evidence_items,
+        data_quality=[*list(primary.data_quality), "fallback_synthesis", "no_strong_conclusion"],
+        input_payload={
+            "fallback_of": {
+                "agent_name": primary.agent_name,
+                "snapshot_id": primary.snapshot_id,
+            },
+            "fallback_tasks": [task.model_dump(mode="json") for task in tasks],
+            "primary_quality": {
+                "confidence": primary.confidence,
+                "bias": primary.bias.value,
+                "status": primary.status.value,
+            },
+        },
+    )

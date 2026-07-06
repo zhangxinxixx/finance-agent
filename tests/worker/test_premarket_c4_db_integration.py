@@ -184,7 +184,13 @@ def test_db_sink_persists_agent_outputs(tmp_path: Path) -> None:
         "coordinator_agent",
     }
 
-    assert agent_names == expected_agents, f"Expected agents {expected_agents}, got {agent_names}"
+    assert expected_agents.issubset(agent_names), f"Expected agents {expected_agents}, got {agent_names}"
+    fallback_rows = [ao for ao in agent_outputs if ao.agent_name == "fallback_synthesis_agent"]
+    if fallback_rows:
+        fallback_payload = fallback_rows[0].payload
+        assert fallback_payload["module"] == "agent_loop_fallback"
+        assert fallback_payload["input_payload"]["fallback_of"]["agent_name"] == "coordinator_agent"
+        assert fallback_payload["bias"] == "neutral"
 
     # Verify each agent output has required fields
     for ao in agent_outputs:

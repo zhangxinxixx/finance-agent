@@ -243,6 +243,60 @@ def test_c4_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) 
     assert runtime_summary["fallback_attempts"] == 0
 
 
+def test_c4_pipeline_executes_fallback_synthesis_before_rendering_when_gate_requires_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision
+    from apps.worker import runner
+    from apps.worker.runner import _run_c4_agent_pipeline
+
+    primary_decision = QualityGateDecision(
+        action=QualityGateAction.FALLBACK,
+        review_status="needs_review",
+        publish_allowed=True,
+        fallback_recommended=True,
+        findings=[
+            {
+                "code": "unsupported_claim",
+                "severity": "fallback",
+                "message": "Unsupported primary conclusion.",
+                "evidence": {},
+            }
+        ],
+        fallback_actions=["fallback_reanalyze"],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.76,
+    )
+    fallback_decision = QualityGateDecision(
+        action=QualityGateAction.PASS,
+        review_status="pass",
+        publish_allowed=True,
+        findings=[],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.55,
+    )
+    monkeypatch.setattr(runner, "evaluate_quality_gate", lambda **_: primary_decision)
+    monkeypatch.setattr("apps.analysis.agents.quality_gate.evaluate_quality_gate", lambda **_: fallback_decision)
+
+    snapshot = _make_rich_snapshot(run_id="run-c4-fallback")
+    summaries, c4_outputs = _run_c4_agent_pipeline(
+        storage_root=tmp_path,
+        snapshot=snapshot,
+        run_id="run-c4-fallback",
+        created_at=_CREATED_AT,
+    )
+
+    assert "fallback_synthesis_agent" in c4_outputs["agents"]
+    assert summaries["final_report"]["fallback_task_results"][0]["task_type"] == "fallback_reanalyze"
+    assert summaries["final_report"]["agent_loop_decision"]["fallback_trace"]["accepted_output"] == "fallback"
+    assert c4_outputs["strategy_card"].bias.value == "neutral"
+    assert "No strong conclusion" in c4_outputs["strategy_card"].scenario_summary
+    assert c4_outputs["gold_runtime_summary"]["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
+
+
 def test_c4_pipeline_binds_snapshot_id_to_outputs(tmp_path: Path) -> None:
     """All C4 outputs must bind to the input snapshot_id."""
     from apps.worker.runner import _run_c4_agent_pipeline

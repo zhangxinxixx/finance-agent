@@ -45,7 +45,7 @@ from apps.analysis.agents.technical import analyze_technical
 from apps.analysis.agents.positioning import analyze_positioning
 from apps.analysis.agents.news import analyze_news
 from apps.analysis.agents.market_odds import analyze_market_odds
-from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate
+from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate, execute_agent_loop_fallback_tasks
 from apps.api.services.quality_gate_service import evaluate_quality_gate
 from apps.analysis.strategy.card import build_strategy_card
 from apps.output.final_report import write_final_report, write_strategy_card
@@ -1124,11 +1124,16 @@ def _run_c4_agent_pipeline(
         gold_macro_overview=_gold_macro_overview_from_snapshot(snapshot),
         source_health=_source_health_from_snapshot(snapshot),
     )
-    agent_loop_decision = evaluate_agent_quality_gate(
+    fallback_execution = execute_agent_loop_fallback_tasks(
         agent_outputs=agent_outputs,
+        primary_quality_gate_decision=quality_gate_decision,
         gold_macro_overview=_gold_macro_overview_from_snapshot(snapshot),
         source_health=_source_health_from_snapshot(snapshot),
-        primary_quality_gate_decision=quality_gate_decision,
+        created_at=created_at,
+    )
+    accepted_coordinator_output = _accepted_coordinator_output(
+        primary=coordinator_output,
+        fallback_execution=fallback_execution,
     )
 
     summaries["c3_agents"] = {
@@ -1153,7 +1158,7 @@ def _run_c4_agent_pipeline(
         technical_output=technical_output,
         positioning_output=positioning_output,
         news_output=news_output,
-        coordinator_output=coordinator_output,
+        coordinator_output=accepted_coordinator_output,
         created_at=created_at,
     )
 
@@ -1167,7 +1172,7 @@ def _run_c4_agent_pipeline(
             technical_output=technical_output,
             positioning_output=positioning_output,
             news_output=news_output,
-            coordinator_output=coordinator_output,
+            coordinator_output=accepted_coordinator_output,
             created_at=created_at,
         )
         structured_dict = structured.model_dump(mode="json")
@@ -1183,25 +1188,10 @@ def _run_c4_agent_pipeline(
         run_id=run_id,
         structured_report=structured_dict,
     )
-    summaries["final_report"] = {
-        "step": "final_report",
-        "status": "success",
-        "snapshot_id": str(snapshot_id),
-        "paths": report_result.get("paths", []),
-        "quality_gate_action": quality_gate_decision.action.value,
-        "review_status": quality_gate_decision.review_status,
-        "publish_allowed": quality_gate_decision.publish_allowed,
-        "manual_review_required": quality_gate_decision.manual_review_required,
-        "fallback_recommended": quality_gate_decision.fallback_recommended,
-        "retry_recommended": quality_gate_decision.retry_recommended,
-        "quality_gate_decision": quality_gate_decision.model_dump(mode="json"),
-        "agent_loop_decision": agent_loop_decision.model_dump(mode="json"),
-    }
-
     # ── 3. Strategy card ──────────────────────────────────────────────────
     card = build_strategy_card(
         snapshot=snapshot,
-        coordinator_output=coordinator_output,
+        coordinator_output=accepted_coordinator_output,
         risk_output=risk_output,
         created_at=created_at,
     )
@@ -1215,6 +1205,38 @@ def _run_c4_agent_pipeline(
         "snapshot_id": str(snapshot_id),
         "input_snapshot_ids": dict(card.input_snapshot_ids),
         "paths": card_result.get("paths", []),
+    }
+    fallback_outputs = (
+        {
+            "analysis_snapshot": snapshot_id,
+            "final_report_paths": report_result.get("paths", []),
+            "strategy_card_paths": card_result.get("paths", []),
+        }
+        if fallback_execution.attempted
+        else None
+    )
+    agent_loop_decision = evaluate_agent_quality_gate(
+        agent_outputs=agent_outputs,
+        gold_macro_overview=_gold_macro_overview_from_snapshot(snapshot),
+        source_health=_source_health_from_snapshot(snapshot),
+        primary_quality_gate_decision=quality_gate_decision,
+        fallback_outputs=fallback_outputs,
+        fallback_quality_gate_decision=fallback_execution.fallback_quality_gate_decision,
+    )
+    summaries["final_report"] = {
+        "step": "final_report",
+        "status": "success",
+        "snapshot_id": str(snapshot_id),
+        "paths": report_result.get("paths", []),
+        "quality_gate_action": quality_gate_decision.action.value,
+        "review_status": quality_gate_decision.review_status,
+        "publish_allowed": quality_gate_decision.publish_allowed,
+        "manual_review_required": quality_gate_decision.manual_review_required,
+        "fallback_recommended": quality_gate_decision.fallback_recommended,
+        "retry_recommended": quality_gate_decision.retry_recommended,
+        "quality_gate_decision": quality_gate_decision.model_dump(mode="json"),
+        "fallback_task_results": [dict(item) for item in fallback_execution.task_results],
+        "agent_loop_decision": agent_loop_decision.model_dump(mode="json"),
     }
     gold_runtime_summary = build_gold_runtime_execution_summary(
         run_mode="premarket_full_run",
@@ -1244,6 +1266,7 @@ def _run_c4_agent_pipeline(
             "news_agent": news_output,
             "market_odds_agent": market_odds_output,
             "coordinator_agent": coordinator_output,
+            **fallback_execution.fallback_agent_outputs,
         },
         "strategy_card": card,
         "report_result": report_result,
@@ -1254,6 +1277,11 @@ def _run_c4_agent_pipeline(
     }
 
     return summaries, c4_outputs
+
+
+def _accepted_coordinator_output(*, primary: Any, fallback_execution: Any) -> Any:
+    fallback = getattr(fallback_execution, "fallback_agent_outputs", {}).get("fallback_synthesis_agent")
+    return fallback or primary
 
 
 def _gold_macro_overview_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
