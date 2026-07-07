@@ -64,6 +64,7 @@ from apps.worker.source_readiness_gate import (
     load_premarket_source_status_index as _load_premarket_source_status_index,
     should_apply_source_readiness_gate as _should_apply_source_readiness_gate,
 )
+from apps.worker import step_dispatcher as _step_dispatcher
 from apps.api.services.quality_gate_service import evaluate_quality_gate
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
@@ -78,6 +79,13 @@ from database.queries.analysis import (
 )
 
 logger = logging.getLogger(__name__)
+
+CME_STEP_NAMES = _step_dispatcher.CME_STEP_NAMES
+MACRO_STEP_NAMES = _step_dispatcher.MACRO_STEP_NAMES
+NEWS_STEP_NAMES = _step_dispatcher.NEWS_STEP_NAMES
+_create_step_dispatch_state = _step_dispatcher.create_step_dispatch_state
+_dispatch_premarket_step = _step_dispatcher.dispatch_premarket_step
+_has_blocked_upstream_in_same_pipeline = _step_dispatcher.has_blocked_upstream_in_same_pipeline
 
 __all__ = [
     "_coerce_lineage_input_snapshot_ids",
@@ -95,6 +103,9 @@ __all__ = [
     "_register_run_support_artifacts",
     "_register_runner_step_artifacts",
     "_run_composite_analysis_pipeline",
+    "_create_step_dispatch_state",
+    "_dispatch_premarket_step",
+    "_has_blocked_upstream_in_same_pipeline",
     "evaluate_quality_gate",
     "upsert_agent_output",
     "upsert_analysis_snapshot",
@@ -107,13 +118,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ---------------------------------------------------------------------------
-# Step names by pipeline
-# ---------------------------------------------------------------------------
-
-CME_STEP_NAMES = {"cme_download", "cme_parse", "cme_ingest", "option_wall"}
-MACRO_STEP_NAMES = {"macro_collect", "macro_feature", "report_render"}
-NEWS_STEP_NAMES = {"news_collect", "news_feature", "news_brief"}
 _STEP_STATUS_SUCCESS = "success"
 _STEP_STATUS_SKIPPED = "skipped"
 _STEP_STATUS_FAILED = "failed"
@@ -161,21 +165,11 @@ def run_premarket(
     except Exception:
         logger.exception("Failed to ensure report tables — continuing without report registry sink")
 
-    # Shared CME pipeline state for this task run
-    from apps.worker.pipelines.cme import CmePipelineState, run_cme_step
-
-    cme_state = CmePipelineState()
     run_id = str(task_id)
-
-    # Shared macro pipeline state for this task run
-    from apps.worker.pipelines.macro import MacroPipelineState, run_macro_step
-
-    macro_state = MacroPipelineState()
-
-    # Shared news/event pipeline state for this task run
-    from apps.worker.pipelines.news import NewsPipelineState, run_news_step
-
-    news_state = NewsPipelineState()
+    step_dispatch_state = _create_step_dispatch_state()
+    cme_state = step_dispatch_state.cme
+    macro_state = step_dispatch_state.macro
+    news_state = step_dispatch_state.news
     source_status_index = _load_premarket_source_status_index()
 
     ordered_steps = sort_premarket_steps(task.steps)
@@ -202,35 +196,18 @@ def run_premarket(
         # ── T1.4: check upstream failure/blocking → block this step ──────
         # Only block steps within the SAME pipeline as the failed/blocked step.
         # CME, Macro, and News pipelines are independent; "other" steps are never blocked here.
-        step_pipeline = (
-            "cme" if step.name in CME_STEP_NAMES
-            else "macro" if step.name in MACRO_STEP_NAMES
-            else "news" if step.name in NEWS_STEP_NAMES
-            else None
-        )
-        if step_pipeline is not None:
-            same_pipeline_blocked = any(
-                s.status in {StepStatus.failed, StepStatus.blocked}
-                and (
-                    "cme" if s.name in CME_STEP_NAMES
-                    else "macro" if s.name in MACRO_STEP_NAMES
-                    else "news" if s.name in NEWS_STEP_NAMES
-                    else None
-                ) == step_pipeline
-                for s in ordered_steps[:idx]
+        if _has_blocked_upstream_in_same_pipeline(ordered_steps, idx):
+            transition_task_step(
+                db,
+                step,
+                StepStatus.blocked,
+                source="worker",
+                reason="upstream_failed",
+                retryable=False,
+                blocked_reason="同管线内上游步骤失败或阻塞，跳过执行",
             )
-            if same_pipeline_blocked:
-                transition_task_step(
-                    db,
-                    step,
-                    StepStatus.blocked,
-                    source="worker",
-                    reason="upstream_failed",
-                    retryable=False,
-                    blocked_reason="同管线内上游步骤失败或阻塞，跳过执行",
-                )
-                db.commit()
-                continue
+            db.commit()
+            continue
 
         contract = get_premarket_step_contract(step.name)
         if contract is not None and _should_apply_source_readiness_gate(contract, source_status_index):
@@ -257,35 +234,14 @@ def run_premarket(
 
         try:
             summary: dict[str, object] | None
-            if step.name in CME_STEP_NAMES:
-                summary = run_cme_step(
-                    step.name,
-                    cme_state,
-                    db=db,
-                    storage_root=storage_root,
-                    run_id=run_id,
-                    product=product,
-                )
-            elif step.name in MACRO_STEP_NAMES:
-                summary = run_macro_step(
-                    step.name,
-                    macro_state,
-                    storage_root=storage_root,
-                    run_id=run_id,
-                    db_session=db,
-                )
-            elif step.name in NEWS_STEP_NAMES:
-                summary = run_news_step(
-                    step.name,
-                    news_state,
-                    storage_root=storage_root,
-                    run_id=run_id,
-                    db_session=db,
-                )
-            else:
-                # Stub: non-CME non-macro steps are stubs
-                logger.info("Step %s: stub — marking success", step.name)
-                summary = None
+            summary = _dispatch_premarket_step(
+                db=db,
+                step_name=step.name,
+                state=step_dispatch_state,
+                storage_root=storage_root,
+                run_id=run_id,
+                product=product,
+            )
 
             # ── P4-03: record output payload ──────────────────────
             if summary is not None:

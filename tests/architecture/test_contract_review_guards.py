@@ -168,6 +168,17 @@ def test_worker_db_persistence_lives_in_dedicated_module() -> None:
     assert runner._ensure_review_items is db_persistence.ensure_review_items
 
 
+def test_worker_step_dispatcher_lives_in_dedicated_module() -> None:
+    from apps.worker import runner, step_dispatcher
+
+    assert runner.CME_STEP_NAMES is step_dispatcher.CME_STEP_NAMES
+    assert runner.MACRO_STEP_NAMES is step_dispatcher.MACRO_STEP_NAMES
+    assert runner.NEWS_STEP_NAMES is step_dispatcher.NEWS_STEP_NAMES
+    assert runner._create_step_dispatch_state is step_dispatcher.create_step_dispatch_state
+    assert runner._dispatch_premarket_step is step_dispatcher.dispatch_premarket_step
+    assert runner._has_blocked_upstream_in_same_pipeline is step_dispatcher.has_blocked_upstream_in_same_pipeline
+
+
 def test_gold_mainline_ids_are_canonical_across_backend_runtime_prompt_source_health_and_frontend() -> None:
     canonical = list(GOLD_MAINLINE_IDS)
 
