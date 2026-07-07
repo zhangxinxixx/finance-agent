@@ -20,6 +20,7 @@ def build_alembic_config(database_url: str | None = None) -> Config:
     resolved_url = database_url or os.getenv("DATABASE_URL")
     if resolved_url:
         config.set_main_option("sqlalchemy.url", resolved_url)
+    config.attributes["database_url_explicit"] = database_url is not None
     return config
 
 

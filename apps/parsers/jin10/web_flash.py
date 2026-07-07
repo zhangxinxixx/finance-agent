@@ -76,6 +76,7 @@ class _Jin10FlashParser(HTMLParser):
         self._article_buf: list[str] = []
         self._article_in_tag: str | None = None
         self._article_depth = 0
+        self._article_root_tag: str | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = dict(attrs)
@@ -195,10 +196,18 @@ class _Jin10FlashParser(HTMLParser):
             self._article_current = {"type": "article"}
             self._in_article_item = True
             self._article_depth = 1
+            self._article_root_tag = "div"
+            return
+
+        if tag == "a" and "article-item" in classes:
+            self._article_current = {"type": "article", "url": attr_map.get("href") or None}
+            self._in_article_item = True
+            self._article_depth = 1
+            self._article_root_tag = "a"
             return
 
         if self._in_article_item and self._article_current is not None:
-            if tag == "div":
+            if tag in ("a", "div"):
                 self._article_depth += 1
             data_text = attr_map.get("data-text")
             if tag == "span" and data_text:
@@ -207,10 +216,20 @@ class _Jin10FlashParser(HTMLParser):
                 image_url = _extract_css_background_url(attr_map.get("style"))
                 if image_url:
                     self._article_current.setdefault("image_urls", []).append(image_url)
+            elif tag == "img" and attr_map.get("src"):
+                self._article_current.setdefault("image_urls", []).append(str(attr_map["src"]))
             elif tag == "span" and "text" in classes:
                 self._article_in_tag = "title"
                 self._article_capture = True
                 self._article_buf = []
+            elif tag == "div" and "article-item__title" in classes:
+                title_attr = str(attr_map.get("title") or "").strip()
+                if title_attr:
+                    self._article_current["title"] = title_attr
+                else:
+                    self._article_in_tag = "title"
+                    self._article_capture = True
+                    self._article_buf = []
             elif tag == "div" and "item-time" in classes:
                 self._article_in_tag = "time"
                 self._article_capture = True
@@ -287,7 +306,7 @@ class _Jin10FlashParser(HTMLParser):
             self._article_in_tag = None
             self._article_buf = []
 
-        if tag == "div" and self._in_article_item and self._article_current is not None:
+        if tag in ("a", "div") and self._in_article_item and self._article_current is not None:
             self._article_depth -= 1
             if self._article_depth <= 0:
                 if self._article_current.get("title"):
@@ -295,6 +314,7 @@ class _Jin10FlashParser(HTMLParser):
                 self._article_current = None
                 self._in_article_item = False
                 self._article_depth = 0
+                self._article_root_tag = None
 
     def handle_data(self, data: str) -> None:
         if self._capture_text:
@@ -410,7 +430,7 @@ def _normalize_item(
     linked_urls = _dedupe_strings(raw.get("linked_urls") or [])
     image_urls = _dedupe_strings(raw.get("image_urls") or [])
     data_id = raw.get("data_id")
-    original_url = raw.get("url")
+    original_url = _normalize_url(raw.get("url"))
     flash_id = data_id or _extract_flash_id(original_url)
     item_id = f"jin10_flash_{flash_id}" if flash_id else f"jin10_{item_type}_{_slug(raw.get('title', ''))}"
     url = f"https://flash.jin10.com/detail/{flash_id}" if flash_id else original_url
@@ -497,6 +517,17 @@ def _is_content_link(href: Any) -> bool:
     if _is_flash_detail_link(href):
         return False
     return href.startswith("http://") or href.startswith("https://")
+
+
+def _normalize_url(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.startswith("//"):
+        return f"https:{text}"
+    return text
 
 
 def _is_flash_detail_link(href: str) -> bool:

@@ -11,10 +11,10 @@ from apps.analysis.agents.market_odds import analyze_market_odds
 from apps.analysis.agents.news import analyze_news
 from apps.analysis.agents.positioning import analyze_positioning
 from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate, execute_agent_loop_fallback_tasks
+from apps.analysis.agents.quality_gate_evaluator import evaluate_quality_gate as _default_evaluate_quality_gate
 from apps.analysis.agents.risk import analyze_risk
 from apps.analysis.agents.technical import analyze_technical
 from apps.analysis.strategy.card import build_strategy_card
-from apps.api.services.quality_gate_service import evaluate_quality_gate as _default_evaluate_quality_gate
 from apps.gold_runtime_orchestration import build_gold_runtime_execution_summary
 from apps.output.final_report import write_final_report, write_strategy_card
 from apps.renderer.markdown.final_report import build_structured_report, render_final_report_markdown

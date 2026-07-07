@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from apps.api.services import system_status_service
 from database.models.engine import get_db
+from database.models.task import TaskRun
 
 router = APIRouter()
 
@@ -15,13 +17,11 @@ router = APIRouter()
 @router.get("/dashboard/system-status")
 def system_status(db: Session = Depends(get_db)) -> dict:
     """返回轻量系统状态摘要（MVP 静态状态，非实时生产监控）。"""
-    from apps.api import main as api_main
-
     recent_tasks: list[dict] = []
     db_available = False
-    if api_main._database_reachable():
+    if system_status_service.database_reachable():
         try:
-            tasks = db.query(api_main.TaskRun).order_by(api_main.TaskRun.created_at.desc()).limit(5).all()
+            tasks = db.query(TaskRun).order_by(TaskRun.created_at.desc()).limit(5).all()
             recent_tasks = [
                 {
                     "id": str(t.id),
@@ -37,11 +37,11 @@ def system_status(db: Session = Depends(get_db)) -> dict:
 
     return {
         "service": "finance-agent",
-        "version": api_main._get_version(),
+        "version": system_status_service.get_version(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "db_available": db_available,
         "recent_tasks": recent_tasks,
-        "phases": api_main._get_phases(),
+        "phases": system_status_service.get_phases(),
         "production_chain": [
             "api",
             "scheduler",

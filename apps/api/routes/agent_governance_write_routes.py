@@ -8,10 +8,35 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from apps.api.schemas.agent import PromptFeedbackCreate, PromptVersionActivate, PromptVersionCreate
+from apps.api.schemas.agent import (
+    PromptEvolutionReleaseActionRequest,
+    PromptFeedbackCreate,
+    PromptVersionActivate,
+    PromptVersionCreate,
+)
+from apps.api.services.agent_governance_service import (
+    prompt_feedback_item,
+    prompt_version_item,
+    validate_prompt_version_create_payload,
+)
+from apps.api.services.prompt_evolution_service import evaluate_prompt_activation_readiness
 from database.models.engine import get_db
 
 router = APIRouter()
+
+
+@router.post("/api/governance/prompt-evolution/release/action")
+def api_prompt_evolution_release_action(payload: PromptEvolutionReleaseActionRequest):
+    """Record a review-approved PromptEvolution release or rollback audit.
+
+    This endpoint intentionally does not activate or mutate production prompts.
+    """
+    from apps.api.services.prompt_evolution_service import record_prompt_release_action
+
+    try:
+        return record_prompt_release_action(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/agents/prompts/{agent_id}")
@@ -25,13 +50,12 @@ def api_prompt_versions_create(
     import json
 
     from apps.analysis.agents.registry import get_agent_registry
-    from apps.api import main as api_main
     from database.models.analysis import PromptVersion
 
     agent = get_agent_registry(agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
-    api_main._validate_prompt_version_create_payload(payload)
+    validate_prompt_version_create_payload(payload)
 
     template_raw = json.dumps(payload.prompt_template, sort_keys=True, ensure_ascii=False)
     sha = hashlib.sha256(template_raw.encode()).hexdigest()
@@ -69,7 +93,7 @@ def api_prompt_versions_create(
     db.add(pv)
     db.commit()
     db.refresh(pv)
-    return api_main._prompt_version_item(pv)
+    return prompt_version_item(pv)
 
 
 @router.patch("/api/agents/prompts/{agent_id}/activate")
@@ -79,7 +103,6 @@ def api_prompt_versions_activate(
     db: Session = Depends(get_db),
 ):
     """激活某个 Agent 的指定版本，同时停用该 Agent 所有其他版本。"""
-    from apps.api import main as api_main
     from database.models.analysis import PromptVersion
 
     target = (
@@ -92,9 +115,28 @@ def api_prompt_versions_activate(
             status_code=404,
             detail=f"Version not found: {agent_id} {payload.version}",
         )
+    if target.status == "candidate":
+        decision = evaluate_prompt_activation_readiness(
+            agent_name=agent_id,
+            candidate_prompt_version_id=target.id,
+            release_approval_artifact=payload.release_approval_artifact,
+        )
+        if not decision.ready:
+            reasons = ", ".join(decision.blocking_reasons)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "candidate prompt activation requires a valid release_approved "
+                    f"PromptEvolution decision: {reasons}"
+                ),
+            )
 
-    db.query(PromptVersion).filter(PromptVersion.agent_id == agent_id).update(
-        {"status": "deprecated" if PromptVersion.status != "deprecated" else "deprecated"},
+    db.query(PromptVersion).filter(
+        PromptVersion.agent_id == agent_id,
+        PromptVersion.id != target.id,
+    ).update(
+        {"status": "deprecated", "enabled": False},
+        synchronize_session=False,
     )
     target.status = "active"
     target.enabled = True
@@ -102,13 +144,12 @@ def api_prompt_versions_activate(
         target.change_note = (target.change_note or "") + f"\n激活: {payload.reason}"
     db.commit()
     db.refresh(target)
-    return api_main._prompt_version_item(target)
+    return prompt_version_item(target)
 
 
 @router.post("/api/agents/feedback")
 def api_prompt_feedback_create(payload: PromptFeedbackCreate, db: Session = Depends(get_db)):
     """提交人工反馈（P2-11）。"""
-    from apps.api import main as api_main
     from database.models.analysis import PromptFeedback
 
     feedback = PromptFeedback(
@@ -160,7 +201,7 @@ def api_prompt_feedback_create(payload: PromptFeedbackCreate, db: Session = Depe
     db.commit()
     db.refresh(feedback)
 
-    result = api_main._prompt_feedback_item(feedback)
+    result = prompt_feedback_item(feedback)
     if review_item:
         result["review_item"] = review_item
     return result
@@ -174,7 +215,6 @@ def api_prompt_feedback_by_agent(
     db: Session = Depends(get_db),
 ):
     """按 Agent 查询反馈记录。"""
-    from apps.api import main as api_main
     from database.models.analysis import PromptFeedback
 
     query = db.query(PromptFeedback).filter(PromptFeedback.agent_id == agent_id)
@@ -187,7 +227,7 @@ def api_prompt_feedback_by_agent(
         "agent_id": agent_id,
         "source": "prompt_feedback",
         "count": len(rows),
-        "feedback": [api_main._prompt_feedback_item(r) for r in rows],
+        "feedback": [prompt_feedback_item(r) for r in rows],
     }
 
 
@@ -199,7 +239,6 @@ def api_prompt_feedback_list(
     db: Session = Depends(get_db),
 ):
     """列出所有反馈记录，可选按 agent/status 过滤。"""
-    from apps.api import main as api_main
     from database.models.analysis import PromptFeedback
 
     query = db.query(PromptFeedback)
@@ -213,5 +252,5 @@ def api_prompt_feedback_list(
     return {
         "source": "prompt_feedback",
         "count": len(rows),
-        "feedback": [api_main._prompt_feedback_item(r) for r in rows],
+        "feedback": [prompt_feedback_item(r) for r in rows],
     }

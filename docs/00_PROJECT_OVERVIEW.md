@@ -81,12 +81,11 @@ apps/frontend-web/src
 
 ## 当前文档基线
 
-公开文档入口：
+公开快照保留的文档：
 
 - 架构文档：`docs/01_ARCHITECTURE.md`
 - 后端主链：`docs/02_BACKEND_PIPELINE.md`
 - 前端页面：`docs/03_FRONTEND_PAGES.md`
 - 数据模型与存储：`docs/04_DATA_MODEL_AND_STORAGE.md`
 - Agent / 报告 / 溯源：`docs/05_AGENT_ARCHITECTURE.md`、`docs/06_REPORT_SYSTEM.md`、`docs/07_SOURCE_TRACE_AND_RUN.md`
-- API 与页面矩阵：`docs/10_API_MAP.md`、`docs/11_PAGE_RESPONSIBILITY_MATRIX.md`
 - 图：`docs/diagrams/*.mmd`

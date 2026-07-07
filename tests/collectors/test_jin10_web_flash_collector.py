@@ -466,7 +466,8 @@ class TestBrowserProfileWrapper:
         launch_kwargs = captured["launch_kwargs"]
         assert html == IMPORTANT_FLASH_HTML
         assert isinstance(launch_kwargs, dict)
-        assert launch_kwargs["user_data_dir"] == str(profile_dir)
+        assert launch_kwargs["user_data_dir"] != str(profile_dir)
+        assert str(launch_kwargs["user_data_dir"]).endswith("/profile")
         assert launch_kwargs["executable_path"] == str(chromium)
         assert launch_kwargs["headless"] is True
         assert "--disable-dev-shm-usage" in launch_kwargs["args"]
@@ -474,3 +475,17 @@ class TestBrowserProfileWrapper:
         assert captured["goto_url"] == "https://www.jin10.com/"
         assert captured["goto_kwargs"]["wait_until"] == "domcontentloaded"
         assert captured["closed"] is True
+
+    def test_profile_copy_omits_singleton_locks(self, tmp_path: Path) -> None:
+        source = tmp_path / "source-profile"
+        target = tmp_path / "target-profile"
+        source.mkdir()
+        (source / "Cookies").write_text("cookie-data", encoding="utf-8")
+        (source / "SingletonLock").write_text("locked", encoding="utf-8")
+        (source / "SingletonSocket").write_text("socket", encoding="utf-8")
+
+        web_flash._copy_browser_profile_for_readonly_launch(source, target)
+
+        assert (target / "Cookies").read_text(encoding="utf-8") == "cookie-data"
+        assert not (target / "SingletonLock").exists()
+        assert not (target / "SingletonSocket").exists()

@@ -22,7 +22,7 @@ DETAIL_FETCH_STEP = "detail_fetch"
 VIP_BROWSER_FALLBACK_STEP = "vip_browser_fallback"
 DAILY_ANALYSIS_STEP = "daily_analysis"
 PLAN_VERSION = "daily-analysis-followup-plan-v1"
-DEFAULT_JIN10_BROWSER_PROFILE = None
+DEFAULT_JIN10_BROWSER_PROFILE = Path.home() / ".finance-agent" / "jin10_browser_profile"
 VIP_BROWSER_FALLBACK_SOURCE_KEY = "jin10_vip_browser_fallback"
 VIP_FALLBACK_PARTIAL_SNAPSHOT_ERRORS = {
     "login_required",
@@ -1263,9 +1263,7 @@ def _extract_jin10_article_id(source_url: str) -> str | None:
 
 
 def _jin10_browser_profile_path() -> Path:
-    raw_path = os.getenv("JIN10_BROWSER_PROFILE") or str(DEFAULT_JIN10_BROWSER_PROFILE or "")
-    if not raw_path:
-        return Path("__missing_jin10_browser_profile__")
+    raw_path = os.getenv("JIN10_BROWSER_PROFILE") or str(DEFAULT_JIN10_BROWSER_PROFILE)
     return Path(raw_path).expanduser()
 
 

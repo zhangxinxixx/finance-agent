@@ -11,7 +11,7 @@ client = TestClient(app)
 
 def test_dashboard_redirects_to_frontend_web(monkeypatch, tmp_path):
     """GET /dashboard 兼容旧入口，但实际跳转到 Vite 前端。"""
-    monkeypatch.setattr("apps.api.main._FRONTEND_DIST_DIR", tmp_path / "missing-dist")
+    monkeypatch.setattr("apps.api.services.frontend_compat_service._FRONTEND_DIST_DIR", tmp_path / "missing-dist")
     resp = client.get("/dashboard", follow_redirects=False)
     assert resp.status_code == 307
     assert resp.headers["location"] == "http://localhost:8080/dashboard"
@@ -22,7 +22,7 @@ def test_dashboard_serves_built_frontend_when_dist_exists(tmp_path, monkeypatch)
     dist_dir.mkdir(parents=True)
     (dist_dir / "index.html").write_text("<!doctype html><title>finance-agent</title>", encoding="utf-8")
 
-    monkeypatch.setattr("apps.api.main._FRONTEND_DIST_DIR", dist_dir)
+    monkeypatch.setattr("apps.api.services.frontend_compat_service._FRONTEND_DIST_DIR", dist_dir)
 
     resp = client.get("/dashboard")
 
@@ -36,7 +36,7 @@ def test_dashboard_assets_serve_from_built_frontend(tmp_path, monkeypatch):
     (tmp_path / "dist" / "index.html").write_text("ok", encoding="utf-8")
     (assets_dir / "app.js").write_text("console.log('ok');", encoding="utf-8")
 
-    monkeypatch.setattr("apps.api.main._FRONTEND_DIST_DIR", tmp_path / "dist")
+    monkeypatch.setattr("apps.api.services.frontend_compat_service._FRONTEND_DIST_DIR", tmp_path / "dist")
 
     resp = client.get("/assets/app.js")
 

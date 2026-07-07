@@ -196,10 +196,12 @@ def _render_jin10_web_flash_home_html_via_browser_profile(
         raise RuntimeError("Playwright is required for Jin10 web flash browser-profile fetch.") from exc
 
     with tempfile.TemporaryDirectory(prefix="jin10-web-flash-playwright-runtime-") as runtime_dir:
+        profile_copy = Path(runtime_dir) / "profile"
+        _copy_browser_profile_for_readonly_launch(user_data_dir, profile_copy)
         env = {**os.environ, "XDG_RUNTIME_DIR": runtime_dir}
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(user_data_dir),
+                user_data_dir=str(profile_copy),
                 executable_path=str(chromium_path),
                 headless=True,
                 args=["--disable-dev-shm-usage"],
@@ -231,6 +233,28 @@ def _wait_for_jin10_web_flash_homepage(page: Any) -> None:
         page.wait_for_timeout(1500)
     except Exception:
         pass
+
+
+def _copy_browser_profile_for_readonly_launch(source_dir: Path, target_dir: Path) -> None:
+    """Copy a Chromium profile without process singleton locks.
+
+    Launching Chromium against the canonical profile can fail when another
+    collector is using it. A temporary copy preserves cookies/session state
+    while avoiding profile-lock contention and accidental writes to the source.
+    """
+    ignore = shutil.ignore_patterns(
+        "Singleton*",
+        "DevToolsActivePort",
+        "BrowserMetrics*",
+        "Crashpad",
+        "Crash Reports",
+        "ShaderCache",
+        "GrShaderCache",
+        "GraphiteDawnCache",
+        "GPUCache",
+        "Code Cache",
+    )
+    shutil.copytree(source_dir, target_dir, ignore=ignore)
 
 
 def _validate_jin10_homepage_url(homepage_url: str) -> str:

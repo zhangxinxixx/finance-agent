@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from apps.scheduler import jin10_refresh as scheduler
+from apps.collectors.news.jin10_detail_fetcher import Jin10DetailFetchResult
 from database.models.analysis import AppSetting, DataSourceStatus, MarketCandle, ensure_analysis_tables
 
 
@@ -282,6 +283,148 @@ def test_refresh_jin10_calendar_cache_persists_only_display_window(monkeypatch, 
 
     payload = json.loads((tmp_path / "calendar_cache.json").read_text(encoding="utf-8"))
     assert [event["title"] for event in payload["events"]] == ["窗口内事件"]
+
+
+def test_refresh_jin10_web_flash_briefs_archives_homepage_items(monkeypatch, tmp_path):
+    fixed_now = datetime(2026, 7, 9, 2, 30, tzinfo=UTC)
+
+    def fake_collect(**kwargs):
+        assert kwargs["storage_root"] == tmp_path
+        assert kwargs["retrieved_date"] == "2026-07-09"
+        assert kwargs["run_id"] == "jin10-web-flash-20260709T023000Z"
+        assert kwargs["fetched_at"] == fixed_now.isoformat()
+        assert kwargs["user_data_dir"] == tmp_path / "profile"
+        return {
+            "status": "ok",
+            "retrievedDate": "2026-07-09",
+            "runId": "jin10-web-flash-20260709T023000Z",
+            "rawArtifactPath": str(tmp_path / "storage/raw/jin10/web_flash/2026-07-09/run/home.html"),
+            "parsedArtifactPath": str(tmp_path / "storage/parsed/jin10/web_flash/2026-07-09/run/web_flash_items.json"),
+            "itemCount": 1,
+            "items": [
+                {
+                    "itemId": "web-flash-1",
+                    "sourceKey": "jin10_web_vip_flash",
+                    "contentFamily": "web_vip_flash.vip_report_article",
+                    "title": "VIP贵金属报告更新",
+                    "summary": "黄金关键位和美联储路径重新定价。",
+                    "publishedAt": "2026-07-09 10:29:00",
+                    "url": "https://www.jin10.com/",
+                    "importanceSource": "homepage",
+                    "verificationStatus": "single_source",
+                    "accessStatus": "readable",
+                    "tags": ["XAUUSD"],
+                    "linkedUrls": ["https://svip.jin10.com/news/223999"],
+                    "imageUrls": [],
+                    "sourceRefs": [{"source_key": "jin10_web_vip_flash"}],
+                    "artifactRefs": [],
+                }
+            ],
+            "qualityFlags": {},
+            "sourceRefs": [{"source": "jin10_homepage"}],
+        }
+
+    monkeypatch.setattr(scheduler, "collect_jin10_web_flash_with_browser_profile", fake_collect)
+
+    summary = scheduler.refresh_jin10_web_flash_briefs(
+        storage_root=tmp_path,
+        browser_profile=tmp_path / "profile",
+        now=fixed_now,
+    )
+
+    assert summary == {
+        "status": "ok",
+        "retrieved_date": "2026-07-09",
+        "run_id": "jin10-web-flash-20260709T023000Z",
+        "item_count": 1,
+        "brief_count": 1,
+        "artifact_path": "storage/features/news/2026-07-09/jin10-web-flash-20260709T023000Z/jin10_web_flash_briefs.json",
+        "raw_artifact_path": str(tmp_path / "storage/raw/jin10/web_flash/2026-07-09/run/home.html"),
+        "parsed_artifact_path": str(tmp_path / "storage/parsed/jin10/web_flash/2026-07-09/run/web_flash_items.json"),
+    }
+    artifact = (
+        tmp_path
+        / "storage"
+        / "features"
+        / "news"
+        / "2026-07-09"
+        / "jin10-web-flash-20260709T023000Z"
+        / "jin10_web_flash_briefs.json"
+    )
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    inner = payload["jin10_web_flash_briefs"]
+    assert inner["brief_count"] == 1
+    assert inner["briefs"][0]["display_bucket"] == "VIP报告/文章"
+    assert inner["briefs"][0]["data_quality"]["content_format"] == "report_article"
+
+
+def test_refresh_jin10_web_article_analysis_fetches_latest_report_articles(monkeypatch, tmp_path):
+    storage_root = tmp_path / "storage"
+    latest_dir = storage_root / "features" / "news" / "2026-07-09" / "jin10-web-flash-run"
+    latest_dir.mkdir(parents=True)
+    (latest_dir / "jin10_web_flash_briefs.json").write_text(
+        json.dumps(
+            {
+                "retrieved_date": "2026-07-09",
+                "run_id": "jin10-web-flash-run",
+                "jin10_web_flash_briefs": {
+                    "as_of": "2026-07-09T02:29:49+00:00",
+                    "briefs": [
+                        {
+                            "brief_id": "b1",
+                            "item_id": "article-1",
+                            "source_key": "jin10_web_important_flash",
+                            "headline": "加息阴影笼罩，美银砍金价预期14%但重申5000美元目标",
+                            "summary": "黄金相关图文",
+                            "url": "https://xnews.jin10.com/details/224056",
+                            "published_at": "07-09 10:05",
+                            "priority_bucket": "P0",
+                            "verification_status": "single_source",
+                            "data_quality": {"content_format": "report_article", "linked_urls": []},
+                        }
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict] = []
+
+    def fake_fetch_jin10_detail_page(**kwargs):
+        calls.append(kwargs)
+        return Jin10DetailFetchResult(
+            detail_url=kwargs["url"],
+            final_url=kwargs["url"],
+            status="fetched",
+            access_status="readable",
+            title="加息阴影笼罩",
+            raw_text="美银下调短期金价预期，但维持长期5000美元目标。",
+            raw_html_path="raw/news/jin10_detail_pages/2026-07-09/detail.html",
+            parsed_path="parsed/news/jin10_detail_pages/2026-07-09/detail.json",
+            image_assets=[{"seq": 1, "path": "raw/news/jin10_detail_pages/2026-07-09/images/01.png", "vlm_eligible": True}],
+            image_insights=[{"seq": 1, "status": "ok", "markdown": "图表显示金价预期路径。"}],
+            fetched_at="2026-07-09T02:31:00+00:00",
+        )
+
+    monkeypatch.setattr(scheduler, "fetch_jin10_detail_page", fake_fetch_jin10_detail_page)
+
+    summary = scheduler.refresh_jin10_web_article_analysis(
+        storage_root=storage_root,
+        browser_profile=tmp_path / "profile",
+        now=datetime(2026, 7, 9, 2, 31, tzinfo=UTC),
+    )
+
+    assert summary["status"] == "ok"
+    assert summary["candidate_count"] == 1
+    assert summary["brief_count"] == 1
+    assert calls[0]["url"] == "https://xnews.jin10.com/details/224056"
+    assert calls[0]["run_vlm"] is True
+    assert calls[0]["browser_profile"] == tmp_path / "profile"
+    artifact = storage_root / summary["artifact_path"]
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["brief_count"] == 1
+    assert payload["briefs"][0]["detail_artifacts"]["vlm_insight_count"] == 1
 
 
 def test_refresh_jin10_flash_cache_respects_disabled_jin10_mcp_setting(monkeypatch, tmp_path):

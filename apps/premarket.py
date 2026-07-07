@@ -102,7 +102,7 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         stage="collect",
         type="collector",
         required_sources=("cme_daily_bulletin",),
-        fallback_policy="block_if_unavailable",
+        fallback_policy="stale_allowed_1d",
         blocked_scope="cme",
     ),
     "cme_parse": PremarketStepContract(
@@ -113,7 +113,7 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         type="parser",
         upstream_dependencies=("cme_download",),
         required_sources=("cme_daily_bulletin",),
-        fallback_policy="block_if_unavailable",
+        fallback_policy="stale_allowed_1d",
         blocked_scope="cme",
     ),
     "cme_ingest": PremarketStepContract(
@@ -124,7 +124,7 @@ _PREMARKET_STEP_CONTRACT_SPECS: dict[str, PremarketStepContract] = {
         type="ingestor",
         upstream_dependencies=("cme_parse",),
         required_sources=("cme_daily_bulletin",),
-        fallback_policy="block_if_unavailable",
+        fallback_policy="stale_allowed_1d",
         blocked_scope="cme",
     ),
     "option_wall": PremarketStepContract(

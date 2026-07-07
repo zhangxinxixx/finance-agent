@@ -12,6 +12,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from dotenv import dotenv_values
 from sqlalchemy import func
@@ -21,7 +22,12 @@ from apps.analysis.agents.jin10_flash_semantic_filter import (
     build_jin10_flash_semantic_filter_prompt_template,
     render_jin10_flash_semantic_filter_messages,
 )
+from apps.collectors.jin10.web_flash import collect_jin10_web_flash_with_browser_profile
 from apps.collectors.jin10.mcp_client import Jin10MCPClient
+from apps.collectors.news.base import RawNewsItem
+from apps.collectors.news.jin10_detail_fetcher import fetch_jin10_detail_page
+from apps.features.news.jin10_article_briefs import archive_jin10_article_briefs, build_jin10_article_briefs
+from apps.features.news.jin10_web_flash_briefs import archive_jin10_web_flash_briefs, build_jin10_web_flash_briefs
 from apps.llm.gateway import chat_sync
 from apps.runtime.secret_resolver import resolve_runtime_secret
 from database.models.analysis import MarketCandle, ensure_analysis_tables
@@ -36,6 +42,20 @@ _JIN10_MCP_URL = "https://mcp.jin10.com/mcp"
 _JIN10_MCP_KEY_ENV = "JIN10_MCP_KEY"
 _JIN10_CALENDAR_PAST_WINDOW_DAYS = 7
 _JIN10_CALENDAR_FUTURE_WINDOW_DAYS = 14
+_DEFAULT_JIN10_BROWSER_PROFILE = Path.home() / ".finance-agent" / "jin10_browser_profile"
+_JIN10_WEB_FLASH_HOMEPAGE_URL = "https://www.jin10.com/"
+_JIN10_WEB_ARTICLE_ANALYSIS_KEYWORDS = (
+    "黄金",
+    "金价",
+    "白银",
+    "美联储",
+    "通胀",
+    "利率",
+    "美元",
+    "原油",
+    "油价",
+    "霍尔木兹",
+)
 
 QUOTE_SYMBOLS = [
     "XAUUSD",
@@ -61,6 +81,11 @@ def _get_mcp_key() -> str:
     if env_path.exists():
         env = dotenv_values(str(env_path))
     return resolve_runtime_secret(_JIN10_MCP_KEY_ENV) or env.get(_JIN10_MCP_KEY_ENV, "")
+
+
+def _get_jin10_browser_profile() -> Path:
+    configured = os.getenv("JIN10_BROWSER_PROFILE")
+    return Path(configured).expanduser() if configured else _DEFAULT_JIN10_BROWSER_PROFILE
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -105,6 +130,208 @@ def _jin10_calendar_window(now: datetime | None = None) -> tuple[datetime, datet
 def _is_jin10_calendar_event_in_window(event: dict[str, Any], *, window_start: datetime, window_end: datetime) -> bool:
     parsed_time = _parse_jin10_calendar_time(event.get("pub_time"))
     return parsed_time is not None and window_start <= parsed_time <= window_end
+
+
+def refresh_jin10_web_flash_briefs(
+    *,
+    storage_root: Path | str = Path("."),
+    browser_profile: Path | str | None = None,
+    chromium_executable: Path | str | None = None,
+    homepage_url: str = _JIN10_WEB_FLASH_HOMEPAGE_URL,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Refresh Jin10 homepage important/VIP flash article briefs.
+
+    The collector writes an ``unavailable`` feature artifact on fetch failure,
+    so read-side APIs can distinguish a fresh failed attempt from stale data.
+    """
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    fetched_at = current.isoformat()
+    retrieved_date = current.date().isoformat()
+    run_id = f"jin10-web-flash-{current.strftime('%Y%m%dT%H%M%SZ')}"
+    workspace_root = Path(storage_root).expanduser()
+    profile_path = Path(browser_profile).expanduser() if browser_profile else _get_jin10_browser_profile()
+    chromium_path = Path(chromium_executable).expanduser() if chromium_executable else None
+
+    parsed_payload = collect_jin10_web_flash_with_browser_profile(
+        storage_root=workspace_root,
+        retrieved_date=retrieved_date,
+        run_id=run_id,
+        fetched_at=fetched_at,
+        user_data_dir=profile_path,
+        executable_path=chromium_path,
+        homepage_url=homepage_url,
+    )
+    bundle = build_jin10_web_flash_briefs(parsed_payload=parsed_payload, as_of=fetched_at)
+    feature_relative = archive_jin10_web_flash_briefs(
+        storage_root=workspace_root / "storage",
+        retrieved_date=retrieved_date,
+        run_id=run_id,
+        bundle=bundle,
+    )
+    summary = {
+        "status": bundle.status,
+        "retrieved_date": retrieved_date,
+        "run_id": run_id,
+        "item_count": int(parsed_payload.get("itemCount") or 0),
+        "brief_count": bundle.brief_count,
+        "artifact_path": f"storage/{feature_relative}",
+        "raw_artifact_path": parsed_payload.get("rawArtifactPath"),
+        "parsed_artifact_path": parsed_payload.get("parsedArtifactPath"),
+    }
+    logger.info(
+        "Jin10 web flash briefs refreshed status=%s brief_count=%s artifact=%s",
+        summary["status"],
+        summary["brief_count"],
+        summary["artifact_path"],
+    )
+    return summary
+
+
+def refresh_jin10_web_article_analysis(
+    *,
+    storage_root: Path | str = Path("storage"),
+    browser_profile: Path | str | None = None,
+    max_items: int = 3,
+    run_vlm: bool = True,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Fetch readable detail pages for latest Jin10 web report-article cards."""
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    retrieved_date = current.date().isoformat()
+    run_id = f"jin10-web-article-analysis-{current.strftime('%Y%m%dT%H%M%SZ')}"
+    root = Path(storage_root).expanduser()
+    latest = _load_latest_jin10_web_flash_briefs(root)
+    candidates = _select_jin10_web_article_candidates(latest, max_items=max_items)
+    profile_path = Path(browser_profile).expanduser() if browser_profile else _get_jin10_browser_profile()
+
+    detail_pairs = []
+    detail_summaries: list[dict[str, Any]] = []
+    for item in candidates:
+        detail = fetch_jin10_detail_page(
+            url=item.url,
+            storage_root=root,
+            retrieved_date=retrieved_date,
+            run_vlm=run_vlm,
+            max_images=4,
+            run_browser_fallback=True,
+            browser_profile=profile_path,
+        )
+        detail_pairs.append((item, detail))
+        detail_summaries.append(
+            {
+                "title": item.title,
+                "url": item.url,
+                "status": detail.status,
+                "access_status": detail.access_status,
+                "raw_text_chars": len(detail.raw_text or ""),
+                "image_asset_count": len(detail.image_assets),
+                "vlm_insight_count": len(detail.image_insights),
+                "raw_html_path": detail.raw_html_path,
+                "parsed_path": detail.parsed_path,
+            }
+        )
+
+    bundle = build_jin10_article_briefs(
+        items_with_details=detail_pairs,
+        as_of=current.isoformat(),
+    )
+    feature_relative = archive_jin10_article_briefs(
+        storage_root=root,
+        retrieved_date=retrieved_date,
+        run_id=run_id,
+        bundle=bundle,
+    )
+    summary = {
+        "status": "ok" if detail_pairs else "empty",
+        "retrieved_date": retrieved_date,
+        "run_id": run_id,
+        "source_web_flash_artifact": latest.get("artifact_path"),
+        "candidate_count": len(candidates),
+        "detail_count": len(detail_pairs),
+        "brief_count": len(bundle.briefs),
+        "artifact_path": feature_relative,
+        "details": detail_summaries,
+    }
+    logger.info(
+        "Jin10 web article analysis refreshed status=%s detail_count=%s artifact=%s",
+        summary["status"],
+        summary["detail_count"],
+        summary["artifact_path"],
+    )
+    return summary
+
+
+def _load_latest_jin10_web_flash_briefs(storage_root: Path) -> dict[str, Any]:
+    base = storage_root / "features" / "news"
+    if not base.exists():
+        return {"briefs": []}
+    for date_dir in sorted((path for path in base.iterdir() if path.is_dir()), reverse=True):
+        for run_dir in sorted((path for path in date_dir.iterdir() if path.is_dir()), reverse=True):
+            artifact = run_dir / "jin10_web_flash_briefs.json"
+            if not artifact.exists():
+                continue
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            inner = payload.get("jin10_web_flash_briefs") if isinstance(payload, dict) else None
+            if isinstance(inner, dict):
+                return {**inner, "artifact_path": artifact.as_posix()}
+    return {"briefs": []}
+
+
+def _select_jin10_web_article_candidates(payload: dict[str, Any], *, max_items: int) -> list[RawNewsItem]:
+    if max_items <= 0:
+        return []
+    briefs = payload.get("briefs") if isinstance(payload.get("briefs"), list) else []
+    ranked: list[tuple[int, int, RawNewsItem]] = []
+    for index, brief in enumerate(briefs):
+        if not isinstance(brief, dict):
+            continue
+        data_quality = brief.get("data_quality") if isinstance(brief.get("data_quality"), dict) else {}
+        if data_quality.get("content_format") != "report_article":
+            continue
+        url = _first_url(brief, data_quality)
+        if not url:
+            continue
+        headline = str(brief.get("headline") or "").strip()
+        summary = str(brief.get("summary") or "").strip() or None
+        text = " ".join(part for part in [headline, summary, url] if part)
+        score = 10 if any(keyword in text for keyword in _JIN10_WEB_ARTICLE_ANALYSIS_KEYWORDS) else 0
+        if "xnews.jin10.com/details/" in url:
+            score += 5
+        if str(brief.get("priority_bucket") or "") == "P0":
+            score += 2
+        parsed = urlparse(url)
+        ranked.append(
+            (
+                score,
+                -index,
+                RawNewsItem(
+                    source_key=str(brief.get("source_key") or "jin10_web_flash"),
+                    source_name="Jin10 Web Flash",
+                    source_type="web_flash_report_article",
+                    feed_key=str(brief.get("item_id") or brief.get("brief_id") or ""),
+                    title=headline,
+                    url=url,
+                    domain=parsed.netloc,
+                    published_at=str(brief.get("published_at") or "") or None,
+                    fetched_at=str(payload.get("as_of") or datetime.now(timezone.utc).isoformat()),
+                    summary=summary,
+                    verification_status=str(brief.get("verification_status") or "single_source"),
+                    duplicate_key=str(brief.get("item_id") or brief.get("brief_id") or url),
+                    raw_payload={"web_flash_brief": brief},
+                ),
+            )
+        )
+    ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return [item for _, _, item in ranked[:max_items]]
+
+
+def _first_url(brief: dict[str, Any], data_quality: dict[str, Any]) -> str | None:
+    for value in [brief.get("url"), *(data_quality.get("linked_urls") or [])]:
+        text = str(value or "").strip()
+        if text.startswith(("http://", "https://")):
+            return text
+    return None
 
 
 def refresh_jin10_quotes_cache() -> None:

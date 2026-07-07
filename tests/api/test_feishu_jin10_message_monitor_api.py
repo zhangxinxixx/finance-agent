@@ -309,7 +309,7 @@ def test_get_feishu_jin10_message_monitor_joins_filter_trigger_and_brief(tmp_pat
 
 def test_api_feishu_jin10_message_monitor_returns_payload() -> None:
     with mock.patch(
-        "apps.api.main.get_feishu_jin10_message_monitor",
+        "apps.api.routes.news_routes.get_feishu_jin10_message_monitor",
         return_value={
             "status": "available",
             "date": "2026-06-12",
@@ -357,7 +357,7 @@ def test_api_feishu_jin10_message_monitor_returns_empty_payload_when_artifact_mi
 
 def test_api_feishu_jin10_message_monitor_http_empty_payload() -> None:
     with mock.patch(
-        "apps.api.main.get_feishu_jin10_message_monitor",
+        "apps.api.routes.news_routes.get_feishu_jin10_message_monitor",
         return_value={
             "status": "empty",
             "date": "2026-06-12",
@@ -411,7 +411,7 @@ def test_list_feishu_jin10_message_monitor_dates_returns_descending_dates(tmp_pa
 
 def test_api_feishu_jin10_message_monitor_latest_returns_payload() -> None:
     with mock.patch(
-        "apps.api.main.get_feishu_jin10_message_monitor_latest",
+        "apps.api.routes.news_routes.get_feishu_jin10_message_monitor_latest",
         return_value={
             "status": "available",
             "date": "2026-06-17",
@@ -442,7 +442,7 @@ def test_api_feishu_jin10_message_monitor_latest_returns_payload() -> None:
 
 
 def test_api_feishu_jin10_message_monitor_dates_returns_payload() -> None:
-    with mock.patch("apps.api.main.list_feishu_jin10_message_monitor_dates", return_value=["2026-06-17", "2026-06-12"]):
+    with mock.patch("apps.api.routes.news_routes.list_feishu_jin10_message_monitor_dates", return_value=["2026-06-17", "2026-06-12"]):
         resp = client.get("/api/news/feishu-jin10/dates")
 
     assert resp.status_code == 200
@@ -450,7 +450,7 @@ def test_api_feishu_jin10_message_monitor_dates_returns_payload() -> None:
 
 
 def test_api_feishu_jin10_message_monitor_latest_returns_404_when_missing() -> None:
-    with mock.patch("apps.api.main.get_feishu_jin10_message_monitor_latest", return_value=None):
+    with mock.patch("apps.api.routes.news_routes.get_feishu_jin10_message_monitor_latest", return_value=None):
         resp = client.get("/api/news/feishu-jin10/messages/latest")
 
     assert resp.status_code == 404

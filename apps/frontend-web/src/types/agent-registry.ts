@@ -5,11 +5,13 @@ export interface AgentPromptRegistry {
 }
 
 /** DB-synced prompt version metadata (P2-11). */
+export type PromptVersionStatus = "active" | "draft" | "candidate" | "deprecated" | "rolled_back";
+
 export interface AgentPromptVersion {
   id: string;
   version: string;
   prompt_kind: string;
-  status: "active" | "draft" | "deprecated";
+  status: PromptVersionStatus;
   enabled: boolean;
   model_routing?: Record<string, unknown> | null;
   change_note?: string | null;
@@ -49,7 +51,7 @@ export interface PromptVersionItem {
   prompt_source?: string | null;
   prompt_template: Record<string, unknown>;
   prompt_sha256: string;
-  status: "active" | "draft" | "deprecated";
+  status: PromptVersionStatus;
   enabled: boolean;
   model_routing?: Record<string, unknown> | null;
   change_note?: string | null;
@@ -71,7 +73,7 @@ export interface PromptVersionCreateRequest {
   prompt_kind?: string;
   prompt_source?: string | null;
   prompt_template: Record<string, unknown>;
-  status?: "active" | "draft" | "deprecated";
+  status?: PromptVersionStatus;
   enabled?: boolean;
   model_routing?: Record<string, unknown> | null;
   change_note?: string | null;

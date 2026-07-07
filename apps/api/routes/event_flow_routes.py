@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.event_flow import EventFlowActionRequest, EventFlowActionResponse, EventFlowBriefLinkRequest
+from apps.api.services import event_flow_action_service
 from database.models.engine import get_db
 
 router = APIRouter()
@@ -83,9 +84,7 @@ def api_event_flow_brief_link(
     db: Session = Depends(get_db),
 ) -> EventFlowActionResponse:
     """登记 brief -> event 归并请求。"""
-    from apps.api import main as api_main
-
-    return api_main.event_flow_action_service.register_brief_link(db, brief_id, body)
+    return event_flow_action_service.register_brief_link(db, brief_id, body)
 
 
 @router.post("/api/events/briefs/{brief_id}/ignore", response_model=EventFlowActionResponse)
@@ -95,9 +94,7 @@ def api_event_flow_brief_ignore(
     db: Session = Depends(get_db),
 ) -> EventFlowActionResponse:
     """登记 brief 忽略请求。"""
-    from apps.api import main as api_main
-
-    return api_main.event_flow_action_service.register_brief_ignore(db, brief_id, body)
+    return event_flow_action_service.register_brief_ignore(db, brief_id, body)
 
 
 @router.post("/api/events/report-inputs/{input_id}/include", response_model=EventFlowActionResponse)
@@ -107,9 +104,7 @@ def api_event_flow_report_input_include(
     db: Session = Depends(get_db),
 ) -> EventFlowActionResponse:
     """登记 report input 纳入请求。"""
-    from apps.api import main as api_main
-
-    return api_main.event_flow_action_service.register_report_input_include(db, input_id, body)
+    return event_flow_action_service.register_report_input_include(db, input_id, body)
 
 
 @router.post("/api/events/report-inputs/{input_id}/exclude", response_model=EventFlowActionResponse)
@@ -119,9 +114,7 @@ def api_event_flow_report_input_exclude(
     db: Session = Depends(get_db),
 ) -> EventFlowActionResponse:
     """登记 report input 排除请求。"""
-    from apps.api import main as api_main
-
-    return api_main.event_flow_action_service.register_report_input_exclude(db, input_id, body)
+    return event_flow_action_service.register_report_input_exclude(db, input_id, body)
 
 
 @router.post("/api/events/{event_id}/review", response_model=EventFlowActionResponse)
@@ -131,6 +124,4 @@ def api_event_flow_event_review(
     db: Session = Depends(get_db),
 ) -> EventFlowActionResponse:
     """登记单事件人工复核请求。"""
-    from apps.api import main as api_main
-
-    return api_main.event_flow_action_service.register_event_review(db, event_id, body)
+    return event_flow_action_service.register_event_review(db, event_id, body)

@@ -21,6 +21,8 @@ _RECORD_INTERVAL_SECONDS: dict[str, int] = {
     "market_candles_daily": 3600,
     "jin10_calendar": 3600,
     "jin10_flash": 900,
+    "jin10_web_flash": 900,
+    "jin10_web_article_analysis": 1800,
 }
 
 _last_record_time: dict[str, float] = {}

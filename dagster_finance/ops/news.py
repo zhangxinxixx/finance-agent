@@ -8,6 +8,7 @@ from pathlib import Path
 from dagster import Config, Out, Output, op
 
 from apps.worker.pipelines.news import NewsPipelineState, run_news_step
+from dagster_finance.ops.summary_status import raise_for_failed_summary
 
 
 class NewsConfig(Config):
@@ -37,6 +38,7 @@ def news_collect_op(context, state: NewsPipelineState, config: NewsConfig) -> Ne
         storage_root=storage, run_id=run_id, db_session=context.resources.db_session,
     )
     context.log.info(f"news_collect done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("news_collect", summary)
     return state
 
 
@@ -53,6 +55,7 @@ def news_feature_op(context, state: NewsPipelineState, config: NewsConfig) -> Ne
         storage_root=storage, run_id=run_id, db_session=context.resources.db_session,
     )
     context.log.info(f"news_feature done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("news_feature", summary)
     return state
 
 
@@ -68,4 +71,5 @@ def news_brief_op(context, state: NewsPipelineState, config: NewsConfig) -> News
         storage_root=storage, run_id=run_id,
     )
     context.log.info(f"news_brief done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("news_brief", summary)
     return state

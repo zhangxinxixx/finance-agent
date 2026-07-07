@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate, execute_agent_loop_fallback_tasks
+from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
 from apps.analysis.agents.schemas import AgentBias, AgentStatus
-from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision
 
 
 def _decision(action: QualityGateAction, *, findings: list[dict] | None = None) -> QualityGateDecision:

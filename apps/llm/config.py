@@ -34,23 +34,19 @@ class LLMConfig:
 
         providers: dict[str, ProviderConfig] = {}
 
-        # OpenAI-compatible local proxy — primary provider
+        # Cockpit (Sub2API) — primary provider
         cockpit_key = os.getenv("COCKPIT_API_KEY", "").strip()
         cockpit_url = os.getenv("COCKPIT_BASE_URL", "").strip()
         if not cockpit_key or not cockpit_url:
             # Try reading from an optional local provider config.
             try:
                 import yaml
-
-                provider_config_path = os.path.expanduser(
-                    os.getenv("LLM_PROVIDER_CONFIG", "~/.finance-agent/llm_providers.yaml")
-                )
-                provider_name = os.getenv("LLM_COCKPIT_PROVIDER_NAME", "cockpit")
+                provider_config_path = os.path.expanduser("~/.finance-agent/config.yaml")
                 if os.path.exists(provider_config_path):
                     with open(provider_config_path) as f:
                         provider_config = yaml.safe_load(f)
                     for provider in provider_config.get("custom_providers", []):
-                        if provider.get("name") == provider_name:
+                        if provider.get("name") == "cockpit-codex":
                             cockpit_key = cockpit_key or provider.get("api_key", "")
                             cockpit_url = cockpit_url or provider.get("base_url", "")
                             break
@@ -88,6 +84,18 @@ class LLMConfig:
                 default_model=os.getenv("LLM_MIMO_MODEL", "mimo-v2.5-pro"),
                 max_tokens=int(os.getenv("LLM_MIMO_MAX_TOKENS", "4096")),
                 timeout=float(os.getenv("LLM_MIMO_TIMEOUT", "120")),
+            )
+
+        # DeepSeek
+        ds_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        if ds_key:
+            providers["deepseek"] = ProviderConfig(
+                name="deepseek",
+                api_key=ds_key,
+                base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+                default_model=os.getenv("LLM_DEEPSEEK_MODEL", "deepseek-chat"),
+                max_tokens=int(os.getenv("LLM_DEEPSEEK_MAX_TOKENS", "4096")),
+                timeout=float(os.getenv("LLM_DEEPSEEK_TIMEOUT", "120")),
             )
 
         # OpenAI (direct or via proxy)

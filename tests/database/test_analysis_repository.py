@@ -15,6 +15,7 @@ from database.models.analysis import (
     AgentOutput,
     AnalysisSnapshot,
     FinalAnalysisResult,
+    PromptVersion,
     ensure_analysis_tables,
 )
 
@@ -387,6 +388,56 @@ def test_upsert_agent_output_accepts_consistent_snapshot_lineage():
 
     assert row.snapshot_id == _SAMPLE_SNAPSHOT_PAYLOAD["snapshot_id"]
     assert row.run_id == _SAMPLE_SNAPSHOT_PAYLOAD["run_id"]
+
+
+def test_upsert_agent_output_binds_active_prompt_version_when_missing():
+    """AgentOutput persistence should record the active PromptVersion used by the agent."""
+    from database.queries.analysis import upsert_agent_output
+
+    session = _make_session()
+    prompt = PromptVersion(
+        id="pv-macro-active",
+        agent_id="macro_agent",
+        version="v1",
+        prompt_kind="llm",
+        prompt_source="apps/analysis/agents/macro_prompt.py",
+        prompt_template={"messages": [{"role": "user", "content": "analyze macro"}]},
+        prompt_sha256="a" * 64,
+        status="active",
+        enabled=True,
+    )
+    session.add(prompt)
+
+    row = upsert_agent_output(session, payload=_SAMPLE_AGENT_OUTPUT_PAYLOAD)
+    session.commit()
+
+    assert row.prompt_version_id == "pv-macro-active"
+
+
+def test_upsert_agent_output_preserves_explicit_prompt_version_id():
+    """An explicit prompt_version_id from a runner must take precedence over active lookup."""
+    from database.queries.analysis import upsert_agent_output
+
+    session = _make_session()
+    prompt = PromptVersion(
+        id="pv-macro-active",
+        agent_id="macro_agent",
+        version="v1",
+        prompt_kind="llm",
+        prompt_source="apps/analysis/agents/macro_prompt.py",
+        prompt_template={"messages": [{"role": "user", "content": "analyze macro"}]},
+        prompt_sha256="a" * 64,
+        status="active",
+        enabled=True,
+    )
+    session.add(prompt)
+    payload = dict(_SAMPLE_AGENT_OUTPUT_PAYLOAD)
+    payload["prompt_version_id"] = "pv-explicit-runner"
+
+    row = upsert_agent_output(session, payload=payload)
+    session.commit()
+
+    assert row.prompt_version_id == "pv-explicit-runner"
 
 
 # ═══════════════════════════════════════════════════════════════════

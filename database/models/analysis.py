@@ -148,6 +148,7 @@ class AgentOutput(AnalysisBase):
 
     # FK relationship
     analysis_snapshot: Mapped["AnalysisSnapshot"] = relationship(back_populates="agent_outputs")
+    prompt_version: Mapped["PromptVersion | None"] = relationship("PromptVersion")
 
 
 class FinalAnalysisResult(AnalysisBase):

@@ -119,6 +119,19 @@ RECOMMEND_ARTICLE_HTML = """
 </div>
 """
 
+RIGHT_RAIL_ARTICLE_HTML = """
+<a href="//xnews.jin10.com/details/224056" target="_blank" class="article-item">
+  <div class="article-item__cover">
+    <img src="https://gimg.jin10.com/gallary/26/05/gold.png/ncover" class="article-item__image">
+  </div>
+  <div class="article-item__info">
+    <div title="加息阴影笼罩，美银砍金价预期14%但重申5000美元目标" class="article-item__title">
+      加息阴影笼罩，美银砍金价预期14%但重申50...
+    </div>
+  </div>
+</a>
+"""
+
 TOP_LIST_HTML = """
 <div class="flash-top-list">
   <a class="flash-top-list__item" href="https://www.jin10.com/flash_newest.html#id=345678" data-id="345678">
@@ -431,6 +444,20 @@ class TestLiveHomepageFlash:
         assert item["publishedAt"] == "06-24 12:48"
         assert "地缘热点" in item["tags"]
         assert item["imageUrls"] == ["https://gimg.jin10.com/gallary/26/04/example.png/ncover"]
+
+    def test_extracts_right_rail_article_card_url_and_image(self):
+        result = parse_jin10_web_flash_html(
+            RIGHT_RAIL_ARTICLE_HTML,
+            fetched_at="2026-07-09T10:05:00+08:00",
+        )
+
+        assert result["status"] == "ok"
+        item = result["items"][0]
+        assert item["sourceKey"] == "jin10_web_important_flash"
+        assert item["contentFamily"] == "web_important_flash.report_article_flash"
+        assert item["url"] == "https://xnews.jin10.com/details/224056"
+        assert item["title"] == "加息阴影笼罩，美银砍金价预期14%但重申5000美元目标"
+        assert item["imageUrls"] == ["https://gimg.jin10.com/gallary/26/05/gold.png/ncover"]
 
 
 class TestDedupe:

@@ -6,7 +6,7 @@ flowchart LR
     GNews["Google News RSS"]
     GDELT["GDELT DOC 2.0"]
     ReutersMeta["Reuters Public Metadata"]
-    Jin10["Jin10"]
+    Jin10["Feishu / Jin10"]
   end
 
   subgraph Collect["采集与标准化"]
@@ -29,7 +29,7 @@ flowchart LR
     Queue["daily_analysis_followups"]
     TaskRun["TaskRun daily_analysis_followup"]
     Detail["detail_fetch"]
-    Browser["browser_detail_fallback"]
+    Browser["vip_browser_fallback"]
     Snapshot["daily_brief_input_snapshot"]
     Render["daily_brief md/json"]
   end

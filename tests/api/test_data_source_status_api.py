@@ -715,6 +715,39 @@ def test_data_service_filesystem_fallback_exposes_dual_source_contract() -> None
     assert sources["jin10_news"]["metadata"]["provider_role"] == "supplemental"
 
 
+def test_data_service_filesystem_fallback_recognizes_latest_available_cme_artifacts(tmp_path: Path) -> None:
+    """CME can be usable from the latest available bulletin before today's file is published."""
+    from apps.api.services.source_service import get_data_source_statuses
+
+    (tmp_path / "raw/cme/daily_bulletin/2026-07-08").mkdir(parents=True)
+    (tmp_path / "raw/cme/daily_bulletin/2026-07-08/Section64_Metals_Option_Products_2026-07-08.pdf").write_bytes(b"%PDF")
+    _write_json(tmp_path / "storage/parsed/cme/2026-07-08/cme-latest-2026-07-08/cme_parse_result.json", {"trade_date": "2026-07-08"})
+    _write_json(
+        tmp_path / "storage/outputs/cme/2026-07-08/cme-latest-2026-07-08/options_analysis.json",
+        {"trade_date": "2026-07-08"},
+    )
+
+    with patch("apps.api.services.source_service._try_db_session", return_value=None):
+        result = get_data_source_statuses()
+
+    sources = _sources_by_key(result)
+    bulletin = sources["cme_daily_bulletin"]
+    options = sources["cme_options"]
+
+    assert bulletin["configured"] is True
+    assert bulletin["raw_ingested"] is True
+    assert bulletin["parsed"] is True
+    assert bulletin["readiness_state"] in {"ready", "degraded"}
+    assert bulletin["metadata"]["polling_strategy"]["cadence"] == "daily afternoon bulletin window / latest available previous bulletin"
+    assert bulletin["metadata"]["latest_raw_ref"]["raw_path"].startswith("raw/cme/daily_bulletin/2026-07-08/")
+
+    assert options["configured"] is True
+    assert options["analysis_ready"] is True
+    assert options["readiness_state"] in {"ready", "degraded"}
+    assert options["metadata"]["polling_strategy"]["cadence"] == "after latest available bulletin parse"
+    assert options["artifact_evidence"]["preferred_artifact_path"].startswith("storage/outputs/cme/2026-07-08/")
+
+
 def test_data_service_filesystem_fallback_exposes_jin10_multi_entry_sources(tmp_path: Path) -> None:
     """Jin10 lanes are separately observable while aggregate jin10_news remains compatible."""
     from apps.api.data_service import get_data_source_statuses
@@ -1378,7 +1411,7 @@ def test_api_data_status_summary_http_smoke_includes_freshness_fields() -> None:
         ],
     }
 
-    with patch("apps.api.main.get_data_status_summary", return_value=payload):
+    with patch("apps.api.services.source_service.get_data_status_summary", return_value=payload):
         data = jsonable_encoder(api_data_status_summary())
 
     assert data["overall_status"] == "PARTIAL"
@@ -1397,7 +1430,7 @@ def test_api_data_source_health_latest_http_smoke() -> None:
         "items": [],
     }
 
-    with patch("apps.api.main.get_data_source_health_latest", return_value=payload):
+    with patch("apps.api.services.source_service.get_data_source_health_latest", return_value=payload):
         data = jsonable_encoder(api_data_source_health_latest())
 
     assert data["snapshot_date"] == "2026-06-24"

@@ -6,8 +6,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from apps.api.main import _build_agent_analysis_inspection
-from database.models.analysis import AgentOutput, AnalysisBase, AnalysisSnapshot
+from apps.api.services.agent_analysis_service import build_agent_analysis_inspection
+from database.models.analysis import AgentOutput, AnalysisBase, AnalysisSnapshot, PromptVersion
 
 
 def _session():
@@ -74,7 +74,7 @@ def test_agent_analysis_inspection_exposes_prompt_input_and_output() -> None:
     db.add_all([snapshot, output])
     db.commit()
 
-    payload = _build_agent_analysis_inspection(db, date(2026, 5, 31), run_id="run-io-001")
+    payload = build_agent_analysis_inspection(db, date(2026, 5, 31), run_id="run-io-001")
 
     assert payload["trade_date"] == "2026-05-31"
     assert payload["run_id"] == "run-io-001"
@@ -91,6 +91,58 @@ def test_agent_analysis_inspection_exposes_prompt_input_and_output() -> None:
     assert agent["output"]["llm_raw_output"] == '{"regime":"direction_choice"}'
     assert agent["output"]["claims"] == []
     assert agent["output"]["claim_reviews"] == []
+
+
+def test_agent_analysis_inspection_resolves_prompt_metadata_from_prompt_version_id() -> None:
+    db = _session()
+    prompt_version = PromptVersion(
+        id="pv-market-regime-v1",
+        agent_id="market_regime",
+        version="v1",
+        prompt_kind="llm",
+        prompt_source="apps/analysis/agents/market_regime_prompt.py",
+        prompt_template={"messages": [{"role": "user", "content": "judge regime"}]},
+        prompt_sha256="1" * 64,
+        status="active",
+        enabled=True,
+    )
+    output = AgentOutput(
+        snapshot_id="snap-prompt-inspect-001",
+        asset="XAUUSD",
+        trade_date=date(2026, 5, 31),
+        run_id="run-prompt-inspect-001",
+        agent_name="market_regime",
+        module="market_monitor",
+        version="1.0",
+        status="success",
+        bias="neutral",
+        confidence=0.61,
+        input_snapshot_ids={"macro": "snap-prompt-inspect-001"},
+        source_refs=[],
+        key_findings=[],
+        risk_points=[],
+        watchlist=[],
+        invalid_conditions=[],
+        summary="市场处于方向抉择态。",
+        payload={"prompt_messages": [{"role": "user", "content": "judge regime"}]},
+        payload_sha256="agent",
+        llm_model="test-model",
+        prompt_version_id=prompt_version.id,
+    )
+    db.add_all([prompt_version, output])
+    db.commit()
+
+    payload = build_agent_analysis_inspection(db, date(2026, 5, 31), run_id="run-prompt-inspect-001")
+
+    agent = payload["agents"][0]
+    assert agent["prompt_version_id"] == "pv-market-regime-v1"
+    assert agent["prompt"]["prompt_id"] == "market_regime_prompt"
+    assert agent["prompt"]["version"] == "v1"
+    assert agent["prompt"]["checksum"] == "1" * 64
+    assert agent["prompt"]["source_file"] == "apps/analysis/agents/market_regime_prompt.py"
+    assert agent["output"]["prompt_id"] == "market_regime_prompt"
+    assert agent["output"]["prompt_version"] == "v1"
+    assert agent["output"]["prompt_checksum"] == "1" * 64
 
 
 def test_agent_analysis_inspection_marks_rule_agent_prompt_as_not_applicable() -> None:
@@ -119,7 +171,7 @@ def test_agent_analysis_inspection_marks_rule_agent_prompt_as_not_applicable() -
     db.add(output)
     db.commit()
 
-    payload = _build_agent_analysis_inspection(db, date(2026, 5, 31), run_id="run-rule-001")
+    payload = build_agent_analysis_inspection(db, date(2026, 5, 31), run_id="run-rule-001")
 
     agent = payload["agents"][0]
     assert agent["agent_output_id"] == output.id
@@ -176,7 +228,7 @@ def test_agent_analysis_inspection_exposes_jin10_report_agent_io() -> None:
     db.add(output)
     db.commit()
 
-    payload = _build_agent_analysis_inspection(db, date(2026, 5, 6), run_id="218330")
+    payload = build_agent_analysis_inspection(db, date(2026, 5, 6), run_id="218330")
 
     agent = payload["agents"][0]
     assert agent["agent_output_id"] == output.id
@@ -236,7 +288,7 @@ def test_agent_analysis_inspection_exposes_cme_options_prompt_and_artifacts() ->
     db.add(output)
     db.commit()
 
-    payload = _build_agent_analysis_inspection(db, date(2026, 5, 6), run_id="options-sample")
+    payload = build_agent_analysis_inspection(db, date(2026, 5, 6), run_id="options-sample")
 
     agent = payload["agents"][0]
     assert agent["agent_output_id"] == output.id

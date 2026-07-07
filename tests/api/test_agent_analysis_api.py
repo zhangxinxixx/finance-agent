@@ -7,8 +7,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.analysis.agents.fact_review import build_fact_review_agent_output_payload
-from apps.api.main import _build_agent_analysis_response, api_agent_analysis_synthesis_latest
-from database.models.analysis import AgentOutput, AnalysisBase
+from apps.api.routes.agent_analysis_read_routes import api_agent_analysis_synthesis_latest
+from apps.api.services.agent_analysis_service import build_agent_analysis_response
+from database.models.analysis import AgentOutput, AnalysisBase, PromptVersion
 from database.queries.analysis import upsert_agent_output
 
 
@@ -82,7 +83,7 @@ def test_agent_analysis_response_exposes_unified_agent_output_summary() -> None:
     db.add_all([cme, coordinator])
     db.commit()
 
-    payload = _build_agent_analysis_response(db, date(2026, 5, 31), run_id="run-contract-001")
+    payload = build_agent_analysis_response(db, date(2026, 5, 31), run_id="run-contract-001")
 
     assert payload["trade_date"] == "2026-05-31"
     assert len(payload["agent_outputs"]) == 2
@@ -115,6 +116,55 @@ def test_agent_analysis_response_exposes_unified_agent_output_summary() -> None:
     assert payload["final"]["confidence"] == 0.55
     assert payload["final"]["summary"] == "协调汇总只读视图为中性（输入不完整）；确信度 0.55。"
     assert payload["final"]["summary_raw"] == "Coordinator read-only view is neutral with partial inputs; confidence 0.55."
+
+
+def test_agent_analysis_response_resolves_prompt_metadata_from_prompt_version_id() -> None:
+    db = _session()
+    prompt_version = PromptVersion(
+        id="pv-jin10-v1",
+        agent_id="jin10_report_analysis_agent",
+        version="v1",
+        prompt_kind="llm",
+        prompt_source="apps/analysis/agents/jin10_report_prompt.py",
+        prompt_template={"messages": [{"role": "user", "content": "analyze report"}]},
+        prompt_sha256="0" * 64,
+        status="active",
+        enabled=True,
+    )
+    output = AgentOutput(
+        id="ao-jin10-prompt-001",
+        snapshot_id="snap-prompt-001",
+        asset="XAUUSD",
+        trade_date=date(2026, 5, 31),
+        run_id="run-prompt-001",
+        agent_name="jin10_report_analysis_agent",
+        module="jin10_reports",
+        version="1.0",
+        status="success",
+        bias="neutral",
+        confidence=0.64,
+        input_snapshot_ids={"jin10": "article-218330"},
+        source_refs=[{"source": "jin10_external", "article_id": "218330"}],
+        key_findings=["方向抉择态"],
+        risk_points=[],
+        watchlist=[],
+        invalid_conditions=[],
+        summary="黄金仍处在等待确认的方向抉择阶段。",
+        payload={"prompt_version": "legacy_payload_prompt_version"},
+        payload_sha256="jin10-prompt",
+        prompt_version_id=prompt_version.id,
+    )
+    db.add_all([prompt_version, output])
+    db.commit()
+
+    payload = build_agent_analysis_response(db, date(2026, 5, 31), run_id="run-prompt-001")
+
+    summary = payload["agent_outputs"][0]
+    assert summary["prompt_version_id"] == "pv-jin10-v1"
+    assert summary["prompt_id"] == "jin10_report_analysis_agent_prompt"
+    assert summary["prompt_version"] == "v1"
+    assert summary["prompt_checksum"] == "0" * 64
+    assert summary["prompt_source_file"] == "apps/analysis/agents/jin10_report_prompt.py"
 
 
 def test_agent_analysis_response_includes_fact_review_agent_output() -> None:
@@ -168,7 +218,7 @@ def test_agent_analysis_response_includes_fact_review_agent_output() -> None:
     upsert_agent_output(db, build_fact_review_agent_output_payload([jin10]))
     db.commit()
 
-    payload = _build_agent_analysis_response(db, date(2026, 5, 31), run_id="run-contract-002")
+    payload = build_agent_analysis_response(db, date(2026, 5, 31), run_id="run-contract-002")
 
     fact_summary = next(item for item in payload["agent_outputs"] if item["agent_name"] == "fact_review_agent")
     assert fact_summary["registry_id"] == "fact_review_agent"

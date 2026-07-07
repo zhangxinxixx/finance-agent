@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from apps.analysis.agents.gold_v3_prompts import build_prompt_evolution_governance_prompt_template
+from apps.analysis.agents import prompt_evolution
 from apps.analysis.agents.prompt_evolution import build_prompt_evolution_proposal
 
 
@@ -122,3 +123,87 @@ def test_prompt_evolution_prompt_schema_matches_runtime_contract() -> None:
     assert "prompt_update_proposal" in schema
     assert "test_cases" in schema["prompt_update_proposal"]
     assert schema["manual_review_required"] is True
+
+
+def test_prompt_evolution_builds_evaluation_cases_from_governance_failures() -> None:
+    assert hasattr(prompt_evolution, "build_prompt_evaluation_cases")
+    build_prompt_evaluation_cases = prompt_evolution.build_prompt_evaluation_cases
+    cases = [
+        item.to_dict()
+        for item in build_prompt_evaluation_cases(
+            agent_name="gold_macro_overview_agent",
+            failures=[
+                {
+                    "code": "mixed_without_driver_decomposition",
+                    "description": "Mixed output did not decompose bullish and bearish drivers.",
+                    "source_refs": [{"artifact_type": "system_evolution", "file_path": "findings.json"}],
+                },
+                {
+                    "code": "war_oil_rate_chain_missing",
+                    "description": "War risk conclusion omitted oil inflation and real-rate chain.",
+                    "source_refs": [{"artifact_type": "review_gate", "file_path": "review.json"}],
+                },
+            ],
+            created_from="system_evolution",
+        )
+    ]
+
+    assert cases[0]["case_id"] == "gold_macro_overview_agent:mixed_decomposition:mixed_without_driver_decomposition"
+    assert cases[0]["case_type"] == "mixed_decomposition"
+    assert cases[0]["input_payload"]["failure_code"] == "mixed_without_driver_decomposition"
+    assert "mixed_must_be_decomposed" in cases[0]["expected_assertions"]
+    assert "no_direct_prompt_mutation" in cases[0]["expected_assertions"]
+    assert cases[0]["source_refs"][0]["file_path"] == "findings.json"
+    assert cases[0]["created_from"] == "system_evolution"
+    assert cases[1]["case_type"] == "war_oil_rate_chain"
+    assert "war_oil_rate_chain_required" in cases[1]["expected_assertions"]
+
+
+def test_prompt_evolution_runs_ab_validation_without_prompt_activation() -> None:
+    assert hasattr(prompt_evolution, "run_prompt_ab_validation")
+    run_prompt_ab_validation = prompt_evolution.run_prompt_ab_validation
+    cases = build_prompt_evolution_cases_for_test()
+
+    result = run_prompt_ab_validation(
+        agent_name="gold_macro_overview_agent",
+        active_prompt_version={"version": "v1", "prompt_sha256": "active"},
+        candidate_prompt_version={"version": "v2", "prompt_sha256": "candidate"},
+        cases=cases,
+        active_results={
+            cases[0].case_id: {
+                "passed_assertions": ["no_direct_prompt_mutation"],
+                "failed_assertions": ["mixed_must_be_decomposed"],
+            }
+        },
+        candidate_results={
+            cases[0].case_id: {
+                "passed_assertions": ["no_direct_prompt_mutation", "mixed_must_be_decomposed"],
+                "failed_assertions": [],
+            }
+        },
+    ).to_dict()
+
+    assert result["agent_name"] == "gold_macro_overview_agent"
+    assert result["validation_status"] == "pass"
+    assert result["improvement_count"] == 1
+    assert result["regression_count"] == 0
+    assert result["active_prompt_result"]["version"] == "v1"
+    assert result["candidate_prompt_result"]["version"] == "v2"
+    assert result["case_results"][0]["status"] == "improved"
+    assert result["proposal_only"] is True
+    assert result["activated_prompt"] is False
+
+
+def build_prompt_evolution_cases_for_test():
+    build_prompt_evaluation_cases = prompt_evolution.build_prompt_evaluation_cases
+    return build_prompt_evaluation_cases(
+        agent_name="gold_macro_overview_agent",
+        failures=[
+            {
+                "code": "mixed_without_driver_decomposition",
+                "description": "Mixed output did not decompose bullish and bearish drivers.",
+                "source_refs": [{"artifact_type": "system_evolution", "file_path": "findings.json"}],
+            }
+        ],
+        created_from="system_evolution",
+    )

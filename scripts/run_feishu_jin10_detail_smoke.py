@@ -76,8 +76,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--browser-profile",
-        default=os.getenv("JIN10_BROWSER_PROFILE") or (str(DEFAULT_JIN10_BROWSER_PROFILE) if DEFAULT_JIN10_BROWSER_PROFILE else None),
-        help="Jin10 Chromium user data dir for browser fallback. Default: JIN10_BROWSER_PROFILE when set.",
+        default=os.getenv("JIN10_BROWSER_PROFILE") or str(DEFAULT_JIN10_BROWSER_PROFILE),
+        help="Jin10 Chromium user data dir for browser fallback. Default: JIN10_BROWSER_PROFILE or project default.",
     )
     parser.add_argument(
         "--env-file",

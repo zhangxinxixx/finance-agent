@@ -332,7 +332,7 @@ export async function fetchEventFlowOverviewView(): Promise<EventFlowViewModel> 
     if (overviewResp.ok) {
       const rawOverview = await overviewResp.json();
       if (rawOverview.status !== "unavailable") {
-        return _mergeApiIntoCurated(curated, rawOverview);
+        return _mapApiToViewModel(rawOverview);
       }
     }
   } catch {
@@ -360,8 +360,8 @@ export async function fetchEventFlowView(): Promise<EventFlowViewModel> {
 
 function _getMockViewModel(): EventFlowViewModel {
   return {
-    status: "available",
-    source: "event_materials_2026-06-11",
+    status: "unavailable",
+    source: "mock_fallback",
     updated_at: "2026-06-11T12:30:00Z",
     timeline: TIMELINE,
     chain: CHAIN,
@@ -1526,11 +1526,11 @@ function _mapApiToViewModel(raw: Record<string, unknown>): EventFlowViewModel {
     source: (raw.source as string) ?? "api",
     updated_at: (raw.updated_at as string) ?? new Date().toISOString(),
     timeline,
-    chain: CHAIN, // 传导链仍用 mock，后端未实现
-    sentiment: SENTIMENT, // 情绪指标仍用 mock
-    radar: RADAR, // 风险雷达仍用 mock
+    chain: [],
+    sentiment: [],
+    radar: [],
     table,
-    reports: REPORTS, // 报告仍用 mock
+    reports: [],
     event_impact_summary: normalizeEventImpactSummary(raw.event_impact_summary),
     brief_summary: briefSummary,
     daily_analysis_triggers: normalizeProgressTriggerBundle(raw.daily_analysis_triggers),

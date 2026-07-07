@@ -181,7 +181,10 @@ def test_composite_analysis_pipeline_writes_final_report_and_strategy_card(tmp_p
     assert len(summaries["strategy_card"]["paths"]) == 2
     assert "gold_runtime_summary" in summaries
     assert summaries["gold_runtime_summary"]["run_mode"] == "premarket_full_run"
-    assert summaries["gold_runtime_summary"]["runtime_contract_only"] is False
+    assert summaries["gold_runtime_summary"]["runtime_contract_only"] is True
+    assert summaries["gold_runtime_summary"]["artifact_execution_enabled"] is False
+    assert summaries["gold_runtime_summary"]["pipeline_materialized_outputs"] is True
+    assert summaries["gold_runtime_summary"]["executed_agents"] == []
     assert summaries["gold_runtime_summary"]["quality_gate_status"] in {
         "passed",
         "fallback_required",
@@ -218,7 +221,7 @@ def test_composite_analysis_pipeline_writes_final_report_and_strategy_card(tmp_p
 
 
 def test_composite_analysis_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) -> None:
-    from apps.api.services.quality_gate_service import QualityGateDecision
+    from apps.analysis.agents.quality_gate_evaluator import QualityGateDecision
     from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-quality-gate")
@@ -247,7 +250,7 @@ def test_composite_analysis_pipeline_executes_fallback_synthesis_before_renderin
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision
+    from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
     from apps.worker import runner
     from apps.worker.runner import _run_composite_analysis_pipeline
 
@@ -301,7 +304,7 @@ def test_composite_analysis_pipeline_executes_cme_options_reparse_when_gate_requ
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision
+    from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
     from apps.worker import runner
     from apps.worker.runner import _run_composite_analysis_pipeline
 
@@ -775,6 +778,57 @@ def test_run_premarket_with_composite_analysis_registers_report_registry_entries
         assert artifact.byte_size is not None
         assert artifact.generated_at is not None
         assert artifact.source_refs
+
+
+def test_run_premarket_blocks_composite_analysis_when_pre_analysis_gate_blocks(tmp_path: Path) -> None:
+    db = _make_db_session(tmp_path)
+    task = _make_task_with_steps(db, ["macro_collect", "macro_feature", "report_render"])
+    gate_path = tmp_path / "orchestration" / _TRADE_DATE / "pre_analysis_gate.json"
+    gate_path.parent.mkdir(parents=True, exist_ok=True)
+    gate_path.write_text(
+        json.dumps(
+            {
+                "trade_date": _TRADE_DATE,
+                "decision": "block",
+                "status": "blocked",
+                "can_run_full_analysis": False,
+                "blocked_outputs": ["full analysis", "knowledge distillation"],
+                "source_ref": f"monitoring/{_TRADE_DATE}/downstream_readiness.json",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def mock_macro_step(step_name, state, **kwargs):
+        if step_name == "report_render":
+            state.snapshot_dict = {
+                "as_of": _TRADE_DATE,
+                "indicators": {"DXY": {"value": 101.5, "unit": "index"}},
+                "source_refs": [{"source": "fred", "symbol": "DXY"}],
+            }
+        return {"step": step_name, "status": "success"}
+
+    def fail_if_composite_runs(*args, **kwargs):
+        raise AssertionError("composite analysis should be blocked by pre_analysis_gate")
+
+    with (
+        patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch("apps.worker.runner._run_composite_analysis_pipeline", side_effect=fail_if_composite_runs),
+    ):
+        from apps.worker.runner import run_premarket
+
+        result = run_premarket(db, task.id, storage_root=tmp_path)
+
+    assert result == TaskStatus.partial_success
+    run_id = str(task.id)
+    assert not (tmp_path / "outputs" / "final_report" / "XAUUSD" / _TRADE_DATE / run_id / "final_report.md").exists()
+    summaries_candidates = list((tmp_path / "outputs").glob(f"run/*/{run_id}/step_summaries.json"))
+    assert len(summaries_candidates) == 1
+    summaries = json.loads(summaries_candidates[0].read_text(encoding="utf-8"))
+    assert summaries["steps"]["pre_analysis_gate"]["decision"] == "block"
+    assert summaries["steps"]["composite_analysis_pipeline"]["status"] == "blocked"
+    assert summaries["steps"]["composite_analysis_pipeline"]["blocked_outputs"] == ["full analysis", "knowledge distillation"]
 
 
 def test_run_premarket_composite_analysis_not_triggered_when_snapshot_fails(tmp_path: Path) -> None:

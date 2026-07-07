@@ -235,6 +235,10 @@ export interface TaskReviewViewModel {
 
 export interface AgentInspectionPrompt {
   kind: "llm" | "rule" | string;
+  prompt_id?: string | null;
+  version?: string | null;
+  checksum?: string | null;
+  source_file?: string | null;
   available: boolean;
   messages: Array<{ role: string; content: string }>;
   note?: string | null;
@@ -268,6 +272,10 @@ export interface AgentInspectionItem {
     risk_points: string[];
     watchlist: string[];
     invalid_conditions: string[];
+    prompt_id?: string | null;
+    prompt_version?: string | null;
+    prompt_checksum?: string | null;
+    prompt_source_file?: string | null;
     payload: unknown;
     llm_raw_output?: string | null;
   };

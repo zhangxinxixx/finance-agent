@@ -14,7 +14,6 @@ venv/
 .env
 .env.local
 .env.*.local
-.local/
 *.pem
 *.key
 *.p12
@@ -75,18 +74,35 @@ output/playwright-mcp/
 /storage/state/*
 !/storage/state/.gitkeep
 
+# Codex
+.codex/context/
+.codex/plans/
+.codex/design-refs/
+.codex/skills/
+.codex-artifacts/
+.codewhale/
+
+# Local agent / Claude skill bundles
+.agents/
+.claude/
+.codex/
+
 # CodeGraph local index
 .codegraph/
 
-# Local worktrees
+# Local agent worktrees
 .worktrees/
 
 # Local generated market/archive artifacts
 /raw/
 storage/archive/
 
-# Local run staging and spike scripts
+# Local Hermes run staging and spike scripts
+.hermes/
+hermes/
+hermes/staging/
 scripts/spikes/
+.claude/settings.local.json
 
 # Local Dagster dev runs
 .tmp_dagster_home*/
@@ -94,6 +110,13 @@ scripts/spikes/
 # Local frontend design/build scratch
 apps/frontend-web/dist-check/
 apps/frontend-web/public/design_ref.png
+design-system/
 
 # Local planning / prototype docs
 docs/archive/
+docs/superpowers/
+docs/dev/tasks/
+docs/dev/current-task.md
+docs/frontend/figma-make/
+docs/frontend/finanalytics-pro-design-system/
+docs/frontend/tasks/

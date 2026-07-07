@@ -59,6 +59,132 @@ class PromptEvolutionProposal:
         }
 
 
+@dataclass(frozen=True)
+class PromptEvaluationCase:
+    case_id: str
+    case_type: str
+    input_payload: dict[str, Any]
+    expected_assertions: list[str]
+    failure_reason: str
+    source_refs: list[Any]
+    created_from: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PromptABCaseResult:
+    case_id: str
+    case_type: str
+    status: str
+    expected_assertions: list[str]
+    active_failed_assertions: list[str]
+    candidate_failed_assertions: list[str]
+    improvement_assertions: list[str]
+    regression_assertions: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PromptABValidationResult:
+    agent_name: str
+    validation_status: str
+    active_prompt_result: dict[str, Any]
+    candidate_prompt_result: dict[str, Any]
+    case_results: list[PromptABCaseResult]
+    improvement_count: int
+    regression_count: int
+    risk_notes: list[str]
+    proposal_only: bool = True
+    activated_prompt: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "agent_name": self.agent_name,
+            "validation_status": self.validation_status,
+            "active_prompt_result": self.active_prompt_result,
+            "candidate_prompt_result": self.candidate_prompt_result,
+            "case_results": [item.to_dict() for item in self.case_results],
+            "improvement_count": self.improvement_count,
+            "regression_count": self.regression_count,
+            "risk_notes": self.risk_notes,
+            "proposal_only": self.proposal_only,
+            "activated_prompt": self.activated_prompt,
+        }
+
+
+def build_prompt_evaluation_cases(
+    *,
+    agent_name: str,
+    failures: list[Any],
+    created_from: str = "manual",
+) -> list[PromptEvaluationCase]:
+    cases: list[PromptEvaluationCase] = []
+    for idx, failure in enumerate(failures):
+        normalized = _normalize_finding(item=failure, example_ref=f"{created_from}:{idx}")
+        pattern_id = str(normalized["pattern_id"] or f"failure:{idx}")
+        case_type = _evaluation_case_type(pattern_id=pattern_id, description=str(normalized["description"]))
+        source_refs = failure.get("source_refs") if isinstance(failure, dict) and isinstance(failure.get("source_refs"), list) else []
+        cases.append(
+            PromptEvaluationCase(
+                case_id=f"{agent_name}:{case_type}:{pattern_id}",
+                case_type=case_type,
+                input_payload={
+                    "agent_name": agent_name,
+                    "failure_code": pattern_id,
+                    "failure": failure,
+                },
+                expected_assertions=_expected_assertions(case_type=case_type),
+                failure_reason=str(normalized["description"]),
+                source_refs=list(source_refs),
+                created_from=created_from,
+            )
+        )
+    return cases
+
+
+def run_prompt_ab_validation(
+    *,
+    agent_name: str,
+    active_prompt_version: dict[str, Any],
+    candidate_prompt_version: dict[str, Any],
+    cases: list[PromptEvaluationCase],
+    active_results: dict[str, dict[str, Any]],
+    candidate_results: dict[str, dict[str, Any]],
+) -> PromptABValidationResult:
+    case_results = [
+        _ab_case_result(
+            case=case,
+            active_result=active_results.get(case.case_id, {}),
+            candidate_result=candidate_results.get(case.case_id, {}),
+        )
+        for case in cases
+    ]
+    improvement_count = sum(1 for item in case_results if item.improvement_assertions)
+    regression_count = sum(1 for item in case_results if item.regression_assertions)
+    candidate_failed_count = sum(1 for item in case_results if item.candidate_failed_assertions)
+    validation_status = "pass" if regression_count == 0 and candidate_failed_count == 0 else "fail"
+    return PromptABValidationResult(
+        agent_name=agent_name,
+        validation_status=validation_status,
+        active_prompt_result={
+            **active_prompt_version,
+            "failed_case_count": sum(1 for item in case_results if item.active_failed_assertions),
+        },
+        candidate_prompt_result={
+            **candidate_prompt_version,
+            "failed_case_count": candidate_failed_count,
+        },
+        case_results=case_results,
+        improvement_count=improvement_count,
+        regression_count=regression_count,
+        risk_notes=_ab_risk_notes(case_results),
+    )
+
+
 def build_prompt_evolution_proposal(
     *,
     agent_name: str,
@@ -322,6 +448,88 @@ def _dominant_root_cause(values: list[str]) -> str:
     if not counts:
         return "unknown"
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
+def _evaluation_case_type(*, pattern_id: str, description: str) -> str:
+    text = f"{pattern_id} {description}".lower()
+    if "mixed" in text and ("decomposition" in text or "decompose" in text or "拆解" in text):
+        return "mixed_decomposition"
+    if "war" in text and "oil" in text and ("rate" in text or "real-rate" in text or "real_rate" in text):
+        return "war_oil_rate_chain"
+    if "source_refs" in text or "source refs" in text or "strong conclusion" in text:
+        return "quality_gate"
+    if "single source" in text or "单源" in text:
+        return "mainline_attribution"
+    if "render" in text or "report" in text:
+        return "report_render"
+    return "quality_gate"
+
+
+def _expected_assertions(*, case_type: str) -> list[str]:
+    assertions = ["no_direct_prompt_mutation", "must_not_bypass_quality_gate"]
+    if case_type == "mixed_decomposition":
+        assertions.append("mixed_must_be_decomposed")
+    elif case_type == "war_oil_rate_chain":
+        assertions.append("war_oil_rate_chain_required")
+    elif case_type == "quality_gate":
+        assertions.append("strong_conclusion_requires_source_refs")
+    elif case_type == "mainline_attribution":
+        assertions.append("single_source_must_not_be_fact")
+    return assertions
+
+
+def _ab_case_result(
+    *,
+    case: PromptEvaluationCase,
+    active_result: dict[str, Any],
+    candidate_result: dict[str, Any],
+) -> PromptABCaseResult:
+    expected = set(case.expected_assertions)
+    active_failed = _failed_assertions(result=active_result, expected=expected)
+    candidate_failed = _failed_assertions(result=candidate_result, expected=expected)
+    improvement = sorted(active_failed - candidate_failed)
+    regression = sorted(candidate_failed - active_failed)
+    if regression:
+        status = "regressed"
+    elif improvement:
+        status = "improved"
+    elif candidate_failed:
+        status = "unchanged_fail"
+    else:
+        status = "unchanged_pass"
+    return PromptABCaseResult(
+        case_id=case.case_id,
+        case_type=case.case_type,
+        status=status,
+        expected_assertions=list(case.expected_assertions),
+        active_failed_assertions=sorted(active_failed),
+        candidate_failed_assertions=sorted(candidate_failed),
+        improvement_assertions=improvement,
+        regression_assertions=regression,
+    )
+
+
+def _failed_assertions(*, result: dict[str, Any], expected: set[str]) -> set[str]:
+    explicit_failed = result.get("failed_assertions")
+    if isinstance(explicit_failed, list):
+        return {str(item) for item in explicit_failed if str(item) in expected}
+    passed = result.get("passed_assertions")
+    if isinstance(passed, list):
+        return expected - {str(item) for item in passed}
+    return set(expected)
+
+
+def _ab_risk_notes(case_results: list[PromptABCaseResult]) -> list[str]:
+    notes: list[str] = []
+    regressions = [item.case_id for item in case_results if item.regression_assertions]
+    if regressions:
+        notes.append("candidate_has_regressions:" + ",".join(regressions[:5]))
+    unresolved = [item.case_id for item in case_results if item.candidate_failed_assertions]
+    if unresolved:
+        notes.append("candidate_has_unresolved_failures:" + ",".join(unresolved[:5]))
+    if not notes:
+        notes.append("candidate_passed_all_prompt_evaluation_cases")
+    return notes
 
 
 def _prompt_patch(*, pattern: FailurePattern) -> str:

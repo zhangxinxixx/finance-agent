@@ -65,7 +65,7 @@ from apps.worker.source_readiness_gate import (
     should_apply_source_readiness_gate as _should_apply_source_readiness_gate,
 )
 from apps.worker import step_dispatcher as _step_dispatcher
-from apps.api.services.quality_gate_service import evaluate_quality_gate
+from apps.analysis.agents.quality_gate_evaluator import evaluate_quality_gate
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
 # ── DB persistence imports ────────────────────────────────────────────────
@@ -347,62 +347,88 @@ def run_premarket(
 
     # ── Composite analysis: domain agents → final report → strategy card ───────
     if analysis_snapshot is not None:
-        try:
-            composite_created_at = datetime.now(timezone.utc)
-            composite_summaries, composite_outputs = _run_composite_analysis_pipeline(
-                storage_root=storage_root,
-                snapshot=analysis_snapshot,
-                run_id=run_id,
-                created_at=composite_created_at,
-            )
-            macro_state.step_summaries.update(composite_summaries)
-
-            # DB sink: persist agent outputs (additive, after file writes)
-            try:
-                snapshot_db_id = _db_persist_agent_outputs(
-                    db, analysis_snapshot, composite_outputs["agents"], run_id
-                )
-                _db_persist_final_result(
-                    db, analysis_snapshot, composite_outputs, snapshot_db_id
-                )
-            except Exception as db_exc:
-                logger.exception("DB persist of composite analysis outputs failed (file artifacts are safe)")
-                macro_state.step_summaries["db_persist_composite"] = {
-                    "step": "db_persist_composite",
-                    "status": "failed",
-                    "error": str(db_exc),
+        pre_analysis_gate = _load_pre_analysis_gate(storage_root=storage_root, analysis_snapshot=analysis_snapshot)
+        if _pre_analysis_gate_blocks(pre_analysis_gate):
+            had_partial_summary = True
+            blocked_outputs = pre_analysis_gate.get("blocked_outputs") if isinstance(pre_analysis_gate.get("blocked_outputs"), list) else []
+            macro_state.step_summaries["pre_analysis_gate"] = {
+                "step": "pre_analysis_gate",
+                "status": "blocked",
+                "decision": pre_analysis_gate.get("decision"),
+                "source_ref": pre_analysis_gate.get("source_ref"),
+                "blocked_outputs": blocked_outputs,
+            }
+            macro_state.step_summaries["composite_analysis_pipeline"] = {
+                "step": "composite_analysis_pipeline",
+                "status": "blocked",
+                "reason": "pre_analysis_gate_blocked",
+                "blocked_outputs": blocked_outputs,
+                "partial_summary": "Composite analysis was blocked by pre_analysis_gate; no final report or strategy card was written.",
+            }
+        else:
+            if pre_analysis_gate:
+                macro_state.step_summaries["pre_analysis_gate"] = {
+                    "step": "pre_analysis_gate",
+                    "status": "success",
+                    "decision": pre_analysis_gate.get("decision"),
+                    "source_ref": pre_analysis_gate.get("source_ref"),
                 }
-            _register_composite_output_artifacts(
-                db,
-                run_id=run_id,
-                steps=ordered_steps,
-                composite_outputs=composite_outputs,
-                analysis_snapshot=analysis_snapshot,
-            )
             try:
-                _register_composite_report_registry_entries(
+                composite_created_at = datetime.now(timezone.utc)
+                composite_summaries, composite_outputs = _run_composite_analysis_pipeline(
+                    storage_root=storage_root,
+                    snapshot=analysis_snapshot,
+                    run_id=run_id,
+                    created_at=composite_created_at,
+                )
+                macro_state.step_summaries.update(composite_summaries)
+
+                # DB sink: persist agent outputs (additive, after file writes)
+                try:
+                    snapshot_db_id = _db_persist_agent_outputs(
+                        db, analysis_snapshot, composite_outputs["agents"], run_id
+                    )
+                    _db_persist_final_result(
+                        db, analysis_snapshot, composite_outputs, snapshot_db_id
+                    )
+                except Exception as db_exc:
+                    logger.exception("DB persist of composite analysis outputs failed (file artifacts are safe)")
+                    macro_state.step_summaries["db_persist_composite"] = {
+                        "step": "db_persist_composite",
+                        "status": "failed",
+                        "error": str(db_exc),
+                    }
+                _register_composite_output_artifacts(
                     db,
                     run_id=run_id,
+                    steps=ordered_steps,
                     composite_outputs=composite_outputs,
                     analysis_snapshot=analysis_snapshot,
                 )
-            except Exception as db_exc:
-                logger.exception("Report registry persist of composite analysis outputs failed (file artifacts are safe)")
-                macro_state.step_summaries["db_persist_composite_report_registry"] = {
-                    "step": "db_persist_composite_report_registry",
+                try:
+                    _register_composite_report_registry_entries(
+                        db,
+                        run_id=run_id,
+                        composite_outputs=composite_outputs,
+                        analysis_snapshot=analysis_snapshot,
+                    )
+                except Exception as db_exc:
+                    logger.exception("Report registry persist of composite analysis outputs failed (file artifacts are safe)")
+                    macro_state.step_summaries["db_persist_composite_report_registry"] = {
+                        "step": "db_persist_composite_report_registry",
+                        "status": "failed",
+                        "error": str(db_exc),
+                    }
+            except Exception as exc:
+                logger.exception("Composite analysis pipeline failed")
+                had_failure = True
+                macro_state.step_summaries["composite_analysis_pipeline"] = {
+                    "step": "composite_analysis_pipeline",
                     "status": "failed",
-                    "error": str(db_exc),
+                    "error": str(exc),
+                    "partial_summary": "Composite analysis pipeline failed after analysis snapshot was persisted; "
+                                      "no final report or strategy card was written.",
                 }
-        except Exception as exc:
-            logger.exception("Composite analysis pipeline failed")
-            had_failure = True
-            macro_state.step_summaries["composite_analysis_pipeline"] = {
-                "step": "composite_analysis_pipeline",
-                "status": "failed",
-                "error": str(exc),
-                "partial_summary": "Composite analysis pipeline failed after analysis snapshot was persisted; "
-                                  "no final report or strategy card was written.",
-            }
 
     # Persist step summaries and run provenance as durable artifacts
     try:
@@ -476,6 +502,22 @@ def run_premarket(
     transition_task_run(db, task, final_status, source="worker", reason="step_rollup")
     db.commit()
     return final_status
+
+
+def _load_pre_analysis_gate(*, storage_root: Path, analysis_snapshot: dict[str, Any]) -> dict[str, Any]:
+    trade_date = str(analysis_snapshot.get("trade_date") or "")
+    if not trade_date:
+        return {}
+    path = storage_root / "orchestration" / trade_date / "pre_analysis_gate.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _pre_analysis_gate_blocks(gate: dict[str, Any]) -> bool:
+    return gate.get("decision") == "block"
 
 
 def _apply_step_summary_status(db: DBSession, step, summary: dict[str, object] | None) -> str:

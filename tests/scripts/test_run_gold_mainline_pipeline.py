@@ -196,7 +196,10 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     assert summary["trigger_reason"] == "daily_premarket_refresh"
     assert "agents_executed" not in summary
     assert "agents_skipped" not in summary
-    assert summary["runtime_contract_only"] is False
+    assert summary["runtime_contract_only"] is True
+    assert summary["artifact_execution_enabled"] is False
+    assert summary["pipeline_materialized_outputs"] is True
+    assert summary["executed_agents"] == []
     assert summary["quality_gate_status"] in {"passed", "fallback_required", "needs_review", "blocked"}
     assert summary["fallback_tasks_created"] == []
     assert summary["fallback_attempts"] == 0

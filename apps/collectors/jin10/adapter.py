@@ -41,7 +41,7 @@ from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 
 logger = logging.getLogger(__name__)
 
-JIN10_OUTPUT_REPORT_TYPES = {"daily", "weekly", "positioning", "technical_levels", "oil", "fx", "market_observation"}
+JIN10_OUTPUT_REPORT_TYPES = {"daily", "weekly", "positioning", "technical_levels", "oil", "fx", "market_observation", "research"}
 
 JIN10_CATEGORY_ALIASES: dict[str, list[str]] = {
     "270": ["金银报告", "报告", "daily"],
@@ -52,6 +52,7 @@ JIN10_CATEGORY_ALIASES: dict[str, list[str]] = {
     "380": ["挂单报告", "pending_orders"],
     "458": ["市场观察", "market_observation", "VIP智库"],
     "536": ["周报", "报告", "weekly"],
+    "786": ["research", "周末·大师复盘", "master_review"],
 }
 
 JIN10_CATEGORY_NAMES: dict[str, str] = {
@@ -63,6 +64,7 @@ JIN10_CATEGORY_NAMES: dict[str, str] = {
     "380": "挂单报告",
     "458": "市场观察",
     "536": "周报",
+    "786": "周末·大师复盘",
 }
 
 JIN10_REPORT_TYPE_BY_CATEGORY: dict[str, str] = report_type_by_category()
@@ -813,6 +815,8 @@ def _category_parent_priority(parent_name: str, requested_category: str | None) 
         order = {"daily": 0, "金银报告": 1, "报告": 2}
     elif requested_category == "458":
         order = {"market_observation": 0, "市场观察": 1, "VIP智库": 2, "research": 3, "报告": 4}
+    elif requested_category == "786":
+        order = {"research": 0, "周末·大师复盘": 1, "报告": 2}
     else:
         order = {"daily": 0, "weekly": 0, "金银报告": 1, "周报": 1, "报告": 2}
     return order.get(parent_name, 9)
@@ -859,6 +863,10 @@ def _read_report_dir(
         "category": category_name,
         "category_code": category_code,
         "report_type": report_type or expected_report_type or "",
+        "series": str(meta.get("series") or meta.get("subcategory") or ""),
+        "vip_locked": bool(meta.get("vip_locked", False)),
+        "content_scope": str(meta.get("content_scope") or "unknown"),
+        "body_complete": bool(meta.get("body_complete", False)),
         "source_url": str(meta.get("source_url") or f"https://xnews.jin10.com/details/{article_id}"),
         "external_report_dir": str(report_dir),
         "retrieved_at": retrieved_at,
@@ -1155,11 +1163,13 @@ def _build_daily_report_bundle(
     raw_article.generated_from = {
         **raw_article.generated_from,
         "parser_trace": _jin10_parser_trace(parsed_report),
+        "content_access": _content_access_metadata(report),
     }
     visual = build_jin10_daily_analysis_report(snapshot)
     report_type = _report_type_for_raw_report(report)
     visual.family = _report_family_for_raw_report(report)
-    visual.generated_from = {**visual.generated_from, "report_type": report_type}
+    content_access = _content_access_metadata(report)
+    visual.generated_from = {**visual.generated_from, "report_type": report_type, "content_access": content_access}
     quality_audit = _build_report_quality_audit(
         report=report,
         parsed_report=parsed_report,
@@ -1172,8 +1182,14 @@ def _build_daily_report_bundle(
     visual_json["quality_audit"] = quality_audit
     raw_article_json = raw_article.to_dict()
     raw_article_json["quality_audit"] = quality_audit
+    raw_article_json["content_access"] = content_access
     agent_analysis_json = agent_analysis.to_dict()
     agent_analysis_json["quality_audit"] = quality_audit
+    agent_analysis_json["content_access"] = content_access
+    agent_analysis_json["generated_from"] = {
+        **dict(agent_analysis_json.get("generated_from") or {}),
+        "content_access": content_access,
+    }
     return {
         "trade_date": report["date"],
         "run_id": report["article_id"],
@@ -1184,7 +1200,10 @@ def _build_daily_report_bundle(
         "json": visual_json,
         "html": render_jin10_daily_html(visual),
         "agent_analysis_json": agent_analysis_json,
-        "agent_analysis_markdown": render_jin10_agent_analysis_markdown(agent_analysis),
+        "agent_analysis_markdown": _prepend_content_access_notice(
+            render_jin10_agent_analysis_markdown(agent_analysis),
+            content_access=content_access,
+        ),
     }
 
 
@@ -1202,7 +1221,50 @@ def _jin10_vlm_reparse_input(report: dict[str, Any]) -> dict[str, Any]:
         "published_at": meta.get("published_at"),
         "report_type": _report_type_for_raw_report(report),
         "image_entries": [dict(item) for item in report.get("images") or [] if isinstance(item, dict)],
+        "content_access": _content_access_metadata(report),
     }
+
+
+def _content_access_metadata(report: dict[str, Any]) -> dict[str, Any]:
+    report_type = _report_type_for_raw_report(report)
+    series = str(report.get("series") or "").strip()
+    if not series and str(report.get("category_code") or "") == "786":
+        series = "master_review"
+    return {
+        "vip_locked": bool(report.get("vip_locked", False)),
+        "content_scope": str(report.get("content_scope") or "unknown"),
+        "body_complete": bool(report.get("body_complete", False)),
+        "report_type": report_type,
+        "series": series or None,
+    }
+
+
+def _prepend_content_access_notice(markdown: str, *, content_access: dict[str, Any]) -> str:
+    scope = str(content_access.get("content_scope") or "unknown")
+    body_complete = bool(content_access.get("body_complete", False))
+    vip_locked = bool(content_access.get("vip_locked", False))
+    if scope == "full" and body_complete and not vip_locked:
+        message = "当前 Agent 分析基于已解析的 full content。"
+    elif scope == "preview" or vip_locked:
+        message = "当前 Agent 分析基于 preview / VIP 锁定内容，只能作为有限证据分析，不应视作完整原文分析。"
+    else:
+        message = "当前 Agent 分析的正文完整性为 unknown，只能作为有限证据分析，不应视作完整原文分析。"
+    notice = "\n".join(
+        [
+            "## 正文完整性",
+            "",
+            f"- content_scope: {scope}",
+            f"- body_complete: {'true' if body_complete else 'false'}",
+            f"- vip_locked: {'true' if vip_locked else 'false'}",
+            f"- 说明：{message}",
+            "",
+        ]
+    )
+    body = str(markdown or "").lstrip()
+    if body.startswith("# "):
+        first_line, separator, rest = body.partition("\n")
+        return f"{first_line}{separator}{notice}{rest.lstrip()}".rstrip() + "\n"
+    return f"{notice}{body}".rstrip() + "\n"
 
 
 def _select_report_text_for_analysis(

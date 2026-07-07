@@ -21,11 +21,12 @@ def test_alembic_env_targets_all_runtime_metadata() -> None:
     assert "cme_option_rows" in table_names
 
 
-def test_runtime_alembic_upgrade_creates_current_schema(tmp_path) -> None:
+def test_runtime_alembic_upgrade_creates_current_schema(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from database.migrations.runtime import run_database_migrations
 
     db_path = tmp_path / "finance-agent.sqlite"
     database_url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", "postgresql://ignored:ignored@127.0.0.1:1/ignored")
 
     run_database_migrations(database_url)
 

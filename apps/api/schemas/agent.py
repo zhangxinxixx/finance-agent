@@ -26,6 +26,7 @@ class PromptVersionActivate(SchemaModel):
 
     version: str
     reason: str | None = None
+    release_approval_artifact: str | None = None
 
 
 class PromptFeedbackCreate(SchemaModel):
@@ -40,4 +41,22 @@ class PromptFeedbackCreate(SchemaModel):
     comment: str | None = None
     suggested_changes: dict | None = None
     submitted_by: str | None = None
+    request_id: str | None = None
+
+
+class PromptEvolutionReleaseActionRequest(SchemaModel):
+    """Review-approved PromptEvolution release or rollback audit request."""
+
+    agent_name: str
+    action: str
+    trade_date: str | None = None
+    active_prompt_version_id: str | None = None
+    candidate_prompt_version_id: str | None = None
+    validation_artifact: str | None = None
+    review_approved_by: str | None = None
+    test_result: str | None = None
+    rollback_reason: str | None = None
+    rolled_back_from: str | None = None
+    rolled_back_to: str | None = None
+    affected_agents: list[str] | None = None
     request_id: str | None = None

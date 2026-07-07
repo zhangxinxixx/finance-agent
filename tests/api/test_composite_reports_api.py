@@ -809,7 +809,10 @@ def test_list_reports_index_marks_rejected_jin10_report_degraded(tmp_path: Path)
         ),
     })
 
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch("apps.api.services.report_service._JIN10_EXTERNAL_ROOT", tmp_path / "jin10-reports"),
+    ):
         index = list_reports_index()
 
     [item] = [report for report in index["reports"] if report["type"] == "jin10_daily_report"]

@@ -8,7 +8,6 @@
 | --- | --- | --- |
 | GET | `/health` | 健康检查 |
 | GET | `/api/health` | 健康检查 |
-| GET | `/api/memory/context` | 本地研究上下文 |
 
 ## Tasks / Runs
 

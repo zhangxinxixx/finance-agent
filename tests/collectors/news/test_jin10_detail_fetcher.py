@@ -7,6 +7,7 @@ import cv2
 import httpx
 import numpy as np
 
+from apps.collectors.news import jin10_detail_fetcher
 from apps.collectors.news.jin10_detail_fetcher import RenderedDetailPage, fetch_jin10_detail_page
 
 
@@ -398,6 +399,21 @@ def test_fetch_jin10_detail_page_uses_browser_profile_fallback_for_vip_locked(tm
     assert result.raw_html_path and result.raw_html_path.endswith(".html")
     assert "-browser-profile" in result.raw_html_path
     assert result.parsed_path and "-browser-profile" in result.parsed_path
+
+
+def test_browser_profile_copy_omits_singleton_locks(tmp_path: Path) -> None:
+    source = tmp_path / "source-profile"
+    target = tmp_path / "target-profile"
+    source.mkdir()
+    (source / "Cookies").write_text("cookie-data", encoding="utf-8")
+    (source / "SingletonLock").write_text("locked", encoding="utf-8")
+    (source / "SingletonCookie").write_text("cookie-lock", encoding="utf-8")
+
+    jin10_detail_fetcher._copy_browser_profile_for_readonly_launch(source, target)
+
+    assert (target / "Cookies").read_text(encoding="utf-8") == "cookie-data"
+    assert not (target / "SingletonLock").exists()
+    assert not (target / "SingletonCookie").exists()
 
 
 def test_fetch_jin10_detail_page_keeps_preview_when_browser_profile_fallback_fails(tmp_path: Path) -> None:

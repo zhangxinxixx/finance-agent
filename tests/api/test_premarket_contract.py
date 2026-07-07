@@ -177,10 +177,48 @@ def test_premarket_contract_declares_source_gating_inputs() -> None:
     assert contracts["macro_collect"].required_sources == ("fred", "fed", "treasury", "dxy")
     assert contracts["macro_collect"].fallback_policy == "openbb_macro_or_stale_allowed"
     assert contracts["cme_download"].required_sources == ("cme_daily_bulletin",)
-    assert contracts["cme_download"].fallback_policy == "block_if_unavailable"
+    assert contracts["cme_download"].fallback_policy == "stale_allowed_1d"
+    assert contracts["cme_parse"].fallback_policy == "stale_allowed_1d"
+    assert contracts["cme_ingest"].fallback_policy == "stale_allowed_1d"
     assert contracts["option_wall"].required_sources == ("cme_options",)
     assert contracts["news_collect"].required_sources == ("jin10_news", "jin10_flash", "jin10_mcp_calendar")
     assert contracts["strategy_card"].fallback_policy == "depends_on_upstream_status"
+
+
+def test_premarket_contract_allows_latest_available_cme_bulletin() -> None:
+    source_status_index = {
+        "fred": {"readiness_state": "ready", "raw_ingested": True},
+        "fed": {"readiness_state": "ready", "raw_ingested": True},
+        "treasury": {"readiness_state": "ready", "raw_ingested": True},
+        "dxy": {"readiness_state": "ready", "raw_ingested": True},
+        "cme_daily_bulletin": {
+            "readiness_state": "degraded",
+            "raw_ingested": True,
+            "parsed": True,
+            "gating_reason": "freshness_stale",
+            "metadata": {"latest_data_date": "2026-07-08"},
+        },
+        "cme_options": {"readiness_state": "ready", "analysis_ready": True, "metadata": {"latest_data_date": "2026-07-08"}},
+        "jin10_news": {"readiness_state": "ready", "raw_ingested": True},
+        "jin10_flash": {"readiness_state": "ready", "raw_ingested": True},
+        "jin10_mcp_calendar": {"readiness_state": "ready", "raw_ingested": True},
+    }
+
+    with patch("apps.api.services.pipeline_contract_service.get_data_source_status_index", return_value=source_status_index):
+        contract = build_premarket_pipeline_contract()
+
+    step_by_name = {step["name"]: step for step in contract["steps"]}
+    for step_name in ("cme_download", "cme_parse", "cme_ingest"):
+        readiness = step_by_name[step_name]["source_readiness"]
+        assert readiness["decision"] == "degraded_allowed"
+        assert readiness["degraded_sources"] == ["cme_daily_bulletin"]
+        assert readiness["blocked_sources"] == []
+    assert step_by_name["option_wall"]["source_readiness"]["decision"] == "ready"
+
+    summary = contract["source_readiness_summary"]
+    assert "cme_download" not in summary["blocked_steps"]
+    assert "cme_daily_bulletin" not in summary["blocked_sources"]
+    assert "cme_daily_bulletin" in summary["degraded_sources"]
 
 
 def test_premarket_contract_can_materialize_task_steps_from_canonical_nodes() -> None:
@@ -296,7 +334,7 @@ def test_premarket_contract_api_exposes_canonical_contract() -> None:
     assert step_by_name["macro_collect"]["required_sources"] == ["fred", "fed", "treasury", "dxy"]
     assert step_by_name["macro_collect"]["fallback_policy"] == "openbb_macro_or_stale_allowed"
     assert step_by_name["cme_download"]["required_sources"] == ["cme_daily_bulletin"]
-    assert step_by_name["cme_download"]["fallback_policy"] == "block_if_unavailable"
+    assert step_by_name["cme_download"]["fallback_policy"] == "stale_allowed_1d"
     assert step_by_name["macro_collect"]["source_readiness"]["decision"] == "ready"
     assert body["source_readiness_summary"]["decision_counts"]["blocked"] == 0
 

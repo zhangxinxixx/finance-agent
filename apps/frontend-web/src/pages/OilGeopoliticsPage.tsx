@@ -4,21 +4,18 @@ import { ArrowRight, RefreshCw } from "lucide-react";
 
 import { ErrorState } from "@/components/shared/ErrorState";
 import { LoadingSkeleton } from "@/components/shared/LoadingSkeleton";
-import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
-import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
 import { GoldTopicOverviewCard, GoldTopicStatusBar } from "@/components/gold-mainlines/GoldMainlinePageFrame";
 import { OilGeoEvidenceTimeline } from "@/components/oil-geopolitics/OilGeoEvidenceTimeline";
+import { OilGeoMainlineRows } from "@/components/oil-geopolitics/OilGeoMainlineRows";
 import { OilGeoVerificationCard } from "@/components/oil-geopolitics/OilGeoVerificationCard";
 import { SafeHavenVsInflationSplit } from "@/components/oil-geopolitics/SafeHavenVsInflationSplit";
 import { WarOilRateChainPanel } from "@/components/oil-geopolitics/WarOilRateChainPanel";
 import {
   collectSources,
-  coverageStatusLabel,
-  coverageStatusTone,
   rankingMainlineId,
   scoreLabel,
   topicEvents,
@@ -28,15 +25,10 @@ import {
   type TopicMainlineRow,
 } from "@/components/oil-geopolitics/oilGeopoliticsModel";
 import {
-  GOLD_MAINLINE_META,
   formatGoldDriverLabel,
   formatGoldMainlineLabel,
-  formatGoldNetBiasLabel,
-  formatGoldPricingLayerLabel,
   formatTransmissionPathLabel,
-  formatGoldVerificationStatusLabel,
   goldNetBiasTone,
-  goldVerificationStatusTone,
 } from "@/components/shared/goldMainlineFormat";
 import { useGoldMainlines } from "@/hooks/useGoldMainlines";
 import type { AppShellOutletContext } from "@/components/AppShell";
@@ -79,65 +71,6 @@ function OilHeader({ overview, rows }: { overview: GoldMacroOverview; rows: Topi
         { label: "风险分", value: `${scoreLabel(overview.risk_score)}/100`, meta: "risk score", tone: "warn" },
       ]}
     />
-  );
-}
-
-function MainlineRows({ rows }: { rows: TopicMainlineRow[] }) {
-  return (
-    <FACard title="地缘 / 石油主线" eyebrow="Theme Rows" accent="brand" bodyClassName="!p-0" className="shrink-0">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[780px] table-fixed text-left text-[length:var(--type-caption)]">
-          <colgroup>
-            <col className="w-[62px]" />
-            <col className="w-[150px]" />
-            <col className="w-[92px]" />
-            <col className="w-[82px]" />
-            <col className="w-[76px]" />
-            <col className="w-[110px]" />
-            <col />
-          </colgroup>
-          <thead className="border-b border-[var(--border-faint)] bg-[var(--bg-card-inner)] text-[var(--fg-5)]">
-            <tr>
-              <th className="px-3 py-2 font-semibold">Rank</th>
-              <th className="px-3 py-2 font-semibold">主线</th>
-              <th className="px-3 py-2 font-semibold">覆盖</th>
-              <th className="px-3 py-2 font-semibold">方向</th>
-              <th className="px-3 py-2 font-semibold">Score</th>
-              <th className="px-3 py-2 font-semibold">验证</th>
-              <th className="px-3 py-2 font-semibold">摘要 / 证据</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const item = row.ranking;
-              const meta = GOLD_MAINLINE_META[row.id];
-              const verificationStatus = item?.verification_status ?? (row.status === "missing" ? "unverified" : "pending");
-              return (
-                <tr key={row.id} className="border-b border-[var(--border-faint)] last:border-0">
-                  <td className="fa-num px-3 py-2 font-semibold text-[var(--fg-2)]">{item ? `#${item.rank}` : "—"}</td>
-                  <td className="px-3 py-2">
-                    <div className="font-semibold text-[var(--fg-2)]">{item?.label || meta.label}</div>
-                    <div className="mt-0.5 text-[length:var(--type-caption)] text-[var(--fg-5)]">{formatGoldPricingLayerLabel(meta.pricingLayer)}</div>
-                  </td>
-                  <td className="px-3 py-2"><FAStatusPill tone={coverageStatusTone(row.status)} dot={false}>{coverageStatusLabel(row.status)}</FAStatusPill></td>
-                  <td className="px-3 py-2"><FAStatusPill tone={goldNetBiasTone(item?.direction ?? "unknown")} dot={false}>{formatGoldNetBiasLabel(item?.direction ?? "unknown")}</FAStatusPill></td>
-                  <td className="fa-num px-3 py-2 font-semibold text-[var(--fg-2)]">{scoreLabel(item?.score)}</td>
-                  <td className="px-3 py-2"><FAStatusPill tone={goldVerificationStatusTone(verificationStatus)} dot={false}>{formatGoldVerificationStatusLabel(verificationStatus)}</FAStatusPill></td>
-                  <td className="px-3 py-2 text-[var(--fg-3)]">
-                    <div className="line-clamp-2 leading-5">{item?.summary || meta.description}</div>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {meta.evidenceTargets.slice(0, 4).map((target) => (
-                        <span key={target} className="rounded-[var(--radius-pill)] border border-[var(--border-faint)] px-1.5 py-0.5 text-[length:var(--type-caption)] text-[var(--fg-5)]">{target}</span>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </FACard>
   );
 }
 
@@ -213,7 +146,7 @@ export function OilGeopoliticsPage() {
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
         <div className="grid content-start gap-3">
           <WarOilRateChainPanel chain={chain} rows={rows} events={events} />
-          <MainlineRows rows={rows} />
+          <OilGeoMainlineRows rows={rows} />
           <SafeHavenVsInflationSplit conflict={overview.driver_conflict} />
         </div>
         <div className="grid content-start gap-3">

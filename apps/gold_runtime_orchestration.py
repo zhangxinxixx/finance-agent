@@ -63,6 +63,9 @@ class GoldRuntimeModeContract:
             "warnings": list(self.warnings),
             "scheduler_entrypoint": self.scheduler_entrypoint,
             "runtime_contract_only": True,
+            "artifact_execution_enabled": False,
+            "pipeline_materialized_outputs": False,
+            "executed_agents": [],
         }
 
 
@@ -233,6 +236,9 @@ def build_gold_runtime_summary_preview(
         "review_status": contract.review_status,
         "warnings": list(contract.warnings),
         "runtime_contract_only": True,
+        "artifact_execution_enabled": False,
+        "pipeline_materialized_outputs": False,
+        "executed_agents": [],
         "writes": [],
     }
 
@@ -248,7 +254,14 @@ def build_gold_runtime_execution_summary(
     fallback_attempts: int = 0,
     warnings: list[str] | None = None,
 ) -> dict[str, object]:
-    """Return a real run summary bound to scheduler/worker execution evidence."""
+    """Return a materialized pipeline summary bound to scheduler/worker evidence.
+
+    Gold v3.0 materializes pipeline outputs, but fixed Agent artifact execution
+    remains a v3.1 concern. Keep ``runtime_contract_only`` true until that
+    artifact execution lane exists, and expose the materialization state
+    explicitly so downstream readers do not confuse planned agents with
+    executed Agent artifacts.
+    """
 
     summary = build_gold_runtime_summary_preview(run_mode=run_mode, trigger_reason=trigger_reason)
     decision = _quality_gate_decision_dict(quality_gate_decision)
@@ -284,7 +297,10 @@ def build_gold_runtime_execution_summary(
             "no_strong_conclusion": quality_gate_status == "blocked" or bool(agent_loop.get("no_strong_conclusion")),
             "strategy_card_override": dict(agent_loop.get("strategy_card_override") or {}),
             "review_item_ids": [],
-            "runtime_contract_only": False,
+            "runtime_contract_only": True,
+            "artifact_execution_enabled": False,
+            "pipeline_materialized_outputs": bool(effective_outputs),
+            "executed_agents": [],
             "writes": _accepted_output_paths(effective_outputs),
             "warnings": sorted(merged_warnings),
         }

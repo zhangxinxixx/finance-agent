@@ -8,3 +8,7 @@ def test_should_record_samples_high_frequency_jin10_tasks(monkeypatch) -> None:
 
     assert task_wrapper._should_record("jin10_flash") is True
     assert task_wrapper._should_record("jin10_flash") is False
+    assert task_wrapper._should_record("jin10_web_flash") is True
+    assert task_wrapper._should_record("jin10_web_flash") is False
+    assert task_wrapper._should_record("jin10_web_article_analysis") is True
+    assert task_wrapper._should_record("jin10_web_article_analysis") is False

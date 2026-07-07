@@ -49,6 +49,8 @@ class ImprovementProposal(BaseModel):
     test_plan: list[str]
     status: str = "pending_review"
     finding_codes: list[str]
+    linked_issue: str | None = None
+    linked_pr: str | None = None
 
     @model_validator(mode="after")
     def fill_issue_contract_fields(self) -> "ImprovementProposal":

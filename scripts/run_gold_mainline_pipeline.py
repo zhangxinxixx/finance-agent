@@ -10,9 +10,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apps.analysis.agents.source_health import build_gold_v3_source_health
+from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, evaluate_quality_gate
 from apps.analysis.gold_mainline_engine import archive_gold_macro_overview, build_gold_macro_overview
 from apps.api.services.source_service import get_data_source_statuses
-from apps.api.services.quality_gate_service import QualityGateAction, evaluate_quality_gate
 from apps.collectors.positioning.collector import CFTC_COT_URL
 from apps.features.news.gold_event_mainlines import archive_gold_event_mainlines, build_gold_event_mainlines
 from apps.gold_runtime_orchestration import build_gold_runtime_execution_summary, build_gold_runtime_summary_preview
@@ -279,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
         "planned_agents_executed": runtime_summary["planned_agents_executed"],
         "planned_agents_skipped": runtime_summary["planned_agents_skipped"],
         "runtime_contract_only": runtime_summary["runtime_contract_only"],
+        "artifact_execution_enabled": runtime_summary["artifact_execution_enabled"],
+        "pipeline_materialized_outputs": runtime_summary["pipeline_materialized_outputs"],
+        "executed_agents": runtime_summary["executed_agents"],
         "gold_macro_overview_updated": runtime_summary["gold_macro_overview_updated"],
         "quality_gate_status": runtime_summary["quality_gate_status"],
         "quality_gate_action": runtime_summary["quality_gate_action"],

@@ -5,6 +5,7 @@ import os
 import time
 
 from apps.api import main
+from apps.api.services import jin10_market_service
 
 
 def test_jin10_flash_api_refreshes_stale_cache(monkeypatch, tmp_path):
@@ -21,8 +22,8 @@ def test_jin10_flash_api_refreshes_stale_cache(monkeypatch, tmp_path):
     old_mtime = time.time() - 3600
     os.utime(cache_path, (old_mtime, old_mtime))
 
-    monkeypatch.setattr(main, "_JIN10_FLASH_CACHE_PATH", cache_path)
-    monkeypatch.setattr(main, "_JIN10_FLASH_CACHE_MAX_AGE_SECONDS", 60)
+    monkeypatch.setattr(jin10_market_service, "JIN10_FLASH_CACHE_PATH", cache_path)
+    monkeypatch.setattr(jin10_market_service, "JIN10_FLASH_CACHE_MAX_AGE_SECONDS", 60)
 
     def refresh() -> None:
         cache_path.write_text(
@@ -56,8 +57,8 @@ def test_jin10_flash_api_keeps_fresh_cache(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(main, "_JIN10_FLASH_CACHE_PATH", cache_path)
-    monkeypatch.setattr(main, "_JIN10_FLASH_CACHE_MAX_AGE_SECONDS", 60)
+    monkeypatch.setattr(jin10_market_service, "JIN10_FLASH_CACHE_PATH", cache_path)
+    monkeypatch.setattr(jin10_market_service, "JIN10_FLASH_CACHE_MAX_AGE_SECONDS", 60)
 
     def refresh() -> None:
         raise AssertionError("fresh cache should not refresh")

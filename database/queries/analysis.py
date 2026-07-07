@@ -17,6 +17,7 @@ from database.models.analysis import (
     AgentOutput,
     AnalysisSnapshot,
     FinalAnalysisResult,
+    PromptVersion,
 )
 
 
@@ -42,6 +43,25 @@ def _parse_iso_datetime(v: str | None) -> datetime | None:
 def _coerce_payload(payload: dict) -> dict:
     """Ensure payload is a plain dict (for SHA256 consistency)."""
     return dict(payload)
+
+
+def _resolve_prompt_version_id(session: Session, payload: dict[str, Any]) -> str | None:
+    explicit = payload.get("prompt_version_id")
+    if explicit:
+        return str(explicit)
+    agent_name = payload.get("agent_name")
+    if not agent_name:
+        return None
+    row = session.scalar(
+        select(PromptVersion)
+        .where(
+            PromptVersion.agent_id == agent_name,
+            PromptVersion.status == "active",
+            PromptVersion.enabled.is_(True),
+        )
+        .order_by(PromptVersion.created_at.desc())
+    )
+    return row.id if row is not None else None
 
 
 def _raise_lineage_conflict(message: str) -> None:
@@ -242,6 +262,7 @@ def upsert_agent_output(
     )
 
     core_payload = _coerce_payload(payload.get("payload", {}))
+    prompt_version_id = _resolve_prompt_version_id(session, payload)
 
     if existing is not None:
         # Update mutable fields
@@ -262,7 +283,7 @@ def upsert_agent_output(
         existing.token_usage = payload.get("token_usage")
         existing.llm_model = payload.get("llm_model")
         existing.llm_elapsed_seconds = payload.get("llm_elapsed_seconds")
-        existing.prompt_version_id = payload.get("prompt_version_id")
+        existing.prompt_version_id = prompt_version_id
         existing.payload = core_payload
         existing.payload_sha256 = _sha256_hex(core_payload)
         session.flush()
@@ -290,7 +311,7 @@ def upsert_agent_output(
         token_usage=payload.get("token_usage"),
         llm_model=payload.get("llm_model"),
         llm_elapsed_seconds=payload.get("llm_elapsed_seconds"),
-        prompt_version_id=payload.get("prompt_version_id"),
+        prompt_version_id=prompt_version_id,
         payload=core_payload,
         payload_sha256=_sha256_hex(core_payload),
     )

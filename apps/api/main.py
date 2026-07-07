@@ -23,7 +23,6 @@ from sqlalchemy.orm import Session
 from apps.api.schemas.agent import (
     PromptVersionCreate,
 )
-from apps.analysis.memory import build_codex_memory_context
 from apps.premarket import PREMARKET_STEP_ORDER, sort_premarket_steps
 from apps.api.data_service import (
     get_dashboard_summary,
@@ -69,6 +68,10 @@ from apps.api.services import (
 from apps.api.services.jin10_article_brief_service import (
     get_jin10_article_briefs,
     get_jin10_article_briefs_latest,
+)
+from apps.api.services.jin10_web_flash_brief_service import (
+    get_jin10_web_flash_briefs,
+    get_jin10_web_flash_briefs_latest,
 )
 from apps.api.services.daily_analysis_trigger_service import (
     get_daily_analysis_triggers,
@@ -120,6 +123,7 @@ from apps.api.routes import (
     market_odds_routes,
     news_routes,
     operations_routes,
+    orchestration_routes,
     options_routes,
     premarket_routes,
     playbook_routes,
@@ -130,6 +134,7 @@ from apps.api.routes import (
     settings_write_routes,
     source_trace_routes,
     strategy_report_routes,
+    system_evolution_routes,
     system_status_routes,
 )
 from apps.api.services.source_service import (
@@ -148,8 +153,13 @@ from apps.api.services.report_service import (
     get_report_source,
     get_report_visual,
 )
-from apps.api.services.agent_output_service import build_agent_output_summary
+from apps.api.services.agent_output_service import build_agent_output_summary, prompt_contract_id, prompt_metadata_from_row
 from apps.api.services._trace_refs import parse_source_refs
+from apps.api.services.jin10_cache_refresh_scheduler import (
+    start_jin10_cache_refresh_scheduler,
+    stop_jin10_cache_refresh_scheduler,
+)
+from apps.api.services import jin10_market_service
 from apps.api.services.scheduler_service import get_scheduler_overview
 from apps.runtime.state_machine import (
     ACTIVE_DAGSTER_RUN_STATUSES,
@@ -164,12 +174,12 @@ _should_skip_background_jobs_ref = None  # set by lifespan
 
 logger = logging.getLogger(__name__)
 
-_JIN10_FLASH_CACHE_PATH = Path("./storage/outputs/jin10/flash_cache.json")
-_JIN10_FLASH_CACHE_MAX_AGE_SECONDS = 60
-_JIN10_CALENDAR_CACHE_PATH = Path("./storage/outputs/jin10/calendar_cache.json")
-_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS = 18 * 60 * 60
-_JIN10_CALENDAR_PAST_WINDOW_DAYS = 7
-_JIN10_CALENDAR_FUTURE_WINDOW_DAYS = 14
+_JIN10_FLASH_CACHE_PATH = jin10_market_service.JIN10_FLASH_CACHE_PATH
+_JIN10_FLASH_CACHE_MAX_AGE_SECONDS = jin10_market_service.JIN10_FLASH_CACHE_MAX_AGE_SECONDS
+_JIN10_CALENDAR_CACHE_PATH = jin10_market_service.JIN10_CALENDAR_CACHE_PATH
+_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS = jin10_market_service.JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS
+_JIN10_CALENDAR_PAST_WINDOW_DAYS = jin10_market_service.JIN10_CALENDAR_PAST_WINDOW_DAYS
+_JIN10_CALENDAR_FUTURE_WINDOW_DAYS = jin10_market_service.JIN10_CALENDAR_FUTURE_WINDOW_DAYS
 _PREMARKET_ACTIVE_TASK_STALE_AFTER = timedelta(
     hours=int(os.getenv("PREMARKET_ACTIVE_TASK_STALE_AFTER_HOURS", "6"))
 )
@@ -483,82 +493,8 @@ async def lifespan(_app: FastAPI):
 
     if not _should_skip_background_jobs():
         try:
-            from apscheduler.schedulers.background import BackgroundScheduler
-            from apps.scheduler.jin10_refresh import (
-                refresh_jin10_kline_cache,
-                refresh_market_candle_daily_cache,
-                refresh_jin10_quotes_cache,
-                refresh_jin10_calendar_cache,
-                refresh_jin10_flash_cache,
-            )
-
-            def _recorded_jin10_quotes():
-                from apps.scheduler.task_wrapper import record_jin10_refresh
-                record_jin10_refresh("jin10_quotes", "Jin10 行情刷新", refresh_jin10_quotes_cache)
-
-            def _recorded_jin10_kline():
-                from apps.scheduler.task_wrapper import record_jin10_refresh
-                record_jin10_refresh("jin10_kline", "Jin10 K线刷新", refresh_jin10_kline_cache)
-
-            def _recorded_market_candles_daily():
-                from apps.scheduler.task_wrapper import record_jin10_refresh
-                record_jin10_refresh("market_candles_daily", "市场日线补缺刷新", refresh_market_candle_daily_cache)
-
-            def _recorded_jin10_calendar():
-                from apps.scheduler.task_wrapper import record_jin10_refresh
-                record_jin10_refresh("jin10_calendar", "Jin10 财经日历刷新", refresh_jin10_calendar_cache)
-
-            def _recorded_jin10_flash():
-                from apps.scheduler.task_wrapper import record_jin10_refresh
-                record_jin10_refresh("jin10_flash", "Jin10 快讯刷新", refresh_jin10_flash_cache)
-
-            scheduler = BackgroundScheduler(daemon=True)
-            scheduler.add_job(
-                _recorded_jin10_quotes,
-                "interval",
-                minutes=15,
-                id="jin10_quotes_refresh",
-                replace_existing=True,
-            )
-            scheduler.add_job(
-                _recorded_jin10_kline,
-                "interval",
-                minutes=1,
-                id="jin10_kline_refresh",
-                replace_existing=True,
-            )
-            scheduler.add_job(
-                _recorded_market_candles_daily,
-                "interval",
-                minutes=60,
-                id="market_candles_daily_refresh",
-                replace_existing=True,
-            )
-            scheduler.add_job(
-                _recorded_jin10_calendar,
-                "interval",
-                minutes=60,
-                id="jin10_calendar_refresh",
-                replace_existing=True,
-            )
-            scheduler.add_job(
-                _recorded_jin10_flash,
-                "interval",
-                minutes=15,
-                id="jin10_flash_refresh",
-                replace_existing=True,
-            )
-            scheduler.start()
-            # 首次刷新移到后台线程，避免阻塞 API 启动
-            import threading as _threading
-            _threading.Thread(target=refresh_jin10_quotes_cache, daemon=True, name="startup-quotes").start()
-            _threading.Thread(target=refresh_jin10_kline_cache, daemon=True, name="startup-kline").start()
-            _threading.Thread(target=refresh_market_candle_daily_cache, daemon=True, name="startup-market-candles").start()
-            _threading.Thread(target=refresh_jin10_flash_cache, daemon=True, name="startup-flash").start()
-            logger.info("Jin10 quotes refresh scheduler started (interval=15min)")
-            logger.info("Jin10 kline refresh scheduler started (interval=1min)")
-            logger.info("Market daily candle refresh scheduler started (interval=60min)")
-            logger.info("Jin10 flash refresh scheduler started (interval=15min)")
+            scheduler = start_jin10_cache_refresh_scheduler()
+            logger.info("Automation orchestration scheduling handled by Dagster")
             logger.info("Premarket scheduling handled by Dagster (premarket_daily)")
             _app.state.jin10_scheduler = scheduler
         except Exception:
@@ -569,8 +505,8 @@ async def lifespan(_app: FastAPI):
     # ── Shutdown ──
     sched = getattr(_app.state, "jin10_scheduler", None)
     if sched is not None:
-        sched.shutdown(wait=False)
-        logger.info("Jin10 quotes refresh scheduler stopped")
+        stop_jin10_cache_refresh_scheduler(sched)
+        _app.state.jin10_scheduler = None
 
 
 app = FastAPI(title="finance-agent", version="0.1.0", lifespan=lifespan)
@@ -584,6 +520,7 @@ app.include_router(market_monitor_routes.router)
 app.include_router(reports_routes.router)
 app.include_router(market_odds_routes.router)
 app.include_router(operations_routes.router)
+app.include_router(orchestration_routes.router)
 app.include_router(macro_routes.router)
 app.include_router(options_routes.router)
 app.include_router(event_flow_routes.router)
@@ -603,6 +540,7 @@ app.include_router(frontend_compat_routes.router)
 app.include_router(system_status_routes.router)
 app.include_router(agent_analysis_read_routes.router)
 app.include_router(agent_analysis_run_routes.router)
+app.include_router(system_evolution_routes.router)
 
 # Re-export modularized handlers so existing direct-import tests and local tools stay compatible.
 api_runs = execution_read_routes.api_runs
@@ -612,6 +550,8 @@ api_run_logs = execution_read_routes.api_run_logs
 api_run_artifacts = execution_read_routes.api_run_artifacts
 api_artifact_detail = execution_read_routes.api_artifact_detail
 api_run_events = execution_read_routes.api_run_events
+api_system_evolution_latest = system_evolution_routes.api_system_evolution_latest
+api_system_evolution_proposal_action = system_evolution_routes.api_system_evolution_proposal_action
 api_source_trace_by_report = source_trace_routes.api_source_trace_by_report
 api_source_trace_by_strategy = source_trace_routes.api_source_trace_by_strategy
 api_source_trace_by_artifact = source_trace_routes.api_source_trace_by_artifact
@@ -658,6 +598,10 @@ api_tasks = operations_routes.api_tasks
 api_scheduler_overview = operations_routes.api_scheduler_overview
 api_run_all_collectors = operations_routes.api_run_all_collectors
 api_dashboard_summary = operations_routes.api_dashboard_summary
+api_orchestration_latest = orchestration_routes.api_orchestration_latest
+api_orchestration_notification_plan = orchestration_routes.api_orchestration_notification_plan
+api_orchestration_manual_review = orchestration_routes.api_orchestration_manual_review
+api_orchestration_manual_review_action = orchestration_routes.api_orchestration_manual_review_action
 api_macro_latest = macro_routes.api_macro_latest
 api_macro_report = macro_routes.api_macro_report
 api_options_snapshot = options_routes.api_options_snapshot
@@ -701,6 +645,8 @@ api_jin10_report_bundle = jin10_report_routes.api_jin10_report_bundle
 api_jin10_report_bundle_asset = jin10_report_routes.api_jin10_report_bundle_asset
 api_jin10_article_briefs_latest = jin10_report_routes.api_jin10_article_briefs_latest
 api_jin10_article_briefs = jin10_report_routes.api_jin10_article_briefs
+api_jin10_web_flash_briefs_latest = jin10_report_routes.api_jin10_web_flash_briefs_latest
+api_jin10_web_flash_briefs = jin10_report_routes.api_jin10_web_flash_briefs
 api_daily_analysis_triggers_latest = news_routes.api_daily_analysis_triggers_latest
 api_daily_analysis_triggers = news_routes.api_daily_analysis_triggers
 api_daily_brief_latest = news_routes.api_daily_brief_latest
@@ -733,18 +679,19 @@ trigger_premarket = premarket_routes.trigger_premarket
 get_task = premarket_routes.get_task
 get_task_logs = premarket_routes.get_task_logs
 health = health_routes.health
-api_memory_context = health_routes.api_memory_context
 api_agents_registry = agent_governance_read_routes.api_agents_registry
 api_agent_registry_detail = agent_governance_read_routes.api_agent_registry_detail
 api_prompt_versions_list = agent_governance_read_routes.api_prompt_versions_list
 api_prompt_versions_by_agent = agent_governance_read_routes.api_prompt_versions_by_agent
 api_prompt_versions_active = agent_governance_read_routes.api_prompt_versions_active
 api_prompt_evolution_proposal = agent_governance_read_routes.api_prompt_evolution_proposal
+api_prompt_evolution_latest = agent_governance_read_routes.api_prompt_evolution_latest
 api_prompt_versions_create = agent_governance_write_routes.api_prompt_versions_create
 api_prompt_versions_activate = agent_governance_write_routes.api_prompt_versions_activate
 api_prompt_feedback_create = agent_governance_write_routes.api_prompt_feedback_create
 api_prompt_feedback_by_agent = agent_governance_write_routes.api_prompt_feedback_by_agent
 api_prompt_feedback_list = agent_governance_write_routes.api_prompt_feedback_list
+api_prompt_evolution_release_action = agent_governance_write_routes.api_prompt_evolution_release_action
 api_agent_analysis_latest = agent_analysis_read_routes.api_agent_analysis_latest
 api_agent_analysis_by_date = agent_analysis_read_routes.api_agent_analysis_by_date
 api_agent_analysis_inspect = agent_analysis_read_routes.api_agent_analysis_inspect
@@ -773,9 +720,6 @@ serve_settings_audit = frontend_compat_routes.serve_settings_audit
 system_status = system_status_routes.system_status
 
 # Keep these globals explicit so modular route handlers and legacy tests can patch via apps.api.main.
-_HEALTH_ROUTE_DEPENDENCIES = (
-    build_codex_memory_context,
-)
 _DATA_SOURCE_ROUTE_DEPENDENCIES = (
     get_data_source_statuses,
     get_data_source_health_latest,
@@ -853,6 +797,8 @@ _JIN10_REPORT_ROUTE_DEPENDENCIES = (
     get_jin10_report_bundle_asset_path,
     get_jin10_article_briefs_latest,
     get_jin10_article_briefs,
+    get_jin10_web_flash_briefs_latest,
+    get_jin10_web_flash_briefs,
 )
 _NEWS_ROUTE_DEPENDENCIES = (
     get_daily_analysis_triggers_latest,
@@ -969,12 +915,6 @@ class TaskOut(BaseModel):
     steps: list[StepOut] = []
 
 
-class MemoryContextResponse(BaseModel):
-    task: str
-    context: str
-    source: str
-
-
 # ---- Routes ----
 
 
@@ -1085,221 +1025,20 @@ _PREMARKET_ROUTE_DEPENDENCIES = (
 # ── API: Jin10 MCP Quotes & Snapshot ──
 
 
-def _jin10_unavailable(reason: str) -> dict:
-    return {
-        "status": "unavailable",
-        "reason": reason,
-        "quotes": {},
-        "counts": {},
-        "kline_codes": [],
-    }
-
-
-def _is_file_stale(path: Path, *, max_age_seconds: int) -> bool:
-    try:
-        age_seconds = time.time() - path.stat().st_mtime
-    except OSError:
-        return True
-    return age_seconds > max_age_seconds
-
-
-def _refresh_jin10_calendar_cache() -> None:
-    try:
-        from apps.scheduler.jin10_refresh import refresh_jin10_calendar_cache
-
-        refresh_jin10_calendar_cache()
-    except Exception:
-        pass
-
-
-def _parse_jin10_calendar_time(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-
-    normalized = value.strip().replace("Z", "+00:00")
-    if "T" not in normalized and " " in normalized:
-        normalized = normalized.replace(" ", "T", 1)
-
-    candidates = [normalized]
-    if len(normalized) == 16:
-        candidates.append(f"{normalized}:00")
-
-    for candidate in candidates:
-        try:
-            parsed = datetime.fromisoformat(candidate)
-        except ValueError:
-            continue
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-    return None
-
-
-def _calendar_release_state(event: dict[str, Any]) -> str:
-    return "upcoming" if event.get("actual") in (None, "") else "released"
-
-
-def _normalize_jin10_calendar_event(event: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(event)
-    parsed_time = _parse_jin10_calendar_time(event.get("pub_time"))
-    if parsed_time is not None:
-        normalized["pub_time"] = parsed_time.isoformat(timespec="minutes")
-        normalized["event_date"] = parsed_time.date().isoformat()
-        normalized["_sort_ts"] = parsed_time.timestamp()
-    else:
-        normalized["event_date"] = None
-        normalized["_sort_ts"] = 0.0
-    normalized["release_state"] = _calendar_release_state(event)
-    normalized["is_high_impact"] = int(event.get("star") or 0) >= 4
-    return normalized
-
-
-def _jin10_calendar_window(now: datetime | None = None) -> tuple[str, str]:
-    anchor = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
-    return (
-        (anchor - timedelta(days=_JIN10_CALENDAR_PAST_WINDOW_DAYS)).isoformat(),
-        (anchor + timedelta(days=_JIN10_CALENDAR_FUTURE_WINDOW_DAYS)).isoformat(),
-    )
-
-
-def _is_jin10_calendar_event_in_window(event: dict[str, Any], *, window_start: str, window_end: str) -> bool:
-    event_date = event.get("event_date")
-    return isinstance(event_date, str) and window_start <= event_date <= window_end
-
-
-def _calendar_event_sort_key(event: dict[str, Any]) -> tuple[int, float, int]:
-    sort_ts = float(event.get("_sort_ts") or 0.0)
-    star = int(event.get("star") or 0)
-    if event.get("release_state") == "upcoming":
-        return (0, sort_ts, -star)
-    return (1, -sort_ts, -star)
-
-
-def _calendar_cache_age_seconds(path: Path) -> int | None:
-    try:
-        return max(0, int(time.time() - path.stat().st_mtime))
-    except OSError:
-        return None
-
-
-def _build_jin10_calendar_payload(data: dict[str, Any], cache_path: Path) -> dict[str, Any]:
-    raw_events = data.get("events")
-    events = [_normalize_jin10_calendar_event(item) for item in raw_events if isinstance(item, dict)] if isinstance(raw_events, list) else []
-    window_start_date, window_end_date = _jin10_calendar_window()
-    events = [
-        event for event in events
-        if _is_jin10_calendar_event_in_window(event, window_start=window_start_date, window_end=window_end_date)
-    ]
-    events.sort(key=_calendar_event_sort_key)
-
-    upcoming_count = sum(1 for event in events if event.get("release_state") == "upcoming")
-    released_count = len(events) - upcoming_count
-    high_impact_count = sum(1 for event in events if event.get("is_high_impact"))
-    event_dates = [event.get("event_date") for event in events if isinstance(event.get("event_date"), str)]
-    earliest_event_date = min(event_dates) if event_dates else None
-    latest_event_date = max(event_dates) if event_dates else None
-    cache_age_seconds = _calendar_cache_age_seconds(cache_path)
-
-    stale_by_age = _is_file_stale(cache_path, max_age_seconds=_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS)
-    today_key = datetime.now(timezone.utc).date().isoformat()
-    stale_by_window = upcoming_count == 0 and latest_event_date is not None and latest_event_date < today_key
-    is_stale = stale_by_age or stale_by_window
-
-    freshness_reason = "fresh"
-    if stale_by_window:
-        freshness_reason = "no_upcoming_events"
-    elif stale_by_age:
-        freshness_reason = "cache_too_old"
-
-    for event in events:
-        event.pop("_sort_ts", None)
-
-    return {
-        "status": "stale" if is_stale else "ok",
-        "generated_at": data.get("generated_at"),
-        "events": events,
-        "stats": {
-            "total": len(events),
-            "upcoming": upcoming_count,
-            "released": released_count,
-            "high_impact": high_impact_count,
-            "earliest_event_date": earliest_event_date,
-            "latest_event_date": latest_event_date,
-            "window_start_date": window_start_date,
-            "window_end_date": window_end_date,
-        },
-        "freshness": {
-            "is_stale": is_stale,
-            "reason": freshness_reason,
-            "cache_age_seconds": cache_age_seconds,
-        },
-    }
-
-
-def _candle_to_dict(row) -> dict:
-    return {
-        "time": row.open_time.isoformat() if row.open_time else "",
-        "open": row.open,
-        "high": row.high,
-        "low": row.low,
-        "close": row.close,
-        "volume": row.volume if row.volume else 0,
-    }
-
-
-def _aggregation_fetch_limit(timeframe: str, target_limit: int) -> int:
-    """计算需要从 DB 拉取的 1m 原始行数。"""
-    multipliers = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1D": 1440}
-    return (target_limit + 4) * multipliers.get(timeframe, 1)
-
-
-def _aggregate_candles(rows: list, timeframe: str) -> list[dict]:
-    """将 1m 行按周期聚合成 OHLC。"""
-    from datetime import datetime, timezone, timedelta
-
-    if not rows:
-        return []
-
-    minutes = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1D": 1440}
-    delta = timedelta(minutes=minutes.get(timeframe, 1))
-
-    # 确保按时间排序
-    sorted_rows = sorted(rows, key=lambda r: r.open_time if r.open_time else datetime.min.replace(tzinfo=timezone.utc))
-
-    buckets: dict[datetime, list] = {}
-    for row in sorted_rows:
-        if not row.open_time:
-            continue
-        # 向下取整到周期边界
-        ts = row.open_time.timestamp()
-        bucket_ts = int(ts // (delta.total_seconds())) * int(delta.total_seconds())
-        bucket_key = datetime.fromtimestamp(bucket_ts, tz=timezone.utc)
-        if bucket_key not in buckets:
-            buckets[bucket_key] = []
-        buckets[bucket_key].append(row)
-
-    result = []
-    for bucket_key in sorted(buckets.keys()):
-        group = buckets[bucket_key]
-        opens = [r.open for r in group if r.open is not None]
-        highs = [r.high for r in group if r.high is not None]
-        lows = [r.low for r in group if r.low is not None]
-        closes = [r.close for r in group if r.close is not None]
-        volumes = [r.volume for r in group if r.volume is not None]
-
-        if not opens:
-            continue
-
-        result.append({
-            "time": bucket_key.isoformat(),
-            "open": opens[0],
-            "high": max(highs) if highs else opens[0],
-            "low": min(lows) if lows else opens[0],
-            "close": closes[-1],
-            "volume": sum(volumes) if volumes else 0,
-        })
-
-    return result
+_jin10_unavailable = jin10_market_service.jin10_unavailable
+_is_file_stale = jin10_market_service.is_file_stale
+_refresh_jin10_calendar_cache = jin10_market_service.refresh_jin10_calendar_cache
+_parse_jin10_calendar_time = jin10_market_service._parse_calendar_time
+_calendar_release_state = jin10_market_service.calendar_release_state
+_normalize_jin10_calendar_event = jin10_market_service._normalize_calendar_event
+_jin10_calendar_window = jin10_market_service._calendar_window
+_is_jin10_calendar_event_in_window = jin10_market_service._is_calendar_event_in_window
+_calendar_event_sort_key = jin10_market_service._calendar_event_sort_key
+_calendar_cache_age_seconds = jin10_market_service._calendar_cache_age_seconds
+_build_jin10_calendar_payload = jin10_market_service.build_jin10_calendar_payload
+_candle_to_dict = jin10_market_service.candle_to_dict
+_aggregation_fetch_limit = jin10_market_service.aggregation_fetch_limit
+_aggregate_candles = jin10_market_service.aggregate_candles
 
 
 # ── Agent Analysis unified endpoint ──
@@ -1308,7 +1047,7 @@ def _aggregate_candles(rows: list, timeframe: str) -> list[dict]:
 # ── P2-11 Prompt Versions API ──
 
 
-_PROMPT_VERSION_STATUSES = {"draft", "active", "deprecated"}
+_PROMPT_VERSION_STATUSES = {"draft", "candidate", "active", "deprecated", "rolled_back"}
 _PROMPT_KINDS = {"llm", "hybrid", "rule", "vlm"}
 
 
@@ -1326,12 +1065,16 @@ def _validate_prompt_version_create_payload(payload: PromptVersionCreate) -> Non
 def _prompt_version_item(row) -> dict[str, Any]:
     return {
         "id": row.id,
+        "prompt_id": prompt_contract_id(row.agent_id),
         "agent_id": row.agent_id,
+        "agent_name": row.agent_id,
         "version": row.version,
         "prompt_kind": row.prompt_kind,
         "prompt_source": row.prompt_source,
+        "source_file": row.prompt_source,
         "prompt_template": row.prompt_template,
         "prompt_sha256": row.prompt_sha256,
+        "checksum": row.prompt_sha256,
         "status": row.status,
         "enabled": row.enabled,
         "model_routing": row.model_routing,
@@ -1480,6 +1223,7 @@ def _agent_inspection_item(row, snapshot_payload: dict[str, Any] | None) -> dict
     generated_by = str(payload.get("generated_by") or "").lower()
     prompt_kind = "rule" if generated_by == "rule" else ("llm" if row.llm_model or prompt_messages else "rule")
     agent_summary = build_agent_output_summary(row)
+    prompt_metadata = prompt_metadata_from_row(row)
 
     return {
         "agent_output_id": row.id,
@@ -1498,6 +1242,10 @@ def _agent_inspection_item(row, snapshot_payload: dict[str, Any] | None) -> dict
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "prompt": {
             "kind": prompt_kind,
+            "prompt_id": prompt_metadata["prompt_id"],
+            "version": prompt_metadata["prompt_version"],
+            "checksum": prompt_metadata["prompt_checksum"],
+            "source_file": prompt_metadata["prompt_source_file"],
             "available": bool(prompt_messages),
             "messages": prompt_messages or [],
             "note": None
@@ -1522,6 +1270,10 @@ def _agent_inspection_item(row, snapshot_payload: dict[str, Any] | None) -> dict
             "invalid_conditions": row.invalid_conditions or [],
             "claims": agent_summary["claims"],
             "claim_reviews": agent_summary["claim_reviews"],
+            "prompt_id": prompt_metadata["prompt_id"],
+            "prompt_version": prompt_metadata["prompt_version"],
+            "prompt_checksum": prompt_metadata["prompt_checksum"],
+            "prompt_source_file": prompt_metadata["prompt_source_file"],
             "payload": payload,
             "llm_raw_output": payload.get("llm_raw_output"),
         },

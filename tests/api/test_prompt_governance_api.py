@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -15,8 +16,20 @@ from apps.api.main import (
     api_prompt_versions_by_agent,
     api_prompt_versions_create,
 )
+from apps.api.routes import agent_governance_write_routes
 from apps.api.schemas.agent import PromptFeedbackCreate, PromptVersionActivate, PromptVersionCreate
 from database.models.analysis import AgentOutput, AnalysisBase, PromptFeedback, ReviewItem, ensure_analysis_tables
+
+
+def test_agent_governance_routes_do_not_depend_on_fastapi_main() -> None:
+    from pathlib import Path
+
+    for route_file in (
+        "agent_governance_read_routes.py",
+        "agent_governance_write_routes.py",
+    ):
+        source = Path("apps/api/routes", route_file).read_text(encoding="utf-8")
+        assert "from apps.api import main as api_main" not in source, route_file
 
 
 def _session():
@@ -101,6 +114,30 @@ def test_prompt_version_create_and_activate_are_versioned_and_append_only() -> N
     assert output.prompt_version_id == first["id"]
 
 
+def test_prompt_version_item_exposes_issue_52_contract_aliases() -> None:
+    db = _session()
+    agent_id = "jin10_report_analysis_agent"
+
+    created = api_prompt_versions_create(
+        agent_id,
+        PromptVersionCreate(
+            prompt_source="apps/analysis/agents/jin10_report_prompt.py",
+            prompt_template={"messages": [{"role": "user", "content": "v1 prompt"}]},
+            status="active",
+            change_note="initial",
+            created_by="tester",
+        ),
+        db=db,
+    )
+
+    assert created["prompt_id"] == "jin10_report_analysis_agent_prompt"
+    assert created["agent_name"] == agent_id
+    assert created["checksum"] == created["prompt_sha256"]
+    assert created["source_file"] == "apps/analysis/agents/jin10_report_prompt.py"
+    assert created["version"] == "v1"
+    assert created["status"] == "active"
+
+
 def test_prompt_version_create_rejects_empty_or_invalid_contract() -> None:
     db = _session()
 
@@ -122,6 +159,130 @@ def test_prompt_version_create_rejects_empty_or_invalid_contract() -> None:
             db=db,
         )
     assert getattr(status_exc.value, "status_code", None) == 400
+
+
+def test_prompt_version_create_accepts_candidate_and_rolled_back_statuses() -> None:
+    db = _session()
+    agent_id = "jin10_report_analysis_agent"
+
+    candidate = api_prompt_versions_create(
+        agent_id,
+        PromptVersionCreate(
+            prompt_template={"messages": [{"role": "user", "content": "candidate prompt"}]},
+            status="candidate",
+            change_note="candidate under A/B validation",
+        ),
+        db=db,
+    )
+    rolled_back = api_prompt_versions_create(
+        agent_id,
+        PromptVersionCreate(
+            prompt_template={"messages": [{"role": "user", "content": "rolled back prompt"}]},
+            status="rolled_back",
+            change_note="rolled back after regression",
+        ),
+        db=db,
+    )
+
+    versions = api_prompt_versions_by_agent(agent_id, db=db)["versions"]
+
+    assert candidate["status"] == "candidate"
+    assert rolled_back["status"] == "rolled_back"
+    assert {item["version"]: item["status"] for item in versions} == {
+        "v1": "candidate",
+        "v2": "rolled_back",
+    }
+
+
+def test_candidate_prompt_activation_requires_release_approval_audit() -> None:
+    db = _session()
+    agent_id = "jin10_report_analysis_agent"
+    active = api_prompt_versions_create(
+        agent_id,
+        PromptVersionCreate(
+            prompt_template={"messages": [{"role": "user", "content": "active prompt"}]},
+            status="active",
+        ),
+        db=db,
+    )
+    candidate = api_prompt_versions_create(
+        agent_id,
+        PromptVersionCreate(
+            prompt_template={"messages": [{"role": "user", "content": "candidate prompt"}]},
+            status="candidate",
+        ),
+        db=db,
+    )
+
+    with pytest.raises(Exception) as exc:
+        api_prompt_versions_activate(
+            agent_id,
+            PromptVersionActivate(version=candidate["version"], reason="release candidate"),
+            db=db,
+        )
+
+    assert getattr(exc.value, "status_code", None) == 400
+    assert "release_approved" in str(getattr(exc.value, "detail", ""))
+    versions = api_prompt_versions_by_agent(agent_id, db=db)["versions"]
+    assert {item["version"]: item["status"] for item in versions} == {
+        active["version"]: "active",
+        candidate["version"]: "candidate",
+    }
+
+
+def test_candidate_prompt_activation_accepts_release_approval_audit(monkeypatch) -> None:
+    db = _session()
+    agent_id = "jin10_report_analysis_agent"
+    active = api_prompt_versions_create(
+        agent_id,
+        PromptVersionCreate(
+            prompt_template={"messages": [{"role": "user", "content": "active prompt"}]},
+            status="active",
+        ),
+        db=db,
+    )
+    candidate = api_prompt_versions_create(
+        agent_id,
+        PromptVersionCreate(
+            prompt_template={"messages": [{"role": "user", "content": "candidate prompt"}]},
+            status="candidate",
+        ),
+        db=db,
+    )
+    approval_check: dict[str, object] = {}
+
+    def _evaluate(**kwargs):
+        approval_check.update(kwargs)
+        return SimpleNamespace(ready=True, blocking_reasons=())
+
+    monkeypatch.setattr(agent_governance_write_routes, "evaluate_prompt_activation_readiness", _evaluate)
+
+    activated = api_prompt_versions_activate(
+        agent_id,
+        PromptVersionActivate(
+            version=candidate["version"],
+            reason="approved release",
+            release_approval_artifact="governance/prompt_evolution/2026-07-09/prompt_release_records.json",
+        ),
+        db=db,
+    )
+
+    versions = api_prompt_versions_by_agent(agent_id, db=db)["versions"]
+    assert activated["id"] == candidate["id"]
+    assert activated["status"] == "active"
+    assert approval_check == {
+        "agent_name": agent_id,
+        "candidate_prompt_version_id": candidate["id"],
+        "release_approval_artifact": "governance/prompt_evolution/2026-07-09/prompt_release_records.json",
+    }
+    assert {item["version"]: item["status"] for item in versions} == {
+        active["version"]: "deprecated",
+        candidate["version"]: "active",
+    }
+    assert {item["version"]: item["enabled"] for item in versions} == {
+        active["version"]: False,
+        candidate["version"]: True,
+    }
 
 
 def test_prompt_version_activate_enables_target_version() -> None:

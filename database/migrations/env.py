@@ -25,7 +25,7 @@ if config is not None and config.config_file_name is not None:
 
 # Override sqlalchemy.url from environment variable if available
 DATABASE_URL = __import__("os").environ.get("DATABASE_URL")
-if config is not None and DATABASE_URL:
+if config is not None and DATABASE_URL and not config.attributes.get("database_url_explicit", False):
     config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 target_metadata = [

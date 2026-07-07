@@ -63,6 +63,12 @@ def test_parse_svip_report_html_builds_markdown_with_images():
         "https://cdn-news.jin10.com/header.png",
         "https://img.jin10.com/news/26/05/report-1.jpg",
     ]
+    assert report.vip_locked is False
+    assert report.content_scope == "full"
+    assert report.body_complete is True
+    assert report.series == ""
+    assert report.subcategory == ""
+    assert "- 正文范围: full" in report.report_markdown
 
 
 def test_parse_svip_report_html_classifies_market_observation_report():
@@ -82,6 +88,30 @@ def test_parse_svip_report_html_classifies_market_observation_report():
     assert report.report_type == "market_observation"
     assert report.category == "市场观察"
     assert "- 分类: 市场观察" in report.report_markdown
+
+
+def test_parse_svip_report_html_classifies_master_review_as_research_series():
+    html = """
+    <html><head>
+      <meta property="og:title" content="非农仅增5.7万，美联储为何不能轻易转鸽？｜大师复盘-金十数据VIP" />
+    </head>
+    <body>
+      <div class="jin10vip-news-details-article-body">
+        <p>栏目 ：周末·大师复盘 (第031期)</p>
+        <p>1、行情回顾：美国6月非农就业报告提前公布，黄金盘中强势拉升。</p>
+        <p>2、核心逻辑：菲尔普斯的自然失业率框架解释了为何美联储不能轻易转鸽。</p>
+      </div>
+    </body></html>
+    """
+
+    report = parse_svip_report_html(html, article_id="223556", source_url="https://svip.jin10.com/news/223556")
+
+    assert report.report_type == "research"
+    assert report.category == "周末·大师复盘"
+    assert report.series == "master_review"
+    assert report.subcategory == "master_review"
+    assert "- 分类: 周末·大师复盘" in report.report_markdown
+    assert "- 系列: master_review" in report.report_markdown
 
 
 def test_parse_svip_report_html_drops_first_title_and_last_disclaimer_images_when_enough_pages():
@@ -169,7 +199,13 @@ def test_parse_svip_report_html_prefers_image_only_article_body_over_reduced_pre
 def test_write_external_report_writes_meta_and_markdown(tmp_path):
     report = parse_svip_report_html(
         """
-        <html><head><title>测试报告</title></head><body><div>2026-05-22</div><p>正文内容</p></body></html>
+        <html><head><title>测试报告</title></head><body>
+        <div>2026-05-22</div>
+        <div class="jin10vip-news-details-article-body">
+          <p>1、行情回顾：现货黄金维持震荡上行，欧盘后回踩支撑位。</p>
+          <p>2、关键指标：美元指数回落，实际利率同步下行。</p>
+        </div>
+        </body></html>
         """,
         article_id="219824",
         source_url="https://svip.jin10.com/news/219824",
@@ -177,8 +213,15 @@ def test_write_external_report_writes_meta_and_markdown(tmp_path):
     report_dir = write_external_report(report, external_root=tmp_path)
     assert (report_dir / "report.md").exists()
     assert (report_dir / "meta.json").exists()
+    markdown = (report_dir / "report.md").read_text(encoding="utf-8")
     meta = json.loads((report_dir / "meta.json").read_text(encoding="utf-8"))
     assert meta["id"] == "219824"
+    assert meta["vip_locked"] is False
+    assert meta["content_scope"] == "full"
+    assert meta["body_complete"] is True
+    assert meta["series"] == ""
+    assert meta["subcategory"] == ""
+    assert "- 正文范围: full" in markdown
 
 
 def test_write_external_report_downloads_images_and_rewrites_markdown_to_local_paths(tmp_path):
@@ -368,8 +411,8 @@ def test_parse_svip_report_weekly_hotlist_type():
     """
     report = parse_svip_report_html(html, article_id="223594", source_url="https://svip.jin10.com/news/223594")
 
-    assert report.report_type == "weekly"
-    assert report.category == "黄金周报"
+    assert report.report_type == "research"
+    assert report.category == "报告"
 
 
 def test_parse_svip_report_gold_headline_is_not_weekly():
@@ -385,7 +428,7 @@ def test_parse_svip_report_gold_headline_is_not_weekly():
     """
     report = parse_svip_report_html(html, article_id="220973", source_url="https://svip.jin10.com/news/220973")
 
-    assert report.report_type == "daily"
+    assert report.report_type == "research"
     assert report.category == "报告"
 
 
@@ -409,6 +452,9 @@ def test_parse_svip_report_html_falls_back_to_reduced_content_when_body_containe
     assert "2、关键指标" in report.report_markdown
     assert "立即下载" not in report.report_markdown
     assert "证据不足：仅抓取到详情页 HTML，未稳定解析出正文。" not in report.report_markdown
+    assert report.vip_locked is True
+    assert report.content_scope == "preview"
+    assert report.body_complete is False
 
 
 def test_parse_svip_report_html_prefers_full_body_over_placeholder_reduced_content():
@@ -460,6 +506,30 @@ def test_parse_svip_report_html_drops_placeholder_reduced_lines_when_report_imag
     assert "1、行情回顾： ..." not in report.report_markdown
     assert "2、关键指标：..." not in report.report_markdown
     assert report.image_urls == ["https://img.jin10.com/news/26/06/report-page.jpg"]
+    assert report.vip_locked is True
+    assert report.content_scope == "preview"
+    assert report.body_complete is False
+
+
+def test_parse_svip_report_html_marks_image_only_body_as_unknown_scope():
+    html = """
+    <html><head>
+      <meta property="og:title" content="黄金图表报告-金十数据VIP" />
+    </head>
+    <body>
+      <div class="jin10vip-news-details-article-body">
+        <p><img src="https://img.jin10.com/news/26/06/page-1.jpg" /></p>
+        <p><img src="https://img.jin10.com/news/26/06/page-2.jpg" /></p>
+      </div>
+    </body></html>
+    """
+
+    report = parse_svip_report_html(html, article_id="221900", source_url="https://svip.jin10.com/news/221900")
+
+    assert report.vip_locked is False
+    assert report.content_scope == "unknown"
+    assert report.body_complete is False
+    assert "- 正文范围: unknown" in report.report_markdown
 
 
 def test_parse_svip_report_html_keeps_reduced_content_text_and_images_when_body_is_empty() -> None:

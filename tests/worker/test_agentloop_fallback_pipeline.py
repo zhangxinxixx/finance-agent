@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate
+from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
 from apps.gold_runtime_orchestration import build_gold_runtime_execution_summary
-from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision
 
 
 def _decision(action: QualityGateAction) -> QualityGateDecision:

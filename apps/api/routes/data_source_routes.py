@@ -12,6 +12,8 @@ from apps.api.schemas.data_source import (
     DataSourceTestResponse,
     ManualUploadRequest,
 )
+from apps.api import data_service
+from apps.api.services import ingestion_action_service, ingestion_source_test_service, source_service
 from database.models.engine import get_db
 
 router = APIRouter()
@@ -20,49 +22,37 @@ router = APIRouter()
 @router.get("/api/data-sources/status")
 def api_data_sources_status():
     """返回数据源 configured/raw/parsed/analysis_ready 四层状态。"""
-    from apps.api import main as api_main
-
-    return api_main.get_data_source_statuses()
+    return data_service.get_data_source_statuses()
 
 
 @router.get("/api/data-sources/registry")
 def api_data_sources_registry():
     """返回统一数据源 registry 契约。"""
-    from apps.api import main as api_main
-
-    return api_main.get_data_sources_registry()
+    return source_service.get_data_sources_registry()
 
 
 @router.get("/api/data-status/summary")
 def api_data_status_summary():
     """返回全局数据状态摘要，供前端 DataStatusBar 使用。"""
-    from apps.api import main as api_main
-
-    return api_main.get_data_status_summary()
+    return source_service.get_data_status_summary()
 
 
 @router.get("/api/data-sources/health/latest")
 def api_data_source_health_latest():
     """返回最新派生数据源健康快照。"""
-    from apps.api import main as api_main
-
-    return api_main.get_data_source_health_latest()
+    return source_service.get_data_source_health_latest()
 
 
 @router.get("/api/data-sources/health")
 def api_data_source_health(date: str | None = None, db: Session = Depends(get_db)):
     """返回指定日期的数据源健康快照；当前实现基于最新状态派生。"""
-    from apps.api import main as api_main
-
-    return api_main.get_data_source_health_latest(date=date, db=db)
+    return source_service.get_data_source_health_latest(date=date, db=db)
 
 
 @router.get("/api/data-sources/{source_key}/history")
 def api_data_source_history(source_key: str, limit: int = 30, db: Session = Depends(get_db)):
     """返回单个数据源的每日健康历史。"""
-    from apps.api import main as api_main
-
-    return api_main.get_data_source_history(source_key, db=db, limit=limit)
+    return source_service.get_data_source_history(source_key, db=db, limit=limit)
 
 
 @router.post("/api/ingestion/sources/{source_key}/retry", response_model=DataSourceActionResponse)
@@ -72,9 +62,7 @@ def api_ingestion_source_retry(
     db: Session = Depends(get_db),
 ) -> DataSourceActionResponse:
     """登记数据源重试请求，返回可追踪 task_run。"""
-    from apps.api import main as api_main
-
-    return api_main.ingestion_action_service.create_ingestion_retry(db, source_key, body)
+    return ingestion_action_service.create_ingestion_retry(db, source_key, body)
 
 
 @router.post("/api/ingestion/sources/{source_key}/test", response_model=DataSourceTestResponse)
@@ -84,9 +72,7 @@ def api_ingestion_source_test(
     db: Session = Depends(get_db),
 ) -> DataSourceTestResponse:
     """执行轻量数据源 probe，返回页面预览并写入 probe 审计。"""
-    from apps.api import main as api_main
-
-    return api_main.ingestion_source_test_service.run_ingestion_source_test(db, source_key, body)
+    return ingestion_source_test_service.run_ingestion_source_test(db, source_key, body)
 
 
 @router.post("/api/ingestion/manual-upload", response_model=DataSourceActionResponse)
@@ -95,6 +81,4 @@ def api_ingestion_manual_upload(
     db: Session = Depends(get_db),
 ) -> DataSourceActionResponse:
     """登记手工上传 raw/staging artifact；解析后续必须回主链。"""
-    from apps.api import main as api_main
-
-    return api_main.ingestion_action_service.register_manual_upload(db, body)
+    return ingestion_action_service.register_manual_upload(db, body)

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from apps.api.services.agent_governance_service import prompt_version_item
 from database.models.engine import get_db
 
 router = APIRouter()
@@ -33,7 +34,6 @@ def api_agent_registry_detail(agent_id: str):
 @router.get("/api/agents/prompts")
 def api_prompt_versions_list(agent_id: str | None = None, status: str | None = None, db: Session = Depends(get_db)):
     """列出 prompt 版本记录。"""
-    from apps.api import main as api_main
     from database.models.analysis import PromptVersion
 
     query = db.query(PromptVersion).order_by(desc(PromptVersion.created_at))
@@ -46,14 +46,13 @@ def api_prompt_versions_list(agent_id: str | None = None, status: str | None = N
     return {
         "source": "prompt_versions",
         "count": len(rows),
-        "versions": [api_main._prompt_version_item(r) for r in rows],
+        "versions": [prompt_version_item(r) for r in rows],
     }
 
 
 @router.get("/api/agents/prompts/{agent_id}")
 def api_prompt_versions_by_agent(agent_id: str, db: Session = Depends(get_db)):
     """返回某个 Agent 的所有 prompt 版本记录。"""
-    from apps.api import main as api_main
     from database.models.analysis import PromptVersion
 
     rows = (
@@ -82,14 +81,13 @@ def api_prompt_versions_by_agent(agent_id: str, db: Session = Depends(get_db)):
         "name": rows[0].agent_id,
         "source": "prompt_versions",
         "count": len(rows),
-        "versions": [api_main._prompt_version_item(r) for r in rows],
+        "versions": [prompt_version_item(r) for r in rows],
     }
 
 
 @router.get("/api/agents/prompts/{agent_id}/active")
 def api_prompt_versions_active(agent_id: str, db: Session = Depends(get_db)):
     """返回某个 Agent 当前激活的 prompt 版本。"""
-    from apps.api import main as api_main
     from database.models.analysis import PromptVersion
 
     row = (
@@ -100,7 +98,7 @@ def api_prompt_versions_active(agent_id: str, db: Session = Depends(get_db)):
     )
     if row is None:
         raise HTTPException(status_code=404, detail=f"No active prompt version for agent: {agent_id}")
-    return api_main._prompt_version_item(row)
+    return prompt_version_item(row)
 
 
 @router.get("/api/agents/prompt-evolution/proposal/{agent_id}")
@@ -113,3 +111,11 @@ def api_prompt_evolution_proposal(agent_id: str, recent_limit: int = 10, db: Ses
     from apps.api.services.prompt_evolution_service import build_prompt_evolution_preview
 
     return build_prompt_evolution_preview(db, agent_id=agent_id, recent_limit=recent_limit)
+
+
+@router.get("/api/governance/prompt-evolution/latest")
+def api_prompt_evolution_latest(date: str | None = None):
+    """Return latest persisted PromptEvolution validation artifacts."""
+    from apps.api.services.prompt_evolution_service import get_prompt_evolution_latest
+
+    return get_prompt_evolution_latest(date=date)

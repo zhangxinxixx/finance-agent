@@ -110,15 +110,19 @@ _SOURCE_OBSERVABILITY: dict[str, dict[str, Any]] = {
     },
     "cme_daily_bulletin": {
         "database_tables": ["data_source_status"],
-        "artifact_layers": ["storage/raw/cme", "storage/parsed/cme"],
-        "polling_strategy": {"mode": "official_file_check", "cadence": "daily bulletin window", "query": "CME Daily Bulletin PDF discovery"},
-        "pressure_profile": {"level": "low", "upgrade_required": False, "recommendation": "PDF 官方文件日频检查即可。"},
+        "artifact_layers": ["raw/cme/daily_bulletin", "storage/raw/cme", "storage/parsed/cme"],
+        "polling_strategy": {
+            "mode": "official_file_check",
+            "cadence": "daily afternoon bulletin window / latest available previous bulletin",
+            "query": "CME Daily Bulletin PDF discovery",
+        },
+        "pressure_profile": {"level": "low", "upgrade_required": False, "recommendation": "下午检查官方 PDF；盘前报告允许使用最新可用的上一份公告。"},
     },
     "cme_options": {
         "database_tables": ["data_source_status", "analysis_snapshots.options"],
-        "artifact_layers": ["storage/outputs/cme_options", "storage/features/options"],
-        "polling_strategy": {"mode": "derived_after_cme_pdf", "cadence": "after bulletin parse", "query": "latest options snapshot by trade date/run"},
-        "pressure_profile": {"level": "low", "upgrade_required": False, "recommendation": "衍生数据跟随 CME PDF 解析完成，不需要独立高频采集。"},
+        "artifact_layers": ["storage/outputs/cme", "storage/outputs/cme_options", "storage/features/cme", "storage/features/options"],
+        "polling_strategy": {"mode": "derived_after_cme_pdf", "cadence": "after latest available bulletin parse", "query": "latest options snapshot by trade date/run"},
+        "pressure_profile": {"level": "low", "upgrade_required": False, "recommendation": "衍生数据跟随最新可用 CME PDF 解析完成，不需要独立高频采集。"},
     },
     "technical_yahoo": {
         "database_tables": ["data_source_status", "market_candles", "analysis_snapshots.technical"],
@@ -494,12 +498,35 @@ def _build_fs_fallback_source(source_def: dict[str, Any]) -> dict[str, Any]:
         if _check_fs_date_dirs("storage/features/macro") or _check_fs_date_dirs("storage/outputs/macro"):
             result.update({"configured": True, "raw_ingested": True, "parsed": True, "analysis_ready": True, "status": "ok"})
     elif source_key == "cme_daily_bulletin":
-        if _check_fs_date_dirs("storage/raw/cme"):
+        raw_present = (
+            _check_fs_date_dirs("raw/cme/daily_bulletin")
+            or _check_fs_date_dirs("storage/raw/cme/daily_bulletin")
+            or _check_fs_date_dirs("storage/raw/cme")
+        )
+        parsed_present = _check_fs_date_dirs("storage/parsed/cme")
+        if raw_present:
             result.update({"configured": True, "raw_ingested": True, "status": "partial"})
-            if _check_fs_date_dirs("storage/parsed/cme"):
-                result.update({"parsed": True, "status": "ok"})
-    elif source_key == "cme_options" and _check_fs_date_dirs("storage/outputs/cme_options"):
+            raw_ref = _latest_artifact_ref_from_layers(["raw/cme/daily_bulletin", "storage/raw/cme/daily_bulletin", "storage/raw/cme"])
+            if raw_ref and raw_ref.get("raw_path"):
+                result["metadata"]["collector_raw_artifact_path"] = raw_ref["raw_path"]
+                result["latest_raw_time"] = raw_ref.get("published_at")
+        if parsed_present:
+            result.update({"configured": True, "raw_ingested": True, "parsed": True, "status": "ok"})
+            parsed_ref = _latest_artifact_ref_from_layers(["storage/parsed/cme"])
+            if parsed_ref and parsed_ref.get("raw_path"):
+                result["metadata"]["collector_parsed_artifact_path"] = parsed_ref["raw_path"]
+                result["latest_parsed_time"] = parsed_ref.get("published_at")
+    elif source_key == "cme_options" and (
+        _check_fs_date_dirs("storage/outputs/cme")
+        or _check_fs_date_dirs("storage/outputs/cme_options")
+        or _check_fs_date_dirs("storage/features/cme")
+        or _check_fs_date_dirs("storage/features/options")
+    ):
         result.update({"configured": True, "raw_ingested": True, "parsed": True, "analysis_ready": True, "status": "ok"})
+        options_ref = _latest_artifact_ref_from_layers(["storage/outputs/cme", "storage/outputs/cme_options", "storage/features/cme", "storage/features/options"])
+        if options_ref and options_ref.get("raw_path"):
+            result["metadata"]["artifact_path"] = options_ref["raw_path"]
+            result["latest_parsed_time"] = options_ref.get("published_at")
     elif source_key == "technical_yahoo" and _check_fs_date_dirs("storage/features/technical"):
         result.update({"configured": True, "raw_ingested": True, "parsed": True, "analysis_ready": True, "status": "ok"})
     elif source_key == "positioning_cot" and _check_fs_date_dirs("storage/features/positioning"):

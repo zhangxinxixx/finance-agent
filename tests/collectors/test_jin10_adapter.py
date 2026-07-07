@@ -8,9 +8,12 @@ from sqlalchemy.orm import sessionmaker
 
 from apps.collectors.jin10.adapter import (
     _charts_from_report_images,
+    _charts_from_parsed_figures,
     _build_report_quality_audit,
     _copy_output_figures,
+    _prepend_content_access_notice,
     _report_type_for_raw_report,
+    _select_report_text_for_analysis,
     build_jin10_agent_output_payload,
     build_jin10_outputs,
     persist_jin10_agent_outputs,
@@ -141,8 +144,12 @@ def test_build_jin10_outputs_filters_out_weekly_reports_from_daily_category(tmp_
 def test_report_type_for_raw_report_distinguishes_weekly_category() -> None:
     assert _report_type_for_raw_report({"category_code": "536"}) == "weekly"
     assert _report_type_for_raw_report({"category_code": "270"}) == "daily"
+    assert _report_type_for_raw_report({"category_code": "274"}) == "positioning"
+    assert _report_type_for_raw_report({"category_code": "301"}) == "technical_levels"
+    assert _report_type_for_raw_report({"category_code": "272"}) == "oil"
+    assert _report_type_for_raw_report({"category_code": "271"}) == "fx"
     assert _report_type_for_raw_report({"category_code": "270", "report_type": "weekly"}) == "daily"
-    assert _report_type_for_raw_report({"category": "报告", "title": "美伊谈判反复，金价仍陷入两难｜黄金头条", "report_type": "weekly"}) == "daily"
+    assert _report_type_for_raw_report({"category": "报告", "title": "美伊谈判反复，金价仍陷入两难｜黄金头条", "report_type": "weekly"}) == "research"
     assert _report_type_for_raw_report({"category": "黄金周报", "title": "期权市场发出信号"}) == "weekly"
 
 
@@ -152,9 +159,205 @@ def test_category_301_recognized_as_point_report() -> None:
     assert "301" in JIN10_CATEGORY_ALIASES
     assert "点位报告" in JIN10_CATEGORY_ALIASES["301"]
     assert JIN10_CATEGORY_NAMES["301"] == "点位报告"
-    # Category 301 should NOT be in JIN10_REPORT_TYPE_BY_CATEGORY (not daily/weekly)
     from apps.collectors.jin10.adapter import JIN10_REPORT_TYPE_BY_CATEGORY
-    assert "301" not in JIN10_REPORT_TYPE_BY_CATEGORY
+    assert JIN10_REPORT_TYPE_BY_CATEGORY["301"] == "technical_levels"
+
+
+def test_build_jin10_outputs_creates_indexable_bundle_for_positioning_report(tmp_path, monkeypatch):
+    def fake_build_parsed_index(raw):
+        return {"reports": [], "artifacts": {}, **{key: raw[key] for key in ("source", "as_of", "source_refs", "unavailable_symbols")}}
+
+    monkeypatch.setattr("apps.collectors.jin10.adapter.build_parsed_index", fake_build_parsed_index)
+    monkeypatch.setattr("apps.collectors.jin10.adapter.build_analysis_index", lambda parsed: {"reports": []})
+    monkeypatch.setattr(
+        "apps.collectors.jin10.adapter._build_daily_report_bundle",
+        lambda report, parsed_report, source_refs: {
+            "trade_date": report["date"],
+            "run_id": report["article_id"],
+            "json": {"family": "jin10_positioning_report", "report_type": "positioning"},
+            "raw_article_json": {"family": "jin10_raw_article"},
+        },
+    )
+
+    fixture = tmp_path / "2026-07-04" / "positioning" / "223700"
+    fixture.mkdir(parents=True, exist_ok=True)
+    (fixture / "meta.json").write_text(
+        json.dumps(
+            {
+                "date": "2026-07-04",
+                "id": "223700",
+                "title": "黄金期权持仓报告",
+                "category": "持仓报告",
+                "report_type": "positioning",
+                "images": [],
+                "source_url": "https://svip.jin10.com/news/223700",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (fixture / "report.md").write_text("# 黄金期权持仓报告\n\n## 正文\n\n持仓变化。", encoding="utf-8")
+
+    outputs = build_jin10_outputs(external_root=tmp_path, date="2026-07-04", category="274")
+
+    assert outputs["raw"]["reports"][0]["report_type"] == "positioning"
+    assert outputs["daily_reports"][0]["run_id"] == "223700"
+    assert outputs["daily_reports"][0]["json"]["family"] == "jin10_positioning_report"
+    assert outputs["daily_reports"][0]["json"]["report_type"] == "positioning"
+
+
+def test_build_jin10_outputs_creates_indexable_bundle_for_market_observation_report(tmp_path, monkeypatch):
+    def fake_build_parsed_index(raw):
+        return {"reports": [], "artifacts": {}, **{key: raw[key] for key in ("source", "as_of", "source_refs", "unavailable_symbols")}}
+
+    monkeypatch.setattr("apps.collectors.jin10.adapter.build_parsed_index", fake_build_parsed_index)
+    monkeypatch.setattr("apps.collectors.jin10.adapter.build_analysis_index", lambda parsed: {"reports": []})
+    monkeypatch.setattr(
+        "apps.collectors.jin10.adapter._build_daily_report_bundle",
+        lambda report, parsed_report, source_refs: {
+            "trade_date": report["date"],
+            "run_id": report["article_id"],
+            "json": {"family": "jin10_market_observation_report", "report_type": "market_observation"},
+            "raw_article_json": {"family": "jin10_raw_article"},
+        },
+    )
+
+    fixture = tmp_path / "2026-07-03" / "market_observation" / "223555"
+    fixture.mkdir(parents=True, exist_ok=True)
+    (fixture / "meta.json").write_text(
+        json.dumps(
+            {
+                "date": "2026-07-03",
+                "id": "223555",
+                "title": "加息跌破半数，黄金赔率变脸｜市场赔率数据表-金十数据VIP",
+                "category": "市场观察",
+                "report_type": "market_observation",
+                "images": [],
+                "source_url": "https://svip.jin10.com/news/223555",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (fixture / "report.md").write_text("# 市场赔率数据表\n\n## 正文\n\n赔率变化。", encoding="utf-8")
+
+    outputs = build_jin10_outputs(external_root=tmp_path, date="2026-07-03", category="458")
+
+    assert outputs["raw"]["reports"][0]["report_type"] == "market_observation"
+    assert outputs["daily_reports"][0]["run_id"] == "223555"
+    assert outputs["daily_reports"][0]["json"]["family"] == "jin10_market_observation_report"
+    assert outputs["daily_reports"][0]["json"]["report_type"] == "market_observation"
+
+
+def test_build_jin10_outputs_creates_indexable_bundle_for_master_review_research_report(tmp_path, monkeypatch):
+    def fake_build_parsed_index(raw):
+        return {"reports": [], "artifacts": {}, **{key: raw[key] for key in ("source", "as_of", "source_refs", "unavailable_symbols")}}
+
+    monkeypatch.setattr("apps.collectors.jin10.adapter.build_parsed_index", fake_build_parsed_index)
+    monkeypatch.setattr("apps.collectors.jin10.adapter.build_analysis_index", lambda parsed: {"reports": []})
+    monkeypatch.setattr(
+        "apps.collectors.jin10.adapter._build_daily_report_bundle",
+        lambda report, parsed_report, source_refs: {
+            "trade_date": report["date"],
+            "run_id": report["article_id"],
+            "json": {
+                "family": "jin10_research_report",
+                "report_type": "research",
+                "content_access": {
+                    "vip_locked": report["vip_locked"],
+                    "content_scope": report["content_scope"],
+                    "body_complete": report["body_complete"],
+                    "series": report["series"],
+                },
+            },
+            "raw_article_json": {"family": "jin10_raw_article"},
+        },
+    )
+
+    fixture = tmp_path / "2026-07-04" / "research" / "223556"
+    fixture.mkdir(parents=True, exist_ok=True)
+    (fixture / "meta.json").write_text(
+        json.dumps(
+            {
+                "date": "2026-07-04",
+                "id": "223556",
+                "title": "非农仅增5.7万，美联储为何不能轻易转鸽？｜大师复盘",
+                "category": "周末·大师复盘",
+                "report_type": "research",
+                "series": "master_review",
+                "vip_locked": True,
+                "content_scope": "preview",
+                "body_complete": False,
+                "images": [],
+                "source_url": "https://svip.jin10.com/news/223556",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (fixture / "report.md").write_text("# 大师复盘\n\n## 正文\n\n美国6月非农大爆冷，但失业率却在好转。", encoding="utf-8")
+
+    outputs = build_jin10_outputs(external_root=tmp_path, date="2026-07-04", category="786")
+
+    raw_report = outputs["raw"]["reports"][0]
+    assert raw_report["report_type"] == "research"
+    assert raw_report["category_code"] == "786"
+    assert raw_report["series"] == "master_review"
+    assert raw_report["vip_locked"] is True
+    assert raw_report["content_scope"] == "preview"
+    assert raw_report["body_complete"] is False
+    assert outputs["daily_reports"][0]["run_id"] == "223556"
+    assert outputs["daily_reports"][0]["json"]["family"] == "jin10_research_report"
+    assert outputs["daily_reports"][0]["json"]["content_access"]["series"] == "master_review"
+
+
+def test_market_observation_analysis_uses_external_markdown_when_parsed_body_is_title_only() -> None:
+    raw_markdown = """# 加息跌破半数，黄金赔率变脸｜市场赔率数据表-金十数据VIP
+
+- 来源: https://svip.jin10.com/news/223555
+
+## 正文
+
+截至7月3日14点，今日赔率市场的核心变化，是利率压力边际缓和之后，贵金属率先拿回一段修复空间。
+
+黄金7月触及4200美元的概率升至94%，4300美元概率也达到65%，但4600美元仅5%。
+"""
+    parsed_report = {
+        "body_text": "# 加息跌破半数，黄金赔率变脸｜市场赔率数据表\n",
+        "vlm_status": "empty",
+    }
+    report = {
+        "category_code": "458",
+        "category": "市场观察",
+        "title": "加息跌破半数，黄金赔率变脸｜市场赔率数据表-金十数据VIP",
+        "report_type": "market_observation",
+    }
+
+    selected = _select_report_text_for_analysis(
+        raw_report_markdown=raw_markdown,
+        parsed_report=parsed_report,
+        report=report,
+    )
+
+    assert "黄金7月触及4200美元的概率升至94%" in selected
+    assert "4600美元仅5%" in selected
+
+
+def test_prepend_content_access_notice_marks_preview_agent_markdown_as_limited_evidence() -> None:
+    markdown = _prepend_content_access_notice(
+        "# 原始 Agent 报告\n\n正文。",
+        content_access={"content_scope": "preview", "body_complete": False, "vip_locked": True},
+    )
+
+    assert markdown.startswith("# 原始 Agent 报告")
+    assert "- content_scope: preview" in markdown
+    assert "- body_complete: false" in markdown
+    assert "- vip_locked: true" in markdown
+    assert "有限证据分析" in markdown
+    assert "# 原始 Agent 报告" in markdown
 
 
 def test_build_jin10_outputs_dedupes_weekly_alias_directories_by_article_id(tmp_path, monkeypatch):
@@ -491,6 +694,72 @@ def test_charts_from_report_images_uses_human_readable_captions_when_only_fallba
     assert charts[1]["title"] == "第2页报告图"
 
 
+def test_parsed_figure_chart_text_does_not_fall_back_to_nearby_body_text():
+    charts = _charts_from_parsed_figures(
+        {
+            "figures": [
+                {
+                    "figure_id": "fig_p2_001",
+                    "page_no": 2,
+                    "bbox": [0, 0, 100, 100],
+                    "chart_image_path": "figures/fig_p2_001.png",
+                    "title": "识别图表",
+                    "nearby_text": "收益率回落带来修复窗口",
+                }
+            ],
+            "artifacts": {
+                "vision_markdown": {
+                    "pages": [
+                        {
+                            "page_no": 2,
+                            "markdown": "## 识别图表\n\n![图表](figures/fig_p2_001.png)\n\n收益率回落带来修复窗口。",
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    assert charts is not None
+    assert charts[0]["recognized_text"] == ""
+    assert "收益率回落带来修复窗口" in charts[0]["summary"]
+
+
+def test_parsed_figure_chart_text_uses_overlapping_layout_block_text():
+    charts = _charts_from_parsed_figures(
+        {
+            "figures": [
+                {
+                    "figure_id": "fig_p2_001",
+                    "page_no": 2,
+                    "bbox": [0, 0, 100, 100],
+                    "chart_image_path": "figures/fig_p2_001.png",
+                    "title": "识别图表",
+                    "nearby_text": "收益率回落带来修复窗口",
+                }
+            ],
+            "artifacts": {
+                "vision_layout": {
+                    "pages": [
+                        {
+                            "page_no": 2,
+                            "markdown": "",
+                            "blocks": [
+                                {"bbox": [5, 5, 95, 95], "text": "RSI 48.2\nMA20 4110"},
+                                {"bbox": [180, 180, 240, 240], "text": "正文段落"},
+                            ],
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    assert charts is not None
+    assert charts[0]["recognized_text"] == "RSI 48.2\nMA20 4110"
+    assert "收益率回落带来修复窗口" in charts[0]["summary"]
+
+
 def test_daily_report_bundle_prefers_parsed_figures_for_raw_article_charts_when_available(monkeypatch):
     def fake_parse_report_images(**_: object) -> dict[str, object]:
         return {
@@ -578,9 +847,12 @@ def test_build_jin10_outputs_keeps_vlm_markdown_when_images_missing(monkeypatch,
                 "parser_run_id": "test-run",
                 "status": "success",
                 "recognition_mode": "vlm",
+                "vision_provider": "mimo",
+                "vision_model": "mimo-v2.5",
                 "figures_total": 0,
                 "section_count": 0,
                 "vision_markdown_status": "success",
+                "vision_layout_status": "success",
             },
             "vision_markdown": {"pages": []},
             "body_markdown": "# 正文\n\n来自 VLM 识别结果的正文。",
@@ -628,9 +900,12 @@ def test_daily_report_bundle_uses_parsed_markdown_for_analysis_input(monkeypatch
                 "parser_run_id": "test-run",
                 "status": "success",
                 "recognition_mode": "vlm",
+                "vision_provider": "mimo",
+                "vision_model": "mimo-v2.5",
                 "figures_total": 0,
                 "section_count": 0,
                 "vision_markdown_status": "success",
+                "vision_layout_status": "success",
             },
             "vision_markdown": {"pages": []},
             "body_markdown": "# 解析后正文\n\n这是解析后的稳定 MD，应作为分析输入。\n\n关键位：4600 为确认位，4500 为分界位。",
@@ -642,6 +917,9 @@ def test_daily_report_bundle_uses_parsed_markdown_for_analysis_input(monkeypatch
 
     raw_article = outputs["daily_reports"][0]["raw_article_json"]
     assert raw_article["generated_from"]["content_stage"] == "parsed_markdown"
+    assert raw_article["generated_from"]["parser_trace"]["vision_provider"] == "mimo"
+    assert raw_article["generated_from"]["parser_trace"]["vision_model"] == "mimo-v2.5"
+    assert raw_article["generated_from"]["parser_trace"]["vision_layout_status"] == "success"
     assert "解析后的稳定 MD" in raw_article["article_markdown"]
     assert "抓取原文占位" not in raw_article["article_markdown"]
 
@@ -774,7 +1052,8 @@ def test_daily_report_bundle_prefers_parsed_figures_for_raw_article_charts(monke
     chart = outputs["daily_reports"][0]["raw_article_json"]["charts"][0]
     assert chart["image_path"] == "figures/fig_p2_001.png"
     assert chart["title"] == "美国初请人数维持下行趋势"
-    assert chart["recognized_text"]
+    assert chart["recognized_text"] == ""
+    assert "收益率回落为黄金修复打开窗口" in chart["summary"]
 
 
 def test_build_jin10_outputs_returns_explicit_unavailable_for_missing_category():
@@ -975,6 +1254,91 @@ def test_build_parsed_index_falls_back_to_web_markdown_when_structured_body_is_t
     assert "真实网页正文。" in parsed["reports"][0]["body_text"]
 
 
+def test_build_parsed_index_falls_back_to_web_markdown_when_vlm_body_is_sparse_table(
+    monkeypatch,
+    tmp_path: Path,
+):
+    report_dir = tmp_path / "2026-07-02" / "daily" / "223124"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_md = report_dir / "report.md"
+    meta_json = report_dir / "meta.json"
+    long_body = "\n\n".join(
+        [
+            "在迎接6月非农报告之前，市场要把地缘、油价和美联储沟通放在一起看。",
+            "如果6月就业增长主要来自教育医疗，说明就业市场仍有防御性支撑；如果制造、贸易运输和建筑同步改善，则说明就业韧性扩散。",
+            "反过来，如果总量不差但主要靠世界杯、休闲住宿、政府就业或季调因素支撑，那么这份非农的含金量就要打折。",
+        ]
+        * 20
+    )
+    report_md.write_text(
+        f"# 决战非农\n\n## 正文\n\n{long_body}\n\n## 报告图片\n\n![图1](images/01.png)\n",
+        encoding="utf-8",
+    )
+    meta_json.write_text(json.dumps({"published_at": "2026-07-02 08:00"}, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "apps.parsers.jin10.report.parse_report_images",
+        lambda **kwargs: {
+            "parse_status": {
+                "parser_version": "test",
+                "parser_run_id": "run",
+                "status": "success",
+                "recognition_mode": "vlm",
+                "vision_markdown_status": "success",
+                "section_count": 1,
+                "figures_total": 1,
+            },
+            "report_structured": {"sections": [{"heading": "美国6月非农报告"}]},
+            "figures": {"figures": []},
+            "body_markdown": (
+                "# 决战非农\n\n"
+                "### 美国6月非农报告\n\n"
+                "| | 预期均值 | 预期众数 |\n"
+                "|---|---|---|\n"
+                "| 新增就业人数 | 11万人 | 10万人 |\n"
+            ),
+        },
+    )
+
+    parsed = build_parsed_index(
+        {
+            "source": "jin10_external",
+            "as_of": "2026-07-02",
+            "source_refs": [],
+            "unavailable_symbols": [],
+            "reports": [
+                {
+                    "article_id": "223124",
+                    "date": "2026-07-02",
+                    "title": "决战非农",
+                    "category": "金银报告",
+                    "category_code": "270",
+                    "source_url": "https://svip.jin10.com/news/223124",
+                    "external_report_dir": str(report_dir),
+                    "retrieved_at": "2026-07-02T08:00:00+00:00",
+                    "meta_json": {
+                        "asset_type": "meta_json",
+                        "path": str(meta_json),
+                        "sha256": "meta",
+                        "size_bytes": meta_json.stat().st_size,
+                    },
+                    "report_md": {
+                        "asset_type": "report_md",
+                        "path": str(report_md),
+                        "sha256": "report",
+                        "size_bytes": report_md.stat().st_size,
+                    },
+                    "images": [],
+                }
+            ],
+        }
+    )
+
+    body_text = parsed["reports"][0]["body_text"]
+    assert "这份非农的含金量就要打折" in body_text
+    assert "新增就业人数 | 11万人" not in body_text
+
+
 def test_build_jin10_outputs_marks_vlm_failure_explicitly_and_still_returns_raw_article(monkeypatch):
     def fake_parse_report_images(**_: object) -> dict[str, object]:
         return {
@@ -1120,7 +1484,7 @@ def test_report_quality_audit_rejects_non_daily_report_title() -> None:
         report={
             "title": "美国就业岗位排行榜 薪资中位数最高的是哪个工种？丨财料-金十数据VIP",
             "date": "2026-06-08",
-            "external_report_dir": "fixtures/jin10-reports/2026-06-08/daily/221274",
+            "external_report_dir": "/tmp/finance-agent/jin10-reports/2026-06-08/daily/221274",
         },
         parsed_report={"vlm_status": "success"},
         raw_article={

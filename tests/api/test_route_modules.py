@@ -130,6 +130,17 @@ def test_main_reexports_review_handlers() -> None:
     assert api_review_use_fallback is modular_api_review_use_fallback
 
 
+def test_main_reexports_system_evolution_handlers() -> None:
+    from apps.api.main import api_system_evolution_latest, api_system_evolution_proposal_action
+    from apps.api.routes.system_evolution_routes import (
+        api_system_evolution_latest as modular_api_system_evolution_latest,
+        api_system_evolution_proposal_action as modular_api_system_evolution_proposal_action,
+    )
+
+    assert api_system_evolution_latest is modular_api_system_evolution_latest
+    assert api_system_evolution_proposal_action is modular_api_system_evolution_proposal_action
+
+
 def test_main_reexports_strategy_report_handlers() -> None:
     from apps.api.main import (
         api_final_report,
@@ -418,6 +429,8 @@ def test_main_reexports_jin10_report_handlers() -> None:
         api_jin10_report_bundle,
         api_jin10_report_bundle_asset,
         api_jin10_report_bundle_latest,
+        api_jin10_web_flash_briefs,
+        api_jin10_web_flash_briefs_latest,
         api_jin10_weekly_report,
         api_jin10_weekly_report_latest,
     )
@@ -429,6 +442,8 @@ def test_main_reexports_jin10_report_handlers() -> None:
         api_jin10_report_bundle as modular_api_jin10_report_bundle,
         api_jin10_report_bundle_asset as modular_api_jin10_report_bundle_asset,
         api_jin10_report_bundle_latest as modular_api_jin10_report_bundle_latest,
+        api_jin10_web_flash_briefs as modular_api_jin10_web_flash_briefs,
+        api_jin10_web_flash_briefs_latest as modular_api_jin10_web_flash_briefs_latest,
         api_jin10_weekly_report as modular_api_jin10_weekly_report,
         api_jin10_weekly_report_latest as modular_api_jin10_weekly_report_latest,
     )
@@ -442,6 +457,8 @@ def test_main_reexports_jin10_report_handlers() -> None:
     assert api_jin10_report_bundle_asset is modular_api_jin10_report_bundle_asset
     assert api_jin10_article_briefs_latest is modular_api_jin10_article_briefs_latest
     assert api_jin10_article_briefs is modular_api_jin10_article_briefs
+    assert api_jin10_web_flash_briefs_latest is modular_api_jin10_web_flash_briefs_latest
+    assert api_jin10_web_flash_briefs is modular_api_jin10_web_flash_briefs
 
 
 def test_main_reexports_news_handlers() -> None:
@@ -502,6 +519,72 @@ def test_main_reexports_jin10_market_handlers() -> None:
     assert api_jin10_kline is modular_api_jin10_kline
 
 
+def test_jin10_market_routes_do_not_depend_on_fastapi_main_helpers() -> None:
+    from pathlib import Path
+
+    source = Path("apps/api/routes/jin10_market_routes.py").read_text(encoding="utf-8")
+
+    assert "from apps.api import main as api_main" not in source
+    assert "from apps.api.services import jin10_market_service" in source
+
+
+def test_market_monitor_routes_depend_on_data_service_not_fastapi_main() -> None:
+    from pathlib import Path
+
+    source = Path("apps/api/routes/market_monitor_routes.py").read_text(encoding="utf-8")
+
+    assert "from apps.api import main as api_main" not in source
+    assert "from apps.api.data_service import" in source
+
+
+def test_macro_routes_depend_on_data_service_not_fastapi_main() -> None:
+    from pathlib import Path
+
+    source = Path("apps/api/routes/macro_routes.py").read_text(encoding="utf-8")
+
+    assert "from apps.api import main as api_main" not in source
+    assert "from apps.api.data_service import" in source
+
+
+def test_options_routes_depend_on_data_service_not_fastapi_main() -> None:
+    from pathlib import Path
+
+    source = Path("apps/api/routes/options_routes.py").read_text(encoding="utf-8")
+
+    assert "from apps.api import main as api_main" not in source
+    assert "from apps.api.data_service import" in source
+
+
+def test_gold_mainline_routes_depend_on_service_not_fastapi_main() -> None:
+    from pathlib import Path
+
+    source = Path("apps/api/routes/gold_mainline_routes.py").read_text(encoding="utf-8")
+
+    assert "from apps.api import main as api_main" not in source
+    assert "from apps.api.services.gold_mainline_service import" in source
+
+
+def test_pure_service_routes_do_not_depend_on_fastapi_main() -> None:
+    from pathlib import Path
+
+    route_files = (
+        "data_source_routes.py",
+        "event_flow_routes.py",
+        "jin10_report_routes.py",
+        "market_odds_routes.py",
+        "news_routes.py",
+        "operations_routes.py",
+        "playbook_routes.py",
+        "reports_routes.py",
+        "settings_read_routes.py",
+        "settings_write_routes.py",
+        "strategy_report_routes.py",
+    )
+    for route_file in route_files:
+        source = Path("apps/api/routes", route_file).read_text(encoding="utf-8")
+        assert "from apps.api import main as api_main" not in source, route_file
+
+
 def test_main_reexports_premarket_handlers() -> None:
     from apps.api.main import (
         api_premarket_launch_preflight,
@@ -528,20 +611,6 @@ def test_main_reexports_premarket_handlers() -> None:
     assert get_task_logs is modular_get_task_logs
 
 
-def test_main_reexports_health_handlers() -> None:
-    from apps.api.main import (
-        api_memory_context,
-        health,
-    )
-    from apps.api.routes.health_routes import (
-        api_memory_context as modular_api_memory_context,
-        health as modular_health,
-    )
-
-    assert health is modular_health
-    assert api_memory_context is modular_api_memory_context
-
-
 def test_main_reexports_gold_mainline_handlers() -> None:
     from apps.api.main import (
         api_gold_mainlines,
@@ -566,6 +635,7 @@ def test_main_reexports_agent_governance_read_handlers() -> None:
     from apps.api.main import (
         api_agent_registry_detail,
         api_agents_registry,
+        api_prompt_evolution_latest,
         api_prompt_evolution_proposal,
         api_prompt_versions_active,
         api_prompt_versions_by_agent,
@@ -574,6 +644,7 @@ def test_main_reexports_agent_governance_read_handlers() -> None:
     from apps.api.routes.agent_governance_read_routes import (
         api_agent_registry_detail as modular_api_agent_registry_detail,
         api_agents_registry as modular_api_agents_registry,
+        api_prompt_evolution_latest as modular_api_prompt_evolution_latest,
         api_prompt_evolution_proposal as modular_api_prompt_evolution_proposal,
         api_prompt_versions_active as modular_api_prompt_versions_active,
         api_prompt_versions_by_agent as modular_api_prompt_versions_by_agent,
@@ -586,10 +657,12 @@ def test_main_reexports_agent_governance_read_handlers() -> None:
     assert api_prompt_versions_by_agent is modular_api_prompt_versions_by_agent
     assert api_prompt_versions_active is modular_api_prompt_versions_active
     assert api_prompt_evolution_proposal is modular_api_prompt_evolution_proposal
+    assert api_prompt_evolution_latest is modular_api_prompt_evolution_latest
 
 
 def test_main_reexports_agent_governance_write_handlers() -> None:
     from apps.api.main import (
+        api_prompt_evolution_release_action,
         api_prompt_feedback_by_agent,
         api_prompt_feedback_create,
         api_prompt_feedback_list,
@@ -597,6 +670,7 @@ def test_main_reexports_agent_governance_write_handlers() -> None:
         api_prompt_versions_create,
     )
     from apps.api.routes.agent_governance_write_routes import (
+        api_prompt_evolution_release_action as modular_api_prompt_evolution_release_action,
         api_prompt_feedback_by_agent as modular_api_prompt_feedback_by_agent,
         api_prompt_feedback_create as modular_api_prompt_feedback_create,
         api_prompt_feedback_list as modular_api_prompt_feedback_list,
@@ -609,6 +683,7 @@ def test_main_reexports_agent_governance_write_handlers() -> None:
     assert api_prompt_feedback_create is modular_api_prompt_feedback_create
     assert api_prompt_feedback_by_agent is modular_api_prompt_feedback_by_agent
     assert api_prompt_feedback_list is modular_api_prompt_feedback_list
+    assert api_prompt_evolution_release_action is modular_api_prompt_evolution_release_action
 
 
 def test_main_reexports_agent_analysis_read_handlers() -> None:
@@ -887,6 +962,43 @@ def test_app_registers_modular_operations_routes() -> None:
     assert route_map["/api/dashboard/summary"] is modular_api_dashboard_summary
 
 
+def test_app_registers_modular_orchestration_routes() -> None:
+    from apps.api.routes.orchestration_routes import (
+        api_orchestration_latest as modular_api_orchestration_latest,
+        api_orchestration_manual_review_action as modular_api_orchestration_manual_review_action,
+        api_orchestration_manual_review as modular_api_orchestration_manual_review,
+        api_orchestration_notification_plan as modular_api_orchestration_notification_plan,
+    )
+
+    route_map = _route_endpoint_map()
+    method_route_map = _route_method_endpoint_map()
+
+    assert route_map["/api/orchestration/latest"] is modular_api_orchestration_latest
+    assert route_map["/api/orchestration/notification-plan"] is modular_api_orchestration_notification_plan
+    assert route_map["/api/orchestration/manual-review"] is modular_api_orchestration_manual_review
+    assert method_route_map[("/api/orchestration/manual-review/action", "POST")] is modular_api_orchestration_manual_review_action
+
+
+def test_main_reexports_orchestration_handlers() -> None:
+    from apps.api.main import (
+        api_orchestration_latest,
+        api_orchestration_manual_review_action,
+        api_orchestration_manual_review,
+        api_orchestration_notification_plan,
+    )
+    from apps.api.routes.orchestration_routes import (
+        api_orchestration_latest as modular_api_orchestration_latest,
+        api_orchestration_manual_review_action as modular_api_orchestration_manual_review_action,
+        api_orchestration_manual_review as modular_api_orchestration_manual_review,
+        api_orchestration_notification_plan as modular_api_orchestration_notification_plan,
+    )
+
+    assert api_orchestration_latest is modular_api_orchestration_latest
+    assert api_orchestration_notification_plan is modular_api_orchestration_notification_plan
+    assert api_orchestration_manual_review is modular_api_orchestration_manual_review
+    assert api_orchestration_manual_review_action is modular_api_orchestration_manual_review_action
+
+
 def test_app_registers_modular_macro_routes() -> None:
     from apps.api.routes.macro_routes import (
         api_macro_latest as modular_api_macro_latest,
@@ -1020,6 +1132,8 @@ def test_app_registers_modular_jin10_report_routes() -> None:
         api_jin10_report_bundle as modular_api_jin10_report_bundle,
         api_jin10_report_bundle_asset as modular_api_jin10_report_bundle_asset,
         api_jin10_report_bundle_latest as modular_api_jin10_report_bundle_latest,
+        api_jin10_web_flash_briefs as modular_api_jin10_web_flash_briefs,
+        api_jin10_web_flash_briefs_latest as modular_api_jin10_web_flash_briefs_latest,
         api_jin10_weekly_report as modular_api_jin10_weekly_report,
         api_jin10_weekly_report_latest as modular_api_jin10_weekly_report_latest,
     )
@@ -1035,6 +1149,8 @@ def test_app_registers_modular_jin10_report_routes() -> None:
     assert route_map["/api/jin10/report-bundle/{date}/{run_id}/asset/{asset_path:path}"] is modular_api_jin10_report_bundle_asset
     assert route_map["/api/jin10/article-briefs/latest"] is modular_api_jin10_article_briefs_latest
     assert route_map["/api/jin10/article-briefs"] is modular_api_jin10_article_briefs
+    assert route_map["/api/jin10/web-flash-briefs/latest"] is modular_api_jin10_web_flash_briefs_latest
+    assert route_map["/api/jin10/web-flash-briefs"] is modular_api_jin10_web_flash_briefs
 
 
 def test_app_registers_modular_news_routes() -> None:
@@ -1123,22 +1239,19 @@ def test_app_registers_modular_gold_mainline_routes() -> None:
 
 
 def test_app_registers_modular_health_routes() -> None:
-    from apps.api.routes.health_routes import (
-        api_memory_context as modular_api_memory_context,
-        health as modular_health,
-    )
+    from apps.api.routes.health_routes import health as modular_health
 
     route_map = _route_endpoint_map()
 
     assert route_map["/health"] is modular_health
     assert route_map["/api/health"] is modular_health
-    assert route_map["/api/memory/context"] is modular_api_memory_context
 
 
 def test_app_registers_modular_agent_governance_read_routes() -> None:
     from apps.api.routes.agent_governance_read_routes import (
         api_agent_registry_detail as modular_api_agent_registry_detail,
         api_agents_registry as modular_api_agents_registry,
+        api_prompt_evolution_latest as modular_api_prompt_evolution_latest,
         api_prompt_evolution_proposal as modular_api_prompt_evolution_proposal,
         api_prompt_versions_active as modular_api_prompt_versions_active,
         api_prompt_versions_by_agent as modular_api_prompt_versions_by_agent,
@@ -1154,6 +1267,23 @@ def test_app_registers_modular_agent_governance_read_routes() -> None:
     assert route_method_map[("/api/agents/prompts/{agent_id}", "GET")] is modular_api_prompt_versions_by_agent
     assert route_map["/api/agents/prompts/{agent_id}/active"] is modular_api_prompt_versions_active
     assert route_map["/api/agents/prompt-evolution/proposal/{agent_id}"] is modular_api_prompt_evolution_proposal
+    assert route_map["/api/governance/prompt-evolution/latest"] is modular_api_prompt_evolution_latest
+
+
+def test_app_registers_modular_system_evolution_routes() -> None:
+    from apps.api.routes.system_evolution_routes import (
+        api_system_evolution_latest as modular_api_system_evolution_latest,
+        api_system_evolution_proposal_action as modular_api_system_evolution_proposal_action,
+    )
+
+    route_map = _route_endpoint_map()
+    route_method_map = _route_method_endpoint_map()
+
+    assert route_map["/api/governance/system-evolution/latest"] is modular_api_system_evolution_latest
+    assert (
+        route_method_map[("/api/governance/system-evolution/proposal/action", "POST")]
+        is modular_api_system_evolution_proposal_action
+    )
 
 
 def test_app_registers_modular_processing_monitor_routes() -> None:
@@ -1180,6 +1310,7 @@ def test_app_registers_modular_processing_monitor_routes() -> None:
 
 def test_app_registers_modular_agent_governance_write_routes() -> None:
     from apps.api.routes.agent_governance_write_routes import (
+        api_prompt_evolution_release_action as modular_api_prompt_evolution_release_action,
         api_prompt_feedback_by_agent as modular_api_prompt_feedback_by_agent,
         api_prompt_feedback_create as modular_api_prompt_feedback_create,
         api_prompt_feedback_list as modular_api_prompt_feedback_list,
@@ -1195,6 +1326,10 @@ def test_app_registers_modular_agent_governance_write_routes() -> None:
     assert route_method_map[("/api/agents/feedback", "POST")] is modular_api_prompt_feedback_create
     assert route_map["/api/agents/feedback/{agent_id}"] is modular_api_prompt_feedback_by_agent
     assert route_map["/api/agents/feedback"] is modular_api_prompt_feedback_list
+    assert (
+        route_method_map[("/api/governance/prompt-evolution/release/action", "POST")]
+        is modular_api_prompt_evolution_release_action
+    )
 
 
 def test_app_registers_modular_agent_analysis_read_routes() -> None:

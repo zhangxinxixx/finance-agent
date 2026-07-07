@@ -30,6 +30,10 @@ function AgentInspectionCard({ agent }: { agent: AgentInspectionItem }) {
     : agent.prompt.note || "未记录 prompt。";
   const claimCount = extractClaimCount(agent);
   const factReviewStatus = extractFactReviewStatus(agent);
+  const promptChecksum = agent.output.prompt_checksum ?? agent.prompt.checksum;
+  const promptId = agent.output.prompt_id ?? agent.prompt.prompt_id;
+  const promptVersion = agent.output.prompt_version ?? agent.prompt.version;
+  const promptSourceFile = agent.output.prompt_source_file ?? agent.prompt.source_file;
 
   return (
     <article className="rounded-[14px] border border-[var(--border)] bg-[var(--bg-card)] p-4">
@@ -79,6 +83,18 @@ function AgentInspectionCard({ agent }: { agent: AgentInspectionItem }) {
         ) : null}
         {agent.prompt_version_id ? (
           <span className="rounded-full border border-[var(--border-faint)] px-2 py-1">prompt {compactId(agent.prompt_version_id, 10, 4)}</span>
+        ) : null}
+        {promptId ? (
+          <span className="rounded-full border border-[var(--border-faint)] px-2 py-1">prompt_id {promptId}</span>
+        ) : null}
+        {promptVersion ? (
+          <span className="rounded-full border border-[var(--border-faint)] px-2 py-1">version {promptVersion}</span>
+        ) : null}
+        {promptChecksum ? (
+          <span className="rounded-full border border-[var(--border-faint)] px-2 py-1">checksum {compactId(promptChecksum, 8, 4)}</span>
+        ) : null}
+        {promptSourceFile ? (
+          <span className="rounded-full border border-[var(--border-faint)] px-2 py-1">source_file {promptSourceFile}</span>
         ) : null}
         <span className="rounded-full border border-[var(--border-faint)] px-2 py-1">claims {claimCount}</span>
         <span className="rounded-full border border-[var(--border-faint)] px-2 py-1">

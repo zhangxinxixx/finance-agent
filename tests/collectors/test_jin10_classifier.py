@@ -45,3 +45,34 @@ def test_classify_non_daily_gold_articles_as_research_even_under_daily_category(
     assert hotlist.report_family == "jin10_research_report"
     assert headline.report_type == "research"
     assert headline.report_family == "jin10_research_report"
+
+
+def test_classify_master_review_category_as_research_series() -> None:
+    classification = classify_jin10_report(category_code="786", title="周末·大师复盘：全球资产交易线索")
+
+    assert classification.category_code == "786"
+    assert classification.category == "周末·大师复盘"
+    assert classification.report_type == "research"
+    assert classification.report_family == "jin10_research_report"
+    assert classification.asset_scope == "cross_asset"
+    assert classification.series == "master_review"
+    assert classification.subcategory == "master_review"
+
+
+def test_classify_master_review_from_category_text_when_code_missing() -> None:
+    classification = classify_jin10_report(category="周末·大师复盘", title="大师复盘：美元与黄金节奏")
+
+    assert classification.category_code == "786"
+    assert classification.category == "周末·大师复盘"
+    assert classification.report_type == "research"
+    assert classification.series == "master_review"
+    assert classification.subcategory == "master_review"
+
+
+def test_classify_master_review_from_title_when_category_is_generic_report() -> None:
+    classification = classify_jin10_report(category="报告", title="非农仅增5.7万，美联储为何不能轻易转鸽？｜大师复盘")
+
+    assert classification.category_code == "786"
+    assert classification.category == "周末·大师复盘"
+    assert classification.report_type == "research"
+    assert classification.series == "master_review"

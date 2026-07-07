@@ -8,6 +8,7 @@ from pathlib import Path
 from dagster import Config, Out, Output, op
 
 from apps.worker.pipelines.cme import CmePipelineState, run_cme_step
+from dagster_finance.ops.summary_status import raise_for_failed_summary
 
 
 class CmeConfig(Config):
@@ -37,6 +38,7 @@ def cme_download_op(context, state: CmePipelineState, config: CmeConfig) -> CmeP
         db=context.resources.db_session, storage_root=storage, run_id=run_id,
     )
     context.log.info(f"cme_download done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("cme_download", summary)
     return state
 
 
@@ -53,6 +55,7 @@ def cme_parse_op(context, state: CmePipelineState, config: CmeConfig) -> CmePipe
         db=context.resources.db_session, storage_root=storage, run_id=run_id,
     )
     context.log.info(f"cme_parse done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("cme_parse", summary)
     return state
 
 
@@ -69,6 +72,7 @@ def cme_ingest_op(context, state: CmePipelineState, config: CmeConfig) -> CmePip
         storage_root=storage, run_id=run_id, db=context.resources.db_session,
     )
     context.log.info(f"cme_ingest done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("cme_ingest", summary)
     return state
 
 
@@ -85,4 +89,5 @@ def option_wall_op(context, state: CmePipelineState, config: CmeConfig) -> CmePi
         storage_root=storage, run_id=run_id, db=context.resources.db_session,
     )
     context.log.info(f"option_wall done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("option_wall", summary)
     return state

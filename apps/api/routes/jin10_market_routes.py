@@ -7,6 +7,8 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from apps.api.services import jin10_market_service
+
 router = APIRouter()
 
 
@@ -17,16 +19,14 @@ def api_jin10_quotes_latest():
     从最新的 premarket_snapshot.json 中提取 jin10 字段，
     包含实时行情报价、快讯/文章计数、K 线代码等。
     """
-    from apps.api import main as api_main
-
     storage_root = Path("./storage")
     snap_dir = storage_root / "features" / "snapshots" / "XAUUSD"
     if not snap_dir.exists():
-        return api_main._jin10_unavailable("No snapshots directory found")
+        return jin10_market_service.jin10_unavailable("No snapshots directory found")
 
     date_dirs = sorted([d for d in snap_dir.iterdir() if d.is_dir()], reverse=True)
     if not date_dirs:
-        return api_main._jin10_unavailable("No snapshot dates found")
+        return jin10_market_service.jin10_unavailable("No snapshot dates found")
 
     for date_dir in date_dirs:
         run_dirs = sorted([d for d in date_dir.iterdir() if d.is_dir()], reverse=True)
@@ -42,27 +42,25 @@ def api_jin10_quotes_latest():
             if jin10_section:
                 return jin10_section
 
-    return api_main._jin10_unavailable("Jin10 section not yet populated in analysis snapshot.")
+    return jin10_market_service.jin10_unavailable("Jin10 section not yet populated in analysis snapshot.")
 
 
 @router.get("/api/jin10/calendar")
 def api_jin10_calendar():
     """返回 Jin10 经济日历（上一周 + 未来两周窗口）。"""
-    from apps.api import main as api_main
-
-    cache_path = api_main._JIN10_CALENDAR_CACHE_PATH
+    cache_path = jin10_market_service.JIN10_CALENDAR_CACHE_PATH
     if not cache_path.exists():
-        api_main._refresh_jin10_calendar_cache()
+        jin10_market_service.refresh_jin10_calendar_cache()
     if not cache_path.exists():
         return {"status": "unavailable", "events": [], "message": "Calendar data not available"}
     try:
         data = json.loads(cache_path.read_text(encoding="utf-8"))
-        payload = api_main._build_jin10_calendar_payload(data, cache_path)
+        payload = jin10_market_service.build_jin10_calendar_payload(data, cache_path)
         if payload["freshness"]["reason"] == "no_upcoming_events":
-            api_main._refresh_jin10_calendar_cache()
+            jin10_market_service.refresh_jin10_calendar_cache()
             if cache_path.exists():
                 refreshed_data = json.loads(cache_path.read_text(encoding="utf-8"))
-                return api_main._build_jin10_calendar_payload(refreshed_data, cache_path)
+                return jin10_market_service.build_jin10_calendar_payload(refreshed_data, cache_path)
         return payload
     except Exception as exc:
         return {"status": "error", "events": [], "message": str(exc)}
@@ -71,12 +69,10 @@ def api_jin10_calendar():
 @router.get("/api/jin10/flash")
 def api_jin10_flash():
     """返回 Jin10 最新快讯。"""
-    from apps.api import main as api_main
-
-    cache_path = api_main._JIN10_FLASH_CACHE_PATH
-    if not cache_path.exists() or api_main._is_file_stale(
+    cache_path = jin10_market_service.JIN10_FLASH_CACHE_PATH
+    if not cache_path.exists() or jin10_market_service.is_file_stale(
         cache_path,
-        max_age_seconds=api_main._JIN10_FLASH_CACHE_MAX_AGE_SECONDS,
+        max_age_seconds=jin10_market_service.JIN10_FLASH_CACHE_MAX_AGE_SECONDS,
     ):
         try:
             from apps.scheduler.jin10_refresh import refresh_jin10_flash_cache
@@ -99,7 +95,6 @@ def api_jin10_kline(
     limit: int = 200,
 ):
     """返回 Jin10 K 线数据（从 market_candles 表读取），支持多周期聚合。"""
-    from apps.api import main as api_main
     from database.models.engine import SessionLocal
     from database.queries.market import list_market_candles
 
@@ -117,13 +112,13 @@ def api_jin10_kline(
                 rows = list_market_candles(session, asset=symbol, timeframe="1m", limit=limit, source=kline_source)
                 if not rows:
                     rows = list_market_candles(session, asset=symbol, timeframe="1m", limit=limit, source="yahoo_finance_1m")
-                candles = [api_main._candle_to_dict(row) for row in rows]
+                candles = [jin10_market_service.candle_to_dict(row) for row in rows]
             else:
-                fetch_limit = api_main._aggregation_fetch_limit(timeframe, limit)
+                fetch_limit = jin10_market_service.aggregation_fetch_limit(timeframe, limit)
                 rows = list_market_candles(session, asset=symbol, timeframe="1m", limit=fetch_limit, source=kline_source)
                 if not rows:
                     rows = list_market_candles(session, asset=symbol, timeframe="1m", limit=fetch_limit, source="yahoo_finance_1m")
-                candles = api_main._aggregate_candles(rows, timeframe)[-limit:]
+                candles = jin10_market_service.aggregate_candles(rows, timeframe)[-limit:]
 
             return {
                 "symbol": symbol,

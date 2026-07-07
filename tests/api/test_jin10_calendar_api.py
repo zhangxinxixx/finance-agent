@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from apps.api import main
+from apps.api.services import jin10_market_service
 
 
 def test_jin10_calendar_api_normalizes_and_sorts_payload(monkeypatch, tmp_path):
@@ -45,9 +46,9 @@ def test_jin10_calendar_api_normalizes_and_sorts_payload(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_PATH", cache_path)
-    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
-    monkeypatch.setattr(main, "_jin10_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
+    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_PATH", cache_path)
+    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
+    monkeypatch.setattr(jin10_market_service, "_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
 
     result = main.api_jin10_calendar()
 
@@ -95,9 +96,9 @@ def test_jin10_calendar_api_marks_past_only_window_as_stale(monkeypatch, tmp_pat
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_PATH", cache_path)
-    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
-    monkeypatch.setattr(main, "_jin10_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
+    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_PATH", cache_path)
+    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
+    monkeypatch.setattr(jin10_market_service, "_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
 
     result = main.api_jin10_calendar()
 
@@ -130,9 +131,9 @@ def test_jin10_calendar_api_refreshes_past_only_window(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_PATH", cache_path)
-    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
-    monkeypatch.setattr(main, "_jin10_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
+    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_PATH", cache_path)
+    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
+    monkeypatch.setattr(jin10_market_service, "_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
 
     def refresh() -> None:
         cache_path.write_text(
@@ -182,9 +183,9 @@ def test_jin10_calendar_api_filters_events_outside_display_window(monkeypatch, t
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_PATH", cache_path)
-    monkeypatch.setattr(main, "_JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
-    monkeypatch.setattr(main, "_jin10_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
+    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_PATH", cache_path)
+    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
+    monkeypatch.setattr(jin10_market_service, "_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
 
     result = main.api_jin10_calendar()
 

@@ -8,7 +8,7 @@ from apps.runtime.artifact_storage import LOCAL_FS_STORAGE_BACKEND, LocalFileSys
 from apps.runtime import task_recorder as task_recorder_module
 from apps.runtime.task_recorder import TaskRecorder
 from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
-from database.models.task import ensure_task_tables
+from database.models.task import TaskRun, TaskStatus, ensure_task_tables
 
 
 def _make_factory():
@@ -78,6 +78,19 @@ def test_task_recorder_emits_failed_event(monkeypatch) -> None:
     assert "TASK_STARTED" in event_types
     assert "TASK_STATUS_CHANGED" in event_types
     assert "RUN_FAILED" in event_types
+
+
+def test_task_recorder_rolls_up_a_blocked_step_to_a_blocked_run(monkeypatch) -> None:
+    factory = _make_factory()
+    monkeypatch.setattr(task_recorder_module, "SessionLocal", factory)
+
+    with TaskRecorder(task_type="quality_gate", task_name="Quality Gate") as rec:
+        rec.step("validate_inputs", status="blocked", stage="quality_gate", error="source unavailable")
+
+    with factory() as session:
+        run = session.query(TaskRun).one()
+
+    assert run.status == TaskStatus.blocked
 
 
 def test_local_artifact_storage_supports_relative_and_absolute_paths(tmp_path) -> None:

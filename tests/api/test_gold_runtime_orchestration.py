@@ -38,6 +38,9 @@ def test_gold_runtime_orchestration_contract_declares_required_run_modes() -> No
     assert "review_gate_agent" in premarket["planned_agents_executed"]
     assert "report_render_agent" in premarket["planned_agents_executed"]
     assert premarket["runtime_contract_only"] is True
+    assert premarket["artifact_execution_enabled"] is False
+    assert premarket["pipeline_materialized_outputs"] is False
+    assert premarket["executed_agents"] == []
 
 
 def test_intraday_mode_is_incremental_and_mixed_capable() -> None:
@@ -52,6 +55,9 @@ def test_intraday_mode_is_incremental_and_mixed_capable() -> None:
     assert "skip_low_frequency_mainlines_when_unaffected" in summary["warnings"]
     assert summary["writes"] == []
     assert summary["runtime_contract_only"] is True
+    assert summary["artifact_execution_enabled"] is False
+    assert summary["pipeline_materialized_outputs"] is False
+    assert summary["executed_agents"] == []
 
 
 def test_gold_runtime_execution_summary_maps_quality_gate_fallback() -> None:
@@ -68,7 +74,10 @@ def test_gold_runtime_execution_summary_maps_quality_gate_fallback() -> None:
     )
 
     assert summary["source"] == "gold_runtime_execution_summary"
-    assert summary["runtime_contract_only"] is False
+    assert summary["runtime_contract_only"] is True
+    assert summary["artifact_execution_enabled"] is False
+    assert summary["pipeline_materialized_outputs"] is True
+    assert summary["executed_agents"] == []
     assert summary["quality_gate_status"] == "fallback_required"
     assert summary["review_status"] == "needs_review"
     assert summary["fallback_attempts"] == 0

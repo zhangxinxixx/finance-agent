@@ -27,7 +27,7 @@ MIN_VLM_IMAGE_HEIGHT = 300
 MIN_VLM_IMAGE_BYTES = 10_000
 JIN10_DETAIL_SOURCE_KEY = "jin10_detail_pages"
 JIN10_XNEWS_PUBLIC_SOURCE_KEY = "jin10_xnews_public"
-DEFAULT_JIN10_BROWSER_PROFILE = Path(os.getenv("JIN10_BROWSER_PROFILE")).expanduser() if os.getenv("JIN10_BROWSER_PROFILE") else None
+DEFAULT_JIN10_BROWSER_PROFILE = Path.home() / ".finance-agent" / "jin10_browser_profile"
 LIMITED_ACCESS_STATUSES = {"empty", "javascript_required", "vip_locked"}
 
 VlmRunner = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
@@ -124,15 +124,6 @@ def fetch_jin10_detail_page(
         if not run_browser_fallback or result.access_status not in LIMITED_ACCESS_STATUSES:
             return result
         profile = Path(browser_profile).expanduser() if browser_profile else DEFAULT_JIN10_BROWSER_PROFILE
-        if profile is None:
-            return Jin10DetailFetchResult(
-                **{
-                    **result.to_dict(),
-                    "browser_fallback_attempted": True,
-                    "browser_fallback_status": "failed",
-                    "browser_fallback_error": "JIN10_BROWSER_PROFILE is not configured",
-                }
-            )
         try:
             rendered = (browser_html_fetcher or _fetch_rendered_html_via_browser_profile)(
                 url=url,
@@ -271,10 +262,12 @@ def _fetch_rendered_html_via_browser_profile(
         raise RuntimeError(f"Browser profile not found: {profile_dir}")
 
     with tempfile.TemporaryDirectory(prefix="jin10-detail-playwright-runtime-") as runtime_dir:
+        profile_copy = Path(runtime_dir) / "profile"
+        _copy_browser_profile_for_readonly_launch(profile_dir, profile_copy)
         env = {**os.environ, "XDG_RUNTIME_DIR": runtime_dir}
         with sync_playwright() as playwright:
             context = playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
+                user_data_dir=str(profile_copy),
                 executable_path=str(chromium),
                 headless=True,
                 args=["--disable-dev-shm-usage"],
@@ -310,6 +303,22 @@ def _wait_for_detail_render(page: Any) -> None:
         )
     except Exception:
         page.wait_for_timeout(2500)
+
+
+def _copy_browser_profile_for_readonly_launch(source_dir: Path, target_dir: Path) -> None:
+    ignore = shutil.ignore_patterns(
+        "Singleton*",
+        "DevToolsActivePort",
+        "BrowserMetrics*",
+        "Crashpad",
+        "Crash Reports",
+        "ShaderCache",
+        "GrShaderCache",
+        "GraphiteDawnCache",
+        "GPUCache",
+        "Code Cache",
+    )
+    shutil.copytree(source_dir, target_dir, ignore=ignore)
 
 
 def _write_raw_html(*, storage_root: Path, retrieved_date: str, url: str, html: str, archive_name: str | None = None) -> str:

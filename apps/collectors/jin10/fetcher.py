@@ -52,6 +52,11 @@ class Jin10FetchedReport:
     raw_html: str
     image_urls: list[str]
     fetched_at: str
+    vip_locked: bool = False
+    content_scope: str = "unknown"
+    body_complete: bool = False
+    series: str = ""
+    subcategory: str = ""
 
 
 def fetch_category_entries(
@@ -189,13 +194,20 @@ def parse_svip_report_html(html: str, *, article_id: str, source_url: str) -> Ji
     if not image_urls:
         image_urls = _extract_best_image_urls(article_html, reduced_html, html)
     body = _extract_report_body(content_html or html)
+    content_scope, vip_locked, body_complete = _assess_content_integrity(
+        content_html=content_html or "",
+        body=body,
+        image_urls=image_urls,
+    )
     markdown_lines = [
         f"# {title.strip()}",
         "",
         f"- 来源: {source_url}",
         f"- 日期: {date}",
         f"- 分类: {category}",
+        *([f"- 系列: {classification.series}"] if classification.series else []),
         f"- 图片: {len(image_urls)} 张",
+        f"- 正文范围: {content_scope}（完整: {'是' if body_complete else '否'}，VIP锁定: {'是' if vip_locked else '否'}）",
         "",
         "## 正文",
         "",
@@ -215,6 +227,11 @@ def parse_svip_report_html(html: str, *, article_id: str, source_url: str) -> Ji
         raw_html=html,
         image_urls=image_urls,
         fetched_at=datetime.now(timezone.utc).isoformat(),
+        vip_locked=vip_locked,
+        content_scope=content_scope,
+        body_complete=body_complete,
+        series=classification.series,
+        subcategory=classification.subcategory,
     )
 
 
@@ -258,6 +275,11 @@ def write_external_report(
         "title": report.title,
         "category": report.category,
         "report_type": report.report_type,
+        "series": report.series,
+        "subcategory": report.subcategory,
+        "vip_locked": report.vip_locked,
+        "content_scope": report.content_scope,
+        "body_complete": report.body_complete,
         "images": images,
         "image_insights": insights,
         "source_url": report.source_url,
@@ -362,6 +384,37 @@ def _extract_report_body(html: str) -> str:
         if reduced_paragraphs:
             return "\n\n".join(reduced_paragraphs[:30]).strip()
     return ""
+
+
+def _assess_content_integrity(*, content_html: str, body: str, image_urls: list[str]) -> tuple[str, bool, bool]:
+    paragraphs = _extract_clean_paragraphs(content_html)
+    informative = _informative_paragraphs(paragraphs)
+    placeholder_count = sum(1 for paragraph in paragraphs if _is_placeholder_paragraph(paragraph))
+    full_section_count = sum(1 for paragraph in informative if _has_report_section_marker(paragraph))
+    informative_chars = sum(len(paragraph) for paragraph in informative)
+    compact_html = re.sub(r"\s+", "", _clean_text(_decode_escaped_html(content_html)))
+
+    has_preview_marker = placeholder_count > 0 or any(
+        marker in compact_html
+        for marker in (
+            "仅VIP查看",
+            "立即解锁",
+            "开通VIP",
+            "下载地址",
+        )
+    )
+    if has_preview_marker:
+        return "preview", True, False
+
+    if full_section_count >= 2 or (full_section_count >= 1 and informative_chars >= 50):
+        return "full", False, True
+    if len(informative) >= 3 and informative_chars >= 180:
+        return "full", False, True
+    if image_urls and not body.strip():
+        return "unknown", False, False
+    if informative:
+        return "unknown", False, False
+    return "unknown", False, False
 
 
 def _extract_clean_paragraphs(html: str) -> list[str]:

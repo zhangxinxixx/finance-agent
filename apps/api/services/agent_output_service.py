@@ -21,6 +21,30 @@ _BIAS_LABELS = {
 }
 
 
+def prompt_contract_id(agent_id: str | None) -> str | None:
+    if not agent_id:
+        return None
+    return f"{agent_id}_prompt"
+
+
+def prompt_metadata_from_row(row) -> dict[str, Any]:
+    prompt_version = getattr(row, "prompt_version", None)
+    payload = row.payload or {}
+    if prompt_version is None:
+        return {
+            "prompt_id": prompt_contract_id(getattr(row, "agent_name", None)) if row.prompt_version_id else None,
+            "prompt_version": payload.get("prompt_version"),
+            "prompt_checksum": None,
+            "prompt_source_file": None,
+        }
+    return {
+        "prompt_id": prompt_contract_id(prompt_version.agent_id),
+        "prompt_version": prompt_version.version,
+        "prompt_checksum": prompt_version.prompt_sha256,
+        "prompt_source_file": prompt_version.prompt_source,
+    }
+
+
 def _contains_cjk(text: str | None) -> bool:
     if not text:
         return False
@@ -92,6 +116,7 @@ def build_agent_output_summary(row) -> dict[str, Any]:
     fact_review_status = payload.get("fact_review_status")
     if fact_review_status is None and runtime_meta.get("registry_id") == "synthesis_agent":
         fact_review_status = payload.get("synthesis_status")
+    prompt_metadata = prompt_metadata_from_row(row)
 
     return {
         "agent_output_id": row.id,
@@ -127,7 +152,10 @@ def build_agent_output_summary(row) -> dict[str, Any]:
         "fact_review_status": fact_review_status,
         "synthesis_group_id": payload.get("synthesis_group_id"),
         "generated_by": generated_by,
-        "prompt_version": payload.get("prompt_version"),
+        "prompt_id": prompt_metadata["prompt_id"],
+        "prompt_version": prompt_metadata["prompt_version"],
+        "prompt_checksum": prompt_metadata["prompt_checksum"],
+        "prompt_source_file": prompt_metadata["prompt_source_file"],
         "llm_model": row.llm_model,
         "llm_usage": row.token_usage,
         "llm_elapsed_seconds": row.llm_elapsed_seconds,

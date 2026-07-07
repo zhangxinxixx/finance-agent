@@ -250,7 +250,10 @@ def test_db_sink_persists_final_analysis_result(tmp_path: Path) -> None:
     assert fr.strategy_card_json_path is not None, "strategy_card_json_path must be set"
     assert fr.strategy_card_md_path is not None, "strategy_card_md_path must be set"
     assert fr.run_summaries["gold_runtime_summary"]["run_mode"] == "premarket_full_run"
-    assert fr.run_summaries["gold_runtime_summary"]["runtime_contract_only"] is False
+    assert fr.run_summaries["gold_runtime_summary"]["runtime_contract_only"] is True
+    assert fr.run_summaries["gold_runtime_summary"]["artifact_execution_enabled"] is False
+    assert fr.run_summaries["gold_runtime_summary"]["pipeline_materialized_outputs"] is True
+    assert fr.run_summaries["gold_runtime_summary"]["executed_agents"] == []
     assert "quality_gate_status" in fr.run_summaries["gold_runtime_summary"]
 
     from apps.api.services.task_service import get_task_run_response

@@ -18,7 +18,7 @@ from typing import Any
 
 from apps.runtime.artifact_registry import register_step_artifacts
 from apps.runtime.execution_event_bridge import emit_task_event
-from apps.runtime.state_machine import coerce_step_status, transition_task_run, transition_task_step
+from apps.runtime.state_machine import derive_task_run_status, coerce_step_status, transition_task_run, transition_task_step
 from database.models.engine import SessionLocal
 from database.models.task import TaskRun, TaskStatus, TaskStep, StepStatus
 from sqlalchemy.orm import Session
@@ -86,10 +86,21 @@ class TaskRecorder:
             return
         run = self._session.get(TaskRun, self._run_id)
         if run:
+            latest_status_by_name = {
+                name: status
+                for name, status in self._session.query(TaskStep.name, TaskStep.status)
+                .filter(TaskStep.task_run_id == self._run_id)
+                .order_by(TaskStep.step_order.asc())
+            }
+            final_status = (
+                derive_task_run_status(latest_status_by_name.values())
+                if latest_status_by_name
+                else TaskStatus.success
+            )
             transition_task_run(
                 self._session,
                 run,
-                TaskStatus.success,
+                final_status,
                 source="task_recorder",
                 reason="run_finished",
                 progress=1.0,

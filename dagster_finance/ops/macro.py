@@ -8,6 +8,7 @@ from pathlib import Path
 from dagster import Config, Out, Output, op
 
 from apps.worker.pipelines.macro import MacroPipelineState, run_macro_step
+from dagster_finance.ops.summary_status import raise_for_failed_summary
 
 
 class MacroConfig(Config):
@@ -38,6 +39,7 @@ def macro_collect_op(context, state: MacroPipelineState, config: MacroConfig) ->
         storage_root=storage, run_id=run_id, db_session=db,
     )
     context.log.info(f"macro_collect done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("macro_collect", summary)
     return state
 
 
@@ -53,6 +55,7 @@ def macro_feature_op(context, state: MacroPipelineState, config: MacroConfig) ->
         storage_root=storage, run_id=run_id,
     )
     context.log.info(f"macro_feature done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("macro_feature", summary)
     return state
 
 
@@ -68,4 +71,5 @@ def report_render_op(context, state: MacroPipelineState, config: MacroConfig) ->
         storage_root=storage, run_id=run_id,
     )
     context.log.info(f"report_render done: {summary.get('status', 'ok')}")
+    raise_for_failed_summary("report_render", summary)
     return state

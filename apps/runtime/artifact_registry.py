@@ -369,21 +369,22 @@ def _collect_artifacts(
         for item in refs or []:
             if not isinstance(item, dict):
                 continue
-            file_path = str(item.get("file_path") or "").strip()
+            file_path = str(item.get("file_path") or item.get("path") or "").strip()
             if not file_path:
                 continue
+            normalized_item = {**item, "file_path": file_path}
             artifacts.append(
                 (
                     ArtifactRef(
-                        artifact_id=str(item.get("artifact_id") or f"{file_path}:{len(artifacts)}"),
-                        artifact_type=_coerce_artifact_type(item.get("artifact_type"), file_path),
+                        artifact_id=str(normalized_item.get("artifact_id") or f"{file_path}:{len(artifacts)}"),
+                        artifact_type=_coerce_artifact_type(normalized_item.get("artifact_type"), file_path),
                         file_path=file_path,
-                        version=item.get("version"),
-                        generated_at=item.get("generated_at"),
-                        storage_backend=item.get("storage_backend"),
-                        sha256=item.get("sha256"),
+                        version=normalized_item.get("version"),
+                        generated_at=normalized_item.get("generated_at"),
+                        storage_backend=normalized_item.get("storage_backend"),
+                        sha256=normalized_item.get("sha256"),
                     ),
-                    item,
+                    normalized_item,
                 )
             )
 

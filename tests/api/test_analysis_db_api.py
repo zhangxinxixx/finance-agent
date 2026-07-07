@@ -20,6 +20,7 @@ from database.models.analysis import ensure_analysis_tables
 
 _PROJECT_ROOT_PATCH = "apps.api.data_service._PROJECT_ROOT"
 _SESSION_REF = "apps.api.data_service._try_db_session"
+_JIN10_EXTERNAL_ROOT_PATCH = "apps.api.services.report_service._JIN10_EXTERNAL_ROOT"
 
 
 def _make_inmem_session():
@@ -539,6 +540,7 @@ def test_strategy_cards_read_model_latest_merges_newer_filesystem_artifact(tmp_p
     with (
         mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
         mock.patch(_SESSION_REF, _fake_try_db),
+        mock.patch(_JIN10_EXTERNAL_ROOT_PATCH, tmp_path / "jin10-reports"),
     ):
         listing = list_strategy_cards(limit=1)
         detail = get_strategy_card_read_model_latest()
@@ -998,7 +1000,7 @@ def test_strategy_asset_route_returns_summary(tmp_path: Path):
     client = TestClient(app)
     with (
         mock.patch(
-            "apps.api.main.list_strategy_assets",
+            "apps.api.routes.strategy_report_routes.list_strategy_assets",
             return_value={
                 "count": 1,
                 "items": [

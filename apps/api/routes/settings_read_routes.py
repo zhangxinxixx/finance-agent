@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from apps.api.schemas.settings import SettingsHistoryResponse
+from apps.api.services import settings_service
 from database.models.engine import get_db
 
 router = APIRouter()
@@ -14,9 +15,7 @@ router = APIRouter()
 @router.get("/api/settings/status")
 def api_settings_status(db: Session = Depends(get_db)):
     """返回配置状态概览（密钥已脱敏）。"""
-    from apps.api import main as api_main
-
-    return api_main.settings_service.build_settings_status(db=db)
+    return settings_service.build_settings_status(db=db)
 
 
 @router.get("/api/settings/history", response_model=SettingsHistoryResponse)
@@ -32,9 +31,7 @@ def api_settings_history(
     db: Session = Depends(get_db),
 ) -> SettingsHistoryResponse:
     """返回 Settings 最近配置变更历史。"""
-    from apps.api import main as api_main
-
-    return api_main.settings_service.build_settings_history(
+    return settings_service.build_settings_history(
         db,
         limit=limit,
         setting_key=setting_key,

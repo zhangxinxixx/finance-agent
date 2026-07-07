@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
+from apps.api.services.agent_analysis_run_service import run_event_impact_async, run_market_regime_async
+
 router = APIRouter()
 
 
@@ -16,13 +18,11 @@ def api_run_agent_analysis(
     force: bool = False,
 ):
     """手动触发 agent 分析。"""
-    from apps.api import main as api_main
-
     target_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     if agent in ("market_regime", "all"):
-        api_main._run_market_regime_async(target_date)
+        run_market_regime_async(target_date)
     if agent in ("event_impact", "all"):
-        api_main._run_event_impact_async(target_date)
+        run_event_impact_async(target_date)
 
     return {"status": "dispatched", "agent": agent, "date": target_date}

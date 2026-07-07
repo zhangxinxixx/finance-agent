@@ -80,7 +80,7 @@ def test_trigger_premarket_marks_stale_legacy_run_and_launches(monkeypatch: pyte
     session.add(stale_run)
     session.commit()
 
-    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr("apps.api.routes.premarket_routes.SessionLocal", session_factory)
     monkeypatch.setattr(
         api_main.pipeline_contract_service,
         "build_premarket_pipeline_source_readiness",
@@ -143,7 +143,7 @@ def test_trigger_premarket_keeps_fresh_active_run_blocking(monkeypatch: pytest.M
     session.add(active_run)
     session.commit()
 
-    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr("apps.api.routes.premarket_routes.SessionLocal", session_factory)
     monkeypatch.setattr(
         api_main.pipeline_contract_service,
         "build_premarket_pipeline_source_readiness",
@@ -164,7 +164,7 @@ def test_trigger_premarket_keeps_fresh_active_run_blocking(monkeypatch: pytest.M
 
 def test_trigger_premarket_blocks_when_dagster_run_is_active(monkeypatch: pytest.MonkeyPatch) -> None:
     session_factory, _session = _make_session_factory()
-    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr("apps.api.routes.premarket_routes.SessionLocal", session_factory)
     monkeypatch.setattr(
         api_main.pipeline_contract_service,
         "build_premarket_pipeline_source_readiness",
@@ -204,7 +204,7 @@ def test_trigger_premarket_returns_structured_detail_when_dagster_launch_unavail
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session_factory, _session = _make_session_factory()
-    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr("apps.api.routes.premarket_routes.SessionLocal", session_factory)
     monkeypatch.setattr(
         api_main.pipeline_contract_service,
         "build_premarket_pipeline_source_readiness",
@@ -244,7 +244,7 @@ def test_premarket_preflight_ignores_stale_legacy_run_and_keeps_it_read_only(
     session.add(stale_run)
     session.commit()
 
-    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr("apps.api.routes.premarket_routes.SessionLocal", session_factory)
     monkeypatch.setattr(
         api_main.pipeline_contract_service,
         "build_premarket_pipeline_source_readiness",
@@ -292,7 +292,7 @@ def test_premarket_preflight_reports_active_legacy_task_blocker(monkeypatch: pyt
     session.add(active_run)
     session.commit()
 
-    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr("apps.api.routes.premarket_routes.SessionLocal", session_factory)
     monkeypatch.setattr(
         api_main.pipeline_contract_service,
         "build_premarket_pipeline_source_readiness",
