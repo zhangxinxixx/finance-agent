@@ -146,6 +146,12 @@ def test_worker_artifact_registration_lives_in_dedicated_module() -> None:
     assert runner._merge_lineage_input_snapshot_ids is artifact_registration.merge_lineage_input_snapshot_ids
 
 
+def test_worker_report_registry_sink_lives_in_dedicated_module() -> None:
+    from apps.worker import report_registry_sink, runner
+
+    assert runner._register_composite_report_registry_entries is report_registry_sink.register_composite_report_registry_entries
+
+
 def test_gold_mainline_ids_are_canonical_across_backend_runtime_prompt_source_health_and_frontend() -> None:
     canonical = list(GOLD_MAINLINE_IDS)
 
