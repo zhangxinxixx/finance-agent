@@ -109,6 +109,14 @@ def test_analysis_layer_does_not_import_api_services() -> None:
     assert offenders == []
 
 
+def test_quality_gate_fallback_executor_lives_in_dedicated_module() -> None:
+    from apps.analysis.agents import fallback_executor
+    from apps.analysis.agents.quality_gate import execute_agent_loop_fallback_tasks
+
+    assert fallback_executor.execute_agent_loop_fallback_tasks is execute_agent_loop_fallback_tasks
+    assert execute_agent_loop_fallback_tasks.__module__ == "apps.analysis.agents.fallback_executor"
+
+
 def test_gold_mainline_ids_are_canonical_across_backend_runtime_prompt_source_health_and_frontend() -> None:
     canonical = list(GOLD_MAINLINE_IDS)
 
