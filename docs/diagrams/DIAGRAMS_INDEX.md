@@ -6,7 +6,7 @@
 | --- | --- |
 | `system-architecture.mmd` | 系统总体架构：前端、API、调度器、任务执行器、流水线、数据库、文件存储 |
 | `data-flow.mmd` | 数据从外部源进入原始层、解析层、特征层、分析层、报告和前端页面的流向 |
-| `backend-pipeline.mmd` | 当前盘前任务后端主链和 C4 分析流水线的位置 |
+| `backend-pipeline.mmd` | 当前盘前任务后端主链和 综合分析链路的位置 |
 | `report-artifacts-flow.mmd` | 报告四类产物：原文、分析正文、可视化报告、结构化 JSON 的生成流程 |
 | `agent-flow.mmd` | 领域 Agent、协调器、事实复核、综合分析之间的关系 |
 | `frontend-page-map.mmd` | Vite React 当前页面路由图 |

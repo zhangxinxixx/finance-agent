@@ -3,7 +3,7 @@
 Tests cover:
   - market_odds_agent standalone (available, partial, unavailable)
   - coordinator with market_odds_output parameter
-  - worker runner includes market_odds in C4 pipeline
+  - worker runner includes market_odds in composite analysis pipeline
 """
 
 from __future__ import annotations

@@ -2024,7 +2024,7 @@ def _build_weekend_opening_outlook(
         "invalidation": [
             "实时点位与最后正式框架方向背离。",
             "美元或美债收益率出现与黄金方向相反的快速重定价。",
-            "新增宏观事件被确认但尚未进入正式 premarket/C4 分析链路。",
+            "新增宏观事件被确认但尚未进入正式 premarket 综合分析链路。",
         ],
     }
 

@@ -92,7 +92,7 @@ class StructuredReportOutput(BaseModel):
     """Structured final report JSON output (P4-04).
 
     A deterministic, machine-readable complement to the Markdown report.
-    Produced by the same renderer pipeline from the same C3 agent outputs,
+    Produced by the same renderer pipeline from the same domain agent outputs,
     without LLM, network, or file reads.
     """
 

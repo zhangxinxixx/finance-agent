@@ -23,7 +23,7 @@ database/models/analysis.py
 
 当前代码事实：
 
-- Domain/coordinator agents 已接入 C4 pipeline。
+- Domain/coordinator agents 已接入 综合分析链路。
 - `fact_review.py`、`synthesis.py` 模块存在，API 也支持 synthesis 读取。
 - `fact_review_agent` 和 `daily_market_synthesis_agent` 是否稳定进入每日 premarket 主链，需要按真实 run artifact 进一步验证。
 
@@ -57,7 +57,7 @@ database/models/analysis.py
 - `apps/analysis/agents/coordinator.py`
 - `apps/worker/runner.py`
 
-当前 C4 pipeline 在 `apps/worker/runner.py` 中调用：
+当前 综合分析链路 在 `apps/worker/runner.py` 中调用：
 
 - `analyze_macro_liquidity`
 - `analyze_cme_options`
@@ -161,7 +161,7 @@ API：
 
 ## 后续整理方向
 
-- 把 C4 pipeline 中的 Agent 步骤拆成显式 TaskStep。
+- 把 综合分析链路 中的 Agent 步骤拆成显式 TaskStep。
 - 将 fact review / synthesis 是否进入主链做成可验证状态。
 - 统一 AgentOutput schema 与 frontend inspection view。
 - 在 Report Detail 中稳定展示 Agent input/output/prompt/version/source trace。

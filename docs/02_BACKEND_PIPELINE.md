@@ -77,11 +77,11 @@ strategy_card
 
 - CME 和 macro step 已接入真实 pipeline。
 - 非 CME/macro step 在 loop 内仍会先按 stub success 处理。
-- analysis snapshot、C4 agents、final report、strategy card 在 step loop 后统一执行。
+- analysis snapshot、domain agents、final report、strategy card 在 step loop 后统一执行。
 
 后续建议：
 
-- 将 `analysis_snapshot`、`c3_agents`、`final_report`、`strategy_card`、`report_index` 等拆成显式 `TaskStep`。
+- 将 `analysis_snapshot`、`domain_agents`、`final_report`、`strategy_card`、`report_index` 等拆成显式 `TaskStep`。
 - 每一步写入 `input_refs`、`output_refs`、`source_refs`、`artifact_refs`。
 
 ## Collectors

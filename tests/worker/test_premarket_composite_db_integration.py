@@ -18,7 +18,7 @@ _TRADE_DATE = "2026-05-14"
 
 @pytest.fixture(autouse=True)
 def _isolate_source_gating():
-    """Keep C4 DB integration tests deterministic unless they opt into source gating explicitly."""
+    """Keep composite analysis DB integration tests deterministic unless they opt into source gating explicitly."""
     with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
         yield
 
@@ -69,7 +69,7 @@ def test_db_sink_creates_analysis_tables(tmp_path: Path) -> None:
 
 
 def test_db_sink_persists_analysis_snapshot(tmp_path: Path) -> None:
-    """After premarket run with C4, DB must contain an AnalysisSnapshot."""
+    """After premarket run with composite analysis, DB must contain an AnalysisSnapshot."""
     from database.models.analysis import AnalysisSnapshot
 
     db = _make_db_session(tmp_path)
@@ -116,7 +116,7 @@ def test_db_sink_persists_analysis_snapshot(tmp_path: Path) -> None:
 
 
 def test_db_sink_persists_agent_outputs(tmp_path: Path) -> None:
-    """After premarket run, DB must contain all C3/C4 agent outputs."""
+    """After premarket run, DB must contain all domain/composite analysis agent outputs."""
     from database.models.analysis import AgentOutput as DBAgentOutput
 
     db = _make_db_session(tmp_path)

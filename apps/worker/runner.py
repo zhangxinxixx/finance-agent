@@ -37,7 +37,7 @@ from apps.runtime.state_machine import derive_task_run_status, transition_task_r
 from apps.gold_runtime_orchestration import build_gold_runtime_execution_summary
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
-# ── C4 agent pipeline imports (deterministic, no LLM / network / file reads) ──
+# ── Composite analysis imports (deterministic, no LLM / network / file reads) ──
 from apps.analysis.agents.macro_liquidity import analyze_macro_liquidity
 from apps.analysis.agents.cme_options import analyze_cme_options
 from apps.analysis.agents.risk import analyze_risk
@@ -361,62 +361,62 @@ def run_premarket(
             input_snapshot_ids=_coerce_lineage_input_snapshot_ids(analysis_snapshot.get("input_snapshot_ids")),
         )
 
-    # ── C4: agent pipeline (C3 agents → final report → strategy card) ──────────
+    # ── Composite analysis: domain agents → final report → strategy card ───────
     if analysis_snapshot is not None:
         try:
-            c4_created_at = datetime.now(timezone.utc)
-            c4_summaries, c4_outputs = _run_c4_agent_pipeline(
+            composite_created_at = datetime.now(timezone.utc)
+            composite_summaries, composite_outputs = _run_composite_analysis_pipeline(
                 storage_root=storage_root,
                 snapshot=analysis_snapshot,
                 run_id=run_id,
-                created_at=c4_created_at,
+                created_at=composite_created_at,
             )
-            macro_state.step_summaries.update(c4_summaries)
+            macro_state.step_summaries.update(composite_summaries)
 
             # DB sink: persist agent outputs (additive, after file writes)
             try:
                 snapshot_db_id = _db_persist_agent_outputs(
-                    db, analysis_snapshot, c4_outputs["agents"], run_id
+                    db, analysis_snapshot, composite_outputs["agents"], run_id
                 )
                 _db_persist_final_result(
-                    db, analysis_snapshot, c4_outputs, snapshot_db_id
+                    db, analysis_snapshot, composite_outputs, snapshot_db_id
                 )
             except Exception as db_exc:
-                logger.exception("DB persist of C4 outputs failed (file artifacts are safe)")
-                macro_state.step_summaries["db_persist_c4"] = {
-                    "step": "db_persist_c4",
+                logger.exception("DB persist of composite analysis outputs failed (file artifacts are safe)")
+                macro_state.step_summaries["db_persist_composite"] = {
+                    "step": "db_persist_composite",
                     "status": "failed",
                     "error": str(db_exc),
                 }
-            _register_c4_output_artifacts(
+            _register_composite_output_artifacts(
                 db,
                 run_id=run_id,
                 steps=ordered_steps,
-                c4_outputs=c4_outputs,
+                composite_outputs=composite_outputs,
                 analysis_snapshot=analysis_snapshot,
             )
             try:
-                _register_c4_report_registry_entries(
+                _register_composite_report_registry_entries(
                     db,
                     run_id=run_id,
-                    c4_outputs=c4_outputs,
+                    composite_outputs=composite_outputs,
                     analysis_snapshot=analysis_snapshot,
                 )
             except Exception as db_exc:
-                logger.exception("Report registry persist of C4 outputs failed (file artifacts are safe)")
-                macro_state.step_summaries["db_persist_c4_report_registry"] = {
-                    "step": "db_persist_c4_report_registry",
+                logger.exception("Report registry persist of composite analysis outputs failed (file artifacts are safe)")
+                macro_state.step_summaries["db_persist_composite_report_registry"] = {
+                    "step": "db_persist_composite_report_registry",
                     "status": "failed",
                     "error": str(db_exc),
                 }
         except Exception as exc:
-            logger.exception("C4 agent pipeline failed")
+            logger.exception("Composite analysis pipeline failed")
             had_failure = True
-            macro_state.step_summaries["c4_agent_pipeline"] = {
-                "step": "c4_agent_pipeline",
+            macro_state.step_summaries["composite_analysis_pipeline"] = {
+                "step": "composite_analysis_pipeline",
                 "status": "failed",
                 "error": str(exc),
-                "partial_summary": "C4 agent pipeline failed after analysis snapshot was persisted; "
+                "partial_summary": "Composite analysis pipeline failed after analysis snapshot was persisted; "
                                   "no final report or strategy card was written.",
             }
 
@@ -670,21 +670,21 @@ def _register_runner_step_artifacts(
     )
 
 
-def _register_c4_output_artifacts(
+def _register_composite_output_artifacts(
     db: DBSession,
     *,
     run_id: str,
     steps: list[Any],
-    c4_outputs: dict[str, Any],
+    composite_outputs: dict[str, Any],
     analysis_snapshot: dict[str, Any] | None = None,
 ) -> None:
     report_step = next((step for step in steps if step.name == "report_render"), None)
     if report_step is None:
         return
 
-    report_result = c4_outputs.get("report_result") if isinstance(c4_outputs, dict) else None
-    card_result = c4_outputs.get("card_result") if isinstance(c4_outputs, dict) else None
-    card = c4_outputs.get("strategy_card") if isinstance(c4_outputs, dict) else None
+    report_result = composite_outputs.get("report_result") if isinstance(composite_outputs, dict) else None
+    card_result = composite_outputs.get("card_result") if isinstance(composite_outputs, dict) else None
+    card = composite_outputs.get("strategy_card") if isinstance(composite_outputs, dict) else None
 
     artifacts: list[dict[str, Any]] = []
     if isinstance(report_result, dict):
@@ -771,16 +771,16 @@ def _register_run_support_artifacts(
     )
 
 
-def _register_c4_report_registry_entries(
+def _register_composite_report_registry_entries(
     db: DBSession,
     *,
     run_id: str,
-    c4_outputs: dict[str, Any],
+    composite_outputs: dict[str, Any],
     analysis_snapshot: dict[str, Any] | None = None,
 ) -> None:
-    report_result = c4_outputs.get("report_result") if isinstance(c4_outputs, dict) else None
-    card_result = c4_outputs.get("card_result") if isinstance(c4_outputs, dict) else None
-    card = c4_outputs.get("strategy_card") if isinstance(c4_outputs, dict) else None
+    report_result = composite_outputs.get("report_result") if isinstance(composite_outputs, dict) else None
+    card_result = composite_outputs.get("card_result") if isinstance(composite_outputs, dict) else None
+    card = composite_outputs.get("strategy_card") if isinstance(composite_outputs, dict) else None
 
     snapshot_id = analysis_snapshot.get("snapshot_id") if isinstance(analysis_snapshot, dict) else None
     trade_date = analysis_snapshot.get("trade_date") if isinstance(analysis_snapshot, dict) else None
@@ -974,7 +974,7 @@ def _persist_analysis_snapshot(
 ) -> tuple[Path, dict[str, Any]]:
     """Build and write the unified Analysis Snapshot from in-memory pipeline states.
 
-    Returns (written_path, snapshot_dict) so downstream C4 rendering can consume
+    Returns (written_path, snapshot_dict) so downstream composite analysis can consume
     the snapshot without re-reading from disk.
     """
 
@@ -1042,11 +1042,11 @@ def _cme_source_refs(cme_state: object) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# C4 agent pipeline (C3 agents → final report → strategy card)
+# Composite analysis pipeline (domain agents → final report → strategy card)
 # ---------------------------------------------------------------------------
 
 
-def _run_c4_agent_pipeline(
+def _run_composite_analysis_pipeline(
     *,
     storage_root: Path,
     snapshot: dict[str, Any],
@@ -1060,17 +1060,17 @@ def _run_c4_agent_pipeline(
     news_output_prebuilt: Any = None,
     coordinator_output_prebuilt: Any = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    """Run the C4 agent pipeline on an already-persisted analysis snapshot.
+    """Run the composite analysis pipeline on an already-persisted analysis snapshot.
 
     Steps (deterministic, no LLM, no network, no file reads):
-      1. Run C3 pseudo-agents (macro, options, risk) against the snapshot.
+      1. Run domain agents against the snapshot.
       2. Coordinate their outputs into one read-only final view.
       3. Render the final report Markdown.
       4. Build the strategy card from coordinator + risk.
       5. Write both artifacts to disk.
 
-    Returns a tuple of (step_summaries, c4_outputs) where c4_outputs contains:
-      ``agents`` — dict of agent_name → AgentOutput for the 4 C3 agents,
+    Returns a tuple of (step_summaries, composite_outputs) where composite_outputs contains:
+      ``agents`` — dict of agent_name → AgentOutput for all domain/coordinator agents,
       ``strategy_card`` — the StrategyCardOutput,
       ``report_result`` — the write_final_report result dict,
       ``card_result`` — the write_strategy_card result dict.
@@ -1083,7 +1083,7 @@ def _run_c4_agent_pipeline(
     trade_date = snapshot.get("trade_date", "")
     snapshot_id = snapshot.get("snapshot_id", "unknown")
 
-    # ── 1. C3 agents ──────────────────────────────────────────────────────
+    # ── 1. Domain agents ──────────────────────────────────────────────────
     macro_output = analyze_macro_liquidity(snapshot, created_at=created_at)
     options_output = analyze_cme_options(snapshot, created_at=created_at)
     risk_output = analyze_risk(
@@ -1137,8 +1137,8 @@ def _run_c4_agent_pipeline(
         fallback_execution=fallback_execution,
     )
 
-    summaries["c3_agents"] = {
-        "step": "c3_agents",
+    summaries["domain_agents"] = {
+        "step": "domain_agents",
         "status": "success",
         "macro_status": macro_output.status.value,
         "options_status": options_output.status.value,
@@ -1257,7 +1257,7 @@ def _run_c4_agent_pipeline(
     }
 
     # ── Pack agent outputs for DB persistence ─────────────────────────
-    c4_outputs: dict[str, Any] = {
+    composite_outputs: dict[str, Any] = {
         "agents": {
             "macro_liquidity_agent": macro_output,
             "cme_options_agent": options_output,
@@ -1277,7 +1277,7 @@ def _run_c4_agent_pipeline(
         "gold_runtime_summary": gold_runtime_summary,
     }
 
-    return summaries, c4_outputs
+    return summaries, composite_outputs
 
 
 def _accepted_coordinator_output(*, primary: Any, fallback_execution: Any) -> Any:
@@ -1345,7 +1345,7 @@ def _db_persist_agent_outputs(
     agents: dict[str, Any],  # agent_name → AgentOutput
     run_id: str,
 ) -> str | None:
-    """Persist all C3 agent outputs to DB via idempotent upsert.
+    """Persist all composite-analysis agent outputs to DB via idempotent upsert.
 
     Returns the DB snapshot id for FK linking, or None if no snapshot exists.
     """
@@ -1393,17 +1393,17 @@ def _db_persist_agent_outputs(
 def _db_persist_final_result(
     db: DBSession,
     snapshot: dict[str, Any],
-    c4_outputs: dict[str, Any],
+    composite_outputs: dict[str, Any],
     snapshot_db_id: str | None,
 ) -> None:
-    """Persist C4 final result (report + strategy card) to DB via idempotent upsert."""
+    """Persist composite analysis final result via idempotent upsert."""
     import hashlib
 
-    card = c4_outputs["strategy_card"]
-    report_result = c4_outputs["report_result"]
-    card_result = c4_outputs["card_result"]
-    agents = c4_outputs["agents"]
-    gold_runtime_summary = c4_outputs.get("gold_runtime_summary")
+    card = composite_outputs["strategy_card"]
+    report_result = composite_outputs["report_result"]
+    card_result = composite_outputs["card_result"]
+    agents = composite_outputs["agents"]
+    gold_runtime_summary = composite_outputs.get("gold_runtime_summary")
 
     trade_date = snapshot.get("trade_date", "")
     run_id = snapshot["run_id"]

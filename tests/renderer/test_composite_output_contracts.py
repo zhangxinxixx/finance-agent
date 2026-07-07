@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from apps.analysis.agents import AgentBias, AgentOutput
 from apps.analysis.strategy.schemas import StrategyCardOutput
 from apps.renderer.contracts import FinalReportOutput, MacroEventFollowupStructuredPayload, ReportSection
-from tests.fixtures.c4_agent_outputs import coordinator_output_payload
+from tests.fixtures.composite_agent_outputs import coordinator_output_payload
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
 
@@ -22,7 +22,7 @@ def _final_report_payload() -> dict:
         "version": "1.0",
         "asset": "XAUUSD",
         "trade_date": "2026-05-14",
-        "run_id": "run-c4-contract",
+        "run_id": "run-composite-contract",
         "snapshot_id": "XAUUSD:2026-05-14:analysis",
         "input_snapshot_ids": {
             "analysis_snapshot": "XAUUSD:2026-05-14:analysis",
@@ -47,7 +47,7 @@ def _strategy_card_payload() -> dict:
         "version": "1.0",
         "asset": "XAUUSD",
         "trade_date": "2026-05-14",
-        "run_id": "run-c4-contract",
+        "run_id": "run-composite-contract",
         "bias": "bullish",
         "confidence": 0.61,
         "scenario_summary": "Macro and options are aligned, with confidence capped by missing inputs.",
@@ -100,7 +100,7 @@ def test_final_report_contract_accepts_required_fields_and_serializes_to_json():
     assert report.version == "1.0"
     assert report.asset == "XAUUSD"
     assert report.trade_date == "2026-05-14"
-    assert report.run_id == "run-c4-contract"
+    assert report.run_id == "run-composite-contract"
     assert report.snapshot_id == "XAUUSD:2026-05-14:analysis"
     assert report.input_snapshot_ids["analysis_snapshot"] == "XAUUSD:2026-05-14:analysis"
     assert report.input_snapshot_ids["coordinator"] == "XAUUSD:2026-05-14:analysis"

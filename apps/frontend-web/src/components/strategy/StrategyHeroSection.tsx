@@ -254,7 +254,7 @@ function DailyUpdateBlock({ update, formalTradeDate }: { update: StrategyDailyUp
         <div className="mt-2 rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-2.5 py-2 text-[10px] leading-5 text-[var(--fg-3)]">
           <span className="font-semibold text-[var(--warn)]">正式策略缺口：</span>
           当前只检测到 {update?.date} 的更新层，正式 StrategyCard 仍锚定 {formalTradeDate}。
-          缺少 `premarket/C4` 综合分析生成任务，所以没有当天或前几天的正式分析策略。
+          缺少 `premarket` 综合分析生成任务，所以没有当天或前几天的正式分析策略。
         </div>
       ) : null}
       {update?.items?.length ? (

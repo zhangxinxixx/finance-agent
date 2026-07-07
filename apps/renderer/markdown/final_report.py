@@ -84,7 +84,7 @@ def render_final_report_markdown(
     coordinator_output: AgentOutput | Mapping[str, Any] | None,
     created_at: datetime | None = None,
 ) -> str:
-    """Render a deterministic Markdown final report from in-memory C3 outputs.
+    """Render a deterministic Markdown final report from in-memory domain agent outputs.
 
     This function is renderer-only: it does not read files, call agents, fetch
     data, write output artifacts, or produce trading/execution instructions.
@@ -1121,7 +1121,7 @@ def build_structured_report(
     coordinator_output: AgentOutput | Mapping[str, Any] | None,
     created_at: datetime | None = None,
 ) -> StructuredReportOutput:
-    """Build a deterministic StructuredReportOutput from in-memory C3 outputs.
+    """Build a deterministic StructuredReportOutput from in-memory domain agent outputs.
 
     This is a parallel structured JSON output to the existing Markdown renderer.
     It does NOT read files, call agents, fetch data, or produce trading instructions.

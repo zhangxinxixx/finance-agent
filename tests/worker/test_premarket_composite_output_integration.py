@@ -19,7 +19,7 @@ _TRADE_DATE = "2026-05-14"
 
 @pytest.fixture(autouse=True)
 def _mock_source_status_index():
-    """Keep C4 output integration tests isolated from source gating by default."""
+    """Keep composite analysis output integration tests isolated from source gating by default."""
     with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
         yield
 
@@ -42,10 +42,10 @@ def _make_task_with_steps(db, step_names: list[str]) -> TaskRun:
 
 def _make_rich_snapshot(
     *,
-    run_id: str = "run-c4-rich",
+    run_id: str = "run-composite-rich",
     trade_date: str = _TRADE_DATE,
 ) -> dict:
-    """Return an analysis snapshot with macro + options data for the C4 pipeline."""
+    """Return an analysis snapshot with macro + options data for the composite analysis pipeline."""
     return {
         "version": "1.0",
         "snapshot_id": f"XAUUSD:{trade_date}:{run_id}",
@@ -144,29 +144,29 @@ def _make_rich_snapshot(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# C4 pipeline unit tests (no DB)
+# composite analysis pipeline unit tests (no DB)
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_c4_pipeline_writes_final_report_and_strategy_card(tmp_path: Path) -> None:
-    """C4 should produce final_report.md, strategy_card.md and strategy_card.json."""
-    from apps.worker.runner import _run_c4_agent_pipeline
+def test_composite_analysis_pipeline_writes_final_report_and_strategy_card(tmp_path: Path) -> None:
+    """composite analysis should produce final_report.md, strategy_card.md and strategy_card.json."""
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
-    snapshot = _make_rich_snapshot(run_id="run-c4-artifacts")
-    summaries, _ = _run_c4_agent_pipeline(
+    snapshot = _make_rich_snapshot(run_id="run-composite-artifacts")
+    summaries, _ = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
-        run_id="run-c4-artifacts",
+        run_id="run-composite-artifacts",
         created_at=_CREATED_AT,
     )
 
     # ── step summaries ──
-    assert "c3_agents" in summaries
-    assert summaries["c3_agents"]["status"] == "success"
-    assert summaries["c3_agents"]["macro_status"] is not None
-    assert summaries["c3_agents"]["options_status"] is not None
-    assert summaries["c3_agents"]["risk_status"] is not None
-    assert summaries["c3_agents"]["coordinator_status"] is not None
+    assert "domain_agents" in summaries
+    assert summaries["domain_agents"]["status"] == "success"
+    assert summaries["domain_agents"]["macro_status"] is not None
+    assert summaries["domain_agents"]["options_status"] is not None
+    assert summaries["domain_agents"]["risk_status"] is not None
+    assert summaries["domain_agents"]["coordinator_status"] is not None
 
     assert "final_report" in summaries
     assert summaries["final_report"]["status"] == "success"
@@ -217,39 +217,39 @@ def test_c4_pipeline_writes_final_report_and_strategy_card(tmp_path: Path) -> No
     assert "coordinator" in data["input_snapshot_ids"]
 
 
-def test_c4_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) -> None:
+def test_composite_analysis_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) -> None:
     from apps.api.services.quality_gate_service import QualityGateDecision
-    from apps.worker.runner import _run_c4_agent_pipeline
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-quality-gate")
-    summaries, c4_outputs = _run_c4_agent_pipeline(
+    summaries, composite_outputs = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-quality-gate",
         created_at=_CREATED_AT,
     )
 
-    decision = c4_outputs["quality_gate_decision"]
+    decision = composite_outputs["quality_gate_decision"]
     assert isinstance(decision, QualityGateDecision)
     assert summaries["final_report"]["quality_gate_decision"] == decision.model_dump(mode="json")
     assert summaries["final_report"]["quality_gate_action"] == decision.action.value
     assert summaries["final_report"]["review_status"] == decision.review_status
     assert summaries["final_report"]["publish_allowed"] == decision.publish_allowed
-    runtime_summary = c4_outputs["gold_runtime_summary"]
+    runtime_summary = composite_outputs["gold_runtime_summary"]
     assert runtime_summary["quality_gate_decision"] == decision.model_dump(mode="json")
-    assert runtime_summary["agent_loop_decision"] == c4_outputs["agent_loop_decision"].model_dump(mode="json")
+    assert runtime_summary["agent_loop_decision"] == composite_outputs["agent_loop_decision"].model_dump(mode="json")
     assert runtime_summary["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
     assert runtime_summary["accepted_outputs"]["strategy_card_paths"] == summaries["strategy_card"]["paths"]
     assert runtime_summary["fallback_attempts"] == 0
 
 
-def test_c4_pipeline_executes_fallback_synthesis_before_rendering_when_gate_requires_fallback(
+def test_composite_analysis_pipeline_executes_fallback_synthesis_before_rendering_when_gate_requires_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision
     from apps.worker import runner
-    from apps.worker.runner import _run_c4_agent_pipeline
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     primary_decision = QualityGateDecision(
         action=QualityGateAction.FALLBACK,
@@ -281,29 +281,29 @@ def test_c4_pipeline_executes_fallback_synthesis_before_rendering_when_gate_requ
     monkeypatch.setattr(runner, "evaluate_quality_gate", lambda **_: primary_decision)
     monkeypatch.setattr("apps.analysis.agents.quality_gate.evaluate_quality_gate", lambda **_: fallback_decision)
 
-    snapshot = _make_rich_snapshot(run_id="run-c4-fallback")
-    summaries, c4_outputs = _run_c4_agent_pipeline(
+    snapshot = _make_rich_snapshot(run_id="run-composite-fallback")
+    summaries, composite_outputs = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
-        run_id="run-c4-fallback",
+        run_id="run-composite-fallback",
         created_at=_CREATED_AT,
     )
 
-    assert "fallback_synthesis_agent" in c4_outputs["agents"]
+    assert "fallback_synthesis_agent" in composite_outputs["agents"]
     assert summaries["final_report"]["fallback_task_results"][0]["task_type"] == "fallback_reanalyze"
     assert summaries["final_report"]["agent_loop_decision"]["fallback_trace"]["accepted_output"] == "fallback"
-    assert c4_outputs["strategy_card"].bias.value == "neutral"
-    assert "No strong conclusion" in c4_outputs["strategy_card"].scenario_summary
-    assert c4_outputs["gold_runtime_summary"]["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
+    assert composite_outputs["strategy_card"].bias.value == "neutral"
+    assert "No strong conclusion" in composite_outputs["strategy_card"].scenario_summary
+    assert composite_outputs["gold_runtime_summary"]["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
 
 
-def test_c4_pipeline_executes_cme_options_reparse_when_gate_requires_reparse(
+def test_composite_analysis_pipeline_executes_cme_options_reparse_when_gate_requires_reparse(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision
     from apps.worker import runner
-    from apps.worker.runner import _run_c4_agent_pipeline
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     primary_decision = QualityGateDecision(
         action=QualityGateAction.FALLBACK,
@@ -336,11 +336,11 @@ def test_c4_pipeline_executes_cme_options_reparse_when_gate_requires_reparse(
     monkeypatch.setattr(runner, "evaluate_quality_gate", lambda **_: primary_decision)
     monkeypatch.setattr("apps.analysis.agents.quality_gate.evaluate_quality_gate", lambda **_: fallback_decision)
 
-    snapshot = _make_rich_snapshot(run_id="run-c4-reparse")
-    summaries, c4_outputs = _run_c4_agent_pipeline(
+    snapshot = _make_rich_snapshot(run_id="run-composite-reparse")
+    summaries, composite_outputs = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
-        run_id="run-c4-reparse",
+        run_id="run-composite-reparse",
         created_at=_CREATED_AT,
     )
 
@@ -348,17 +348,17 @@ def test_c4_pipeline_executes_cme_options_reparse_when_gate_requires_reparse(
     assert task_results[0]["task_type"] == "fallback_reparse"
     assert task_results[0]["status"] == "success"
     assert task_results[0]["fallback_output_agent"] == "cme_options_reparse_agent"
-    assert "cme_options_reparse_agent" in c4_outputs["agents"]
-    assert c4_outputs["agents"]["cme_options_reparse_agent"].input_payload["fallback_task"] == "fallback_reparse"
+    assert "cme_options_reparse_agent" in composite_outputs["agents"]
+    assert composite_outputs["agents"]["cme_options_reparse_agent"].input_payload["fallback_task"] == "fallback_reparse"
     assert task_results[1]["task_type"] == "fallback_conservative_synthesis"
 
 
-def test_c4_pipeline_binds_snapshot_id_to_outputs(tmp_path: Path) -> None:
-    """All C4 outputs must bind to the input snapshot_id."""
-    from apps.worker.runner import _run_c4_agent_pipeline
+def test_composite_analysis_pipeline_binds_snapshot_id_to_outputs(tmp_path: Path) -> None:
+    """All composite analysis outputs must bind to the input snapshot_id."""
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-snapshot-id")
-    summaries, _ = _run_c4_agent_pipeline(
+    summaries, _ = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-snapshot-id",
@@ -374,14 +374,14 @@ def test_c4_pipeline_binds_snapshot_id_to_outputs(tmp_path: Path) -> None:
     assert input_ids["analysis_snapshot"] == snapshot_id
 
 
-def test_c4_pipeline_no_overwrite_history(tmp_path: Path) -> None:
-    """C4 must not overwrite historical reports — FileExistsError on re-run."""
-    from apps.worker.runner import _run_c4_agent_pipeline
+def test_composite_analysis_pipeline_no_overwrite_history(tmp_path: Path) -> None:
+    """composite analysis must not overwrite historical reports — FileExistsError on re-run."""
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-no-overwrite")
 
     # first write succeeds
-    _run_c4_agent_pipeline(
+    _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-no-overwrite",
@@ -390,7 +390,7 @@ def test_c4_pipeline_no_overwrite_history(tmp_path: Path) -> None:
 
     # second write must fail
     with pytest.raises(FileExistsError, match="already exist"):
-        _run_c4_agent_pipeline(
+        _run_composite_analysis_pipeline(
             storage_root=tmp_path,
             snapshot=snapshot,
             run_id="run-no-overwrite",
@@ -416,27 +416,27 @@ def test_enrich_runner_artifact_metadata_skips_inferred_fields_for_missing_file(
     assert "generated_at" not in enriched
 
 
-def test_c4_pipeline_no_llm_no_network_calls(tmp_path: Path) -> None:
-    """C4 agents are deterministic rule-based post-processors — no LLM, no network."""
-    from apps.worker.runner import _run_c4_agent_pipeline
+def test_composite_analysis_pipeline_no_llm_no_network_calls(tmp_path: Path) -> None:
+    """composite analysis agents are deterministic rule-based post-processors — no LLM, no network."""
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-no-llm")
 
     # Run without network/LLM — if any agent tries to make an HTTP call
     # or invoke an LLM it will fail because we haven't set up any mocks.
-    summaries, _ = _run_c4_agent_pipeline(
+    summaries, _ = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-no-llm",
         created_at=_CREATED_AT,
     )
 
-    assert summaries["c3_agents"]["status"] == "success"
+    assert summaries["domain_agents"]["status"] == "success"
 
 
-def test_c4_pipeline_records_partial_when_snapshot_has_missing_data(tmp_path: Path) -> None:
-    """When macro data is missing, C3 agents should produce partial statuses."""
-    from apps.worker.runner import _run_c4_agent_pipeline
+def test_composite_analysis_pipeline_records_partial_when_snapshot_has_missing_data(tmp_path: Path) -> None:
+    """When macro data is missing, domain agents should produce partial statuses."""
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-partial")
     # Remove macro indicators entirely
@@ -444,15 +444,15 @@ def test_c4_pipeline_records_partial_when_snapshot_has_missing_data(tmp_path: Pa
     # Remove options data too
     snapshot["options"] = {"status": "unavailable", "reason": "cme_download_failed"}
 
-    summaries, _ = _run_c4_agent_pipeline(
+    summaries, _ = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-partial",
         created_at=_CREATED_AT,
     )
 
-    assert summaries["c3_agents"]["macro_status"] == "unavailable"
-    assert summaries["c3_agents"]["options_status"] == "unavailable"
+    assert summaries["domain_agents"]["macro_status"] == "unavailable"
+    assert summaries["domain_agents"]["options_status"] == "unavailable"
 
     # final report still renders even with partial inputs
     report_path = Path(summaries["final_report"]["paths"][0])
@@ -462,12 +462,12 @@ def test_c4_pipeline_records_partial_when_snapshot_has_missing_data(tmp_path: Pa
     assert "unavailable" in report_text.lower()
 
 
-def test_c4_pipeline_no_execution_language_in_outputs(tmp_path: Path) -> None:
+def test_composite_analysis_pipeline_no_execution_language_in_outputs(tmp_path: Path) -> None:
     """Strategy card and report must contain no executable trading language."""
-    from apps.worker.runner import _run_c4_agent_pipeline
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-no-exec")
-    summaries, _ = _run_c4_agent_pipeline(
+    summaries, _ = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-no-exec",
@@ -491,12 +491,12 @@ def test_c4_pipeline_no_execution_language_in_outputs(tmp_path: Path) -> None:
         assert forbidden not in report_text, f"forbidden '{forbidden}' in final_report.md"
 
 
-def test_c4_pipeline_source_refs_flow_through(tmp_path: Path) -> None:
-    """C4 outputs must carry source_refs from snapshot + agents."""
-    from apps.worker.runner import _run_c4_agent_pipeline
+def test_composite_analysis_pipeline_source_refs_flow_through(tmp_path: Path) -> None:
+    """composite analysis outputs must carry source_refs from snapshot + agents."""
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-source-refs")
-    summaries, _ = _run_c4_agent_pipeline(
+    summaries, _ = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-source-refs",
@@ -511,9 +511,9 @@ def test_c4_pipeline_source_refs_flow_through(tmp_path: Path) -> None:
     assert len(data["source_refs"]) > 0
 
 
-def test_c4_pipeline_strategy_card_consumes_gold_macro_conditions(tmp_path: Path) -> None:
+def test_composite_analysis_pipeline_strategy_card_consumes_gold_macro_conditions(tmp_path: Path) -> None:
     """GoldMacroOverview should reach strategy_card as conditional research signals."""
-    from apps.worker.runner import _run_c4_agent_pipeline
+    from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-gold-macro-conditions")
     snapshot["news"] = {
@@ -534,7 +534,7 @@ def test_c4_pipeline_strategy_card_consumes_gold_macro_conditions(tmp_path: Path
         },
     }
 
-    summaries, _ = _run_c4_agent_pipeline(
+    summaries, _ = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-gold-macro-conditions",
@@ -557,8 +557,8 @@ def test_c4_pipeline_strategy_card_consumes_gold_macro_conditions(tmp_path: Path
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_run_premarket_with_c4_writes_all_artifacts(tmp_path: Path) -> None:
-    """Full premarket run with mocked steps should produce C4 outputs."""
+def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Path) -> None:
+    """Full premarket run with mocked steps should produce composite analysis outputs."""
     db = _make_db_session(tmp_path)
     ensure_execution_tables(db)
     task = _make_task_with_steps(
@@ -622,7 +622,7 @@ def test_run_premarket_with_c4_writes_all_artifacts(tmp_path: Path) -> None:
 
     assert result == TaskStatus.success
 
-    # ── Verify C4 artifacts exist ──
+    # ── Verify composite analysis artifacts exist ──
     run_id = str(task.id)
     base = tmp_path / "outputs"
 
@@ -638,11 +638,11 @@ def test_run_premarket_with_c4_writes_all_artifacts(tmp_path: Path) -> None:
     assert len(sc_json_candidates) == 1, f"Expected one strategy_card.json for {run_id}"
     assert len(sc_md_candidates) == 1, f"Expected one strategy_card.md for {run_id}"
 
-    # ── Verify step summaries include C4 steps ──
+    # ── Verify step summaries include composite analysis steps ──
     summaries_candidates = list(base.glob(f"run/*/{run_id}/step_summaries.json"))
     assert len(summaries_candidates) == 1, f"Expected one step_summaries.json for {run_id}"
     summaries = json.loads(summaries_candidates[0].read_text(encoding="utf-8"))
-    assert "c3_agents" in summaries["steps"]
+    assert "domain_agents" in summaries["steps"]
     assert "final_report" in summaries["steps"]
 
     support_artifact_paths = {
@@ -671,7 +671,7 @@ def test_run_premarket_with_c4_writes_all_artifacts(tmp_path: Path) -> None:
     assert any(artifact.artifact_type == "analysis_md" for artifact in run_artifacts)
 
 
-def test_run_premarket_with_c4_registers_report_registry_entries(tmp_path: Path) -> None:
+def test_run_premarket_with_composite_analysis_registers_report_registry_entries(tmp_path: Path) -> None:
     """Full premarket run should register final report + strategy card into report registry."""
     db = _make_db_session(tmp_path)
     ensure_execution_tables(db)
@@ -777,8 +777,8 @@ def test_run_premarket_with_c4_registers_report_registry_entries(tmp_path: Path)
         assert artifact.source_refs
 
 
-def test_run_premarket_c4_not_triggered_when_snapshot_fails(tmp_path: Path) -> None:
-    """When analysis snapshot fails, C4 should NOT run (no snapshot to consume)."""
+def test_run_premarket_composite_analysis_not_triggered_when_snapshot_fails(tmp_path: Path) -> None:
+    """When analysis snapshot fails, composite analysis should NOT run (no snapshot to consume)."""
     db = _make_db_session(tmp_path)
     task = _make_task_with_steps(db, ["macro_collect", "macro_feature", "report_render"])
 
@@ -786,7 +786,7 @@ def test_run_premarket_c4_not_triggered_when_snapshot_fails(tmp_path: Path) -> N
         if step_name == "report_render":
             # Return a snapshot that will cause build_analysis_snapshot to succeed
             # but then we need the _persist_analysis_snapshot call to fail...
-            # Actually, let's test C4 is skipped when the snapshot build fails.
+            # Actually, let's test composite analysis is skipped when the snapshot build fails.
             # The easiest way: make state.snapshot_dict invalid so build raises.
             state.snapshot_dict = {"as_of": _TRADE_DATE}
         return {"step": step_name, "status": "success"}
@@ -806,22 +806,22 @@ def test_run_premarket_c4_not_triggered_when_snapshot_fails(tmp_path: Path) -> N
     # Should be partial_success — steps succeeded but snapshot failed
     assert result == TaskStatus.partial_success
 
-    # C4 artifacts must NOT exist
+    # composite analysis artifacts must NOT exist
     run_id = str(task.id)
     base = tmp_path / "outputs"
     report_path = base / "final_report" / "XAUUSD" / _TRADE_DATE / run_id / "final_report.md"
-    assert not report_path.exists(), "C4 should not have run when snapshot failed"
+    assert not report_path.exists(), "composite analysis should not have run when snapshot failed"
 
     # Step summaries should record the analysis_snapshot failure.
     summaries_candidates = list(base.glob(f"run/*/{run_id}/step_summaries.json"))
     assert len(summaries_candidates) == 1, f"Expected one step_summaries.json for {run_id}"
     summaries = json.loads(summaries_candidates[0].read_text(encoding="utf-8"))
     assert summaries["steps"]["analysis_snapshot"]["status"] == "failed"
-    assert "c3_agents" not in summaries["steps"]
+    assert "domain_agents" not in summaries["steps"]
 
 
-def test_run_premarket_c4_failure_recorded_in_summaries(tmp_path: Path) -> None:
-    """When C4 pipeline itself fails, the failure is recorded without losing prior steps."""
+def test_run_premarket_composite_analysis_failure_recorded_in_summaries(tmp_path: Path) -> None:
+    """When composite analysis pipeline itself fails, the failure is recorded without losing prior steps."""
     db = _make_db_session(tmp_path)
     task = _make_task_with_steps(db, ["macro_collect", "macro_feature", "report_render"])
 
@@ -840,19 +840,19 @@ def test_run_premarket_c4_failure_recorded_in_summaries(tmp_path: Path) -> None:
             }
         return {"step": step_name, "status": "success"}
 
-    # Force C4 pipeline to fail
-    def mock_c4_fail(*args, **kwargs):
-        raise RuntimeError("simulated C4 agent pipeline failure")
+    # Force composite analysis pipeline to fail
+    def mock_composite_analysis_fail(*args, **kwargs):
+        raise RuntimeError("simulated composite analysis agent pipeline failure")
 
     with (
         patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
-        patch("apps.worker.runner._run_c4_agent_pipeline", side_effect=mock_c4_fail),
+        patch("apps.worker.runner._run_composite_analysis_pipeline", side_effect=mock_composite_analysis_fail),
     ):
         from apps.worker.runner import run_premarket
 
         result = run_premarket(db, task.id, storage_root=tmp_path)
 
-    # C4 failure → partial_success (steps succeeded, C4 failed)
+    # composite analysis failure → partial_success (steps succeeded, composite analysis failed)
     assert result == TaskStatus.partial_success
 
     run_id = str(task.id)
@@ -860,5 +860,5 @@ def test_run_premarket_c4_failure_recorded_in_summaries(tmp_path: Path) -> None:
     summaries_candidates = list(base.glob(f"run/*/{run_id}/step_summaries.json"))
     assert len(summaries_candidates) == 1, f"Expected one step_summaries.json for {run_id}"
     summaries = json.loads(summaries_candidates[0].read_text(encoding="utf-8"))
-    assert summaries["steps"]["c4_agent_pipeline"]["status"] == "failed"
-    assert "partial_summary" in summaries["steps"]["c4_agent_pipeline"]
+    assert summaries["steps"]["composite_analysis_pipeline"]["status"] == "failed"
+    assert "partial_summary" in summaries["steps"]["composite_analysis_pipeline"]

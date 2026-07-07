@@ -441,7 +441,7 @@ def test_get_task_falls_back_to_dagster_run_when_legacy_task_missing(monkeypatch
                                 "endTime": 1781683764.4515185,
                             },
                             {
-                                "stepKey": "premarket.c4_agent_pipeline.strategy_card_op",
+                                "stepKey": "premarket.composite_analysis_pipeline.strategy_card_op",
                                 "status": "SUCCESS",
                                 "startTime": 1781683770.0,
                                 "endTime": 1781683772.2973607,

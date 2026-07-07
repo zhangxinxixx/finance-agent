@@ -103,7 +103,7 @@ Worker：
 
 待统一：
 
-- C4 agent/final report/strategy card 尚未完全拆成 TaskStep。
+- domain agents/final report/strategy card 尚未完全拆成 TaskStep。
 - 报告四类标准 artifact 需要按 report family 完整校准。
 - Alembic migrations 缺失。
 - 前端 mock/fallback 状态需要更严格展示。

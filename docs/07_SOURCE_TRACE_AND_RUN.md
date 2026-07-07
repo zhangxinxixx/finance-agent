@@ -114,7 +114,7 @@ TaskRun
 
 - 并非所有 legacy report 都有完整 `ReportItem` / `ReportArtifact`。
 - TaskStep 的 `artifact_refs` 与最终 ReportArtifact 之间还需要统一。
-- C4 agent/final report/strategy card 在 worker 末尾执行，未完全拆成显式 TaskStep。
+- domain agents/final report/strategy card 在 worker 末尾执行，未完全拆成显式 TaskStep。
 
 ## 验收标准
 

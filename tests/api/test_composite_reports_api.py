@@ -1,4 +1,4 @@
-"""C4 Final Report / Strategy Card / Reports Index API 测试。"""
+"""composite analysis Final Report / Strategy Card / Reports Index API 测试。"""
 
 from __future__ import annotations
 
@@ -225,14 +225,14 @@ def test_get_strategy_card_exact(tmp_path: Path):
     sc_json = json.dumps({"bias": "neutral", "confidence": 0.5})
     sc_md = "# Strategy\nNeutral"
     _make_tree(tmp_path, {
-        "storage/outputs/strategy_card/XAUUSD/2026-05-14/manual-c4/strategy_card.json": sc_json,
-        "storage/outputs/strategy_card/XAUUSD/2026-05-14/manual-c4/strategy_card.md": sc_md,
+        "storage/outputs/strategy_card/XAUUSD/2026-05-14/manual-composite/strategy_card.json": sc_json,
+        "storage/outputs/strategy_card/XAUUSD/2026-05-14/manual-composite/strategy_card.md": sc_md,
     })
     with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
-        data = get_strategy_card(date="2026-05-14", run_id="manual-c4")
+        data = get_strategy_card(date="2026-05-14", run_id="manual-composite")
     assert data is not None
     assert data["trade_date"] == "2026-05-14"
-    assert data["run_id"] == "manual-c4"
+    assert data["run_id"] == "manual-composite"
     assert data["json"]["bias"] == "neutral"
     assert data["markdown"] == sc_md
 

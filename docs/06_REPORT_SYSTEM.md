@@ -63,7 +63,7 @@ report_structured.json
 
 | 报告族 | 当前入口 | 说明 |
 | --- | --- | --- |
-| Final Report | `/api/final-report/latest`、`/api/final-report`、`/api/reports/{report_id}` | C4 pipeline 输出 |
+| Final Report | `/api/final-report/latest`、`/api/final-report`、`/api/reports/{report_id}` | 综合分析链路 输出 |
 | Strategy Card | `/api/strategy-card/latest`、`/api/strategy-card`、`/api/strategy-cards*` | 策略卡 read model |
 | CME Options | `/api/options/report`、`/api/options/visual-report*`、`/api/reports/{report_id}` | Markdown + HTML visual |
 | Macro | `/api/macro/report`、`storage/outputs/macro/*` | 宏观快照 Markdown |

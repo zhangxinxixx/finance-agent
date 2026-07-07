@@ -206,7 +206,7 @@ def execute_agent_loop_fallback_tasks(
     source_health: dict[str, Any] | None = None,
     created_at: datetime | None = None,
 ) -> AgentLoopFallbackExecution:
-    """Run deterministic fallback tasks for the C4 AgentLoop.
+    """Run deterministic fallback tasks for the composite-analysis agent loop.
 
     The first executable fallback is conservative synthesis: it preserves
     source/evidence refs, downgrades bias to neutral, caps confidence, and marks
