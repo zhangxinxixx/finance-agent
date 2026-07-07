@@ -30,6 +30,7 @@ from apps.gold_runtime_orchestration import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ANALYSIS_ROOT = PROJECT_ROOT / "apps/analysis"
 
 
 def _quoted_strings(value: str) -> list[str]:
@@ -95,6 +96,17 @@ def _walk_strings(value: Any) -> list[str]:
             strings.extend(_walk_strings(item))
         return strings
     return []
+
+
+def test_analysis_layer_does_not_import_api_services() -> None:
+    offenders: list[str] = []
+    for path in sorted(ANALYSIS_ROOT.rglob("*.py")):
+        relative = path.relative_to(PROJECT_ROOT)
+        source = path.read_text(encoding="utf-8")
+        if "apps.api.services" in source:
+            offenders.append(str(relative))
+
+    assert offenders == []
 
 
 def test_gold_mainline_ids_are_canonical_across_backend_runtime_prompt_source_health_and_frontend() -> None:

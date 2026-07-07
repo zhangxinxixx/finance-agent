@@ -5,8 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision, evaluate_quality_gate
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
-from apps.api.services.quality_gate_service import QualityGateAction, QualityGateDecision, evaluate_quality_gate
 
 
 class AgentLoopFallbackTask(BaseModel):
