@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "tsc --noEmit",
+    "test": "npm run test:markdown-viewer && npm run test:market-kline && npm run test:gold-v3-page-bindings && npm run test:pipeline-dag && npm run test:review-center-actions",
     "test:markdown-viewer": "node scripts/check-markdown-viewer.mjs",
     "test:market-kline": "node scripts/check-market-kline-coverage.mjs",
     "test:gold-v3-page-bindings": "node scripts/check-gold-v3-page-bindings.mjs",
