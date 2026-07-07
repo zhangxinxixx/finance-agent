@@ -1084,6 +1084,91 @@ def test_run_gold_mainline_pipeline_auto_loads_macro_policy_context_without_fed_
     assert "fed_funds_futures" in fed_requirement["missing_sources"]
 
 
+def test_run_gold_mainline_pipeline_auto_loads_policy_expectations_artifact(tmp_path: Path, capsys) -> None:
+    _write_input_artifacts(tmp_path, date="2026-06-30", run_id="source-run")
+    macro_dir = tmp_path / "features" / "macro" / "2026-06-30" / "macro-run"
+    macro_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        macro_dir / "macro_snapshot.json",
+        {
+            "as_of": "2026-06-30",
+            "indicators": {
+                "US02Y": {"value": 4.14, "weekly_change": 0.12},
+                "US10Y": {"value": 4.44, "weekly_change": 0.08},
+            },
+            "source_refs": {
+                "US02Y": {"source": "treasury_yields", "raw_path": "raw/market/us02y.json"},
+                "US10Y": {"source": "treasury_yields", "raw_path": "raw/market/us10y.json"},
+            },
+        },
+    )
+    _write_json(
+        macro_dir / "policy_expectations.json",
+        {
+            "as_of": "2026-06-30T20:00:00+00:00",
+            "provider": "cme_fedwatch",
+            "target_meeting": "2026-09-16",
+            "current_target_midpoint": 3.625,
+            "implied_target_midpoint": 3.875,
+            "hike_probability": 0.64,
+            "cut_probability": 0.04,
+            "hold_probability": 0.32,
+            "fomc_tone": "hawkish",
+            "source_refs": [
+                {
+                    "source": "cme_fedwatch",
+                    "source_ref": "fedwatch:2026-09-16",
+                    "source_tier": "official",
+                    "lineage_type": "feature_artifact",
+                }
+            ],
+        },
+    )
+
+    exit_code = run_gold_mainline_pipeline.main(
+        [
+            "--storage-root",
+            str(tmp_path),
+            "--date",
+            "2026-06-30",
+            "--run-id",
+            "source-run",
+            "--output-run-id",
+            "gold-mainlines-policy-expectations-test",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out)
+    overview = json.loads((tmp_path / summary["gold_macro_overview_path"]).read_text(encoding="utf-8"))
+    expected_policy_context_path = (
+        "analysis/gold_mainlines/2026-06-30/gold-mainlines-policy-expectations-test/policy_context.json"
+    )
+    assert overview["input_snapshot_ids"]["policy_context"] == expected_policy_context_path
+    policy_context = json.loads((tmp_path / expected_policy_context_path).read_text(encoding="utf-8"))
+    assert policy_context["fed_policy_bias"] == "higher_for_longer"
+    assert policy_context["rate_expectation_delta"] == 0.25
+    assert policy_context["cut_hike_probability"] == 0.64
+    assert policy_context["fomc_tone"] == "hawkish"
+    assert policy_context["policy_surprise"] == "hawkish_futures_repricing"
+    assert policy_context["treasury_2y_change"] == 0.12
+    assert policy_context["treasury_10y_change"] == 0.08
+    assert policy_context["source_refs"][0]["source"] == "cme_fedwatch"
+    assert policy_context["source_refs"][0]["source_tier"] == "official"
+    assert policy_context["source_refs"][0]["evidence_role"] == "policy_context"
+    assert policy_context["source_refs"][0]["policy_expectations_path"] == (
+        "features/macro/2026-06-30/macro-run/policy_expectations.json"
+    )
+
+    fed = next(row for row in overview["theme_rankings"] if row["mainline_id"] == "fed_policy_path")
+    assert fed["feature_fields"]["fed_policy_bias"] == "higher_for_longer"
+    assert fed["feature_fields"]["rate_expectation_delta"] == 0.25
+    assert fed["feature_fields"]["cut_hike_probability"] == 0.64
+    assert fed["missing_data"] == []
+    fed_requirement = next(item for item in overview["mainline_requirements"] if item["mainline_id"] == "fed_policy_path")
+    assert fed_requirement["readiness_status"] == "ready"
+
+
 def test_run_gold_mainline_pipeline_auto_loads_news_geopolitical_context(tmp_path: Path, capsys) -> None:
     _write_input_artifacts(tmp_path, date="2026-06-30", run_id="source-run")
 

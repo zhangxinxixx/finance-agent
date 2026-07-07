@@ -1004,6 +1004,14 @@ def _number(value: Any) -> float | None:
         return None
 
 
+def _context_text(context: dict[str, Any], *aliases: str) -> str | None:
+    for alias in aliases:
+        value = context.get(alias)
+        if value not in {None, ""}:
+            return str(value)
+    return None
+
+
 def _option_positioning_crowding(call_put_oi_ratio: float | None) -> str | None:
     if call_put_oi_ratio is None:
         return None
@@ -1037,14 +1045,202 @@ def _resolve_policy_context(
     macro_context: dict[str, Any] | None = None,
     macro_snapshot_path: str | None = None,
 ) -> tuple[dict[str, Any], str | None]:
-    payload = _read_json(Path(value)) if value else _macro_policy_context(
-        macro_context=macro_context or {},
-        macro_snapshot_path=macro_snapshot_path,
-    )
+    if value:
+        payload = _read_json(Path(value))
+    else:
+        payload = _latest_policy_expectations_context(
+            storage_root=storage_root,
+            source_date=retrieved_date,
+            macro_context=macro_context or {},
+            macro_snapshot_path=macro_snapshot_path,
+        )
+        if not payload:
+            payload = _macro_policy_context(
+                macro_context=macro_context or {},
+                macro_snapshot_path=macro_snapshot_path,
+            )
     if not payload:
         return {}, None
     rel_path = Path("analysis") / "gold_mainlines" / retrieved_date / run_id / "policy_context.json"
     return payload, _persist_context_payload(storage_root=storage_root, rel_path=rel_path, kind="policy", payload=payload)
+
+
+def _latest_policy_expectations_context(
+    *,
+    storage_root: Path,
+    source_date: str,
+    macro_context: dict[str, Any],
+    macro_snapshot_path: str | None,
+) -> dict[str, Any]:
+    for path in _policy_expectations_candidates(
+        storage_root=storage_root,
+        source_date=source_date,
+        macro_snapshot_path=macro_snapshot_path,
+    ):
+        if not path.exists():
+            continue
+        payload = _read_json(path)
+        context = _policy_expectations_context_from_feature(
+            payload=payload,
+            feature_path=path.relative_to(storage_root).as_posix(),
+            macro_context=macro_context,
+            macro_snapshot_path=macro_snapshot_path,
+        )
+        if context:
+            return context
+    return {}
+
+
+def _policy_expectations_candidates(*, storage_root: Path, source_date: str, macro_snapshot_path: str | None) -> list[Path]:
+    candidates: list[Path] = []
+    if macro_snapshot_path:
+        candidates.append((storage_root / macro_snapshot_path).parent / "policy_expectations.json")
+    base = storage_root / "features" / "macro"
+    date_dir = base / source_date
+    if date_dir.exists():
+        candidates.extend(
+            run_dir / "policy_expectations.json"
+            for run_dir in sorted((item for item in date_dir.iterdir() if item.is_dir()), reverse=True)
+        )
+    if base.exists():
+        date_dirs = sorted((item for item in base.iterdir() if item.is_dir()), reverse=True)
+        candidates.extend(
+            run_dir / "policy_expectations.json"
+            for other_date_dir in date_dirs
+            if other_date_dir.name != source_date and other_date_dir.name <= source_date
+            for run_dir in sorted((item for item in other_date_dir.iterdir() if item.is_dir()), reverse=True)
+        )
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        unique.append(candidate)
+    return unique
+
+
+def _policy_expectations_context_from_feature(
+    *,
+    payload: dict[str, Any],
+    feature_path: str,
+    macro_context: dict[str, Any],
+    macro_snapshot_path: str | None,
+) -> dict[str, Any]:
+    rate_expectation_delta = _policy_expectation_delta(payload)
+    cut_hike_probability = _policy_cut_hike_probability(payload)
+    fomc_tone = _context_text(payload, "fomc_tone", "fed_tone", "statement_tone")
+    fed_policy_bias = _context_text(payload, "fed_policy_bias", "policy_bias", "fed_regime") or _policy_bias_from_expectations(
+        rate_expectation_delta=rate_expectation_delta,
+        hike_probability=_expectation_probability(payload, "hike_probability", "hike", "raise"),
+        cut_probability=_expectation_probability(payload, "cut_probability", "cut", "ease"),
+    )
+    policy_surprise = _context_text(payload, "policy_surprise", "surprise_signal") or _policy_surprise_from_expectations(
+        rate_expectation_delta=rate_expectation_delta,
+        cut_hike_probability=cut_hike_probability,
+    )
+    if all(value in {None, ""} for value in [rate_expectation_delta, cut_hike_probability, fomc_tone, fed_policy_bias, policy_surprise]):
+        return {}
+
+    macro_policy = _macro_policy_context(macro_context=macro_context, macro_snapshot_path=macro_snapshot_path)
+    source_refs = _policy_expectations_source_refs(payload=payload, feature_path=feature_path)
+    source_refs.extend(macro_policy.get("source_refs") or [])
+    return {
+        "fed_policy_bias": fed_policy_bias,
+        "rate_expectation_delta": rate_expectation_delta,
+        "cut_hike_probability": cut_hike_probability,
+        "fomc_tone": fomc_tone,
+        "policy_surprise": policy_surprise,
+        "treasury_2y_change": macro_policy.get("treasury_2y_change"),
+        "treasury_10y_change": macro_policy.get("treasury_10y_change"),
+        "as_of": payload.get("as_of") or macro_policy.get("as_of"),
+        "provider_role": str(payload.get("provider_role") or "official_source"),
+        "verification_status": str(payload.get("verification_status") or "official_confirmed"),
+        "source_refs": source_refs,
+    }
+
+
+def _policy_expectation_delta(payload: dict[str, Any]) -> float | None:
+    direct = _number(payload.get("rate_expectation_delta") or payload.get("fed_funds_delta") or payload.get("terminal_rate_delta"))
+    if direct is not None:
+        return direct
+    current = _number(payload.get("current_target_midpoint") or payload.get("current_rate_midpoint"))
+    implied = _number(payload.get("implied_target_midpoint") or payload.get("implied_rate_midpoint") or payload.get("terminal_rate"))
+    if current is None or implied is None:
+        return None
+    return round(implied - current, 6)
+
+
+def _policy_cut_hike_probability(payload: dict[str, Any]) -> float | None:
+    direct = _number(payload.get("cut_hike_probability") or payload.get("fed_watch_probability") or payload.get("policy_probability"))
+    if direct is not None:
+        return direct
+    probabilities = [
+        value
+        for value in [
+            _expectation_probability(payload, "hike_probability", "hike", "raise"),
+            _expectation_probability(payload, "cut_probability", "cut", "ease"),
+        ]
+        if value is not None
+    ]
+    return max(probabilities) if probabilities else None
+
+
+def _expectation_probability(payload: dict[str, Any], *keys: str) -> float | None:
+    probabilities = payload.get("probabilities") if isinstance(payload.get("probabilities"), dict) else {}
+    for key in keys:
+        value = _number(payload.get(key))
+        if value is not None:
+            return value
+        value = _number(probabilities.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _policy_bias_from_expectations(
+    *,
+    rate_expectation_delta: float | None,
+    hike_probability: float | None,
+    cut_probability: float | None,
+) -> str:
+    if rate_expectation_delta is not None:
+        if rate_expectation_delta >= 0.125:
+            return "higher_for_longer"
+        if rate_expectation_delta <= -0.125:
+            return "easing_repricing"
+    if hike_probability is not None and (cut_probability is None or hike_probability > cut_probability):
+        return "higher_for_longer"
+    if cut_probability is not None and (hike_probability is None or cut_probability > hike_probability):
+        return "easing_repricing"
+    return "watch"
+
+
+def _policy_surprise_from_expectations(*, rate_expectation_delta: float | None, cut_hike_probability: float | None) -> str:
+    probability = cut_hike_probability or 0.0
+    delta = rate_expectation_delta or 0.0
+    if delta >= 0.125 and probability >= 0.5:
+        return "hawkish_futures_repricing"
+    if delta <= -0.125 and probability >= 0.5:
+        return "dovish_futures_repricing"
+    if abs(delta) >= 0.125:
+        return "futures_repricing"
+    return "no_major_surprise"
+
+
+def _policy_expectations_source_refs(*, payload: dict[str, Any], feature_path: str) -> list[dict[str, Any]]:
+    refs = [dict(ref) for ref in payload.get("source_refs") or [] if isinstance(ref, dict)]
+    if not refs:
+        refs = [{"source": str(payload.get("provider") or "policy_expectations"), "source_ref": "fed_funds_futures"}]
+    for ref in refs:
+        ref.setdefault("source", str(payload.get("provider") or "policy_expectations"))
+        ref["policy_expectations_path"] = feature_path
+        ref.setdefault("provider_role", "official_source")
+        ref.setdefault("source_tier", "official")
+        ref.setdefault("evidence_role", "policy_context")
+        ref.setdefault("lineage_type", "feature_artifact")
+        ref.setdefault("verification_status", "official_confirmed")
+    return refs
 
 
 def _macro_policy_context(*, macro_context: dict[str, Any], macro_snapshot_path: str | None) -> dict[str, Any]:
