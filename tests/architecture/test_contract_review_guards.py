@@ -133,6 +133,19 @@ def test_worker_error_policy_lives_in_dedicated_module() -> None:
     assert runner._is_retryable_error_type is error_policy.is_retryable_error_type
 
 
+def test_worker_artifact_registration_lives_in_dedicated_module() -> None:
+    from apps.worker import artifact_registration, runner
+
+    assert runner._register_runner_step_artifacts is artifact_registration.register_runner_step_artifacts
+    assert runner._register_composite_output_artifacts is artifact_registration.register_composite_output_artifacts
+    assert runner._register_run_support_artifacts is artifact_registration.register_run_support_artifacts
+    assert runner._enrich_runner_artifact_metadata is artifact_registration.enrich_runner_artifact_metadata
+    assert runner._coerce_lineage_source_refs is artifact_registration.coerce_lineage_source_refs
+    assert runner._coerce_lineage_input_snapshot_ids is artifact_registration.coerce_lineage_input_snapshot_ids
+    assert runner._merge_lineage_source_refs is artifact_registration.merge_lineage_source_refs
+    assert runner._merge_lineage_input_snapshot_ids is artifact_registration.merge_lineage_input_snapshot_ids
+
+
 def test_gold_mainline_ids_are_canonical_across_backend_runtime_prompt_source_health_and_frontend() -> None:
     canonical = list(GOLD_MAINLINE_IDS)
 
