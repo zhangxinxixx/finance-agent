@@ -31,6 +31,14 @@ export type KnownProcessingStageStatus =
 
 export type ProcessingStageStatus = KnownProcessingStageStatus | "unknown";
 
+export type KnownProcessingTraceEntityType =
+  | "news"
+  | "report_input"
+  | "event"
+  | "analysis_signal";
+
+export type ProcessingTraceEntityType = KnownProcessingTraceEntityType | "unknown";
+
 export interface ProcessingStage {
   stage_id: string;
   status: ProcessingStageStatus;
@@ -43,7 +51,7 @@ export interface ProcessingStage {
 
 export interface ProcessingTrace {
   trace_id: string;
-  entity_type: "news" | "report_input" | "event" | "analysis_signal" | string;
+  entity_type: ProcessingTraceEntityType;
   entity_id: string;
   source_refs: SourceRef[];
   artifact_refs: ArtifactRef[];

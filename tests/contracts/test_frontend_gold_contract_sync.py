@@ -15,6 +15,7 @@ from apps.gold_mainline_contract import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_GOLD_TYPES = PROJECT_ROOT / "apps/frontend-web/src/types/gold-mainlines.ts"
+FRONTEND_PROCESSING_TYPES = PROJECT_ROOT / "apps/frontend-web/src/types/processing-monitor.ts"
 FRONTEND_GENERATED_GOLD_CONTRACT = PROJECT_ROOT / "apps/frontend-web/src/generated/gold-contract.ts"
 GENERATE_FRONTEND_CONTRACTS = PROJECT_ROOT / "scripts/generate_frontend_contracts.py"
 
@@ -54,6 +55,12 @@ def test_frontend_gold_types_reexport_generated_contract_types() -> None:
 
 def test_frontend_gold_view_model_types_do_not_accept_arbitrary_string_enums() -> None:
     source = FRONTEND_GOLD_TYPES.read_text(encoding="utf-8")
+
+    assert "| string" not in source
+
+
+def test_processing_monitor_view_model_types_do_not_accept_arbitrary_string_enums() -> None:
+    source = FRONTEND_PROCESSING_TYPES.read_text(encoding="utf-8")
 
     assert "| string" not in source
 

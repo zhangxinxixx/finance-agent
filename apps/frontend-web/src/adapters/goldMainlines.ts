@@ -2,6 +2,7 @@ import { fetchJson } from "@/adapters/apiClient";
 import { GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_PATH_IDS } from "@/generated/gold-contract";
 import type { ArtifactRef } from "@/types/artifact";
 import type { SourceRef } from "@/types/common";
+import type { ProcessingStageStatus, ProcessingTrace, ProcessingTraceEntityType } from "@/types/processing-monitor";
 import type {
   AnalysisReadiness,
   DriverConflict,
@@ -77,6 +78,8 @@ const GOLD_IMPACT_STRENGTH_SET = new Set<string>(["high", "medium", "low", "weak
 const GOLD_CONCLUSION_CODE_SET = new Set<string>(["A", "B", "C", "D", "unknown"]);
 const GOLD_READINESS_SET = new Set<string>(["ready", "partial", "missing", "unknown"]);
 const VERIFICATION_ITEM_STATUS_SET = new Set<string>(["confirmed", "pending", "failed", "unavailable", "not_required", "unknown"]);
+const PROCESSING_TRACE_ENTITY_TYPE_SET = new Set<string>(["news", "report_input", "event", "analysis_signal", "unknown"]);
+const PROCESSING_STAGE_STATUS_SET = new Set<string>(["raw", "parsed", "normalized", "attributed", "validated", "projected", "rendered", "unknown"]);
 
 export interface GoldMainlinesResponse {
   status: GoldMainlineStatus;
@@ -326,6 +329,28 @@ function normalizeAnalysisReadiness(value: unknown): AnalysisReadiness | undefin
   };
 }
 
+function normalizeProcessingTraceList(value: unknown): ProcessingTrace[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return recordList(value).map((trace) => ({
+    trace_id: stringValue(trace.trace_id),
+    entity_type: oneOf<ProcessingTraceEntityType>(trace.entity_type, PROCESSING_TRACE_ENTITY_TYPE_SET, "unknown"),
+    entity_id: stringValue(trace.entity_id),
+    source_refs: normalizeSourceRefs(trace.source_refs),
+    artifact_refs: normalizeArtifactRefs(trace.artifact_refs),
+    stages: recordList(trace.stages).map((stage) => ({
+      stage_id: stringValue(stage.stage_id),
+      status: oneOf<ProcessingStageStatus>(stage.status, PROCESSING_STAGE_STATUS_SET, "unknown"),
+      started_at: nullableString(stage.started_at),
+      finished_at: nullableString(stage.finished_at),
+      source_refs: normalizeSourceRefs(stage.source_refs),
+      artifact_refs: normalizeArtifactRefs(stage.artifact_refs),
+      warnings: normalizeStringList(stage.warnings),
+    })),
+    current_status: oneOf<ProcessingStageStatus>(trace.current_status, PROCESSING_STAGE_STATUS_SET, "unknown"),
+    warnings: normalizeStringList(trace.warnings),
+  }));
+}
+
 function normalizeGoldMacroOverview(value: unknown): GoldMacroOverview | null {
   const item = asRecord(value);
   if (Object.keys(item).length === 0) return null;
@@ -350,7 +375,7 @@ function normalizeGoldMacroOverview(value: unknown): GoldMacroOverview | null {
     key_events: normalizeStringList(item.key_events),
     source_refs: normalizeSourceRefs(item.source_refs),
     artifact_refs: normalizeArtifactRefs(item.artifact_refs),
-    processing_traces: Array.isArray(item.processing_traces) ? item.processing_traces as GoldMacroOverview["processing_traces"] : undefined,
+    processing_traces: normalizeProcessingTraceList(item.processing_traces),
     warnings: normalizeStringList(item.warnings),
   };
 }
