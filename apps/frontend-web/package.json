@@ -9,6 +9,7 @@
     "lint": "tsc --noEmit",
     "test:markdown-viewer": "node scripts/check-markdown-viewer.mjs",
     "test:market-kline": "node scripts/check-market-kline-coverage.mjs",
+    "test:gold-v3-page-bindings": "node scripts/check-gold-v3-page-bindings.mjs",
     "test:pipeline-dag": "node scripts/check-pipeline-dag-gold-mainline.mjs",
     "test:review-center-actions": "node scripts/check-review-center-actions.mjs",
     "typecheck": "tsc --noEmit",
