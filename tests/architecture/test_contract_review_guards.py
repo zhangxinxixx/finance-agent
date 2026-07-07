@@ -117,6 +117,15 @@ def test_quality_gate_fallback_executor_lives_in_dedicated_module() -> None:
     assert execute_agent_loop_fallback_tasks.__module__ == "apps.analysis.agents.fallback_executor"
 
 
+def test_worker_source_readiness_gate_lives_in_dedicated_module() -> None:
+    from apps.worker import runner, source_readiness_gate
+
+    assert runner._load_premarket_source_status_index is source_readiness_gate.load_premarket_source_status_index
+    assert runner._should_apply_source_readiness_gate is source_readiness_gate.should_apply_source_readiness_gate
+    assert runner._format_source_readiness_blocked_reason is source_readiness_gate.format_source_readiness_blocked_reason
+    assert runner._emit_source_readiness_events is source_readiness_gate.emit_source_readiness_events
+
+
 def test_gold_mainline_ids_are_canonical_across_backend_runtime_prompt_source_health_and_frontend() -> None:
     canonical = list(GOLD_MAINLINE_IDS)
 
