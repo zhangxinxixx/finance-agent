@@ -159,6 +159,15 @@ def test_worker_composite_analysis_pipeline_lives_in_dedicated_module() -> None:
     assert runner._accepted_coordinator_output is composite_analysis_pipeline.accepted_coordinator_output
 
 
+def test_worker_db_persistence_lives_in_dedicated_module() -> None:
+    from apps.worker import db_persistence, runner
+
+    assert runner._db_persist_analysis_snapshot is db_persistence.db_persist_analysis_snapshot
+    assert runner._db_persist_agent_outputs is db_persistence.db_persist_agent_outputs
+    assert runner._db_persist_final_result is db_persistence.db_persist_final_result
+    assert runner._ensure_review_items is db_persistence.ensure_review_items
+
+
 def test_gold_mainline_ids_are_canonical_across_backend_runtime_prompt_source_health_and_frontend() -> None:
     canonical = list(GOLD_MAINLINE_IDS)
 
