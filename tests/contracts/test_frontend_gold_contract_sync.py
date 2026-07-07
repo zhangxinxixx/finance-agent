@@ -52,6 +52,12 @@ def test_frontend_gold_types_reexport_generated_contract_types() -> None:
     assert re.search(r"export type TransmissionPath\s*=", source) is None
 
 
+def test_frontend_gold_view_model_types_do_not_accept_arbitrary_string_enums() -> None:
+    source = FRONTEND_GOLD_TYPES.read_text(encoding="utf-8")
+
+    assert "| string" not in source
+
+
 def test_frontend_gold_contract_generation_is_up_to_date() -> None:
     result = subprocess.run(
         [sys.executable, str(GENERATE_FRONTEND_CONTRACTS), "--check"],

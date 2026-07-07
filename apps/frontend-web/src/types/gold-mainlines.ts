@@ -42,22 +42,28 @@ export type GoldNetBias =
 
 export type GoldMainlineTrend = "rising" | "falling" | "stable" | "new" | "unknown";
 
-export type GoldVerificationStatus =
+export type KnownGoldVerificationStatus =
   | "official_confirmed"
   | "multi_source"
   | "report_derived"
   | "single_source"
   | "unverified"
-  | "not_applicable"
-  | string;
+  | "needs_verification"
+  | "not_applicable";
 
-export type GoldMainlineStatus = DataStatus | "stale" | "fallback" | "manual_required";
+export type GoldVerificationStatus = KnownGoldVerificationStatus | "unknown";
+
+export type GoldMainlineStatus = DataStatus | "stale" | "fallback" | "manual_required" | "unknown";
+export type GoldImpactStrength = "high" | "medium" | "low" | "weak" | "strong" | "unknown";
+export type GoldChainConclusionCode = "A" | "B" | "C" | "D" | "unknown";
+export type GoldReadinessStatus = "ready" | "partial" | "missing" | "unknown";
+export type GoldSchemaVersion = "gold-event-mainlines-v1" | "unknown";
 
 export interface GoldMainlineRanking {
-  mainline_id?: GoldMainline | string | null;
-  mainline?: GoldMainline | string | null;
+  mainline_id?: GoldMainline | null;
+  mainline?: GoldMainline | null;
   label: string;
-  pricing_layer: GoldPricingLayer;
+  pricing_layer: GoldPricingLayer | "unknown";
   rank: number;
   score: number | null;
   theme_score?: number | null;
@@ -69,8 +75,8 @@ export interface GoldMainlineRanking {
   confidence: number | null;
   verification_status: GoldVerificationStatus;
   trend: GoldMainlineTrend;
-  impact_strength?: "high" | "medium" | "low" | "weak" | "strong" | string | null;
-  freshness?: GoldMainlineStatus | string | null;
+  impact_strength?: GoldImpactStrength | null;
+  freshness?: GoldMainlineStatus | null;
   evidence_count?: number | null;
   missing_data?: string[] | null;
   related_event_ids?: string[];
@@ -95,16 +101,16 @@ export interface TransmissionChainSummary {
   path_id: TransmissionPath;
   label: string;
   status: GoldMainlineStatus;
-  conclusion_code?: "A" | "B" | "C" | "D" | string;
+  conclusion_code?: GoldChainConclusionCode;
   conclusion_label?: string;
   net_effect: GoldNetBias;
-  geopolitical_status?: GoldMainlineStatus | string | null;
-  oil_status?: GoldMainlineStatus | string | null;
-  inflation_expectation_status?: GoldMainlineStatus | string | null;
-  fed_expectation_status?: GoldMainlineStatus | string | null;
-  real_rate_status?: GoldMainlineStatus | string | null;
-  dollar_status?: GoldMainlineStatus | string | null;
-  gold_effect?: GoldNetBias | string | null;
+  geopolitical_status?: GoldMainlineStatus | null;
+  oil_status?: GoldMainlineStatus | null;
+  inflation_expectation_status?: GoldMainlineStatus | null;
+  fed_expectation_status?: GoldMainlineStatus | null;
+  real_rate_status?: GoldMainlineStatus | null;
+  dollar_status?: GoldMainlineStatus | null;
+  gold_effect?: GoldNetBias | null;
   conclusion?: string | null;
   verification_needed?: string[];
   dominant_driver?: string | null;
@@ -132,7 +138,7 @@ export type DriverDecomposition = DriverConflict;
 export interface VerificationItem {
   id: string;
   label: string;
-  status: "confirmed" | "pending" | "failed" | "unavailable" | "not_required" | string;
+  status: "confirmed" | "pending" | "failed" | "unavailable" | "not_required" | "unknown";
   mainline_id?: GoldMainline | null;
   event_id?: string | null;
   required_source?: string | null;
@@ -141,9 +147,9 @@ export interface VerificationItem {
 }
 
 export interface MainlineRequirement {
-  mainline_id: GoldMainline | string;
+  mainline_id: GoldMainline | null;
   label: string;
-  pricing_layer: GoldPricingLayer | string;
+  pricing_layer: GoldPricingLayer | "unknown";
   asset_principle: string;
   analysis_chain: string[];
   required_sources: string[];
@@ -151,14 +157,14 @@ export interface MainlineRequirement {
   developed_sources: string[];
   missing_sources: string[];
   missing_fields: string[];
-  readiness_status: "ready" | "partial" | "missing" | string;
+  readiness_status: GoldReadinessStatus;
   page_targets: string[];
   verification_requirements: string[];
   development_gaps: string[];
 }
 
 export interface AnalysisReadiness {
-  status: "ready" | "partial" | "missing" | string;
+  status: GoldReadinessStatus;
   ready_count: number;
   partial_count: number;
   missing_count: number;
@@ -188,7 +194,7 @@ export interface GoldMainlineEventLink {
 
 export interface GoldMainlinesViewModel {
   status: GoldMainlineStatus;
-  schema_version: "gold-event-mainlines-v1" | string;
+  schema_version: GoldSchemaVersion;
   asset: GoldAsset;
   as_of: string | null;
   mainlines: GoldMainlineRanking[];

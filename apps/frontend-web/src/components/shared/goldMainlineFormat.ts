@@ -184,7 +184,7 @@ export const GOLD_PHASE_LABELS: Record<GoldPhase, string> = {
   unknown: "未知",
 };
 
-export const GOLD_VERIFICATION_STATUS_LABELS: Record<GoldVerificationStatus, string> = {
+export const GOLD_VERIFICATION_STATUS_LABELS: Record<string, string> = {
   confirmed: "已确认",
   pending: "待验证",
   failed: "验证失败",
@@ -195,7 +195,9 @@ export const GOLD_VERIFICATION_STATUS_LABELS: Record<GoldVerificationStatus, str
   report_derived: "报告推导",
   single_source: "单一来源",
   unverified: "未验证",
+  needs_verification: "需要验证",
   not_applicable: "不适用",
+  unknown: "未知",
 };
 
 export const GOLD_DRIVER_LABELS: Record<string, string> = {
