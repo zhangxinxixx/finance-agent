@@ -1,6 +1,9 @@
 import type { ArtifactRef } from "@/types/artifact";
 import type { DataStatus, SourceRef } from "@/types/common";
+import type { GoldMainline, TransmissionChain, TransmissionPath } from "@/generated/gold-contract";
 import type { ProcessingTrace } from "@/types/processing-monitor";
+
+export type { GoldMainline, TransmissionChain, TransmissionPath } from "@/generated/gold-contract";
 
 export type GoldAsset = "XAUUSD" | "gold";
 
@@ -15,37 +18,6 @@ export type GoldPricingLayer =
   | "capital_confirmation"
   | "structural_support"
   | "price_confirmation";
-
-export type GoldMainline =
-  | "fed_policy_path"
-  | "real_rates_usd"
-  | "oil_prices"
-  | "geopolitical_war_risk"
-  | "gold_technical_levels"
-  | "etf_flows"
-  | "central_bank_gold"
-  | "china_asia_demand"
-  | "institutional_sentiment";
-
-export type TransmissionPath =
-  | "inflation_to_real_rates"
-  | "usd_pressure"
-  | "geopolitics_to_oil_to_rates"
-  | "haven_bid"
-  | "capital_confirmation"
-  | "reserve_reallocation"
-  | "asia_demand"
-  | "technical_confirmation";
-
-export type TransmissionChain =
-  | "rate_chain"
-  | "dollar_chain"
-  | "war_oil_rate_chain"
-  | "safe_haven_chain"
-  | "flow_chain"
-  | "reserve_chain"
-  | "asia_demand_chain"
-  | "technical_chain";
 
 export type GoldPhase =
   | "strong_uptrend"

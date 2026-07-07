@@ -7,7 +7,7 @@ from typing import Any
 
 from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
-from apps.gold_mainline_contract import (
+from apps.contracts.gold import (
     GOLD_MAINLINE_IDS,
     GOLD_TRANSMISSION_CHAIN_IDS,
     normalize_gold_mainline_id,

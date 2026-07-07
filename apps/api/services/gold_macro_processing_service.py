@@ -9,7 +9,7 @@ from apps.analysis.gold_mainline_engine import (
     decompose_mixed_drivers,
 )
 from apps.features.news.gold_event_mainlines import build_gold_event_mainlines
-from apps.gold_mainline_contract import normalize_gold_transmission_chain_id
+from apps.contracts.gold import normalize_gold_transmission_chain_id
 
 
 TRACE_STAGES = (

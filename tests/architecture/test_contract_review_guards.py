@@ -15,7 +15,7 @@ from apps.api.services import event_flow_service, report_service
 from apps.api.services import gold_mainline_service
 from apps.api.services import processing_monitor_service
 from apps.features.news.gold_event_mainlines import MAINLINE_ORDER, build_gold_event_mainlines
-from apps.gold_mainline_contract import (
+from apps.contracts.gold import (
     GOLD_MAINLINE_IDS,
     GOLD_TRANSMISSION_CHAIN_IDS,
     GOLD_TRANSMISSION_PATH_IDS,
@@ -38,9 +38,9 @@ def _quoted_strings(value: str) -> list[str]:
 
 
 def _frontend_gold_mainline_type_ids() -> set[str]:
-    path = PROJECT_ROOT / "apps/frontend-web/src/types/gold-mainlines.ts"
+    path = PROJECT_ROOT / "apps/frontend-web/src/generated/gold-contract.ts"
     text = path.read_text(encoding="utf-8")
-    match = re.search(r"export type GoldMainline =(?P<body>.*?);", text, re.S)
+    match = re.search(r"export const GOLD_MAINLINE_IDS = \[(?P<body>.*?)\] as const;", text, re.S)
     assert match is not None
     return set(_quoted_strings(match.group("body")))
 
@@ -54,17 +54,17 @@ def _frontend_gold_mainline_order_ids() -> list[str]:
 
 
 def _frontend_transmission_path_type_ids() -> set[str]:
-    path = PROJECT_ROOT / "apps/frontend-web/src/types/gold-mainlines.ts"
+    path = PROJECT_ROOT / "apps/frontend-web/src/generated/gold-contract.ts"
     text = path.read_text(encoding="utf-8")
-    match = re.search(r"export type TransmissionPath =(?P<body>.*?);", text, re.S)
+    match = re.search(r"export const GOLD_TRANSMISSION_PATH_IDS = \[(?P<body>.*?)\] as const;", text, re.S)
     assert match is not None
     return set(_quoted_strings(match.group("body")))
 
 
 def _frontend_transmission_chain_type_ids() -> set[str]:
-    path = PROJECT_ROOT / "apps/frontend-web/src/types/gold-mainlines.ts"
+    path = PROJECT_ROOT / "apps/frontend-web/src/generated/gold-contract.ts"
     text = path.read_text(encoding="utf-8")
-    match = re.search(r"export type TransmissionChain =(?P<body>.*?);", text, re.S)
+    match = re.search(r"export const GOLD_TRANSMISSION_CHAIN_IDS = \[(?P<body>.*?)\] as const;", text, re.S)
     assert match is not None
     return set(_quoted_strings(match.group("body")))
 

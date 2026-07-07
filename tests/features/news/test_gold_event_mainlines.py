@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from apps.features.news.gold_event_mainlines import MAINLINE_ORDER, build_gold_event_mainlines
-from apps.gold_mainline_contract import normalize_gold_transmission_chain_id
+from apps.contracts.gold import normalize_gold_transmission_chain_id
 
 
 def _event(

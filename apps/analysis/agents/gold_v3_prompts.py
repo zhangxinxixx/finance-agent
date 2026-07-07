@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from apps.gold_mainline_contract import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
+from apps.contracts.gold import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
 
 GOLD_V3_MAINLINES = list(GOLD_MAINLINE_IDS)
 

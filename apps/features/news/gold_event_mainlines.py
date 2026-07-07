@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from apps.gold_mainline_contract import GOLD_MAINLINE_IDS
+from apps.contracts.gold import GOLD_MAINLINE_IDS
 
 SCHEMA_VERSION = "gold-event-mainlines-v1"
 RULE_VERSION = "gold-event-mainlines-rules-v2"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from apps.gold_mainline_contract import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
+from apps.contracts.gold import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
 
 GoldRunMode = Literal[
     "premarket_full_run",

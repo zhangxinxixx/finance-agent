@@ -9,7 +9,7 @@ from apps.analysis.agents.source_health import build_gold_v3_source_health
 from apps.analysis.gold_mainline_engine import build_gold_macro_overview
 from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.source_service import get_data_source_statuses
-from apps.gold_mainline_contract import normalize_gold_mainline_id
+from apps.contracts.gold import normalize_gold_mainline_id
 
 logger = logging.getLogger(__name__)
 

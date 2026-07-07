@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
-from apps.gold_mainline_contract import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
+from apps.contracts.gold import GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_CHAIN_IDS
 from apps.gold_runtime_orchestration import (
     build_gold_runtime_execution_summary,
     build_gold_runtime_orchestration_contract,
