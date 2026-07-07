@@ -104,3 +104,42 @@ def test_system_evolution_improvement_proposals_include_required_review_fields()
             "test_plan",
         ):
             assert payload[field]
+
+
+def test_system_evolution_outputs_issue_34_review_contract_fields() -> None:
+    review = evaluate_system_evolution(
+        gold_macro_overview={
+            "net_bias": "mixed",
+            "driver_conflict": {},
+            "source_refs": [{"source": "event_flow", "source_ref": "event:1"}],
+        },
+    )
+
+    finding = review.findings[0].model_dump()
+    for field in (
+        "finding_id",
+        "category",
+        "title",
+        "description",
+        "affected_entities",
+        "confidence",
+        "created_at",
+    ):
+        assert finding[field]
+    assert finding["category"] == "driver_decomposition"
+
+    proposal = review.evolution_proposals[0].model_dump()
+    for field in (
+        "proposal_id",
+        "proposal_type",
+        "title",
+        "rationale",
+        "proposed_changes",
+        "expected_impact",
+        "risks",
+        "rollback_plan",
+        "test_plan",
+        "status",
+    ):
+        assert proposal[field]
+    assert proposal["status"] == "pending_review"

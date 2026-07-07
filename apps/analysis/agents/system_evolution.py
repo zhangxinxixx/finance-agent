@@ -2,29 +2,59 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SystemEvolutionFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    finding_id: str = ""
     code: str
     severity: str
+    category: str = ""
+    title: str = ""
     message: str
+    description: str = ""
+    affected_entities: dict[str, Any] = Field(default_factory=dict)
     evidence: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = Field(default=0.85, ge=0.0, le=1.0)
+    created_at: str = "1970-01-01T00:00:00+00:00"
+
+    @model_validator(mode="after")
+    def fill_issue_contract_fields(self) -> "SystemEvolutionFinding":
+        if not self.finding_id:
+            self.finding_id = f"finding:{self.code}"
+        if not self.category:
+            self.category = _finding_category(self.code)
+        if not self.title:
+            self.title = self.code.replace("_", " ")
+        if not self.description:
+            self.description = self.message
+        if not self.affected_entities:
+            self.affected_entities = _affected_entities(self.code, self.evidence)
+        return self
 
 
 class ImprovementProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     proposal_id: str
+    proposal_type: str = "backend_rule_update"
+    title: str = ""
     rationale: str
     proposed_changes: list[str]
     expected_impact: str
     risks: list[str]
     rollback_plan: str
     test_plan: list[str]
+    status: str = "pending_review"
     finding_codes: list[str]
+
+    @model_validator(mode="after")
+    def fill_issue_contract_fields(self) -> "ImprovementProposal":
+        if not self.title:
+            self.title = self.proposal_id.removeprefix("proposal:").replace("_", " ")
+        return self
 
 
 class SystemEvolutionReview(BaseModel):
@@ -221,6 +251,29 @@ def _build_proposals(findings: list[SystemEvolutionFinding]) -> list[Improvement
             )
         )
     return proposals
+
+
+def _finding_category(code: str) -> str:
+    if code == "mixed_without_driver_decomposition":
+        return "driver_decomposition"
+    if code == "war_oil_rate_chain_missing":
+        return "transmission_chain"
+    if code == "dashboard_strong_conclusion_without_source_refs":
+        return "view_binding"
+    if code == "p0_gap_strong_conclusion":
+        return "data_source_gap"
+    if code in {"quality_gate_blocked", "source_refs_missing"}:
+        return "report_quality"
+    return "runtime_quality"
+
+
+def _affected_entities(code: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    entities: dict[str, Any] = {"finding_codes": [code]}
+    for key in ("event_ids", "input_ids", "source_refs", "page_slots", "dag_node_ids", "agent_names"):
+        value = evidence.get(key)
+        if isinstance(value, list) and value:
+            entities[key] = value
+    return entities
 
 
 def _proposal_changes(code: str) -> list[str]:
