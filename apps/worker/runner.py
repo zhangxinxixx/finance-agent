@@ -33,6 +33,10 @@ from apps.premarket import (
 from apps.runtime.artifact_storage import get_artifact_storage
 from apps.runtime.artifact_registry import register_step_artifacts
 from apps.runtime.state_machine import derive_task_run_status, transition_task_run, transition_task_step
+from apps.worker.error_policy import (
+    classify_error_type as _classify_error_type,
+    is_retryable_error_type as _is_retryable_error_type,
+)
 from apps.worker.source_readiness_gate import (
     emit_source_readiness_events as _emit_source_readiness_events,
     format_source_readiness_blocked_reason as _format_source_readiness_blocked_reason,
@@ -302,9 +306,7 @@ def run_premarket(
             )
             # ── T1.3: classify error_type and retryable semantics ──
             step.error_type = _classify_error_type(exc)
-            step.retryable = step.error_type in (
-                "network_timeout", "data_unavailable",
-            )
+            step.retryable = _is_retryable_error_type(step.error_type)
             transition_task_step(
                 db,
                 step,
@@ -497,39 +499,6 @@ def run_premarket(
     transition_task_run(db, task, final_status, source="worker", reason="step_rollup")
     db.commit()
     return final_status
-
-
-def _classify_error_type(exc: Exception) -> str:
-    """Classify an exception into a structured error type for observability."""
-    exc_name = type(exc).__name__
-    exc_msg = str(exc).lower()
-
-    # Network / connectivity errors
-    if exc_name in (
-        "ConnectionError", "TimeoutError", "ConnectTimeout",
-        "ReadTimeout", "ConnectionResetError", "SocketError",
-    ) or "timeout" in exc_msg or "connection" in exc_msg:
-        return "network_timeout"
-
-    # Data unavailable (source returned no data / 404)
-    if exc_name in ("DataUnavailableError",) or "not found" in exc_msg or "unavailable" in exc_msg:
-        return "data_unavailable"
-
-    # Parse / validation errors (bad data, won't fix on retry)
-    if exc_name in (
-        "ValueError", "TypeError", "KeyError",
-        "JSONDecodeError", "ValidationError",
-    ) or "parse" in exc_msg:
-        return "parse_failure"
-
-    # Config / setup errors (won't fix on retry)
-    if exc_name in (
-        "ConfigError", "EnvironmentError", "KeyError",
-    ) or "config" in exc_msg or "api key" in exc_msg:
-        return "config_error"
-
-    # Default: unknown, conservatively retryable
-    return "unknown"
 
 
 def _apply_step_summary_status(db: DBSession, step, summary: dict[str, object] | None) -> str:

@@ -126,6 +126,13 @@ def test_worker_source_readiness_gate_lives_in_dedicated_module() -> None:
     assert runner._emit_source_readiness_events is source_readiness_gate.emit_source_readiness_events
 
 
+def test_worker_error_policy_lives_in_dedicated_module() -> None:
+    from apps.worker import error_policy, runner
+
+    assert runner._classify_error_type is error_policy.classify_error_type
+    assert runner._is_retryable_error_type is error_policy.is_retryable_error_type
+
+
 def test_gold_mainline_ids_are_canonical_across_backend_runtime_prompt_source_health_and_frontend() -> None:
     canonical = list(GOLD_MAINLINE_IDS)
 
