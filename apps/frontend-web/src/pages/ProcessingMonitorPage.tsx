@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useOutletContext } from "react-router-dom";
+import { Link, useOutletContext, useSearchParams } from "react-router-dom";
 import { ArrowRight, Network, RefreshCw, Search, ShieldCheck, Workflow } from "lucide-react";
 
 import {
@@ -468,8 +468,34 @@ function queryTrace(mode: ProcessingTraceMode, value: string): Promise<Processin
   return fetchProcessingTrace(value);
 }
 
+function isTraceMode(value: string | null): value is ProcessingTraceMode {
+  return TRACE_MODE_OPTIONS.some((item) => item.value === value);
+}
+
+function traceQueryFromSearchParams(params: URLSearchParams): { mode: ProcessingTraceMode; value: string } | null {
+  const q = params.get("q")?.trim();
+  const mode = params.get("mode");
+  if (q && isTraceMode(mode)) return { mode, value: q };
+
+  const aliases: Array<[string, ProcessingTraceMode]> = [
+    ["trace_id", "processing_trace_id"],
+    ["processing_trace_id", "processing_trace_id"],
+    ["event_id", "event_id"],
+    ["source_ref", "source_ref"],
+    ["input_id", "input_id"],
+    ["mainline", "mainline"],
+    ["transmission_chain", "transmission_chain"],
+  ];
+  for (const [key, nextMode] of aliases) {
+    const value = params.get(key)?.trim();
+    if (value) return { mode: nextMode, value };
+  }
+  return null;
+}
+
 export function ProcessingMonitorPage() {
   const shell = useOutletContext<AppShellOutletContext | null>() ?? { setHeaderContent: () => undefined };
+  const [searchParams] = useSearchParams();
   const [overview, setOverview] = useState<ProcessingOverviewResponse | null>(null);
   const [trace, setTrace] = useState<ProcessingTraceResponse | null>(null);
   const [mode, setMode] = useState<ProcessingTraceMode>("processing_trace_id");
@@ -501,6 +527,31 @@ export function ProcessingMonitorPage() {
   useEffect(() => {
     void loadOverview();
   }, [loadOverview]);
+
+  useEffect(() => {
+    const initialQuery = traceQueryFromSearchParams(searchParams);
+    if (!initialQuery) return;
+
+    let cancelled = false;
+    setMode(initialQuery.mode);
+    setQueryValue(initialQuery.value);
+    setLoadingTrace(true);
+    setTraceError(null);
+    queryTrace(initialQuery.mode, initialQuery.value)
+      .then((result) => {
+        if (!cancelled) setTrace(result);
+      })
+      .catch((error) => {
+        if (!cancelled) setTraceError(error instanceof Error ? error.message : "Trace 查询失败");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTrace(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
