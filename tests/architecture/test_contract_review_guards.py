@@ -152,6 +152,13 @@ def test_worker_report_registry_sink_lives_in_dedicated_module() -> None:
     assert runner._register_composite_report_registry_entries is report_registry_sink.register_composite_report_registry_entries
 
 
+def test_worker_composite_analysis_pipeline_lives_in_dedicated_module() -> None:
+    from apps.worker import composite_analysis_pipeline, runner
+
+    assert runner._run_composite_analysis_pipeline is composite_analysis_pipeline.run_composite_analysis_pipeline
+    assert runner._accepted_coordinator_output is composite_analysis_pipeline.accepted_coordinator_output
+
+
 def test_gold_mainline_ids_are_canonical_across_backend_runtime_prompt_source_health_and_frontend() -> None:
     canonical = list(GOLD_MAINLINE_IDS)
 
