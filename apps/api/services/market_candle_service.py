@@ -47,7 +47,13 @@ class SourcePlan:
     degraded_reason: str | None = None
 
 
-def get_market_candles(asset: str = "XAUUSD", timeframe: str = "1m", limit: int = 500) -> dict[str, Any]:
+def get_market_candles(
+    asset: str = "XAUUSD",
+    timeframe: str = "1m",
+    limit: int = 500,
+    *,
+    session: Any | None = None,
+) -> dict[str, Any]:
     normalized_asset = str(asset or "XAUUSD").upper()
     normalized_timeframe = normalize_timeframe(timeframe)
     requested_limit = _clamp_limit(limit)
@@ -74,8 +80,17 @@ def get_market_candles(asset: str = "XAUUSD", timeframe: str = "1m", limit: int 
             primary_source="market_candles:DXY:1d",
         )
 
-    session_factory = _market_session_factory()
-    with session_factory() as session:
+    if session is None:
+        session_factory = _market_session_factory()
+        with session_factory() as db_session:
+            ensure_analysis_tables(db_session)
+            plan = choose_best_source(
+                db_session,
+                asset=normalized_asset,
+                timeframe=normalized_timeframe,
+                limit=requested_limit,
+            )
+    else:
         ensure_analysis_tables(session)
         plan = choose_best_source(
             session,

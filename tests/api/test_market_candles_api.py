@@ -75,6 +75,36 @@ def test_market_candles_service_returns_native_daily_rows(monkeypatch):
     assert payload["source_trace"]["latest_raw_path"] == "raw/technical/yahoo/GC=F.json"
 
 
+def test_market_candles_service_accepts_injected_session(monkeypatch):
+    factory = _session_factory()
+    with factory() as session:
+        upsert_market_candle(
+            session,
+            asset="XAUUSD",
+            timeframe="1d",
+            open_time=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+            open=3330.0,
+            high=3350.0,
+            low=3320.0,
+            close=3345.0,
+            source="yahoo_finance_gc_f",
+            raw_path="raw/technical/yahoo/GC=F-20260702.json",
+        )
+        session.commit()
+
+        def fail_factory():
+            raise AssertionError("session factory should not be used when a session is injected")
+
+        monkeypatch.setattr("apps.api.services.market_candle_service._market_session_factory", fail_factory)
+
+        payload = get_market_candles(asset="XAUUSD", timeframe="1D", limit=1, session=session)
+
+    assert payload["source_timeframe"] == "1D"
+    assert payload["provider"] == "yahoo_finance"
+    assert payload["candles"][0]["close"] == 3345.0
+    assert payload["source_trace"]["latest_raw_path"] == "raw/technical/yahoo/GC=F-20260702.json"
+
+
 def test_market_candles_aggregates_15m_from_minute_rows(monkeypatch):
     factory = _session_factory()
     base_time = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
