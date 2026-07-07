@@ -9,17 +9,27 @@ export type ProcessingTraceMode =
   | "mainline"
   | "transmission_chain";
 
-export type ProcessingCoverageStatus = "covered" | "degraded" | "missing" | "stale" | "pass" | "needs_review" | "blocked" | string;
+export type KnownProcessingCoverageStatus =
+  | "covered"
+  | "degraded"
+  | "missing"
+  | "stale"
+  | "pass"
+  | "needs_review"
+  | "blocked";
 
-export type ProcessingStageStatus =
+export type ProcessingCoverageStatus = KnownProcessingCoverageStatus | "unknown";
+
+export type KnownProcessingStageStatus =
   | "raw"
   | "parsed"
   | "normalized"
   | "attributed"
   | "validated"
   | "projected"
-  | "rendered"
-  | string;
+  | "rendered";
+
+export type ProcessingStageStatus = KnownProcessingStageStatus | "unknown";
 
 export interface ProcessingStage {
   stage_id: string;
@@ -150,7 +160,7 @@ export interface ProcessingQualityGate {
 
 export interface ProcessingViewBinding {
   view: string;
-  status: "bound" | "missing" | string;
+  status: "bound" | "missing" | "unknown";
 }
 
 export interface ProcessingMatchedEvent {
@@ -191,7 +201,7 @@ export interface ProcessingOverviewResponse {
 }
 
 export interface ProcessingTraceResponse {
-  status: "matched" | "not_found" | string;
+  status: "matched" | "not_found" | "unknown";
   date: string | null;
   run_id: string | null;
   asset: string;

@@ -1,8 +1,10 @@
 import { fetchJson } from "@/adapters/apiClient";
 import type {
   ProcessingInputCoverage,
+  KnownProcessingCoverageStatus,
   ProcessingMixedHealth,
   ProcessingOverviewResponse,
+  ProcessingCoverageStatus,
   ProcessingQualityGate,
   ProcessingSourceFreshness,
   ProcessingSourceHealth,
@@ -15,12 +17,39 @@ const OVERVIEW_PATH = "/api/processing/overview";
 
 type RawRecord = Record<string, unknown>;
 
+const PROCESSING_COVERAGE_STATUSES: ReadonlySet<KnownProcessingCoverageStatus> = new Set([
+  "covered",
+  "degraded",
+  "missing",
+  "stale",
+  "pass",
+  "needs_review",
+  "blocked",
+]);
+
 function asRecord(value: unknown): RawRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as RawRecord) : {};
 }
 
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function normalizeCoverageStatus(value: unknown, fallback: ProcessingCoverageStatus = "unknown"): ProcessingCoverageStatus {
+  const status = stringValue(value);
+  return PROCESSING_COVERAGE_STATUSES.has(status as KnownProcessingCoverageStatus)
+    ? (status as KnownProcessingCoverageStatus)
+    : fallback;
+}
+
+function normalizeViewBindingStatus(value: unknown): "bound" | "missing" | "unknown" {
+  const status = stringValue(value);
+  return status === "bound" || status === "missing" ? status : "unknown";
+}
+
+function normalizeTraceStatus(value: unknown): ProcessingTraceResponse["status"] {
+  const status = stringValue(value);
+  return status === "matched" || status === "not_found" ? status : "unknown";
 }
 
 function nullableString(value: unknown): string | null {
@@ -63,7 +92,7 @@ function normalizeTracePath(value: unknown): ProcessingTracePathNode[] {
     node_id: stringValue(item.node_id),
     label: stringValue(item.label, stringValue(item.node_id)),
     stage: stringValue(item.stage, "unknown"),
-    status: stringValue(item.status, "missing"),
+    status: normalizeCoverageStatus(item.status, "missing"),
     source_ref_count: numberValue(item.source_ref_count),
     artifact_ref_count: numberValue(item.artifact_ref_count),
   }));
@@ -85,7 +114,7 @@ function normalizeInputCoverage(value: unknown): ProcessingInputCoverage {
 function normalizeMixedHealth(value: unknown): ProcessingMixedHealth {
   const item = asRecord(value);
   return {
-    status: stringValue(item.status, "unknown"),
+    status: normalizeCoverageStatus(item.status),
     mixed_events_total: numberValue(item.mixed_events_total),
     mixed_without_bullish_drivers: numberValue(item.mixed_without_bullish_drivers),
     mixed_without_bearish_drivers: numberValue(item.mixed_without_bearish_drivers),
@@ -175,14 +204,14 @@ export function normalizeProcessingOverview(raw: unknown): ProcessingOverviewRes
     input_coverage: normalizeInputCoverage(item.input_coverage),
     mainline_coverage: recordList(item.mainline_coverage).map((row) => ({
       mainline_id: stringValue(row.mainline_id),
-      status: stringValue(row.status, "missing"),
+      status: normalizeCoverageStatus(row.status, "missing"),
       event_count: numberValue(row.event_count),
       source_ref_count: numberValue(row.source_ref_count),
       missing_data: stringList(row.missing_data),
     })),
     transmission_chain_coverage: recordList(item.transmission_chain_coverage).map((row) => ({
       chain_id: stringValue(row.chain_id),
-      status: stringValue(row.status, "missing"),
+      status: normalizeCoverageStatus(row.status, "missing"),
       verification_needed: stringList(row.verification_needed),
     })),
     mixed_health: normalizeMixedHealth(item.mixed_health),
@@ -191,7 +220,7 @@ export function normalizeProcessingOverview(raw: unknown): ProcessingOverviewRes
     quality_gate: normalizeQualityGate(item.quality_gate),
     view_bindings: recordList(item.view_bindings).map((row) => ({
       view: stringValue(row.view),
-      status: stringValue(row.status, "missing"),
+      status: normalizeViewBindingStatus(row.status),
     })),
     source_refs: recordList(item.source_refs) as unknown as ProcessingOverviewResponse["source_refs"],
     artifact_refs: recordList(item.artifact_refs) as ProcessingOverviewResponse["artifact_refs"],
@@ -203,7 +232,7 @@ export function normalizeProcessingTrace(raw: unknown): ProcessingTraceResponse 
   const item = asRecord(raw);
   const matchedEvent = asRecord(item.matched_event);
   return {
-    status: stringValue(item.status, "not_found"),
+    status: normalizeTraceStatus(item.status),
     date: nullableString(item.date),
     run_id: nullableString(item.run_id),
     asset: stringValue(item.asset, "XAUUSD"),
@@ -223,7 +252,7 @@ export function normalizeProcessingTrace(raw: unknown): ProcessingTraceResponse 
     artifact_refs: recordList(item.artifact_refs) as ProcessingTraceResponse["artifact_refs"],
     view_bindings: recordList(item.view_bindings).map((row) => ({
       view: stringValue(row.view),
-      status: stringValue(row.status, "missing"),
+      status: normalizeViewBindingStatus(row.status),
     })),
   };
 }
