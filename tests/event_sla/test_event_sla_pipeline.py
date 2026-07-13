@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
 from apps.event_sla import sla_orchestrator
 from apps.event_sla.sla_orchestrator import run_event_sla_pipeline
+from apps.runtime import task_recorder as task_recorder_module
+from database.models.execution import RunArtifact, ensure_execution_tables
+from database.models.task import ensure_task_tables
 
 
 OBSERVED_AT = datetime(2026, 7, 8, 10, 20, tzinfo=timezone.utc)
@@ -105,6 +114,21 @@ def test_event_sla_pipeline_writes_jin10_analysis_strategy_trace_and_notificatio
     assert trace["sla_minutes"] == 30
     assert trace["status"] == "success"
     assert [step["name"] for step in trace["steps"]][-1] == "record_sla_result"
+    assert next(step for step in trace["steps"] if step["name"] == "detect_update") == {
+        "name": "detect_update",
+        "status": "success",
+        "execution_mode": "executed",
+    }
+    assert next(step for step in trace["steps"] if step["name"] == "collect_raw") == {
+        "name": "collect_raw",
+        "status": "skipped",
+        "execution_mode": "reused_existing_artifact",
+    }
+    assert next(step for step in trace["steps"] if step["name"] == "parse_content") == {
+        "name": "parse_content",
+        "status": "skipped",
+        "execution_mode": "reused_existing_artifact",
+    }
 
     strategy = json.loads((storage_root / artifacts["trading_strategy_json"]).read_text(encoding="utf-8"))
     assert strategy["evidence_level"] == "full"
@@ -116,6 +140,42 @@ def test_event_sla_pipeline_writes_jin10_analysis_strategy_trace_and_notificatio
     assert notification["kind"] == "event_sla_completed"
     assert notification["facts"]["event_id"] == event["event_id"]
     assert notification["facts"]["status"] == "success"
+
+
+def test_event_sla_pipeline_does_not_claim_missing_jin10_indexes_were_reused(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_jin10_event(storage_root)
+    (storage_root / "raw" / "jin10" / "2026-07-08" / "index.json").unlink()
+    (storage_root / "parsed" / "jin10" / "2026-07-08" / "index.json").unlink()
+
+    result = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        source_types=("jin10",),
+        record_task_run=False,
+    )
+
+    event = result["events"][0]
+    snapshot = json.loads(
+        (storage_root / event["artifacts"]["event_snapshot"]).read_text(encoding="utf-8")
+    )
+    trace = json.loads((storage_root / event["artifacts"]["sla_trace"]).read_text(encoding="utf-8"))
+    collect_raw = next(step for step in trace["steps"] if step["name"] == "collect_raw")
+    parse_content = next(step for step in trace["steps"] if step["name"] == "parse_content")
+
+    assert snapshot["raw_refs"] == []
+    assert snapshot["parsed_refs"] == []
+    assert collect_raw == {
+        "name": "collect_raw",
+        "status": "skipped",
+        "execution_mode": "not_required",
+    }
+    assert parse_content == {
+        "name": "parse_content",
+        "status": "blocked",
+        "execution_mode": "blocked_by_missing_input",
+    }
 
 
 def test_event_sla_pipeline_degrades_preview_jin10_to_observation_only(tmp_path) -> None:
@@ -220,3 +280,178 @@ def test_event_sla_pipeline_records_task_run_when_enabled(tmp_path, monkeypatch)
     assert calls[0]["record_task"]["task_type"] == "event_sla_analysis"
     assert calls[1]["step_name"] == "detect_update"
     assert calls[1]["source_refs"][0]["source_ref"].startswith("event:")
+    collect_raw = next(call for call in calls if call.get("step_name") == "collect_raw")
+    parse_content = next(call for call in calls if call.get("step_name") == "parse_content")
+    assert collect_raw["status"] == "skipped"
+    assert collect_raw["output_refs"][0]["execution_mode"] == "reused_existing_artifact"
+    assert parse_content["status"] == "skipped"
+    assert parse_content["output_refs"][0]["execution_mode"] == "reused_existing_artifact"
+
+
+def test_event_sla_pipeline_reuses_identical_event_without_rewriting_outputs(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_jin10_event(storage_root)
+
+    first = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        source_types=("jin10",),
+        record_task_run=False,
+    )
+    first_event = first["events"][0]
+    trace_path = storage_root / first_event["artifacts"]["sla_trace"]
+    original_trace = trace_path.read_text(encoding="utf-8")
+
+    second = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=datetime(2026, 7, 8, 10, 25, tzinfo=timezone.utc),
+        source_types=("jin10",),
+        record_task_run=False,
+    )
+
+    assert first["created_count"] == 1
+    assert first["reused_count"] == 0
+    assert second["created_count"] == 0
+    assert second["reused_count"] == 1
+    assert second["events"][0]["execution_mode"] == "reused"
+    assert second["events"][0]["task_run_id"] is None
+    assert trace_path.read_text(encoding="utf-8") == original_trace
+    ledger = json.loads(
+        (storage_root / "event_sla" / "2026-07-08" / "event_execution_ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["events"][first_event["event_id"]]["event_hash"] == first_event["event_hash"]
+
+
+def test_event_sla_pipeline_treats_changed_report_content_as_new_event(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_jin10_event(storage_root)
+    first = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        source_types=("jin10",),
+        record_task_run=False,
+    )
+    report_path = storage_root / "outputs" / "jin10" / "2026-07-08" / "223556" / "agent_analysis_report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["one_line_conclusion"] = "Updated conclusion after the source artifact changed."
+    _write_json(report_path, payload)
+
+    second = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=datetime(2026, 7, 8, 10, 25, tzinfo=timezone.utc),
+        source_types=("jin10",),
+        record_task_run=False,
+    )
+
+    assert second["created_count"] == 1
+    assert second["reused_count"] == 0
+    assert second["events"][0]["event_id"] != first["events"][0]["event_id"]
+
+
+def test_event_sla_pipeline_reexecutes_when_parsed_input_arrives(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_cme_unparsed_event(storage_root)
+    first = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        source_types=("cme",),
+        record_task_run=False,
+    )
+    _write_json(
+        storage_root / "parsed" / "cme" / "2026-07-08" / "run-1" / "cme_parse_result.json",
+        {
+            "product": "OG COMEX Gold options",
+            "key_levels": [4000, 4100, 4200],
+            "summary": "Parsed after the PDF observation was first recorded.",
+        },
+    )
+
+    second = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=datetime(2026, 7, 8, 10, 25, tzinfo=timezone.utc),
+        source_types=("cme",),
+        record_task_run=False,
+    )
+
+    assert first["events"][0]["status"] == "blocked"
+    assert second["created_count"] == 1
+    assert second["reused_count"] == 0
+    assert second["events"][0]["status"] == "success"
+    ledger = json.loads(
+        (storage_root / "event_sla" / "2026-07-08" / "event_execution_ledger.json").read_text(encoding="utf-8")
+    )
+    entry = ledger["events"][second["events"][0]["event_id"]]
+    assert entry["execution_count"] == 2
+    assert entry["history"][0]["status"] == "blocked"
+
+
+def test_event_sla_pipeline_serializes_concurrent_duplicate_observations(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_jin10_event(storage_root)
+    original_run_event = sla_orchestrator.EventSlaOrchestrator._run_event
+
+    def slow_run_event(self, **kwargs):
+        time.sleep(0.1)
+        return original_run_event(self, **kwargs)
+
+    monkeypatch.setattr(sla_orchestrator.EventSlaOrchestrator, "_run_event", slow_run_event)
+
+    def run_once():
+        return run_event_sla_pipeline(
+            storage_root=storage_root,
+            trade_date="2026-07-08",
+            observed_at=OBSERVED_AT,
+            source_types=("jin10",),
+            record_task_run=False,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: run_once(), range(2)))
+
+    assert sorted(result["created_count"] for result in results) == [0, 1]
+    assert sorted(result["reused_count"] for result in results) == [0, 1]
+
+
+def test_preview_and_reused_event_artifacts_are_registered_with_usage_metadata(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_jin10_event(storage_root, content_scope="preview", body_complete=False)
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    ensure_task_tables(engine)
+    ensure_execution_tables(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(task_recorder_module, "SessionLocal", factory)
+
+    result = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        source_types=("jin10",),
+        record_task_run=True,
+    )
+
+    with factory() as session:
+        artifacts = session.query(RunArtifact).all()
+
+    artifact_paths = [artifact.file_path for artifact in artifacts]
+    assert len(artifact_paths) == len(set(artifact_paths))
+    strategy_json = next(
+        artifact
+        for artifact in artifacts
+        if artifact.file_path == result["events"][0]["artifacts"]["trading_strategy_json"]
+    )
+    parsed = next(artifact for artifact in artifacts if artifact.artifact_metadata.get("execution_mode") == "reused_existing_artifact" and "parsed" in artifact.file_path)
+    assert strategy_json.artifact_metadata["quality_status"] == "preview"
+    assert strategy_json.artifact_metadata["usable_for"] == ["observation"]
+    assert strategy_json.artifact_metadata["blocked_for"] == ["actionable_strategy"]
+    assert parsed.artifact_metadata["quality_status"] == "reused"
+    assert parsed.artifact_metadata["usable_for"] == ["source_evidence"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -10,13 +11,15 @@ from apps.parsers.jin10.report_image_parser import (
     PARSER_VERSION,
     _detect_white_chart_panels,
     _normalize_vision_markdown_payload,
+    figure_analysis_image_data_url,
+    figure_image_data_url,
     parse_report_images,
     render_vision_markdown,
     write_parse_artifacts,
 )
-from apps.parsers.jin10.qwen_vl_markdown import (
-    DashScopeChatCompletionClient,
-    DashScopeVisionMarkdownClient,
+from apps.parsers.jin10.vision_recognition_agent.agent import (
+    VisionMarkdownClient,
+    _build_page_unified_prompt,
     _image_to_data_url,
     _normalize_chart_bbox,
     _normalize_layout_blocks,
@@ -25,6 +28,171 @@ from apps.parsers.jin10.qwen_vl_markdown import (
     recognize_pages_layout,
     recognize_pages_unified,
 )
+
+
+def test_figure_image_data_url_crops_from_in_memory_page_artifacts(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    _write_page_image(image_path, include_chart=True)
+    artifacts = {
+        "page_images": {
+            "pages": [
+                {
+                    "page_no": 2,
+                    "image_path": str(image_path),
+                }
+            ]
+        }
+    }
+    chart = {
+        "figure_id": "fig_p2_001",
+        "page_no": 2,
+        "bbox": [80, 180, 920, 720],
+    }
+
+    encoded = figure_image_data_url(artifacts, chart)
+
+    assert encoded.startswith("data:image/png;base64,")
+
+
+def test_figure_analysis_image_data_url_bounds_size_and_uses_jpeg(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    image = np.full((2400, 1800, 3), 255, dtype=np.uint8)
+    cv2.rectangle(image, (100, 100), (1700, 2300), (0, 0, 0), 8)
+    cv2.imwrite(str(image_path), image)
+    artifacts = {"page_images": {"pages": [{"page_no": 2, "image_path": str(image_path)}]}}
+    chart = {"figure_id": "fig_p2_001", "page_no": 2, "bbox": [0, 0, 1800, 2400]}
+
+    encoded = figure_analysis_image_data_url(artifacts, chart, max_long_edge=1200, jpeg_quality=90)
+    payload = base64.b64decode(encoded.split(",", 1)[1])
+    decoded = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    assert encoded.startswith("data:image/jpeg;base64,")
+    assert decoded is not None
+    assert max(decoded.shape[:2]) == 1200
+
+
+def test_cover_unified_prompt_preserves_formal_report_classification() -> None:
+    prompt = _build_page_unified_prompt(
+        page_no=1,
+        page_width=2160,
+        page_height=3839,
+        original_page_width=2160,
+        original_page_height=3839,
+        prompt_profile="default",
+        preserve_cover_identity=True,
+    )
+
+    assert "正式报告分类" in prompt
+    assert "黄金投资者周报" in prompt
+    assert "周末·大师复盘" in prompt
+    assert "页面底部" in prompt
+    assert "本期主题" in prompt
+
+
+def test_unified_prompt_only_requests_recognition_and_complete_crop_regions() -> None:
+    prompt = _build_page_unified_prompt(
+        page_no=2,
+        page_width=2160,
+        page_height=3839,
+        original_page_width=2160,
+        original_page_height=3839,
+        prompt_profile="default",
+    )
+
+    assert "唯一任务是 OCR 和 bbox 定位" in prompt
+    assert "禁止总结、解释、改写、推断" in prompt
+    assert "不得只框内部绘图区" in prompt
+    assert "面板内标题、图例、坐标轴、刻度标签、数据来源" in prompt
+    assert "不需要解释图中曲线" in prompt
+    assert "只写面板标题" in prompt
+    assert "不得进入 markdown 或 blocks" in prompt
+
+
+def test_vision_client_preserves_explicit_cockpit_luna_provider() -> None:
+    client = VisionMarkdownClient(provider="cockpit", model="gpt-5.6-luna")
+
+    assert client.provider == "cockpit"
+    assert client.model == "gpt-5.6-luna"
+
+
+def test_vision_client_uses_formal_luna_high_defaults(monkeypatch) -> None:
+    for name in (
+        "JIN10_VISION_PROVIDER",
+        "JIN10_VISION_MODEL",
+        "JIN10_MIMO_VL_MODEL",
+        "JIN10_VISION_REASONING_EFFORT",
+        "JIN10_VISION_TIMEOUT",
+        "JIN10_VISION_MAX_RETRIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    client = VisionMarkdownClient()
+
+    assert client.provider == "cockpit"
+    assert client.model == "gpt-5.6-luna"
+    assert client.reasoning_effort == "high"
+    assert client.request_timeout == 120.0
+    assert client.max_retries == 0
+
+
+def test_vision_client_invalid_runtime_values_fall_back_to_safe_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("JIN10_VISION_TIMEOUT", "invalid")
+    monkeypatch.setenv("JIN10_VISION_MAX_RETRIES", "invalid")
+    monkeypatch.setenv("JIN10_VISION_REASONING_EFFORT", "")
+    monkeypatch.setenv("JIN10_VISION_MAX_LONG_EDGE", "0")
+    monkeypatch.setenv("JIN10_VISION_JPEG_QUALITY", "999")
+
+    client = VisionMarkdownClient()
+
+    assert client.request_timeout == 120.0
+    assert client.max_retries == 0
+    assert client.reasoning_effort == "high"
+    assert client.max_image_long_edge > 0
+    assert client.image_jpeg_quality == 100
+
+
+def test_vision_client_can_disable_gateway_retries_for_benchmark(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        content = "{}"
+
+    def fake_chat_sync(**kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr("apps.parsers.jin10.vision_recognition_agent.agent.chat_sync", fake_chat_sync)
+    client = VisionMarkdownClient(provider="cockpit", model="gpt-5.6-luna", max_retries=0)
+
+    client._chat_with_image(image_data_url="data:image/png;base64,ZmFrZQ==", text_prompt="识别")
+
+    assert captured["max_retries"] == 0
+
+
+def test_vision_client_passes_explicit_low_reasoning_effort(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        content = "{}"
+
+    def fake_chat_sync(**kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr("apps.parsers.jin10.vision_recognition_agent.agent.chat_sync", fake_chat_sync)
+    client = VisionMarkdownClient(
+        provider="cockpit",
+        model="gpt-5.6-luna",
+        reasoning_effort="low",
+        timeout=360,
+    )
+
+    client._chat_with_image(image_data_url="data:image/png;base64,ZmFrZQ==", text_prompt="识别")
+
+    assert captured["reasoning_effort"] == "low"
+    assert captured["request_timeout"] == 360
+    image_block = captured["messages"][0]["content"][0]
+    assert image_block["image_url"]["detail"] == "original"
 
 
 def test_parse_report_images_emits_vlm_schema_and_writes_artifacts(monkeypatch, tmp_path: Path):
@@ -46,8 +214,8 @@ def test_parse_report_images_emits_vlm_schema_and_writes_artifacts(monkeypatch, 
         assert all("image_path" in page for page in pages)
         assert figures
         return {
-            "provider": "dashscope",
-            "model": "qwen3-vl-plus",
+            "provider": "mimo",
+            "model": "mimo-v2.5",
             "pages": [
                 {"page_no": 1, "status": "success", "markdown": "# 每日金银报告\n\n## 目录\n\nVIP专属报告系列"},
                 {
@@ -115,7 +283,7 @@ def test_write_parse_artifacts_skips_debug_images_by_default(tmp_path: Path):
         title="测试报告",
         published_at="2026-05-22 10:00",
         image_entries=[{"seq": 1, "file": "01.png", "path": str(page_one)}],
-        vision_markdown_runner=lambda pages, figures: {"provider": "dashscope", "model": "qwen3-vl-flash", "pages": []},
+        vision_markdown_runner=lambda pages, figures: {"provider": "mimo", "model": "mimo-v2.5", "pages": []},
     )
 
     output_dir = tmp_path / "storage" / "parsed" / "jin10" / "2026-05-22" / "219948"
@@ -386,7 +554,7 @@ def test_parse_report_images_surfaces_vision_failure_reason_in_parse_status(tmp_
     _write_page_image(image_path, include_chart=True)
 
     def failing_runner(pages, figures):
-        raise RuntimeError("dashscope request timed out")
+        raise RuntimeError("vision request timed out")
 
     artifacts = parse_report_images(
         article_id="219948",
@@ -398,7 +566,7 @@ def test_parse_report_images_surfaces_vision_failure_reason_in_parse_status(tmp_
 
     warnings = artifacts["parse_status"]["warnings"]
     assert any("vision_markdown_failed:RuntimeError" in item for item in warnings)
-    assert any("dashscope request timed out" in item for item in warnings)
+    assert any("vision request timed out" in item for item in warnings)
 
 
 def test_parse_report_images_vlm_visual_detection_keeps_upper_chart(tmp_path: Path):
@@ -1020,8 +1188,8 @@ def test_parse_report_images_ocr_fallback_replaces_empty_layout_pages(tmp_path: 
     def fake_markdown_runner(pages, figures):
         markdown_calls.append([int(page["page_no"]) for page in pages])
         return {
-            "provider": "dashscope",
-            "model": "qwen3-vl-plus",
+            "provider": "mimo",
+            "model": "mimo-v2.5",
             "pages": [
                 {
                     "page_no": 3,
@@ -1042,8 +1210,8 @@ def test_parse_report_images_ocr_fallback_replaces_empty_layout_pages(tmp_path: 
         ],
         vision_markdown_runner=fake_markdown_runner,
         vision_layout_runner=lambda pages: {
-            "provider": "dashscope",
-            "model": "qwen3-vl-plus",
+            "provider": "mimo",
+            "model": "mimo-v2.5",
             "pages": [
                 {
                     "page_no": 1,
@@ -1100,6 +1268,7 @@ def test_parse_report_images_layout_fallback_uses_markdown_image_count(tmp_path:
                 }
             ]
         },
+        vision_title_runner=lambda bands: [],
     )
 
     assert artifacts["parse_status"]["figures_total"] == 1
@@ -1245,8 +1414,8 @@ def test_parse_report_images_default_remote_path_uses_unified_page_recognition(m
     def fake_unified_runner(pages):
         unified_calls.append([int(page["page_no"]) for page in pages])
         return {
-            "provider": "dashscope",
-            "model": "qwen3-vl-plus",
+            "provider": "mimo",
+            "model": "mimo-v2.5",
             "pages": [
                 {
                     "page_no": 16,
@@ -1712,7 +1881,7 @@ def test_normalize_layout_blocks_scales_payload_coordinate_space_to_page_size():
     assert blocks[0]["bbox"] == [200, 100, 1800, 900]
 
 
-def test_normalize_layout_blocks_infers_qwen_normalized_1000_coordinate_space():
+def test_normalize_layout_blocks_infers_normalized_1000_coordinate_space():
     blocks = _normalize_layout_blocks(
         {
             "image_size": {"width": 2160, "height": 3839},
@@ -1787,12 +1956,36 @@ def test_image_to_data_url_reencodes_local_image_as_png(tmp_path: Path):
     assert (encoded.width, encoded.height) == (64, 64)
 
 
+def test_image_to_data_url_resizes_vlm_page_and_uses_high_quality_jpeg(tmp_path: Path):
+    image_path = tmp_path / "report-page.jpg"
+    image = np.random.randint(0, 255, (2000, 1000, 3), dtype=np.uint8)
+    assert cv2.imwrite(str(image_path), image)
+
+    encoded = _image_to_data_url(image_path, max_long_edge=1000, jpeg_quality=92)
+
+    assert encoded.data_url.startswith("data:image/jpeg;base64,")
+    assert (encoded.width, encoded.height) == (500, 1000)
+
+
+def test_image_to_data_url_reuses_vlm_ready_jpeg_bytes(tmp_path: Path):
+    image_path = tmp_path / "page-001.jpg"
+    image = np.full((120, 200, 3), (30, 120, 220), dtype=np.uint8)
+    assert cv2.imwrite(str(image_path), image, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+    original = image_path.read_bytes()
+
+    encoded = _image_to_data_url(image_path, max_long_edge=2800, jpeg_quality=92)
+
+    payload = encoded.data_url.split(",", 1)[1]
+    assert base64.b64decode(payload) == original
+    assert (encoded.width, encoded.height) == (200, 120)
+
+
 def test_image_to_data_url_falls_back_to_jpeg_when_png_data_url_is_too_large(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "noise.png"
     image = np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8)
     assert cv2.imwrite(str(image_path), image)
 
-    monkeypatch.setattr("apps.parsers.jin10.qwen_vl_markdown.MAX_IMAGE_DATA_URL_CHARS", 200_000)
+    monkeypatch.setattr("apps.parsers.jin10.vision_recognition_agent.agent.MAX_IMAGE_DATA_URL_CHARS", 200_000)
 
     encoded = _image_to_data_url(image_path)
 
@@ -1805,12 +1998,12 @@ def test_image_to_data_url_falls_back_to_jpeg_when_png_data_url_is_too_large(mon
 def test_image_to_data_url_rejects_oversized_raw_image_payload(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "broken.png"
     image_path.write_bytes(b"not a real png" * 10_000)
-    monkeypatch.setattr("apps.parsers.jin10.qwen_vl_markdown.MAX_IMAGE_DATA_URL_CHARS", 2_000)
+    monkeypatch.setattr("apps.parsers.jin10.vision_recognition_agent.agent.MAX_IMAGE_DATA_URL_CHARS", 2_000)
 
     try:
         _image_to_data_url(image_path)
     except ValueError as exc:
-        assert str(exc) == "encoded_image_exceeds_dashscope_data_uri_limit"
+        assert str(exc) == "encoded_image_exceeds_data_uri_limit"
     else:
         raise AssertionError("expected oversized raw image payload to be rejected")
 
@@ -1827,63 +2020,11 @@ def test_image_to_data_url_rejects_unsupported_raw_image_format(tmp_path: Path):
         raise AssertionError("expected unsupported raw image payload to be rejected")
 
 
-def test_dashscope_chat_completion_client_posts_compatible_payload(monkeypatch):
-    requests: list[dict] = []
-
-    class FakeResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {"choices": [{"message": {"content": "## 识别结果"}}]}
-
-    class FakeHttpClient:
-        def __init__(self, *, timeout: float) -> None:
-            self.timeout = timeout
-
-        def __enter__(self) -> "FakeHttpClient":
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-        def post(self, url: str, *, headers: dict, json: dict) -> FakeResponse:
-            requests.append({"url": url, "headers": headers, "json": json, "timeout": self.timeout})
-            return FakeResponse()
-
-    monkeypatch.setattr("apps.parsers.jin10.qwen_vl_markdown.httpx.Client", FakeHttpClient)
-
-    client = DashScopeChatCompletionClient(api_key="dashscope-key", base_url="https://dashscope.example/v1", timeout=12.5)
-    content = client.create(
-        model="qwen3-vl-plus",
-        messages=[{"role": "user", "content": [{"type": "text", "text": "识别"}]}],
-        temperature=0,
-        extra_body={"enable_thinking": False},
-    )
-
-    assert content == "## 识别结果"
-    assert requests == [
-        {
-            "url": "https://dashscope.example/v1/chat/completions",
-            "headers": {"Authorization": "Bearer dashscope-key", "Content-Type": "application/json"},
-            "json": {
-                "model": "qwen3-vl-plus",
-                "messages": [{"role": "user", "content": [{"type": "text", "text": "识别"}]}],
-                "temperature": 0,
-                "enable_thinking": False,
-            },
-            "timeout": 12.5,
-        }
-    ]
-
-
 def test_recognize_page_layout_returns_unavailable_on_image_encoding_failure(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "page.bin"
     image_path.write_bytes(b"not an image")
-    client = DashScopeVisionMarkdownClient.__new__(DashScopeVisionMarkdownClient)
-    client.model = "qwen3-vl-flash"
-    client._client = _FailIfCalledDashScopeClient()
-    monkeypatch.setattr("apps.parsers.jin10.qwen_vl_markdown.MAX_IMAGE_DATA_URL_CHARS", 2_000)
+    client = VisionMarkdownClient(provider="mimo", model="mimo-v2.5")
+    monkeypatch.setattr("apps.parsers.jin10.vision_recognition_agent.agent.MAX_IMAGE_DATA_URL_CHARS", 2_000)
 
     result = client.recognize_page_layout(
         image_path=image_path,
@@ -1913,7 +2054,7 @@ def test_recognize_pages_as_markdown_uses_page_cache(monkeypatch, tmp_path: Path
     assert first == second
     assert first["provider"] == client.provider
     assert first["pages"][0]["markdown"] == "## 第1页\n\n缓存测试"
-    assert list((cache_dir / "markdown" / "qwen3-vl-flash").glob("page_001_*.json"))
+    assert list((cache_dir / "markdown" / "mimo-v2.5").glob("page_001_*.json"))
 
 
 def test_recognize_pages_layout_uses_page_cache(monkeypatch, tmp_path: Path):
@@ -1941,7 +2082,7 @@ def test_recognize_pages_layout_uses_page_cache(monkeypatch, tmp_path: Path):
     assert first["provider"] == client.provider
     assert first["pages"][0]["blocks"][0]["type"] == "chart"
     assert first["pages"][0]["charts"][0]["bbox"] == [80, 260, 920, 720]
-    assert list((cache_dir / "layout" / "qwen3-vl-flash").glob("page_001_*.json"))
+    assert list((cache_dir / "layout" / "mimo-v2.5").glob("page_001_*.json"))
 
 
 def test_recognize_pages_unified_uses_page_cache(monkeypatch, tmp_path: Path):
@@ -1960,7 +2101,7 @@ def test_recognize_pages_unified_uses_page_cache(monkeypatch, tmp_path: Path):
     assert first["provider"] == client.provider
     assert first["pages"][0]["markdown"] == "## 黄金持仓\n\n![黄金持仓](figures/fig_p1_001.png)\n\n统一识别正文"
     assert first["pages"][0]["blocks"][0]["type"] == "chart"
-    assert list((cache_dir / "unified" / "qwen3-vl-flash").glob("page_001_*.json"))
+    assert list((cache_dir / "unified" / "mimo-v2.5").glob("page_001_*.json"))
 
 
 def test_recognize_pages_unified_cache_is_scoped_by_report_type(monkeypatch, tmp_path: Path):
@@ -1977,7 +2118,7 @@ def test_recognize_pages_unified_cache_is_scoped_by_report_type(monkeypatch, tmp
 
     assert client.unified_calls == 2
     assert client.unified_report_types == ["positioning", "technical_levels"]
-    assert len(list((cache_dir / "unified" / "qwen3-vl-flash").glob("page_001_*.json"))) == 2
+    assert len(list((cache_dir / "unified" / "mimo-v2.5").glob("page_001_*.json"))) == 2
 
 
 def test_normalize_chart_bbox_accepts_short_white_chart_on_tall_page():
@@ -1998,8 +2139,8 @@ def test_parse_report_images_can_run_with_vlm_only(tmp_path: Path):
         assert len(pages) == 1
         assert figures
         return {
-            "provider": "dashscope",
-            "model": "qwen3-vl-plus",
+            "provider": "mimo",
+            "model": "mimo-v2.5",
             "pages": [
                 {
                     "page_no": 2,
@@ -2030,7 +2171,7 @@ def test_parse_report_images_can_run_with_vlm_only(tmp_path: Path):
 
 class _FakeVisionClient:
     provider = "mimo"
-    model = "qwen3-vl-flash"
+    model = "mimo-v2.5"
 
     def __init__(self) -> None:
         self.markdown_calls = 0
@@ -2108,12 +2249,6 @@ class _FakeVisionClient:
         }
 
 
-class _FailIfCalledDashScopeClient:
-    @property
-    def chat(self):
-        raise AssertionError("DashScope API should not be called for invalid local image payloads")
-
-
 def _write_page_image(path: Path, *, include_chart: bool) -> None:
     image = np.zeros((1600, 1000, 3), dtype=np.uint8)
     image[:] = (16, 16, 24)
@@ -2164,3 +2299,74 @@ def _scaled_rect_points(left: int, top: int, right: int, bottom: int, scale: flo
         int(right * scale),
         int(bottom * scale),
     )
+
+
+def test_parse_report_images_preserves_cover_identity_without_rendering_it_into_body(tmp_path: Path):
+    cover_path = tmp_path / "cover.png"
+    body_path = tmp_path / "body.png"
+    _write_page_image(cover_path, include_chart=False)
+    _write_page_image(body_path, include_chart=False)
+
+    def recognize_cover(pages, *, preserve_cover_identity=False):
+        assert preserve_cover_identity is True
+        return {
+            "provider": "fixture",
+            "model": "fixture-vl",
+            "pages": [
+                {
+                    "page_no": 1,
+                    "status": "success",
+                    "markdown": (
+                        "黄金 投资者周报\n\n"
+                        "黄金短期难以摆脱横盘僵局，期权暗示阶段性底部形成"
+                    ),
+                    "blocks": [
+                        {"id": "title", "type": "title", "text": "黄金 投资者周报", "bbox": [0, 0, 100, 20]},
+                        {"id": "theme", "type": "text", "text": "黄金短期难以摆脱横盘僵局，期权暗示阶段性底部形成", "bbox": [0, 20, 100, 40]},
+                    ],
+                }
+            ],
+        }
+
+    artifacts = parse_report_images(
+        article_id="224284",
+        title="黄金短期难以摆脱横盘僵局，期权暗示阶段性底部形成",
+        published_at="2026-07-11T00:00:00+00:00",
+        report_type="weekly",
+        image_entries=[
+            {"seq": 1, "file": cover_path.name, "path": str(cover_path)},
+            {"seq": 2, "file": body_path.name, "path": str(body_path)},
+        ],
+        vision_cover_runner=recognize_cover,
+        vision_markdown_runner=lambda pages, figures: {
+            "provider": "fixture",
+            "model": "fixture-vl",
+            "pages": [
+                {
+                    "page_no": 2,
+                    "status": "success",
+                    "markdown": "## 周度判断\n\n周度区间仍待突破。",
+                }
+            ],
+        },
+        vision_layout_runner=lambda pages: {
+            "pages": [
+                {
+                    "page_no": 2,
+                    "status": "success",
+                    "blocks": [
+                        {"id": "body", "type": "text", "text": "周度区间仍待突破。", "bbox": [0, 0, 100, 20]},
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert artifacts["cover_page"]["page_no"] == 1
+    assert "黄金 投资者周报" in artifacts["cover_page"]["recognized_text"]
+    assert "期权暗示阶段性底部形成" in artifacts["cover_page"]["recognized_text"]
+    assert "周度区间仍待突破" in artifacts["body_markdown"]
+    assert "黄金 投资者周报" not in artifacts["body_markdown"]
+
+    written = write_parse_artifacts(artifacts, tmp_path / "parsed")
+    assert json.loads(Path(written["cover_page"]).read_text(encoding="utf-8"))["page_no"] == 1

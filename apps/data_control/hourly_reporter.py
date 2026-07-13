@@ -19,10 +19,15 @@ def build_hourly_report(
     readiness = processing_plan.get("quality_gate") if isinstance(processing_plan.get("quality_gate"), dict) else {}
     allowed_outputs = readiness.get("allowed_outputs") or []
     blocked_outputs = readiness.get("blocked_outputs") or []
-    main_readiness = "ready" if readiness.get("can_run_full_analysis") else ("limited" if allowed_outputs else "blocked")
-    if "full analysis" in blocked_outputs:
-        main_readiness = "blocked"
-    knowledge_readiness = "ready" if readiness.get("can_run_research_distillation") else "blocked"
+    capabilities = readiness.get("capabilities") if isinstance(readiness.get("capabilities"), dict) else None
+    if capabilities is not None:
+        main_readiness = _readiness_label(capabilities.get("full_daily_analysis"))
+        knowledge_readiness = _readiness_label(capabilities.get("knowledge_distillation"))
+    else:
+        main_readiness = "ready" if readiness.get("can_run_full_analysis") else ("limited" if allowed_outputs else "blocked")
+        if "full analysis" in blocked_outputs:
+            main_readiness = "blocked"
+        knowledge_readiness = "ready" if readiness.get("can_run_research_distillation") else "blocked"
     notification_request = _notification_request(
         trade_date=trade_date,
         hour=hour,
@@ -49,6 +54,14 @@ def build_hourly_report(
         "next_hour_plan": _next_hour_plan(collection_plan=collection_plan, processing_plan=processing_plan),
         "notification_request": asdict(notification_request),
     }
+
+
+def _readiness_label(state: Any) -> str:
+    if state == "allowed":
+        return "ready"
+    if state == "degraded":
+        return "limited"
+    return "blocked"
 
 
 def render_hourly_report_markdown(report: dict[str, Any]) -> str:

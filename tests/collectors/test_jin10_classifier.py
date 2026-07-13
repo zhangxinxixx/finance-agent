@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from apps.collectors.jin10.classifier import classify_jin10_report
+from apps.collectors.jin10.classifier import classify_jin10_report, resolve_jin10_report_identity
 
 
 def test_classify_report_families_for_stable_svip_categories() -> None:
@@ -17,6 +17,39 @@ def test_classify_report_family_from_category_text_when_code_missing() -> None:
     assert classify_jin10_report(category="点位报告", title="现货黄金点位报告").report_type == "technical_levels"
     assert classify_jin10_report(category="原油报告", title="原油市场日报").report_type == "oil"
     assert classify_jin10_report(category="外汇报告", title="美元指数外汇报告").report_type == "fx"
+
+
+def test_resolve_report_identity_separates_cover_classification_from_issue_theme() -> None:
+    identity = resolve_jin10_report_identity(
+        category_code="536",
+        category="黄金周报",
+        title="黄金短期难以摆脱横盘僵局，期权暗示阶段性底部形成-金十数据VIP",
+        report_type="weekly",
+        cover_text=(
+            "黄金 投资者周报 2026年7月11日\n"
+            "黄金短期难以摆脱横盘僵局，期权暗示阶段性底部形成"
+        ),
+    )
+
+    assert identity["report_type"] == "weekly"
+    assert identity["report_family"] == "jin10_weekly_visual"
+    assert identity["classification_label"] == "黄金投资者周报"
+    assert identity["report_theme"] == "黄金短期难以摆脱横盘僵局，期权暗示阶段性底部形成"
+    assert identity["verification_status"] == "confirmed"
+    assert {item["source"] for item in identity["evidence"]} == {"listing", "cover"}
+
+
+def test_resolve_report_identity_marks_unclassified_cover_for_review() -> None:
+    identity = resolve_jin10_report_identity(
+        category_code="536",
+        category="黄金周报",
+        title="期权暗示阶段性底部形成-金十数据VIP",
+        report_type="weekly",
+        cover_text="期权暗示阶段性底部形成\n未来数周大概率区间震荡",
+    )
+
+    assert identity["classification_label"] == "黄金投资者周报"
+    assert identity["verification_status"] == "needs_review"
 
 
 def test_classify_market_observation_reports_from_vip_titles() -> None:

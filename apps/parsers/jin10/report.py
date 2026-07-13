@@ -81,6 +81,7 @@ def _parse_report(report: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
         "sections": artifacts["report_structured"]["sections"],
         "figures": artifacts["figures"]["figures"],
         "artifacts": {
+            "cover_page": artifacts.get("cover_page"),
             "vision_markdown": artifacts.get("vision_markdown"),
             "vision_layout": artifacts.get("vision_layout"),
         },

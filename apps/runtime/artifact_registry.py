@@ -44,6 +44,14 @@ _SOURCE_REF_TRACE_KEYS = frozenset(
         "url",
     }
 )
+_ARTIFACT_QUALITY_METADATA_KEYS = frozenset(
+    {
+        "quality_status",
+        "usable_for",
+        "blocked_for",
+        "execution_mode",
+    }
+)
 
 
 def _artifact_run(db: Session, *, step: TaskStep) -> TaskRun | None:
@@ -324,7 +332,7 @@ def register_step_artifacts(
             raw_artifact=raw_artifact,
             source_refs=source_refs,
             input_snapshot_ids=input_snapshot_ids,
-            metadata=None,
+            metadata=_artifact_quality_metadata(raw_artifact),
             storage=storage,
             require_canonical_path=False,
             flush=False,
@@ -402,6 +410,20 @@ def _collect_artifacts(
             )
         )
     return artifacts
+
+
+def _artifact_quality_metadata(raw_artifact: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = {
+        key: raw_artifact[key]
+        for key in _ARTIFACT_QUALITY_METADATA_KEYS
+        if key in raw_artifact
+    }
+    nested = raw_artifact.get("metadata")
+    if isinstance(nested, dict):
+        for key in _ARTIFACT_QUALITY_METADATA_KEYS:
+            if key in nested:
+                metadata.setdefault(key, nested[key])
+    return metadata or None
 
 
 def _persist_run_artifact(

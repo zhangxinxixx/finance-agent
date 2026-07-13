@@ -160,6 +160,7 @@ export type DashboardReportStatus = "ready" | "pending" | "missing" | "degraded"
 export interface ReportItem {
   title: string;
   trade_date: string;
+  generated_at?: string | null;
   run_id: string | null;
   report_id?: string | null;
   type?: string | null;

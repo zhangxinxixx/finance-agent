@@ -1,10 +1,11 @@
-"""Scheduler-facing wrappers for Automation Orchestrator."""
+"""Business execution wrappers launched by Dagster or explicit manual calls."""
 
 from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ def run_hourly_orchestration(
     storage_root: Path = Path("./storage"),
     send_notifications: bool = True,
     record_task_run: bool = True,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     now = _ensure_utc(observed_at or datetime.now(timezone.utc))
     day = trade_date or now.date().isoformat()
@@ -49,6 +51,7 @@ def run_hourly_orchestration(
         hour=now.strftime("%H"),
         send_notifications=send_notifications,
         record_task_run=record_task_run,
+        run_id=run_id,
     )
     return {**orchestration_result, "data_control": data_control_result, "data_quality": data_quality_result}
 
@@ -60,6 +63,7 @@ def run_pre_analysis_orchestration(
     storage_root: Path = Path("./storage"),
     send_notifications: bool = True,
     record_task_run: bool = True,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     now = _ensure_utc(observed_at or datetime.now(timezone.utc))
     day = trade_date or now.date().isoformat()
@@ -78,6 +82,7 @@ def run_pre_analysis_orchestration(
         hour=now.strftime("%H"),
         send_notifications=send_notifications,
         record_task_run=record_task_run,
+        run_id=run_id,
     )
     return {**orchestration_result, "data_quality": data_quality_result}
 
@@ -90,6 +95,7 @@ def run_event_sla_orchestration(
     source_types: tuple[str, ...] = ("jin10", "cme"),
     send_notifications: bool = True,
     record_task_run: bool = True,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     now = _ensure_utc(observed_at or datetime.now(timezone.utc))
     day = trade_date or now.date().isoformat()
@@ -109,6 +115,7 @@ def run_event_sla_orchestration(
         hour=now.strftime("%H"),
         send_notifications=send_notifications,
         record_task_run=record_task_run,
+        run_id=run_id,
     )
     return {**orchestration_result, "event_sla": event_sla_result}
 
@@ -120,6 +127,7 @@ def run_incident_orchestration(
     storage_root: Path = Path("./storage"),
     send_notifications: bool = True,
     record_task_run: bool = True,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     now = _ensure_utc(observed_at or datetime.now(timezone.utc))
     day = trade_date or now.date().isoformat()
@@ -138,6 +146,7 @@ def run_incident_orchestration(
         hour=now.strftime("%H"),
         send_notifications=send_notifications,
         record_task_run=record_task_run,
+        run_id=run_id,
     )
     return {**orchestration_result, "data_quality": data_quality_result}
 
@@ -152,6 +161,15 @@ def run_notification_retry_queue(
     now = _ensure_utc(observed_at or datetime.now(timezone.utc))
     day = trade_date or now.date().isoformat()
     _ensure_no_proxy()
+    outbox_items = _load_retryable_outbox(storage_root=storage_root, trade_date=day)
+    if outbox_items:
+        return _retry_outbox_items(
+            storage_root=storage_root,
+            trade_date=day,
+            observed_at=now,
+            outbox_items=outbox_items,
+            notification_agent=notification_agent,
+        )
     base = storage_root / "orchestration" / day
     retry_queue_path = base / "retry_queue.json"
     retry_payload = _read_json(retry_queue_path)
@@ -197,44 +215,100 @@ def run_notification_retry_queue(
     }
 
 
-def register_automation_orchestration_jobs(scheduler: Any, *, enabled: bool) -> list[str]:
-    if not enabled:
-        return []
-    scheduler.add_job(
-        run_hourly_orchestration,
-        "interval",
-        minutes=60,
-        id="automation_orchestration_hourly",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        run_event_sla_orchestration,
-        "interval",
-        minutes=5,
-        id="automation_orchestration_event_sla",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        run_pre_analysis_orchestration,
-        "cron",
-        hour=20,
-        minute=0,
-        id="automation_orchestration_pre_analysis",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        run_notification_retry_queue,
-        "interval",
-        minutes=5,
-        id="automation_orchestration_retry_queue",
-        replace_existing=True,
-    )
-    return [
-        "automation_orchestration_hourly",
-        "automation_orchestration_event_sla",
-        "automation_orchestration_pre_analysis",
-        "automation_orchestration_retry_queue",
-    ]
+def _load_retryable_outbox(*, storage_root: Path, trade_date: str) -> list[tuple[Path, dict[str, Any]]]:
+    outbox_root = storage_root / "orchestration" / "outbox"
+    items: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted(outbox_root.glob("*.json")):
+        payload = _read_json(path)
+        if payload.get("trade_date") != trade_date or payload.get("status") != "pending_retry":
+            continue
+        if not isinstance(payload.get("request"), dict):
+            continue
+        items.append((path, payload))
+    return items
+
+
+def _retry_outbox_items(
+    *,
+    storage_root: Path,
+    trade_date: str,
+    observed_at: datetime,
+    outbox_items: list[tuple[Path, dict[str, Any]]],
+    notification_agent: Any | None,
+) -> dict[str, Any]:
+    agent = notification_agent or FeishuNotificationAgent()
+    processed: list[dict[str, Any]] = []
+    remaining_count = 0
+    for path, item in outbox_items:
+        if not _retry_item_due(item, observed_at):
+            remaining_count += 1
+            continue
+        request_payload = item["request"]
+        request = _notification_request_from_dict(request_payload)
+        try:
+            result = agent.send(request)
+            result_payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+        except Exception as exc:  # pragma: no cover - external sender boundary
+            result_payload = {"ok": False, "status": "failed", "kind": request.kind, "error": str(exc)}
+        attempt_count = int(item.get("attempt_count") or 0) + 1
+        result_payload.update(
+            {
+                "notification_id": item.get("notification_id"),
+                "dedupe_key": item.get("dedupe_key"),
+                "retried_at": observed_at.isoformat(),
+                "attempt_count": attempt_count,
+            }
+        )
+        processed.append(result_payload)
+        ok = bool(result_payload.get("ok")) or result_payload.get("status") in {"sent", "dry_run", "disabled"}
+        if ok:
+            status = str(result_payload.get("status") or "sent")
+            next_retry_at = None
+            last_error = None
+        else:
+            status = "pending_retry"
+            remaining_count += 1
+            backoff_seconds = min(3600, 60 * (2 ** max(attempt_count - 1, 0)))
+            next_retry_at = (observed_at + timedelta(seconds=backoff_seconds)).isoformat()
+            last_error = result_payload.get("error")
+        attempts = item.get("attempts") if isinstance(item.get("attempts"), list) else []
+        _write_json_atomic(
+            path,
+            {
+                **item,
+                "status": status,
+                "attempt_count": attempt_count,
+                "next_retry_at": next_retry_at,
+                "last_error": last_error,
+                "attempts": [
+                    *attempts,
+                    {
+                        "attempted_at": observed_at.isoformat(),
+                        "attempt_count": attempt_count,
+                        "status": result_payload.get("status"),
+                        "ok": ok,
+                        "error": result_payload.get("error"),
+                    },
+                ],
+                "updated_at": observed_at.isoformat(),
+            },
+        )
+
+    base = storage_root / "orchestration" / trade_date
+    base.mkdir(parents=True, exist_ok=True)
+    results_path = base / "notification_retry_results.json"
+    previous_results = _read_json(results_path)
+    existing_results = previous_results.get("results") if isinstance(previous_results.get("results"), list) else []
+    _write_json(results_path, {"trade_date": trade_date, "results": [*existing_results, *processed]})
+    _append_delivery_log(base=base, trade_date=trade_date, observed_at=observed_at.isoformat(), results=processed)
+    return {
+        "trade_date": trade_date,
+        "observed_at": observed_at.isoformat(),
+        "processed_count": len(processed),
+        "remaining_count": remaining_count,
+        "results_path": _rel(results_path, storage_root),
+        "retry_queue_path": "orchestration/outbox",
+    }
 
 
 def _notification_request_from_dict(payload: dict[str, Any]) -> NotificationRequest:
@@ -289,6 +363,16 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        _write_json(temporary, payload)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _parse_datetime(value: str) -> datetime | None:

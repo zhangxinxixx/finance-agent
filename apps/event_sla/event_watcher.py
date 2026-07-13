@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from apps.event_sla.schemas import EventSnapshot
-from apps.event_sla.update_detector import file_sha256, read_json, rel, safe_event_id, stable_event_hash
+from apps.event_sla.update_detector import file_sha256, read_json, rel, safe_event_id
 
 SourceType = Literal["jin10", "cme"]
 
@@ -37,9 +37,10 @@ def _discover_jin10_events(*, storage_root: Path, trade_date: str, observed_at: 
         series = str(content_access.get("series") or payload.get("series") or "")
         source_key = "jin10_research_master_review" if report_type == "research" and series == "master_review" else "jin10_report"
         title = str(payload.get("title") or payload.get("document_title") or f"Jin10 report {article_id}")
-        published_at = payload.get("published_at") or payload.get("trade_date") or trade_date
-        event_hash = stable_event_hash(source_key, article_id, title, published_at)
+        event_hash = file_sha256(report_path)
         event_id = safe_event_id(source_key, article_id, event_hash[:10])
+        raw_index_path = storage_root / "raw" / "jin10" / trade_date / "index.json"
+        parsed_index_path = storage_root / "parsed" / "jin10" / trade_date / "index.json"
         events.append(
             EventSnapshot(
                 event_id=event_id,
@@ -51,8 +52,12 @@ def _discover_jin10_events(*, storage_root: Path, trade_date: str, observed_at: 
                 trade_date=trade_date,
                 source_url=f"https://xnews.jin10.com/details/{article_id}",
                 article_id=article_id,
-                raw_refs=[{"artifact_type": "raw_index", "path": rel(storage_root / "raw" / "jin10" / trade_date / "index.json", storage_root)}],
-                parsed_refs=[{"artifact_type": "parsed_index", "path": rel(storage_root / "parsed" / "jin10" / trade_date / "index.json", storage_root)}],
+                raw_refs=[{"artifact_type": "raw_index", "path": rel(raw_index_path, storage_root)}]
+                if raw_index_path.is_file()
+                else [],
+                parsed_refs=[{"artifact_type": "parsed_index", "path": rel(parsed_index_path, storage_root)}]
+                if parsed_index_path.is_file()
+                else [],
                 output_refs=[{"artifact_type": "agent_analysis_report", "path": rel(report_path, storage_root)}],
                 content_access=content_access,
                 payload=payload,

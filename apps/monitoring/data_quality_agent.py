@@ -8,7 +8,7 @@ from typing import Any
 from apps.api.services.source_service import get_data_source_health_latest
 from apps.monitoring.completeness_checker import build_artifact_completeness_checks, jin10_report_access_checks
 from apps.monitoring.freshness_rules import MONITORED_JIN10_SOURCES, build_source_freshness_checks
-from apps.monitoring.schemas import DataHealthCheck, MonitoringArtifacts
+from apps.monitoring.schemas import DATA_QUALITY_CAPABILITIES, DataHealthCheck, MonitoringArtifacts
 from apps.runtime.task_recorder import record_task
 
 
@@ -133,39 +133,64 @@ def _data_quality_report(
             "completeness_problem_count": sum(1 for check in completeness_checks if check.status != "ok"),
             "permission_problem_count": sum(1 for check in permission_checks if check.status != "ok"),
         },
-        "blocking_issues": [_issue(check) for check in problem_checks if check.severity in {"critical", "high"}],
+        "blocking_issues": [_issue(check) for check in problem_checks if check.blocked_capabilities],
+        "degraded_issues": [_issue(check) for check in problem_checks if check.degraded_capabilities],
     }
 
 
 def _downstream_readiness(*, day: str, observed_at: datetime, checks: list[DataHealthCheck]) -> dict[str, Any]:
-    freshness_blockers = [check for check in checks if check.check_type == "freshness" and check.status != "ok"]
-    completeness_blockers = [check for check in checks if check.check_type == "completeness" and check.status != "ok"]
-    permission_blockers = [check for check in checks if check.check_type == "permission" and check.status != "ok"]
-    can_run_full_analysis = not freshness_blockers and not completeness_blockers
-    can_run_research_distillation = can_run_full_analysis and not permission_blockers
-    readiness = "ready" if can_run_full_analysis and can_run_research_distillation else ("partial" if can_run_full_analysis else "blocked")
-    allowed_outputs = ["market snapshot"]
-    if can_run_full_analysis:
-        allowed_outputs.append("full daily analysis")
+    capabilities = {capability: "allowed" for capability in DATA_QUALITY_CAPABILITIES}
+    for check in checks:
+        if check.status == "ok":
+            continue
+        for capability in check.degraded_capabilities:
+            if capabilities.get(capability) == "allowed":
+                capabilities[capability] = "degraded"
+        for capability in check.blocked_capabilities:
+            capabilities[capability] = "blocked"
+
+    blocking_checks = [check for check in checks if check.status != "ok" and check.blocked_capabilities]
+    degraded_checks = [check for check in checks if check.status != "ok" and check.degraded_capabilities]
+    full_analysis_state = capabilities["full_daily_analysis"]
+    distillation_state = capabilities["knowledge_distillation"]
+    can_run_full_analysis = full_analysis_state != "blocked"
+    can_run_research_distillation = distillation_state != "blocked"
+    if full_analysis_state == "blocked":
+        readiness = "blocked"
+    elif any(state != "allowed" for state in capabilities.values()):
+        readiness = "partial"
     else:
+        readiness = "ready"
+
+    allowed_outputs: list[str] = []
+    if capabilities["daily_market_snapshot"] != "blocked":
+        allowed_outputs.append("market snapshot")
+    if full_analysis_state == "allowed":
+        allowed_outputs.append("full daily analysis")
+    elif full_analysis_state == "degraded":
         allowed_outputs.append("limited daily analysis")
-    if can_run_research_distillation:
+    if distillation_state == "allowed":
         allowed_outputs.append("knowledge distillation")
+    elif distillation_state == "degraded":
+        allowed_outputs.append("limited knowledge distillation")
+
     blocked_outputs: list[str] = []
-    if not can_run_full_analysis:
+    if full_analysis_state == "blocked":
         blocked_outputs.append("full analysis")
-    if not can_run_research_distillation:
+    if distillation_state == "blocked":
         blocked_outputs.append("knowledge distillation")
     return {
         "trade_date": day,
         "observed_at": observed_at.isoformat(),
         "readiness": readiness,
+        "capabilities": capabilities,
         "can_run_daily_report": True,
         "can_run_full_analysis": can_run_full_analysis,
         "can_run_research_distillation": can_run_research_distillation,
         "allowed_outputs": allowed_outputs,
         "blocked_outputs": blocked_outputs,
-        "blocking_issues": [_issue(check) for check in [*freshness_blockers, *completeness_blockers, *permission_blockers]],
+        "blocking_issues": [_issue(check) for check in blocking_checks],
+        "degraded_issues": [_issue(check) for check in degraded_checks],
     }
 
 
@@ -203,7 +228,7 @@ def _record_monitor_task(*, day: str, artifacts: MonitoringArtifacts, checks: li
 def _overall_status(checks: list[DataHealthCheck]) -> str:
     if any(check.severity == "critical" for check in checks):
         return "blocked"
-    if any(check.status in {"stale", "partial", "unavailable", "blocked", "unknown"} for check in checks):
+    if any(check.status in {"waiting", "stale", "partial", "unavailable", "blocked", "unknown"} for check in checks):
         return "partial"
     return "ok"
 
@@ -217,6 +242,9 @@ def _issue(check: DataHealthCheck) -> dict[str, Any]:
         "reason_code": check.reason_code,
         "message": check.message,
         "repair_suggestion": check.repair_suggestion,
+        "blocked_capabilities": list(check.blocked_capabilities),
+        "degraded_capabilities": list(check.degraded_capabilities),
+        "required_for": list(check.required_for),
     }
 
 

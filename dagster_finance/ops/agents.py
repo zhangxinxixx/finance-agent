@@ -10,6 +10,9 @@ from typing import Any
 from dagster import Config, op
 from pydantic import ValidationError
 
+from apps.output.final_report import write_final_report
+from apps.renderer.markdown.final_report import build_structured_report, render_final_report_markdown
+
 
 class AgentConfig(Config):
     storage_root: str = "./storage"
@@ -154,6 +157,66 @@ def coordinator_op(
         created_at=created_at,
     )
     return _to_dict(result)
+
+
+@op(
+    tags={"pipeline": "c4", "step": "final_report"},
+)
+def final_report_op(
+    context,
+    snapshot: dict[str, Any],
+    macro_output: dict[str, Any],
+    options_output: dict[str, Any],
+    risk_output: dict[str, Any],
+    technical_output: dict[str, Any],
+    positioning_output: dict[str, Any],
+    news_output: dict[str, Any],
+    coordinator_output: dict[str, Any],
+) -> dict[str, Any]:
+    """Render the composite analysis report from this Dagster run's agent outputs."""
+    created_at = datetime.now(timezone.utc)
+    outputs = {
+        "macro": _coerce_agent_output(macro_output, name="macro_output"),
+        "options": _coerce_agent_output(options_output, name="options_output"),
+        "risk": _coerce_agent_output(risk_output, name="risk_output"),
+        "technical": _coerce_agent_output(technical_output, name="technical_output"),
+        "positioning": _coerce_agent_output(positioning_output, name="positioning_output"),
+        "news": _coerce_agent_output(news_output, name="news_output"),
+        "coordinator": _coerce_agent_output(coordinator_output, name="coordinator_output"),
+    }
+    context.log.info("Rendering final report")
+    markdown = render_final_report_markdown(
+        snapshot=snapshot,
+        macro_output=outputs["macro"],
+        options_output=outputs["options"],
+        risk_output=outputs["risk"],
+        technical_output=outputs["technical"],
+        positioning_output=outputs["positioning"],
+        news_output=outputs["news"],
+        coordinator_output=outputs["coordinator"],
+        created_at=created_at,
+    )
+    structured = build_structured_report(
+        snapshot=snapshot,
+        macro_output=outputs["macro"],
+        options_output=outputs["options"],
+        risk_output=outputs["risk"],
+        technical_output=outputs["technical"],
+        positioning_output=outputs["positioning"],
+        news_output=outputs["news"],
+        coordinator_output=outputs["coordinator"],
+        created_at=created_at,
+    )
+    result = write_final_report(
+        storage_root=Path("./storage"),
+        markdown=markdown,
+        asset=str(snapshot.get("asset") or "XAUUSD"),
+        trade_date=str(snapshot["trade_date"]),
+        run_id=context.run_id,
+        structured_report=structured.model_dump(mode="json"),
+    )
+    context.log.info("Final report rendered")
+    return result
 
 
 @op(

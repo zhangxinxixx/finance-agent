@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import date as calendar_date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -14,6 +15,10 @@ from apps.collectors.jin10.adapter import (
     persist_jin10_task_runs,
     write_jin10_outputs,
 )
+from apps.data_layer.jin10_image_assets import (
+    DEFAULT_JIN10_IMAGE_RETENTION_DAYS,
+    prune_jin10_image_assets,
+)
 
 
 def main() -> int:
@@ -22,17 +27,46 @@ def main() -> int:
     parser.add_argument("--category", default="270", help="Jin10 category code, default 270 for 金银报告.")
     parser.add_argument("--external-root", default="~/jin10-reports", help="External Jin10 output root.")
     parser.add_argument("--storage-root", default="storage", help="finance-agent storage root.")
-    parser.add_argument("--vision-provider", default="mimo", choices=("mimo", "dashscope", "qwen"), help="Vision provider for page parsing.")
-    parser.add_argument("--mimo-model", default="mimo-v2.5", help="MiMo vision model, for example mimo-v2.5.")
-    parser.add_argument("--qwen-model", default=None, help="Legacy DashScope/Qwen vision model for compatibility.")
+    parser.add_argument(
+        "--image-retention-days",
+        type=int,
+        default=DEFAULT_JIN10_IMAGE_RETENTION_DAYS,
+        help="Keep canonical Jin10 page JPEGs and parsed figures for this many days.",
+    )
+    parser.add_argument(
+        "--vision-provider",
+        default="cockpit",
+        choices=("mimo", "cockpit"),
+        help="Vision provider for page parsing.",
+    )
+    parser.add_argument(
+        "--vision-model",
+        "--mimo-model",
+        dest="vision_model",
+        default="gpt-5.6-luna",
+        help="Vision model. --mimo-model remains as a compatibility alias.",
+    )
+    parser.add_argument("--vision-reasoning-effort", default="high", choices=("low", "medium", "high"))
+    parser.add_argument("--vision-timeout", type=float, default=120.0)
+    parser.add_argument("--analysis-provider", default="cockpit")
+    parser.add_argument("--analysis-model", default="gpt-5.6-sol")
+    parser.add_argument("--analysis-reasoning-effort", default="high", choices=("low", "medium", "high"))
+    parser.add_argument("--analysis-timeout", type=float, default=300.0)
+    parser.add_argument("--analysis-max-images", type=int, default=25)
     parser.add_argument("--article-id", action="append", default=None, help="Only process the given Jin10 article id. Repeatable.")
     args = parser.parse_args()
     os.environ["JIN10_IMAGE_RECOGNITION"] = "vlm"
     os.environ.setdefault("JIN10_VISION_CACHE_DIR", str(Path(args.storage_root) / "parsed" / "jin10" / "vision_cache"))
     os.environ["JIN10_VISION_PROVIDER"] = args.vision_provider
-    os.environ["JIN10_MIMO_VL_MODEL"] = args.mimo_model
-    if args.qwen_model:
-        os.environ["JIN10_QWEN_VL_MODEL"] = args.qwen_model
+    os.environ["JIN10_VISION_MODEL"] = args.vision_model
+    os.environ["JIN10_VISION_REASONING_EFFORT"] = args.vision_reasoning_effort
+    os.environ["JIN10_VISION_TIMEOUT"] = str(args.vision_timeout)
+    os.environ["JIN10_VISION_MAX_RETRIES"] = "0"
+    os.environ["JIN10_AGENT_PROVIDER"] = args.analysis_provider
+    os.environ["JIN10_AGENT_MODEL"] = args.analysis_model
+    os.environ["JIN10_AGENT_REASONING_EFFORT"] = args.analysis_reasoning_effort
+    os.environ["JIN10_AGENT_REQUEST_TIMEOUT"] = str(args.analysis_timeout)
+    os.environ["JIN10_AGENT_MAX_IMAGES"] = str(max(0, args.analysis_max_images))
 
     outputs = build_jin10_outputs(
         external_root=Path(args.external_root).expanduser(),
@@ -43,6 +77,12 @@ def main() -> int:
     written = write_jin10_outputs(outputs, storage_root=args.storage_root)
     persisted_agent_outputs = persist_jin10_agent_outputs(outputs, storage_root=args.storage_root)
     persisted_task_runs = persist_jin10_task_runs(outputs, storage_root=args.storage_root)
+    image_retention = prune_jin10_image_assets(
+        external_root=Path(args.external_root).expanduser(),
+        storage_root=Path(args.storage_root).expanduser(),
+        reference_date=calendar_date.today(),
+        retention_days=args.image_retention_days,
+    )
     summary = {
         "date": args.date,
         "category": args.category,
@@ -83,6 +123,7 @@ def main() -> int:
         ],
         "persisted_agent_outputs": persisted_agent_outputs,
         "persisted_task_runs": persisted_task_runs,
+        "image_retention": image_retention,
         "written": {layer: str(path) for layer, path in written.items()},
         "next_step_hint": "使用 scripts/generate_jin10_visual_report.py --raw-report-json <.../raw_article_report.json> 生成 prompt，再用 --agent-response <html-response> --html-output <.../daily_analysis.html> 落地 LLM 可视化报告。",
     }

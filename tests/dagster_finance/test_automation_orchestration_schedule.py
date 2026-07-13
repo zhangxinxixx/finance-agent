@@ -57,13 +57,21 @@ def test_automation_op_dispatches_the_selected_existing_wrapper(monkeypatch: pyt
         run_event_sla_orchestration,
     )
 
+    context = build_op_context()
     result = automation_orchestration_op(
-        build_op_context(),
+        context,
         AutomationOrchestrationConfig(trigger="event_sla", storage_root=str(tmp_path)),
     )
 
     assert result == expected
-    assert called == [{"storage_root": tmp_path, "send_notifications": True, "record_task_run": True}]
+    assert called == [
+        {
+            "storage_root": tmp_path,
+            "send_notifications": True,
+            "record_task_run": True,
+            "run_id": context.run_id,
+        }
+    ]
 
 
 def test_automation_op_raises_when_wrapper_reports_failed(monkeypatch: pytest.MonkeyPatch) -> None:

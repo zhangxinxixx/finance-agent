@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+
+import apps.collectors.jin10.adapter as jin10_adapter
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -10,12 +12,14 @@ from apps.collectors.jin10.adapter import (
     _charts_from_report_images,
     _charts_from_parsed_figures,
     _build_report_quality_audit,
-    _copy_output_figures,
+    _remove_output_image_copies,
     _prepend_content_access_notice,
+    _report_identity_for_raw_report,
     _report_type_for_raw_report,
     _select_report_text_for_analysis,
     build_jin10_agent_output_payload,
     build_jin10_outputs,
+    collect_raw_index,
     persist_jin10_agent_outputs,
     persist_jin10_task_runs,
     write_jin10_outputs,
@@ -52,6 +56,9 @@ def test_build_jin10_outputs_indexes_existing_external_report_assets():
     assert outputs["analysis"]["reports"][0]["summary_status"] == "ready"
     assert outputs["daily_reports"][0]["run_id"] == "218330"
     assert outputs["daily_reports"][0]["json"]["family"] == "jin10_daily_visual"
+    assert outputs["daily_reports"][0]["json"]["report_identity"]["report_type"] == "daily"
+    assert outputs["daily_reports"][0]["raw_article_json"]["report_identity"]["report_type"] == "daily"
+    assert outputs["daily_reports"][0]["agent_analysis_json"]["report_identity"]["report_type"] == "daily"
 
     raw_report = outputs["raw"]["reports"][0]
     assert raw_report["meta_json"]["path"].endswith("/tests/fixtures/jin10/2026-05-06/报告/218330/meta.json")
@@ -59,6 +66,21 @@ def test_build_jin10_outputs_indexes_existing_external_report_assets():
     assert raw_report["images"][0]["path"].endswith("/images/报告_2026-05-06_01.png")
     assert raw_report["images"][0]["size_bytes"] == len("fixture-image-1\n")
     assert raw_report["images"][0]["sha256"] == hashlib.sha256(b"fixture-image-1\n").hexdigest()
+
+
+def test_build_jin10_outputs_passes_parser_figure_loader_to_agent(monkeypatch):
+    original = jin10_adapter.build_jin10_agent_analysis_report_with_llm
+    captured = {}
+
+    def wrapped(raw_report, daily_report=None, *, figure_image_loader=None):
+        captured["loader"] = figure_image_loader
+        return original(raw_report, daily_report, figure_image_loader=figure_image_loader)
+
+    monkeypatch.setattr(jin10_adapter, "build_jin10_agent_analysis_report_with_llm", wrapped)
+
+    build_jin10_outputs(external_root=FIXTURE_ROOT, date="2026-05-06", category="270")
+
+    assert callable(captured["loader"])
 
 
 def test_build_jin10_outputs_ignores_stale_image_files_not_listed_in_meta(tmp_path):
@@ -151,6 +173,30 @@ def test_report_type_for_raw_report_distinguishes_weekly_category() -> None:
     assert _report_type_for_raw_report({"category_code": "270", "report_type": "weekly"}) == "daily"
     assert _report_type_for_raw_report({"category": "报告", "title": "美伊谈判反复，金价仍陷入两难｜黄金头条", "report_type": "weekly"}) == "research"
     assert _report_type_for_raw_report({"category": "黄金周报", "title": "期权市场发出信号"}) == "weekly"
+
+
+def test_report_identity_for_raw_report_uses_parsed_cover_evidence() -> None:
+    identity = _report_identity_for_raw_report(
+        {
+            "category_code": "536",
+            "category": "黄金周报",
+            "report_type": "weekly",
+            "title": "黄金短期横盘，期权暗示阶段性底部-金十数据VIP",
+        },
+        {
+            "artifacts": {
+                "cover_page": {
+                    "page_no": 1,
+                    "recognized_text": "黄金 投资者周报\n黄金短期横盘，期权暗示阶段性底部",
+                }
+            }
+        },
+    )
+
+    assert identity["classification_label"] == "黄金投资者周报"
+    assert identity["report_theme"] == "黄金短期横盘，期权暗示阶段性底部"
+    assert identity["report_type"] == "weekly"
+    assert identity["verification_status"] == "confirmed"
 
 
 def test_category_301_recognized_as_point_report() -> None:
@@ -249,6 +295,32 @@ def test_build_jin10_outputs_creates_indexable_bundle_for_market_observation_rep
     assert outputs["daily_reports"][0]["run_id"] == "223555"
     assert outputs["daily_reports"][0]["json"]["family"] == "jin10_market_observation_report"
     assert outputs["daily_reports"][0]["json"]["report_type"] == "market_observation"
+
+
+def test_collect_raw_index_discovers_vip_research_directory_for_category_458(tmp_path: Path) -> None:
+    fixture = tmp_path / "2026-07-09" / "research" / "224042"
+    fixture.mkdir(parents=True)
+    (fixture / "meta.json").write_text(
+        json.dumps(
+            {
+                "date": "2026-07-09",
+                "id": "224042",
+                "title": "新闻交易员：拥挤交易在漏风-金十数据VIP",
+                "category": "VIP智库",
+                "report_type": "research",
+                "images": [],
+                "source_url": "https://svip.jin10.com/news/224042",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (fixture / "report.md").write_text("# 新闻交易员\n\n研究正文。\n", encoding="utf-8")
+
+    raw = collect_raw_index(tmp_path, "2026-07-09", category="458")
+
+    assert raw["unavailable_symbols"] == []
+    assert [(item["article_id"], item["report_type"]) for item in raw["reports"]] == [("224042", "research")]
 
 
 def test_build_jin10_outputs_creates_indexable_bundle_for_master_review_research_report(tmp_path, monkeypatch):
@@ -1072,7 +1144,7 @@ def test_build_jin10_outputs_returns_explicit_unavailable_for_missing_category()
     assert outputs["analysis"]["source_refs"] == []
 
 
-def test_write_jin10_outputs_writes_layered_json_without_copying_images(tmp_path):
+def test_write_jin10_outputs_writes_layered_json_and_bundle_images(tmp_path):
     outputs = build_jin10_outputs(external_root=FIXTURE_ROOT, date="2026-05-06")
     written = write_jin10_outputs(outputs, storage_root=tmp_path)
 
@@ -1105,36 +1177,26 @@ def test_write_jin10_outputs_writes_layered_json_without_copying_images(tmp_path
     assert "## 图表" in raw_article_markdown
     assert "## 报告图片" not in raw_article_markdown
     assert raw_article_markdown.count("![第1页报告图](images/报告_2026-05-06_01.png)") == 1
+    output_base = tmp_path / "outputs" / "jin10" / "2026-05-06" / "218330"
+    assert not (output_base / "images").exists()
+    assert not (output_base / "figures").exists()
     assert not (tmp_path / "raw" / "jin10" / "2026-05-06" / "images").exists()
 
 
-def test_copy_output_figures_only_copies_allowed_raw_article_charts(tmp_path):
-    parsed_base = tmp_path / "parsed"
-    figures_dir = parsed_base / "figures"
-    figures_dir.mkdir(parents=True)
-    (figures_dir / "fig_p11_001.png").write_text("keep", encoding="utf-8")
-    (figures_dir / "fig_p16_001.png").write_text("drop", encoding="utf-8")
+def test_remove_output_image_copies_preserves_report_files(tmp_path):
     output_base = tmp_path / "outputs"
-    stale_dir = output_base / "figures"
-    stale_dir.mkdir(parents=True)
-    (stale_dir / "stale.png").write_text("stale", encoding="utf-8")
+    for directory_name in ("figures", "images"):
+        asset_dir = output_base / directory_name
+        asset_dir.mkdir(parents=True)
+        (asset_dir / "stale.png").write_text("stale", encoding="utf-8")
+    report_path = output_base / "raw_article_report.json"
+    report_path.write_text("{}", encoding="utf-8")
 
-    _copy_output_figures(
-        {
-            "figures": {
-                "figures": [
-                    {"chart_image_path": "figures/fig_p11_001.png"},
-                    {"chart_image_path": "figures/fig_p16_001.png"},
-                ]
-            }
-        },
-        parsed_base=parsed_base,
-        output_base=output_base,
-        allowed_paths={"figures/fig_p11_001.png"},
-    )
+    _remove_output_image_copies(output_base)
 
-    copied = sorted(path.name for path in (output_base / "figures").iterdir())
-    assert copied == ["fig_p11_001.png"]
+    assert not (output_base / "figures").exists()
+    assert not (output_base / "images").exists()
+    assert report_path.read_text(encoding="utf-8") == "{}"
 
 
 def test_build_jin10_outputs_prefers_vlm_body_markdown(monkeypatch):
@@ -1386,7 +1448,7 @@ def test_build_jin10_agent_output_payload_exposes_prompt_claims_and_artifacts(tm
         "jin10_raw_article_report": "jin10:2026-05-06:218330:raw_article_report",
         "jin10_daily_visual": "jin10:2026-05-06:218330:daily_analysis",
     }
-    assert payload["payload"]["prompt_version"] == "jin10_agent_analysis_v2"
+    assert payload["payload"]["prompt_version"] == "jin10_agent_analysis_v3"
     assert payload["payload"]["prompt_messages"][0]["role"] == "system"
     assert "## Agent 入库字段" not in payload["payload"]["prompt_messages"][1]["content"]
     assert "不输出 YAML、JSON 或 Agent 入库字段" in payload["payload"]["prompt_messages"][1]["content"]
@@ -1427,7 +1489,7 @@ def test_persist_jin10_agent_outputs_stores_traceable_agent_output(tmp_path):
     assert row.snapshot_id == "jin10:2026-05-06:218330:agent_analysis"
     assert row.run_id == "218330"
     assert row.summary
-    assert row.payload["prompt_version"] == "jin10_agent_analysis_v2"
+    assert row.payload["prompt_version"] == "jin10_agent_analysis_v3"
     assert row.payload["prompt_messages"][1]["content"]
     assert row.payload["input_payload"]["raw_report"]["article_id"] == "218330"
     assert row.payload["narrative_md"].startswith("# ")
@@ -1484,7 +1546,7 @@ def test_report_quality_audit_rejects_non_daily_report_title() -> None:
         report={
             "title": "美国就业岗位排行榜 薪资中位数最高的是哪个工种？丨财料-金十数据VIP",
             "date": "2026-06-08",
-            "external_report_dir": "/tmp/finance-agent/jin10-reports/2026-06-08/daily/221274",
+            "external_report_dir": "/tmp/jin10-reports/2026-06-08/daily/221274",
         },
         parsed_report={"vlm_status": "success"},
         raw_article={
@@ -1505,6 +1567,68 @@ def test_report_quality_audit_rejects_non_daily_report_title() -> None:
 
     assert audit["status"] == "rejected"
     assert {reason["code"] for reason in audit["reasons"]} >= {"non_daily_report_title", "evidence_insufficient"}
+
+
+def test_report_quality_audit_accepts_technical_levels_with_structured_context() -> None:
+    audit = _build_report_quality_audit(
+        report={
+            "title": "技术刘PRO：黄金筹码分布",
+            "date": "2026-06-29",
+            "report_type": "technical_levels",
+            "category_code": "301",
+            "external_report_dir": "/tmp/jin10/2026-06-29/technical_levels/223073",
+        },
+        parsed_report={"vlm_status": "success"},
+        raw_article={
+            "article_markdown": "VAH 4092.61，POC 4064.95，VAL 4032.76。" * 20,
+            "generated_from": {
+                "article_context": {
+                    "key_sentences": ["现货黄金收盘4045.73。"],
+                    "level_snippets": ["VAH 4092.61，POC 4064.95，VAL 4032.76。"],
+                    "chart_summaries": ["黄金筹码分布呈双筹码峰。"],
+                }
+            },
+        },
+        visual={
+            "core_conclusion": "解析已完成，但正文与图表证据仍不足以形成稳定结论。",
+            "market_prices": [],
+            "logic_chains": [{"label": "证据不足"}],
+        },
+    )
+
+    assert audit == {"status": "accepted", "reasons": [], "checked_at": audit["checked_at"]}
+
+
+def test_report_quality_audit_accepts_full_research_body_when_auxiliary_image_is_empty() -> None:
+    audit = _build_report_quality_audit(
+        report={
+            "title": "新闻交易员：拥挤交易在漏风",
+            "date": "2026-07-09",
+            "report_type": "research",
+            "category_code": "458",
+            "content_scope": "full",
+            "body_complete": True,
+            "external_report_dir": "/tmp/jin10/2026-07-09/research/224042",
+        },
+        parsed_report={"vlm_status": "empty"},
+        raw_article={
+            "article_markdown": "完整研究正文，包含宏观、利率、外汇与风险资产传导。" * 80,
+            "generated_from": {
+                "article_context": {
+                    "key_sentences": ["美联储高利率路径仍影响全球资产。"],
+                    "level_snippets": [],
+                    "chart_summaries": ["title=第1页报告图; caption=第1页报告图"],
+                }
+            },
+        },
+        visual={
+            "core_conclusion": "美联储高利率路径仍影响全球资产。",
+            "market_prices": [],
+            "logic_chains": [{"label": "证据不足"}],
+        },
+    )
+
+    assert audit == {"status": "accepted", "reasons": [], "checked_at": audit["checked_at"]}
 
 
 def test_persist_jin10_task_runs_marks_rejected_quality_as_degraded(tmp_path):
@@ -1548,7 +1672,14 @@ def test_persist_jin10_task_runs_updates_existing_run_quality_status(tmp_path):
     session.commit()
 
     assert persisted[0]["status"] == "degraded"
-    run = session.query(TaskRun).filter(TaskRun.task_type == "jin10_report").one()
+    runs = (
+        session.query(TaskRun)
+        .filter(TaskRun.task_type == "jin10_report")
+        .order_by(TaskRun.started_at.asc(), TaskRun.created_at.asc())
+        .all()
+    )
+    assert [run.status for run in runs] == [TaskStatus.success, TaskStatus.degraded]
+    run = runs[-1]
     steps = session.query(TaskStep).filter(TaskStep.task_run_id == run.id).order_by(TaskStep.step_order.asc()).all()
     events = session.query(ExecutionEvent).filter(ExecutionEvent.run_id == run.id).all()
     event_types = [event.event_type for event in events]
@@ -1558,5 +1689,5 @@ def test_persist_jin10_task_runs_updates_existing_run_quality_status(tmp_path):
     assert steps[4].name == "quality_audit"
     assert steps[4].status is StepStatus.blocked
     assert "non_daily_report_title" in (steps[4].error_json or "")
-    assert event_types.count("RUN_FINISHED") == 2
+    assert event_types.count("RUN_FINISHED") == 1
     assert event_types.count("TASK_BLOCKED") == 2

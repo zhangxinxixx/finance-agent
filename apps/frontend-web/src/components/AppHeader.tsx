@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
-import { Bell, RefreshCw, Clock, Moon, Sun } from "lucide-react";
+import { RefreshCw, Clock, Moon, Sun } from "lucide-react";
 import { useDataStatus } from "../hooks/useDataStatus";
 import { HeaderBreadcrumb } from "./shared/HeaderBreadcrumb";
+import { ReportUpdateNotifications } from "./ReportUpdateNotifications";
 
 const viewLabels: Record<string, string> = {
   "/dashboard/analysis": "综合分析",
@@ -102,15 +103,7 @@ export function AppHeader({ theme, onToggleTheme, headerContent }: AppHeaderProp
             <Moon size={14} className="text-finance-text-muted" />
           )}
         </button>
-        <button className="relative rounded-full border border-transparent p-2.5 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]" title="告警">
-          <Bell size={14} className="text-finance-text-muted" />
-          <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-finance-bearish" />
-        </button>
-
-        <div className="hidden items-center gap-1 rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-1.5 text-[10px] font-medium text-[var(--fg-4)] xl:flex">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--brand)]" />
-          <span>研究工作台</span>
-        </div>
+        <ReportUpdateNotifications />
 
         <div className="flex items-center gap-2 rounded-full border border-transparent px-2 py-1.5 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]">
           <div

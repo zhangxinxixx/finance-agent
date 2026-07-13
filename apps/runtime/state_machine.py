@@ -44,12 +44,19 @@ _ALLOWED_RUN_TRANSITIONS = {
     },
     TaskStatus.blocked: {TaskStatus.running, TaskStatus.failed, TaskStatus.success},
     TaskStatus.stale: {TaskStatus.running, TaskStatus.failed, TaskStatus.success},
+    TaskStatus.success: set(),
+    TaskStatus.failed: set(),
+    TaskStatus.partial_success: set(),
+    TaskStatus.degraded: set(),
+    TaskStatus.cancelled: set(),
 }
 _ALLOWED_STEP_TRANSITIONS = {
     StepStatus.pending: {StepStatus.running, StepStatus.success, StepStatus.failed, StepStatus.skipped, StepStatus.blocked},
     StepStatus.running: {StepStatus.success, StepStatus.failed, StepStatus.skipped, StepStatus.blocked},
     StepStatus.blocked: {StepStatus.pending, StepStatus.running, StepStatus.success, StepStatus.failed, StepStatus.skipped},
-    StepStatus.failed: {StepStatus.running},
+    StepStatus.success: set(),
+    StepStatus.failed: set(),
+    StepStatus.skipped: set(),
 }
 
 
@@ -129,12 +136,36 @@ def transition_task_run(
     error_message: str | None = None,
     progress: float | None = None,
 ) -> TaskStatus:
+    return _transition_task_run(
+        db,
+        run,
+        to_status,
+        source=source,
+        reason=reason,
+        error_message=error_message,
+        progress=progress,
+        allow_failed_retry=False,
+    )
+
+
+def _transition_task_run(
+    db: Session,
+    run: TaskRun,
+    to_status: TaskStatus | str,
+    *,
+    source: str,
+    reason: str | None,
+    error_message: str | None,
+    progress: float | None,
+    allow_failed_retry: bool,
+) -> TaskStatus:
     from_status = coerce_task_status(run.status)
     target = coerce_task_status(to_status)
 
     if from_status != target:
-        allowed = _ALLOWED_RUN_TRANSITIONS.get(from_status)
-        if allowed is not None and target not in allowed:
+        allowed = _ALLOWED_RUN_TRANSITIONS[from_status]
+        is_failed_retry = allow_failed_retry and from_status == TaskStatus.failed and target == TaskStatus.running
+        if target not in allowed and not is_failed_retry:
             raise ValueError(f"Invalid task run transition: {from_status.value} -> {target.value}")
         run.status = target
 
@@ -184,12 +215,40 @@ def transition_task_step(
     retryable: bool | None = None,
     blocked_reason: str | None = None,
 ) -> StepStatus:
+    return _transition_task_step(
+        db,
+        step,
+        to_status,
+        source=source,
+        reason=reason,
+        error_message=error_message,
+        error_type=error_type,
+        retryable=retryable,
+        blocked_reason=blocked_reason,
+        allow_failed_retry=False,
+    )
+
+
+def _transition_task_step(
+    db: Session,
+    step: TaskStep,
+    to_status: StepStatus | str,
+    *,
+    source: str,
+    reason: str | None,
+    error_message: str | None,
+    error_type: str | None,
+    retryable: bool | None,
+    blocked_reason: str | None,
+    allow_failed_retry: bool,
+) -> StepStatus:
     from_status = coerce_step_status(step.status)
     target = coerce_step_status(to_status)
 
     if from_status != target:
-        allowed = _ALLOWED_STEP_TRANSITIONS.get(from_status)
-        if allowed is not None and target not in allowed:
+        allowed = _ALLOWED_STEP_TRANSITIONS[from_status]
+        is_failed_retry = allow_failed_retry and from_status == StepStatus.failed and target == StepStatus.running
+        if target not in allowed and not is_failed_retry:
             raise ValueError(f"Invalid task step transition: {from_status.value} -> {target.value}")
         step.status = target
 
@@ -239,6 +298,71 @@ def transition_task_step(
             emit_task_event(db, str(step.task_run_id), str(step.id), "TASK_BLOCKED", payload)
 
     return target
+
+
+def retry_task_run(
+    db: Session,
+    run: TaskRun,
+    *,
+    source: str,
+    reason: str | None = None,
+) -> TaskStatus:
+    """Reopen a failed run through the explicit retry path."""
+    from_status = coerce_task_status(run.status)
+    if from_status != TaskStatus.failed:
+        raise ValueError(f"Only failed task runs can be retried; current status is {from_status.value}")
+
+    run.started_at = None
+    run.ended_at = None
+    run.progress = 0.0
+    run.error = None
+    run.error_summary = None
+    return _transition_task_run(
+        db,
+        run,
+        TaskStatus.running,
+        source=source,
+        reason=reason or "run_retry_started",
+        error_message=None,
+        progress=0.0,
+        allow_failed_retry=True,
+    )
+
+
+def retry_task_step(
+    db: Session,
+    step: TaskStep,
+    *,
+    source: str,
+    reason: str | None = None,
+) -> StepStatus:
+    """Reopen a retryable failed step through the explicit retry path."""
+    from_status = coerce_step_status(step.status)
+    if from_status != StepStatus.failed:
+        raise ValueError(f"Only failed task steps can be retried; current status is {from_status.value}")
+    if not step.retryable:
+        raise ValueError(f"Task step {step.name} is not retryable")
+
+    step.started_at = None
+    step.finished_at = None
+    step.duration_ms = None
+    step.error = None
+    step.error_json = None
+    step.error_type = None
+    step.blocked_reason = None
+    step.retry_count = int(step.retry_count or 0) + 1
+    return _transition_task_step(
+        db,
+        step,
+        StepStatus.running,
+        source=source,
+        reason=reason or "step_retry_started",
+        error_message=None,
+        error_type=None,
+        retryable=True,
+        blocked_reason=None,
+        allow_failed_retry=True,
+    )
 
 
 def _emit_run_lifecycle_event(

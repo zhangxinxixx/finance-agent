@@ -8,6 +8,7 @@ from apps.analysis.jin10.agent_analysis import (
     agent_analysis_prompt_version,
     build_agent_analysis_prompt,
     build_jin10_agent_analysis_report,
+    build_jin10_agent_analysis_report_with_llm,
     parse_agent_analysis_markdown,
     sanitize_agent_analysis_markdown,
 )
@@ -91,7 +92,7 @@ def test_build_agent_analysis_prompt_includes_required_framework_terms() -> None
     assert "整体语气更像盘后研究会话或交易员复盘" in prompt
     assert "最多 3 句" in prompt
     assert "不要单独展开“三确认模型”小节" in prompt
-    assert "4366 -> 4500 -> 4600 -> 5000-5200" in prompt
+    assert "近端确认位、动态期权锚和远期模型目标必须拆开" in prompt
     assert "## Agent 入库字段" not in prompt
 
 
@@ -311,7 +312,34 @@ def test_agent_analysis_prompt_version_tracks_report_type() -> None:
     assert agent_analysis_prompt_version(raw_report, {"report_type": "technical_levels"}) == "jin10_agent_analysis_technical_levels_v1"
     assert agent_analysis_prompt_version(raw_report, {"report_type": "oil"}) == "jin10_agent_analysis_oil_v1"
     assert agent_analysis_prompt_version(raw_report, {"report_type": "fx"}) == "jin10_agent_analysis_fx_v1"
-    assert agent_analysis_prompt_version(raw_report, {"report_type": "daily"}) == "jin10_agent_analysis_v2"
+    assert agent_analysis_prompt_version(raw_report, {"report_type": "daily"}) == "jin10_agent_analysis_v3"
+
+
+def test_weekly_prompt_does_not_route_to_embedded_specialty_section() -> None:
+    raw_report = {
+        "title": "黄金投资者周报",
+        "article_markdown": "# 黄金\n周度区间判断。\n# 交易者持仓报告\n持仓变化。\n# 原油报告\n油价变化。\n# 市场赔率表\n辅助观察。",
+        "charts": [],
+    }
+    daily_report = {
+        "family": "jin10_weekly_visual",
+        "report_type": "weekly",
+    }
+
+    prompt = build_agent_analysis_prompt(raw_report, daily_report)
+
+    assert "# 1. 最新判断发生了什么变化？" in prompt
+    assert "报告作者预测" in prompt
+    assert "其他可报告交易商" in prompt
+    assert "最大痛点是随持仓和到期时间变化的动态参考锚" in prompt
+    assert "10Y 名义收益率、实际收益率、2Y 收益率、2Y-3M 利差" in prompt
+    assert "趋势反转证据" in prompt
+    assert "价格确认`必须写“未完成”" in prompt
+    assert "不得混用量表" in prompt
+    assert "禁止使用“先见底”" in prompt
+    assert "持仓 / 期权分布专用分析" not in prompt
+    assert "市场观察 / 市场赔率专用分析" not in prompt
+    assert agent_analysis_prompt_version(raw_report, daily_report) == "jin10_agent_analysis_v3"
 
 
 def test_build_jin10_agent_analysis_report_outputs_core_sections() -> None:
@@ -420,6 +448,123 @@ def test_render_jin10_agent_analysis_markdown_contains_fixed_sections() -> None:
 
 def test_parse_agent_analysis_markdown_strips_fences() -> None:
     assert parse_agent_analysis_markdown("```markdown\n# 标题\n```") == "# 标题"
+
+
+def test_llm_agent_analysis_submits_real_images_and_records_visual_trace(monkeypatch) -> None:
+    raw_report, daily_report, _ = _agent_report()
+    raw = raw_report.to_dict()
+    raw["article_markdown"] += "\n\n![关键图](figures/fig_p2_001.png)\n"
+    raw["charts"] = [
+        {
+            "figure_id": "fig_p2_001",
+            "page_no": 2,
+            "bbox": [10, 20, 300, 400],
+            "title": "关键图",
+            "recognized_text": "4500",
+            "image_path": "figures/fig_p2_001.png",
+        }
+    ]
+    captured = {}
+
+    class Response:
+        content = "# 测试｜Agent 二次分析报告\n\n## 一句话结论\n\n图表显示4500，来源 [figure_id=fig_p2_001 page_no=2]。"
+        model = "gpt-5.5"
+        provider = "cockpit"
+        latency_ms = 42
+        usage = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+
+    def fake_chat_sync(**kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.delenv("JIN10_AGENT_PROVIDER", raising=False)
+    monkeypatch.delenv("JIN10_AGENT_MODEL", raising=False)
+    monkeypatch.delenv("JIN10_AGENT_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("JIN10_AGENT_REQUEST_TIMEOUT", raising=False)
+    monkeypatch.delenv("JIN10_AGENT_MAX_IMAGES", raising=False)
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+
+    result = build_jin10_agent_analysis_report_with_llm(
+        raw,
+        daily_report,
+        figure_image_loader=lambda chart: "data:image/png;base64,ZmFrZQ==",
+    )
+
+    user_content = captured["messages"][1]["content"]
+    assert isinstance(user_content, list)
+    assert any(block.get("type") == "image_url" for block in user_content)
+    assert captured["provider"] == "cockpit"
+    assert captured["model"] == "gpt-5.6-sol"
+    assert captured["reasoning_effort"] == "high"
+    assert captured["request_timeout"] == 300.0
+    assert result.generated_from["max_images"] == 25
+    assert result.generated_from["vision_model"] == "gpt-5.5"
+    assert result.generated_from["submitted_image_count"] == 1
+    assert result.generated_from["image_processing_status"] == "success"
+    assert result.generated_from["degraded"] is False
+    assert result.generated_from["figure_results"][0]["figure_id"] == "fig_p2_001"
+    assert result.generated_from["figure_results"][0]["referenced_in_output"] is True
+
+
+def test_llm_agent_analysis_accepts_formal_runtime_overrides(monkeypatch) -> None:
+    raw_report, daily_report, _ = _agent_report()
+    captured = {}
+
+    class Response:
+        content = "# 测试｜Agent 二次分析报告\n\n## 一句话结论\n\n保持观察。"
+        model = "custom-sol"
+        provider = "cockpit"
+        latency_ms = 10
+        usage = {}
+
+    def fake_chat_sync(**kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.setenv("JIN10_AGENT_MODEL", "custom-sol")
+    monkeypatch.setenv("JIN10_AGENT_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("JIN10_AGENT_REQUEST_TIMEOUT", "240")
+    monkeypatch.setenv("JIN10_AGENT_MAX_TOKENS", "3000")
+    monkeypatch.setenv("JIN10_AGENT_MAX_IMAGES", "8")
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+
+    result = build_jin10_agent_analysis_report_with_llm(raw_report, daily_report)
+
+    assert captured["model"] == "custom-sol"
+    assert captured["reasoning_effort"] == "medium"
+    assert captured["request_timeout"] == 240.0
+    assert captured["max_tokens"] == 3000
+    assert result.generated_from["max_images"] == 8
+
+
+def test_llm_agent_analysis_error_fallback_records_visual_degradation(monkeypatch) -> None:
+    raw_report, daily_report, _ = _agent_report()
+    raw = raw_report.to_dict()
+    raw["article_markdown"] += "\n\n![关键图](figures/fig_p2_001.png)\n"
+    raw["charts"] = [
+        {
+            "figure_id": "fig_p2_001",
+            "page_no": 2,
+            "bbox": [10, 20, 300, 400],
+            "image_path": "figures/fig_p2_001.png",
+        }
+    ]
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("vlm down")))
+
+    result = build_jin10_agent_analysis_report_with_llm(
+        raw,
+        daily_report,
+        figure_image_loader=lambda chart: "data:image/png;base64,ZmFrZQ==",
+    )
+
+    assert result.generated_from["source"] == "jin10_agent_analysis_fallback_after_llm_error"
+    assert result.generated_from["degraded"] is True
+    assert result.generated_from["degraded_reason"] == "llm_error:RuntimeError"
+    assert result.generated_from["submitted_image_count"] == 1
 
 
 def test_sanitize_agent_analysis_markdown_removes_agent_storage_section_and_yaml_block() -> None:

@@ -19,6 +19,29 @@ collector
 -> renderer / output
 ```
 
+正式模型配置：
+
+```text
+页面识别与 bbox：gpt-5.6-luna + high，单页 120 秒，0 重试
+Agent 二次分析：gpt-5.6-sol + high，整份 300 秒，0 重试
+分析图片：最多 25 张，按正文顺序提交；长边 1600、JPEG 92
+```
+
+默认环境变量：
+
+```text
+JIN10_VISION_PROVIDER=cockpit
+JIN10_VISION_MODEL=gpt-5.6-luna
+JIN10_VISION_REASONING_EFFORT=high
+JIN10_VISION_TIMEOUT=120
+JIN10_VISION_MAX_RETRIES=0
+JIN10_AGENT_PROVIDER=cockpit
+JIN10_AGENT_MODEL=gpt-5.6-sol
+JIN10_AGENT_REASONING_EFFORT=high
+JIN10_AGENT_REQUEST_TIMEOUT=300
+JIN10_AGENT_MAX_IMAGES=25
+```
+
 ## 输入
 
 解析入口是 `parse_report_images()`，主要输入来自抓取层归档：
@@ -26,7 +49,7 @@ collector
 - `detail.html`
 - `report.md`
 - `meta.json`
-- `images/*`
+- `images/page-NNN.jpg`：采集阶段已按 VLM 尺寸与质量规范化的 canonical 页面 JPEG
 - article metadata: `article_id`, `title`, `published_at`
 
 日报和周报必须按 `category_code` 分流：
@@ -44,7 +67,7 @@ page image
 -> page JSON: markdown + blocks + bbox
 ```
 
-`recognize_pages_unified()` 位于 `apps/parsers/jin10/qwen_vl_markdown.py`。
+`recognize_pages_unified()` 位于 `apps/parsers/jin10/vision_recognition_agent/agent.py`。
 
 单页 unified 输出必须包含：
 
@@ -66,8 +89,8 @@ page image
 
 OpenCV 只负责：
 
-- 读取页面图片
-- 编码发送给 VLM
+- 采集阶段把远端 PNG/JPG/WebP 统一解码、缩放并保存为 VLM-ready JPEG
+- 读取页面 JPEG；符合约束时直接 Base64 发送给 VLM，不做第二次转码
 - 按 VLM bbox 裁图
 - 保存 `figures/*.png`
 
@@ -114,6 +137,13 @@ unified page JSON
 - `parse_status.json`: 状态、warnings、页数、figure 数量
 - `raw_article_report.md`: 人可读原文图文版
 - `raw_article_report.json`: raw article JSON
+
+图片只保留两个 canonical 位置：
+
+- 页面 JPEG：`~/jin10-reports/<date>/<report_type>/<article_id>/images/page-NNN.jpg`
+- 裁剪图：`storage/parsed/jin10/<date>/<article_id>/figures/*.png`
+
+`storage/outputs/jin10` 不复制 `images` 或 `figures`。既有 report-bundle asset URL 保持不变，API 对页面图回源 external source refs，对裁剪图回源 parsed。完整 pipeline 结束后执行 30 天滚动保留；边界日保留，过期时只删除图片，不删除 Markdown、JSON、状态或 lineage。
 
 `raw_article_report.md` 必须满足：
 
@@ -166,13 +196,20 @@ rtk env UV_CACHE_DIR=/tmp/uv-cache uv run pytest \
 rtk env \
   JIN10_IMAGE_RECOGNITION=vlm \
   JIN10_VISION_PAGE_LIMIT=0 \
-  JIN10_QWEN_VL_MODEL=qwen3-vl-plus \
+  JIN10_VISION_MODEL=gpt-5.6-luna \
   UV_CACHE_DIR=/tmp/uv-cache \
   timeout 600s \
   uv run python scripts/run_daily_report_pipeline.py \
   --date 2026-05-26 \
   --category 270 \
-  --article-id 220232
+  --article-id 220232 \
+  --vision-provider cockpit \
+  --vision-model gpt-5.6-luna \
+  --vision-reasoning-effort high \
+  --analysis-provider cockpit \
+  --analysis-model gpt-5.6-sol \
+  --analysis-reasoning-effort high \
+  --analysis-max-images 25
 ```
 
 实跑后必须抽查：

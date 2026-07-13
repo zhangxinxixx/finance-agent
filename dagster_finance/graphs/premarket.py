@@ -31,6 +31,7 @@ from dagster_finance.ops.news import (
 from dagster_finance.ops.agents import (
     cme_options_agent_op,
     coordinator_op,
+    final_report_op,
     macro_liquidity_agent_op,
     market_odds_agent_op,
     news_agent_op,
@@ -163,6 +164,17 @@ def c4_agent_pipeline(snapshot: dict[str, Any]):
     coord_out = coordinator_op(
         snapshot, macro_out, options_out, risk_out,
         tech_out, pos_out, news_out, odds_out,
+    )
+
+    final_report_op(
+        snapshot,
+        macro_out,
+        options_out,
+        risk_out,
+        tech_out,
+        pos_out,
+        news_out,
+        coord_out,
     )
 
     # Strategy card

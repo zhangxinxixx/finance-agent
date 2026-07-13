@@ -186,3 +186,39 @@ def test_orchestration_notification_plan_missing_storage_returns_empty(tmp_path)
     assert payload["trade_date"] == "2026-07-08"
     assert payload["requests"] == []
     assert payload["request_count"] == 0
+
+
+def test_orchestration_latest_follows_run_scoped_latest_pointer(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    date_root = storage_root / "orchestration" / "2026-07-08"
+    run_root = date_root / "hourly-run-1"
+    artifacts = {
+        "run_id": "hourly-run-1",
+        "automation_summary": "orchestration/2026-07-08/hourly-run-1/automation_summary.json",
+        "notification_plan": "orchestration/2026-07-08/hourly-run-1/notification_plan.json",
+        "workflow_runs": "orchestration/2026-07-08/hourly-run-1/workflow_runs.json",
+        "retry_queue": "orchestration/2026-07-08/hourly-run-1/retry_queue.json",
+        "pre_analysis_gate": "orchestration/2026-07-08/hourly-run-1/pre_analysis_gate.json",
+    }
+    _write_json(
+        date_root / "latest.json",
+        {
+            "trade_date": "2026-07-08",
+            "run_id": "hourly-run-1",
+            "trigger": "hourly",
+            "artifacts": artifacts,
+        },
+    )
+    _write_json(run_root / "automation_summary.json", {"run_id": "hourly-run-1", "status": "partial"})
+    _write_json(run_root / "notification_plan.json", {"trade_date": "2026-07-08", "request_count": 0, "requests": []})
+    _write_json(run_root / "workflow_runs.json", {"workflow_runs": []})
+    _write_json(run_root / "retry_queue.json", {"trade_date": "2026-07-08", "count": 0, "items": []})
+    _write_json(run_root / "pre_analysis_gate.json", {"decision": "limited"})
+    (storage_root / "orchestration" / "outbox").mkdir(parents=True)
+
+    payload = get_orchestration_latest(storage_root=storage_root)
+
+    assert payload["run_id"] == "hourly-run-1"
+    assert payload["summary"]["run_id"] == "hourly-run-1"
+    assert payload["pre_analysis_gate"]["decision"] == "limited"
+    assert payload["artifacts"]["automation_summary"] == artifacts["automation_summary"]

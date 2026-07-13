@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from apps.data_control import data_control_agent
 from apps.data_control.data_control_agent import run_data_control_agent
+from apps.data_control.processing_planner import build_processing_plan
 from apps.runtime import task_recorder as task_recorder_module
 from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.task import ensure_task_tables
@@ -174,3 +175,38 @@ def test_data_control_agent_registers_artifacts_with_traceable_source_refs(tmp_p
             "data_date": "2026-07-08",
         },
     ]
+
+
+def test_processing_plan_blocks_only_the_affected_capability(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_storage(storage_root)
+    _write_json(
+        storage_root / "monitoring" / "2026-07-08" / "downstream_readiness.json",
+        {
+            "trade_date": "2026-07-08",
+            "readiness": "partial",
+            "capabilities": {
+                "daily_market_snapshot": "allowed",
+                "full_daily_analysis": "degraded",
+                "research_report_interpretation": "blocked",
+                "knowledge_distillation": "blocked",
+                "technical_trigger_confirmation": "allowed",
+                "options_structure_analysis": "allowed",
+            },
+            "can_run_full_analysis": False,
+            "can_run_research_distillation": False,
+            "allowed_outputs": ["market snapshot", "limited daily analysis"],
+            "blocked_outputs": ["knowledge distillation"],
+            "blocking_issues": [{"source_key": "jin10_svip_reports"}],
+        },
+    )
+
+    plan = build_processing_plan(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT.isoformat(),
+    )
+
+    assert plan["status"] == "partial"
+    assert any(item["step"] == "run_knowledge_distillation" for item in plan["blocked_steps"])
+    assert not any(item["step"] == "run_full_analysis" for item in plan["blocked_steps"])

@@ -5,7 +5,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from sqlalchemy.exc import OperationalError, ProgrammingError
@@ -832,7 +832,16 @@ def _legacy_jin10_report_detail(report_id: str) -> ReportDetail | None:
             ]
         ),
         structured_payload=structured_payload,
+        report_identity=_jin10_report_identity(daily_payload, raw_payload, agent_payload),
     )
+
+
+def _jin10_report_identity(*payloads: dict[str, Any]) -> dict[str, Any] | None:
+    for payload in payloads:
+        identity = payload.get("report_identity") if isinstance(payload, dict) else None
+        if isinstance(identity, dict) and identity:
+            return dict(identity)
+    return None
 
 
 def _build_legacy_jin10_structured_payload(*, run_dir: Path, artifacts: list[ReportArtifactSchema]) -> dict[str, Any] | None:
@@ -936,8 +945,24 @@ def _build_jin10_asset_audit(*, run_dir: Path, raw_payload: dict[str, Any]) -> d
         if isinstance(chart, dict) and chart.get("image_path")
     }
     chart_refs.discard("")
-    figure_paths = {_normalize_jin10_image_ref(f"figures/{path.name}") for path in (run_dir / "figures").glob("*.png")}
+    article_id = str(raw_payload.get("article_id") or run_dir.name).strip()
+    if not re.fullmatch(r"\d+", article_id):
+        article_id = run_dir.name
+    parsed_figures = (
+        _PROJECT_ROOT
+        / "storage"
+        / "parsed"
+        / "jin10"
+        / run_dir.parent.name
+        / article_id
+        / "figures"
+    )
+    canonical_figure_paths = {
+        _normalize_jin10_image_ref(f"figures/{path.name}")
+        for path in parsed_figures.glob("*.png")
+    }
     expected_refs = markdown_refs | chart_refs
+    figure_paths = canonical_figure_paths & expected_refs
     parser_figures_total = _jin10_parser_figures_total(raw_payload)
     count_issues: list[dict[str, Any]] = []
     if len(markdown_image_refs) != len(markdown_refs):
@@ -980,8 +1005,8 @@ def _build_jin10_asset_audit(*, run_dir: Path, raw_payload: dict[str, Any]) -> d
                 "chart_image_refs": len(chart_refs),
             }
         )
-    missing_refs = sorted(ref for ref in expected_refs if ref not in figure_paths)
-    extra_files = sorted(path for path in figure_paths if path not in expected_refs)
+    missing_refs = sorted(ref for ref in expected_refs if ref not in canonical_figure_paths)
+    extra_files: list[str] = []
     if missing_refs:
         status = "missing_assets"
     elif count_issues or extra_files:
@@ -994,6 +1019,7 @@ def _build_jin10_asset_audit(*, run_dir: Path, raw_payload: dict[str, Any]) -> d
         "raw_chart_count": len(charts),
         "chart_image_refs": len(chart_refs),
         "figure_files": len(figure_paths),
+        "canonical_figure_files": len(canonical_figure_paths),
         "parser_figures_total": parser_figures_total,
         "missing_refs": missing_refs,
         "extra_files": extra_files,
@@ -2659,14 +2685,62 @@ def get_jin10_report_bundle_asset_path(date: str, run_id: str, asset_path: str) 
     base = (_PROJECT_ROOT / "storage" / "outputs" / "jin10" / date / run_id).resolve()
     if not base.exists():
         return None
-    candidate = (base / asset_path).resolve()
-    if not candidate.exists() or not candidate.is_file():
+    normalized = str(asset_path or "").strip().replace("\\", "/")
+    parts = PurePosixPath(normalized).parts
+    if not normalized or len(parts) != 2 or parts[0] not in {"figures", "images"}:
         return None
-    try:
-        candidate.relative_to(base)
-    except ValueError:
+    if any(part in {"", ".", ".."} for part in parts):
         return None
-    return candidate
+
+    raw_payload = _read_optional_json(base / "raw_article_report.json") or {}
+
+    legacy_candidate = (base / parts[0] / parts[1]).resolve()
+    if legacy_candidate.is_file():
+        try:
+            legacy_candidate.relative_to(base)
+        except ValueError:
+            return None
+        return legacy_candidate
+
+    if parts[0] == "figures":
+        article_id = str(raw_payload.get("article_id") or "").strip()
+        canonical_ids = [run_id]
+        if re.fullmatch(r"\d+", article_id) and article_id not in canonical_ids:
+            canonical_ids.append(article_id)
+        for canonical_id in canonical_ids:
+            parsed_base = (
+                _PROJECT_ROOT / "storage" / "parsed" / "jin10" / date / canonical_id
+            ).resolve()
+            candidate = (parsed_base / "figures" / parts[1]).resolve()
+            if not candidate.is_file():
+                continue
+            try:
+                candidate.relative_to(parsed_base)
+            except ValueError:
+                continue
+            return candidate
+        return None
+
+    for source_ref in raw_payload.get("source_refs") or []:
+        if not isinstance(source_ref, dict) or source_ref.get("asset_type") != "image":
+            continue
+        candidate = Path(str(source_ref.get("path") or "")).expanduser().resolve()
+        if candidate.name != parts[1] or not candidate.is_file():
+            continue
+        candidate_parts = candidate.parts
+        article_id = str(raw_payload.get("article_id") or "").strip()
+        canonical_ids = {run_id}
+        if re.fullmatch(r"\d+", article_id):
+            canonical_ids.add(article_id)
+        if (
+            len(candidate_parts) < 5
+            or candidate_parts[-5] != date
+            or candidate_parts[-3] not in canonical_ids
+            or candidate_parts[-2] != "images"
+        ):
+            continue
+        return candidate
+    return None
 
 
 def _read_optional_json(path: Path) -> dict[str, Any] | None:
@@ -3155,8 +3229,10 @@ def _is_explicit_jin10_weekly(meta: dict[str, Any]) -> bool:
 def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
     reports: list[dict[str, Any]] = []
     reports.extend(_collect_registered_reports_from_db(asset))
-    reports.extend(_collect_reports_from_db("final_report", "markdown", asset) or _collect_reports("final_report", "final_report", "markdown", asset, "final_report.md"))
-    reports.extend(_collect_reports_from_db("strategy_card", "json+markdown", asset) or _collect_reports("strategy_card", "strategy_card", "json+markdown", asset))
+    reports.extend(_collect_reports_from_db("final_report", "markdown", asset))
+    reports.extend(_collect_reports("final_report", "final_report", "markdown", asset, "final_report.md"))
+    reports.extend(_collect_reports_from_db("strategy_card", "json+markdown", asset))
+    reports.extend(_collect_reports("strategy_card", "strategy_card", "json+markdown", asset))
     reports.extend(_collect_jin10_reports())
 
     options_base = _PROJECT_ROOT / "storage" / "outputs" / "cme_options"

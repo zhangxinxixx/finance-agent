@@ -72,6 +72,24 @@ def test_upsert_macro_observation_updates_same_source_symbol_date() -> None:
     assert rows[0].run_id == "run-b"
 
 
+def test_upsert_macro_observation_accepts_space_separated_datetime() -> None:
+    session = _make_session()
+
+    row = upsert_macro_observation(
+        session,
+        {
+            "source_key": "jin10_news",
+            "symbol": "FED_EVENT",
+            "observation_date": "2026-07-13 20:00",
+            "value": 1,
+            "run_id": "run-jin10-event",
+        },
+    )
+    session.commit()
+
+    assert row.observation_date.isoformat() == "2026-07-13"
+
+
 def test_list_macro_observations_filters_by_run_and_date() -> None:
     session = _make_session()
     upsert_macro_observation(

@@ -10,19 +10,23 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-import httpx
 from dotenv import load_dotenv
 
+from apps.data_layer.jin10_image_assets import (
+    DEFAULT_JIN10_IMAGE_JPEG_QUALITY,
+    DEFAULT_JIN10_IMAGE_MAX_LONG_EDGE,
+)
 from apps.llm.gateway import chat_sync
-from apps.runtime.secret_resolver import resolve_runtime_secret
 
 
-DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_VISION_PROVIDER = "mimo"
+DEFAULT_VISION_PROVIDER = "cockpit"
 DEFAULT_MIMO_VL_MODEL = "mimo-v2.5"
-DEFAULT_QWEN_VL_MODEL = "qwen3-vl-flash"
-DEFAULT_VISION_MODEL = DEFAULT_MIMO_VL_MODEL
-DEFAULT_VISION_TIMEOUT = 90.0
+DEFAULT_VISION_MODEL = "gpt-5.6-luna"
+DEFAULT_VISION_REASONING_EFFORT = "high"
+DEFAULT_VISION_TIMEOUT = 120.0
+DEFAULT_VISION_MAX_RETRIES = 0
+DEFAULT_VISION_MAX_LONG_EDGE = DEFAULT_JIN10_IMAGE_MAX_LONG_EDGE
+DEFAULT_VISION_JPEG_QUALITY = DEFAULT_JIN10_IMAGE_JPEG_QUALITY
 MAX_IMAGE_DATA_URL_CHARS = 9_500_000
 SUPPORTED_RAW_IMAGE_MIME_TYPES = {
     ".png": "image/png",
@@ -32,8 +36,35 @@ SUPPORTED_RAW_IMAGE_MIME_TYPES = {
 }
 
 
-class MissingDashScopeApiKey(RuntimeError):
-    """Raised when legacy DashScope / Qwen VL recognition is requested but no API key is configured."""
+def _positive_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _non_negative_int(value: Any, default: int) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _bounded_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
 
 
 @dataclass(slots=True)
@@ -43,44 +74,8 @@ class EncodedImage:
     height: int
 
 
-class DashScopeChatCompletionClient:
-    """Legacy DashScope-compatible client kept for compatibility tests."""
-
-    def __init__(self, *, api_key: str, base_url: str, timeout: float) -> None:
-        self._url = base_url.rstrip("/") + "/chat/completions"
-        self._timeout = timeout
-        self._headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
-    def create(
-        self,
-        *,
-        model: str,
-        messages: list[dict[str, Any]],
-        temperature: float = 0,
-        extra_body: dict[str, Any] | None = None,
-    ) -> str:
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if extra_body:
-            payload.update(extra_body)
-        with httpx.Client(timeout=self._timeout) as client:
-            response = client.post(self._url, headers=self._headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        try:
-            return str(data["choices"][0]["message"].get("content") or "")
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("DashScope response missing choices[0].message.content") from exc
-
-
-class DashScopeVisionMarkdownClient:
-    """Vision markdown client that now defaults to MiMo multi-modal."""
+class VisionMarkdownClient:
+    """Vision client for formal Jin10 page recognition."""
 
     def __init__(
         self,
@@ -88,17 +83,50 @@ class DashScopeVisionMarkdownClient:
         provider: str | None = None,
         model: str | None = None,
         timeout: float | None = None,
+        max_retries: int | None = None,
+        reasoning_effort: str | None = None,
+        max_image_long_edge: int | None = None,
+        image_jpeg_quality: int | None = None,
     ) -> None:
         load_dotenv()
+        self._explicit_runtime_config = any(
+            value is not None
+            for value in (
+                provider,
+                model,
+                timeout,
+                max_retries,
+                reasoning_effort,
+                max_image_long_edge,
+                image_jpeg_quality,
+            )
+        )
         self.provider = self._resolve_provider(provider)
         self.model = self._resolve_model(model)
-        self.timeout = float(timeout or os.getenv("JIN10_VISION_TIMEOUT", DEFAULT_VISION_TIMEOUT))
-        self._legacy_qwen_enabled = self.provider in {"dashscope", "qwen"}
-        if self._legacy_qwen_enabled:
-            resolved_api_key = (resolve_runtime_secret("DASHSCOPE_API_KEY") or "").strip()
-            if not resolved_api_key:
-                raise MissingDashScopeApiKey("DASHSCOPE_API_KEY is not configured")
-        self._base_url = self._resolve_base_url()
+        self.timeout = _positive_float(
+            timeout if timeout is not None else os.getenv("JIN10_VISION_TIMEOUT"),
+            DEFAULT_VISION_TIMEOUT,
+        )
+        self.request_timeout = self.timeout
+        self.max_retries = _non_negative_int(
+            max_retries if max_retries is not None else os.getenv("JIN10_VISION_MAX_RETRIES"),
+            DEFAULT_VISION_MAX_RETRIES,
+        )
+        self.reasoning_effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else os.getenv("JIN10_VISION_REASONING_EFFORT", DEFAULT_VISION_REASONING_EFFORT).strip()
+        ) or DEFAULT_VISION_REASONING_EFFORT
+        self.max_image_long_edge = _positive_int(
+            max_image_long_edge if max_image_long_edge is not None else os.getenv("JIN10_VISION_MAX_LONG_EDGE"),
+            DEFAULT_VISION_MAX_LONG_EDGE,
+        )
+        self.image_jpeg_quality = _bounded_int(
+            image_jpeg_quality if image_jpeg_quality is not None else os.getenv("JIN10_VISION_JPEG_QUALITY"),
+            DEFAULT_VISION_JPEG_QUALITY,
+            minimum=1,
+            maximum=100,
+        )
 
     def recognize_page_markdown(
         self,
@@ -118,7 +146,11 @@ class DashScopeVisionMarkdownClient:
             }
 
         try:
-            encoded_image = _image_to_data_url(image_path)
+            encoded_image = _image_to_data_url(
+                image_path,
+                max_long_edge=self.max_image_long_edge,
+                jpeg_quality=self.image_jpeg_quality,
+            )
         except ValueError as exc:
             return {
                 "page_no": page_no,
@@ -166,7 +198,11 @@ class DashScopeVisionMarkdownClient:
             }
 
         try:
-            encoded_image = _image_to_data_url(image_path)
+            encoded_image = _image_to_data_url(
+                image_path,
+                max_long_edge=self.max_image_long_edge,
+                jpeg_quality=self.image_jpeg_quality,
+            )
         except ValueError as exc:
             return {
                 "page_no": page_no,
@@ -228,6 +264,7 @@ class DashScopeVisionMarkdownClient:
         page_width: int,
         page_height: int,
         report_type: str | None = None,
+        preserve_cover_identity: bool = False,
     ) -> dict[str, Any]:
         if not image_path.is_file():
             return {
@@ -242,7 +279,11 @@ class DashScopeVisionMarkdownClient:
             }
 
         try:
-            encoded_image = _image_to_data_url(image_path)
+            encoded_image = _image_to_data_url(
+                image_path,
+                max_long_edge=self.max_image_long_edge,
+                jpeg_quality=self.image_jpeg_quality,
+            )
         except ValueError as exc:
             return {
                 "page_no": page_no,
@@ -264,6 +305,7 @@ class DashScopeVisionMarkdownClient:
                 original_page_width=page_width,
                 original_page_height=page_height,
                 prompt_profile=_prompt_profile_for_report_type(report_type),
+                preserve_cover_identity=preserve_cover_identity,
             ),
         )
         payload = _parse_layout_json(content)
@@ -315,41 +357,37 @@ class DashScopeVisionMarkdownClient:
 
     def _resolve_provider(self, provider: str | None) -> str:
         value = (provider or os.getenv("JIN10_VISION_PROVIDER") or DEFAULT_VISION_PROVIDER).strip().lower()
-        if value in {"dashscope", "qwen"}:
-            return "dashscope"
+        if value in {"cockpit", "codex", "openai-cockpit"}:
+            return "cockpit"
         if value in {"mimo", "mi-mo", "mimo2.5", "mimo-2.5"}:
             return "mimo"
-        return "mimo"
+        return DEFAULT_VISION_PROVIDER
 
     def _resolve_model(self, model: str | None) -> str:
         if model:
             return model.strip()
-        if self.provider == "dashscope":
-            legacy = os.getenv("JIN10_QWEN_VL_MODEL", "").strip()
-            if legacy:
-                return legacy
-            return DEFAULT_QWEN_VL_MODEL
+        configured = os.getenv("JIN10_VISION_MODEL", "").strip()
+        if configured:
+            return configured
         modern = os.getenv("JIN10_MIMO_VL_MODEL", "").strip()
         if modern:
             return modern
-        legacy = os.getenv("JIN10_QWEN_VL_MODEL", "").strip()
-        if legacy:
-            return legacy
         return DEFAULT_VISION_MODEL
 
-    def _resolve_base_url(self) -> str:
-        if self.provider == "dashscope":
-            return os.getenv("JIN10_QWEN_VL_BASE_URL", DASHSCOPE_BASE_URL)
-        return os.getenv("JIN10_MIMO_VL_BASE_URL", "").strip() or ""
-
     def _chat_with_image(self, *, image_data_url: str, text_prompt: str) -> str:
+        if (
+            "PYTEST_CURRENT_TEST" in os.environ
+            and os.getenv("FINANCE_AGENT_FORCE_LIVE_LLM", "").strip().lower() not in {"1", "true", "yes"}
+            and not self._explicit_runtime_config
+        ):
+            raise RuntimeError("live vision disabled in pytest without explicit client config")
         messages = [
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {"url": image_data_url},
+                        "image_url": {"url": image_data_url, "detail": "original"},
                     },
                     {"type": "text", "text": text_prompt},
                 ],
@@ -362,8 +400,12 @@ class DashScopeVisionMarkdownClient:
             "max_tokens": 4096,
             "provider": self.provider,
         }
-        if self.provider == "dashscope":
-            kwargs["max_retries"] = 0
+        if self.max_retries is not None:
+            kwargs["max_retries"] = self.max_retries
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
+        if self.request_timeout is not None:
+            kwargs["request_timeout"] = self.request_timeout
         response = chat_sync(**kwargs)
         return response.content
 
@@ -372,10 +414,10 @@ def recognize_pages_as_markdown(
     pages: list[dict[str, Any]],
     figures: list[dict[str, Any]],
     *,
-    client: DashScopeVisionMarkdownClient | None = None,
+    client: VisionMarkdownClient | None = None,
     report_type: str | None = None,
 ) -> dict[str, Any]:
-    recognizer = client or DashScopeVisionMarkdownClient()
+    recognizer = client or VisionMarkdownClient()
     prompt_profile = _prompt_profile_for_report_type(report_type)
     figure_map: dict[int, list[dict[str, Any]]] = {}
     for figure in figures:
@@ -386,17 +428,24 @@ def recognize_pages_as_markdown(
         page_no = int(page["page_no"])
         image_path = Path(str(page["image_path"]))
         page_figures = figure_map.get(page_no, [])
+        payload_hint = {
+            "prompt_version": "markdown-v3-resized-shell-aware",
+            "prompt_profile": prompt_profile,
+            "report_type": _normalize_report_type(report_type),
+            "figures": page_figures,
+            "input_max_long_edge": int(
+                getattr(recognizer, "max_image_long_edge", DEFAULT_VISION_MAX_LONG_EDGE)
+            ),
+            "input_jpeg_quality": int(
+                getattr(recognizer, "image_jpeg_quality", DEFAULT_VISION_JPEG_QUALITY)
+            ),
+        }
         cached = _read_page_cache(
             kind="markdown",
             model=recognizer.model,
             image_path=image_path,
             page_no=page_no,
-            payload_hint={
-                "prompt_version": "markdown-v2-shell-aware",
-                "prompt_profile": prompt_profile,
-                "report_type": _normalize_report_type(report_type),
-                "figures": page_figures,
-            },
+            payload_hint=payload_hint,
         )
         if cached is not None:
             print(f"[jin10-vlm] markdown page {page_no}: cache hit", file=sys.stderr, flush=True)
@@ -419,12 +468,7 @@ def recognize_pages_as_markdown(
             model=recognizer.model,
             image_path=image_path,
             page_no=page_no,
-            payload_hint={
-                "prompt_version": "markdown-v2-shell-aware",
-                "prompt_profile": prompt_profile,
-                "report_type": _normalize_report_type(report_type),
-                "figures": page_figures,
-            },
+            payload_hint=payload_hint,
             result=result,
         )
         page_results.append(result)
@@ -438,22 +482,31 @@ def recognize_pages_as_markdown(
 def recognize_pages_unified(
     pages: list[dict[str, Any]],
     *,
-    client: DashScopeVisionMarkdownClient | None = None,
+    client: VisionMarkdownClient | None = None,
     report_type: str | None = None,
+    preserve_cover_identity: bool = False,
 ) -> dict[str, Any]:
-    recognizer = client or DashScopeVisionMarkdownClient()
+    recognizer = client or VisionMarkdownClient()
     prompt_profile = _prompt_profile_for_report_type(report_type)
     page_results: list[dict[str, Any]] = []
     for page in pages:
         page_no = int(page["page_no"])
         image_path = Path(str(page["image_path"]))
         payload_hint = {
-            "prompt_version": "unified-v2-shell-aware-markdown-and-layout",
+            "prompt_version": "unified-v6-resized-recognition-crop-only",
             "prompt_profile": prompt_profile,
             "report_type": _normalize_report_type(report_type),
             "page_width": int(page.get("width") or 0),
             "page_height": int(page.get("height") or 0),
+            "input_max_long_edge": int(
+                getattr(recognizer, "max_image_long_edge", DEFAULT_VISION_MAX_LONG_EDGE)
+            ),
+            "input_jpeg_quality": int(
+                getattr(recognizer, "image_jpeg_quality", DEFAULT_VISION_JPEG_QUALITY)
+            ),
         }
+        if preserve_cover_identity:
+            payload_hint["preserve_cover_identity"] = True
         cached = _read_page_cache(
             kind="unified",
             model=recognizer.model,
@@ -466,13 +519,16 @@ def recognize_pages_unified(
             page_results.append(cached)
             continue
         print(f"[jin10-vlm] unified page {page_no}: start", file=sys.stderr, flush=True)
-        result = recognizer.recognize_page_unified(
-            image_path=image_path,
-            page_no=page_no,
-            page_width=payload_hint["page_width"],
-            page_height=payload_hint["page_height"],
-            report_type=report_type,
-        )
+        recognition_kwargs: dict[str, Any] = {
+            "image_path": image_path,
+            "page_no": page_no,
+            "page_width": payload_hint["page_width"],
+            "page_height": payload_hint["page_height"],
+            "report_type": report_type,
+        }
+        if preserve_cover_identity:
+            recognition_kwargs["preserve_cover_identity"] = True
+        result = recognizer.recognize_page_unified(**recognition_kwargs)
         print(
             f"[jin10-vlm] unified page {page_no}: {result.get('status') or 'done'}",
             file=sys.stderr,
@@ -497,19 +553,25 @@ def recognize_pages_unified(
 def recognize_pages_layout(
     pages: list[dict[str, Any]],
     *,
-    client: DashScopeVisionMarkdownClient | None = None,
+    client: VisionMarkdownClient | None = None,
 ) -> dict[str, Any]:
-    recognizer = client or DashScopeVisionMarkdownClient()
+    recognizer = client or VisionMarkdownClient()
     page_results: list[dict[str, Any]] = []
     for page in pages:
         page_no = int(page["page_no"])
         image_path = Path(str(page["image_path"]))
         payload_hint = {
-            "prompt_version": "layout-v5-shell-aware-image-or-normalized-coordinate-space",
+            "prompt_version": "layout-v6-resized-image-or-normalized-coordinate-space",
             "page_width": int(page.get("width") or 0),
             "page_height": int(page.get("height") or 0),
             "expected_chart_count": int(page.get("expected_chart_count") or 0),
             "hint_titles": [str(item) for item in (page.get("hint_titles") or [])],
+            "input_max_long_edge": int(
+                getattr(recognizer, "max_image_long_edge", DEFAULT_VISION_MAX_LONG_EDGE)
+            ),
+            "input_jpeg_quality": int(
+                getattr(recognizer, "image_jpeg_quality", DEFAULT_VISION_JPEG_QUALITY)
+            ),
         }
         cached = _read_page_cache(
             kind="layout",
@@ -555,9 +617,9 @@ def recognize_pages_layout(
 def recognize_figure_title_bands(
     bands: list[dict[str, Any]],
     *,
-    client: DashScopeVisionMarkdownClient | None = None,
+    client: VisionMarkdownClient | None = None,
 ) -> list[dict[str, Any]]:
-    recognizer = client or DashScopeVisionMarkdownClient()
+    recognizer = client or VisionMarkdownClient()
     results: list[dict[str, Any]] = []
     for band in bands:
         image = band.get("image")
@@ -788,66 +850,46 @@ def _build_page_unified_prompt(
     original_page_width: int,
     original_page_height: int,
     prompt_profile: str = "default",
+    preserve_cover_identity: bool = False,
 ) -> str:
-    if prompt_profile == "positioning":
-        profile_rules = """分类规则：持仓/期权分布报告。
-1. 标题类似“黄金持仓报告/白银持仓报告/欧元持仓报告/英镑持仓报告/澳元持仓报告”时，不要判定为封面。
-2. markdown 必须保留资产名称、看涨期权/看跌期权两栏、图例（存量、单日新增/减）、行权价/价格轴范围、最突出的存量峰值和单日增减位置；图内难以精确读取的数值用“约”。
-3. 文字总结页必须逐字保留期货持仓量、期货成交量、期权布局变化、期现价差、总结及其中数字/百分比/手数/价格位。
-4. blocks 中左右两栏可以分别作为 chart block，也可以返回覆盖两栏的 chart block，但要有 title/text block 标明资产和两栏名称。"""
-    elif prompt_profile == "technical_levels":
-        profile_rules = """分类规则：技术刘Pro/点位报告。
-1. markdown 必须保留品种名称、筹码形态、形态解释、VAH、VAL、POC、OTC、开/高/低/收、报价、涨跌幅和周期。
-2. TradingHero/筹码分布图插入图片占位，同时保留图上可读关键点位和正文形态结论。
-3. blocks 要把图表本体框为 chart，下面的形态解释文字框为 text，不要把整张浅色说明卡合成一个 chart。"""
-    elif prompt_profile == "oil":
-        profile_rules = """分类规则：每日原油报告。
-1. markdown 按栏目保留行情回顾、隔夜要闻、今日原油市场聚焦、市场分析、关键图表、技术指标。
-2. 原样保留 WTI、布伦特、EIA、API、OPEC、CFTC、霍尔木兹海峡、库存、钻井、裂解价差、期限结构等实体和指标。
-3. 必须保留价格、百分比、桶/日、万桶、日期、合约月份、价差等数字和单位。
-4. 封面/目录页只保留报告标题、日期、导语核心句和目录，不要输出联系方式、VIP 系列列表和免责声明。"""
-    elif prompt_profile == "fx":
-        profile_rules = """分类规则：每日外汇报告。
-1. markdown 按栏目保留行情回顾、隔夜要闻、中东局势、市场分析、关键图表、技术指标。
-2. 原样保留美元指数、美债收益率、FedWatch、PCE、核心PCE、实际利率、欧洲央行、主要货币和央行相关实体。
-3. 必须保留指数点位、收益率、百分比、日期、预期概率、利差、通胀指标等数字和单位。
-4. 封面/目录页只保留报告标题、日期、导语核心句和目录，不要输出联系方式、VIP 系列列表和免责声明。"""
+    report_kind = {
+        "positioning": "持仓或期权分布报告",
+        "technical_levels": "技术点位报告",
+        "oil": "每日原油报告",
+        "fx": "每日外汇报告",
+    }.get(prompt_profile, "金银日报或周报")
+
+    if preserve_cover_identity:
+        cover_rule = """这是封面页。只保留正式报告分类、日期、本期主题和导语；正式报告分类与本期主题分别返回 title block。正式分类可能位于页面底部，例如“黄金投资者周报”“每日金银报告”“每日市场观察”“周末·大师复盘”“持仓报告”。联系方式、VIP 列表、目录、APP 广告和免责声明不得进入 markdown 或 blocks。"""
     else:
-        profile_rules = """分类规则：默认金银日报/周报。
-1. 普通行情图不要转写图表内部坐标轴、图例、刻度和 tooltip 数值。
-2. 如果页面是封面/日期/导语/目录/免责声明的壳页，只保留导语或摘要正文。"""
+        cover_rule = "忽略页眉、页脚、联系方式、网址、广告和免责声明。"
 
-    return f"""你是金十图片报告的单页 OCR 与图表定位器，不做市场分析。
+    return f"""你是页面识别与裁剪定位器。唯一任务是 OCR 和 bbox 定位。
 
-请对第 {page_no} 页一次性输出完整 JSON，只返回 JSON，不要解释，不要 Markdown 代码块。
+禁止总结、解释、改写、推断、比较、评价、计算趋势、分析市场或给出投资结论。不要回答页面内容提出的问题。只返回 JSON，不要 Markdown 代码块。
 
-你当前看到的输入图片尺寸是 {page_width}x{page_height}。
-原始报告页尺寸是 {original_page_width}x{original_page_height}，后续程序会按 `image_size` 缩放 bbox。
+页面：第 {page_no} 页；类型提示：{report_kind}。
+当前输入图片：{page_width}x{page_height}；原始报告页：{original_page_width}x{original_page_height}。
+所有 bbox 使用当前输入图片的像素坐标 `[x1, y1, x2, y2]`，程序会按 `image_size` 缩放裁剪。
 
 输出字段：
-- image_size：必须填写当前输入图片尺寸。
-- markdown：逐字转写正文、标题、小标题、图表标题、图后说明，保持页面阅读顺序。
-- blocks：页面版面块，包含 title/text/chart/table/image/unknown。
+- `image_size`：当前输入图片尺寸。
+- `markdown`：按阅读顺序逐字转写文章标题、正文、图表标题、图注和正文关键数字；不可概括。图表位置插入 `![图表标题](figures/fig_p{page_no}_001.png)`，按从上到下编号。
+- `blocks`：只使用 title/text/chart/table/image/unknown。
 
-markdown 要求：
-1. 不要输出页眉、页脚、免责声明、网址、联系方式、目录广告。
-2. 不要总结、不要改写、不要压缩段落。
-3. 页面有图表时，在图表位置插入本地图片占位：`![图表标题](figures/fig_p{page_no}_001.png)`、`![图表标题](figures/fig_p{page_no}_002.png)`，按从上到下顺序编号。
-4. 普通行情图不要转写图表内部坐标轴、图例、刻度和 tooltip 数值；分类规则要求保留的关键点位和指标除外。
-5. 纯文字页 markdown 只输出正文。
-6. 如果页面是“封面/日期/导语/目录/免责声明”的壳页，只保留导语或摘要正文。
-7. 不要输出重复的报告总标题、日期、目录条目、联系方式、VIP Team、VIP 系列列表、免责声明。
-8. 如果除了这些壳信息外没有正文，`markdown` 返回空字符串。
+裁剪规则：
+1. chart/table/image bbox 必须覆盖可独立使用的完整视觉面板，包括面板边框或背景、面板内标题、图例、坐标轴、刻度标签、数据来源和紧邻图注。
+2. 不得只框内部绘图区，不得漏掉左右边缘、顶部标题或底部标签。
+3. 排除相邻正文、页面栏目标题、页眉、页脚和免责声明。面板外的标题或正文另建 title/text block。
+4. 多个上下或左右排列的面板分别返回，按页面阅读顺序排列。
+5. 没有真实图表、表格或图片时不要编造对应 block；不确定类型写 unknown。
+6. chart/table/image block 的 `text` 只写面板标题，没有标题就写空字符串；不要转写面板内部序列、刻度、图例或数据点。
 
-{profile_rules}
-
-blocks 要求：
-1. bbox 使用你当前看到的输入图片像素坐标 [x1, y1, x2, y2]。
-2. chart/table/image bbox 只框图表或表格本体，不要包含上方标题文字。
-3. 图表标题作为 title block 返回，不要并进 chart bbox。
-4. 纯文字页可以只返回 title/text blocks，完全没有图表时不要编造 chart。
-5. 如果不确定某区域类型，type 写 unknown。
-6. 对壳页中的封面标题、日期、目录、联系方式、免责声明，不必返回 blocks。
+OCR 规则：
+1. 原样保留文章标题、正文和图注中的日期、数值、百分比、单位及中英文专有名词，不补造模糊内容。
+2. 不需要解释图中曲线、柱形或指标意味着什么。
+3. 页眉、页脚、联系方式、网址、广告、目录和免责声明不得进入 markdown 或 blocks。
+4. {cover_rule}
 
 JSON 结构：
 {{
@@ -946,10 +988,30 @@ def _build_title_band_prompt(*, page_width: int, page_height: int) -> str:
 """
 
 
-def _image_to_data_url(path: Path) -> EncodedImage:
+def _image_to_data_url(
+    path: Path,
+    *,
+    max_long_edge: int | None = None,
+    jpeg_quality: int | None = None,
+) -> EncodedImage:
     normalized = cv2.imread(str(path))
     if normalized is not None:
-        return _image_array_to_data_url(normalized)
+        height, width = normalized.shape[:2]
+        longest = max(height, width)
+        if (
+            path.suffix.lower() in {".jpg", ".jpeg"}
+            and jpeg_quality is not None
+            and (not max_long_edge or longest <= max_long_edge)
+        ):
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            data_url = f"data:image/jpeg;base64,{encoded}"
+            if len(data_url) <= MAX_IMAGE_DATA_URL_CHARS:
+                return EncodedImage(data_url=data_url, width=width, height=height)
+        return _image_array_to_data_url(
+            normalized,
+            max_long_edge=max_long_edge,
+            jpeg_quality=jpeg_quality,
+        )
 
     mime_type = _guess_mime_type(path)
     if not mime_type:
@@ -957,14 +1019,38 @@ def _image_to_data_url(path: Path) -> EncodedImage:
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     data_url = f"data:{mime_type};base64,{encoded}"
     if len(data_url) > MAX_IMAGE_DATA_URL_CHARS:
-        raise ValueError("encoded_image_exceeds_dashscope_data_uri_limit")
+        raise ValueError("encoded_image_exceeds_data_uri_limit")
     return EncodedImage(data_url=data_url, width=0, height=0)
 
 
-def _image_array_to_data_url(image: Any) -> EncodedImage:
+def _image_array_to_data_url(
+    image: Any,
+    *,
+    max_long_edge: int | None = None,
+    jpeg_quality: int | None = None,
+) -> EncodedImage:
     if image is None:
         raise ValueError("image_not_decodable_or_unsupported_format")
+    if max_long_edge and max_long_edge > 0:
+        height, width = image.shape[:2]
+        longest = max(height, width)
+        if longest > max_long_edge:
+            scale = max_long_edge / longest
+            image = cv2.resize(
+                image,
+                (max(1, round(width * scale)), max(1, round(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
     height, width = image.shape[:2]
+    if jpeg_quality is not None:
+        quality = max(70, min(100, int(jpeg_quality)))
+        jpg_url = _encoded_image_data_url(
+            image,
+            ".jpg",
+            [int(cv2.IMWRITE_JPEG_QUALITY), quality],
+        )
+        if jpg_url and len(jpg_url) <= MAX_IMAGE_DATA_URL_CHARS:
+            return EncodedImage(data_url=jpg_url, width=width, height=height)
     png_url = _encoded_image_data_url(image, ".png")
     if png_url and len(png_url) <= MAX_IMAGE_DATA_URL_CHARS:
         return EncodedImage(data_url=png_url, width=width, height=height)
@@ -989,7 +1075,7 @@ def _image_array_to_data_url(image: Any) -> EncodedImage:
             if jpg_url and len(jpg_url) <= MAX_IMAGE_DATA_URL_CHARS:
                 return EncodedImage(data_url=jpg_url, width=current_width, height=current_height)
 
-    raise ValueError("encoded_image_exceeds_dashscope_data_uri_limit")
+    raise ValueError("encoded_image_exceeds_data_uri_limit")
 
 
 def _encoded_image_data_url(image: Any, ext: str, params: list[int] | None = None) -> str | None:
@@ -1120,7 +1206,7 @@ def _layout_coordinate_size(
         return page_width, page_height
     if coordinate_width <= 0 or coordinate_height <= 0:
         return page_width, page_height
-    if _looks_like_qwen_normalized_coordinate_space(
+    if _looks_like_normalized_1000_coordinate_space(
         raw_blocks=raw_blocks,
         coordinate_width=coordinate_width,
         coordinate_height=coordinate_height,
@@ -1131,7 +1217,7 @@ def _layout_coordinate_size(
     return coordinate_width, coordinate_height
 
 
-def _looks_like_qwen_normalized_coordinate_space(
+def _looks_like_normalized_1000_coordinate_space(
     *,
     raw_blocks: list[dict[str, Any]],
     coordinate_width: int,

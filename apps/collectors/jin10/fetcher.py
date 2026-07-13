@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from apps.collectors.jin10.classifier import classify_jin10_report
+from apps.data_layer.jin10_image_assets import normalize_image_bytes_to_jpeg
 
 XNEWS_CATEGORY_URL = "https://xnews.jin10.com/category/{category_code}"
 SVIP_DETAIL_URL = "https://svip.jin10.com/news/{article_id}"
@@ -198,6 +199,7 @@ def parse_svip_report_html(html: str, *, article_id: str, source_url: str) -> Ji
         content_html=content_html or "",
         body=body,
         image_urls=image_urls,
+        report_type=report_type,
     )
     markdown_lines = [
         f"# {title.strip()}",
@@ -291,33 +293,48 @@ def write_external_report(
 
 def _download_report_images(report_dir: Path, image_urls: list[str], *, client: Any | None) -> list[dict[str, Any]]:
     images_dir = report_dir / "images"
-    if images_dir.exists():
-        for path in images_dir.iterdir():
-            if path.is_file() or path.is_symlink():
-                path.unlink()
-            elif path.is_dir():
-                shutil.rmtree(path)
-    images_dir.mkdir(parents=True, exist_ok=True)
+    if not image_urls:
+        if images_dir.exists():
+            shutil.rmtree(images_dir)
+        return []
+    if client is None:
+        raise ValueError("jin10_image_client_required")
+
+    staging_dir = Path(tempfile.mkdtemp(prefix=".images-", dir=report_dir))
     results: list[dict[str, Any]] = []
-    for index, url in enumerate(image_urls, start=1):
-        original_name = Path(urlparse(url).path).name or f"image-{index}.png"
-        file_name = f"{index:02d}-{original_name}"
-        path = images_dir / file_name
-        if client is not None:
+    try:
+        for index, url in enumerate(image_urls, start=1):
+            original_name = Path(urlparse(url).path).name or f"image-{index}.png"
+            file_name = f"page-{index:03d}.jpg"
             response = client.get(url, headers=DEFAULT_HEADERS)
             response.raise_for_status()
-            path.write_bytes(response.content)
-        results.append(
-            {
-                "seq": index,
-                "file": file_name,
-                "url": url,
-                "path": str(path),
-            }
-        )
-    if not any(images_dir.iterdir()):
-        images_dir.rmdir()
-    return results
+            try:
+                normalized = normalize_image_bytes_to_jpeg(response.content)
+            except ValueError as exc:
+                raise ValueError(f"jin10_image_normalization_failed:{url}:{exc}") from exc
+            (staging_dir / file_name).write_bytes(normalized.data)
+            results.append(
+                {
+                    "seq": index,
+                    "file": file_name,
+                    "url": url,
+                    "source_file": original_name,
+                    "path": str(images_dir / file_name),
+                    "format": "jpeg",
+                    "mime_type": "image/jpeg",
+                    "w": normalized.width,
+                    "h": normalized.height,
+                    "size_bytes": len(normalized.data),
+                    "sha256": normalized.sha256,
+                }
+            )
+        if images_dir.exists():
+            shutil.rmtree(images_dir)
+        staging_dir.replace(images_dir)
+        return results
+    finally:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
 
 
 def _render_report_markdown(
@@ -386,7 +403,13 @@ def _extract_report_body(html: str) -> str:
     return ""
 
 
-def _assess_content_integrity(*, content_html: str, body: str, image_urls: list[str]) -> tuple[str, bool, bool]:
+def _assess_content_integrity(
+    *,
+    content_html: str,
+    body: str,
+    image_urls: list[str],
+    report_type: str,
+) -> tuple[str, bool, bool]:
     paragraphs = _extract_clean_paragraphs(content_html)
     informative = _informative_paragraphs(paragraphs)
     placeholder_count = sum(1 for paragraph in paragraphs if _is_placeholder_paragraph(paragraph))
@@ -409,6 +432,11 @@ def _assess_content_integrity(*, content_html: str, body: str, image_urls: list[
     if full_section_count >= 2 or (full_section_count >= 1 and informative_chars >= 50):
         return "full", False, True
     if len(informative) >= 3 and informative_chars >= 180:
+        return "full", False, True
+    # Gold weekly reports are sometimes delivered as a multi-page image document
+    # without extractable text paragraphs. Four retained pages excludes the usual
+    # cover-only/preview shape; preview markers were rejected above.
+    if report_type == "weekly" and len(image_urls) >= 4:
         return "full", False, True
     if image_urls and not body.strip():
         return "unknown", False, False

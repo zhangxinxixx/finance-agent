@@ -86,3 +86,48 @@ def test_build_daily_report_analysis_snapshot_summarizes_weekly_targets():
     assert "6500-7000" in {str(row.get("value")) for row in snapshot.key_levels}
     assert "证据不足" not in snapshot.core_conclusion
     assert len(snapshot.core_conclusion) <= 360
+
+
+def test_weekly_conclusion_keeps_report_classification_separate_from_options_theme():
+    report_text = """# 黄金短期难以摆脱横盘僵局，期权暗示阶段性底部形成
+
+黄金降息周期高点预计在2027年一季度至二季度，目标区间6500—7000美元。
+
+未来数周黄金价格大概率维持区间震荡，金价持续在4065至4235美元区间运行，期权成交比率回落确认阶段低点。
+
+若要推动金价突破区间，10年期美债收益率需持续下行；下一催化剂是CPI与FOMC。
+
+## 交易商持仓报告（COT）
+
+本次持仓报告统计周期为6月23日至7月7日，黄金期货未平仓合约总量增加1.96万手。多头增仓主力为其他可报告交易商，合计增持1.28万手多头合约。
+
+"""
+    document = SourceDocument(
+        document_id="jin10-2026-07-11-224284",
+        source="jin10_external",
+        trade_date="2026-07-11",
+        title="黄金短期难以摆脱横盘僵局，期权暗示阶段性底部形成-金十数据VIP",
+        category="黄金周报",
+        category_code="536",
+        source_url="https://svip.jin10.com/news/224284",
+        article_id="224284",
+        external_report_dir="/tmp/jin10",
+        retrieved_at="2026-07-11T00:00:00+00:00",
+        markdown_asset=SourceAssetRef(asset_type="report_md", path="/tmp/report.md", sha256="", size_bytes=0),
+        meta_asset=SourceAssetRef(asset_type="meta_json", path="/tmp/meta.json", sha256="", size_bytes=0),
+        image_assets=[],
+        report_text=report_text,
+        source_refs=[],
+    )
+
+    parsed = build_parsed_document(document)
+    snapshot = build_daily_report_analysis_snapshot(parsed, extract_report_facts(parsed))
+
+    assert "报告分类：黄金投资者周报" in snapshot.core_conclusion
+    assert "本期主题：黄金短期难以摆脱横盘僵局，期权暗示阶段性底部形成" in snapshot.core_conclusion
+    assert "周度判断：4065-4235" in snapshot.core_conclusion
+    assert "利率/催化" in snapshot.core_conclusion
+    assert "持仓验证" in snapshot.core_conclusion
+    assert "1.96万手" in snapshot.core_conclusion
+    assert "中长期目标：6500-7000" in snapshot.core_conclusion
+    assert len(snapshot.core_conclusion) <= 420

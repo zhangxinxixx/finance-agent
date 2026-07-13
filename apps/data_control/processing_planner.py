@@ -29,7 +29,29 @@ def build_processing_plan(*, storage_root: Path, trade_date: str, observed_at: s
     else:
         missing_artifacts.append({"artifact_type": "output_bundle", "path": _rel(output_analysis, storage_root)})
 
-    if readiness and readiness.get("readiness") == "blocked":
+    capabilities = readiness.get("capabilities") if readiness and isinstance(readiness.get("capabilities"), dict) else None
+    full_analysis_blocked = False
+    if capabilities is not None:
+        capability_steps = {
+            "full_daily_analysis": "run_full_analysis",
+            "research_report_interpretation": "run_research_report_interpretation",
+            "knowledge_distillation": "run_knowledge_distillation",
+            "technical_trigger_confirmation": "run_technical_trigger_confirmation",
+            "options_structure_analysis": "run_options_structure_analysis",
+        }
+        for capability, step_name in capability_steps.items():
+            if capabilities.get(capability) != "blocked":
+                continue
+            blocked_steps.append(
+                {
+                    "step": step_name,
+                    "capability": capability,
+                    "reason_code": "downstream_capability_blocked",
+                    "blocking_issues": readiness.get("blocking_issues") or [],
+                }
+            )
+        full_analysis_blocked = capabilities.get("full_daily_analysis") == "blocked"
+    elif readiness and readiness.get("readiness") == "blocked":
         blocked_steps.append(
             {
                 "step": "run_full_analysis_or_distillation",
@@ -38,11 +60,20 @@ def build_processing_plan(*, storage_root: Path, trade_date: str, observed_at: s
                 "blocking_issues": readiness.get("blocking_issues") or [],
             }
         )
+        full_analysis_blocked = True
+
+    has_degraded_capability = bool(capabilities) and any(state == "degraded" for state in capabilities.values())
+    if full_analysis_blocked:
+        status = "blocked"
+    elif blocked_steps or missing_artifacts or has_degraded_capability:
+        status = "partial"
+    else:
+        status = "ready"
 
     return {
         "trade_date": trade_date,
         "observed_at": observed_at,
-        "status": "blocked" if blocked_steps else ("partial" if missing_artifacts else "ready"),
+        "status": status,
         "ready_steps": ready_steps,
         "missing_artifacts": missing_artifacts,
         "blocked_steps": blocked_steps,

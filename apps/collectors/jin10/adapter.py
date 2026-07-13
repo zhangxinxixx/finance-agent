@@ -17,7 +17,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from apps.collectors.jin10.fetcher import parse_svip_report_html
-from apps.collectors.jin10.classifier import classify_jin10_report, report_type_by_category
+from apps.collectors.jin10.classifier import (
+    classify_jin10_report,
+    report_type_by_category,
+    resolve_jin10_report_identity,
+)
 from apps.analysis.jin10.agent_analysis import (
     agent_analysis_prompt_version,
     build_agent_analysis_prompt,
@@ -32,7 +36,7 @@ from apps.documents.parsing import build_parsed_document
 from apps.documents.schemas import SourceAssetRef, SourceDocument
 from apps.extractors.report_fact_extractor import extract_report_facts
 from apps.parsers.jin10.report import build_parsed_index
-from apps.parsers.jin10.report_image_parser import write_parse_artifacts
+from apps.parsers.jin10.report_image_parser import figure_analysis_image_data_url, write_parse_artifacts
 from apps.renderer.html.jin10_daily import render_jin10_daily_html
 from apps.renderer.markdown.jin10_agent_analysis import render_jin10_agent_analysis_markdown
 from apps.runtime.artifact_registry import register_step_artifacts
@@ -50,7 +54,7 @@ JIN10_CATEGORY_ALIASES: dict[str, list[str]] = {
     "274": ["持仓报告", "positioning"],
     "301": ["点位报告", "technical_levels"],
     "380": ["挂单报告", "pending_orders"],
-    "458": ["市场观察", "market_observation", "VIP智库"],
+    "458": ["市场观察", "market_observation", "VIP智库", "research"],
     "536": ["周报", "报告", "weekly"],
     "786": ["research", "周末·大师复盘", "master_review"],
 }
@@ -87,7 +91,14 @@ def build_jin10_outputs(
         raw["source_refs"] = [ref for ref in raw.get("source_refs", []) if str(ref.get("article_id")) in expected_ids]
     parsed = build_parsed_index(raw)
     analysis = build_analysis_index(parsed)
-    parsed_report_map = {item["article_id"]: item for item in parsed["reports"]}
+    parsed_artifact_map = parsed.get("artifacts") or {}
+    parsed_report_map = {
+        item["article_id"]: {
+            **item,
+            "_runtime_artifacts": parsed_artifact_map.get(item["article_id"]),
+        }
+        for item in parsed["reports"]
+    }
     daily_reports = [
         _build_daily_report_bundle(report, parsed_report_map.get(report["article_id"]), raw["source_refs"])
         for report in raw["reports"]
@@ -125,17 +136,7 @@ def write_jin10_outputs(outputs: dict[str, dict[str, Any]], *, storage_root: Pat
     for report in outputs.get("daily_reports", []):
         base = root / "outputs" / "jin10" / report["trade_date"] / report["run_id"]
         base.mkdir(parents=True, exist_ok=True)
-        allowed_figure_paths = {
-            str(chart.get("image_path") or "")
-            for chart in (report.get("raw_article_json") or {}).get("charts", [])
-            if str(chart.get("image_path") or "").strip()
-        }
-        _copy_output_figures(
-            parsed_artifacts.get(report["run_id"]),
-            parsed_base=root / "parsed" / "jin10" / report["trade_date"] / report["run_id"],
-            output_base=base,
-            allowed_paths=allowed_figure_paths,
-        )
+        _remove_output_image_copies(base)
         (base / "raw_article_report.json").write_text(
             json.dumps(report["raw_article_json"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -352,8 +353,18 @@ def persist_jin10_task_runs(
                     TaskRun.trade_date == trade_date,
                     TaskRun.final_result_id == run_id,
                 )
+                .order_by(TaskRun.started_at.desc(), TaskRun.created_at.desc())
                 .first()
             )
+            terminal_statuses = {
+                TaskStatus.success,
+                TaskStatus.failed,
+                TaskStatus.partial_success,
+                TaskStatus.degraded,
+                TaskStatus.cancelled,
+            }
+            if existing is not None and existing.status in terminal_statuses and existing.status != task_status:
+                existing = None
             if existing is not None:
                 existing.current_stage = "agent" if quality_status == "accepted" else "quality_audit"
                 existing.error_summary = error_summary
@@ -977,6 +988,11 @@ def _rebuild_external_report_from_detail_html(
             "title": reparsed.title,
             "category": reparsed.category,
             "report_type": reparsed.report_type,
+            "series": reparsed.series,
+            "subcategory": reparsed.subcategory,
+            "vip_locked": reparsed.vip_locked,
+            "content_scope": reparsed.content_scope,
+            "body_complete": reparsed.body_complete,
             "source_url": reparsed.source_url,
             "fetched_at": reparsed.fetched_at,
             "images": local_image_map,
@@ -1128,6 +1144,8 @@ def _build_daily_report_bundle(
     parsed_report: dict[str, Any] | None,
     source_refs: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    parsed_artifacts = (parsed_report or {}).get("_runtime_artifacts")
+    report_identity = _report_identity_for_raw_report(report, parsed_report)
     raw_report_markdown = Path(report["report_md"]["path"]).read_text(encoding="utf-8")
     report_text = _select_report_text_for_analysis(
         raw_report_markdown=raw_report_markdown,
@@ -1164,31 +1182,51 @@ def _build_daily_report_bundle(
         **raw_article.generated_from,
         "parser_trace": _jin10_parser_trace(parsed_report),
         "content_access": _content_access_metadata(report),
+        "report_identity": report_identity,
     }
     visual = build_jin10_daily_analysis_report(snapshot)
-    report_type = _report_type_for_raw_report(report)
-    visual.family = _report_family_for_raw_report(report)
+    report_type = str(report_identity["report_type"])
+    visual.family = str(report_identity["report_family"])
     content_access = _content_access_metadata(report)
-    visual.generated_from = {**visual.generated_from, "report_type": report_type, "content_access": content_access}
+    visual.generated_from = {
+        **visual.generated_from,
+        "report_type": report_type,
+        "content_access": content_access,
+        "report_identity": report_identity,
+    }
     quality_audit = _build_report_quality_audit(
         report=report,
         parsed_report=parsed_report,
         raw_article=raw_article.to_dict(),
         visual=visual.to_dict(),
     )
-    agent_analysis = build_jin10_agent_analysis_report_with_llm(raw_article, visual)
+    figure_loader = None
+    if parsed_artifacts is not None:
+        def load_figure_image(chart: dict[str, Any]) -> str:
+            return figure_analysis_image_data_url(parsed_artifacts, chart)
+
+        figure_loader = load_figure_image
+    agent_analysis = build_jin10_agent_analysis_report_with_llm(
+        raw_article,
+        visual,
+        figure_image_loader=figure_loader,
+    )
     visual_json = visual.to_dict()
     visual_json["report_type"] = report_type
+    visual_json["report_identity"] = report_identity
     visual_json["quality_audit"] = quality_audit
     raw_article_json = raw_article.to_dict()
+    raw_article_json["report_identity"] = report_identity
     raw_article_json["quality_audit"] = quality_audit
     raw_article_json["content_access"] = content_access
     agent_analysis_json = agent_analysis.to_dict()
+    agent_analysis_json["report_identity"] = report_identity
     agent_analysis_json["quality_audit"] = quality_audit
     agent_analysis_json["content_access"] = content_access
     agent_analysis_json["generated_from"] = {
         **dict(agent_analysis_json.get("generated_from") or {}),
         "content_access": content_access,
+        "report_identity": report_identity,
     }
     return {
         "trade_date": report["date"],
@@ -1295,9 +1333,29 @@ def _jin10_parser_trace(parsed_report: dict[str, Any] | None) -> dict[str, Any]:
         or ("present" if artifacts.get("vision_layout") else "missing"),
         "vision_provider": parsed_report.get("vision_provider"),
         "vision_model": parsed_report.get("vision_model"),
+        "cover_page_status": "present" if artifacts.get("cover_page") else "missing",
         "figures_total": parsed_report.get("figure_count"),
         "section_count": parsed_report.get("section_count"),
     }
+
+
+def _report_identity_for_raw_report(
+    report: dict[str, Any],
+    parsed_report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    artifacts = (parsed_report or {}).get("artifacts")
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+    cover_page = artifacts.get("cover_page")
+    if not isinstance(cover_page, dict):
+        cover_page = {}
+    return resolve_jin10_report_identity(
+        category_code=str(report.get("category_code") or ""),
+        category=str(report.get("category") or ""),
+        title=str(report.get("title") or ""),
+        report_type=str(report.get("report_type") or ""),
+        cover_text=str(cover_page.get("recognized_text") or ""),
+    )
 
 
 def _build_report_quality_audit(
@@ -1328,16 +1386,32 @@ def _build_report_quality_audit(
     level_snippets = article_context.get("level_snippets") or []
     chart_summaries = article_context.get("chart_summaries") or []
     parse_status = str((parsed_report or {}).get("vlm_status") or "")
+    report_type = _report_type_for_raw_report(report)
+    article_markdown = str(raw_article.get("article_markdown") or "").strip()
+    full_web_body = bool(
+        report.get("body_complete") is True
+        and str(report.get("content_scope") or "").strip().lower() == "full"
+        and len(article_markdown) >= 800
+    )
+    has_text_context = bool(key_sentences or level_snippets)
+    daily_conclusion_required = report_type in {"daily", "weekly", "fx", "oil"}
 
     has_insufficient_conclusion = "证据仍不足" in core_conclusion or "证据不足" in core_conclusion
     has_only_placeholder_logic = all(str(item.get("label") or "") == "证据不足" for item in logic_chains if isinstance(item, dict))
-    if has_insufficient_conclusion or (not market_prices and not key_sentences and not level_snippets and has_only_placeholder_logic):
+    if (daily_conclusion_required and has_insufficient_conclusion) or (
+        not market_prices and not has_text_context and has_only_placeholder_logic
+    ):
         reasons.append({"code": "evidence_insufficient", "message": "no stable prices, key sentences, levels, or logic chain extracted"})
 
-    if parse_status and parse_status not in {"success", "partial"}:
+    if parse_status and parse_status not in {"success", "partial"} and not full_web_body:
         reasons.append({"code": "parse_degraded", "message": f"vlm_status={parse_status}"})
 
-    if chart_summaries and all("第" in str(item) and "报告图" in str(item) for item in chart_summaries):
+    if (
+        chart_summaries
+        and all("第" in str(item) and "报告图" in str(item) for item in chart_summaries)
+        and not has_text_context
+        and not full_web_body
+    ):
         reasons.append({"code": "fallback_chart_only", "message": "only fallback page-image captions were available"})
 
     blocking_codes = {"date_mismatch", "non_daily_report_title"}
@@ -1644,29 +1718,13 @@ def _chart_summary_from_markdown(title: str, markdown: str, *, nearby_text: str 
     return summary
 
 
-def _copy_output_figures(
-    artifacts: dict[str, Any] | None,
-    *,
-    parsed_base: Path,
-    output_base: Path,
-    allowed_paths: set[str] | None = None,
-) -> None:
-    figures = ((artifacts or {}).get("figures") or {}).get("figures") or []
-    output_figures = output_base / "figures"
-    if output_figures.exists():
-        shutil.rmtree(output_figures)
-    if not figures or allowed_paths == set():
-        return
-    output_figures.mkdir(parents=True, exist_ok=True)
-    for figure in figures:
-        relative_path = figure.get("chart_image_path")
-        if not relative_path:
-            continue
-        if allowed_paths is not None and str(relative_path) not in allowed_paths:
-            continue
-        source = parsed_base / str(relative_path)
-        if source.is_file():
-            shutil.copy2(source, output_figures / source.name)
+def _remove_output_image_copies(output_base: Path) -> None:
+    """Keep reports in outputs while serving images from canonical source layers."""
+
+    for directory_name in ("figures", "images"):
+        asset_dir = output_base / directory_name
+        if asset_dir.exists():
+            shutil.rmtree(asset_dir)
 
 
 def _infer_category_code(category_name: str, folder_name: str) -> str | None:

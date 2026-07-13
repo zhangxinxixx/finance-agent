@@ -30,7 +30,11 @@ def _latest_asset_date_run(base: Path, asset: str) -> tuple[str | None, str | No
         return None, None, None
     dates = sorted((d for d in asset_dir.iterdir() if d.is_dir()), reverse=True)
     for date_dir in dates:
-        runs = sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True)
+        runs = sorted(
+            (d for d in date_dir.iterdir() if d.is_dir()),
+            key=lambda run_dir: (run_dir.stat().st_mtime, run_dir.name),
+            reverse=True,
+        )
         for run_dir in runs:
             return date_dir.name, run_dir.name, run_dir
     return (dates[0].name, None, None) if dates else (None, None, None)

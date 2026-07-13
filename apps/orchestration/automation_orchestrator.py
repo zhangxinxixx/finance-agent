@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -26,17 +28,20 @@ class AutomationOrchestrator:
         observed_at: datetime | None = None,
         trigger: str = "hourly",
         hour: str | None = None,
+        run_id: str | None = None,
         record_task_run: bool = True,
         send_notifications: bool = False,
     ) -> dict[str, Any]:
         now = _ensure_utc(observed_at or datetime.now(timezone.utc))
         day = trade_date or now.date().isoformat()
         run_hour = hour or now.strftime("%H")
+        resolved_run_id = _resolve_run_id(run_id)
         registry = load_agent_registry()
         inputs = _resolve_inputs(storage_root=self.storage_root, trade_date=day, hour=run_hour)
         steps = resolve_trigger(trigger=trigger, registry=registry)
         orchestration_plan = {
             "trade_date": day,
+            "run_id": resolved_run_id,
             "observed_at": now.isoformat(),
             "trigger": {"type": trigger, "hour": run_hour},
             "agent_registry": registry,
@@ -51,10 +56,22 @@ class AutomationOrchestrator:
             inputs=inputs,
             observed_at=now.isoformat(),
         )
+        notification_plan = self._persist_notification_outbox(
+            notification_plan=notification_plan,
+            trade_date=day,
+            run_id=resolved_run_id,
+            observed_at=now.isoformat(),
+            send_notifications=send_notifications,
+        )
         notification_results = (
             self._dispatch_notifications(notification_plan=notification_plan, trade_date=day, observed_at=now.isoformat()) if send_notifications else []
         )
-        retry_queue = _build_retry_queue(notification_results)
+        self._finalize_notification_outbox(
+            notification_plan=notification_plan,
+            notification_results=notification_results,
+            observed_at=now.isoformat(),
+        )
+        retry_queue = _build_retry_queue(notification_results, notification_plan=notification_plan)
         pre_analysis_gate = (
             _build_pre_analysis_gate(storage_root=self.storage_root, trade_date=day, observed_at=now.isoformat(), inputs=inputs)
             if trigger == "pre_analysis"
@@ -63,6 +80,7 @@ class AutomationOrchestrator:
         status = _summary_status(notification_plan)
         workflow_runs = _build_workflow_runs(
             trade_date=day,
+            run_id=resolved_run_id,
             observed_at=now.isoformat(),
             trigger=trigger,
             hour=run_hour,
@@ -76,6 +94,7 @@ class AutomationOrchestrator:
         )
         automation_summary = {
             "trade_date": day,
+            "run_id": resolved_run_id,
             "observed_at": now.isoformat(),
             "trigger": trigger,
             "hour": run_hour,
@@ -91,6 +110,9 @@ class AutomationOrchestrator:
             automation_summary["pre_analysis_gate"] = pre_analysis_gate
         artifacts = self._write_artifacts(
             day=day,
+            run_id=resolved_run_id,
+            trigger=trigger,
+            observed_at=now.isoformat(),
             orchestration_plan=orchestration_plan,
             notification_plan=notification_plan,
             automation_summary=automation_summary,
@@ -100,6 +122,7 @@ class AutomationOrchestrator:
         )
         summary = {
             "trade_date": day,
+            "run_id": resolved_run_id,
             "observed_at": now.isoformat(),
             "trigger": trigger,
             "status": status,
@@ -109,6 +132,100 @@ class AutomationOrchestrator:
         if record_task_run:
             summary["task_run_id"] = _record_orchestrator_task(day=day, artifacts=artifacts, trigger=trigger, notification_count=notification_plan["request_count"])
         return summary
+
+    def _persist_notification_outbox(
+        self,
+        *,
+        notification_plan: dict[str, Any],
+        trade_date: str,
+        run_id: str,
+        observed_at: str,
+        send_notifications: bool,
+    ) -> dict[str, Any]:
+        requests: list[dict[str, Any]] = []
+        outbox_root = self.storage_root / "orchestration" / "outbox"
+        outbox_root.mkdir(parents=True, exist_ok=True)
+        for index, payload in enumerate(notification_plan.get("requests", [])):
+            if not isinstance(payload, dict):
+                continue
+            notification_id = _notification_id(run_id=run_id, index=index, dedupe_key=payload.get("dedupe_key"))
+            outbox_path = outbox_root / f"{notification_id}.json"
+            request_payload = _notification_request_payload(payload)
+            if not send_notifications:
+                status = "planned"
+            elif payload.get("eligible_to_send") is False:
+                status = "skipped"
+            else:
+                status = "pending_delivery"
+            _write_json_atomic(
+                outbox_path,
+                {
+                    "notification_id": notification_id,
+                    "source_run_id": run_id,
+                    "trade_date": trade_date,
+                    "status": status,
+                    "dedupe_key": payload.get("dedupe_key"),
+                    "request": request_payload,
+                    "attempt_count": 0,
+                    "next_retry_at": None,
+                    "last_error": None,
+                    "attempts": [],
+                    "created_at": observed_at,
+                    "updated_at": observed_at,
+                },
+            )
+            requests.append(
+                {
+                    **payload,
+                    "notification_id": notification_id,
+                    "outbox_ref": _rel(outbox_path, self.storage_root),
+                }
+            )
+        return {**notification_plan, "requests": requests, "request_count": len(requests)}
+
+    def _finalize_notification_outbox(
+        self,
+        *,
+        notification_plan: dict[str, Any],
+        notification_results: list[dict[str, Any]],
+        observed_at: str,
+    ) -> None:
+        results_by_id = {
+            str(result.get("notification_id")): result
+            for result in notification_results
+            if isinstance(result, dict) and result.get("notification_id")
+        }
+        for payload in notification_plan.get("requests", []):
+            if not isinstance(payload, dict) or not payload.get("notification_id") or not payload.get("outbox_ref"):
+                continue
+            result = results_by_id.get(str(payload["notification_id"]))
+            if result is None:
+                continue
+            outbox_path = self.storage_root / str(payload["outbox_ref"])
+            outbox_item = _read_json(outbox_path)
+            if not outbox_item:
+                continue
+            result_status = str(result.get("status") or "failed")
+            attempt_count = int(result.get("attempts") or 0)
+            attempt = {
+                "attempted_at": observed_at,
+                "attempt_count": attempt_count,
+                "status": result_status,
+                "ok": bool(result.get("ok")),
+                "error": result.get("error"),
+            }
+            _write_json_atomic(
+                outbox_path,
+                {
+                    **outbox_item,
+                    "status": "pending_retry" if result_status == "failed" else result_status,
+                    "attempt_count": attempt_count,
+                    "next_retry_at": result.get("next_retry_at"),
+                    "last_error": result.get("error"),
+                    "attempts": [*(outbox_item.get("attempts") or []), attempt],
+                    "updated_at": observed_at,
+                },
+            )
 
     def _dispatch_notifications(self, *, notification_plan: dict[str, Any], trade_date: str, observed_at: str) -> list[dict[str, Any]]:
         agent = self.notification_agent or FeishuNotificationAgent()
@@ -125,6 +242,7 @@ class AutomationOrchestrator:
                         "dedupe_key": payload.get("dedupe_key"),
                         "skipped_reason": payload.get("skipped_reason"),
                         "attempts": 0,
+                        "notification_id": payload.get("notification_id"),
                     }
                 )
                 continue
@@ -137,6 +255,9 @@ class AutomationOrchestrator:
         self,
         *,
         day: str,
+        run_id: str,
+        trigger: str,
+        observed_at: str,
         orchestration_plan: dict[str, Any],
         notification_plan: dict[str, Any],
         automation_summary: dict[str, Any],
@@ -144,7 +265,8 @@ class AutomationOrchestrator:
         pre_analysis_gate: dict[str, Any] | None = None,
         retry_queue: list[dict[str, Any]] | None = None,
     ) -> OrchestrationArtifacts:
-        base = self.storage_root / "orchestration" / day
+        date_root = self.storage_root / "orchestration" / day
+        base = date_root / run_id
         base.mkdir(parents=True, exist_ok=True)
         orchestration_path = base / "orchestration_plan.json"
         notification_path = base / "notification_plan.json"
@@ -159,14 +281,28 @@ class AutomationOrchestrator:
         _write_json(retry_queue_path, {"trade_date": day, "count": len(retry_queue or []), "items": retry_queue or []})
         if pre_analysis_gate is not None:
             _write_json(pre_analysis_gate_path, pre_analysis_gate)
-        return OrchestrationArtifacts(
+        latest_path = date_root / "latest.json"
+        artifacts = OrchestrationArtifacts(
+            run_id=run_id,
             orchestration_plan_path=_rel(orchestration_path, self.storage_root),
             notification_plan_path=_rel(notification_path, self.storage_root),
             automation_summary_path=_rel(summary_path, self.storage_root),
             workflow_runs_path=_rel(workflow_runs_path, self.storage_root),
             retry_queue_path=_rel(retry_queue_path, self.storage_root),
+            latest_pointer_path=_rel(latest_path, self.storage_root),
             pre_analysis_gate_path=_rel(pre_analysis_gate_path, self.storage_root) if pre_analysis_gate is not None else None,
         )
+        _write_json_atomic(
+            latest_path,
+            {
+                "trade_date": day,
+                "run_id": run_id,
+                "trigger": trigger,
+                "observed_at": observed_at,
+                "artifacts": artifacts.to_dict(),
+            },
+        )
+        return artifacts
 
 
 def run_automation_orchestrator(
@@ -176,6 +312,7 @@ def run_automation_orchestrator(
     observed_at: datetime | None = None,
     trigger: str = "hourly",
     hour: str | None = None,
+    run_id: str | None = None,
     record_task_run: bool = True,
     send_notifications: bool = False,
     notification_agent: Any | None = None,
@@ -185,6 +322,7 @@ def run_automation_orchestrator(
         observed_at=observed_at,
         trigger=trigger,
         hour=hour,
+        run_id=run_id,
         record_task_run=record_task_run,
         send_notifications=send_notifications,
     )
@@ -211,18 +349,28 @@ def _build_pre_analysis_gate(*, storage_root: Path, trade_date: str, observed_at
             "status": "unavailable",
             "can_run_full_analysis": False,
             "can_run_research_distillation": False,
+            "capabilities": {},
             "allowed_outputs": [],
             "blocked_outputs": ["full analysis", "knowledge distillation"],
             "issues": [{"reason_code": "downstream_readiness_missing"}],
             "source_ref": source_ref,
         }
 
-    can_run_full_analysis = bool(readiness.get("can_run_full_analysis"))
-    can_run_research_distillation = bool(readiness.get("can_run_research_distillation"))
+    capabilities = readiness.get("capabilities") if isinstance(readiness.get("capabilities"), dict) else None
+    if capabilities is not None:
+        full_analysis_state = str(capabilities.get("full_daily_analysis") or "blocked")
+        distillation_state = str(capabilities.get("knowledge_distillation") or "blocked")
+        can_run_full_analysis = full_analysis_state != "blocked"
+        can_run_research_distillation = distillation_state != "blocked"
+    else:
+        full_analysis_state = "allowed" if readiness.get("can_run_full_analysis") else "blocked"
+        distillation_state = "allowed" if readiness.get("can_run_research_distillation") else "blocked"
+        can_run_full_analysis = bool(readiness.get("can_run_full_analysis"))
+        can_run_research_distillation = bool(readiness.get("can_run_research_distillation"))
     status = str(readiness.get("readiness") or "unknown")
-    if not can_run_full_analysis or status == "blocked":
+    if full_analysis_state == "blocked":
         decision = "block"
-    elif not can_run_research_distillation or status == "partial":
+    elif full_analysis_state == "degraded" or distillation_state != "allowed":
         decision = "limited"
     else:
         decision = "allow"
@@ -233,6 +381,7 @@ def _build_pre_analysis_gate(*, storage_root: Path, trade_date: str, observed_at
         "status": status,
         "can_run_full_analysis": can_run_full_analysis,
         "can_run_research_distillation": can_run_research_distillation,
+        "capabilities": capabilities or {},
         "allowed_outputs": readiness.get("allowed_outputs") if isinstance(readiness.get("allowed_outputs"), list) else [],
         "blocked_outputs": readiness.get("blocked_outputs") if isinstance(readiness.get("blocked_outputs"), list) else [],
         "issues": readiness.get("blocking_issues") if isinstance(readiness.get("blocking_issues"), list) else [],
@@ -273,6 +422,7 @@ def _output_refs_for_step(step_name: str, artifacts: OrchestrationArtifacts, not
 def _build_workflow_runs(
     *,
     trade_date: str,
+    run_id: str,
     observed_at: str,
     trigger: str,
     hour: str,
@@ -292,7 +442,8 @@ def _build_workflow_runs(
         "observed_at": observed_at,
         "workflow_runs": [
             {
-                "workflow_id": f"{trigger}:{trade_date}:{hour}",
+                "workflow_id": run_id,
+                "run_id": run_id,
                 "trigger": trigger,
                 "hour": hour,
                 "status": status,
@@ -301,7 +452,12 @@ def _build_workflow_runs(
                 "notification_request_count": notification_plan.get("request_count", 0),
                 "notification_result_count": len(notification_results),
                 "pre_analysis_gate": pre_analysis_gate,
-                "output_refs": _workflow_output_refs(trade_date=trade_date, trigger=trigger, pre_analysis_gate=pre_analysis_gate),
+                "output_refs": _workflow_output_refs(
+                    trade_date=trade_date,
+                    run_id=run_id,
+                    trigger=trigger,
+                    pre_analysis_gate=pre_analysis_gate,
+                ),
                 "retry_queue": retry_queue or [],
                 "manual_review_required": manual_review_required,
                 "manual_review": _manual_review_items(notification_plan) if manual_review_required else [],
@@ -317,10 +473,21 @@ def _build_workflow_runs(
     }
 
 
-def _workflow_output_refs(*, trade_date: str, trigger: str, pre_analysis_gate: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _workflow_output_refs(
+    *,
+    trade_date: str,
+    run_id: str,
+    trigger: str,
+    pre_analysis_gate: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     if trigger != "pre_analysis" or pre_analysis_gate is None:
         return []
-    return [{"artifact_type": "pre_analysis_gate", "path": f"orchestration/{trade_date}/pre_analysis_gate.json"}]
+    return [
+        {
+            "artifact_type": "pre_analysis_gate",
+            "path": f"orchestration/{trade_date}/{run_id}/pre_analysis_gate.json",
+        }
+    ]
 
 
 def _manual_review_items(notification_plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -353,6 +520,7 @@ def _send_with_retry(*, agent: Any, request: NotificationRequest, payload: dict[
                 "attempts": attempt,
                 "max_attempts": max_attempts,
                 "dedupe_key": payload.get("dedupe_key"),
+                "notification_id": payload.get("notification_id"),
                 "cooldown_minutes": payload.get("cooldown_minutes"),
             }
         )
@@ -364,19 +532,35 @@ def _send_with_retry(*, agent: Any, request: NotificationRequest, payload: dict[
     return last_result
 
 
-def _build_retry_queue(notification_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_retry_queue(
+    notification_results: list[dict[str, Any]],
+    *,
+    notification_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    requests_by_id = {
+        str(payload.get("notification_id")): payload
+        for payload in notification_plan.get("requests", [])
+        if isinstance(payload, dict) and payload.get("notification_id")
+    }
     queue = []
     for result in notification_results:
         if result.get("status") != "failed" or not result.get("next_retry_at"):
             continue
+        notification_id = str(result.get("notification_id") or "")
+        payload = requests_by_id.get(notification_id, {})
+        attempt_count = int(result.get("attempts") or 0)
         queue.append(
             {
+                "notification_id": notification_id,
                 "kind": result.get("kind"),
                 "dedupe_key": result.get("dedupe_key"),
-                "attempts": int(result.get("attempts") or 0),
+                "request": _notification_request_payload(payload),
+                "attempt_count": attempt_count,
+                "attempts": attempt_count,
                 "max_attempts": int(result.get("max_attempts") or 3),
                 "next_retry_at": result.get("next_retry_at"),
                 "backoff_seconds": int(result.get("backoff_seconds") or 0),
+                "last_error": result.get("error"),
                 "error": result.get("error"),
             }
         )
@@ -447,6 +631,26 @@ def _notification_request_from_dict(payload: dict[str, Any]) -> NotificationRequ
     )
 
 
+def _notification_request_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    request = _notification_request_from_dict(payload)
+    return {
+        "kind": request.kind,
+        "title": request.title,
+        "summary": request.summary,
+        "severity": request.severity,
+        "facts": request.facts,
+        "sections": request.sections,
+        "source_refs": request.source_refs,
+        "dry_run": request.dry_run,
+        "trade_date": request.trade_date,
+    }
+
+
+def _notification_id(*, run_id: str, index: int, dedupe_key: Any) -> str:
+    identity = f"{run_id}:{index}:{str(dedupe_key or '')}"
+    return uuid.uuid5(uuid.NAMESPACE_URL, identity).hex
+
+
 def _summary_status(notification_plan: dict[str, Any]) -> str:
     severities = {str(item.get("severity")) for item in notification_plan.get("requests", []) if isinstance(item, dict)}
     if "critical" in severities:
@@ -460,8 +664,25 @@ def _existing(storage_root: Path, relative_path: str) -> str | None:
     return relative_path if (storage_root / relative_path).is_file() else None
 
 
+def _resolve_run_id(value: str | None) -> str:
+    run_id = str(value or uuid.uuid4())
+    if len(run_id) > 128 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", run_id) or ".." in run_id:
+        raise ValueError(f"Invalid orchestration run_id: {run_id}")
+    return run_id
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        _write_json(temporary, payload)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _read_json(path: Path) -> dict[str, Any]:

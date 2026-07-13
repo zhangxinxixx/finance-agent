@@ -1,6 +1,7 @@
 import type { DashboardSummary, DashboardViewModel, SignalDirection } from "@/types/dashboard";
 import { ShieldAlert } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
+import { formatDateTime } from "@/lib/date";
 import { buildIntegratedMacroSummary, buildOptionsEvidenceSummary } from "./DashboardIntegratedMacroModel";
 import { translateText } from "./judgmentFormat";
 
@@ -67,6 +68,12 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
   const dataQualityText = dataPct == null
     ? integrated.dataCompleteness.label
     : `${dataPct}% · ${integrated.dataCompleteness.label}`;
+  const primaryReport = summary.latest_reports.find(
+    (report) => report.status === "ready" && (report.type === "final_report" || report.type === "macro_report") && report.generated_at,
+  );
+  const reportUpdatedAt = primaryReport?.generated_at ?? summary.latest_reports.find(
+    (report) => report.status === "ready" && report.generated_at,
+  )?.generated_at;
 
   return (
     <FACard
@@ -75,6 +82,14 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
       density="compact"
       className="dashboard-decision-panel"
       bodyClassName="dashboard-decision-body"
+      action={
+        reportUpdatedAt ? (
+          <div className="flex items-baseline gap-1.5">
+            <span className="fa-label">报告更新</span>
+            <time className="fa-num text-[length:var(--type-label)] text-[var(--fg-3)]">{formatDateTime(reportUpdatedAt)}</time>
+          </div>
+        ) : null
+      }
     >
       <div className="dashboard-decision-grid dashboard-decision-grid--integrated">
         <div className="dashboard-decision-memo">

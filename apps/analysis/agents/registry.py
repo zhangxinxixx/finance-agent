@@ -16,7 +16,7 @@ from apps.analysis.agents.jin10_flash_semantic_filter import (
 from apps.analysis.agents.synthesis import build_synthesis_prompt_template
 from apps.analysis.jin10.agent_analysis import build_agent_analysis_prompt
 from apps.analysis.options.llm_conclusion import build_conclusion_prompt
-from apps.parsers.jin10.qwen_vl_markdown import (
+from apps.parsers.jin10.vision_recognition_agent.agent import (
     _build_page_layout_prompt,
     _build_page_markdown_prompt,
     _build_page_unified_prompt,
@@ -422,14 +422,14 @@ def list_agent_registry() -> list[dict[str, Any]]:
             "priority": "P0",
             "status": "active_prompt",
             "status_label": "优先重建",
-            "description": "基于 qwen3-vl-flash 对金十报告图片逐页做 OCR 转写、版面定位和图表识别。",
+            "description": "通过可配置 VLM 对金十报告图片逐页做 OCR 转写、版面定位和图表识别。",
             "input_sections": ["jin10_report_images", "figure_crops"],
             "output_targets": ["Jin10 报告解析层", "raw_article_report.md"],
-            "source_module": "apps.parsers.jin10.qwen_vl_markdown",
+            "source_module": "apps.parsers.jin10.vision_recognition_agent.agent",
             "runtime_agent_names": ["jin10_vlm_parser"],
             "prompt": {
                 "kind": "llm",
-                "source": "apps/parsers/jin10/qwen_vl_markdown.py",
+                "source": "apps/parsers/jin10/vision_recognition_agent/agent.py",
                 "template": {
                     "unified_markdown_layout": _build_page_unified_prompt(page_no=1, page_width=1200, page_height=1800, original_page_width=1200, original_page_height=1800),
                     "layout": _build_page_layout_prompt(page_no=1, page_width=1200, page_height=1800, original_page_width=1200, original_page_height=1800, expected_chart_count=1, hint_titles=["示例图表"]),

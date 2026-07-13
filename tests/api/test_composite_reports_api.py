@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -88,6 +89,22 @@ def test_latest_asset_date_run_picks_latest_date_and_run(tmp_path: Path):
     assert run_id == "run-c"
     assert run_dir is not None
     assert run_dir.name == "run-c"
+
+
+def test_latest_asset_date_run_prefers_newest_artifact_mtime_over_run_id(tmp_path: Path):
+    _make_tree(tmp_path, {
+        "XAUUSD/2026-05-14/z-old/strategy_card.json": "old",
+        "XAUUSD/2026-05-14/a-new/strategy_card.json": "new",
+    })
+    os.utime(tmp_path / "XAUUSD/2026-05-14/z-old", (1, 1))
+    os.utime(tmp_path / "XAUUSD/2026-05-14/a-new", (2, 2))
+
+    date, run_id, run_dir = _latest_asset_date_run(tmp_path, "XAUUSD")
+
+    assert date == "2026-05-14"
+    assert run_id == "a-new"
+    assert run_dir is not None
+    assert run_dir.name == "a-new"
 
 
 def test_latest_asset_date_run_date_with_no_runs(tmp_path: Path):
@@ -415,6 +432,41 @@ def test_list_reports_index_full(tmp_path: Path):
     assert followup[0]["anchor_trade_date"] == "2026-05-16"
     assert followup[0]["summary"] == "Weekend headlines reinforce the prior bullish stance."
     assert isinstance(followup[0]["generated_at"], str)
+
+
+def test_list_reports_index_merges_newer_filesystem_final_report_with_older_db(tmp_path: Path):
+    db_report = {
+        "type": "final_report",
+        "trade_date": "2026-05-07",
+        "run_id": "db-old",
+        "report_id": "db-old",
+        "family": "final_report_markdown",
+        "title": "old",
+        "format": "markdown",
+        "available": True,
+        "generated_at": "2026-05-07T00:00:00+00:00",
+    }
+    filesystem_report = {
+        "type": "final_report",
+        "trade_date": "2026-05-14",
+        "run_id": "fs-new",
+        "report_id": "fs-new",
+        "family": "final_report_markdown",
+        "title": "new",
+        "format": "markdown",
+        "available": True,
+        "generated_at": "2026-05-14T00:00:00+00:00",
+    }
+
+    with (
+        mock.patch("apps.api.services.report_service._collect_reports_from_db", side_effect=lambda report_type, *_: [db_report] if report_type == "final_report" else []),
+        mock.patch("apps.api.services.report_service._collect_reports", side_effect=lambda base_rel, *_: [filesystem_report] if base_rel == "final_report" else []),
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+    ):
+        index = list_reports_index()
+
+    assert any(item["run_id"] == "db-old" for item in index["reports"])
+    assert any(item["run_id"] == "fs-new" for item in index["reports"])
 
 
 def test_list_reports_index_includes_db_only_registered_report(tmp_path: Path):
@@ -928,11 +980,63 @@ def test_api_jin10_report_bundle_latest_200(tmp_path: Path):
 
 def test_api_jin10_report_bundle_asset_200(tmp_path: Path):
     _make_tree(tmp_path, {
-        "storage/outputs/jin10/2026-05-21/219824/figures/fig_p2_001.png": "png-bytes",
+        "storage/outputs/jin10/2026-05-21/219824/raw_article_report.json": "{}",
+        "storage/parsed/jin10/2026-05-21/219824/figures/fig_p2_001.png": "png-bytes",
     })
     with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
         resp = client.get("/api/jin10/report-bundle/2026-05-21/219824/asset/figures/fig_p2_001.png")
     assert resp.status_code == 200
+
+
+def test_api_jin10_report_bundle_asset_serves_canonical_external_jpeg(tmp_path: Path):
+    external_root = tmp_path / "external-jin10"
+    image_path = external_root / "2026-05-21" / "daily" / "219824" / "images" / "page-001.jpg"
+    _make_tree(
+        tmp_path,
+        {
+            "external-jin10/2026-05-21/daily/219824/images/page-001.jpg": "jpeg-bytes",
+            "storage/outputs/jin10/2026-05-21/219824/raw_article_report.json": json.dumps(
+                {"source_refs": [{"asset_type": "image", "path": str(image_path)}]}
+            ),
+        },
+    )
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch("apps.api.services.report_service._JIN10_EXTERNAL_ROOT", external_root),
+    ):
+        resp = client.get("/api/jin10/report-bundle/2026-05-21/219824/asset/images/page-001.jpg")
+    assert resp.status_code == 200
+
+
+def test_api_jin10_report_bundle_asset_resolves_article_id_for_suffixed_run(tmp_path: Path):
+    external_root = tmp_path / "external-jin10"
+    image_path = external_root / "2026-05-21" / "daily" / "219824" / "images" / "page-001.jpg"
+    run_id = "219824-benchmark-v2"
+    _make_tree(
+        tmp_path,
+        {
+            "external-jin10/2026-05-21/daily/219824/images/page-001.jpg": "jpeg-bytes",
+            "storage/parsed/jin10/2026-05-21/219824/figures/fig_p2_001.png": "png-bytes",
+            f"storage/outputs/jin10/2026-05-21/{run_id}/raw_article_report.json": json.dumps(
+                {
+                    "article_id": "219824",
+                    "source_refs": [{"asset_type": "image", "path": str(image_path)}],
+                }
+            ),
+        },
+    )
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch("apps.api.services.report_service._JIN10_EXTERNAL_ROOT", external_root),
+    ):
+        figure_resp = client.get(
+            f"/api/jin10/report-bundle/2026-05-21/{run_id}/asset/figures/fig_p2_001.png"
+        )
+        image_resp = client.get(
+            f"/api/jin10/report-bundle/2026-05-21/{run_id}/asset/images/page-001.jpg"
+        )
+    assert figure_resp.status_code == 200
+    assert image_resp.status_code == 200
 
 
 def test_api_jin10_report_bundle_exact_404(tmp_path: Path):

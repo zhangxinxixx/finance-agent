@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import inspect
 import json
 import os
@@ -15,11 +16,9 @@ from urllib.parse import urlparse
 import cv2
 import numpy as np
 
-from apps.parsers.jin10.qwen_vl_markdown import (
-    DEFAULT_MIMO_VL_MODEL,
-    DEFAULT_QWEN_VL_MODEL,
+from apps.parsers.jin10.vision_recognition_agent import (
     DEFAULT_VISION_PROVIDER,
-    MissingDashScopeApiKey,
+    DEFAULT_VISION_MODEL,
     normalize_page_markdown,
     recognize_figure_title_bands,
     recognize_pages_unified,
@@ -34,6 +33,7 @@ DEFAULT_VISION_PAGE_LIMIT = 0
 VisionMarkdownRunner = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
 VisionLayoutRunner = Callable[[list[dict[str, Any]]], dict[str, Any]]
 VisionTitleRunner = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
+VisionCoverRunner = Callable[[list[dict[str, Any]]], dict[str, Any]]
 
 
 @dataclass(slots=True)
@@ -51,6 +51,7 @@ def parse_report_images(
     published_at: str | None,
     image_entries: list[dict[str, Any]],
     report_type: str | None = None,
+    vision_cover_runner: VisionCoverRunner | None = None,
     vision_markdown_runner: VisionMarkdownRunner | None = None,
     vision_layout_runner: VisionLayoutRunner | None = None,
     vision_title_runner: VisionTitleRunner | None = None,
@@ -59,7 +60,7 @@ def parse_report_images(
 
     Legacy text-extraction fallback is intentionally not supported. The deterministic
     image pass only prepares page metadata and crops visual chart regions; all
-    article text comes from DashScope Qwen-VL markdown recognition or an
+    article text comes from configured VLM markdown recognition or an
     injected vision runner in tests.
     """
 
@@ -73,6 +74,7 @@ def parse_report_images(
     cover_page_count = 0
     vision_markdown_payload: dict[str, Any] | None = None
     vision_layout_payload: dict[str, Any] | None = None
+    cover_page: dict[str, Any] | None = None
     prepared_pages: dict[int, PreparedPage] = {}
 
     for image_entry in sorted(image_entries, key=lambda item: int(item.get("seq") or 0)):
@@ -140,6 +142,33 @@ def parse_report_images(
     }
     body_markdown = render_report_structured_markdown(structured)
 
+    cover_pages = [
+        page
+        for page in page_payloads
+        if _is_visual_cover_page(page_no=int(page.get("page_no") or 0), report_type=report_type)
+    ]
+    if cover_pages:
+        cover_runner = vision_cover_runner
+        if cover_runner is None and vision_markdown_runner is None and vision_layout_runner is None:
+            cover_runner = recognize_pages_unified
+    else:
+        cover_runner = None
+    if cover_runner is not None:
+        try:
+            cover_payload = _run_vision_unified_runner(
+                cover_runner,
+                cover_pages[:1],
+                report_type=report_type,
+                preserve_cover_identity=True,
+            )
+            cover_page = _cover_page_evidence(cover_payload, expected_page_no=int(cover_pages[0]["page_no"]))
+            if cover_page is None:
+                warnings.append("cover_page_recognition_empty")
+        except Exception as exc:  # pragma: no cover - optional remote parser shield
+            message = str(exc).strip().replace("\n", " ")[:240]
+            suffix = f":{message}" if message else ""
+            warnings.append(f"cover_page_recognition_failed:{exc.__class__.__name__}{suffix}")
+
     try:
         vision_pages = _vision_target_pages(page_payloads, report_type=report_type)
         vision_candidate_count = sum(
@@ -164,8 +193,6 @@ def parse_report_images(
                 )
                 vision_layout_payload = _sanitize_layout_payload_for_report(unified_payload)
                 warnings.append("vision_unified_page_recognition_primary")
-            except MissingDashScopeApiKey:
-                raise
             except Exception as exc:  # pragma: no cover - remote parser fallback
                 layout_failed = True
                 message = str(exc).strip().replace("\n", " ")[:240]
@@ -178,8 +205,6 @@ def parse_report_images(
             try:
                 vision_layout_payload = layout_runner(vision_pages)
                 vision_layout_payload = _sanitize_layout_payload_for_report(vision_layout_payload)
-            except MissingDashScopeApiKey:
-                raise
             except Exception as exc:  # pragma: no cover - remote parser fallback
                 layout_failed = True
                 message = str(exc).strip().replace("\n", " ")[:240]
@@ -248,8 +273,6 @@ def parse_report_images(
                         vision_markdown_payload = markdown_ocr_payload
                         vision_body_markdown = markdown_ocr_body
                         warnings.append("vision_markdown_full_page_ocr_primary")
-                except MissingDashScopeApiKey:
-                    raise
                 except Exception as exc:  # pragma: no cover - remote parser fallback
                     message = str(exc).strip().replace("\n", " ")[:240]
                     if message:
@@ -360,8 +383,6 @@ def parse_report_images(
                 )
         if _has_substantive_vision_markdown(vision_body_markdown, title=title):
             body_markdown = vision_body_markdown
-    except MissingDashScopeApiKey:
-        warnings.append("vision_markdown_missing_dashscope_api_key")
     except Exception as exc:  # pragma: no cover - defensive shield for optional remote parser
         message = str(exc).strip().replace("\n", " ")[:240]
         if message:
@@ -373,9 +394,9 @@ def parse_report_images(
     finished_at = _utc_now()
     vision_provider = os.getenv("JIN10_VISION_PROVIDER", DEFAULT_VISION_PROVIDER).strip().lower() or DEFAULT_VISION_PROVIDER
     vision_model = (
-        os.getenv("JIN10_QWEN_VL_MODEL", DEFAULT_QWEN_VL_MODEL)
-        if vision_provider in {"dashscope", "qwen"}
-        else os.getenv("JIN10_MIMO_VL_MODEL", DEFAULT_MIMO_VL_MODEL)
+        os.getenv("JIN10_VISION_MODEL", "").strip()
+        or os.getenv("JIN10_MIMO_VL_MODEL", "").strip()
+        or DEFAULT_VISION_MODEL
     )
     status = {
         "article_id": article_id,
@@ -392,6 +413,7 @@ def parse_report_images(
         "section_count": len(sections),
         "paragraph_count": 0,
         "cover_page_count": cover_page_count,
+        "cover_page_status": str((cover_page or {}).get("status") or ("failed" if cover_pages else "not_applicable")),
         "empty_page_count": empty_page_count,
         "warnings": warnings,
     }
@@ -415,7 +437,36 @@ def parse_report_images(
         "parse_status": status,
         "vision_markdown": vision_markdown_payload,
         "vision_layout": vision_layout_payload,
+        "cover_page": cover_page,
         "body_markdown": body_markdown,
+    }
+
+
+def _cover_page_evidence(payload: dict[str, Any], *, expected_page_no: int) -> dict[str, Any] | None:
+    pages = payload.get("pages") if isinstance(payload, dict) else None
+    if not isinstance(pages, list):
+        return None
+    page = next(
+        (item for item in pages if isinstance(item, dict) and int(item.get("page_no") or 0) == expected_page_no),
+        None,
+    )
+    if page is None:
+        return None
+    markdown = str(page.get("markdown") or "").strip()
+    block_texts = [
+        str(block.get("text") or "").strip()
+        for block in page.get("blocks") or []
+        if isinstance(block, dict) and str(block.get("text") or "").strip()
+    ]
+    recognized_text = markdown or "\n".join(block_texts)
+    return {
+        "page_no": expected_page_no,
+        "status": str(page.get("status") or ("success" if recognized_text else "empty")),
+        "provider": str(payload.get("provider") or ""),
+        "model": str(payload.get("model") or ""),
+        "recognized_text": recognized_text,
+        "markdown": markdown,
+        "blocks": deepcopy(page.get("blocks") or []),
     }
 
 
@@ -456,10 +507,15 @@ def _run_vision_unified_runner(
     pages: list[dict[str, Any]],
     *,
     report_type: str | None = None,
+    preserve_cover_identity: bool = False,
 ) -> dict[str, Any]:
-    if "report_type" in inspect.signature(runner).parameters:
-        return runner(pages, report_type=report_type)
-    return runner(pages)
+    parameters = inspect.signature(runner).parameters
+    kwargs: dict[str, Any] = {}
+    if "report_type" in parameters:
+        kwargs["report_type"] = report_type
+    if "preserve_cover_identity" in parameters:
+        kwargs["preserve_cover_identity"] = preserve_cover_identity
+    return runner(pages, **kwargs)
 
 
 def _provisional_figures_from_pages(page_payloads: list[dict[str, Any]], *, report_type: str | None = None) -> list[dict[str, Any]]:
@@ -487,6 +543,62 @@ def _provisional_figures_from_pages(page_payloads: list[dict[str, Any]], *, repo
     return figures
 
 
+def figure_image_data_url(artifacts: dict[str, Any], chart: dict[str, Any]) -> str:
+    """Crop one parsed figure from its source page and return a PNG data URI."""
+
+    crop = _figure_crop(artifacts, chart)
+    ok, encoded = cv2.imencode(".png", crop)
+    if not ok:
+        raise ValueError("figure_image_encode_failed")
+    payload = base64.b64encode(encoded.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{payload}"
+
+
+def figure_analysis_image_data_url(
+    artifacts: dict[str, Any],
+    chart: dict[str, Any],
+    *,
+    max_long_edge: int = 1600,
+    jpeg_quality: int = 92,
+) -> str:
+    """Return a size-bounded JPEG data URI for formal Agent analysis."""
+
+    crop = _figure_crop(artifacts, chart)
+    height, width = crop.shape[:2]
+    longest = max(height, width)
+    if max_long_edge > 0 and longest > max_long_edge:
+        scale = max_long_edge / longest
+        crop = cv2.resize(
+            crop,
+            (max(1, round(width * scale)), max(1, round(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    quality = max(1, min(100, int(jpeg_quality)))
+    ok, encoded = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok:
+        raise ValueError("figure_analysis_image_encode_failed")
+    payload = base64.b64encode(encoded.tobytes()).decode("ascii")
+    return f"data:image/jpeg;base64,{payload}"
+
+
+def _figure_crop(artifacts: dict[str, Any], chart: dict[str, Any]) -> np.ndarray:
+    """Load and crop one parsed figure from its canonical source page."""
+
+    page_no = int(chart.get("page_no") or 0)
+    pages = ((artifacts.get("page_images") or {}).get("pages") or [])
+    page = next((item for item in pages if int(item.get("page_no") or 0) == page_no), None)
+    if not isinstance(page, dict):
+        raise ValueError("figure_source_page_not_found")
+    image_path = Path(str(page.get("image_path") or ""))
+    prepared = _prepare_page(image_path)
+    if prepared is None:
+        raise ValueError("figure_source_image_unreadable")
+    bbox = chart.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        raise ValueError("figure_bbox_invalid")
+    return _crop_bbox(prepared.original, bbox)
+
+
 def write_parse_artifacts(artifacts: dict[str, Any], output_dir: Path) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     figures_dir = output_dir / "figures"
@@ -507,6 +619,7 @@ def write_parse_artifacts(artifacts: dict[str, Any], output_dir: Path) -> dict[s
     parse_status = deepcopy(artifacts["parse_status"])
     vision_markdown = deepcopy(artifacts.get("vision_markdown"))
     vision_layout = deepcopy(artifacts.get("vision_layout"))
+    cover_page = deepcopy(artifacts.get("cover_page"))
 
     page_map = {page["page_no"]: page for page in page_images_payload["pages"]}
     page_image_paths = {page["page_no"]: Path(page["image_path"]) for page in page_images_payload["pages"] if page["image_path"]}
@@ -573,6 +686,9 @@ def write_parse_artifacts(artifacts: dict[str, Any], output_dir: Path) -> dict[s
     if vision_layout:
         targets["vision_layout"] = output_dir / "vision_layout.json"
         payloads["vision_layout"] = vision_layout
+    if cover_page:
+        targets["cover_page"] = output_dir / "cover_page.json"
+        payloads["cover_page"] = cover_page
     for key, target in targets.items():
         target.write_text(json.dumps(payloads[key], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {key: str(path) for key, path in targets.items()}
@@ -690,7 +806,7 @@ def _unified_payload_to_vision_markdown_payload(payload: dict[str, Any] | None) 
             page_payload["image_size"] = image_size
         normalized_pages.append(page_payload)
     return {
-        "provider": payload.get("provider") or "dashscope",
+        "provider": payload.get("provider") or DEFAULT_VISION_PROVIDER,
         "model": payload.get("model"),
         "pages": normalized_pages,
     }

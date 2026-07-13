@@ -162,36 +162,6 @@ def test_incident_orchestration_scheduler_wrapper_refreshes_quality_then_orchest
     assert automation_orchestration.os.environ["no_proxy"] == "127.0.0.1,localhost,::1"
 
 
-def test_register_automation_orchestration_jobs_is_env_gated() -> None:
-    from apps.scheduler import automation_orchestration
-
-    class FakeScheduler:
-        def __init__(self) -> None:
-            self.jobs: list[dict] = []
-
-        def add_job(self, func, trigger, **kwargs):
-            self.jobs.append({"func": func, "trigger": trigger, **kwargs})
-
-    disabled = FakeScheduler()
-    assert automation_orchestration.register_automation_orchestration_jobs(disabled, enabled=False) == []
-    assert disabled.jobs == []
-
-    enabled = FakeScheduler()
-    job_ids = automation_orchestration.register_automation_orchestration_jobs(enabled, enabled=True)
-
-    assert job_ids == [
-        "automation_orchestration_hourly",
-        "automation_orchestration_event_sla",
-        "automation_orchestration_pre_analysis",
-        "automation_orchestration_retry_queue",
-    ]
-    assert [job["trigger"] for job in enabled.jobs] == ["interval", "interval", "cron", "interval"]
-    assert enabled.jobs[0]["id"] == "automation_orchestration_hourly"
-    assert enabled.jobs[1]["id"] == "automation_orchestration_event_sla"
-    assert enabled.jobs[2]["id"] == "automation_orchestration_pre_analysis"
-    assert enabled.jobs[3]["id"] == "automation_orchestration_retry_queue"
-
-
 def test_notification_retry_queue_sends_due_items_and_updates_artifacts(tmp_path) -> None:
     from apps.scheduler import automation_orchestration
 
@@ -287,3 +257,63 @@ def test_notification_retry_queue_sends_due_items_and_updates_artifacts(tmp_path
     assert delivery_log["deliveries"][0]["dedupe_key"] == "hourly_report:2026-07-08:10"
     assert delivery_log["deliveries"][0]["status"] == "sent"
     assert delivery_log["deliveries"][0]["sent_at"] == "2026-07-08T10:30:00+00:00"
+
+
+def test_notification_retry_recovers_from_outbox_without_run_notification_plan(tmp_path) -> None:
+    from apps.scheduler import automation_orchestration
+
+    storage_root = tmp_path / "storage"
+    outbox_path = storage_root / "orchestration" / "outbox" / "notification-1.json"
+    outbox_path.parent.mkdir(parents=True, exist_ok=True)
+    outbox_path.write_text(
+        json.dumps(
+            {
+                "notification_id": "notification-1",
+                "source_run_id": "hourly-run-1",
+                "trade_date": "2026-07-08",
+                "status": "pending_retry",
+                "dedupe_key": "hourly_report:2026-07-08:10",
+                "request": {
+                    "kind": "hourly_report",
+                    "title": "Hourly blocked",
+                    "summary": "status=blocked",
+                    "severity": "critical",
+                    "facts": {"status": "blocked"},
+                    "sections": [],
+                    "source_refs": [],
+                    "dry_run": False,
+                    "trade_date": "2026-07-08",
+                },
+                "attempt_count": 3,
+                "next_retry_at": "2026-07-08T10:29:00+00:00",
+                "last_error": "temporary",
+                "attempts": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    sent: list[str] = []
+
+    class Sender:
+        def send(self, request):
+            sent.append(request.title)
+            return type(
+                "Result",
+                (),
+                {"to_dict": lambda self: {"ok": True, "status": "sent", "kind": request.kind, "title": request.title}},
+            )()
+
+    result = automation_orchestration.run_notification_retry_queue(
+        trade_date="2026-07-08",
+        observed_at=datetime(2026, 7, 8, 10, 30, tzinfo=timezone.utc),
+        storage_root=storage_root,
+        notification_agent=Sender(),
+    )
+
+    assert sent == ["Hourly blocked"]
+    assert result["processed_count"] == 1
+    updated = json.loads(outbox_path.read_text(encoding="utf-8"))
+    assert updated["status"] == "sent"
+    assert updated["attempt_count"] == 4
+    assert updated["last_error"] is None

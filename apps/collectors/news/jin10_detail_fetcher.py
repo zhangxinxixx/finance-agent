@@ -16,7 +16,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from apps.collectors.news.base import archive_news_payload
-from apps.parsers.jin10.qwen_vl_markdown import DashScopeVisionMarkdownClient, MissingDashScopeApiKey
+from apps.parsers.jin10.vision_recognition_agent import VisionMarkdownClient
 
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 finance-agent/0.1",
@@ -27,7 +27,9 @@ MIN_VLM_IMAGE_HEIGHT = 300
 MIN_VLM_IMAGE_BYTES = 10_000
 JIN10_DETAIL_SOURCE_KEY = "jin10_detail_pages"
 JIN10_XNEWS_PUBLIC_SOURCE_KEY = "jin10_xnews_public"
-DEFAULT_JIN10_BROWSER_PROFILE = Path.home() / ".finance-agent" / "jin10_browser_profile"
+DEFAULT_JIN10_BROWSER_PROFILE = Path(
+    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
+).expanduser()
 LIMITED_ACCESS_STATUSES = {"empty", "javascript_required", "vip_locked"}
 
 VlmRunner = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
@@ -564,15 +566,15 @@ def _run_vlm_if_requested(
     if vlm_runner is not None:
         return vlm_runner(eligible)
     try:
-        client = DashScopeVisionMarkdownClient()
-    except MissingDashScopeApiKey:
+        client = VisionMarkdownClient()
+    except Exception as exc:
         return [
             {
                 "seq": asset.get("seq"),
                 "file": asset.get("file"),
                 "path": asset.get("path"),
                 "status": "unavailable",
-                "reason": "missing_dashscope_api_key",
+                "reason": f"vision_client_unavailable:{type(exc).__name__}",
             }
             for asset in eligible
         ]

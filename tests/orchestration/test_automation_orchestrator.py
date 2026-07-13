@@ -114,6 +114,49 @@ def test_automation_orchestrator_writes_plans_from_existing_agent_outputs(tmp_pa
     assert workflow_runs["workflow_runs"][0]["retry_policy"]["max_attempts"] == 3
 
 
+def test_same_day_runs_write_isolated_artifacts_and_update_latest_pointer(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_upstream_artifacts(storage_root)
+
+    first = run_automation_orchestrator(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        trigger="hourly",
+        hour="10",
+        run_id="hourly-run-1",
+        record_task_run=False,
+        send_notifications=False,
+    )
+    second = run_automation_orchestrator(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        trigger="incident",
+        hour="10",
+        run_id="incident-run-2",
+        record_task_run=False,
+        send_notifications=False,
+    )
+
+    assert first["run_id"] == "hourly-run-1"
+    assert second["run_id"] == "incident-run-2"
+    assert first["artifacts"]["automation_summary"] == (
+        "orchestration/2026-07-08/hourly-run-1/automation_summary.json"
+    )
+    assert second["artifacts"]["automation_summary"] == (
+        "orchestration/2026-07-08/incident-run-2/automation_summary.json"
+    )
+    assert (storage_root / first["artifacts"]["automation_summary"]).is_file()
+    assert (storage_root / second["artifacts"]["automation_summary"]).is_file()
+
+    latest_path = storage_root / "orchestration" / "2026-07-08" / "latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    assert latest["run_id"] == "incident-run-2"
+    assert latest["trigger"] == "incident"
+    assert latest["artifacts"]["automation_summary"] == second["artifacts"]["automation_summary"]
+
+
 def test_automation_orchestrator_pre_analysis_trigger_builds_readiness_notification(tmp_path) -> None:
     storage_root = tmp_path / "storage"
     _seed_upstream_artifacts(storage_root)
@@ -150,7 +193,9 @@ def test_automation_orchestrator_pre_analysis_trigger_writes_gate_from_downstrea
     )
 
     artifacts = result["artifacts"]
-    assert artifacts["pre_analysis_gate"] == "orchestration/2026-07-08/pre_analysis_gate.json"
+    assert artifacts["pre_analysis_gate"] == (
+        f"orchestration/2026-07-08/{result['run_id']}/pre_analysis_gate.json"
+    )
     gate = json.loads((storage_root / artifacts["pre_analysis_gate"]).read_text(encoding="utf-8"))
     assert gate["decision"] == "block"
     assert gate["status"] == "blocked"
@@ -167,8 +212,87 @@ def test_automation_orchestrator_pre_analysis_trigger_writes_gate_from_downstrea
     workflow_run = workflow_runs["workflow_runs"][0]
     assert workflow_run["pre_analysis_gate"]["decision"] == "block"
     assert workflow_run["output_refs"] == [
-        {"artifact_type": "pre_analysis_gate", "path": "orchestration/2026-07-08/pre_analysis_gate.json"}
+        {"artifact_type": "pre_analysis_gate", "path": artifacts["pre_analysis_gate"]}
     ]
+
+
+def test_pre_analysis_gate_prefers_capability_states_over_legacy_booleans(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_upstream_artifacts(storage_root)
+    _write_json(
+        storage_root / "monitoring" / "2026-07-08" / "downstream_readiness.json",
+        {
+            "trade_date": "2026-07-08",
+            "readiness": "partial",
+            "capabilities": {
+                "daily_market_snapshot": "allowed",
+                "full_daily_analysis": "degraded",
+                "research_report_interpretation": "blocked",
+                "knowledge_distillation": "blocked",
+                "technical_trigger_confirmation": "allowed",
+                "options_structure_analysis": "allowed",
+            },
+            "can_run_full_analysis": False,
+            "can_run_research_distillation": False,
+            "allowed_outputs": ["market snapshot", "limited daily analysis"],
+            "blocked_outputs": ["knowledge distillation"],
+            "blocking_issues": [{"source_key": "jin10_svip_reports"}],
+        },
+    )
+
+    result = run_automation_orchestrator(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        trigger="pre_analysis",
+        hour="10",
+        record_task_run=False,
+        send_notifications=False,
+    )
+
+    gate = json.loads((storage_root / result["artifacts"]["pre_analysis_gate"]).read_text(encoding="utf-8"))
+    assert gate["decision"] == "limited"
+    assert gate["can_run_full_analysis"] is True
+    assert gate["can_run_research_distillation"] is False
+    assert gate["capabilities"]["full_daily_analysis"] == "degraded"
+
+
+def test_pre_analysis_gate_ignores_unrelated_blocked_capability(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_upstream_artifacts(storage_root)
+    _write_json(
+        storage_root / "monitoring" / "2026-07-08" / "downstream_readiness.json",
+        {
+            "trade_date": "2026-07-08",
+            "readiness": "partial",
+            "capabilities": {
+                "daily_market_snapshot": "allowed",
+                "full_daily_analysis": "allowed",
+                "research_report_interpretation": "allowed",
+                "knowledge_distillation": "allowed",
+                "technical_trigger_confirmation": "allowed",
+                "options_structure_analysis": "blocked",
+            },
+            "can_run_full_analysis": True,
+            "can_run_research_distillation": True,
+            "allowed_outputs": ["market snapshot", "full daily analysis", "knowledge distillation"],
+            "blocked_outputs": [],
+            "blocking_issues": [{"source_key": "cme_options"}],
+        },
+    )
+
+    result = run_automation_orchestrator(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        trigger="pre_analysis",
+        hour="10",
+        record_task_run=False,
+        send_notifications=False,
+    )
+
+    gate = json.loads((storage_root / result["artifacts"]["pre_analysis_gate"]).read_text(encoding="utf-8"))
+    assert gate["decision"] == "allow"
 
 
 def test_automation_orchestrator_event_sla_trigger_includes_sla_notification(tmp_path) -> None:
@@ -306,20 +430,26 @@ def test_automation_orchestrator_records_retry_queue_for_failed_notification(tmp
     assert result["notification_results"][0]["status"] == "failed"
     assert result["notification_results"][0]["next_retry_at"] == "2026-07-08T10:34:00+00:00"
     summary = json.loads((storage_root / result["artifacts"]["automation_summary"]).read_text(encoding="utf-8"))
-    assert summary["retry_queue"][0] == {
-        "kind": "hourly_report",
-        "dedupe_key": "hourly_report:2026-07-08:10",
-        "attempts": 3,
-        "max_attempts": 3,
-        "next_retry_at": "2026-07-08T10:34:00+00:00",
-        "backoff_seconds": 240,
-        "error": "temporary",
-    }
+    retry_item = summary["retry_queue"][0]
+    assert retry_item["kind"] == "hourly_report"
+    assert retry_item["dedupe_key"] == "hourly_report:2026-07-08:10"
+    assert retry_item["attempt_count"] == 3
+    assert retry_item["attempts"] == 3
+    assert retry_item["next_retry_at"] == "2026-07-08T10:34:00+00:00"
+    assert retry_item["last_error"] == "temporary"
+    assert retry_item["request"]["title"] == "Data control hourly report"
+    assert retry_item["request"]["facts"] == {"status": "blocked"}
+    outbox_path = storage_root / "orchestration" / "outbox" / f"{retry_item['notification_id']}.json"
+    outbox = json.loads(outbox_path.read_text(encoding="utf-8"))
+    assert outbox["status"] == "pending_retry"
+    assert outbox["request"] == retry_item["request"]
     workflow_runs = json.loads((storage_root / result["artifacts"]["workflow_runs"]).read_text(encoding="utf-8"))
     workflow_run = workflow_runs["workflow_runs"][0]
     assert workflow_run["retry_policy"]["backoff"] == "exponential"
     assert workflow_run["retry_queue"] == summary["retry_queue"]
-    assert result["artifacts"]["retry_queue"] == "orchestration/2026-07-08/retry_queue.json"
+    assert result["artifacts"]["retry_queue"] == (
+        f"orchestration/2026-07-08/{result['run_id']}/retry_queue.json"
+    )
     retry_queue = json.loads((storage_root / result["artifacts"]["retry_queue"]).read_text(encoding="utf-8"))
     assert retry_queue["trade_date"] == "2026-07-08"
     assert retry_queue["items"] == summary["retry_queue"]

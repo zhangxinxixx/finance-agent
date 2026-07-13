@@ -45,6 +45,11 @@ def _write_text(path: Path, text: str = "{}") -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _set_source_health(snapshot: dict, source_key: str, **updates) -> None:
+    item = next(item for item in snapshot["items"] if item["source_key"] == source_key)
+    item.update(updates)
+
+
 def _seed_storage(storage_root: Path, *, content_scope: str = "full", body_complete: bool = True, vip_locked: bool = False) -> None:
     _write_text(storage_root / "outputs" / "jin10" / "quotes_cache.json")
     _write_text(storage_root / "outputs" / "jin10" / "flash_cache.json")
@@ -107,6 +112,9 @@ def test_data_quality_monitor_blocks_distillation_for_preview_content(tmp_path, 
 
     readiness = result["downstream_readiness"]
     quality = result["data_quality_report"]
+    assert readiness["capabilities"]["full_daily_analysis"] == "allowed"
+    assert readiness["capabilities"]["research_report_interpretation"] == "blocked"
+    assert readiness["capabilities"]["knowledge_distillation"] == "blocked"
     assert readiness["can_run_research_distillation"] is False
     assert "knowledge distillation" in readiness["blocked_outputs"]
     assert any(issue["reason_code"] == "jin10_report_preview_or_incomplete" for issue in readiness["blocking_issues"])
@@ -132,9 +140,108 @@ def test_data_quality_monitor_marks_stale_market_as_full_analysis_blocker(tmp_pa
     )
 
     readiness = result["downstream_readiness"]
+    assert readiness["capabilities"]["daily_market_snapshot"] == "blocked"
+    assert readiness["capabilities"]["full_daily_analysis"] == "blocked"
+    assert readiness["capabilities"]["technical_trigger_confirmation"] == "blocked"
+    assert readiness["capabilities"]["options_structure_analysis"] == "allowed"
     assert readiness["can_run_full_analysis"] is False
     assert "full analysis" in readiness["blocked_outputs"]
     assert any(issue["source_key"] == "jin10_mcp_market" and issue["reason_code"] == "freshness_stale" for issue in readiness["blocking_issues"])
+
+
+def test_non_core_flash_staleness_degrades_without_blocking_daily_analysis(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_storage(storage_root)
+    snapshot = _health_snapshot()
+    _set_source_health(
+        snapshot,
+        "jin10_mcp_flash",
+        freshness_status="stale",
+        freshness_reason="ttl_exceeded",
+        latest_health_at="2026-07-08T02:00:00+00:00",
+    )
+    monkeypatch.setattr(data_quality_agent, "get_data_source_health_latest", lambda date=None: snapshot)
+
+    result = run_data_quality_monitor(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        record_task_run=False,
+    )
+    readiness = result["downstream_readiness"]
+
+    assert readiness["capabilities"]["full_daily_analysis"] == "degraded"
+    assert readiness["can_run_full_analysis"] is True
+    assert readiness["readiness"] == "partial"
+    assert not any(issue["source_key"] == "jin10_mcp_flash" for issue in readiness["blocking_issues"])
+    assert any(issue["source_key"] == "jin10_mcp_flash" for issue in readiness["degraded_issues"])
+    assert not any(issue["source_key"] == "jin10_mcp_flash" for issue in result["data_quality_report"]["blocking_issues"])
+
+
+def test_low_frequency_datacenter_staleness_is_degraded_not_blocked(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_storage(storage_root)
+    snapshot = _health_snapshot()
+    _set_source_health(
+        snapshot,
+        "jin10_datacenter_reports",
+        freshness_status="stale",
+        freshness_reason="stale_allowed",
+        latest_health_at="2026-07-06T03:00:00+00:00",
+    )
+    monkeypatch.setattr(data_quality_agent, "get_data_source_health_latest", lambda date=None: snapshot)
+
+    readiness = run_data_quality_monitor(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        record_task_run=False,
+    )["downstream_readiness"]
+
+    assert readiness["capabilities"]["full_daily_analysis"] == "degraded"
+    assert readiness["can_run_full_analysis"] is True
+    assert readiness["capabilities"]["knowledge_distillation"] == "allowed"
+
+
+def test_waiting_research_source_degrades_instead_of_blocking(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_storage(storage_root)
+    snapshot = _health_snapshot()
+    _set_source_health(
+        snapshot,
+        "jin10_svip_reports",
+        data_status="waiting",
+        freshness_status="waiting",
+        freshness_reason="not_published_yet",
+        latest_health_at=None,
+    )
+    monkeypatch.setattr(data_quality_agent, "get_data_source_health_latest", lambda date=None: snapshot)
+
+    result = run_data_quality_monitor(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        record_task_run=False,
+    )
+    readiness = result["downstream_readiness"]
+    freshness_check = next(
+        check
+        for check in result["data_quality_report"]["checks"]
+        if check["source_key"] == "jin10_svip_reports" and check["check_type"] == "freshness"
+    )
+
+    assert freshness_check["status"] == "waiting"
+    assert freshness_check["blocked_capabilities"] == []
+    assert set(freshness_check["degraded_capabilities"]) == {
+        "full_daily_analysis",
+        "research_report_interpretation",
+        "knowledge_distillation",
+    }
+    assert result["source_health"]["overall_status"] == "partial"
+    assert readiness["capabilities"]["research_report_interpretation"] == "degraded"
+    assert readiness["capabilities"]["knowledge_distillation"] == "degraded"
+    assert readiness["can_run_research_distillation"] is True
+    assert not any(issue["source_key"] == "jin10_svip_reports" for issue in readiness["blocking_issues"])
 
 
 def test_data_quality_monitor_records_task_run_when_enabled(tmp_path, monkeypatch) -> None:

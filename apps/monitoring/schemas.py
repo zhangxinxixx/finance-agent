@@ -3,8 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-HealthStatus = Literal["ok", "stale", "partial", "unavailable", "blocked", "unknown"]
+HealthStatus = Literal["ok", "waiting", "stale", "partial", "unavailable", "blocked", "unknown"]
 Severity = Literal["info", "warning", "high", "critical"]
+CapabilityState = Literal["allowed", "degraded", "blocked"]
+
+DATA_QUALITY_CAPABILITIES = (
+    "daily_market_snapshot",
+    "full_daily_analysis",
+    "research_report_interpretation",
+    "knowledge_distillation",
+    "technical_trigger_confirmation",
+    "options_structure_analysis",
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +34,9 @@ class DataHealthCheck:
     repair_suggestion: str | None = None
     source_refs: list[dict[str, Any]] = field(default_factory=list)
     artifact_refs: list[dict[str, Any]] = field(default_factory=list)
+    blocked_capabilities: tuple[str, ...] = ()
+    degraded_capabilities: tuple[str, ...] = ()
+    required_for: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -40,6 +53,9 @@ class DataHealthCheck:
             "latest_artifact_ref": self.latest_artifact_ref,
             "source_refs": self.source_refs,
             "artifact_refs": self.artifact_refs,
+            "blocked_capabilities": list(self.blocked_capabilities),
+            "degraded_capabilities": list(self.degraded_capabilities),
+            "required_for": list(self.required_for),
             "reason_code": self.reason_code,
             "message": self.message,
             "repair_suggestion": self.repair_suggestion,

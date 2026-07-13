@@ -21,17 +21,33 @@ EVENT_SLA_STEP_NAMES = (
 )
 
 
-def event_step_statuses(status: str) -> dict[str, str]:
-    """Expose which Event SLA stages were blocked while producing a degraded report."""
-    statuses = {name: "success" for name in EVENT_SLA_STEP_NAMES}
+def event_step_outcomes(*, event: EventSnapshot, status: str) -> dict[str, dict[str, str]]:
+    outcomes = {
+        name: {"status": "success", "execution_mode": "executed"}
+        for name in EVENT_SLA_STEP_NAMES
+    }
     if status == "failed":
-        return {name: "failed" for name in EVENT_SLA_STEP_NAMES}
+        return {
+            name: {"status": "failed", "execution_mode": "executed"}
+            for name in EVENT_SLA_STEP_NAMES
+        }
+    if event.raw_refs:
+        outcomes["collect_raw"] = {"status": "skipped", "execution_mode": "reused_existing_artifact"}
+    else:
+        outcomes["collect_raw"] = {"status": "skipped", "execution_mode": "not_required"}
+    if event.parsed_refs:
+        outcomes["parse_content"] = {"status": "skipped", "execution_mode": "reused_existing_artifact"}
+    else:
+        outcomes["parse_content"] = {"status": "blocked", "execution_mode": "blocked_by_missing_input"}
     if status == "partial_success":
-        statuses["build_trading_strategy"] = "blocked"
+        outcomes["build_trading_strategy"] = {"status": "blocked", "execution_mode": "blocked_by_quality_gate"}
     elif status == "blocked":
-        statuses["parse_content"] = "blocked"
-        statuses["build_trading_strategy"] = "blocked"
-    return statuses
+        outcomes["build_trading_strategy"] = {"status": "blocked", "execution_mode": "blocked_by_quality_gate"}
+    return outcomes
+
+
+def event_step_statuses(*, event: EventSnapshot, status: str) -> dict[str, str]:
+    return {name: outcome["status"] for name, outcome in event_step_outcomes(event=event, status=status).items()}
 
 
 def evidence_level(event: EventSnapshot) -> str:
@@ -139,7 +155,7 @@ def build_sla_trace(
     elapsed_minutes: float,
     artifacts: dict[str, str],
 ) -> dict[str, Any]:
-    step_status = event_step_statuses(status)
+    step_outcomes = event_step_outcomes(event=event, status=status)
     return {
         "task_type": "event_sla_analysis",
         "event_id": event.event_id,
@@ -151,7 +167,7 @@ def build_sla_trace(
         "sla_minutes": 30,
         "within_sla": elapsed_minutes <= 30,
         "artifacts": artifacts,
-        "steps": [{"name": name, "status": step_status[name]} for name in EVENT_SLA_STEP_NAMES],
+        "steps": [{"name": name, **step_outcomes[name]} for name in EVENT_SLA_STEP_NAMES],
     }
 
 

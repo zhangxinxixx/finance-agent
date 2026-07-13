@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -54,6 +56,7 @@ def test_task_recorder_emits_run_and_artifact_events(monkeypatch) -> None:
     assert "TASK_STATUS_CHANGED" in event_types
     assert "TASK_FINISHED" in event_types
     assert "ARTIFACT_WRITTEN" in event_types
+    assert event_types.count("ARTIFACT_WRITTEN") == 1
     assert event_types[-1] == "RUN_FINISHED"
     assert [artifact.file_path for artifact in artifacts] == ["storage/raw/macro/fred.json"]
     assert artifacts[0].artifact_type == "raw_file"
@@ -91,6 +94,80 @@ def test_task_recorder_rolls_up_a_blocked_step_to_a_blocked_run(monkeypatch) -> 
         run = session.query(TaskRun).one()
 
     assert run.status == TaskStatus.blocked
+
+
+def test_task_recorder_registers_blocked_preview_artifact(monkeypatch) -> None:
+    factory = _make_factory()
+    monkeypatch.setattr(task_recorder_module, "SessionLocal", factory)
+
+    with TaskRecorder(task_type="event_sla", task_name="Event SLA", trade_date="2026-07-08") as rec:
+        rec.step(
+            "build_trading_strategy",
+            status="blocked",
+            stage="event_sla",
+            output_refs=[
+                {
+                    "artifact_type": "structured_json",
+                    "path": "storage/outputs/event_sla/2026-07-08/preview/trading_strategy.json",
+                    "quality_status": "preview",
+                    "usable_for": ["observation"],
+                    "blocked_for": ["actionable_strategy"],
+                    "execution_mode": "blocked_by_quality_gate",
+                }
+            ],
+            source_refs=[
+                {
+                    "source": "jin10_report",
+                    "source_ref": "event:preview",
+                    "data_date": "2026-07-08",
+                }
+            ],
+        )
+
+    with factory() as session:
+        artifact = session.query(RunArtifact).one()
+        event = session.query(ExecutionEvent).filter(ExecutionEvent.event_type == "ARTIFACT_WRITTEN").one()
+
+    assert artifact.artifact_metadata["quality_status"] == "preview"
+    assert artifact.artifact_metadata["usable_for"] == ["observation"]
+    assert artifact.artifact_metadata["blocked_for"] == ["actionable_strategy"]
+    assert artifact.artifact_metadata["execution_mode"] == "blocked_by_quality_gate"
+    assert json.loads(event.payload or "{}")["step_status"] == "blocked"
+
+
+def test_task_recorder_registers_skipped_reused_artifact(monkeypatch) -> None:
+    factory = _make_factory()
+    monkeypatch.setattr(task_recorder_module, "SessionLocal", factory)
+
+    with TaskRecorder(task_type="event_sla", task_name="Event SLA", trade_date="2026-07-08") as rec:
+        rec.step(
+            "parse_content",
+            status="skipped",
+            stage="event_sla",
+            output_refs=[
+                {
+                    "artifact_type": "parsed_file",
+                    "path": "storage/parsed/cme/2026-07-08/run-1/cme_parse_result.json",
+                    "quality_status": "reused",
+                    "usable_for": ["source_evidence"],
+                    "blocked_for": [],
+                    "execution_mode": "reused_existing_artifact",
+                }
+            ],
+            source_refs=[
+                {
+                    "source": "cme_gold_options_bulletin",
+                    "source_ref": "event:cme-1",
+                    "data_date": "2026-07-08",
+                }
+            ],
+        )
+
+    with factory() as session:
+        artifact = session.query(RunArtifact).one()
+
+    assert artifact.artifact_metadata["quality_status"] == "reused"
+    assert artifact.artifact_metadata["execution_mode"] == "reused_existing_artifact"
 
 
 def test_local_artifact_storage_supports_relative_and_absolute_paths(tmp_path) -> None:

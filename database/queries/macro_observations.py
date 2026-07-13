@@ -17,6 +17,8 @@ def _parse_iso_date(value: str | date) -> date:
     text = str(value).strip()
     if "T" in text:
         text = text.split("T", 1)[0]
+    elif " " in text:
+        text = text.split(" ", 1)[0]
     return date.fromisoformat(text)
 
 

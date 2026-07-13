@@ -86,7 +86,7 @@ def _extract_weekly_natural_language_facts(
 
 def _extract_target_ranges(text: str) -> list[str]:
     ranges: list[str] = []
-    for match in re.finditer(r"(?P<low>\d{3,5}(?:\.\d+)?)\s*(?:至|到|-|~)\s*(?P<high>\d{3,5}(?:\.\d+)?)\s*美元", text):
+    for match in re.finditer(r"(?P<low>\d{3,5}(?:\.\d+)?)\s*(?:至|到|-|~|—|–|－)\s*(?P<high>\d{3,5}(?:\.\d+)?)\s*美元", text):
         value = f"{match.group('low')}-{match.group('high')}"
         if value not in ranges:
             ranges.append(value)

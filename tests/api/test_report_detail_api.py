@@ -705,11 +705,16 @@ def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: P
                 {
                     "family": "jin10_weekly_visual",
                     "report_type": "weekly",
+                    "report_identity": {
+                        "classification_label": "黄金投资者周报",
+                        "report_theme": "黄金日线底部确认",
+                        "verification_status": "confirmed",
+                    },
                     "trade_date": "2026-05-31",
                     "run_id": "220787",
                 }
             ),
-            "storage/outputs/jin10/2026-05-31/220787/figures/fig_p1_001.png": "png",
+            "storage/parsed/jin10/2026-05-31/220787/figures/fig_p1_001.png": "png",
         },
     )
     monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
@@ -722,6 +727,8 @@ def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: P
 
     assert payload["family"] == "jin10_weekly_visual"
     assert payload["title"] == "External Weekly"
+    assert payload["report_identity"]["classification_label"] == "黄金投资者周报"
+    assert payload["report_identity"]["report_theme"] == "黄金日线底部确认"
     assert source_payload is not None
     assert source_payload["path"] == "storage/outputs/jin10/2026-05-31/220787/raw_article_report.md"
     assert "# Weekly Source" in source_payload["content"]
@@ -793,8 +800,8 @@ def test_report_detail_jin10_chart_asset_mismatch_requires_agent_loop_review(
                     "run_id": "223608",
                 }
             ),
-            "storage/outputs/jin10/2026-07-05/223608/figures/fig_p1_001.png": "png",
-            "storage/outputs/jin10/2026-07-05/223608/figures/fig_p2_001.png": "png",
+            "storage/parsed/jin10/2026-07-05/223608/figures/fig_p1_001.png": "png",
+            "storage/parsed/jin10/2026-07-05/223608/figures/fig_p2_001.png": "png",
         },
     )
     monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
@@ -816,23 +823,27 @@ def test_report_detail_jin10_chart_asset_mismatch_requires_agent_loop_review(
     assert trace["asset_audit"]["count_issues"][0]["code"] == "parser_figure_count_mismatch"
 
 
-def test_jin10_asset_audit_normalizes_equivalent_image_refs(tmp_path: Path) -> None:
-    from apps.api.services.report_service import _build_jin10_asset_audit
+def test_jin10_asset_audit_normalizes_equivalent_image_refs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api.services import report_service
 
-    run_dir = tmp_path / "storage" / "outputs" / "jin10" / "2026-07-05" / "223609"
+    run_dir = tmp_path / "storage" / "outputs" / "jin10" / "2026-07-05" / "223609-benchmark"
     _make_tree(
         tmp_path,
         {
-            "storage/outputs/jin10/2026-07-05/223609/raw_article_report.md": (
+            "storage/outputs/jin10/2026-07-05/223609-benchmark/raw_article_report.md": (
                 "# Source\n\n"
                 "![图表 1](./figures/fig_p1_001.png)\n\n"
                 "![图表 2](/api/reports/223609/asset/fig_p2_001.png?raw=1)\n"
             ),
-            "storage/outputs/jin10/2026-07-05/223609/figures/fig_p1_001.png": "png",
-            "storage/outputs/jin10/2026-07-05/223609/figures/fig_p2_001.png": "png",
+            "storage/parsed/jin10/2026-07-05/223609/figures/fig_p1_001.png": "png",
+            "storage/parsed/jin10/2026-07-05/223609/figures/fig_p2_001.png": "png",
+            "storage/parsed/jin10/2026-07-05/223609/figures/fig_p3_unreferenced.png": "png",
         },
     )
     raw_payload = {
+        "article_id": "223609",
         "charts": [
             {"figure_id": "fig_p1_001", "image_path": "figures/fig_p1_001.png?raw=1"},
             {"figure_id": "fig_p2_001", "image_path": "figures/fig_p2_001.png"},
@@ -840,12 +851,15 @@ def test_jin10_asset_audit_normalizes_equivalent_image_refs(tmp_path: Path) -> N
         "generated_from": {"parser_trace": {"figures_total": 2}},
     }
 
-    audit = _build_jin10_asset_audit(run_dir=run_dir, raw_payload=raw_payload)
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    audit = report_service._build_jin10_asset_audit(run_dir=run_dir, raw_payload=raw_payload)
 
     assert audit["status"] == "pass"
     assert audit["missing_refs"] == []
     assert audit["extra_files"] == []
     assert audit["count_issues"] == []
+    assert audit["figure_files"] == 2
+    assert audit["canonical_figure_files"] == 3
 
 
 def test_jin10_chart_text_audit_uses_compound_noise_signals() -> None:

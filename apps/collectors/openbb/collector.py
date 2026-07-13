@@ -330,9 +330,8 @@ def collect_market_prices_via_openbb(
         # 转换为 MacroPoint（取最新收盘价）
         try:
             last_row = df.iloc[-1]
-            date_col = "date" if "date" in df.columns else df.columns[0]
             close_col = "close" if "close" in df.columns else df.columns[-1]
-            point_date = str(last_row[date_col])[:10]
+            point_date = str(last_row["date"] if "date" in df.columns else df.index[-1])[:10]
             point_value = float(last_row[close_col])
         except Exception as exc:
             unavailable.append(symbol)

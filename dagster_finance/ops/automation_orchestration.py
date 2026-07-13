@@ -31,16 +31,19 @@ def automation_orchestration_op(context, config: AutomationOrchestrationConfig) 
             storage_root=storage_root,
             send_notifications=config.send_notifications,
             record_task_run=config.record_task_run,
+            run_id=context.run_id,
         ),
         "event_sla": lambda: run_event_sla_orchestration(
             storage_root=storage_root,
             send_notifications=config.send_notifications,
             record_task_run=config.record_task_run,
+            run_id=context.run_id,
         ),
         "pre_analysis": lambda: run_pre_analysis_orchestration(
             storage_root=storage_root,
             send_notifications=config.send_notifications,
             record_task_run=config.record_task_run,
+            run_id=context.run_id,
         ),
         "notification_retry": lambda: run_notification_retry_queue(storage_root=storage_root),
     }

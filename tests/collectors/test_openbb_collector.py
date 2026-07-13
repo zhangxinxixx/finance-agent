@@ -117,6 +117,27 @@ def test_market_prices_produces_macro_points(tmp_path: Path, monkeypatch) -> Non
     assert p.source == "openbb_yfinance"
 
 
+def test_market_prices_uses_dataframe_index_when_date_is_not_a_column(tmp_path: Path, monkeypatch) -> None:
+    df = pd.DataFrame(
+        {"open": [752.0499877929688], "close": [752.5]},
+        index=pd.to_datetime(["2026-07-10"]),
+    )
+    mock_obb = MagicMock()
+    mock_obb.equity.price.historical.return_value = FakeOBBResult(df)
+    _inject_openbb(monkeypatch, mock_obb)
+
+    from apps.collectors.openbb.collector import collect_market_prices_via_openbb
+    result = collect_market_prices_via_openbb(
+        retrieved_date="2026-07-13",
+        storage_root=tmp_path,
+        symbols={"SPY": "equity"},
+    )
+
+    assert result.unavailable_symbols == []
+    assert result.points[0].date == "2026-07-10"
+    assert result.points[0].value == 752.5
+
+
 def test_market_prices_empty_data_marks_unavailable(tmp_path: Path, monkeypatch) -> None:
     mock_obb = MagicMock()
     mock_obb.index.price.historical.side_effect = Exception("EmptyDataError: No results found.")

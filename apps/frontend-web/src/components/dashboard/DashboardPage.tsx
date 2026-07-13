@@ -37,7 +37,6 @@ export function DashboardPage() {
 
     const integrated = buildIntegratedMacroSummary(summary, dashboard.data.view_model);
     const strategyDirection = integrated.overallBias || dashboardBiasLabel(integrated.direction);
-    const dashboardDate = dashboard.data.view_model?.trade_date ?? summary.cme_options.trade_date ?? summary.generated_at.slice(0, 10);
     const dataMode = integrated.dataCompleteness.label;
     const dominantDriver = integrated.dominantDrivers.slice(0, 2).join(" / ") || "待确认";
 
@@ -46,7 +45,6 @@ export function DashboardPage() {
         title="黄金宏观交易驾驶舱"
         meta={
           <>
-            <span className="fa-num dashboard-header-summary-item">{dashboardDate}</span>
             <span className="dashboard-header-summary-item">综合判断：{strategyDirection}</span>
             <span className="dashboard-header-summary-item">主导变量：{dominantDriver}</span>
             <span className="dashboard-header-summary-item dashboard-header-summary-status">{dataMode}</span>

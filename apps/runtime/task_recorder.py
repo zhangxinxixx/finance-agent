@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
 
 from apps.runtime.artifact_registry import register_step_artifacts
 from apps.runtime.execution_event_bridge import emit_task_event
@@ -198,13 +197,7 @@ class TaskRecorder:
         if status == "running":
             return
 
-        if status == "failed":
-            return
-
-        if status != "success":
-            return
-
-        register_step_artifacts(
+        persisted = register_step_artifacts(
             self._session,
             run_id=run_id,
             step=step,
@@ -213,11 +206,7 @@ class TaskRecorder:
             output_ref=output_ref,
             source_refs=source_refs,
         )
-        for artifact_payload in self._artifact_event_payloads(
-            output_refs=output_refs,
-            artifact_refs=artifact_refs,
-            output_ref=output_ref,
-        ):
+        for artifact in persisted:
             emit_task_event(
                 self._session,
                 run_id,
@@ -225,45 +214,17 @@ class TaskRecorder:
                 "ARTIFACT_WRITTEN",
                 {
                     "step_name": step.name,
+                    "step_status": step.status.value,
                     "stage": step.stage,
                     "step_order": step.step_order,
-                    **artifact_payload,
+                    "artifact_role": "registry",
+                    "artifact_id": str(artifact.artifact_id),
+                    "artifact_type": artifact.artifact_type,
+                    "file_path": artifact.file_path,
+                    "sha256": artifact.sha256,
+                    "artifact_metadata": artifact.artifact_metadata or {},
                 },
             )
-
-    @staticmethod
-    def _artifact_event_payloads(
-        *,
-        output_refs: list[dict[str, Any]] | None,
-        artifact_refs: list[dict[str, Any]] | None,
-        output_ref: str | None,
-    ) -> list[dict[str, Any]]:
-        payloads: list[dict[str, Any]] = []
-
-        for role, refs in (("output_refs", output_refs), ("artifact_refs", artifact_refs)):
-            for ref in refs or []:
-                if not isinstance(ref, dict):
-                    continue
-                payloads.append({"artifact_role": role, **ref})
-
-        if output_ref:
-            payloads.append(
-                {
-                    "artifact_role": "output_ref",
-                    "artifact_type": "output_ref",
-                    "file_path": output_ref,
-                }
-            )
-
-        deduped: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for payload in payloads:
-            key = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(payload)
-        return deduped
 
 
 def record_task(task_type: str, task_name: str, trade_date: str | None = None) -> TaskRecorder:

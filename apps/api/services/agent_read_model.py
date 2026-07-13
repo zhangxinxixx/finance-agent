@@ -26,6 +26,12 @@ def _latest_agent_summaries(agent_names: Iterable[str]) -> dict[str, dict[str, A
                 .order_by(desc(AgentOutput.trade_date), desc(AgentOutput.created_at))
                 .all()
             )
+            result: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                if row.agent_name in result:
+                    continue
+                result[row.agent_name] = build_agent_output_summary(row)
+            return result
     except Exception as exc:
         logger.debug(
             "Agent read model lookup failed; returning empty summary",
@@ -33,13 +39,6 @@ def _latest_agent_summaries(agent_names: Iterable[str]) -> dict[str, dict[str, A
             extra={"service": "agent_read_model", "agent_names": names, "degraded": True},
         )
         return {}
-
-    result: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        if row.agent_name in result:
-            continue
-        result[row.agent_name] = build_agent_output_summary(row)
-    return result
 
 
 def _summary_text(item: dict[str, Any] | None) -> str:

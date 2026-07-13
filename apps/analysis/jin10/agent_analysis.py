@@ -7,10 +7,17 @@ from pathlib import Path
 from typing import Any
 
 from apps.analysis.jin10.agent_prompt_profiles import typed_report_prompt_spec
+from apps.analysis.jin10.multimodal import ImageLoader, build_multimodal_user_content
 from apps.documents.schemas import Jin10AgentAnalysisReport, Jin10DailyAnalysisReport, Jin10RawArticleReport
 
 MISSING = "未从识别结果中稳定提取"
 DEFAULT_STAGE = "方向抉择态"
+DEFAULT_JIN10_AGENT_PROVIDER = "cockpit"
+DEFAULT_JIN10_AGENT_MODEL = "gpt-5.6-sol"
+DEFAULT_JIN10_AGENT_REASONING_EFFORT = "high"
+DEFAULT_JIN10_AGENT_REQUEST_TIMEOUT = 300.0
+DEFAULT_JIN10_AGENT_MAX_TOKENS = 4096
+DEFAULT_JIN10_AGENT_MAX_IMAGES = 25
 STAGE_LABELS = (
     "利率压制态",
     "流动性踩踏态",
@@ -122,9 +129,20 @@ def build_agent_analysis_prompt(
 13. 开头两段必须足够短、足够硬：先直接点“前序偏什么，本次为什么降温/强化”，不要先铺背景。
 14. `分析溯源 / 数据来源` 最多 3 句，不要再解释“事实/观点/推论”分类方法。
 15. `操作层面怎么理解？` 每类角色尽量控制在 2-4 句，先写“先等什么确认”，再写“什么情况下失效”，避免长段解释。
-16. 若前序报告存在明确连续价位链，优先用“4366 -> 4500 -> 4600 -> 5000-5200”这类链路写法；不要把价位拆散后丢失连续关系。
+16. 前序报告的价位链只能在同一时间尺度和证据层级内延续；近端确认位、动态期权锚和远期模型目标必须拆开，不得拼成自然连续上涨路径。
 17. 能用短句说清时，不要展开成长段；能用“先看什么，再看什么；没发生什么，就不能说什么”就不要写概念解释。
 18. 除非输入材料强要求，否则不要单独展开“三确认模型”小节，可把确认条件揉进关键位、路径推演和操作层面。
+19. 证据来源必须使用明确类别：`图表事实`、`COT 数据事实`、`报告作者预测`、`报告作者解释`、`Agent 综合推论`、`前序框架延续`；不得笼统写成“本期报告明确”。
+20. 仅有 Put/Call 成交量或单边成交量变化时，只能写“下行保护需求降温”或“阶段底部线索增强”；缺少 Put OI、Call OI、隐含波动率或新开/平仓方向时，禁止写“期权见底”“底部已经形成”“趋势反转确认”。
+21. CFTC 的“其他可报告交易商”不得直接等同于价值型资金。只能确认该类别持仓变化；“偏价值型承接”必须明确归属于报告作者解释，并同时检查空头、净多、总持仓和占比分母是否可得。
+22. COT 属于周频滞后数据，只能作为中期承接或仓位背景，不能用于确认报告日当天或日内突破。现货、期权成交、期权 OI、COT、长期周期模型必须分别注明数据时效。
+23. 最大痛点是随持仓和到期时间变化的动态参考锚，不是稳定目标位。临近到期且 OI 结构明确时才可提高权重；不得把最大痛点与远期结构目标写成自然连续上涨路径。
+24. 长期周期模型目标必须标为低权重作者情景；输入未提供模型参数、历史样本、命中率、误差范围或失效条件时，不得进入短中期交易评分和当前价格路径。
+25. “有效突破”“站稳”“持续下降”“明显回升”“重新放大”等词必须绑定周期与判定口径。输入没有经过回测的阈值时，应写“判定阈值待回测/未提供”，不得自行发明精确 bp、均线或收盘次数。
+26. 利率判断至少检查 10Y 名义收益率、实际收益率、2Y 收益率、2Y-3M 利差四项。缺失项必须写“未确认”，不得仅凭名义收益率概括为宏观已经转松。
+27. 若输入提供同一时点当前价和预计区间，可计算 `区间位置=(当前价-下沿)/(上沿-下沿)`，并说明当前处于下半部、中性区或上半部；缺少同一时点当前价时不得估算。
+28. 管理资金空头占比较低属于双向信号：既表示趋势性做空不拥挤，也意味着后续逼空燃料可能有限；默认按中性证据处理。
+29. 标题优先使用“线索增强”“需求降温”“尚待确认”等条件化措辞。除非价格、OI、波动率与宏观变量共同确认，否则禁止使用“先见底”“反转完成”“上涨启动”。
 
 阶段标签可选：{', '.join(STAGE_LABELS)}。
 
@@ -136,38 +154,41 @@ def build_agent_analysis_prompt(
 # 2. 报告中的行情回顾
 # 3. 黄金为什么涨 / 为什么跌？
 # 4. 报告核心观点：短线、中期、长期分开
-# 5. 当前阶段判断
+# 5. 当前阶段判断与确认矩阵
 # 6. 关键位更新
 # 7. 三条路径推演
 # 8. 操作层面怎么理解？
 # 最终综合判断
 
 关键要求：
-- `一句话结论` 要直接回答当前更接近修复、承压、整固还是趋势延续；如果输入里有明确关键位，必须点名。
+- `一句话结论` 要直接回答当前更接近修复、承压、整固还是趋势延续；如果输入里有明确关键位，必须点名，同时说明底部线索和趋势反转是否已经确认。
 - `最新判断发生了什么变化？` 是全文重点，要优先写今天相对前序判断新增确认了什么、哪些被降温、哪些逻辑仍未失效；如果没有 previous_daily_analysis，就如实写本次新增确认 / 仍未确认。
 - 如果存在 `previous_daily_analysis`，默认先用一句短句概括“前序偏乐观/偏修复/偏承压，本次转为降温/强化/延后”，然后再展开。
 - 如果存在 `previous_daily_analysis`，开篇优先显式写出“前序判断是什么 -> 本次被什么变量打断或强化 -> 当前该把哪条路径降级”，不要先写抽象阶段名。
 - `报告中的行情回顾` 只保留与后续判断直接相关的行情与数据，不要把全文逐段改写。
 - `黄金为什么涨 / 为什么跌？` 要用“数据或事件 -> 市场预期 -> 利率/美元/资金 -> 黄金”的链路表达，最多 2-4 条。
 - `报告核心观点：短线、中期、长期分开` 必须区分交易压力、修复/震荡逻辑和长期配置逻辑。
-- `当前阶段判断` 要给出黄金主判断，并补一句白银相对黄金的弹性/联动；白银证据不足时必须明确。
+- `当前阶段判断与确认矩阵` 要给出黄金主判断，并固定列出：阶段、底部证据、趋势反转证据、价格确认、宏观确认、资金确认。`底部证据`和`趋势反转证据`只能使用“强/中等/偏弱”；`价格确认`、`宏观确认`和`资金确认`只能使用“已完成/部分完成/未完成”，不得混用量表。若价格仍在作者预计区间内且尚未突破第一确认位，`价格确认`必须写“未完成”。每项附一句证据或缺口。另补一句白银相对黄金的弹性/联动；白银证据不足时必须明确。
 - 如果本次报告已经明确跌破某个前序关键分界位，阶段名优先写成“某分界位失守后的方向抉择偏承压/偏修复”，不要过早写成“支撑保卫战”；真正的支撑保卫区放到下一句写清具体区间。
-- `关键位更新` 只解释输入材料、前序判断或结构化摘要中明确出现的关键价格、区间或分界位；并标注来源类别。
+- `关键位更新` 只解释输入材料、前序判断或结构化摘要中明确出现的关键价格、区间或分界位；来源类别只能从“图表事实 / COT数据事实 / 报告作者预测 / 报告作者解释 / Agent综合推论 / 前序框架延续”中选择。
 - 若提供了 `previous_daily_analysis`，允许继承其中仍未被当前报告否定的关键位框架，但必须明确标注为“前序报告延续”或“Agent 基于前序框架保留”，不得伪装成本次报告直接给出的事实。
 - `关键位更新` 优先输出为紧凑表格或紧凑列表；至少覆盖“价格 / 品种 / 来源类别 / 当前含义”四列或四项。
 - `关键位更新` 默认拆成两组：`短中线交易位` 与 `中长期参考位`。前者放交易分界位、修复确认位、突破确认位、下方防守位；后者放机构目标价、历史高位、长期情景位。两组不要混排。
-- 若前序报告已经给出一组连续关键位（例如底部位 / 第一确认位 / 趋势确认位 / 目标区），优先按这组连续关系写清，而不是只散列单个价位。
+- 若前序报告已经给出一组连续关键位，先区分近端价格确认位、动态期权参考位和远期结构情景。只有同一时间尺度、同一证据层级的价位才允许连成路径。
 - 若本次报告没有推翻前序底部位或目标区，要明确写“前序底部位仍可观察，但当前先降级到先收复哪个位再谈下一档”，避免只保留近端价位。
 - 若存在相邻的下方观察位或底部观察位，优先合并表达为连续支撑区/保卫区，而不是拆成两个孤立点。
 - 中长期机构目标价、历史高位描述必须和短线交易位分组展示，不得混在同一短线表里。
-- `三条路径推演` 必须包含主路径、修复/上行路径、失败/下行路径，每条都写触发条件，不写确定性预测。
-- 如果前序关键位存在，三条路径优先围绕“底部观察位 / 第一确认位 / 趋势确认位 / 目标区”展开；例如先写 `4366 -> 4500 -> 4600 -> 5000-5200` 这种连续关系，再补本次报告新增变量。
+- `三条路径推演` 必须包含主路径、修复/上行路径、失败/下行路径，每条都写触发条件，不写确定性预测。近端路径只使用当前区间、价格确认位和失效位；最大痛点只作为次级动态参考，远期结构目标不得直接接在近端路径之后。
 - `操作层面怎么理解？` 要体现空仓、已有多单、已有空单分别要等什么确认、什么情况下失效。
 - `最终综合判断` 用 3-5 条短句收束：当前阶段、最大新增变量、最重要关键位、中长期逻辑是否失效、下一步观察条件。
 - 如果报告出现期权领先信号，要明确“期权领先但现货未确认”，并写出失效条件：跌破平衡区无法收回、Put 保护重新放大、Call 回升但 OI 不增加、到期后锚定区失效等。
 - 如果报告出现收益率确认位、价格修复位和期权信号，把确认条件融进关键位、路径推演和操作层面即可；除非非常必要，不要单独起一个“三确认模型”大段。
 - 利率确认要明确区分“盘中刺破”和“有效跌破”；价格确认要明确写周期口径，例如 4H 收盘、日线收盘。
 - 期权确认必须分两层：成交量确认（Call volume 回升、Put volume 不扩张）与持仓确认（Call OI 增加、Put OI 未明显增加）；如果只有成交量没有 OI，要标注可能只是短线换手。
+- 期权证据应明确列出四种组合：Put 成交下降且 Put OI 下降=保护真正退潮；Put 成交下降但 Put OI 上升=底部信号有限；Call 成交上升且 Call OI 上升=主动看涨资金进入；Call 成交上升但 Call OI 不升=更可能是短线换手。缺少对应 OI 时只给中等或偏弱辅助权重。
+- COT 解读必须注明统计截止日/发布时间差；管理资金低空头要同时写“无拥挤空头”和“逼空燃料有限”两面，不得单独作为底部确认。
+- 利率部分固定检查 10Y 名义收益率、实际收益率、2Y 收益率、2Y-3M 利差，并分别标记改善、恶化、中性或未确认；没有输入值就写未确认。
+- 若报告给出未来预计运行区间，必须标为“报告作者预测”，不能标为市场事实；只有已经观察到的价格、成交、持仓和图表读数才能列为事实。
 - Put/Call 关键区间只能作为历史观察信号，不是单独交易信号，必须和利率、价格确认共同使用。
 - 允许使用少量箭头逻辑，但不要整段使用代码块表现。
 - 同一条逻辑只详细解释一次，后文只引用，不重复铺陈。
@@ -232,9 +253,14 @@ chart_render_mode: {chart_render_mode}
 
 
 def _agent_analysis_prompt_profile(*, raw_report: dict[str, Any], daily_report: dict[str, Any] | None) -> str:
+    daily = daily_report or {}
+    generated_from = daily.get("generated_from") if isinstance(daily.get("generated_from"), dict) else {}
+    report_type = str(daily.get("report_type") or generated_from.get("report_type") or "").strip().lower()
+    family = str(daily.get("family") or "").strip()
+    if report_type in {"daily", "weekly"} or family in {"jin10_daily_visual", "jin10_weekly_visual"}:
+        return "default_daily"
     if _is_market_observation_report(raw_report=raw_report, daily_report=daily_report):
         return "market_observation"
-    daily = daily_report or {}
     text = " ".join(
         str(item or "")
         for item in (
@@ -246,9 +272,6 @@ def _agent_analysis_prompt_profile(*, raw_report: dict[str, Any], daily_report: 
             (daily.get("generated_from") or {}).get("report_type") if isinstance(daily.get("generated_from"), dict) else "",
         )
     )
-    generated_from = daily.get("generated_from") if isinstance(daily.get("generated_from"), dict) else {}
-    report_type = str(daily.get("report_type") or generated_from.get("report_type") or "").strip().lower()
-    family = str(daily.get("family") or "").strip()
     if report_type in {"market_observation", "positioning", "technical_levels", "oil", "fx"}:
         return report_type
     if family == "jin10_positioning_report" or "持仓报告" in text:
@@ -266,11 +289,15 @@ def agent_analysis_prompt_version(raw_report: dict[str, Any], daily_report: dict
     if _is_market_observation_report(raw_report=raw_report, daily_report=daily_report):
         return "jin10_agent_analysis_market_observation_v1"
     profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
-    return f"jin10_agent_analysis_{profile}_v1" if profile != "default_daily" else "jin10_agent_analysis_v2"
+    return f"jin10_agent_analysis_{profile}_v1" if profile != "default_daily" else "jin10_agent_analysis_v3"
 
 
 def _is_market_observation_report(*, raw_report: dict[str, Any], daily_report: dict[str, Any] | None) -> bool:
     daily = daily_report or {}
+    generated_from = daily.get("generated_from") if isinstance(daily.get("generated_from"), dict) else {}
+    explicit_report_type = str(daily.get("report_type") or generated_from.get("report_type") or "").strip().lower()
+    if explicit_report_type and explicit_report_type != "market_observation":
+        return False
     text = " ".join(
         str(item or "")
         for item in (
@@ -1267,6 +1294,8 @@ def load_previous_jin10_agent_analysis(
 def build_jin10_agent_analysis_report_with_llm(
     raw_report: Jin10RawArticleReport | dict[str, Any],
     daily_report: Jin10DailyAnalysisReport | dict[str, Any] | None = None,
+    *,
+    figure_image_loader: ImageLoader | None = None,
 ) -> Jin10AgentAnalysisReport:
     """Build Jin10 agent analysis using LLM, with deterministic fallback.
 
@@ -1279,6 +1308,7 @@ def build_jin10_agent_analysis_report_with_llm(
     daily = _to_dict(daily_report) if daily_report is not None else {}
     fallback = build_jin10_agent_analysis_report(raw_report, daily_report)
     prompt_version = agent_analysis_prompt_version(raw, daily)
+    llm_config = _agent_llm_config()
     previous_daily_analysis = load_previous_jin10_agent_analysis(
         trade_date=str(fallback.trade_date or raw.get("trade_date") or ""),
         run_id=str(fallback.run_id or raw.get("article_id") or ""),
@@ -1286,6 +1316,12 @@ def build_jin10_agent_analysis_report_with_llm(
 
     # Build prompt
     prompt = build_agent_analysis_prompt(raw, daily, previous_daily_analysis=previous_daily_analysis)
+    multimodal_plan = build_multimodal_user_content(
+        prompt,
+        raw,
+        image_loader=figure_image_loader,
+        max_images=llm_config["max_images"],
+    )
 
     # Call LLM
     try:
@@ -1294,14 +1330,20 @@ def build_jin10_agent_analysis_report_with_llm(
         response = chat_sync(
             messages=[
                 {"role": "system", "content": "你是一名专业的宏观市场与贵金属分析 Agent，默认使用简体中文。"},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": multimodal_plan.content},
             ],
+            model=llm_config["model"],
+            provider=llm_config["provider"],
+            reasoning_effort=llm_config["reasoning_effort"],
+            request_timeout=llm_config["request_timeout"],
             temperature=0.3,
-            max_tokens=4096,
+            max_tokens=llm_config["max_tokens"],
             max_retries=0,
         )
         llm_markdown = sanitize_agent_analysis_markdown(response.content)
         llm_fields = _parse_llm_output_to_fields(llm_markdown, daily, raw)
+        figure_results = _mark_figure_output_references(multimodal_plan.figure_results, llm_markdown)
+        degraded = multimodal_plan.status == "degraded"
 
         return Jin10AgentAnalysisReport(
             document_id=fallback.document_id,
@@ -1337,8 +1379,17 @@ def build_jin10_agent_analysis_report_with_llm(
                 "source": "jin10_agent_analysis_llm",
                 "model": response.model,
                 "provider": response.provider,
+                "reasoning_effort": llm_config["reasoning_effort"],
+                "request_timeout": llm_config["request_timeout"],
+                "max_images": llm_config["max_images"],
                 "latency_ms": response.latency_ms,
                 "tokens": response.usage,
+                "vision_model": response.model,
+                "submitted_image_count": multimodal_plan.submitted_image_count,
+                "image_processing_status": multimodal_plan.status,
+                "degraded": degraded,
+                "degraded_reason": ";".join(multimodal_plan.degraded_reasons) if degraded else None,
+                "figure_results": figure_results,
                 "raw_report_family": fallback.generated_from.get("raw_report_family") or raw.get("family"),
                 "daily_report_family": fallback.generated_from.get("daily_report_family") or daily.get("family"),
                 "prompt_version": prompt_version,
@@ -1348,12 +1399,81 @@ def build_jin10_agent_analysis_report_with_llm(
                 "fallback_generated_from": fallback.generated_from,
             },
         )
-    except Exception:
+    except Exception as exc:
         # Fallback to deterministic analysis
         fallback.generated_from["source"] = "jin10_agent_analysis_fallback_after_llm_error"
         fallback.generated_from["prompt_version"] = prompt_version
         fallback.generated_from["prompt_profile"] = _agent_analysis_prompt_profile(raw_report=raw, daily_report=daily)
+        fallback.generated_from["model"] = llm_config["model"]
+        fallback.generated_from["provider"] = llm_config["provider"]
+        fallback.generated_from["reasoning_effort"] = llm_config["reasoning_effort"]
+        fallback.generated_from["request_timeout"] = llm_config["request_timeout"]
+        fallback.generated_from["max_images"] = llm_config["max_images"]
+        fallback.generated_from["vision_model"] = None
+        fallback.generated_from["submitted_image_count"] = multimodal_plan.submitted_image_count
+        fallback.generated_from["image_processing_status"] = multimodal_plan.status
+        fallback.generated_from["degraded"] = True
+        fallback.generated_from["degraded_reason"] = f"llm_error:{type(exc).__name__}"
+        fallback.generated_from["figure_results"] = multimodal_plan.figure_results
         return fallback
+
+
+def _agent_llm_config() -> dict[str, Any]:
+    return {
+        "provider": os.getenv("JIN10_AGENT_PROVIDER", DEFAULT_JIN10_AGENT_PROVIDER).strip()
+        or DEFAULT_JIN10_AGENT_PROVIDER,
+        "model": os.getenv("JIN10_AGENT_MODEL", DEFAULT_JIN10_AGENT_MODEL).strip()
+        or DEFAULT_JIN10_AGENT_MODEL,
+        "reasoning_effort": os.getenv(
+            "JIN10_AGENT_REASONING_EFFORT",
+            DEFAULT_JIN10_AGENT_REASONING_EFFORT,
+        ).strip()
+        or DEFAULT_JIN10_AGENT_REASONING_EFFORT,
+        "request_timeout": _positive_float_env(
+            "JIN10_AGENT_REQUEST_TIMEOUT",
+            DEFAULT_JIN10_AGENT_REQUEST_TIMEOUT,
+        ),
+        "max_tokens": _positive_int_env("JIN10_AGENT_MAX_TOKENS", DEFAULT_JIN10_AGENT_MAX_TOKENS),
+        "max_images": _non_negative_int_env("JIN10_AGENT_MAX_IMAGES", DEFAULT_JIN10_AGENT_MAX_IMAGES),
+    }
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _non_negative_int_env(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def _mark_figure_output_references(
+    figure_results: list[dict[str, Any]],
+    markdown: str,
+) -> list[dict[str, Any]]:
+    marked: list[dict[str, Any]] = []
+    for item in figure_results:
+        figure_id = str(item.get("figure_id") or "")
+        page_no = item.get("page_no")
+        referenced = bool(figure_id and figure_id in markdown)
+        if not referenced and page_no is not None:
+            referenced = f"page_no={page_no}" in markdown or f"第{page_no}页" in markdown
+        marked.append({**item, "referenced_in_output": referenced})
+    return marked
 
 
 def _should_skip_live_llm() -> bool:

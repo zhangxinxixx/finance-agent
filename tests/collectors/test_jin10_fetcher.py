@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+import cv2
+import numpy as np
+import pytest
+
 from apps.collectors.jin10.fetcher import parse_category_entries, parse_svip_report_html, write_external_report
 
 
@@ -20,6 +24,13 @@ class _FakeClient:
 
     def get(self, url: str, headers: dict | None = None) -> _FakeResponse:
         return _FakeResponse(self.payloads[url])
+
+
+def _image_bytes(ext: str, color: tuple[int, int, int]) -> bytes:
+    image = np.full((24, 40, 3), color, dtype=np.uint8)
+    ok, buffer = cv2.imencode(ext, image)
+    assert ok
+    return buffer.tobytes()
 
 
 def test_parse_category_entries_extracts_ids_titles_and_urls():
@@ -241,8 +252,8 @@ def test_write_external_report_downloads_images_and_rewrites_markdown_to_local_p
     )
     client = _FakeClient(
         {
-            "https://img.jin10.com/news/26/05/report-1.jpg": b"image-one",
-            "https://img.jin10.com/news/26/05/report-2.png": b"image-two",
+            "https://img.jin10.com/news/26/05/report-1.jpg": _image_bytes(".jpg", (1, 2, 3)),
+            "https://img.jin10.com/news/26/05/report-2.png": _image_bytes(".png", (4, 5, 6)),
         }
     )
 
@@ -250,24 +261,17 @@ def test_write_external_report_downloads_images_and_rewrites_markdown_to_local_p
 
     markdown = (report_dir / "report.md").read_text(encoding="utf-8")
     meta = json.loads((report_dir / "meta.json").read_text(encoding="utf-8"))
-    assert "![01-report-1.jpg](images/01-report-1.jpg)" in markdown
-    assert "![02-report-2.png](images/02-report-2.png)" in markdown
-    assert (report_dir / "images" / "01-report-1.jpg").read_bytes() == b"image-one"
-    assert (report_dir / "images" / "02-report-2.png").read_bytes() == b"image-two"
-    assert meta["images"] == [
-        {
-            "seq": 1,
-            "file": "01-report-1.jpg",
-            "url": "https://img.jin10.com/news/26/05/report-1.jpg",
-            "path": str(report_dir / "images" / "01-report-1.jpg"),
-        },
-        {
-            "seq": 2,
-            "file": "02-report-2.png",
-            "url": "https://img.jin10.com/news/26/05/report-2.png",
-            "path": str(report_dir / "images" / "02-report-2.png"),
-        },
-    ]
+    assert "![page-001.jpg](images/page-001.jpg)" in markdown
+    assert "![page-002.jpg](images/page-002.jpg)" in markdown
+    first = (report_dir / "images" / "page-001.jpg").read_bytes()
+    second = (report_dir / "images" / "page-002.jpg").read_bytes()
+    assert first.startswith(b"\xff\xd8")
+    assert second.startswith(b"\xff\xd8")
+    assert [item["file"] for item in meta["images"]] == ["page-001.jpg", "page-002.jpg"]
+    assert [item["source_file"] for item in meta["images"]] == ["report-1.jpg", "report-2.png"]
+    assert all(item["format"] == "jpeg" for item in meta["images"])
+    assert all(item["mime_type"] == "image/jpeg" for item in meta["images"])
+    assert all(item["w"] == 40 and item["h"] == 24 for item in meta["images"])
 
 
 def test_write_external_report_appends_chart_insights_to_markdown(tmp_path):
@@ -286,13 +290,13 @@ def test_write_external_report_appends_chart_insights_to_markdown(tmp_path):
     )
     client = _FakeClient(
         {
-            "https://img.jin10.com/news/26/05/report-1.jpg": b"image-one",
-            "https://img.jin10.com/news/26/05/report-2.png": b"image-two",
+            "https://img.jin10.com/news/26/05/report-1.jpg": _image_bytes(".jpg", (1, 2, 3)),
+            "https://img.jin10.com/news/26/05/report-2.png": _image_bytes(".png", (4, 5, 6)),
         }
     )
     image_insights = [
-        {"seq": 1, "file": "01-report-1.jpg", "status": "ok", "text": "黄金周线图", "summary": "价格在关键支撑附近震荡。"},
-        {"seq": 2, "file": "02-report-2.png", "status": "ok", "text": "白银日线图", "summary": "白银上破短期区间。"},
+        {"seq": 1, "file": "page-001.jpg", "status": "ok", "text": "黄金周线图", "summary": "价格在关键支撑附近震荡。"},
+        {"seq": 2, "file": "page-002.jpg", "status": "ok", "text": "白银日线图", "summary": "白银上破短期区间。"},
     ]
 
     report_dir = write_external_report(
@@ -324,8 +328,8 @@ def test_write_external_report_removes_stale_images_on_refetch(tmp_path):
     )
     client = _FakeClient(
         {
-            "https://img.jin10.com/news/chart-1.jpg": b"image-one",
-            "https://img.jin10.com/news/chart-2.png": b"image-two",
+            "https://img.jin10.com/news/chart-1.jpg": _image_bytes(".jpg", (1, 2, 3)),
+            "https://img.jin10.com/news/chart-2.png": _image_bytes(".png", (4, 5, 6)),
         }
     )
     report_dir = tmp_path / report.date / report.report_type / report.article_id
@@ -336,7 +340,34 @@ def test_write_external_report_removes_stale_images_on_refetch(tmp_path):
     write_external_report(report, external_root=tmp_path, client=client)
 
     kept = sorted(path.name for path in stale_dir.iterdir() if path.is_file())
-    assert kept == ["01-chart-1.jpg", "02-chart-2.png"]
+    assert kept == ["page-001.jpg", "page-002.jpg"]
+
+
+def test_write_external_report_preserves_existing_images_when_normalization_fails(tmp_path):
+    report = parse_svip_report_html(
+        """
+        <html><body><div class="jin10vip-news-details-article-body">
+          <p><img src="https://img.jin10.com/news/broken.png" /></p>
+        </div></body></html>
+        """,
+        article_id="219824",
+        source_url="https://svip.jin10.com/news/219824",
+    )
+    report_dir = tmp_path / report.date / report.report_type / report.article_id
+    images_dir = report_dir / "images"
+    images_dir.mkdir(parents=True)
+    existing = images_dir / "page-001.jpg"
+    existing.write_bytes(b"existing")
+
+    with pytest.raises(ValueError, match="jin10_image_normalization_failed"):
+        write_external_report(
+            report,
+            external_root=tmp_path,
+            client=_FakeClient({"https://img.jin10.com/news/broken.png": b"not-an-image"}),
+        )
+
+    assert existing.read_bytes() == b"existing"
+    assert not list(report_dir.glob(".images-*"))
 
 
 def test_parse_svip_report_daily_type():
@@ -511,7 +542,7 @@ def test_parse_svip_report_html_drops_placeholder_reduced_lines_when_report_imag
     assert report.body_complete is False
 
 
-def test_parse_svip_report_html_marks_image_only_body_as_unknown_scope():
+def test_parse_svip_report_html_keeps_short_image_only_body_as_unknown_scope():
     html = """
     <html><head>
       <meta property="og:title" content="黄金图表报告-金十数据VIP" />
@@ -530,6 +561,34 @@ def test_parse_svip_report_html_marks_image_only_body_as_unknown_scope():
     assert report.content_scope == "unknown"
     assert report.body_complete is False
     assert "- 正文范围: unknown" in report.report_markdown
+
+
+def test_parse_svip_report_html_marks_authenticated_multi_page_weekly_as_full():
+    html = """
+    <html><head>
+      <meta property="og:title" content="黄金短期横盘｜VIP黄金周报-金十数据VIP" />
+    </head>
+    <body>
+      <div class="jin10vip-news-details-article-body">
+        <p>金十VIP专享黄金投资者周报，欢迎查看！</p>
+        <p><img src="https://cdn-news.jin10.com/weekly-cover.png" /></p>
+        <p><img src="https://img.jin10.com/news/26/07/page-1.jpg" /></p>
+        <p><img src="https://img.jin10.com/news/26/07/page-2.jpg" /></p>
+        <p><img src="https://img.jin10.com/news/26/07/page-3.jpg" /></p>
+        <p><img src="https://img.jin10.com/news/26/07/page-4.jpg" /></p>
+        <p><img src="https://img.jin10.com/news/26/07/page-5.jpg" /></p>
+        <p><img src="https://img.jin10.com/news/26/07/weekly-tail.jpg" /></p>
+      </div>
+    </body></html>
+    """
+
+    report = parse_svip_report_html(html, article_id="224284", source_url="https://svip.jin10.com/news/224284")
+
+    assert report.report_type == "weekly"
+    assert report.vip_locked is False
+    assert report.content_scope == "full"
+    assert report.body_complete is True
+    assert "- 正文范围: full" in report.report_markdown
 
 
 def test_parse_svip_report_html_keeps_reduced_content_text_and_images_when_body_is_empty() -> None:

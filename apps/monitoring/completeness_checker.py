@@ -5,7 +5,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from apps.monitoring.freshness_rules import MONITORED_JIN10_SOURCES
+from apps.monitoring.freshness_rules import (
+    MONITORED_JIN10_SOURCES,
+    capability_impact_for_source,
+    required_capabilities_for_source,
+)
 from apps.monitoring.schemas import DataHealthCheck
 
 
@@ -54,8 +58,10 @@ def jin10_report_access_checks(*, storage_root: Path, trade_date: str, observed_
                 latest_artifact_ref=_rel(agent_json, storage_root),
                 reason_code=reason_code,
                 message=message,
-                repair_suggestion="Do not allow full analysis or knowledge distillation until full content is available." if status != "ok" else None,
+                repair_suggestion="Do not allow research interpretation or knowledge distillation until full content is available." if status != "ok" else None,
                 artifact_refs=[{"artifact_type": "agent_analysis_report", "path": _rel(agent_json, storage_root)}],
+                blocked_capabilities=("research_report_interpretation", "knowledge_distillation") if status != "ok" else (),
+                required_for=("research_report_interpretation", "knowledge_distillation"),
                 metadata={
                     "article_id": payload.get("article_id") or payload.get("run_id"),
                     "trade_date": payload.get("trade_date") or trade_date,
@@ -156,6 +162,7 @@ def _file_check(
     severity = "info" if status == "ok" else ("high" if source_key in {"jin10_svip_reports", "jin10_mcp_market"} else "warning")
     latest = max(existing, key=lambda item: item.stat().st_mtime) if existing else None
     message = message_ok if status == "ok" else f"{source_key} artifact chain is incomplete"
+    blocked_capabilities, degraded_capabilities = capability_impact_for_source(source_key, status=status)
     return DataHealthCheck(
         source_key=source_key,
         check_type="completeness",
@@ -167,6 +174,9 @@ def _file_check(
         message=message,
         repair_suggestion=None if status == "ok" else "Run the collector/parser/output pipeline for this source.",
         artifact_refs=[{"artifact_type": "file", "path": _rel(path, storage_root)} for path in existing],
+        blocked_capabilities=blocked_capabilities,
+        degraded_capabilities=degraded_capabilities,
+        required_for=required_capabilities_for_source(source_key),
         metadata={
             "expected_count": expected_count,
             "existing_count": len(existing),

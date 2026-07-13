@@ -109,6 +109,25 @@ def test_analysis_layer_does_not_import_api_services() -> None:
     assert offenders == []
 
 
+def test_automation_orchestration_uses_dagster_as_its_only_schedule_authority() -> None:
+    scheduler_wrapper = _frontend_type_file("apps/scheduler/automation_orchestration.py")
+    dagster_definitions = _frontend_type_file("dagster_finance/definitions.py")
+    dagster_schedules = _frontend_type_file(
+        "dagster_finance/schedules/automation_orchestration_schedule.py"
+    )
+
+    assert "def register_automation_orchestration_jobs" not in scheduler_wrapper
+    assert ".add_job(" not in scheduler_wrapper
+    for schedule_name in (
+        "automation_hourly_schedule",
+        "automation_event_sla_schedule",
+        "automation_pre_analysis_schedule",
+        "automation_notification_retry_schedule",
+    ):
+        assert schedule_name in dagster_definitions
+        assert f"def {schedule_name}" in dagster_schedules
+
+
 def test_quality_gate_fallback_executor_lives_in_dedicated_module() -> None:
     from apps.analysis.agents import fallback_executor
     from apps.analysis.agents.quality_gate import execute_agent_loop_fallback_tasks
