@@ -92,6 +92,9 @@ def test_available_options_returns_schema_valid_agent_output_bound_to_snapshot_a
     factors = {item["factor"] for item in output.evidence_items}
     assert {"options_intent", "option_wall", "gamma_positioning"} <= factors
     assert all(item["source_tier"] == "exchange" for item in output.evidence_items)
+    if output.bias is AgentBias.MIXED:
+        assert output.input_payload["bullish_drivers"] == ["put/support wall at 4100"]
+        assert output.input_payload["bearish_drivers"] == ["call/resistance wall at 4300"]
 
 
 def test_prelim_source_uncertainty_reduces_confidence_or_records_risk_note():

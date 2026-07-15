@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -123,4 +123,72 @@ class MacroEventFollowupStructuredPayload(BaseModel):
     def _require_followup_type(self) -> MacroEventFollowupStructuredPayload:
         if self.report_type != "macro_event_followup":
             raise ValueError("report_type must be macro_event_followup")
+        return self
+
+
+class WeeklyContextRevisionAnchor(BaseModel):
+    """Immutable Jin10 weekly report used as the revision baseline."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    article_id: str
+    report_date: str
+    run_id: str
+    title: str
+    baseline_quality_status: str
+    baseline_artifact_refs: list[dict[str, Any]] = Field(min_length=1)
+
+
+class WeeklyClaimRevision(BaseModel):
+    """One evidence-bound change to a claim from the weekly baseline."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: str
+    original_claim: str
+    action: Literal["maintain", "strengthen", "weaken", "invalidate", "pending"]
+    reason: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    confidence_before: Literal["low", "medium", "high"]
+    confidence_after: Literal["low", "medium", "high"]
+
+
+class WeeklyContextRevisionPayload(BaseModel):
+    """Append-only overlay that revises one immutable Jin10 weekly analysis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_type: str = Field(default="weekly_context_revision")
+    schema_version: str = Field(default="1.0.0")
+    asset: str
+    trade_date: str
+    run_id: str
+    context_as_of: str
+    anchor: WeeklyContextRevisionAnchor
+    input_snapshot_ids: dict[str, Any]
+    freshness: dict[str, dict[str, Any]]
+    baseline_claims: list[dict[str, Any]] = Field(min_length=1)
+    new_evidence: list[dict[str, Any]]
+    claim_revisions: list[WeeklyClaimRevision] = Field(min_length=1)
+    executive_summary: str
+    confirmation_matrix: dict[str, dict[str, Any]]
+    positioning_check: dict[str, Any]
+    dominant_transmission_chain: dict[str, Any]
+    scenario_updates: list[dict[str, Any]]
+    watch_items: list[dict[str, Any]]
+    revision_risk: dict[str, Any]
+    quality_status: Literal["accepted", "needs_review", "blocked"]
+    publication_status: Literal["accepted", "observe"]
+    publish_allowed: bool
+    analysis_provenance: dict[str, Any]
+    source_refs: list[dict[str, Any]]
+
+    @model_validator(mode="after")
+    def _require_revision_invariants(self) -> WeeklyContextRevisionPayload:
+        if self.report_type != "weekly_context_revision":
+            raise ValueError("report_type must be weekly_context_revision")
+        if self.publish_allowed != (self.publication_status == "accepted"):
+            raise ValueError("publish_allowed must match publication_status")
+        if self.publish_allowed and self.quality_status != "accepted":
+            raise ValueError("only accepted revisions may be published")
         return self

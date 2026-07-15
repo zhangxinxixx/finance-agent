@@ -11,6 +11,7 @@ const RatesDollarPage = lazy(() => import("./pages/RatesDollarPage").then((modul
 const OilGeopoliticsPage = lazy(() => import("./pages/OilGeopoliticsPage").then((module) => ({ default: module.OilGeopoliticsPage })));
 const DataIngestionPage = lazy(() => import("./pages/DataIngestionPage").then((module) => ({ default: module.DataIngestionPage })));
 const MarketMonitorPage = lazy(() => import("./pages/MarketMonitorPage").then((module) => ({ default: module.MarketMonitorPage })));
+const MarketOddsPage = lazy(() => import("./pages/MarketOddsPage").then((module) => ({ default: module.MarketOddsPage })));
 const CMEOptionsPage = lazy(() => import("./pages/CMEOptionsPage").then((module) => ({ default: module.CMEOptionsPage })));
 const ReportsPage = lazy(() => import("./pages/ReportsPage").then((module) => ({ default: module.ReportsPage })));
 const ReportDetailPage = lazy(() => import("./pages/ReportDetailPage").then((module) => ({ default: module.ReportDetailPage })));
@@ -28,6 +29,7 @@ const ReviewCenterPage = lazy(() => import("./pages/ReviewCenterPage").then((mod
 const StrategyPage = lazy(() => import("./pages/StrategyPage").then((module) => ({ default: module.StrategyPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 const SettingsAuditPage = lazy(() => import("./pages/SettingsAuditPage").then((module) => ({ default: module.SettingsAuditPage })));
+const LLMAuditPage = lazy(() => import("./pages/LLMAuditPage").then((module) => ({ default: module.LLMAuditPage })));
 
 function RouteFallback() {
   return (
@@ -61,6 +63,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/data-ingestion" element={lazyPage(<DataIngestionPage />)} />
           <Route path="/data-sources/:sourceId" element={lazyPage(<DataIngestionPage />)} />
           <Route path="/market-monitor" element={lazyPage(<MarketMonitorPage />)} />
+          <Route path="/market-monitor/odds" element={lazyPage(<MarketOddsPage />)} />
           <Route path="/cme-options" element={lazyPage(<CMEOptionsPage />)} />
           <Route path="/reports" element={lazyPage(<ReportsPage />)} />
           <Route path="/reports/:reportId" element={lazyPage(<ReportDetailPage />)} />
@@ -81,6 +84,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/strategy" element={lazyPage(<StrategyPage />)} />
           <Route path="/settings" element={lazyPage(<SettingsPage />)} />
           <Route path="/settings/audit" element={lazyPage(<SettingsAuditPage />)} />
+          <Route path="/settings/llm-audit" element={lazyPage(<LLMAuditPage />)} />
         </Route>
       </Routes>
     </BrowserRouter>

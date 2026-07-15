@@ -43,6 +43,7 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     real_10y = snapshot.indicators["REAL_10Y"]
     yield_spread = snapshot.indicators["YIELD_SPREAD_10Y_2Y"]
     short_curve_spread = snapshot.indicators["YIELD_SPREAD_2Y_3M"]
+    us03m = snapshot.indicators["US03M"]
     us10y = snapshot.indicators["US10Y"]
     rrp_usage = snapshot.indicators["ON_RRP_USAGE"]
 
@@ -56,6 +57,12 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     assert short_curve_spread.value == -0.6
     assert short_curve_spread.weekly_change == 0.2
     assert short_curve_spread.monthly_change == 0.6
+    assert short_curve_spread.direction_note == "倒挂、倒挂收窄；2Y 上行、3M 下行，鹰派预期与近期价格转松并存"
+    assert us03m.label == "US03M"
+    assert us03m.value == 4.6
+    assert us03m.weekly_change == -0.1
+    assert us03m.monthly_change == -0.3
+    assert us03m.direction_note == "3M 周度下行，当前政策价格出现转松信号"
     assert us10y.unit == "%"
     assert us10y.monthly_change == 0.3
     assert rrp_usage.unit == "B"
@@ -94,6 +101,7 @@ def test_macro_snapshot_marks_real_10y_unavailable_when_t10yie_is_missing() -> N
     assert "REAL_10Y" not in snapshot.indicators
     assert "T10YIE" in snapshot.unavailable_symbols
     assert "DGS3MO" in snapshot.unavailable_symbols
+    assert "US03M" not in snapshot.indicators
     assert "BREAKEVEN_10Y" not in snapshot.indicators
     assert "YIELD_SPREAD_2Y_3M" not in snapshot.indicators
     assert snapshot.indicators["US10Y"].value == 4.3

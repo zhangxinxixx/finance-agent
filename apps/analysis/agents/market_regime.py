@@ -186,6 +186,12 @@ def run_market_regime_agent(
             messages=prompt_messages,
             temperature=0.2,
             max_tokens=2048,
+            audit_context={
+                "caller": "market_regime.run_market_regime_agent",
+                "run_id": run_id,
+                "snapshot_id": snapshot_id,
+                "input_payload": input_payload,
+            },
         )
         parsed = parse_regime_response(response.content)
         if not parsed:
@@ -249,6 +255,7 @@ def run_market_regime_agent(
             llm_provider=response.provider,
             llm_usage=response.usage,
             llm_latency_ms=response.latency_ms,
+            llm_audit_id=getattr(response, "audit_id", None),
             prompt_messages=prompt_messages,
             input_payload=input_payload,
             llm_raw_output=response.content,

@@ -1,74 +1,46 @@
 # 前端页面职责
 
-当前主前端：`apps/frontend-web/src`
-入口：`apps/frontend-web/src/main.tsx`
-Shell：`AppShell`、`AppSidebar`、`AppHeader`
+> 路由事实源：`apps/frontend-web/src/main.tsx`；导航事实源：`components/AppSidebar.tsx`。代码基线：2026-07-21。
 
-## 路由列表
+## 主路由
 
-| 路由 | 页面文件 | 当前职责 |
-| --- | --- | --- |
-| `/dashboard` | `pages/DashboardPage.tsx` | 总览、报告/策略/市场状态入口 |
-| `/dashboard/analysis` | `pages/DashboardAnalysisPage.tsx` | 分析视图 |
-| `/data-ingestion` | `pages/DataIngestionPage.tsx` | 数据源状态、重试、手工上传入口 |
-| `/data-sources/:sourceId` | `pages/DataIngestionPage.tsx` | 数据源详情视角 |
-| `/market-monitor` | `pages/MarketMonitorPage.tsx` | 市场监控、行情、宏观/跨资产读数 |
-| `/cme-options` | `pages/CMEOptionsPage.tsx` | CME 期权结构 |
-| `/reports` | `pages/ReportsPage.tsx` | 报告列表与报告族入口 |
-| `/reports/:reportId` | `pages/ReportDetailPage.tsx` | 报告详情、三产物、证据、溯源 |
-| `/event-flow` | `pages/EventFlowPage.tsx` | 事件流 overview |
-| `/event-flow/:eventId` | `pages/EventFlowDetailPage.tsx` | 事件详情 |
-| `/knowledge-base` | `pages/KnowledgeBasePage.tsx` | 知识库列表 |
-| `/knowledge/:knowledgeId` | `pages/KnowledgeBasePage.tsx` | 知识详情视角 |
-| `/agent-tasks` | `pages/AgentTasksPage.tsx` | Run 控制台 / Agent task overview |
-| `/agent-tasks/:runId` | `pages/AgentTaskDetailPage.tsx` | 单次 run 详情 |
-| `/review-center` | `pages/ReviewCenterPage.tsx` | 人工复核队列 |
-| `/strategy` | `pages/StrategyPage.tsx` | Strategy Center / Strategy Cards |
-| `/settings` | `pages/SettingsPage.tsx` | 配置中心、Agent 管理、Prompt governance |
-| `/settings/audit` | `pages/SettingsAuditPage.tsx` | 配置审计历史 |
+| 路由 | 职责 |
+| --- | --- |
+| `/dashboard`、`/dashboard/analysis` | 总览与综合分析下钻 |
+| `/gold-mainlines` | 黄金事件主线与运行编排摘要 |
+| `/rates-dollar` | 利率、美元与黄金宏观关系 |
+| `/oil-geopolitics` | 石油、地缘与黄金影响 |
+| `/data-ingestion`、`/data-sources/:sourceId` | 数据源健康、详情、测试、重试与手工上传 |
+| `/market-monitor`、`/market-monitor/odds` | 行情、跨资产监控和市场赔率 |
+| `/cme-options` | CME 期权结构、decision 和可视化报告 |
+| `/reports`、`/reports/:reportId` | 报告索引、artifact、输入与证据 |
+| `/event-flow`、`/event-flow/:eventId` | 事件、brief、影响与市场反应 |
+| `/feishu-monitor` | 飞书/Jin10 消息监控 |
+| `/knowledge*` | 知识条目与详情 |
+| `/scheduler` | Pipeline DAG 与运行状态 |
+| `/scheduler/grid`、`/scheduler/tasks` | 调度视图与任务列表 |
+| `/processing-monitor` | 按 trace/event/input/source/mainline/chain 查询加工链 |
+| `/agent-tasks/:runId` | 单次 run 的步骤、日志、artifact 与 Agent 检查 |
+| `/review-center` | 人工复核队列与动作 |
+| `/strategy` | accepted 策略、live strategy 与 shadow evaluation |
+| `/settings`、`/settings/audit` | 配置、数据源、Prompt 与变更审计 |
+| `/settings/llm-audit` | LLM 调用审计 |
 
-## 数据访问
+`/agent-tasks` 会重定向到 `/scheduler`；`/scheduler/processing-monitor` 会重定向到 `/processing-monitor`。
 
-统一 API client：
+## 页面边界
 
-- `apps/frontend-web/src/adapters/apiClient.ts`
+- 页面不得自行计算策略方向、期权墙、宏观 regime 或发布资格。
+- 页面必须展示 `data_status`、业务日期、生成时间和 fallback/mock/unavailable 标识。
+- 写操作只能调用明确的 API action；UI 更新后应重新拉取后端状态。
+- `src/mocks` 只用于演示或降级，不能伪装成 live。
+- FastAPI 的 `/dashboard`、`/reports`、`/scheduler` 等是兼容跳转，不是第二套前端。
 
-主要 adapters：
+## 验证
 
-- `adapters/api.ts`：Dashboard
-- `adapters/dataIngestion.ts`：Data Ingestion
-- `adapters/marketMonitor.ts`：Market Monitor
-- `adapters/cmeOptions.ts`：CME Options
-- `adapters/reports.ts`：Reports / Report Detail
-- `adapters/agentTasks.ts`：Run / Reviews / Agent inspection
-- `adapters/strategy.ts`：Strategy Cards
-- `adapters/settings.ts`：Settings
-- `adapters/agentRegistry.ts`：Agent Registry / Prompt / Feedback
-- `adapters/eventFlow.ts`：Event Flow
-- `adapters/knowledge.ts`：Knowledge Base
-- `adapters/playbooks.ts`：Playbooks
-- `adapters/agentAnalysis.ts`：Agent Analysis
-
-## 页面与 API
-
-| 页面 | 主要 API | mock/fallback |
-| --- | --- | --- |
-| Dashboard | `/api/dashboard/summary`、`/api/reports/dates`、`/api/strategy-card/latest` | `src/mocks/dashboard.json` |
-| Data Ingestion | `/api/data-sources/status`、`/api/data-status/summary`、`/api/ingestion/sources/{source_key}/retry` | `src/mocks/data-ingestion.json` |
-| Market Monitor | `/api/market/monitor`、`/api/market/tickers`、`/api/macro/latest`、`/api/market/monitor/history` | `src/mocks/market-monitor.json` |
-| CME Options | `/api/options/snapshot`、`/api/options/dates` | `src/mocks/cme-options.json` |
-| Reports | `/api/reports/index`、`/api/reports/dates`、Jin10/Final/Options report APIs | 主要依赖后端，个别 optional fetch |
-| Report Detail | `/api/reports/{report_id}`、`/api/reports/{report_id}/artifacts`、`source`、`analysis`、`visual`、`evidence`、`analysis-inputs`、`/api/source-trace/by-report/{report_id}` | optional 404 空态 |
-| Event Flow | `/api/events/flow/overview` | adapter 内 fallback 需进一步标注 |
-| Knowledge Base | `/api/knowledge/items`、`/api/knowledge/items/{item_id}` | adapter 内 fallback 需进一步标注 |
-| Agent Tasks | `/api/runs`、`/api/runs/{run_id}`、`/api/runs/{run_id}/artifacts`、`/api/runs/{run_id}/logs`、`/api/reviews`、`/api/agent-analysis/inspect` | `src/mocks/agent-runs.json` |
-| Review Center | `/api/reviews`、review action APIs | 后端不可用时显示错误 |
-| Strategy Center | `/api/strategy-cards/latest`、`/api/strategy-cards`、`/api/strategy-cards/assets` | `src/mocks/strategy.json` |
-| Settings | `/api/settings/status`、settings write/reset/history APIs、Agent registry/prompt/feedback APIs | 需以后端状态为准 |
-
-## 当前约束
-
-- 不在前端计算策略。
-- 不把 mock 当 live 展示。
-- 不恢复 `apps/frontend` 或 `dashboard.html`。
-- 新页面、新组件、新 API 对接默认只改 `apps/frontend-web/src`。
+```bash
+cd apps/frontend-web
+rtk npm run typecheck
+rtk npm test
+rtk npm run build
+```

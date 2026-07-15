@@ -200,6 +200,17 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     assert summary["artifact_execution_enabled"] is False
     assert summary["pipeline_materialized_outputs"] is True
     assert summary["executed_agents"] == []
+    assert summary["materialized_stage_envelopes"] == [
+        "source_health_agent",
+        "event_attribution_agent",
+        "transmission_chain_agent",
+        "driver_decomposition_agent",
+        "mainline_ranking_agent",
+        "gold_macro_overview_agent",
+        "review_gate_agent",
+    ]
+    assert summary["failed_agents"] == []
+    assert summary["skipped_agents"] == ["report_render_agent"]
     assert summary["quality_gate_status"] in {"passed", "fallback_required", "needs_review", "blocked"}
     assert summary["fallback_tasks_created"] == []
     assert summary["fallback_attempts"] == 0
@@ -234,6 +245,11 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     assert summary["source_health_status"] == "degraded"
     assert summary["review_status"] == "needs_review"
     assert isinstance(summary["warnings"], list)
+    assert summary["source_health_path"].endswith("/source_health.json")
+    assert summary["quality_gate_result_path"].endswith("/quality_gate_result.json")
+    assert set(summary["agent_artifact_refs"]) == set(
+        summary["materialized_stage_envelopes"]
+    )
 
     mainlines_path = tmp_path / summary["gold_event_mainlines_path"]
     overview_path = tmp_path / summary["gold_macro_overview_path"]
@@ -242,6 +258,12 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
 
     mainlines = json.loads(mainlines_path.read_text(encoding="utf-8"))
     overview = json.loads(overview_path.read_text(encoding="utf-8"))
+    source_health_artifact = json.loads(
+        (tmp_path / summary["source_health_path"]).read_text(encoding="utf-8")
+    )
+    quality_gate_artifact = json.loads(
+        (tmp_path / summary["quality_gate_result_path"]).read_text(encoding="utf-8")
+    )
     assert len(mainlines["mainlines"]) == 9
     assert len(overview["theme_rankings"]) == 9
     assert overview["source_health"]["overall_status"] == "degraded"
@@ -252,6 +274,19 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     assert overview["review_gate"]["quality_gate_action"] == overview["review_gate"]["quality_gate_decision"]["action"]
     assert isinstance(overview["review_gate"]["publish_allowed"], bool)
     assert overview["review_status"] == "needs_review"
+    assert source_health_artifact == overview["source_health"]
+    assert quality_gate_artifact == overview["review_gate"]
+    for agent_name, artifact_path in summary["agent_artifact_refs"].items():
+        envelope = json.loads((tmp_path / artifact_path).read_text(encoding="utf-8"))
+        assert envelope["agent_name"] == agent_name
+        assert envelope["run_id"] == summary["output_run_id"]
+        assert envelope["snapshot_id"] == summary["snapshot_id"]
+        assert envelope["created_at"] == "2026-06-30T08:30:00Z"
+        assert envelope["source_refs"]
+        assert envelope["input_snapshot_ids"]["event_candidates"].endswith(
+            "/event_candidates.json"
+        )
+        assert len(envelope["artifact_refs"]) == 1
     assert overview["input_snapshot_ids"]["gold_event_mainlines"] == summary["gold_event_mainlines_path"]
     assert overview["input_snapshot_ids"]["macro_snapshot"] == "features/macro/2026-06-30/macro-run/macro_snapshot.json"
     expected_market_context_path = "analysis/gold_mainlines/2026-06-30/gold-mainlines-refresh-test/market_context.json"
@@ -279,28 +314,42 @@ def test_run_gold_mainline_pipeline_rebuilds_nine_mainline_artifacts(tmp_path: P
     assert rankings["oil_prices"]["feature_fields"]["oil_price_trend"] == "rising"
     assert rankings["etf_flows"]["feature_fields"]["flow_confirmation_status"] == "confirmed_inflow"
 
+    for _ in range(9):
+        with mock.patch(
+            "scripts.run_gold_mainline_pipeline.get_data_source_statuses",
+            return_value=_gold_v3_source_status_payload(),
+        ):
+            rerun_exit_code = run_gold_mainline_pipeline.main(
+                [
+                    "--storage-root",
+                    str(tmp_path),
+                    "--date",
+                    "2026-06-30",
+                    "--run-id",
+                    "source-run",
+                    "--output-run-id",
+                    "gold-mainlines-refresh-test",
+                    "--market-context",
+                    str(market_context_path),
+                    "--oil-context",
+                    str(oil_context_path),
+                    "--flow-context",
+                    str(flow_context_path),
+                ]
+            )
+        assert rerun_exit_code == 0
+        rerun_summary = json.loads(capsys.readouterr().out)
+        assert rerun_summary["agent_artifact_refs"] == summary["agent_artifact_refs"]
+        assert rerun_summary["snapshot_id"] == summary["snapshot_id"]
+
 
 def test_run_gold_mainline_pipeline_blocks_review_gate_from_source_health_conflict(tmp_path: Path, capsys) -> None:
     _write_input_artifacts(tmp_path, date="2026-06-30", run_id="source-run")
 
-    class Snapshot:
-        def to_dict(self) -> dict[str, object]:
-            return {
-                "overall_status": "blocked",
-                "as_of": "2026-06-30T08:30:00+00:00",
-                "p0_missing": ["xauusd_price"],
-                "p1_missing": [],
-                "p2_missing": [],
-                "stale_sources": [],
-                "fresh_sources": [],
-                "source_freshness": {},
-                "mainline_impact": {},
-                "can_build_gold_macro_overview": False,
-                "blocking_reasons": ["P0 source gap conflicts with strong GoldMacroOverview conclusion"],
-                "warnings": [],
-            }
-
-    with mock.patch("scripts.run_gold_mainline_pipeline.build_gold_v3_source_health", return_value=Snapshot()):
+    with mock.patch(
+        "scripts.run_gold_mainline_pipeline.get_data_source_statuses",
+        return_value=_gold_v3_source_status_payload(missing={"xauusd_price"}),
+    ):
         exit_code = run_gold_mainline_pipeline.main(
             [
                 "--storage-root",
@@ -323,6 +372,8 @@ def test_run_gold_mainline_pipeline_blocks_review_gate_from_source_health_confli
     assert summary["review_status"] == "blocked"
     assert summary["quality_gate_status"] == "blocked"
     assert summary["no_strong_conclusion"] is True
+    assert summary["executed_agents"] == []
+    assert summary["materialized_stage_envelopes"][-1] == "review_gate_agent"
 
     overview = json.loads((tmp_path / summary["gold_macro_overview_path"]).read_text(encoding="utf-8"))
     assert overview["status"] == "blocked"
@@ -331,11 +382,25 @@ def test_run_gold_mainline_pipeline_blocks_review_gate_from_source_health_confli
     assert overview["review_gate"]["quality_gate_action"] == "block_publish"
     assert overview["review_gate"]["quality_gate_decision"]["review_status"] == "blocked"
     assert overview["review_gate"]["publish_allowed"] is False
-    assert "P0 source gap conflicts with strong GoldMacroOverview conclusion" in overview["review_blocking_reasons"]
+    assert any("P0 source gap conflicts" in item for item in overview["review_blocking_reasons"])
     assert (
         "P0 source gap conflicts with a strong or high-confidence conclusion."
         in overview["review_blocking_reasons"]
     )
+    source_envelope = json.loads(
+        (tmp_path / summary["agent_artifact_refs"]["source_health_agent"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    review_envelope = json.loads(
+        (tmp_path / summary["agent_artifact_refs"]["review_gate_agent"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert source_envelope["status"] == "unavailable"
+    assert source_envelope["confidence"] == 0.0
+    assert review_envelope["status"] == "unavailable"
+    assert review_envelope["confidence"] == 0.0
 
 
 def test_run_gold_mainline_pipeline_emits_major_event_runtime_summary(tmp_path: Path, capsys) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import zipfile
+from datetime import date
 from io import BytesIO, StringIO
 from pathlib import Path
 
@@ -15,12 +16,13 @@ CFTC_COT_URL = "https://www.cftc.gov/files/dea/history/fut_disagg_txt_2026.zip"
 COT_SOURCE = "cftc"
 COT_SYMBOL = "COT_GOLD"
 
-GOLD_MARKET_FILTER = "GOLD"
-EXCHANGE_FILTER = "COMMODITY EXCHANGE"
+GOLD_CONTRACT_CODE = "088691"
+GOLD_MARKET_NAME = "GOLD - COMMODITY EXCHANGE INC."
 
 # CSV columns in the CFTC disaggregated futures report
 COL_REPORT_DATE = "Report_Date_as_YYYY-MM-DD"
 COL_MARKET = "Market_and_Exchange_Names"
+COL_CONTRACT_CODE = "CFTC_Contract_Market_Code"
 COL_OPEN_INTEREST = "Open_Interest_All"
 # Commercial = Producer/Merchant + Swap Dealers
 COL_PROD_LONG = "Prod_Merc_Positions_Long_All"
@@ -64,14 +66,29 @@ def collect_positioning_cot(*, retrieved_date: str, storage_root: Path) -> Colle
     if reader.fieldnames is None:
         return _unavailable("CFTC CSV has no header row")
 
+    try:
+        cutoff_date = date.fromisoformat(retrieved_date[:10])
+    except ValueError:
+        return _unavailable(f"Invalid retrieved_date for COT cutoff: {retrieved_date!r}")
+
     gold_rows: list[dict[str, str]] = []
     for row in reader:
-        market = row.get(COL_MARKET, "")
-        if GOLD_MARKET_FILTER in market and EXCHANGE_FILTER in market:
+        market = " ".join(row.get(COL_MARKET, "").upper().split())
+        contract_code = row.get(COL_CONTRACT_CODE, "").strip()
+        if contract_code != GOLD_CONTRACT_CODE or market != GOLD_MARKET_NAME:
+            continue
+        try:
+            report_date = date.fromisoformat(row.get(COL_REPORT_DATE, ""))
+        except ValueError:
+            continue
+        if report_date <= cutoff_date:
             gold_rows.append(row)
 
     if not gold_rows:
-        return _unavailable("No GOLD / COMMODITY EXCHANGE rows found in CFTC COT CSV")
+        return _unavailable(
+            f"No standard GOLD contract {GOLD_CONTRACT_CODE} rows found on or before "
+            f"{cutoff_date.isoformat()} in CFTC COT CSV"
+        )
 
     # Archive raw rows
     raw_dir = storage_root / "raw" / "positioning" / retrieved_date
@@ -83,10 +100,15 @@ def collect_positioning_cot(*, retrieved_date: str, storage_root: Path) -> Colle
     )
     raw_path_rel = raw_path.relative_to(storage_root).as_posix()
 
-    # Sort by date and pick the most recent
+    # Contract and point-in-time filtering above ensure the comparison is like-for-like.
     gold_rows.sort(key=lambda r: r.get(COL_REPORT_DATE, ""))
     latest_row = gold_rows[-1]
-    prev_row = gold_rows[-2] if len(gold_rows) >= 2 else None
+    latest_report_date = latest_row.get(COL_REPORT_DATE, "")
+    previous_rows = [
+        row for row in gold_rows
+        if row.get(COL_REPORT_DATE, "") < latest_report_date
+    ]
+    prev_row = previous_rows[-1] if previous_rows else None
 
     retrieved_at = utc_now_iso()
 
@@ -115,7 +137,9 @@ def collect_positioning_cot(*, retrieved_date: str, storage_root: Path) -> Colle
     other_long = _val(COL_OTHER_LONG)
     other_short = _val(COL_OTHER_SHORT)
 
-    # Commercial = Producer/Merchant + Swap Dealers
+    producer_net = prod_long - prod_short
+    swap_net = swap_long - swap_short
+    # Compatibility aggregate proxy = Producer/Merchant + Swap Dealers.
     comm_long = prod_long + swap_long
     comm_short = prod_short + swap_short
     commercial_net = comm_long - comm_short
@@ -130,6 +154,8 @@ def collect_positioning_cot(*, retrieved_date: str, storage_root: Path) -> Colle
     prev_mm_short = _prev_val(COL_MM_SHORT)
     prev_open_interest = _prev_val(COL_OPEN_INTEREST)
 
+    prev_producer_net = prev_prod_long - prev_prod_short
+    prev_swap_net = prev_swap_long - prev_swap_short
     prev_comm_long = prev_prod_long + prev_swap_long
     prev_comm_short = prev_prod_short + prev_swap_short
     prev_commercial_net = prev_comm_long - prev_comm_short
@@ -150,6 +176,8 @@ def collect_positioning_cot(*, retrieved_date: str, storage_root: Path) -> Colle
         )
 
     points.append(_point("commercial_net", commercial_net))
+    points.append(_point("producer_net", producer_net))
+    points.append(_point("swap_net", swap_net))
     points.append(_point("noncomm_net", noncomm_net))
     points.append(_point("open_interest", open_interest))
     points.append(_point("comm_long", comm_long))
@@ -167,6 +195,28 @@ def collect_positioning_cot(*, retrieved_date: str, storage_root: Path) -> Colle
                 symbol=f"{COT_SYMBOL}_commercial_net_prev",
                 date=prev_report_date,
                 value=round(prev_commercial_net, 6),
+                source=COT_SOURCE,
+                source_url=CFTC_COT_URL,
+                retrieved_at=retrieved_at,
+                raw_path=raw_path_rel,
+            )
+        )
+        points.append(
+            MacroPoint(
+                symbol=f"{COT_SYMBOL}_producer_net_prev",
+                date=prev_report_date,
+                value=round(prev_producer_net, 6),
+                source=COT_SOURCE,
+                source_url=CFTC_COT_URL,
+                retrieved_at=retrieved_at,
+                raw_path=raw_path_rel,
+            )
+        )
+        points.append(
+            MacroPoint(
+                symbol=f"{COT_SYMBOL}_swap_net_prev",
+                date=prev_report_date,
+                value=round(prev_swap_net, 6),
                 source=COT_SOURCE,
                 source_url=CFTC_COT_URL,
                 retrieved_at=retrieved_at,
@@ -202,6 +252,8 @@ def collect_positioning_cot(*, retrieved_date: str, storage_root: Path) -> Colle
             "source": COT_SOURCE,
             "source_url": CFTC_COT_URL,
             "raw_path": raw_path_rel,
+            "contract_code": GOLD_CONTRACT_CODE,
+            "market": GOLD_MARKET_NAME,
         }
     ]
 

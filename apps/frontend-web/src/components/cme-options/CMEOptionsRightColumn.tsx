@@ -1,12 +1,13 @@
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { FAStatusTone } from "@/components/shared/FAStatusPill";
 import { getStatusLabel, getStatusTone } from "@/components/shared/statusMeta";
-import type { CMEOptionsResponse } from "@/types/cme-options";
-import { CME_META_TEXT, shortId, translateEvidence } from "./cmeOptionsFormat";
+import type { CMEOptionsDecisionResponse, CMEOptionsResponse } from "@/types/cme-options";
+import { shortId, summarizeDecision, translateDecisionText } from "./cmeOptionsFormat";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
 
 interface CMEOptionsRightColumnProps {
   snapshot: CMEOptionsResponse;
+  decision?: CMEOptionsDecisionResponse | null;
 }
 
 function reviewStatusTone(status: string | null | undefined): FAStatusTone {
@@ -25,7 +26,7 @@ function synthesisStatusLabel(status: string | null | undefined) {
   if (status === "success") return "通过";
   if (status === "needs_review") return "需复核";
   if (status === "failed") return "失败";
-  return status ?? "未知";
+  return translateDecisionText(status ?? "未知");
 }
 
 function biasLabel(bias: string | null | undefined) {
@@ -33,22 +34,24 @@ function biasLabel(bias: string | null | undefined) {
   if (bias === "bearish") return "偏空";
   if (bias === "neutral") return "中性";
   if (bias === "mixed") return "多空交织";
-  return bias || "中性";
+  return translateDecisionText(bias || "中性");
 }
 
 function severityLabel(severity: string | null | undefined) {
   if (severity === "high") return "高";
   if (severity === "medium") return "中";
   if (severity === "low") return "低";
-  return severity ?? "待定";
+  return translateDecisionText(severity ?? "待定");
 }
 
-export function CMEOptionsRightColumn({ snapshot }: CMEOptionsRightColumnProps) {
+export function CMEOptionsRightColumn({ snapshot, decision }: CMEOptionsRightColumnProps) {
   const analysis = snapshot.analysis;
   const cmeAgent = analysis?.cme_options_agent;
   const factReview = analysis?.fact_review;
   const synthesis = analysis?.synthesis;
-  const primarySummary = synthesis?.summary || cmeAgent?.summary || "当前未返回后端解释摘要。";
+  const agentSummary = synthesis?.summary || cmeAgent?.summary;
+  const decisionSummary = summarizeDecision(decision);
+  const primarySummary = agentSummary || decisionSummary || "综合分析暂不可用，请以当前结构数据和风险提示为准。";
   const keyPoints = synthesis?.consensus_points?.length
     ? synthesis.consensus_points
     : synthesis?.key_findings?.length
@@ -81,112 +84,97 @@ export function CMEOptionsRightColumn({ snapshot }: CMEOptionsRightColumnProps) 
     analysis?.pending_review_count ? (
       <FAStatusPill key="pending" tone="warn">待复核 {analysis.pending_review_count}</FAStatusPill>
     ) : null,
+    !agentSummary && decisionSummary ? (
+      <FAStatusPill key="decision-summary" tone="info">决策模型摘要</FAStatusPill>
+    ) : null,
   ].filter(Boolean);
 
-  const compactMetaGrid = {
-    display: "grid",
-    gridTemplateColumns: "repeat(2,minmax(0,1fr))",
-    gap: 6,
-  } as const;
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-      <CMEOptionsSurface title="后端解释" bodyStyle={{ display: "grid", gap: 8 }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+    <div className="cme-options-insight-stack">
+      <CMEOptionsSurface title={agentSummary ? "后端综合判断" : "决策数据摘要"} bodyClassName="cme-options-insight-body">
+        <div className="cme-options-meta-pills">
           {topMeta}
         </div>
-        <div style={{ fontSize: 11, color: "var(--fg-3)", lineHeight: 1.55 }}>{translateEvidence(primarySummary)}</div>
-        <div style={compactMetaGrid}>
-          <div style={{ border: "1px solid var(--border-faint)", borderRadius: "var(--radius-md)", padding: "7px 9px", background: "var(--bg-panel)" }}>
-            <div style={{ fontSize: 8, color: CME_META_TEXT, marginBottom: 3 }}>运行编号</div>
-            <div className="fa-num" style={{ fontSize: "var(--text-10)", color: "var(--fg-2)" }}>{shortId(analysis?.run_id)}</div>
+        <p className="cme-options-insight-copy">{translateDecisionText(primarySummary)}</p>
+        <div className="cme-options-meta-grid">
+          <div className="cme-options-meta-card">
+            <span>运行编号</span>
+            <strong className="fa-num">{shortId(analysis?.run_id)}</strong>
           </div>
-          <div style={{ border: "1px solid var(--border-faint)", borderRadius: "var(--radius-md)", padding: "7px 9px", background: "var(--bg-panel)" }}>
-            <div style={{ fontSize: 8, color: CME_META_TEXT, marginBottom: 3 }}>快照编号</div>
-            <div className="fa-num" style={{ fontSize: "var(--text-10)", color: "var(--fg-2)" }}>{shortId(analysis?.snapshot_id)}</div>
+          <div className="cme-options-meta-card">
+            <span>快照编号</span>
+            <strong className="fa-num">{shortId(analysis?.snapshot_id)}</strong>
           </div>
         </div>
       </CMEOptionsSurface>
 
-      <CMEOptionsSurface title="审查状态" bodyStyle={{ display: "grid", gap: 8 }}>
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <span style={{ fontSize: 9, color: CME_META_TEXT }}>事实审查</span>
+      <CMEOptionsSurface title="审查状态" bodyClassName="cme-options-insight-body">
+        <div className="cme-options-status-list">
+          <div className="cme-options-status-line">
+            <span>事实审查</span>
             <FAStatusPill tone={reviewStatusTone(analysis?.fact_review_status)}>
               {reviewStatusLabel(analysis?.fact_review_status)}
             </FAStatusPill>
           </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <span style={{ fontSize: 9, color: CME_META_TEXT }}>待处理问题项</span>
-            <span className="fa-num" style={{ fontSize: "var(--text-11)", color: "var(--fg-2)", fontWeight: 700 }}>
+          <div className="cme-options-status-line">
+            <span>待处理问题项</span>
+            <strong className="fa-num">
               {analysis?.pending_review_count ?? 0}
-            </span>
+            </strong>
           </div>
         </div>
         {factReview?.claim_reviews?.length ? (
-          <div style={{ display: "grid", gap: 6 }}>
+          <div className="cme-options-insight-list">
             {factReview.claim_reviews.slice(0, 2).map((item) => (
-              <div key={`${item.claim_id}-${item.verdict}`} style={{ border: "1px solid var(--border-faint)", borderRadius: "var(--radius-md)", padding: "7px 9px", background: "var(--bg-panel)" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <span className="fa-num" style={{ fontSize: "var(--text-9)", color: "var(--fg-2)" }}>{shortId(item.claim_id)}</span>
+              <div key={`${item.claim_id}-${item.verdict}`} className="cme-options-insight-item">
+                <div className="cme-options-insight-item-header">
+                  <span className="fa-num">{shortId(item.claim_id)}</span>
                   <FAStatusPill tone={reviewStatusTone(item.verdict)}>{reviewStatusLabel(item.verdict)}</FAStatusPill>
                 </div>
-                <div style={{ marginTop: 5, fontSize: 9.5, color: "var(--fg-4)", lineHeight: 1.45 }}>{translateEvidence(item.reason)}</div>
+                <p>{translateDecisionText(item.reason)}</p>
               </div>
             ))}
           </div>
         ) : (
-          <div style={{ fontSize: 9.5, color: "var(--fg-5)" }}>当前未返回逐条断言审查结果。</div>
+          <p className="cme-options-empty-copy">当前未返回逐条断言审查结果。</p>
         )}
       </CMEOptionsSurface>
 
-      <CMEOptionsSurface title="综合要点" bodyStyle={{ display: "grid", gap: 6 }}>
+      <CMEOptionsSurface title="综合要点" bodyClassName="cme-options-insight-body">
         {keyPoints.length > 0 ? keyPoints.slice(0, 5).map((line) => (
-          <div key={line} style={{ display: "flex", gap: 8 }}>
-            <span style={{ color: CME_META_TEXT, flexShrink: 0 }}>•</span>
-            <div style={{ fontSize: 10, color: "var(--fg-3)", lineHeight: 1.45 }}>{translateEvidence(line)}</div>
+          <div key={line} className="cme-options-bullet-row">
+            <span>•</span>
+            <p>{translateDecisionText(line)}</p>
           </div>
         )) : (
-          <div style={{ fontSize: 9.5, color: "var(--fg-5)" }}>当前未返回综合共识点。</div>
+          <p className="cme-options-empty-copy">当前未返回综合共识点。</p>
         )}
         {watchlist.length > 0 ? (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, paddingTop: 2 }}>
+          <div className="cme-options-watchlist">
             {watchlist.slice(0, 4).map((item) => (
-              <span
-                key={item}
-                style={{
-                  padding: "2px 6px",
-                  borderRadius: 999,
-                  border: "1px solid var(--border-faint)",
-                  background: "var(--bg-panel)",
-                  fontSize: 9,
-                  color: "var(--fg-4)",
-                }}
-              >
-                {item}
-              </span>
+              <span key={item}>{translateDecisionText(item)}</span>
             ))}
           </div>
         ) : null}
       </CMEOptionsSurface>
 
-      <CMEOptionsSurface title="待复核与降权" bodyStyle={{ display: "grid", gap: 6 }}>
+      <CMEOptionsSurface title="待复核与降权" bodyClassName="cme-options-insight-body">
         {analysis?.pending_reviews?.length ? analysis.pending_reviews.slice(0, 2).map((item) => (
-          <div key={item.review_id} style={{ border: "1px solid var(--border-faint)", borderRadius: "var(--radius-md)", padding: "7px 9px", background: "var(--bg-panel)" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <span className="fa-num" style={{ fontSize: "var(--text-9)", color: "var(--fg-2)" }}>{shortId(item.claim_id || item.review_id)}</span>
+          <div key={item.review_id} className="cme-options-insight-item">
+            <div className="cme-options-insight-item-header">
+              <span className="fa-num">{shortId(item.claim_id || item.review_id)}</span>
               <FAStatusPill tone={severityTone(item.severity)}>{severityLabel(item.severity)}</FAStatusPill>
             </div>
-            <div style={{ marginTop: 5, fontSize: 9.5, color: "var(--fg-4)", lineHeight: 1.45 }}>{translateEvidence(item.reason)}</div>
+            <p>{translateDecisionText(item.reason)}</p>
           </div>
         )) : null}
         {reviewNotes.length > 0 ? reviewNotes.slice(0, 3).map((line) => (
-          <div key={line} style={{ display: "flex", gap: 8 }}>
-            <span style={{ color: CME_META_TEXT, flexShrink: 0 }}>•</span>
-            <div style={{ fontSize: 10, color: "var(--fg-3)", lineHeight: 1.45 }}>{translateEvidence(line)}</div>
+          <div key={line} className="cme-options-bullet-row">
+            <span>•</span>
+            <p>{translateDecisionText(line)}</p>
           </div>
         )) : (
-          <div style={{ fontSize: 9.5, color: "var(--fg-5)" }}>当前没有待复核或降权说明。</div>
+          <p className="cme-options-empty-copy">当前没有待复核或降权说明。</p>
         )}
       </CMEOptionsSurface>
     </div>

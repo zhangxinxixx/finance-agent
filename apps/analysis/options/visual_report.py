@@ -329,17 +329,59 @@ def _build_levels(result: OptionsAnalysisResult, kind: str) -> list[VisualLevelR
 
 
 def _build_scenarios(result: OptionsAnalysisResult) -> list[VisualScenarioRow]:
-    intent = result.intent.primary_intent
+    anchor = result.live_p0 or result.report_p0 or result.forward_price or result.netgex.gamma_zero
+    strikes = sorted({float(metric.strike) for metric in result.strike_metrics})
+    supports = sorted((strike for strike in strikes if anchor is not None and strike < anchor), reverse=True)[:3]
+    resistances = sorted(strike for strike in strikes if anchor is not None and strike > anchor)[:4]
+    lower_trigger = supports[0] if supports else None
+    gamma_zero = result.netgex.gamma_zero
+    upper_trigger = (
+        gamma_zero
+        if gamma_zero is not None and (anchor is None or gamma_zero > anchor)
+        else (resistances[0] if resistances else None)
+    )
+    bullish_targets = [strike for strike in resistances if upper_trigger is not None and strike > upper_trigger][:2]
+    bearish_targets = supports[1:3]
+
+    base_detail = "上下边界不完整，修复路径暂不激活。"
+    if lower_trigger is not None and upper_trigger is not None:
+        base_detail = (
+            f"保持: {lower_trigger:g} 不失守；目标: {upper_trigger:g}；"
+            f"失效: 跌破 {lower_trigger:g} 且回抽失败。"
+        )
+
+    bullish_detail = "Gamma 翻转带不可用，转强路径暂不激活。"
+    if upper_trigger is not None:
+        targets = " → ".join(f"{target:g}" for target in bullish_targets) or "上方 Call-GEX 墙"
+        invalidation = lower_trigger if lower_trigger is not None else anchor
+        bullish_detail = (
+            f"触发: 站上 {upper_trigger:g} 并回踩确认；目标: {targets}；"
+            f"失效: 跌回 {_fmt_float(invalidation)} 下方。"
+        )
+
+    bearish_detail = "下方核心地板不可用，转弱路径暂不激活。"
+    if lower_trigger is not None:
+        targets = " → ".join(f"{target:g}" for target in bearish_targets) or "下一 Put-GEX 防守带"
+        bearish_detail = (
+            f"触发: 跌破 {lower_trigger:g} 并回抽失败；目标: {targets}；"
+            f"失效: 重新收回 {lower_trigger:g}。"
+        )
+
     return [
         VisualScenarioRow(
-            title="Base Case",
-            detail=f"{intent.intent_type.value} with confidence {_fmt_float(intent.confidence)}.",
+            title="主路径 · 修复震荡",
+            detail=base_detail,
             tone="neutral",
         ),
         VisualScenarioRow(
-            title="Gamma Trigger",
-            detail=f"Watch Gamma Zero around {_fmt_float(result.netgex.gamma_zero)}.",
+            title="转强路径 · Gamma 接受",
+            detail=bullish_detail,
             tone="info",
+        ),
+        VisualScenarioRow(
+            title="转弱路径 · 地板失守",
+            detail=bearish_detail,
+            tone="warning",
         ),
     ]
 

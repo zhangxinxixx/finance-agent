@@ -25,7 +25,7 @@ export function MultiLineChart({
   className = "",
 }: MultiLineChartProps) {
   // ── Jin10 实时 K 线（图表内部管理时间周期）──
-  const [chartTimeframe, setChartTimeframe] = useState<KlineTimeframe>("1m");
+  const [chartTimeframe, setChartTimeframe] = useState<KlineTimeframe>("5m");
   const {
     candles: jin10Candles,
     loading: jin10Loading,

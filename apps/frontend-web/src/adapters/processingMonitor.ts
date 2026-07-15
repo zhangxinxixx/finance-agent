@@ -1,13 +1,20 @@
-import { fetchJson } from "@/adapters/apiClient";
+import { ApiError, fetchJson } from "@/adapters/apiClient";
 import type {
+  ArtifactSourceTraceLookup,
+  ArtifactSourceTraceResponse,
   ProcessingInputCoverage,
   KnownProcessingCoverageStatus,
   ProcessingMixedHealth,
   ProcessingOverviewResponse,
   ProcessingCoverageStatus,
+  ProcessingExecutionSummary,
+  ProcessingFallbackOutput,
+  ProcessingFallbackReview,
   ProcessingQualityGate,
   ProcessingSourceFreshness,
   ProcessingSourceHealth,
+  ProcessingTraceEntityType,
+  ProcessingTraceHeader,
   ProcessingTraceMode,
   ProcessingTracePathNode,
   ProcessingTraceResponse,
@@ -87,6 +94,104 @@ function recordList(value: unknown): RawRecord[] {
   return Array.isArray(value) ? value.filter((item): item is RawRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
 }
 
+function normalizedRecords(value: unknown): Array<Record<string, unknown>> {
+  return recordList(value).map((item) => ({ ...item }));
+}
+
+function normalizeArtifactSourceTraceArtifactRefs(value: unknown): ArtifactSourceTraceResponse["artifact_refs"] {
+  return recordList(value).map((item) => ({
+    artifact_id: stringValue(item.artifact_id),
+    artifact_type: stringValue(item.artifact_type),
+    file_path: stringValue(item.file_path),
+    storage_backend: nullableString(item.storage_backend),
+    version: nullableString(item.version),
+    generated_at: nullableString(item.generated_at),
+    sha256: nullableString(item.sha256),
+  }));
+}
+
+function normalizeArtifactSourceTraceSnapshots(value: unknown): ArtifactSourceTraceResponse["input_snapshots"] {
+  return recordList(value).map((item) => ({
+    snapshot_id: stringValue(item.snapshot_id),
+    snapshot_type: stringValue(item.snapshot_type),
+    data_date: nullableString(item.data_date),
+    run_id: nullableString(item.run_id),
+    data_status: stringValue(item.data_status, "unknown"),
+    created_at: nullableString(item.created_at),
+    input_snapshot_ids: stringList(item.input_snapshot_ids),
+  }));
+}
+
+function normalizeArtifactSourceTraceWarnings(value: unknown): ArtifactSourceTraceResponse["warnings"] {
+  return recordList(value).map((item) => ({
+    code: stringValue(item.code),
+    message: stringValue(item.message),
+    severity: stringValue(item.severity, "warning"),
+    field: nullableString(item.field),
+    hint: nullableString(item.hint),
+  }));
+}
+
+export function normalizeArtifactSourceTrace(raw: unknown): ArtifactSourceTraceResponse {
+  const item = asRecord(raw);
+  const snapshot = asRecord(item.snapshot);
+  return {
+    run_id: nullableString(item.run_id),
+    snapshot_id: nullableString(item.snapshot_id),
+    data_status: stringValue(item.data_status, "unknown"),
+    source_refs: recordList(item.source_refs).map((source) => ({
+      source_id: stringValue(source.source_id),
+      source_name: stringValue(source.source_name),
+      source_type: stringValue(source.source_type),
+      data_date: nullableString(source.data_date),
+      endpoint: nullableString(source.endpoint),
+      captured_at: nullableString(source.captured_at),
+      file_path: nullableString(source.file_path),
+      sha256: nullableString(source.sha256),
+      url: nullableString(source.url),
+      status: nullableString(source.status),
+    })),
+    artifact_refs: normalizeArtifactSourceTraceArtifactRefs(item.artifact_refs),
+    snapshot: Object.keys(snapshot).length
+      ? normalizeArtifactSourceTraceSnapshots([snapshot])[0] ?? null
+      : null,
+    input_snapshots: normalizeArtifactSourceTraceSnapshots(item.input_snapshots),
+    related_artifacts: normalizeArtifactSourceTraceArtifactRefs(item.related_artifacts),
+    warnings: normalizeArtifactSourceTraceWarnings(item.warnings),
+  };
+}
+
+function normalizeSourceRefs(value: unknown): ProcessingTraceResponse["source_refs"] {
+  return recordList(value)
+    .map((item) => ({ ...item, source_ref: stringValue(item.source_ref) }))
+    .filter((item) => item.source_ref.length > 0) as ProcessingTraceResponse["source_refs"];
+}
+
+function normalizeScope(value: unknown): "event" | "run" | "unknown" {
+  const scope = stringValue(value);
+  return scope === "event" || scope === "run" ? scope : "unknown";
+}
+
+function normalizeTraceEntityType(value: unknown): ProcessingTraceEntityType {
+  const entityType = stringValue(value);
+  return ["news", "report_input", "event", "analysis_signal"].includes(entityType)
+    ? (entityType as ProcessingTraceEntityType)
+    : "unknown";
+}
+
+function normalizeAcceptedOutputSource(value: unknown): ProcessingTraceResponse["accepted_output_source"] {
+  const source = stringValue(value);
+  return source === "primary" || source === "fallback" || source === "none" ? source : "unknown";
+}
+
+function normalizeAgentArtifactRefs(value: unknown) {
+  return recordList(value).map((row) => ({
+    agent_name: stringValue(row.agent_name),
+    status: stringValue(row.status, "unknown"),
+    file_path: stringValue(row.file_path),
+  }));
+}
+
 function normalizeTracePath(value: unknown): ProcessingTracePathNode[] {
   return recordList(value).map((item) => ({
     node_id: stringValue(item.node_id),
@@ -95,6 +200,12 @@ function normalizeTracePath(value: unknown): ProcessingTracePathNode[] {
     status: normalizeCoverageStatus(item.status, "missing"),
     source_ref_count: numberValue(item.source_ref_count),
     artifact_ref_count: numberValue(item.artifact_ref_count),
+    warnings: stringList(item.warnings),
+    missing_data: stringList(item.missing_data),
+    agent_artifact_refs: normalizeAgentArtifactRefs(item.agent_artifact_refs),
+    source_refs: normalizeSourceRefs(item.source_refs),
+    artifact_refs: normalizedRecords(item.artifact_refs) as ProcessingTracePathNode["artifact_refs"],
+    scope: normalizeScope(item.scope),
   }));
 }
 
@@ -143,15 +254,55 @@ function normalizeSourceHealth(value: unknown): ProcessingSourceHealth {
     p2_missing: stringList(item.p2_missing),
     stale_sources: stringList(item.stale_sources),
     fresh_sources: stringList(item.fresh_sources),
+    source_freshness: { ...asRecord(item.source_freshness) },
+    mainline_impact: { ...asRecord(item.mainline_impact) },
     can_build_gold_macro_overview: item.can_build_gold_macro_overview === true,
+    can_emit_strong_conclusion: item.can_emit_strong_conclusion === true,
+    blocked_mainlines: stringList(item.blocked_mainlines),
+    degraded_mainlines: stringList(item.degraded_mainlines),
     blocking_reasons: stringList(item.blocking_reasons),
     warnings: stringList(item.warnings),
   };
 }
 
+function normalizeFallbackOutputs(value: unknown): ProcessingFallbackOutput[] {
+  return recordList(value).map((row) => ({
+    agent_name: stringValue(row.agent_name),
+    snapshot_id: nullableString(row.snapshot_id),
+    bias: nullableString(row.bias),
+    confidence: nullableNumber(row.confidence),
+    summary: nullableString(row.summary),
+  }));
+}
+
+function normalizeFallbackReview(value: unknown): ProcessingFallbackReview {
+  const item = asRecord(value);
+  return {
+    status: stringValue(item.status, "missing"),
+    fallback_used: item.fallback_used === true,
+    accepted_output: nullableString(item.accepted_output),
+    manual_review_required: item.manual_review_required === true,
+    primary_outputs: stringList(item.primary_outputs),
+    fallback_outputs: normalizeFallbackOutputs(item.fallback_outputs),
+    accepted_outputs: { ...asRecord(item.accepted_outputs) },
+    fallback_tasks: normalizedRecords(item.fallback_tasks),
+    task_results: recordList(item.task_results).map((row) => ({
+      task_type: stringValue(row.task_type),
+      reason: stringValue(row.reason),
+      status: stringValue(row.status, "unknown"),
+      fallback_output_agent: nullableString(row.fallback_output_agent),
+      fallback_of: nullableString(row.fallback_of),
+    })),
+    reasons: stringList(item.reasons),
+    review_items: normalizedRecords(item.review_items),
+    fallback_quality_gate_decision: { ...asRecord(item.fallback_quality_gate_decision) },
+    no_strong_conclusion: item.no_strong_conclusion === true,
+    strategy_card_override: { ...asRecord(item.strategy_card_override) },
+  };
+}
+
 function normalizeQualityGate(value: unknown): ProcessingQualityGate {
   const item = asRecord(value);
-  const fallbackReview = asRecord(item.fallback_review);
   return {
     status: stringValue(item.status, "missing"),
     review_status: stringValue(item.review_status, "missing"),
@@ -162,32 +313,55 @@ function normalizeQualityGate(value: unknown): ProcessingQualityGate {
     retry_recommended: nullableBoolean(item.retry_recommended),
     fallback_actions: fallbackActionList(item.fallback_actions),
     fallback_reasons: stringList(item.fallback_reasons),
-    fallback_review: {
-      status: stringValue(fallbackReview.status, "missing"),
-      fallback_used: fallbackReview.fallback_used === true,
-      accepted_output: nullableString(fallbackReview.accepted_output),
-      manual_review_required: fallbackReview.manual_review_required === true,
-      primary_outputs: stringList(fallbackReview.primary_outputs),
-      fallback_outputs: recordList(fallbackReview.fallback_outputs).map((row) => ({
-        agent_name: stringValue(row.agent_name),
-        snapshot_id: nullableString(row.snapshot_id),
-        bias: nullableString(row.bias),
-        confidence: nullableNumber(row.confidence),
-        summary: nullableString(row.summary),
-      })),
-      accepted_outputs: asRecord(fallbackReview.accepted_outputs),
-      task_results: recordList(fallbackReview.task_results).map((row) => ({
-        task_type: stringValue(row.task_type),
-        reason: stringValue(row.reason),
-        status: stringValue(row.status, "unknown"),
-        fallback_output_agent: nullableString(row.fallback_output_agent),
-        fallback_of: nullableString(row.fallback_of),
-      })),
-      reasons: stringList(fallbackReview.reasons),
-      review_items: recordList(fallbackReview.review_items),
-    },
+    agent_loop_decision: { ...asRecord(item.agent_loop_decision) },
+    fallback_review: normalizeFallbackReview(item.fallback_review),
     blocking_reasons: stringList(item.blocking_reasons),
     warnings: stringList(item.warnings),
+  };
+}
+
+function normalizeTraceHeader(value: unknown): ProcessingTraceHeader {
+  const item = asRecord(value);
+  return {
+    trace_id: nullableString(item.trace_id),
+    run_id: nullableString(item.run_id),
+    entity_type: normalizeTraceEntityType(item.entity_type),
+    entity_id: nullableString(item.entity_id),
+    status: stringValue(item.status, "unknown"),
+    review_status: stringValue(item.review_status, "missing"),
+    publish_allowed: nullableBoolean(item.publish_allowed),
+    as_of: nullableString(item.as_of),
+  };
+}
+
+function normalizeFinalOutputMode(value: unknown): ProcessingExecutionSummary["final_output"]["mode"] {
+  const mode = stringValue(value);
+  return mode === "accepted" || mode === "observe" ? mode : "unavailable";
+}
+
+function normalizeExecutionSummary(value: unknown): ProcessingExecutionSummary {
+  const item = asRecord(value);
+  const usedData = asRecord(item.used_data);
+  const finalOutput = asRecord(item.final_output);
+  return {
+    status: stringValue(item.status, "unavailable"),
+    failed_steps: stringList(item.failed_steps),
+    used_data: {
+      input_snapshot_ids: asRecord(usedData.input_snapshot_ids),
+      source_refs: recordList(usedData.source_refs) as unknown as ProcessingExecutionSummary["used_data"]["source_refs"],
+      agent_artifact_refs: recordList(usedData.agent_artifact_refs).map((row) => ({
+        agent_name: stringValue(row.agent_name),
+        status: stringValue(row.status, "unknown"),
+        file_path: stringValue(row.file_path),
+      })),
+    },
+    final_output: {
+      mode: normalizeFinalOutputMode(finalOutput.mode),
+      publish_allowed: nullableBoolean(finalOutput.publish_allowed),
+      review_status: stringValue(finalOutput.review_status, "unavailable"),
+      report_artifact_refs: recordList(finalOutput.report_artifact_refs) as ProcessingExecutionSummary["final_output"]["report_artifact_refs"],
+      strategy_card_artifact_refs: recordList(finalOutput.strategy_card_artifact_refs) as ProcessingExecutionSummary["final_output"]["strategy_card_artifact_refs"],
+    },
   };
 }
 
@@ -218,6 +392,7 @@ export function normalizeProcessingOverview(raw: unknown): ProcessingOverviewRes
     source_freshness: normalizeSourceFreshness(item.source_freshness),
     source_health: normalizeSourceHealth(item.source_health),
     quality_gate: normalizeQualityGate(item.quality_gate),
+    execution_summary: normalizeExecutionSummary(item.execution_summary),
     view_bindings: recordList(item.view_bindings).map((row) => ({
       view: stringValue(row.view),
       status: normalizeViewBindingStatus(row.status),
@@ -231,6 +406,7 @@ export function normalizeProcessingOverview(raw: unknown): ProcessingOverviewRes
 export function normalizeProcessingTrace(raw: unknown): ProcessingTraceResponse {
   const item = asRecord(raw);
   const matchedEvent = asRecord(item.matched_event);
+  const primaryOutput = asRecord(item.primary_output);
   return {
     status: normalizeTraceStatus(item.status),
     date: nullableString(item.date),
@@ -247,13 +423,54 @@ export function normalizeProcessingTrace(raw: unknown): ProcessingTraceResponse 
       : null,
     mainlines: stringList(item.mainlines),
     transmission_chains: stringList(item.transmission_chains),
+    trace_header: normalizeTraceHeader(item.trace_header),
     trace_path: normalizeTracePath(item.trace_path),
-    source_refs: recordList(item.source_refs) as unknown as ProcessingTraceResponse["source_refs"],
+    source_health: normalizeSourceHealth(item.source_health),
+    quality_gate: normalizeQualityGate(item.quality_gate),
+    read_time_source_health: normalizeSourceHealth(item.read_time_source_health),
+    read_time_warnings: stringList(item.read_time_warnings),
+    read_time_generated_at: nullableString(item.read_time_generated_at),
+    source_refs: normalizeSourceRefs(item.source_refs),
     artifact_refs: recordList(item.artifact_refs) as ProcessingTraceResponse["artifact_refs"],
     view_bindings: recordList(item.view_bindings).map((row) => ({
       view: stringValue(row.view),
       status: normalizeViewBindingStatus(row.status),
     })),
+    primary_output: Object.keys(primaryOutput).length
+      ? {
+          scope: normalizeScope(primaryOutput.scope),
+          agent_name: nullableString(primaryOutput.agent_name),
+          run_id: nullableString(primaryOutput.run_id),
+          snapshot_id: nullableString(primaryOutput.snapshot_id),
+          status: stringValue(primaryOutput.status, "unknown"),
+          file_path: nullableString(primaryOutput.file_path),
+          artifact_refs: normalizedRecords(primaryOutput.artifact_refs) as ProcessingTraceResponse["artifact_refs"],
+        }
+      : null,
+    fallback_outputs: normalizeFallbackOutputs(item.fallback_outputs),
+    accepted_output: { ...asRecord(item.accepted_output) },
+    accepted_output_source: normalizeAcceptedOutputSource(item.accepted_output_source),
+    fallback_review: normalizeFallbackReview(item.fallback_review),
+    agent_envelopes: recordList(item.agent_envelopes).map((row) => ({
+      scope: normalizeScope(row.scope),
+      agent_name: stringValue(row.agent_name),
+      run_id: nullableString(row.run_id),
+      snapshot_id: nullableString(row.snapshot_id),
+      status: stringValue(row.status, "unknown"),
+      confidence: nullableNumber(row.confidence),
+      created_at: nullableString(row.created_at),
+      input_snapshot_ids: { ...asRecord(row.input_snapshot_ids) },
+      source_refs: normalizeSourceRefs(row.source_refs),
+      artifact_refs: normalizedRecords(row.artifact_refs) as ProcessingTraceResponse["artifact_refs"],
+      evidence_refs: normalizedRecords(row.evidence_refs),
+      evidence_items: normalizedRecords(row.evidence_items),
+      data_quality: stringList(row.data_quality),
+      file_path: nullableString(row.file_path),
+    })),
+    input_snapshot_ids: { ...asRecord(item.input_snapshot_ids) },
+    evidence_refs: normalizedRecords(item.evidence_refs),
+    evidence_items: normalizedRecords(item.evidence_items),
+    affected_views: stringList(item.affected_views),
   };
 }
 
@@ -283,4 +500,16 @@ export async function fetchProcessingTraceByMainline(mainline: string): Promise<
 
 export async function fetchProcessingTraceByChain(chainId: string): Promise<ProcessingTraceResponse> {
   return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-chain/${encodeURIComponent(chainId)}`));
+}
+
+export async function fetchArtifactSourceTrace(artifactId: string): Promise<ArtifactSourceTraceLookup> {
+  try {
+    const raw = await fetchJson<unknown>(`/api/source-trace/by-artifact/${encodeURIComponent(artifactId)}`);
+    return { status: "matched", trace: normalizeArtifactSourceTrace(raw) };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return { status: "not_found", trace: null };
+    }
+    throw error;
+  }
 }

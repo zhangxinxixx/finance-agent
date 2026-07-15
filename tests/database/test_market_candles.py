@@ -123,3 +123,23 @@ def test_list_market_candles_returns_oldest_to_newest() -> None:
     rows = list_market_candles(session, asset="XAUUSD", timeframe="1h", limit=2)
     assert [row.open_time.hour for row in rows] == [2, 3]
     assert [row.close for row in rows] == [3362.5, 3360.8]
+
+
+def test_upsert_reclassifies_gc_f_as_separate_gc_asset() -> None:
+    session = _make_session()
+    row = upsert_market_candle(
+        session,
+        asset="XAUUSD",
+        timeframe="1d",
+        open_time=datetime(2026, 6, 4, tzinfo=UTC),
+        open=3320.0,
+        high=3340.0,
+        low=3310.0,
+        close=3335.0,
+        source="yahoo_finance_gc_f",
+        source_ref={"provider_symbol": "GC=F"},
+    )
+
+    assert row.asset == "GC"
+    assert row.source_ref["identity_guard"] == "reclassified_xauusd_futures"
+    assert list_market_candles(session, asset="XAUUSD", timeframe="1d") == []

@@ -2,12 +2,14 @@
 
 Three independent sub-pipelines (macro, cme, news) run in parallel,
 then their outputs merge into the analysis snapshot, which feeds the
-C4 agent pipeline.
+canonical analysis pipeline.
 """
 
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from dagster import graph, op
+from dagster import Config, graph, op
 
 from dagster_finance.ops.macro import (
     macro_collect_op,
@@ -29,16 +31,12 @@ from dagster_finance.ops.news import (
     news_brief_op,
 )
 from dagster_finance.ops.agents import (
-    cme_options_agent_op,
-    coordinator_op,
-    final_report_op,
-    macro_liquidity_agent_op,
-    market_odds_agent_op,
-    news_agent_op,
-    positioning_agent_op,
-    risk_agent_op,
-    strategy_card_op,
-    technical_agent_op,
+    canonical_composite_analysis_op,
+)
+from dagster_finance.ops.premarket_gate import premarket_readiness_gate_op
+from dagster_finance.ops.task_run_lifecycle import (
+    premarket_task_run_complete_op,
+    premarket_task_run_init_op,
 )
 
 
@@ -48,8 +46,8 @@ from dagster_finance.ops.agents import (
     name="macro_pipeline",
     description="Macro data collection → feature engineering → report rendering",
 )
-def macro_pipeline():
-    state = macro_init_op()
+def macro_pipeline(task_run_ready):
+    state = macro_init_op(task_run_ready=task_run_ready)
     state = macro_collect_op(state)
     state = macro_feature_op(state)
     state = report_render_op(state)
@@ -62,8 +60,8 @@ def macro_pipeline():
     name="cme_pipeline",
     description="CME PDF download → parse → ingest → options analysis",
 )
-def cme_pipeline():
-    state = cme_init_op()
+def cme_pipeline(task_run_ready):
+    state = cme_init_op(task_run_ready=task_run_ready)
     state = cme_download_op(state)
     state = cme_parse_op(state)
     state = cme_ingest_op(state)
@@ -77,8 +75,8 @@ def cme_pipeline():
     name="news_pipeline",
     description="News collection → feature extraction → daily brief",
 )
-def news_pipeline():
-    state = news_init_op()
+def news_pipeline(task_run_ready):
+    state = news_init_op(task_run_ready=task_run_ready)
     state = news_collect_op(state)
     state = news_feature_op(state)
     state = news_brief_op(state)
@@ -87,31 +85,67 @@ def news_pipeline():
 
 # ── Merge snapshot op ───────────────────────────────────────────
 
+class MergeSnapshotConfig(Config):
+    storage_root: str = "./storage"
+
+
+def _resolve_analysis_trade_date(
+    *,
+    macro_snapshot: dict[str, Any] | None,
+    options_snapshot: dict[str, Any] | None,
+    news_snapshot: dict[str, Any] | None,
+    fallback_date: date,
+) -> str:
+    """Use the freshest source anchor as the analysis context date."""
+
+    candidates: list[Any] = [
+        macro_snapshot.get("as_of") if macro_snapshot else None,
+        options_snapshot.get("trade_date") if options_snapshot else None,
+    ]
+    if news_snapshot:
+        daily_market_brief = news_snapshot.get("daily_market_brief")
+        if isinstance(daily_market_brief, dict):
+            candidates.append(daily_market_brief.get("as_of"))
+        daily_brief_input = news_snapshot.get("daily_brief_input_snapshot")
+        if isinstance(daily_brief_input, dict):
+            candidates.append(daily_brief_input.get("retrieved_date"))
+
+    resolved: list[date] = []
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        try:
+            resolved.append(date.fromisoformat(value[:10]))
+        except ValueError:
+            continue
+    return max(resolved, default=fallback_date).isoformat()
+
 @op(
     tags={"pipeline": "premarket", "step": "merge_snapshot"},
 )
 def merge_analysis_snapshot_op(
     context,
+    config: MergeSnapshotConfig,
     macro_state: Any,
     cme_state: Any,
     news_state: Any,
 ) -> dict[str, Any]:
     """Merge the three pipeline states into a unified analysis snapshot."""
-    from apps.analysis.snapshots.builder import build_analysis_snapshot
-    from datetime import datetime, timezone
+    from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
+    from apps.analysis.jin10.daily_context import build_daily_analysis_context
+
     context.log.info("Merging analysis snapshot from macro + cme + news")
 
     macro_snapshot = getattr(macro_state, "snapshot_dict", None)
     options_snapshot = getattr(cme_state, "snapshot_dict", None)
 
-    # Resolve trade_date: prefer options, then macro, then today
-    trade_date = None
-    if options_snapshot and options_snapshot.get("trade_date"):
-        trade_date = str(options_snapshot["trade_date"])
-    elif macro_snapshot and macro_snapshot.get("as_of"):
-        trade_date = str(macro_snapshot["as_of"])
-    else:
-        trade_date = datetime.now(timezone.utc).date().isoformat()
+    news_snapshot = getattr(news_state, "snapshot_dict", None) if news_state is not None else None
+    trade_date = _resolve_analysis_trade_date(
+        macro_snapshot=macro_snapshot,
+        options_snapshot=options_snapshot,
+        news_snapshot=news_snapshot,
+        fallback_date=datetime.now(timezone.utc).date(),
+    )
 
     source_refs = list(getattr(macro_state, "all_source_refs", []) or [])
     # CME source refs
@@ -127,8 +161,6 @@ def merge_analysis_snapshot_op(
         source_refs.extend(getattr(news_state, "source_refs", []) or [])
 
     collected_points = [p.to_dict() for p in getattr(macro_state, "all_points", [])]
-    news_snapshot = getattr(news_state, "snapshot_dict", None) if news_state is not None else None
-
     snapshot = build_analysis_snapshot(
         asset="XAUUSD",
         trade_date=trade_date,
@@ -138,64 +170,49 @@ def merge_analysis_snapshot_op(
         source_refs=source_refs,
         collected_points=collected_points,
         news_snapshot=news_snapshot,
+        gold_analysis_context=build_daily_analysis_context(
+            trade_date=trade_date,
+            storage_root=Path(config.storage_root),
+            asset="XAUUSD",
+            preferred_run_id=context.run_id,
+        ),
     )
+    snapshot_path = write_analysis_snapshot(snapshot, storage_root=Path(config.storage_root))
     context.log.info(f"Snapshot merged: trade_date={snapshot.get('trade_date')}, "
-                     f"snapshot_id={snapshot.get('snapshot_id', 'unknown')[:12]}")
+                     f"snapshot_id={snapshot.get('snapshot_id', 'unknown')[:12]}, "
+                     f"path={snapshot_path}")
     return snapshot
 
 
-# ── C4 agent sub-pipeline ───────────────────────────────────────
+# ── Canonical analysis sub-pipeline ─────────────────────────────
 
 @graph(
-    name="c4_agent_pipeline",
-    description="C3 agents (parallel) → coordinator → strategy card",
+    name="canonical_analysis_pipeline",
+    description="Canonical domain agents → FactReview → QualityGate/fallback → accepted report/card",
 )
-def c4_agent_pipeline(snapshot: dict[str, Any]):
-    # C3 agents run in parallel where possible
-    macro_out = macro_liquidity_agent_op(snapshot)
-    options_out = cme_options_agent_op(snapshot)
-    risk_out = risk_agent_op(snapshot, macro_out, options_out)
-    tech_out = technical_agent_op(snapshot)
-    pos_out = positioning_agent_op(snapshot)
-    news_out = news_agent_op(snapshot)
-    odds_out = market_odds_agent_op(snapshot)
-
-    # Coordinator aggregates all agent outputs
-    coord_out = coordinator_op(
-        snapshot, macro_out, options_out, risk_out,
-        tech_out, pos_out, news_out, odds_out,
-    )
-
-    final_report_op(
-        snapshot,
-        macro_out,
-        options_out,
-        risk_out,
-        tech_out,
-        pos_out,
-        news_out,
-        coord_out,
-    )
-
-    # Strategy card
-    card = strategy_card_op(snapshot, coord_out, risk_out)
-    return card
+def canonical_analysis_pipeline(snapshot: dict[str, Any], readiness_gate: dict[str, Any]):
+    return canonical_composite_analysis_op(snapshot, readiness_gate)
 
 
 # ── Full premarket graph ────────────────────────────────────────
 
 @graph(
     name="premarket",
-    description="Full premarket pipeline: macro ∥ cme ∥ news → snapshot → C4 agents → strategy card",
+    description="Full premarket pipeline: macro ∥ cme ∥ news → snapshot → canonical analysis → strategy card",
 )
 def premarket_graph():
+    task_run_ready = premarket_task_run_init_op()
     # Three independent sub-pipelines run in parallel (Dagster resolves deps)
-    macro_state = macro_pipeline()
-    cme_state = cme_pipeline()
-    news_state = news_pipeline()
+    macro_state = macro_pipeline(task_run_ready)
+    cme_state = cme_pipeline(task_run_ready)
+    news_state = news_pipeline(task_run_ready)
 
     # Merge into unified snapshot
     snapshot = merge_analysis_snapshot_op(macro_state, cme_state, news_state)
 
-    # C4 agent pipeline
-    c4_agent_pipeline(snapshot)
+    # Domain agents may only start after the current readiness artifact passes.
+    readiness_gate = premarket_readiness_gate_op(snapshot)
+
+    # Canonical analysis pipeline
+    analysis_result = canonical_analysis_pipeline(snapshot, readiness_gate)
+    premarket_task_run_complete_op(analysis_result)

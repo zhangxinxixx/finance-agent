@@ -21,6 +21,10 @@ def register_composite_report_registry_entries(
     composite_outputs: dict[str, Any],
     analysis_snapshot: dict[str, Any] | None = None,
 ) -> None:
+    agent_loop_decision = composite_outputs.get("agent_loop_decision") if isinstance(composite_outputs, dict) else None
+    if not bool(getattr(agent_loop_decision, "publish_allowed", False)):
+        return
+
     report_result = composite_outputs.get("report_result") if isinstance(composite_outputs, dict) else None
     card_result = composite_outputs.get("card_result") if isinstance(composite_outputs, dict) else None
     card = composite_outputs.get("strategy_card") if isinstance(composite_outputs, dict) else None
@@ -48,6 +52,9 @@ def register_composite_report_registry_entries(
             "metadata": {
                 "input_snapshot_ids": input_snapshot_ids,
                 "writer": "run_premarket",
+                "publish_allowed": True,
+                "review_status": getattr(agent_loop_decision, "review_status", "pass"),
+                "output_mode": "accepted",
             },
         },
         {
@@ -61,6 +68,9 @@ def register_composite_report_registry_entries(
                 "input_snapshot_ids": input_snapshot_ids,
                 "writer": "run_premarket",
                 "strategy_card_id": getattr(card, "strategy_card_id", None),
+                "publish_allowed": True,
+                "review_status": getattr(agent_loop_decision, "review_status", "pass"),
+                "output_mode": "accepted",
             },
         },
     ]

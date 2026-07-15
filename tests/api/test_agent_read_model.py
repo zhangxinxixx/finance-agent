@@ -48,9 +48,20 @@ def test_latest_agent_summaries_materializes_prompt_metadata_before_session_clos
             key_findings=[],
             risk_points=[],
             watchlist=[],
-            invalid_conditions=[],
+            invalid_conditions=["legacy future invalidation"],
             summary="综合结论。",
-            payload={},
+            payload={
+                "invalidation_conditions": ["future invalidation"],
+                "active_blockers": ["canonical candle unavailable"],
+                "data_gaps": [
+                    {
+                        "code": "canonical_candle_missing",
+                        "message": "canonical 5m candle is unavailable",
+                        "severity": "p0",
+                    }
+                ],
+                "review_triggers": ["macro_options_conflict"],
+            },
             payload_sha256="a" * 64,
             prompt_version_id=prompt_version.id,
         )
@@ -63,3 +74,18 @@ def test_latest_agent_summaries_materializes_prompt_metadata_before_session_clos
 
     assert summaries["synthesis_agent"]["prompt_version"] == "v1"
     assert summaries["synthesis_agent"]["prompt_checksum"] == "1" * 64
+    assert summaries["synthesis_agent"]["invalidation_conditions"] == ["future invalidation"]
+    assert summaries["synthesis_agent"]["active_blockers"] == ["canonical candle unavailable"]
+    assert summaries["synthesis_agent"]["data_gaps"] == [
+        {
+            "code": "canonical_candle_missing",
+            "message": "canonical 5m candle is unavailable",
+            "severity": "p0",
+        }
+    ]
+    assert summaries["synthesis_agent"]["review_triggers"] == ["macro_options_conflict"]
+
+    compact = agent_read_model._compact_agent(summaries["synthesis_agent"])
+    assert compact is not None
+    assert compact["invalidation_conditions"] == ["future invalidation"]
+    assert compact["active_blockers"] == ["canonical candle unavailable"]

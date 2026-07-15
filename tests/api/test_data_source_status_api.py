@@ -54,6 +54,7 @@ _JIN10_MULTI_ENTRY_EXPECTATIONS = {
     "jin10_mcp_market": ("technical", "mcp", "mcp"),
     "jin10_xnews_public": ("news", "scraper", "http_document"),
     "jin10_datacenter_reports": ("macro", "structured", "js_data_script"),
+    "jin10_minipro_etf_reports": ("positioning", "structured", "minipro_rest"),
     "jin10_svip_reports": ("reports", "scraper", "vip_browser_profile"),
     "jin10_web_important_flash": ("news", "web_flash", "vip_browser_profile"),
     "jin10_web_vip_flash": ("news", "vip_flash", "vip_browser_profile"),
@@ -231,6 +232,19 @@ def _api_status_payload() -> dict:
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def test_latest_artifact_ref_accepts_exact_file_layer(tmp_path: Path) -> None:
+    from apps.api.services.source_service import _latest_artifact_ref_from_layers
+
+    cache = tmp_path / "storage" / "outputs" / "jin10" / "quotes_cache.json"
+    _write_json(cache, {"generated_at": "2026-07-21T04:34:37+00:00", "quotes": {}})
+
+    result = _latest_artifact_ref_from_layers(["storage/outputs/jin10/quotes_cache.json"])
+
+    assert result is not None
+    assert result["raw_path"] == "storage/outputs/jin10/quotes_cache.json"
+    assert result["published_at"] == _mtime_iso(cache)
 
 
 # ── data_service tests ──
@@ -1507,6 +1521,16 @@ def test_api_data_sources_registry_exposes_expected_source_contract() -> None:
     assert sources["fred"]["freshness_sla_minutes"] == 2160
     assert "macro_snapshot" in sources["fred"]["required_for"]
     assert sources["fred"]["enabled"] is True
+    assert sources["twelvedata_xauusd"]["domain"] == "technical"
+    assert sources["twelvedata_xauusd"]["expected_frequency"] == "intraday"
+    assert sources["twelvedata_xauusd"]["metadata"]["provider_role"] == "validation_and_fallback"
+    assert sources["twelvedata_xauusd"]["metadata"]["entitlement"] == "trial"
+    etf = sources["jin10_minipro_etf_reports"]
+    assert etf["domain"] == "positioning"
+    assert etf["expected_frequency"] == "daily"
+    assert etf["metadata"]["provider_role"] == "supplemental"
+    assert etf["required_for"] == []
+    assert etf["fallback_policy"] == "degraded_allowed"
 
 
 def test_api_data_source_history_reads_persisted_snapshots_for_one_source() -> None:

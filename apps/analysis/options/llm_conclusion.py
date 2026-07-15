@@ -274,6 +274,13 @@ def invoke_options_llm(snapshot: dict[str, Any]) -> dict[str, Any]:
         ],
         temperature=0.3,
         max_tokens=4096,
+        audit_context={
+            "caller": "options.invoke_options_llm",
+            "run_id": snapshot.get("run_id"),
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "trade_date": snapshot.get("trade_date"),
+            "input_payload": snapshot,
+        },
     )
 
     markdown = parse_llm_response(response.content)
@@ -292,4 +299,5 @@ def invoke_options_llm(snapshot: dict[str, Any]) -> dict[str, Any]:
         "provider": response.provider,
         "latency_ms": response.latency_ms,
         "tokens": response.usage,
+        "audit_id": getattr(response, "audit_id", None),
     }

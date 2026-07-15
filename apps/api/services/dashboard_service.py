@@ -5,11 +5,12 @@ from datetime import UTC, date, datetime, timezone
 from typing import Any
 
 from apps.api.services.agent_read_model import build_dashboard_agent_summary
+from apps.api.services.dashboard_analysis_service import build_dashboard_integrated_analysis
 from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
 from apps.api.services.macro_service import get_macro_latest
 from apps.api.services.market_service import get_market_tickers
 from apps.api.services.options_service import get_options_snapshot
-from apps.api.services.report_service import list_reports_index
+from apps.api.services.report_service import get_jin10_agent_analysis_latest, list_reports_index
 from apps.api.services.source_service import get_data_source_statuses
 from apps.api.services.task_service import list_recent_tasks
 
@@ -130,21 +131,16 @@ def _build_composite_analysis_status(
     all_reports: list[dict[str, Any]],
     options_trade_date: str | None,
 ) -> dict[str, Any]:
-    strategy_dates = [
-        _safe_trade_date(str(report.get("trade_date") or ""))
-        for report in all_reports
-        if report.get("available") and report.get("type") == "strategy_card"
-    ]
-    final_dates = [
-        _safe_trade_date(str(report.get("trade_date") or ""))
-        for report in all_reports
-        if report.get("available") and report.get("type") == "final_report"
-    ]
-    strategy_dates = [item for item in strategy_dates if item is not None]
-    final_dates = [item for item in final_dates if item is not None]
-    strategy_date = max(strategy_dates).isoformat() if strategy_dates else None
-    final_report_date = max(final_dates).isoformat() if final_dates else None
+    strategy_ref = _latest_report_ref(all_reports, report_type="strategy_card")
+    final_report_ref = _latest_report_ref(all_reports, report_type="final_report")
+    strategy_date = strategy_ref.get("trade_date") if strategy_ref else None
+    final_report_date = final_report_ref.get("trade_date") if final_report_ref else None
     composite_date = strategy_date or final_report_date
+    composite_run_id = (
+        strategy_ref.get("run_id")
+        if strategy_ref and strategy_date == composite_date
+        else final_report_ref.get("run_id") if final_report_ref else None
+    )
 
     context_dates = [
         _safe_trade_date(value)
@@ -183,8 +179,11 @@ def _build_composite_analysis_status(
     return {
         "status": status,
         "trade_date": composite_date,
+        "run_id": composite_run_id,
         "strategy_trade_date": strategy_date,
+        "strategy_run_id": strategy_ref.get("run_id") if strategy_ref else None,
         "final_report_trade_date": final_report_date,
+        "final_report_run_id": final_report_ref.get("run_id") if final_report_ref else None,
         "latest_report_date": latest_report_date,
         "latest_eligible_context_date": latest_eligible_context_date,
         "degraded_newer_reports": [
@@ -198,6 +197,29 @@ def _build_composite_analysis_status(
             for report in degraded_newer_reports
         ],
         "warnings": warnings,
+    }
+
+
+def _latest_report_ref(reports: list[dict[str, Any]], *, report_type: str) -> dict[str, Any] | None:
+    candidates = [
+        report
+        for report in reports
+        if report.get("available")
+        and report.get("type") == report_type
+        and _safe_trade_date(str(report.get("trade_date") or "")) is not None
+    ]
+    if not candidates:
+        return None
+    latest = max(
+        candidates,
+        key=lambda report: (
+            _safe_trade_date(str(report.get("trade_date") or "")) or date.min,
+            str(report.get("run_id") or ""),
+        ),
+    )
+    return {
+        "trade_date": str(latest.get("trade_date") or ""),
+        "run_id": latest.get("run_id"),
     }
 
 
@@ -238,6 +260,18 @@ def _load_gold_macro_overview() -> dict[str, Any] | None:
 
     overview = payload.get("gold_macro_overview") if isinstance(payload, dict) else None
     return overview if isinstance(overview, dict) and overview else None
+
+
+def _load_latest_jin10_analysis() -> dict[str, Any] | None:
+    try:
+        return get_jin10_agent_analysis_latest()
+    except Exception as exc:
+        logger.warning(
+            "Failed to load latest Jin10 analysis for dashboard summary",
+            exc_info=exc,
+            extra={"service": "dashboard_summary", "stage": "jin10_analysis", "degraded": True},
+        )
+        return None
 
 
 def get_dashboard_summary() -> dict[str, Any]:
@@ -336,6 +370,17 @@ def get_dashboard_summary() -> dict[str, Any]:
 
     agent_summary = _gate_agent_summary(build_dashboard_agent_summary(), composite_analysis)
     gold_macro_overview = _load_gold_macro_overview()
+    latest_jin10_analysis = _load_latest_jin10_analysis()
+    integrated_macro = build_dashboard_integrated_analysis(
+        macro_snapshot=macro,
+        options_snapshot=options_snapshot,
+        market_tickers=market_tickers,
+        gold_macro_overview=gold_macro_overview,
+        agent_summary=agent_summary,
+        composite_analysis=composite_analysis,
+        source_trace=source_trace,
+        jin10_analysis=latest_jin10_analysis,
+    )
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -392,6 +437,7 @@ def get_dashboard_summary() -> dict[str, Any]:
         "warnings": warnings,
         "risk_alerts": risk_alerts,
         "agent_summary": agent_summary,
+        "integrated_macro": integrated_macro,
         "gold_macro_overview": gold_macro_overview,
         "composite_analysis": composite_analysis,
         "latest_supplemental_report": latest_supplemental_report,

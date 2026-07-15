@@ -10,7 +10,13 @@ def test_cli_builds_snapshot_from_macro_and_options_json(tmp_path: Path):
     macro_json = tmp_path / "macro.json"
     options_json = tmp_path / "options.json"
     macro_json.write_text(
-        json.dumps({"as_of": "2026-05-14", "source_refs": [{"symbol": "DGS10", "source": "fred"}]}),
+        json.dumps(
+            {
+                "as_of": "2026-05-14",
+                "indicators": {"DGS10": {"date": "2026-05-14", "value": 4.3}},
+                "source_refs": [{"symbol": "DGS10", "source": "fred"}],
+            }
+        ),
         encoding="utf-8",
     )
     options_json.write_text(

@@ -1,167 +1,78 @@
 # Agent 架构
 
-## 定位
+> 代码基线：2026-07-21。
 
-Agent 层只消费确定性数据快照和结构化输入，不直接修改 raw data，也不绕过 features / analysis 生成策略结论。
+## 角色与边界
 
-当前代码中的 Agent 主要位于：
+Agent 是 analysis 层的受约束分析器，不是第二套任务调度器。它们读取 analysis snapshot、feature 或已有 output，不得修改 raw/parsed 数据。
 
-```text
-apps/analysis/agents/
-apps/analysis/strategy/
-apps/api/services/agent_output_service.py
-database/models/analysis.py
+当前 canonical composite analysis 位于 `apps/worker/composite_analysis_pipeline.py`，并由 Dagster `canonical_composite_analysis_op` 调用。
+
+## 领域 Agent
+
+当前综合链包含：
+
+- `macro_liquidity`
+- `cme_options`
+- `risk`
+- `technical`
+- `positioning`
+- `news`
+- `market_odds`
+
+仓库还包含 `market_regime`、`event_impact`、Gold runtime agents、weekly context revision、macro event follow-up 等专项实现；它们是否进入某个定时 job 以实际 graph/调用链为准。
+
+## 协调、核查与质量门
+
+```mermaid
+flowchart TD
+    Snapshot[Analysis snapshot] --> Domain[Domain agents]
+    Domain --> Coordinator[Coordinator]
+    Coordinator --> FactReview[Fact Review: claims + evidence]
+    FactReview --> Synthesis[Synthesis candidate]
+    Synthesis --> Gate{Quality Gate}
+    Gate -->|PASS| Accepted[Accepted output]
+    Gate -->|FALLBACK / RETRY| Fallback[Fallback executor]
+    Fallback --> Gate
+    Gate -->|BLOCK / NEEDS REVIEW| Observe[Observe-only + ReviewItem]
 ```
 
-## 三层模型
+- Coordinator 负责聚合，不重写来源事实。
+- Fact Review 逐 claim 检查来源、冲突和不可用状态，并可同步 ReviewItem。
+- Quality Gate 的 `accepted_output` 是发布权威；`publish_allowed` 必须与其一致。
+- fallback 只有再次 `PASS` 才能成为 accepted output。
 
-规划上的三层：
+{% hint style="warning" %}
+Agent 输出是带来源的分析产物，不是原始事实。任何方向性结论都必须经过 Fact Review 与 Quality Gate。
+{% endhint %}
 
-1. Domain agents
-2. Fact review agent
-3. Daily market synthesis agent
+## 输出契约
 
-当前代码事实：
+`AgentOutput` 保留 agent identity、bias、confidence、findings、risks、watchlist、invalid conditions、claims、`input_snapshot_ids` 和 `source_refs`。使用 LLM 时还应关联 prompt/version/model/audit metadata。
 
-- Domain/coordinator agents 已接入 综合分析链路。
-- `fact_review.py`、`synthesis.py` 模块存在，API 也支持 synthesis 读取。
-- `fact_review_agent` 和 `daily_market_synthesis_agent` 是否稳定进入每日 premarket 主链，需要按真实 run artifact 进一步验证。
+质量门失败时：
 
-## Domain Agents
+- 输出模式为 `observe`。
+- artifact 类型使用 observation report/card。
+- 不生成可被正式策略消费者误读的方向性 accepted 输出。
 
-目录：`apps/analysis/agents/`
+## 治理接口
 
-已发现：
-
-- `macro_liquidity.py`
-- `cme_options.py`
-- `risk.py`
-- `technical.py`
-- `positioning.py`
-- `news.py`
-- `market_odds.py`
-- `market_regime.py`
-- `event_impact.py`
-- `jin10_report_analysis_agent` 相关逻辑在 Jin10 analysis/report 模块中体现
-
-职责：
-
-- 读取 analysis snapshot 的对应 section。
-- 输出 bias、confidence、key_findings、risk_points、watchlist、invalid_conditions。
-- 绑定 `input_snapshot_ids` 和 `source_refs`。
-
-## Coordinator
-
-文件：
-
-- `apps/analysis/agents/coordinator.py`
-- `apps/worker/runner.py`
-
-当前 综合分析链路 在 `apps/worker/runner.py` 中调用：
-
-- `analyze_macro_liquidity`
-- `analyze_cme_options`
-- `analyze_risk`
-- `analyze_technical`
-- `analyze_positioning`
-- `analyze_news`
-- `analyze_market_odds`
-- `coordinate_agent_outputs`
-
-然后生成：
-
-- final report
-- strategy card
-- DB `AgentOutput`
-- DB `FinalAnalysisResult`
-
-## Fact Review
-
-文件：
-
-- `apps/analysis/agents/fact_review.py`
-- `database/models/analysis.py` 的 `ReviewItem`
-- `apps/api/services/review_service.py`
-- `GET /api/reviews`
-- review action APIs
-
-职责：
-
-- 记录低置信、解析异常、Agent 输出冲突等需要人工复核的问题。
-- 不直接覆盖历史 AgentOutput。
-
-NEED_VERIFY：
-
-- 当前每日主链是否自动运行 fact review。
-- ReviewItem 的来源覆盖率是否已经包含 OCR/VLM、CME parse、Agent conflict、report review。
-
-## Synthesis
-
-文件：
-
-- `apps/analysis/agents/synthesis.py`
-- `GET /api/agent-analysis/synthesis/latest`
-
-职责：
-
-- 聚合 domain agents、fact review、reviews，形成日报级 synthesis。
-
-NEED_VERIFY：
-
-- synthesis 是否是每次 premarket 的必经步骤，还是可单独读取已存在 `synthesis_agent` 输出。
-
-## Registry / Prompt Governance
-
-文件：
-
-- `apps/analysis/agents/registry.py`
-- `apps/api/schemas/agent.py`
-- `database/models/analysis.py` 的 `PromptVersion`、`PromptFeedback`
-- `apps/frontend-web/src/adapters/agentRegistry.ts`
-- `apps/frontend-web/src/pages/SettingsPage.tsx`
-
-API：
-
-- `GET /api/agents/registry`
-- `GET /api/agents/registry/{agent_id}`
-- `GET /api/agents/prompts`
-- `GET /api/agents/prompts/{agent_id}`
-- `GET /api/agents/prompts/{agent_id}/active`
-- `POST /api/agents/prompts/{agent_id}`
-- `PATCH /api/agents/prompts/{agent_id}/activate`
-- `POST /api/agents/feedback`
-- `GET /api/agents/feedback`
-
-约束：
-
-- Prompt 版本和反馈是治理数据，不应让 Agent 直接修改 raw source。
-- severe feedback 可创建 ReviewItem。
+系统提供 Agent registry、Prompt 版本、激活、feedback、proposal 和 system evolution API。Prompt 与反馈属于治理数据；修改它们不能改变上游事实，也不能绕过 Fact Review / Quality Gate。
 
 ## 持久化
 
-模型：
+- `analysis_snapshots`
+- `agent_outputs`
+- `final_analysis_results`
+- `review_items`
+- `prompt_versions` / `prompt_feedback`
+- `llm_call_audits`
 
-- `AnalysisSnapshot`
-- `AgentOutput`
-- `FinalAnalysisResult`
-- `PromptVersion`
-- `PromptFeedback`
-- `ReviewItem`
+检查 Agent 是否“已运行”时，应以对应 run、persisted output、audit 和 artifact 为证据，不能只看模块存在。
 
-每个 AgentOutput 应保留：
+## 相关内容
 
-- `run_id`
-- `snapshot_id`
-- `input_snapshot_ids`
-- `source_refs`
-- `payload`
-- `payload_sha256`
-- LLM metadata（如使用 LLM）
-- `prompt_version_id`（如使用 prompt governance）
-
-## 后续整理方向
-
-- 把 综合分析链路 中的 Agent 步骤拆成显式 TaskStep。
-- 将 fact review / synthesis 是否进入主链做成可验证状态。
-- 统一 AgentOutput schema 与 frontend inspection view。
-- 在 Report Detail 中稳定展示 Agent input/output/prompt/version/source trace。
+- [后端主链](02_BACKEND_PIPELINE.md)
+- [报告系统](06_REPORT_SYSTEM.md)
+- [Trace Schema](TRACE_SCHEMA.md)

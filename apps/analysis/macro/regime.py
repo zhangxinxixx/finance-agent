@@ -176,7 +176,7 @@ def classify_macro_regime(indicators: dict[str, Any]) -> dict[str, Any]:
     elif monetary_credit_repricing:
         market_phase = "monetary_credit_repricing"
         confidence += 0.04
-    elif score >= 3.0:
+    elif score >= 3.0 and _has_trend_tailwind_confirmation(drivers):
         market_phase = "trend_tailwind"
     elif score <= -3.0:
         market_phase = "rate_pressure"
@@ -201,6 +201,18 @@ def classify_macro_regime(indicators: dict[str, Any]) -> dict[str, Any]:
         "change_conditions": change_conditions,
         "source_refs": [{"source": "macro_regime_engine", "version": "2.1.0", "method": "deterministic"}],
     }
+
+
+def _has_trend_tailwind_confirmation(drivers: dict[str, Any]) -> bool:
+    """Require both core gold drivers to confirm a durable macro tailwind."""
+    real_yield = drivers.get("real_yield", {})
+    dxy = drivers.get("dxy", {})
+    return (
+        real_yield.get("status") == "available"
+        and real_yield.get("direction") == "falling"
+        and dxy.get("status") == "available"
+        and dxy.get("direction") == "falling"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

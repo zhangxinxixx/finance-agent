@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from apps.analysis.agents import AgentBias, AgentOutput, AgentStatus
-from apps.analysis.agents.macro_liquidity import analyze_macro_liquidity, build_macro_liquidity_structured_payload
+from apps.analysis.agents.macro_liquidity import (
+    analyze_macro_liquidity,
+    build_macro_liquidity_structured_payload,
+    invoke_macro_liquidity_llm,
+)
 from apps.analysis.agents.macro_liquidity_prompt import build_macro_liquidity_prompt_template
 from apps.analysis.agents.registry import get_agent_registry
 
@@ -193,12 +198,49 @@ def test_macro_liquidity_registry_prompts_as_llm() -> None:
     assert "XAUUSD 宏观交易引擎 v2.1" in agent["prompt"]["template"]
 
 
+def test_macro_liquidity_llm_is_pinned_to_sol_high(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_chat_sync(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            content="## 一句话结论\n保持观察。",
+            model=kwargs["model"],
+            provider=kwargs["provider"],
+            reasoning_effort=kwargs["reasoning_effort"],
+            latency_ms=10,
+            usage={"total_tokens": 12},
+        )
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.delenv("MACRO_LIQUIDITY_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("MACRO_LIQUIDITY_LLM_MODEL", raising=False)
+    monkeypatch.delenv("MACRO_LIQUIDITY_LLM_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("LLM_COCKPIT_MODEL", raising=False)
+    monkeypatch.delenv("LLM_COCKPIT_REASONING_EFFORT", raising=False)
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+
+    result = invoke_macro_liquidity_llm(_available_snapshot())
+
+    assert captured["provider"] == "cockpit"
+    assert captured["model"] == "gpt-5.6-sol"
+    assert captured["reasoning_effort"] == "high"
+    assert result["model"] == "gpt-5.6-sol"
+    assert result["reasoning_effort"] == "high"
+
+
 def test_macro_prompt_allows_web_but_requires_external_gap_labeling() -> None:
     prompt = build_macro_liquidity_prompt_template()
 
     assert "不主动联网" not in prompt
     assert "必须主动核验关键缺口" in prompt
     assert "外部联网补充 / 待系统化接入" in prompt
+    assert "3M 使用 US03M / DGS3MO" in prompt
+    assert "2Y 上升主导通常偏鹰" in prompt
+    assert "不重复抄表" in prompt
+    assert "不要输出完整来源台账或链接脚注" in prompt
+    assert "4100" not in prompt
+    assert "3720" not in prompt
 
 
 def test_macro_structured_payload_marks_sources_missing_from_system() -> None:
@@ -211,6 +253,22 @@ def test_macro_structured_payload_marks_sources_missing_from_system() -> None:
     gaps = payload["system_data_gaps"]
     assert any(gap["item"] == "DXY TradingView weekly/monthly" for gap in gaps)
     assert any(gap["item"] == "ETF / GLD flows" for gap in gaps)
+
+
+def test_macro_structured_payload_includes_short_curve_legs_and_preserves_zero() -> None:
+    snapshot = _available_snapshot()
+    indicators = snapshot["macro"]["data"]["indicators"]
+    indicators["US03M"] = {"value": 4.05, "change_1w": 0.0, "unit": "%"}
+    indicators["YIELD_SPREAD_2Y_3M"] = {"value": 0.0, "weekly_change": 0.0, "unit": "%"}
+
+    payload = build_macro_liquidity_structured_payload(snapshot)
+
+    assert payload["indicators"]["US03M"]["value"] == 4.05
+    assert payload["indicators"]["YIELD_SPREAD_2Y_3M"]["value"] == 0.0
+    assert payload["indicators"]["YIELD_SPREAD_2Y_3M"]["change"] == 0.0
+    assert payload["short_curve_policy"]["us02y"]["value"] == 4.05
+    assert payload["short_curve_policy"]["us03m"]["change"] == 0.0
+    assert payload["short_curve_policy"]["spread_2y_3m"]["value"] == 0.0
 
 
 def test_agent_output_regime_fields_present_in_dict_form():

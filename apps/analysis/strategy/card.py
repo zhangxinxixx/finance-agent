@@ -322,6 +322,10 @@ def _extract_gold_macro_conditions(snapshot: dict[str, Any]) -> dict[str, Any] |
     chain = overview.get("war_oil_rate_chain") if isinstance(overview.get("war_oil_rate_chain"), dict) else {}
     verification_needed = _verification_needed(overview)
     changed_theme = bool(overview.get("changed_dominant_theme"))
+    context_section = snapshot.get("gold_analysis_context")
+    context = context_section.get("data") if isinstance(context_section, dict) and isinstance(context_section.get("data"), dict) else {}
+    baseline = context.get("analysis_baseline") if isinstance(context.get("analysis_baseline"), dict) else {}
+    oil_report = context.get("oil_report_summary") if isinstance(context.get("oil_report_summary"), dict) else {}
 
     trigger_conditions = [
         f"Gold macro context remains {net_bias} with dominant mainline {dominant}.",
@@ -352,6 +356,27 @@ def _extract_gold_macro_conditions(snapshot: dict[str, Any]) -> dict[str, Any] |
         confirmation_conditions.append("Gold macro verification matrix has no pending top-level blockers.")
     if changed_theme:
         invalidation_conditions.append("GoldMacroOverview reports a changed dominant theme; keep strategy view provisional.")
+    if baseline:
+        baseline_kind = str(context.get("baseline_kind") or baseline.get("source_kind") or "weekly_anchor")
+        baseline_label = {
+            "weekly_anchor": "周末周报",
+            "weekly_fallback": "周报回退（前一日最终综合分析报告缺失）",
+            "previous_analysis_report": "前一日最新综合分析报告",
+            "previous_daily": "前一日最新综合分析报告",
+        }.get(baseline_kind, "前序分析")
+        trigger_conditions.append(
+            f"综合判断基于{baseline_label} {baseline.get('trade_date') or baseline.get('context_as_of') or 'unknown'} 的前序分析，并由当日上下文增量修正。"
+        )
+        if str(context.get("status") or "") != "ready":
+            confirmation_conditions.append("统一分析上下文未完全就绪；策略卡保持观察状态，不升级方向性确信度。")
+            invalidation_conditions.append("统一分析上下文缺失或过期时，前序基准不得被视为当日确认。")
+    if oil_report:
+        oil_conclusion = str(oil_report.get("one_line_conclusion") or oil_report.get("final_summary") or "").strip()
+        if oil_conclusion:
+            trigger_conditions.append(f"原油报告增量：{oil_conclusion[:500]}")
+        watchlist.append(
+            f"原油报告 {oil_report.get('trade_date') or 'unknown'} / {oil_report.get('article_id') or 'unknown'} / quality={oil_report.get('status') or 'unknown'}"
+        )
 
     return {
         "as_of": as_of,

@@ -11,7 +11,9 @@ from sqlalchemy.orm import sessionmaker
 from apps.collectors.jin10.adapter import (
     _charts_from_report_images,
     _charts_from_parsed_figures,
+    _build_agent_output_quality_audit,
     _build_report_quality_audit,
+    _combine_quality_audits,
     _remove_output_image_copies,
     _prepend_content_access_notice,
     _report_identity_for_raw_report,
@@ -72,9 +74,15 @@ def test_build_jin10_outputs_passes_parser_figure_loader_to_agent(monkeypatch):
     original = jin10_adapter.build_jin10_agent_analysis_report_with_llm
     captured = {}
 
-    def wrapped(raw_report, daily_report=None, *, figure_image_loader=None):
+    def wrapped(raw_report, daily_report=None, *, figure_image_loader=None, analysis_context=None, market_odds_evidence=None):
         captured["loader"] = figure_image_loader
-        return original(raw_report, daily_report, figure_image_loader=figure_image_loader)
+        return original(
+            raw_report,
+            daily_report,
+            figure_image_loader=figure_image_loader,
+            analysis_context=analysis_context,
+            market_odds_evidence=market_odds_evidence,
+        )
 
     monkeypatch.setattr(jin10_adapter, "build_jin10_agent_analysis_report_with_llm", wrapped)
 
@@ -217,7 +225,7 @@ def test_build_jin10_outputs_creates_indexable_bundle_for_positioning_report(tmp
     monkeypatch.setattr("apps.collectors.jin10.adapter.build_analysis_index", lambda parsed: {"reports": []})
     monkeypatch.setattr(
         "apps.collectors.jin10.adapter._build_daily_report_bundle",
-        lambda report, parsed_report, source_refs: {
+        lambda report, parsed_report, source_refs, *, storage_root: {
             "trade_date": report["date"],
             "run_id": report["article_id"],
             "json": {"family": "jin10_positioning_report", "report_type": "positioning"},
@@ -261,7 +269,7 @@ def test_build_jin10_outputs_creates_indexable_bundle_for_market_observation_rep
     monkeypatch.setattr("apps.collectors.jin10.adapter.build_analysis_index", lambda parsed: {"reports": []})
     monkeypatch.setattr(
         "apps.collectors.jin10.adapter._build_daily_report_bundle",
-        lambda report, parsed_report, source_refs: {
+        lambda report, parsed_report, source_refs, *, storage_root: {
             "trade_date": report["date"],
             "run_id": report["article_id"],
             "json": {"family": "jin10_market_observation_report", "report_type": "market_observation"},
@@ -331,7 +339,7 @@ def test_build_jin10_outputs_creates_indexable_bundle_for_master_review_research
     monkeypatch.setattr("apps.collectors.jin10.adapter.build_analysis_index", lambda parsed: {"reports": []})
     monkeypatch.setattr(
         "apps.collectors.jin10.adapter._build_daily_report_bundle",
-        lambda report, parsed_report, source_refs: {
+        lambda report, parsed_report, source_refs, *, storage_root: {
             "trade_date": report["date"],
             "run_id": report["article_id"],
             "json": {
@@ -438,7 +446,7 @@ def test_build_jin10_outputs_dedupes_weekly_alias_directories_by_article_id(tmp_
 
     monkeypatch.setattr("apps.collectors.jin10.adapter.build_parsed_index", fake_build_parsed_index)
     monkeypatch.setattr("apps.collectors.jin10.adapter.build_analysis_index", lambda parsed: {"reports": []})
-    monkeypatch.setattr("apps.collectors.jin10.adapter._build_daily_report_bundle", lambda report, parsed_report, source_refs: {})
+    monkeypatch.setattr("apps.collectors.jin10.adapter._build_daily_report_bundle", lambda report, parsed_report, source_refs, *, storage_root: {})
 
     for parent in ("报告", "weekly"):
         fixture = tmp_path / "2026-05-24" / parent / "220071"
@@ -564,7 +572,7 @@ def test_build_jin10_outputs_keeps_guided_daily_report_when_only_detail_page_has
 
     monkeypatch.setattr("apps.collectors.jin10.adapter.build_parsed_index", fake_build_parsed_index)
     monkeypatch.setattr("apps.collectors.jin10.adapter.build_analysis_index", lambda parsed: {"reports": []})
-    monkeypatch.setattr("apps.collectors.jin10.adapter._build_daily_report_bundle", lambda report, parsed_report, source_refs: {})
+    monkeypatch.setattr("apps.collectors.jin10.adapter._build_daily_report_bundle", lambda report, parsed_report, source_refs, *, storage_root: {})
 
     outputs = build_jin10_outputs(external_root=tmp_path, date="2026-06-09", category="270")
 
@@ -1451,7 +1459,7 @@ def test_build_jin10_agent_output_payload_exposes_prompt_claims_and_artifacts(tm
     assert payload["payload"]["prompt_version"] == "jin10_agent_analysis_v3"
     assert payload["payload"]["prompt_messages"][0]["role"] == "system"
     assert "## Agent 入库字段" not in payload["payload"]["prompt_messages"][1]["content"]
-    assert "不输出 YAML、JSON 或 Agent 入库字段" in payload["payload"]["prompt_messages"][1]["content"]
+    assert "只返回一个 JSON object" in payload["payload"]["prompt_messages"][1]["content"]
     assert payload["payload"]["input_payload"]["raw_report"]["article_id"] == "218330"
     assert payload["payload"]["input_payload"]["daily_report"]["family"] == "jin10_daily_visual"
     vlm_reparse_input = payload["payload"]["input_payload"]["vlm_reparse_input"]
@@ -1466,6 +1474,7 @@ def test_build_jin10_agent_output_payload_exposes_prompt_claims_and_artifacts(tm
 
 def test_persist_jin10_agent_outputs_stores_traceable_agent_output(tmp_path):
     outputs = build_jin10_outputs(external_root=FIXTURE_ROOT, date="2026-05-06", category="270")
+    outputs["daily_reports"][0]["quality_audit"] = {"status": "accepted", "reasons": []}
     write_jin10_outputs(outputs, storage_root=tmp_path)
     session = _session()
 
@@ -1498,6 +1507,24 @@ def test_persist_jin10_agent_outputs_stores_traceable_agent_output(tmp_path):
     assert fact_review_row.payload["fact_review_status"] in {"passed", "partial", "needs_review"}
     assert fact_review_row.payload["claim_reviews"]
     assert synthesis_row.payload["prompt_version"] == "synthesis_rules_v1"
+
+
+def test_persist_jin10_agent_outputs_blocks_review_and_synthesis_when_needs_review(tmp_path):
+    outputs = build_jin10_outputs(external_root=FIXTURE_ROOT, date="2026-05-06", category="270")
+    outputs["daily_reports"][0]["quality_audit"] = {
+        "status": "needs_review",
+        "reasons": [{"code": "analysis_degraded", "message": "fallback"}],
+    }
+    session = _session()
+
+    persisted = persist_jin10_agent_outputs(outputs, storage_root=tmp_path, session=session)
+    session.commit()
+
+    assert persisted[0]["quality_status"] == "needs_review"
+    assert persisted[0]["fact_review_agent_output_id"] is None
+    assert persisted[0]["synthesis_agent_output_id"] is None
+    rows = session.scalars(select(AgentOutput)).all()
+    assert [row.agent_name for row in rows] == ["jin10_report_analysis_agent"]
 
 
 def test_persist_jin10_task_runs_creates_agent_task_visible_run(tmp_path):
@@ -1629,6 +1656,36 @@ def test_report_quality_audit_accepts_full_research_body_when_auxiliary_image_is
     )
 
     assert audit == {"status": "accepted", "reasons": [], "checked_at": audit["checked_at"]}
+
+
+def test_agent_output_quality_audit_checks_rendered_consistency_and_daily_coverage() -> None:
+    agent_report = {
+        "one_line_conclusion": "黄金维持观察。",
+        "gold_analysis": "黄金尚未确认反转。",
+        "final_summary": "继续观察4500。",
+        "market_stage": {"label": "方向抉择态", "reason": "尚未突破", "confirmation_matrix": {}},
+        "key_levels": [{"value": "4500"}],
+        "scenario_paths": [],
+        "trading_implications": [],
+        "source_refs": [{"source": "jin10", "article_id": "1"}],
+        "evidence_basis": {"report_facts": ["现货黄金报4500"]},
+        "generated_from": {"prompt_profile": "default_daily", "source": "jin10_agent_analysis_llm"},
+    }
+
+    audit = _build_agent_output_quality_audit(agent_report=agent_report, rendered_markdown="# 不一致报告")
+
+    assert audit["status"] == "rejected"
+    codes = {reason["code"] for reason in audit["reasons"]}
+    assert {"daily_confirmation_matrix_missing", "daily_scenario_coverage_low", "render_conclusion_mismatch"} <= codes
+
+
+def test_combine_quality_audits_never_promotes_needs_review_or_rejected() -> None:
+    accepted = {"status": "accepted", "reasons": []}
+    needs_review = {"status": "needs_review", "reasons": [{"code": "degraded"}]}
+    rejected = {"status": "rejected", "reasons": [{"code": "invalid"}]}
+
+    assert _combine_quality_audits(accepted, needs_review)["status"] == "needs_review"
+    assert _combine_quality_audits(needs_review, rejected)["status"] == "rejected"
 
 
 def test_persist_jin10_task_runs_marks_rejected_quality_as_degraded(tmp_path):

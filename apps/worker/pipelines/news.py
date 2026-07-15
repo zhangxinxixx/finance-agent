@@ -8,12 +8,20 @@ writes feature artifacts under ``storage/features/news/<date>/<run_id>/``.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from apps.analysis.gold_mainline_engine import archive_gold_macro_overview, build_gold_macro_overview
+from apps.analysis.agents.gold_artifacts import write_canonical_gold_json
+from apps.analysis.agents.gold_runtime_agents import (
+    build_gold_review_gate,
+    build_gold_runtime_gate,
+    materialize_gold_runtime_agent_artifacts,
+)
+from apps.analysis.gold_mainline_engine import build_gold_macro_overview, gold_macro_overview_payload
+from apps.api.services.source_service import get_data_source_statuses
 from apps.collectors.news.base import NewsCollectionResult, RawNewsItem
 from apps.features.news.daily_brief_snapshot import archive_daily_brief_input_snapshot, build_daily_brief_input_snapshot
 from apps.features.news.daily_market_brief import DailyMarketBrief, archive_daily_market_brief, build_daily_market_brief
@@ -60,6 +68,8 @@ class NewsPipelineState:
     market_reactions: list[MarketReaction] = field(default_factory=list)
     daily_market_brief: DailyMarketBrief | None = None
     gold_macro_overview: Any | None = None
+    etf_holdings_context: dict[str, Any] = field(default_factory=dict)
+    news_freshness: dict[str, Any] = field(default_factory=dict)
     snapshot_dict: dict[str, Any] | None = None
     artifact_paths: dict[str, str] = field(default_factory=dict)
     step_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -102,11 +112,13 @@ def _step_collect(
     checkpoint_path = _collection_checkpoint_path(storage_root).relative_to(storage_root).as_posix()
     skipped_duplicate_item_count = 0
     collected_raw_news_item_count = 0
+    observed_items: list[RawNewsItem] = []
 
     for collector_name, collector in _collectors():
         started_at = datetime.now(timezone.utc).isoformat()
         try:
             result = collector(retrieved_date=retrieved_date, storage_root=storage_root)
+            observed_items.extend(result.items)
             collected_raw_news_item_count += len(result.items)
             accepted_items, skipped_count = _filter_checkpointed_items(
                 result.items,
@@ -165,6 +177,102 @@ def _step_collect(
                 "checkpoint_path": checkpoint_path,
             })
 
+    news_freshness = _assess_news_freshness(
+        observed_items,
+        state.collector_statuses,
+        now=datetime.now(timezone.utc),
+    )
+    fallback_attempted = False
+    fallback_status = "not_needed"
+    if news_freshness["fallback_required"] and _web_search_fallback_enabled():
+        from apps.collectors.news.llm_web_search import collect_llm_web_search_news
+
+        fallback_attempted = True
+        fallback_status = "unavailable"
+        collector_name = "llm_web_search"
+        started_at = datetime.now(timezone.utc).isoformat()
+        try:
+            result = collect_llm_web_search_news(
+                retrieved_date=retrieved_date,
+                storage_root=storage_root,
+            )
+            observed_items.extend(result.items)
+            collected_raw_news_item_count += len(result.items)
+            accepted_items, skipped_count = _filter_checkpointed_items(
+                result.items,
+                _checkpoint_for_source(checkpoint_state, result.source_key),
+            )
+            skipped_duplicate_item_count += skipped_count
+            checkpointed_result = NewsCollectionResult(
+                source_key=result.source_key,
+                status=result.status,
+                items=accepted_items,
+                source_refs=result.source_refs,
+                unavailable_feeds=result.unavailable_feeds,
+                warnings=result.warnings,
+            )
+            _merge_collection_result(state, checkpointed_result)
+            ended_at = datetime.now(timezone.utc).isoformat()
+            _update_collection_checkpoint(
+                checkpoint_state,
+                collector_name=collector_name,
+                result=result,
+                started_at=started_at,
+                ended_at=ended_at,
+                accepted_item_count=len(accepted_items),
+                skipped_duplicate_item_count=skipped_count,
+            )
+            _save_collection_checkpoints(storage_root, checkpoint_state)
+            fallback_status = result.status
+            state.collector_statuses.append({
+                "collector": collector_name,
+                "status": result.status,
+                "items": len(accepted_items),
+                "collected_items": len(result.items),
+                "skipped_duplicate_items": skipped_count,
+                "unavailable_feeds": len(result.unavailable_feeds),
+                "warnings": list(result.warnings),
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "checkpoint_path": checkpoint_path,
+                "trigger_reason": news_freshness["reason"],
+                "high_watermark_published_at": _checkpoint_for_source(
+                    checkpoint_state,
+                    result.source_key,
+                ).get("high_watermark_published_at"),
+            })
+        except Exception as exc:
+            ended_at = datetime.now(timezone.utc).isoformat()
+            _update_failed_collection_checkpoint(
+                checkpoint_state,
+                collector_name=collector_name,
+                started_at=started_at,
+                ended_at=ended_at,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            _save_collection_checkpoints(storage_root, checkpoint_state)
+            state.collector_statuses.append({
+                "collector": collector_name,
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "checkpoint_path": checkpoint_path,
+                "trigger_reason": news_freshness["reason"],
+            })
+            fallback_status = "failed"
+        news_freshness = _assess_news_freshness(
+            observed_items,
+            state.collector_statuses,
+            now=datetime.now(timezone.utc),
+        )
+    news_freshness.update({
+        "fallback_enabled": _web_search_fallback_enabled(),
+        "fallback_attempted": fallback_attempted,
+        "fallback_status": fallback_status,
+    })
+    state.news_freshness = news_freshness
+
     failed_or_unavailable = [
         row for row in state.collector_statuses
         if row.get("status") in {"failed", "unavailable"}
@@ -183,7 +291,9 @@ def _step_collect(
         run_id=run_key,
         collector_statuses=state.collector_statuses,
         source_refs=state.source_refs,
+        news_freshness=news_freshness,
     )
+    state.artifact_paths["collection_diagnostics"] = diagnostics_path
 
     return {
         "step": "news_collect",
@@ -196,6 +306,7 @@ def _step_collect(
         "source_ref_count": len(state.source_refs),
         "artifact_path": diagnostics_path,
         "collection_checkpoint_path": checkpoint_path,
+        "news_freshness": news_freshness,
     }
 
 
@@ -285,10 +396,17 @@ def _step_feature(
         run_id=run_key,
         bundle=gold_event_mainlines,
     )
+    etf_holdings_context, etf_holdings_path, etf_report_count = _build_etf_holdings_feature(
+        state=state,
+        storage_root=storage_root,
+        retrieved_date=state.retrieved_date,
+        run_id=run_key,
+    )
 
     state.event_bundle = bundle
     state.impact_assessments = assessments
     state.gold_event_mainlines = gold_event_mainlines
+    state.etf_holdings_context = etf_holdings_context
     state.daily_analysis_triggers = daily_analysis_triggers
     state.report_event_extraction = report_extraction
     state.market_reactions = reactions
@@ -301,6 +419,8 @@ def _step_feature(
     })
     if report_events_path is not None:
         state.artifact_paths["report_events"] = report_events_path
+    if etf_holdings_path is not None:
+        state.artifact_paths["etf_holdings"] = etf_holdings_path
     return {
         "step": "news_feature",
         "status": "success",
@@ -319,6 +439,8 @@ def _step_feature(
         "report_events_path": report_events_path,
         "market_reactions_path": market_reactions_path,
         "gold_event_mainlines_path": gold_event_mainlines_path,
+        "etf_report_count": etf_report_count,
+        "etf_holdings_path": etf_holdings_path,
         "artifact_path": event_candidates_path,
         "warnings": warnings,
     }
@@ -341,6 +463,13 @@ def _step_brief(
         retrieved_date=state.retrieved_date,
         run_id=run_key,
     )
+    if state.etf_holdings_context:
+        report_input_artifacts.append({
+            "source_key": "jin10_minipro_etf_reports",
+            "source_kind": "etf_holdings",
+            "items": [dict(state.etf_holdings_context)],
+            "source_refs": list(state.etf_holdings_context.get("source_refs") or []),
+        })
 
     brief = build_daily_market_brief(
         event_bundle=state.event_bundle,
@@ -357,24 +486,102 @@ def _step_brief(
         brief=brief,
     )
     gold_event_mainlines_payload = _gold_event_mainlines_payload(state)
-    gold_macro_overview = build_gold_macro_overview(gold_event_mainlines_payload)
-    gold_macro_overview_snapshot = gold_macro_overview.to_dict()
-    gold_macro_overview_snapshot["input_snapshot_ids"] = {
+    gold_macro_overview = build_gold_macro_overview(
+        gold_event_mainlines_payload,
+        flow_context=state.etf_holdings_context,
+    )
+    input_snapshot_ids = {
         "gold_event_mainlines": state.artifact_paths.get("gold_event_mainlines"),
     }
-    gold_macro_overview_path = archive_gold_macro_overview(
-        storage_root=storage_root,
+    if state.artifact_paths.get("collection_diagnostics"):
+        input_snapshot_ids["news_collection_diagnostics"] = state.artifact_paths[
+            "collection_diagnostics"
+        ]
+    if state.artifact_paths.get("etf_holdings"):
+        input_snapshot_ids["flow_context"] = state.artifact_paths["etf_holdings"]
+    gold_macro_overview_path = (
+        Path("analysis") / "gold_mainlines" / state.retrieved_date / run_key / "gold_macro_overview.json"
+    ).as_posix()
+    gold_macro_overview_snapshot = gold_macro_overview_payload(
         retrieved_date=state.retrieved_date,
         run_id=run_key,
         overview=gold_macro_overview,
-        input_snapshot_ids={"gold_event_mainlines": state.artifact_paths.get("gold_event_mainlines")},
+        input_snapshot_ids=input_snapshot_ids,
     )
+    run_base = Path("analysis") / "gold_mainlines" / state.retrieved_date / run_key
+    # This branch runs before macro/CME merge, so its gate artifacts are
+    # explicitly preliminary. The composite stage owns the canonical files.
+    source_health_path = (run_base / "preliminary_source_health.json").as_posix()
+    quality_gate_result_path = (run_base / "preliminary_quality_gate_result.json").as_posix()
+    runtime_gate = _gold_runtime_gate_for_worker(
+        overview=gold_macro_overview_snapshot,
+        persisted_source_health_path=storage_root / source_health_path,
+    )
+    gold_macro_overview_snapshot["source_health"] = runtime_gate["source_health"]
+    gold_macro_overview_snapshot["review_gate"] = runtime_gate["review_gate"]
+    gold_macro_overview_snapshot["review_status"] = runtime_gate["review_gate"]["review_status"]
+    gold_macro_overview_snapshot["review_blocking_reasons"] = runtime_gate["review_gate"]["blocking_reasons"]
+    if runtime_gate["review_gate"]["review_status"] == "blocked":
+        gold_macro_overview_snapshot["status"] = "blocked"
+    write_canonical_gold_json(
+        storage_root / gold_macro_overview_path,
+        gold_macro_overview_snapshot,
+        storage_root=storage_root,
+    )
+    write_canonical_gold_json(
+        storage_root / source_health_path,
+        runtime_gate["source_health"],
+        storage_root=storage_root,
+    )
+    write_canonical_gold_json(
+        storage_root / quality_gate_result_path,
+        runtime_gate["review_gate"],
+        storage_root=storage_root,
+    )
+    gold_agent_execution = materialize_gold_runtime_agent_artifacts(
+        storage_root=storage_root,
+        retrieved_date=state.retrieved_date,
+        run_id=run_key,
+        as_of=str(gold_macro_overview_snapshot.get("as_of") or state.retrieved_date),
+        input_snapshot_ids=input_snapshot_ids,
+        source_refs=[
+            dict(item)
+            for item in gold_macro_overview_snapshot.get("source_refs") or []
+            if isinstance(item, dict)
+        ],
+        canonical_paths={
+            "source_health": source_health_path,
+            "gold_event_mainlines": str(state.artifact_paths.get("gold_event_mainlines") or ""),
+            "gold_macro_overview": gold_macro_overview_path,
+            "quality_gate_result": quality_gate_result_path,
+        },
+        source_health=runtime_gate["source_health"],
+        gold_event_mainlines=gold_event_mainlines_payload,
+        gold_macro_overview=gold_macro_overview_snapshot,
+        review_gate=runtime_gate["review_gate"],
+    )
+    gold_agent_execution_snapshot = {
+        "snapshot_id": gold_agent_execution["snapshot_id"],
+        "declared_agents": gold_agent_execution["declared_agents"],
+        "materialized_stage_envelopes": gold_agent_execution[
+            "materialized_stage_envelopes"
+        ],
+        "executed_agents": gold_agent_execution["executed_agents"],
+        "runtime_contract_only": gold_agent_execution["runtime_contract_only"],
+        "artifact_paths": gold_agent_execution["artifact_paths"],
+    }
 
     state.daily_market_brief = brief
     state.gold_macro_overview = gold_macro_overview
     state.artifact_paths.update({
         "daily_market_brief": brief_path,
         "gold_macro_overview": gold_macro_overview_path,
+        "source_health": source_health_path,
+        "quality_gate_result": quality_gate_result_path,
+        **{
+            f"agent:{agent_name}": str(path)
+            for agent_name, path in gold_agent_execution["artifact_paths"].items()
+        },
     })
     trigger_bundle = state.daily_analysis_triggers.to_dict() if state.daily_analysis_triggers is not None else None
     report_events = state.report_event_extraction.to_dict() if state.report_event_extraction is not None else None
@@ -409,10 +616,13 @@ def _step_brief(
     data_quality["gold_mainline_count"] = len(gold_event_mainlines_payload.get("mainlines") or [])
     data_quality["gold_event_link_count"] = len(gold_event_mainlines_payload.get("event_links") or [])
     data_quality["gold_verification_item_count"] = len(gold_macro_overview.verification_matrix)
+    data_quality["news_freshness"] = dict(state.news_freshness)
     state.snapshot_dict = {
+        "news_freshness": dict(state.news_freshness),
         "daily_market_brief": brief.to_dict(),
         "gold_event_mainlines": gold_event_mainlines_payload,
         "gold_macro_overview": gold_macro_overview_snapshot,
+        "gold_agent_execution": gold_agent_execution_snapshot,
         "daily_analysis_triggers": trigger_bundle,
         "daily_brief_input_snapshot": daily_brief_input_snapshot.to_dict(),
         "daily_brief_output": daily_brief_output,
@@ -437,15 +647,82 @@ def _step_brief(
         "gold_mainline_count": len(gold_event_mainlines_payload.get("mainlines") or []),
         "gold_verification_item_count": len(gold_macro_overview.verification_matrix),
         "gold_dominant_mainline": gold_macro_overview.dominant_mainline,
+        "source_health_path": source_health_path,
+        "quality_gate_result_path": quality_gate_result_path,
+        "declared_agents": gold_agent_execution["declared_agents"],
+        "materialized_stage_envelopes": gold_agent_execution[
+            "materialized_stage_envelopes"
+        ],
+        "executed_agents": gold_agent_execution["executed_agents"],
+        "runtime_contract_only": gold_agent_execution["runtime_contract_only"],
+        "agent_artifact_refs": gold_agent_execution["artifact_paths"],
+        "artifact_refs": [
+            {
+                "artifact_id": f"{run_key}:{name}",
+                "artifact_type": "structured_json",
+                "file_path": str(storage_root / path),
+            }
+            for name, path in {
+                "gold_macro_overview": gold_macro_overview_path,
+                "source_health": source_health_path,
+                "quality_gate_result": quality_gate_result_path,
+                **gold_agent_execution["artifact_paths"],
+            }.items()
+        ],
+        "source_refs": gold_macro_overview_snapshot.get("source_refs") or [],
+        "input_snapshot_ids": input_snapshot_ids,
         "positioning_input_count": data_quality.get("positioning_input_count", 0),
         "technical_level_input_count": data_quality.get("technical_level_input_count", 0),
+        "news_freshness": dict(state.news_freshness),
     }
+
+
+def _gold_runtime_gate_for_worker(
+    *,
+    overview: dict[str, Any],
+    persisted_source_health_path: Path,
+) -> dict[str, dict[str, Any]]:
+    if persisted_source_health_path.is_file():
+        persisted = json.loads(persisted_source_health_path.read_text(encoding="utf-8"))
+        if not isinstance(persisted, dict):
+            raise ValueError("persisted source_health artifact must be an object")
+        return {
+            "source_health": persisted,
+            "review_gate": build_gold_review_gate(source_health=persisted, overview=overview),
+        }
+    try:
+        return build_gold_runtime_gate(
+            source_statuses=get_data_source_statuses(),
+            overview=overview,
+        )
+    except Exception as exc:
+        source_health = {
+            "overall_status": "degraded",
+            "as_of": str(overview.get("as_of") or "") or None,
+            "p0_missing": [],
+            "p1_missing": [],
+            "p2_missing": [],
+            "stale_sources": [],
+            "fresh_sources": [],
+            "source_freshness": {},
+            "mainline_impact": {},
+            "can_build_gold_macro_overview": True,
+            "can_emit_strong_conclusion": False,
+            "blocked_mainlines": [],
+            "degraded_mainlines": [],
+            "blocking_reasons": ["source health unavailable: no strong conclusion"],
+            "warnings": [f"source_health_unavailable: {exc.__class__.__name__}"],
+        }
+        return {
+            "source_health": source_health,
+            "review_gate": build_gold_review_gate(source_health=source_health, overview=overview),
+        }
 
 
 def _load_report_input_artifacts(*, storage_root: Path, retrieved_date: str, run_id: str) -> list[dict[str, Any]]:
     feature_dir = storage_root / "features" / "news" / retrieved_date / run_id
     artifacts: list[dict[str, Any]] = []
-    for filename in ("positioning.json", "technical_levels.json", "market_observations.json"):
+    for filename in ("positioning.json", "technical_levels.json", "market_observations.json", "market_odds_evidence.json"):
         path = feature_dir / filename
         if not path.is_file():
             continue
@@ -459,27 +736,236 @@ def _load_report_input_artifacts(*, storage_root: Path, retrieved_date: str, run
 
 
 def _collectors() -> list[tuple[str, Callable[..., NewsCollectionResult]]]:
+    from apps.collectors.jin10.etf_reports import collect_jin10_etf_reports
     from apps.collectors.news.bea import collect_bea_schedule
     from apps.collectors.news.bls import collect_bls_calendar
     from apps.collectors.news.eia import collect_eia_energy_events
     from apps.collectors.news.fed_rss import collect_fed_rss
     from apps.collectors.news.feishu_jin10 import collect_feishu_jin10_messages, is_feishu_jin10_enabled
-    from apps.collectors.news.gdelt import collect_gdelt_docs
-    from apps.collectors.news.google_news_rss import collect_google_news_rss
-    from apps.collectors.news.reuters_public import collect_reuters_public_news
+    from apps.collectors.news.gdelt import GDELT_DOC_QUERIES, collect_gdelt_docs
+    from apps.collectors.news.google_news_rss import GOOGLE_NEWS_QUERIES, collect_google_news_rss
+    from apps.collectors.news.reuters_public import REUTERS_PUBLIC_QUERIES, collect_reuters_public_news
 
     collectors: list[tuple[str, Callable[..., NewsCollectionResult]]] = [
         ("fed_rss", collect_fed_rss),
         ("bls_calendar", collect_bls_calendar),
         ("bea_calendar", collect_bea_schedule),
         ("eia_energy", collect_eia_energy_events),
-        ("gdelt_news", collect_gdelt_docs),
-        ("google_news_rss", collect_google_news_rss),
-        ("reuters_public_news", collect_reuters_public_news),
+        (
+            "gdelt_news",
+            _resilient_discovery_collector("gdelt_news", collect_gdelt_docs, GDELT_DOC_QUERIES),
+        ),
+        (
+            "google_news_rss",
+            _resilient_discovery_collector(
+                "google_news_rss",
+                collect_google_news_rss,
+                GOOGLE_NEWS_QUERIES,
+            ),
+        ),
+        (
+            "reuters_public_news",
+            _resilient_discovery_collector(
+                "reuters_public_news",
+                collect_reuters_public_news,
+                REUTERS_PUBLIC_QUERIES,
+            ),
+        ),
+        ("jin10_minipro_etf_reports", collect_jin10_etf_reports),
     ]
     if is_feishu_jin10_enabled():
         collectors.append(("jin10_feishu", collect_feishu_jin10_messages))
     return collectors
+
+
+def _resilient_discovery_collector(
+    collector_name: str,
+    collector: Callable[..., NewsCollectionResult],
+    query_groups: dict[str, str],
+) -> Callable[..., NewsCollectionResult]:
+    def collect_with_fallback(**kwargs: Any) -> NewsCollectionResult:
+        primary = collector(**kwargs)
+        retry_groups = _retryable_query_groups(primary, query_groups)
+        if not retry_groups:
+            return primary
+
+        attempts = [primary]
+        proxy_url = _news_proxy_url()
+        if proxy_url:
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.update({
+                "query_groups": retry_groups,
+                "request_proxy": proxy_url,
+                "trust_env": False,
+            })
+            attempts.append(
+                collector(**retry_kwargs)
+            )
+            retry_groups = _retryable_query_groups(attempts[-1], retry_groups)
+        if retry_groups and _direct_news_fallback_enabled():
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.update({
+                "query_groups": retry_groups,
+                "request_proxy": None,
+                "trust_env": False,
+            })
+            attempts.append(
+                collector(**retry_kwargs)
+            )
+        return _merge_collection_attempts(collector_name, attempts)
+
+    return collect_with_fallback
+
+
+def _retryable_query_groups(
+    result: NewsCollectionResult,
+    query_groups: dict[str, str],
+) -> dict[str, str]:
+    retryable_reason_codes = {
+        "network_blocked",
+        "request_failed",
+        "timeout",
+        "connect_error",
+        "http_500",
+        "http_502",
+        "http_503",
+        "http_504",
+    }
+    retryable: set[str] = set()
+    for ref in result.source_refs:
+        if not isinstance(ref, dict):
+            continue
+        group = str(ref.get("query_group") or "")
+        reason_code = str(ref.get("reason_code") or "")
+        if group in query_groups and reason_code in retryable_reason_codes:
+            retryable.add(group)
+    return {group: query_groups[group] for group in query_groups if group in retryable}
+
+
+def _merge_collection_attempts(
+    collector_name: str,
+    attempts: list[NewsCollectionResult],
+) -> NewsCollectionResult:
+    items: list[RawNewsItem] = []
+    source_refs: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    unresolved = set(attempts[0].unavailable_feeds)
+    for attempt_index, attempt in enumerate(attempts):
+        items.extend(attempt.items)
+        warnings.extend(attempt.warnings)
+        for ref in attempt.source_refs:
+            if not isinstance(ref, dict):
+                continue
+            enriched = dict(ref)
+            enriched["network_attempt"] = attempt_index + 1
+            source_refs.append(enriched)
+            group = str(ref.get("query_group") or "")
+            if group and str(ref.get("status") or "") in {"available", "empty"}:
+                unresolved.discard(group)
+    deduped_items = list({item.duplicate_key or item.url: item for item in items}.values())
+    if deduped_items and unresolved:
+        status = "partial"
+    elif deduped_items:
+        status = "success"
+    else:
+        status = "unavailable"
+    if len(attempts) > 1:
+        warnings.append(
+            f"{collector_name}: network route fallback attempted {len(attempts) - 1} time(s); "
+            f"unresolved_groups={sorted(unresolved)}"
+        )
+    return NewsCollectionResult(
+        source_key=attempts[0].source_key,
+        status=status,
+        items=deduped_items,
+        source_refs=source_refs,
+        unavailable_feeds=sorted(unresolved),
+        warnings=warnings,
+    )
+
+
+def _news_proxy_url() -> str | None:
+    for key in (
+        "NEWS_HTTP_PROXY",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ):
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return None
+
+
+def _direct_news_fallback_enabled() -> bool:
+    return os.getenv("NEWS_DIRECT_FALLBACK_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _build_etf_holdings_feature(
+    *,
+    state: NewsPipelineState,
+    storage_root: Path,
+    retrieved_date: str,
+    run_id: str,
+) -> tuple[dict[str, Any], str | None, int]:
+    from apps.features.market.etf_holdings import archive_etf_holdings_context, build_etf_holdings_context
+    from apps.parsers.jin10.etf_reports import archive_parsed_etf_report, parse_jin10_etf_report
+
+    root = storage_root.resolve()
+    parsed_reports: list[dict[str, Any]] = []
+    parsed_source_refs: list[dict[str, Any]] = []
+    for source_ref in state.source_refs:
+        if source_ref.get("source_key") != "jin10_minipro_etf_reports" or source_ref.get("status") != "ok":
+            continue
+        raw_path = str(source_ref.get("raw_path") or "")
+        candidate = (storage_root / raw_path).resolve()
+        if not raw_path or not candidate.is_relative_to(root) or not candidate.is_file():
+            continue
+        try:
+            envelope = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(envelope, dict):
+            continue
+        report = parse_jin10_etf_report(
+            envelope,
+            raw_path=raw_path,
+            reference_date=retrieved_date,
+        )
+        parsed_path = archive_parsed_etf_report(
+            storage_root=storage_root,
+            retrieved_date=retrieved_date,
+            report=report,
+        )
+        report_payload = report.to_dict()
+        for ref in report_payload.get("source_refs") or []:
+            if isinstance(ref, dict):
+                ref["parsed_path"] = parsed_path
+                parsed_source_refs.append(ref)
+        parsed_reports.append(report_payload)
+
+    context = build_etf_holdings_context(parsed_reports)
+    if not context:
+        return {}, None, len(parsed_reports)
+    context["source_refs"] = parsed_source_refs
+    artifact_path = archive_etf_holdings_context(
+        storage_root=storage_root,
+        retrieved_date=retrieved_date,
+        run_id=run_id,
+        context=context,
+    )
+    state.source_refs = [
+        ref for ref in state.source_refs
+        if ref.get("source_key") != "jin10_minipro_etf_reports"
+    ]
+    state.source_refs.extend(parsed_source_refs)
+    return context, artifact_path, len(parsed_reports)
 
 
 def _gold_event_mainlines_payload(state: NewsPipelineState) -> dict[str, Any]:
@@ -509,6 +995,91 @@ def _gold_event_mainlines_payload(state: NewsPipelineState) -> dict[str, Any]:
 def _merge_collection_result(state: NewsPipelineState, result: NewsCollectionResult) -> None:
     state.raw_items.extend(result.items)
     state.source_refs.extend(dict(ref) for ref in result.source_refs if isinstance(ref, dict))
+
+
+def _assess_news_freshness(
+    items: list[RawNewsItem],
+    collector_statuses: list[dict[str, Any]],
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    discovery_sources = {
+        "gdelt_news",
+        "google_news_rss",
+        "reuters_public_news",
+        "jin10_feishu",
+        "llm_web_search",
+    }
+    max_age_hours = _positive_float_env("NEWS_FRESHNESS_MAX_AGE_HOURS", default=6.0)
+    max_age = timedelta(hours=max_age_hours)
+    published: list[tuple[datetime, RawNewsItem]] = []
+    for item in items:
+        if item.source_key not in discovery_sources or not item.published_at:
+            continue
+        parsed = _parse_news_datetime(item.published_at)
+        if parsed is not None:
+            published.append((parsed, item))
+
+    recent = [row for row in published if timedelta(0) <= now - row[0] <= max_age]
+    latest = max((row[0] for row in published), default=None)
+    available_sources = sorted({
+        str(row.get("collector"))
+        for row in collector_statuses
+        if row.get("collector") in discovery_sources
+        and row.get("status") in {"success", "partial"}
+        and int(row.get("collected_items") or 0) > 0
+    })
+    if recent:
+        status = "fresh"
+        reason = f"{len(recent)} candidate(s) published within {max_age_hours:g}h"
+    elif latest is not None:
+        status = "stale"
+        age_hours = max(0.0, (now - latest).total_seconds() / 3600)
+        reason = f"latest candidate is {age_hours:.2f}h old; freshness target is {max_age_hours:g}h"
+    elif available_sources:
+        status = "unknown"
+        reason = "discovery sources returned items without parseable published_at"
+    else:
+        status = "missing"
+        reason = "no discovery source returned candidate items"
+    return {
+        "status": status,
+        "as_of": now.isoformat(),
+        "max_age_hours": max_age_hours,
+        "latest_published_at": latest.isoformat() if latest is not None else None,
+        "recent_candidate_count": len(recent),
+        "candidate_with_timestamp_count": len(published),
+        "available_discovery_sources": available_sources,
+        "fallback_required": status != "fresh",
+        "reason": reason,
+    }
+
+
+def _parse_news_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _positive_float_env(name: str, *, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _web_search_fallback_enabled() -> bool:
+    return os.getenv("NEWS_WEB_SEARCH_FALLBACK_ENABLED", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _collection_checkpoint_path(storage_root: Path) -> Path:
@@ -659,6 +1230,7 @@ def _archive_collection_diagnostics(
     run_id: str,
     collector_statuses: list[dict[str, Any]],
     source_refs: list[dict[str, Any]],
+    news_freshness: dict[str, Any],
 ) -> str:
     target = storage_root / "features" / "news" / retrieved_date / run_id / "collection_diagnostics.json"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -682,11 +1254,14 @@ def _archive_collection_diagnostics(
         "source_ref_count": len(source_refs),
         "latest_collector_status_by_collector": latest_collector_status_by_collector,
         "latest_source_status_by_source_key": latest_source_status_by_source_key,
+        "news_freshness": news_freshness,
         "summary": {
             "collector_count": len(collector_statuses),
             "warning_count": len(warnings),
             "warnings": warnings,
             "source_key_count": len(latest_source_status_by_source_key),
+            "news_freshness_status": news_freshness.get("status"),
+            "news_fallback_attempted": news_freshness.get("fallback_attempted", False),
         },
     }
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

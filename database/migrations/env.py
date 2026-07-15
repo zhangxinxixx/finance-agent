@@ -11,10 +11,12 @@ from database.models.analysis import AnalysisBase
 from database.models.execution import ExecutionBase
 from database.models.report import ReportBase
 from database.models.task import Base
+from database.migrations.runtime import alembic_config_value
 
 # Import model modules that register tables on shared metadata.
 from database.models import cme as _cme_models  # noqa: F401
 from database.models import playbook as _playbook_models  # noqa: F401
+from database.models import analysis_state as _analysis_state_models  # noqa: F401
 
 # this is the Alembic Config object
 config = getattr(context, "config", None)
@@ -26,7 +28,7 @@ if config is not None and config.config_file_name is not None:
 # Override sqlalchemy.url from environment variable if available
 DATABASE_URL = __import__("os").environ.get("DATABASE_URL")
 if config is not None and DATABASE_URL and not config.attributes.get("database_url_explicit", False):
-    config.set_main_option("sqlalchemy.url", DATABASE_URL)
+    config.set_main_option("sqlalchemy.url", alembic_config_value(DATABASE_URL))
 
 target_metadata = [
     AnalysisBase.metadata,

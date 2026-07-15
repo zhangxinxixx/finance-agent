@@ -24,20 +24,21 @@ import { getLatestTradeDate, isWeekend } from "@/lib/date";
 
 const navItems = [
   { id: "dashboard", zh: "总览", icon: LayoutDashboard, path: "/dashboard" },
+  { id: "strategy", zh: "策略决策", icon: Target, path: "/strategy" },
   { id: "gold-mainlines", zh: "黄金主线", icon: Target, path: "/gold-mainlines" },
+  { id: "market-monitor", zh: "市场监控", icon: LineChart, path: "/market-monitor" },
   { id: "rates-dollar", zh: "利率与美元", icon: Gauge, path: "/rates-dollar" },
   { id: "oil-geopolitics", zh: "石油与地缘", icon: Flame, path: "/oil-geopolitics" },
-  { id: "data-ingestion", zh: "数据接入", icon: DatabaseZap, path: "/data-ingestion" },
-  { id: "event-flow", zh: "事件流", icon: GitBranch, path: "/event-flow" },
-  { id: "feishu-monitor", zh: "飞书监控", icon: MessagesSquare, path: "/feishu-monitor" },
-  { id: "market-monitor", zh: "市场监控", icon: LineChart, path: "/market-monitor" },
   { id: "cme-options", zh: "期权结构", icon: BarChart3, path: "/cme-options" },
+  { id: "event-flow", zh: "事件流", icon: GitBranch, path: "/event-flow" },
   { id: "reports", zh: "报告中心", icon: FileText, path: "/reports" },
-  { id: "knowledge-base", zh: "知识库", icon: BookOpen, path: "/knowledge-base" },
+  { id: "review-center", zh: "人工复核", icon: ShieldCheck, path: "/review-center" },
+  { id: "data-ingestion", zh: "数据接入", icon: DatabaseZap, path: "/data-ingestion" },
+  { id: "feishu-monitor", zh: "飞书监控", icon: MessagesSquare, path: "/feishu-monitor" },
   { id: "scheduler", zh: "调度中心", icon: Bot, path: "/scheduler" },
   { id: "processing-monitor", zh: "加工监控", icon: Workflow, path: "/processing-monitor" },
-  { id: "review-center", zh: "人工复核", icon: ShieldCheck, path: "/review-center" },
-  { id: "strategy", zh: "每日策略", icon: Target, path: "/strategy" },
+  { id: "llm-audit", zh: "LLM 审计", icon: Bot, path: "/settings/llm-audit" },
+  { id: "knowledge-base", zh: "知识库", icon: BookOpen, path: "/knowledge-base" },
   { id: "settings", zh: "系统设置", icon: Settings, path: "/settings" },
 ];
 

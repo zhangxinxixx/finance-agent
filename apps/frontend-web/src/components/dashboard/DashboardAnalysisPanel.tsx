@@ -111,7 +111,7 @@ export function DashboardAnalysisPanel({ summary, viewModel, agentSynthesis }: D
     : integrated.confidence ?? agentSynthesis?.confidence ?? strategyView?.confidence;
   const confidencePct = confidence == null ? null : Math.round(Math.max(0, Math.min(1, confidence)) * 100);
   const confidenceLabel = confidencePct == null ? "置信度未量化" : `置信度 ${confidencePct}/100`;
-  const macroThread = `${integrated.macroRegime}。${integrated.dollarState}，${integrated.ratesState}。当前黄金修复仍需要美元或实际利率进一步转弱配合，否则反弹更偏短线修复。`;
+  const macroThread = integrated.macroExplanation;
   const liquidityThread = integrated.liquidityExplanation;
   const optionsThread = integrated.optionsMemo;
   const resonanceItems = uniqueList(
@@ -198,10 +198,8 @@ export function DashboardAnalysisPanel({ summary, viewModel, agentSynthesis }: D
       <div className="fa-card-body dashboard-memo-body">
         <div className="dashboard-reasoning-body">
           <ReasoningSection title="宏观主线">{macroThread}</ReasoningSection>
-          <div className="dashboard-reasoning-grid">
-            <ReasoningSection title="流动性状态">{liquidityThread}</ReasoningSection>
-            <ReasoningSection title="期权配合度">{optionsThread}</ReasoningSection>
-          </div>
+          <ReasoningSection title="流动性状态">{liquidityThread}</ReasoningSection>
+          <ReasoningSection title="期权配合度">{optionsThread}</ReasoningSection>
           <div className="dashboard-reasoning-grid">
             <ReasoningList title="共振因素" items={resonanceItems} tone="brand" />
             <ReasoningList title="失效条件" items={failureItems} tone="warn" />

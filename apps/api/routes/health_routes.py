@@ -1,4 +1,4 @@
-"""Health and memory-context routes extracted from the main FastAPI entrypoint."""
+"""Health routes extracted from the main FastAPI entrypoint."""
 
 from __future__ import annotations
 

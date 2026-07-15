@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend contracts
+    runs-on: ubuntu-latest
+    env:
+      FINANCE_AGENT_DISABLE_BACKGROUND_JOBS: "1"
+      UV_CACHE_DIR: /tmp/uv-cache
+      no_proxy: 127.0.0.1,localhost,::1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: uv sync --locked --extra dev
+      - name: Compile Python sources
+        run: uv run python -m compileall -q apps database dagster_finance scripts
+      - name: Lint hardening boundaries
+        run: >-
+          uv run ruff check
+          apps/runtime
+          apps/monitoring
+          apps/data_control
+          apps/event_sla
+          apps/orchestration
+          apps/scheduler/automation_orchestration.py
+          apps/api/services/orchestration_service.py
+          dagster_finance/ops/automation_orchestration.py
+          tests/runtime
+          tests/monitoring
+          tests/data_control
+          tests/event_sla
+          tests/orchestration
+          tests/scheduler/test_automation_orchestration.py
+          tests/api/test_orchestration_api.py
+          tests/architecture/test_contract_review_guards.py
+      - name: Run execution hardening regression tests
+        run: >-
+          uv run pytest -q
+          tests/runtime
+          tests/monitoring/test_data_quality_monitor.py
+          tests/data_control/test_data_control_agent.py
+          tests/event_sla/test_event_sla_pipeline.py
+          tests/scripts/test_run_event_sla_pipeline.py
+          tests/orchestration/test_automation_orchestrator.py
+          tests/scheduler/test_automation_orchestration.py
+          tests/dagster_finance/test_automation_orchestration_schedule.py
+          tests/api/test_orchestration_api.py
+          tests/scripts/test_run_automation_orchestrator.py
+          tests/worker/test_premarket_composite_output_integration.py
+          tests/architecture/test_contract_review_guards.py
+
+  frontend:
+    name: Frontend contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/frontend-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/frontend-web/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck frontend
+        run: pnpm typecheck
+      - name: Test frontend contracts
+        run: pnpm test
+      - name: Build frontend
+        run: pnpm build

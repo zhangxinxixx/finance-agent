@@ -84,6 +84,17 @@ type RawDashboardSummaryResponse = {
     confidence?: number | null;
     reasoning?: string;
     trade_implication?: string;
+    quick_supports?: Array<{
+      level?: number;
+      label?: string;
+      source?: string;
+      source_label?: string;
+      trade_date?: string | null;
+      timeframe?: string | null;
+      basis?: string;
+      status?: string;
+      source_ref?: string;
+    }>;
     trigger_upgrade?: unknown;
     trigger_downgrade?: unknown;
     invalidation?: unknown;
@@ -296,6 +307,19 @@ function normalizeIntegratedMacro(
     confidence: typeof item.confidence === "number" ? item.confidence : null,
     reasoning: asString(item.reasoning),
     trade_implication: asString(item.trade_implication),
+    quick_supports: (item.quick_supports ?? [])
+      .filter((support) => typeof support.level === "number" && Number.isFinite(support.level))
+      .map((support) => ({
+        level: support.level as number,
+        label: asString(support.label, "快支撑"),
+        source: asString(support.source, "unknown"),
+        source_label: asString(support.source_label, "来源待确认"),
+        trade_date: asOptionalString(support.trade_date),
+        timeframe: asOptionalString(support.timeframe),
+        basis: asString(support.basis),
+        status: support.status === "active" || support.status === "broken" ? support.status : "unknown",
+        source_ref: asString(support.source_ref),
+      })),
     trigger_upgrade: asStringList(item.trigger_upgrade),
     trigger_downgrade: asStringList(item.trigger_downgrade),
     invalidation: asStringList(item.invalidation),

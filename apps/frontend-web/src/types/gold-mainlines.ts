@@ -53,7 +53,7 @@ export type KnownGoldVerificationStatus =
 
 export type GoldVerificationStatus = KnownGoldVerificationStatus | "unknown";
 
-export type GoldMainlineStatus = DataStatus | "stale" | "fallback" | "manual_required" | "unknown";
+export type GoldMainlineStatus = DataStatus | "stale" | "fallback" | "manual_required" | "blocked" | "unknown";
 export type GoldImpactStrength = "high" | "medium" | "low" | "weak" | "strong" | "unknown";
 export type GoldChainConclusionCode = "A" | "B" | "C" | "D" | "unknown";
 export type GoldReadinessStatus = "ready" | "partial" | "missing" | "unknown";

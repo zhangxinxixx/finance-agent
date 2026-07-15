@@ -6,7 +6,7 @@ import hashlib
 import os
 import shutil
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import cv2
@@ -90,10 +90,10 @@ def prune_jin10_image_assets(
     reference_date: date | None = None,
     retention_days: int | None = None,
 ) -> dict[str, int | str]:
-    """Keep canonical page JPEGs and crops for a rolling retention window.
+    """Prune only disposable VLM cache files and output-layer image copies.
 
-    Output-layer image directories are always removed because the API resolves
-    assets from the external page JPEGs and parsed figure directories.
+    External page JPEGs and parsed figures are canonical source evidence and are
+    never deleted by automatic retention, including during historical replay.
     """
 
     keep_days = _positive_int(
@@ -112,18 +112,19 @@ def prune_jin10_image_assets(
         "deleted_directories": 0,
         "output_copy_files": 0,
         "output_copy_bytes": 0,
+        "vlm_cache_files": 0,
+        "vlm_cache_bytes": 0,
+        "canonical_evidence_policy": "preserved",
     }
 
-    external = Path(external_root).expanduser()
-    for date_dir in _dated_directories(external, before=cutoff):
-        for images_dir in date_dir.glob("*/*/images"):
-            _delete_image_directory(images_dir, summary=summary, output_copy=False)
-
+    # Resolve for API compatibility while deliberately preserving this tree.
+    _canonical_external_root = Path(external_root).expanduser()
     storage = Path(storage_root).expanduser()
-    parsed_root = storage / "parsed" / "jin10"
-    for date_dir in _dated_directories(parsed_root, before=cutoff):
-        for figures_dir in date_dir.glob("*/figures"):
-            _delete_image_directory(figures_dir, summary=summary, output_copy=False)
+    _prune_vlm_cache_files(
+        storage / "parsed" / "jin10" / "vision_cache",
+        cutoff=cutoff,
+        summary=summary,
+    )
 
     outputs_root = storage / "outputs" / "jin10"
     if outputs_root.is_dir():
@@ -131,6 +132,33 @@ def prune_jin10_image_assets(
             _delete_image_directory(asset_dir, summary=summary, output_copy=True)
 
     return summary
+
+
+def _prune_vlm_cache_files(
+    cache_root: Path,
+    *,
+    cutoff: date,
+    summary: dict[str, int | str],
+) -> None:
+    if not cache_root.is_dir():
+        return
+    cutoff_timestamp = datetime.combine(cutoff, time.min).timestamp()
+    for item in cache_root.rglob("*"):
+        if not (item.is_file() or item.is_symlink()):
+            continue
+        stat = item.stat()
+        if stat.st_mtime >= cutoff_timestamp:
+            continue
+        byte_count = stat.st_size if item.is_file() else 0
+        item.unlink()
+        summary["deleted_files"] = int(summary["deleted_files"]) + 1
+        summary["deleted_bytes"] = int(summary["deleted_bytes"]) + byte_count
+        summary["vlm_cache_files"] = int(summary["vlm_cache_files"]) + 1
+        summary["vlm_cache_bytes"] = int(summary["vlm_cache_bytes"]) + byte_count
+    for directory in sorted((path for path in cache_root.rglob("*") if path.is_dir()), reverse=True):
+        if not any(directory.iterdir()):
+            directory.rmdir()
+            summary["deleted_directories"] = int(summary["deleted_directories"]) + 1
 
 
 def _to_bgr_on_white(image: np.ndarray) -> np.ndarray:

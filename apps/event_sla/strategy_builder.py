@@ -8,6 +8,8 @@ from apps.event_sla.schemas import EventSnapshot
 def build_trading_strategy(*, event: EventSnapshot, evidence_level: str) -> dict[str, Any]:
     if evidence_level != "full":
         return {
+            "authority": "none",
+            "output_mode": "observation_only",
             "bias": "event_risk",
             "confidence": "low",
             "strategy_mode": "observe",
@@ -15,11 +17,13 @@ def build_trading_strategy(*, event: EventSnapshot, evidence_level: str) -> dict
             "key_levels": _key_levels(event),
             "entry_conditions": [],
             "invalidation_conditions": [],
-            "risk_notes": ["actionable strategy is blocked until full content and quality gates are available"],
+            "risk_notes": ["legacy observation output is blocked from direct use until full content and quality gates are available"],
             "positioning_suggestion": "仅做情景参考，不构成投资建议",
         }
     if event.source_key == "cme_gold_options_bulletin":
         return {
+            "authority": "none",
+            "output_mode": "observation_only",
             "bias": "range",
             "confidence": "medium",
             "strategy_mode": "wait_breakout",
@@ -31,6 +35,8 @@ def build_trading_strategy(*, event: EventSnapshot, evidence_level: str) -> dict
             "positioning_suggestion": "仅做情景参考，不构成投资建议",
         }
     return {
+        "authority": "none",
+        "output_mode": "observation_only",
         "bias": "range",
         "confidence": "medium",
         "strategy_mode": "wait_breakout",
@@ -51,6 +57,8 @@ def render_strategy_markdown(strategy: dict[str, Any]) -> str:
         f"- Confidence: {strategy.get('confidence')}",
         f"- Strategy mode: {strategy.get('strategy_mode')}",
         f"- Evidence level: {strategy.get('evidence_level')}",
+        f"- Authority: {strategy.get('authority')}",
+        f"- Output mode: {strategy.get('output_mode')}",
         "",
         "## Key Levels",
     ]

@@ -46,6 +46,7 @@ def _seed_storage(storage_root: Path) -> None:
         storage_root / "monitoring" / "2026-07-08" / "downstream_readiness.json",
         {
             "trade_date": "2026-07-08",
+            "observed_at": OBSERVED_AT.isoformat(),
             "readiness": "blocked",
             "can_run_full_analysis": False,
             "can_run_research_distillation": False,
@@ -71,6 +72,7 @@ def test_data_control_agent_writes_hourly_plans_and_notification_request(tmp_pat
     assert (storage_root / artifacts["data_availability_snapshot"]).is_file()
     assert (storage_root / artifacts["collection_plan"]).is_file()
     assert (storage_root / artifacts["processing_plan"]).is_file()
+    assert (storage_root / artifacts["dispatch_plan"]).is_file()
     assert (storage_root / artifacts["hourly_report_json"]).is_file()
     assert (storage_root / artifacts["hourly_report_md"]).is_file()
 
@@ -89,6 +91,24 @@ def test_data_control_agent_writes_hourly_plans_and_notification_request(tmp_pat
     assert "jin10_reports_raw_to_parsed" in processing_plan["ready_steps"]
     assert "jin10_reports_outputs_to_agent_outputs" in processing_plan["ready_steps"]
     assert any(item["reason_code"] == "downstream_quality_gate_blocked" for item in processing_plan["blocked_steps"])
+    assert processing_plan["quality_gate_evaluation"]["status"] == "current"
+
+    dispatch_plan = json.loads((storage_root / artifacts["dispatch_plan"]).read_text(encoding="utf-8"))
+    assert dispatch_plan["auto_execute"] is False
+    assert dispatch_plan["execution_owner"] == "automation_orchestrator"
+    assert len({item["request_id"] for item in dispatch_plan["requests"]}) == len(dispatch_plan["requests"])
+    assert any(
+        item["source_key"] == "jin10_mcp_flash"
+        and item["task_key"] == "jin10_flash_refresh"
+        and item["status"] == "ready"
+        for item in dispatch_plan["requests"]
+    )
+    assert any(
+        item["source_key"] == "jin10_svip_reports" and item["status"] == "manual_required"
+        for item in dispatch_plan["requests"]
+    )
+    assert all("blocking_issues" not in item for item in dispatch_plan["blocked_steps"])
+    assert all(set(ref) == {"source_key", "check_type", "status", "reason_code"} for item in dispatch_plan["blocked_steps"] for ref in item["issue_refs"])
 
     report = json.loads((storage_root / artifacts["hourly_report_json"]).read_text(encoding="utf-8"))
     assert report["status"] == "blocked"
@@ -162,7 +182,7 @@ def test_data_control_agent_registers_artifacts_with_traceable_source_refs(tmp_p
     with factory() as session:
         artifacts = session.query(RunArtifact).all()
 
-    assert len(artifacts) == 5
+    assert len(artifacts) == 6
     assert artifacts[0].source_refs_data == [
         {
             "source": "data_control_agent",
@@ -184,6 +204,7 @@ def test_processing_plan_blocks_only_the_affected_capability(tmp_path) -> None:
         storage_root / "monitoring" / "2026-07-08" / "downstream_readiness.json",
         {
             "trade_date": "2026-07-08",
+            "observed_at": OBSERVED_AT.isoformat(),
             "readiness": "partial",
             "capabilities": {
                 "daily_market_snapshot": "allowed",
@@ -210,3 +231,69 @@ def test_processing_plan_blocks_only_the_affected_capability(tmp_path) -> None:
     assert plan["status"] == "partial"
     assert any(item["step"] == "run_knowledge_distillation" for item in plan["blocked_steps"])
     assert not any(item["step"] == "run_full_analysis" for item in plan["blocked_steps"])
+
+
+def test_processing_plan_blocks_when_downstream_readiness_is_missing(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+
+    plan = build_processing_plan(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT.isoformat(),
+    )
+
+    assert plan["status"] == "blocked"
+    assert plan["quality_gate_evaluation"]["status"] == "missing"
+    assert any(item["reason_code"] == "downstream_readiness_missing" for item in plan["blocked_steps"])
+
+
+def test_processing_plan_blocks_when_downstream_readiness_is_stale(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _write_json(
+        storage_root / "monitoring" / "2026-07-08" / "downstream_readiness.json",
+        {
+            "trade_date": "2026-07-08",
+            "observed_at": "2026-07-08T08:00:00+00:00",
+            "readiness": "ready",
+            "capabilities": {
+                "full_daily_analysis": "allowed",
+                "knowledge_distillation": "allowed",
+            },
+        },
+    )
+
+    plan = build_processing_plan(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT.isoformat(),
+    )
+
+    assert plan["status"] == "blocked"
+    assert plan["quality_gate_evaluation"]["status"] == "stale"
+    assert plan["quality_gate_evaluation"]["age_minutes"] == 135
+    assert any(item["reason_code"] == "downstream_readiness_stale" for item in plan["blocked_steps"])
+
+
+def test_processing_plan_blocks_when_downstream_readiness_trade_date_mismatches(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _write_json(
+        storage_root / "monitoring" / "2026-07-08" / "downstream_readiness.json",
+        {
+            "trade_date": "2026-07-07",
+            "observed_at": OBSERVED_AT.isoformat(),
+            "readiness": "ready",
+            "capabilities": {"full_daily_analysis": "allowed"},
+        },
+    )
+
+    plan = build_processing_plan(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT.isoformat(),
+    )
+
+    assert plan["status"] == "blocked"
+    assert plan["quality_gate_evaluation"]["status"] == "trade_date_mismatch"
+    assert any(
+        item["reason_code"] == "downstream_readiness_trade_date_mismatch" for item in plan["blocked_steps"]
+    )

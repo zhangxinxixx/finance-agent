@@ -1,0 +1,44 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const source = (relativePath) => readFileSync(join(root, relativePath), "utf8");
+const adapter = source("src/adapters/cmeOptions.ts");
+const hook = source("src/hooks/useCMEOptionsDecision.ts");
+const page = source("src/pages/CMEOptionsPage.tsx");
+const workspace = source("src/components/cme-options/CMEOptionsDecisionWorkspace.tsx");
+const kpiStrip = source("src/components/cme-options/CMEOptionsKpiStrip.tsx");
+const sections = source("src/components/cme-options/CMEOptionsPageSections.tsx");
+const overview = source("src/components/cme-options/CMEOptionsOverviewGrid.tsx");
+const rightColumn = source("src/components/cme-options/CMEOptionsRightColumn.tsx");
+const format = source("src/components/cme-options/cmeOptionsFormat.ts");
+
+assert.match(adapter, /CME_OPTIONS_DECISION_PATH = "\/api\/options\/decision"/, "decision adapter must use the stable API endpoint");
+assert.match(adapter, /schema_version !== "cme_options_decision\.v1"/, "decision adapter must validate the schema version");
+assert.match(adapter, /fetchCMEOptionsDecision/, "decision adapter must export a dedicated fetcher");
+assert.doesNotMatch(adapter, /loadMockCMEOptions\(\).*decision/s, "decision request must not fall back to snapshot mock data");
+assert.match(hook, /fetchCMEOptionsDecision\(date\)/, "decision hook must be date-driven");
+assert.match(page, /decisionState\.refetch\(\)/, "page refresh must also refresh decision data");
+assert.match(page, /decisionState\.data\s*\?\s*<CMEOptionsDecisionWorkspace/, "available decision data must render as the single overview workspace");
+assert.doesNotMatch(page, /Snapshot Deep Analysis/, "overview must not append the legacy snapshot overview after the decision workspace");
+assert.match(page, /value: "snapshot-overview", label: "结构总览"/, "legacy snapshot overview must remain accessible as a dedicated tab");
+assert.match(sections, /activeTab === "overview" \|\| activeTab === "snapshot-overview"/, "snapshot overview tab must render the complete legacy overview grid");
+assert.match(sections, /cme-options-tab-grid--left-rail/, "detail tabs must use the shared responsive layout");
+assert.match(workspace, /oi_by_expiry/, "decision workspace must render OI expiry data");
+assert.match(workspace, /key_levels/, "decision workspace must render backend key levels");
+assert.match(workspace, /gamma_profile/, "decision workspace must render the backend Gamma Profile");
+assert.match(workspace, /intraday_strategy/, "decision workspace must render backend intraday strategy");
+assert.match(workspace, /swing_strategy/, "decision workspace must render backend swing strategy");
+assert.match(workspace, /translateDecisionText/, "decision workspace must localize backend decision prose");
+assert.doesNotMatch(workspace, />Call\s*</, "decision workspace must not expose English Call labels");
+assert.doesNotMatch(workspace, />Put\s*</, "decision workspace must not expose English Put labels");
+assert.match(kpiStrip, /decision\?\.gamma_summary/, "top structure KPIs must fall back to the decision read model");
+assert.match(kpiStrip, /formatCompactNumber\(netGex\)/, "top GEX must use a readable compact scale");
+assert.match(overview, /summarizeDecision\(decision\)/, "snapshot overview must fall back to the backend decision read model");
+assert.match(rightColumn, /summarizeDecision\(decision\)/, "detail rail must fall back to the backend decision read model");
+assert.match(format, /export function formatCompactNumber/, "options metrics must share unit-aware compact formatting");
+assert.doesNotMatch(page, /wallScores\.length === 0/, "missing wall rows must degrade the wall tab instead of blanking the whole page");
+
+console.log("CME Options decision frontend contract OK");

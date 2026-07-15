@@ -6,6 +6,11 @@ from typing import Any
 
 from apps.analysis.strategy.schemas import StrategyCardOutput
 from apps.output.artifacts import _validate_path_component, normalize_run_id
+from apps.runtime.immutable_artifact import (
+    immutable_json_item,
+    immutable_text_item,
+    write_immutable_artifact_bundle,
+)
 
 # ──────────────────────────────────────────────────────────────────────
 # path builder
@@ -52,6 +57,7 @@ def write_final_report(
     run_id: str,
     overwrite: bool = False,
     structured_report: Any | None = None,  # P4-04: StructuredReportOutput dict
+    artifact_type: str = "final_report",
 ) -> dict:
     """Write ``final_report.md`` to the artifact directory.
 
@@ -61,12 +67,12 @@ def write_final_report(
     Returns a summary dict with ``artifact_type``, ``paths`` list, and
     ``skipped`` bool for downstream logging / auditing.
 
-    Raises ``FileExistsError`` when the target file already exists and
-    ``overwrite=False`` (the default).
+    With the default ``overwrite=False``, an identical bundle is returned as
+    skipped while conflicting content raises ``FileExistsError``.
     """
     artifact_dir = _safe_artifact_dir(
         storage_root,
-        artifact_type="final_report",
+        artifact_type=artifact_type,
         asset=asset,
         trade_date=trade_date,
         run_id=run_id,
@@ -74,35 +80,40 @@ def write_final_report(
 
     target_path = artifact_dir / "final_report.md"
 
-    if target_path.exists() and not overwrite:
-        raise FileExistsError(
-            f"final_report.md already exists at {target_path}; "
-            "pass overwrite=True to replace"
-        )
-
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(markdown, encoding="utf-8")
-
     paths: list[str] = [str(target_path)]
-
-    # ── P4-04: write structured_report.json ──────────────────────────
+    structured_payload: dict[str, Any] | None = None
     if structured_report is not None:
-        json_path = artifact_dir / "structured_report.json"
-        if json_path.exists() and not overwrite:
-            raise FileExistsError(
-                f"structured_report.json already exists at {json_path}; "
-                "pass overwrite=True to replace"
+        if hasattr(structured_report, "model_dump"):
+            structured_payload = structured_report.model_dump(mode="json")
+        elif isinstance(structured_report, dict):
+            structured_payload = dict(structured_report)
+        else:
+            raise TypeError("structured_report must be a mapping or Pydantic model")
+
+    if overwrite:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(markdown, encoding="utf-8")
+        if structured_payload is not None:
+            json_path = artifact_dir / "structured_report.json"
+            json_path.write_text(
+                json.dumps(structured_payload, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
             )
-        json_path.write_text(
-            json.dumps(structured_report, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
-        paths.append(str(json_path))
+            paths.append(str(json_path))
+        skipped = False
+    else:
+        items = [immutable_text_item(target_path, markdown)]
+        if structured_payload is not None:
+            json_path = artifact_dir / "structured_report.json"
+            items.append(immutable_json_item(json_path, structured_payload))
+            paths.append(str(json_path))
+        write_results = write_immutable_artifact_bundle(items, storage_root=storage_root)
+        skipped = not any(item.written for item in write_results)
 
     return {
-        "artifact_type": "final_report",
+        "artifact_type": artifact_type,
         "paths": paths,
-        "skipped": False,
+        "skipped": skipped,
     }
 
 
@@ -203,18 +214,20 @@ def write_strategy_card(
     storage_root: Path | str,
     card: StrategyCardOutput,
     overwrite: bool = False,
+    artifact_type: str = "strategy_card",
 ) -> dict:
     """Write ``strategy_card.json`` and ``strategy_card.md`` to the artifact directory.
 
     Returns a summary dict with ``artifact_type``, ``paths`` list, and
     ``skipped`` bool.
 
-    Raises ``FileExistsError`` when *either* output file already exists
-    and ``overwrite=False`` (the default).
+    With the default ``overwrite=False``, an identical bundle is returned as
+    skipped while conflicting content raises ``FileExistsError`` before either
+    file is changed.
     """
     artifact_dir = _safe_artifact_dir(
         storage_root,
-        artifact_type="strategy_card",
+        artifact_type=artifact_type,
         asset=card.asset,
         trade_date=card.trade_date,
         run_id=card.run_id,
@@ -223,31 +236,26 @@ def write_strategy_card(
     json_path = artifact_dir / "strategy_card.json"
     md_path = artifact_dir / "strategy_card.md"
 
-    # Check both paths before writing anything
-    if not overwrite:
-        conflicts = [p for p in (json_path, md_path) if p.exists()]
-        if conflicts:
-            raise FileExistsError(
-                f"strategy card artifact(s) already exist: {', '.join(str(p) for p in conflicts)}; "
-                "pass overwrite=True to replace"
-            )
-
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-
-    # JSON — use model_dump(mode='json') for serializable types.
-    json_path.write_text(
-        json.dumps(card.model_dump(mode="json"), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    # Markdown — deterministic render, no LLM / network / file reads
-    md_path.write_text(
-        _render_strategy_card_markdown(card),
-        encoding="utf-8",
-    )
+    if overwrite:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(
+            json.dumps(card.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        md_path.write_text(_render_strategy_card_markdown(card), encoding="utf-8")
+        skipped = False
+    else:
+        write_results = write_immutable_artifact_bundle(
+            [
+                immutable_json_item(json_path, card.model_dump(mode="json")),
+                immutable_text_item(md_path, _render_strategy_card_markdown(card)),
+            ],
+            storage_root=storage_root,
+        )
+        skipped = not any(item.written for item in write_results)
 
     return {
-        "artifact_type": "strategy_card",
+        "artifact_type": artifact_type,
         "paths": [str(json_path), str(md_path)],
-        "skipped": False,
+        "skipped": skipped,
     }

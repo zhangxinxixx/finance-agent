@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
 from apps.analysis.macro.conclusion import build_macro_conclusion
@@ -11,6 +12,7 @@ from apps.features.macro.snapshot import build_macro_snapshot
 def test_current_manual_macro_doc_generates_target_conclusion() -> None:
     snapshot = build_macro_snapshot(_current_doc_points(), as_of="2026-05-08")
     conclusion = build_macro_conclusion(snapshot)
+    assert conclusion.market_phase == "transition_release"
     assert conclusion.bias == "中性偏多"
     assert conclusion.quantity_layer == "偏松"
     assert conclusion.price_layer == "钱仍贵"
@@ -30,17 +32,18 @@ def test_current_manual_macro_doc_generates_target_conclusion() -> None:
     assert "回踩接多" in markdown
 
 
-def test_recent_trade_day_macro_doc_maps_to_rate_pressure() -> None:
+def test_recent_trade_day_macro_doc_uses_authoritative_transition_phase() -> None:
     snapshot = build_macro_snapshot(_recent_trade_day_points(), as_of="2026-06-26")
     conclusion = build_macro_conclusion(snapshot)
 
+    assert conclusion.market_phase == "transition_release"
     assert conclusion.bias == "中性偏空"
     assert conclusion.quantity_layer == "分裂偏紧"
     assert conclusion.price_layer == "钱仍贵"
     assert conclusion.dollar_layer == "逆风"
-    assert conclusion.state == "利率压制态"
-    assert conclusion.action == "反弹空 / 等待"
-    assert conclusion.action_priority == "等待反弹空 / 等确认"
+    assert conclusion.state == "过渡释放态"
+    assert conclusion.action == "等待"
+    assert conclusion.action_priority == "主要"
     assert "DXY 跌破 100.8" in conclusion.trigger_upgrade
     assert "10Y 实际利率跌回 2.10% 下方" in conclusion.trigger_upgrade
     assert "DXY 重新上破 101.8" in conclusion.trigger_downgrade
@@ -50,21 +53,34 @@ def test_recent_trade_day_macro_doc_maps_to_rate_pressure() -> None:
     assert "准备金周变化 -82.030B" in conclusion.reasoning
 
     markdown = render_macro_full_report_markdown(snapshot, conclusion)
-    assert "利率压制态" in markdown
+    assert "过渡释放态" in markdown
     assert "分裂偏紧" in markdown
-    assert "反弹空" in markdown
+    assert "过渡释放态下的等待" in markdown
     assert "DXY 跌破 100.8" in markdown
     assert "10Y 实际利率跌回 2.10% 下方" in markdown
     assert "实际收益率 | 高位压制 | 待LLM判断" in markdown
     assert "利率曲线 / 2Y-3M利差" in markdown
-    assert "规则预判更接近：**利率压制态**。" in markdown
-    assert "规则预判更接近：**利率压制态**。" in markdown
+    assert "规则预判更接近：**过渡释放态**。" in markdown
     assert "## 系统性风险雷达" in markdown
     assert "## 三路径推演" in markdown
-    assert "## 联网补充与系统数据源缺口" in markdown
-    assert "ETF / GLD 流向" in markdown
-    assert "系统快照未接入；如联网获取只能标为外部补充" in markdown
+    assert "## 联网补充与系统数据源缺口" not in markdown
+    assert "## 数据源" not in markdown
     assert "规则预判方向与动作仅供对照，不是最终结论。" in markdown
+
+
+def test_trend_tailwind_without_bullish_bias_does_not_create_long_action() -> None:
+    snapshot = build_macro_snapshot(_recent_trade_day_points(), as_of="2026-06-26")
+
+    with patch(
+        "apps.analysis.macro.conclusion.classify_macro_regime",
+        return_value={"market_phase": "trend_tailwind"},
+    ):
+        conclusion = build_macro_conclusion(snapshot)
+
+    assert conclusion.state == "趋势顺风态"
+    assert conclusion.bias == "中性偏空"
+    assert conclusion.action == "等待"
+    assert conclusion.action_priority == "等待阶段与方向共振"
 
 
 def test_macro_reasoning_matches_neutral_dollar_layer() -> None:
@@ -141,13 +157,103 @@ def test_macro_full_report_prefers_llm_output_when_present() -> None:
         market_phase="rate_pressure",
         regime_drivers={"drivers": {"dxy": {"value": 101.366}}},
         data_category=DataCategory.EXTERNAL_OPINION,
-        llm_raw_output="# XAUUSD 宏观交易引擎 v2.1\n\n## 一句话结论\n\nLLM 正文已接入。",
+        llm_raw_output=(
+            "# XAUUSD 宏观交易引擎 v2.1\n\n"
+            "## 一句话结论\n\nLLM 正文已接入。\n\n"
+            "## 流动性与利率统一数据表\n\n| 重复表 | 不应展示 |\n\n"
+            "## 数据源\n\n- 不应展示的来源\n\n"
+            "## 风险\n\n保留的风险。"
+        ),
     )
 
     markdown = render_macro_full_report_markdown(snapshot, conclusion, macro_output=macro_output)
 
     assert "## LLM 宏观分析" in markdown
     assert "LLM 正文已接入" in markdown
+    assert markdown.count("## 一句话结论") == 1
+    assert "重复表" not in markdown
+    assert "不应展示的来源" not in markdown
+    assert "保留的风险" in markdown
+    assert "## 当前所处环境阶段判断" not in markdown
+    assert "## 口径与规则校验" in markdown
+    assert "确定性规则预判" in markdown
+
+
+def test_macro_full_report_degrades_empty_snapshot_without_neutral_conclusion_or_missing_table() -> None:
+    snapshot = build_macro_snapshot(
+        [],
+        as_of="2026-07-21",
+        unavailable_symbols=["DGS10", "DXY", "SOFR"],
+        source_refs=[{"symbol": "DGS10", "source": "fred", "reason": "network failed"}],
+    )
+    conclusion = build_macro_conclusion(snapshot)
+
+    markdown = render_macro_full_report_markdown(snapshot, conclusion)
+
+    assert "## 本次报告不可用" in markdown
+    assert "没有获得任何有效指标" in markdown
+    assert f"缺失指标数：{len(snapshot.unavailable_symbols)}" in markdown
+    assert "## 一句话结论" not in markdown
+    assert "流动性与利率统一数据表" not in markdown
+    assert "中性" not in markdown
+    assert "## 数据源" not in markdown
+
+
+def test_macro_full_report_adds_us03m_and_explains_positive_spread_driver() -> None:
+    points = _curve_points(
+        dgs2=[("2026-06-17", 4.20), ("2026-07-10", 4.21), ("2026-07-17", 4.18)],
+        dgs3mo=[("2026-06-17", 3.83), ("2026-07-10", 3.85), ("2026-07-17", 3.85)],
+    )
+    snapshot = build_macro_snapshot(points, as_of="2026-07-17")
+    conclusion = build_macro_conclusion(snapshot)
+
+    markdown = render_macro_full_report_markdown(snapshot, conclusion)
+
+    assert "| US03M | 2026-07-17 | 3.85%" in markdown
+    assert "3M 周度持平、月度上行，当前政策价格未松" in markdown
+    assert "| 2Y-3M 利差 | 2026-07-17 | 0.33%" in markdown
+    assert "正斜率、周度收窄；2Y 下行、3M 未降，未来紧缩溢价缓和但当前短端未松" in markdown
+    assert "正斜率、周度收窄" in markdown
+    assert "2Y 下行而 3M 未降，仅代表未来紧缩溢价缓和，当前短端尚未宽松" in markdown
+    assert "不把转正、走阔或收窄机械等同于宽松" in markdown
+    assert "4100" not in markdown
+    assert "3720" not in markdown
+
+
+def test_macro_full_report_does_not_treat_opposing_curve_legs_as_one_way_signal() -> None:
+    points = _curve_points(
+        dgs2=[("2026-07-10", 4.10), ("2026-07-17", 4.20)],
+        dgs3mo=[("2026-07-10", 3.90), ("2026-07-17", 3.85)],
+    )
+    snapshot = build_macro_snapshot(points, as_of="2026-07-17")
+    conclusion = build_macro_conclusion(snapshot)
+
+    markdown = render_macro_full_report_markdown(snapshot, conclusion)
+
+    assert "2Y 上行而 3M 下行" in markdown
+    assert "鹰派预期与近期政策价格转松并存" in markdown
+    assert "曲线变化不能单向解读" in markdown
+
+
+def _curve_points(
+    *,
+    dgs2: list[tuple[str, float]],
+    dgs3mo: list[tuple[str, float]],
+) -> list[dict[str, object]]:
+    series = {"DGS2": dgs2, "DGS3MO": dgs3mo}
+    return [
+        {
+            "symbol": symbol,
+            "date": date_value,
+            "value": value,
+            "source": "fred",
+            "source_url": f"fixture://fred/{symbol}",
+            "retrieved_at": "2026-07-17T00:00:00+00:00",
+            "raw_path": f"fixture/{symbol}.json",
+        }
+        for symbol, observations in series.items()
+        for date_value, value in observations
+    ]
 
 
 def _neutral_dollar_and_falling_reserves_value(point: dict[str, object]) -> object:

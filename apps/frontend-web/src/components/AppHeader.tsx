@@ -27,9 +27,10 @@ const viewLabels: Record<string, string> = {
   "/scheduler/grid": "任务网格",
   "/scheduler/tasks": "任务计划",
   "/review-center": "人工复核",
-  "/strategy": "每日策略框架",
+  "/strategy": "策略决策台",
   "/settings": "系统设置",
   "/settings/audit": "审计日志",
+  "/settings/llm-audit": "LLM 调用审计",
 };
 
 function getViewLabel(pathname: string): string {

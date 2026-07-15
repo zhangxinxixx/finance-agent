@@ -13,13 +13,19 @@ _MIGRATIONS_DIR = Path(__file__).resolve().parent
 _ALEMBIC_INI = _MIGRATIONS_DIR / "alembic.ini"
 
 
+def alembic_config_value(value: str) -> str:
+    """Escape ConfigParser interpolation while preserving the resolved URL."""
+
+    return value.replace("%", "%%")
+
+
 def build_alembic_config(database_url: str | None = None) -> Config:
     """Build an Alembic config pinned to this repo's migrations directory."""
     config = Config(str(_ALEMBIC_INI))
     config.set_main_option("script_location", str(_MIGRATIONS_DIR))
     resolved_url = database_url or os.getenv("DATABASE_URL")
     if resolved_url:
-        config.set_main_option("sqlalchemy.url", resolved_url)
+        config.set_main_option("sqlalchemy.url", alembic_config_value(resolved_url))
     config.attributes["database_url_explicit"] = database_url is not None
     return config
 

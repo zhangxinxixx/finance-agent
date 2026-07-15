@@ -15,6 +15,7 @@ export const GENERIC_LABELS: Record<string, string> = {
   api: "接口数据",
   approved: "已通过",
   available: "可用",
+  blocked: "发布阻断",
   cancelled: "已取消",
   clear: "清晰",
   complete: "完整",
@@ -171,6 +172,7 @@ export const UP_STATUSES = new Set([
 ]);
 
 export const WARN_STATUSES = new Set([
+  "blocked",
   "cancelled",
   "conflicted",
   "degraded",

@@ -13,14 +13,19 @@ _AGENT_NAME = "macro_liquidity_agent"
 _MODULE = "macro"
 _VERSION = "1.0"
 _SYSTEM_PROMPT = "你是一位专业的宏观流动性研究员。只输出 Markdown 正文。"
-_PROMPT_VERSION = "macro_liquidity_agent_v1"
+_PROMPT_VERSION = "macro_liquidity_agent_v2"
+_DEFAULT_LLM_PROVIDER = "cockpit"
+_DEFAULT_LLM_MODEL = "gpt-5.6-sol"
+_DEFAULT_LLM_REASONING_EFFORT = "high"
 
 _DXY_KEYS = ("DXY", "dxy")
 _REAL_YIELD_KEYS = ("REAL_10Y", "REAL_YIELD_10Y", "real_yield_10y", "US10Y_REAL", "10Y_REAL_YIELD")
 _NOMINAL_YIELD_KEYS = ("US10Y", "DGS10", "10Y", "10Y_NOMINAL_YIELD")
 _BREAKEVEN_KEYS = ("T10YIE", "BREAKEVEN_10Y", "10Y_BREAKEVEN")
 _US02Y_KEYS = ("US02Y", "DGS2")
-_WATCHLIST = ["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "WRESBAL", "DGS2", "SOFR", "EFFR", "IORB"]
+_US03M_KEYS = ("US03M", "DGS3MO")
+_SHORT_CURVE_KEYS = ("YIELD_SPREAD_2Y_3M", "yield_spread_2y_3m")
+_WATCHLIST = ["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "WRESBAL", "DGS2", "DGS3MO", "SOFR", "EFFR", "IORB"]
 _LIQUIDITY_GROUPS = {
     "ON RRP": ("RRPONTSYD", "ON_RRP", "ON_RRP_USAGE"),
     "TGA": ("TGA",),
@@ -96,14 +101,30 @@ def invoke_macro_liquidity_llm(
         }
 
     prompt = build_macro_liquidity_prompt(snapshot, deterministic_output=deterministic_output)
+    provider = os.getenv("MACRO_LIQUIDITY_LLM_PROVIDER", _DEFAULT_LLM_PROVIDER)
+    model = os.getenv("MACRO_LIQUIDITY_LLM_MODEL", os.getenv("LLM_COCKPIT_MODEL", _DEFAULT_LLM_MODEL))
+    reasoning_effort = os.getenv(
+        "MACRO_LIQUIDITY_LLM_REASONING_EFFORT",
+        os.getenv("LLM_COCKPIT_REASONING_EFFORT", _DEFAULT_LLM_REASONING_EFFORT),
+    )
     response = chat_sync(
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
+        provider=provider,
+        model=model,
+        reasoning_effort=reasoning_effort,
         temperature=0.3,
         max_tokens=4096,
         max_retries=0,
+        audit_context={
+            "caller": "macro_liquidity.invoke_macro_liquidity_llm",
+            "run_id": snapshot.get("run_id"),
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "trade_date": snapshot.get("trade_date"),
+            "input_payload": build_macro_liquidity_structured_payload(snapshot, deterministic_output=deterministic_output),
+        },
     )
     return {
         "markdown": _parse_markdown(response.content),
@@ -111,8 +132,10 @@ def invoke_macro_liquidity_llm(
         "provider": response.provider,
         "latency_ms": response.latency_ms,
         "tokens": response.usage,
+        "reasoning_effort": response.reasoning_effort,
         "prompt_version": _PROMPT_VERSION,
         "skipped": False,
+        "audit_id": getattr(response, "audit_id", None),
     }
 
 
@@ -171,6 +194,13 @@ def build_macro_liquidity_structured_payload(
         "real_yield_policy": {
             "main": "US10Y - T10YIE",
             "supplementary": "DFII10 / TIPS only as observation, not the main score口径",
+        },
+        "short_curve_policy": {
+            "formula": "US02Y - US03M (DGS2 - DGS3MO)",
+            "rule": "先判断曲线正负和收窄/走阔，再拆分 US02Y 与 US03M 的变化来源；不得把转正或走阔机械解释为黄金利多。",
+            "us02y": _indicator_snapshot(indicators, _US02Y_KEYS),
+            "us03m": _indicator_snapshot(indicators, _US03M_KEYS),
+            "spread_2y_3m": _indicator_snapshot(indicators, _SHORT_CURVE_KEYS),
         },
         "external_web_policy": {
             "use_full_available_capability": True,
@@ -267,6 +297,7 @@ def _merge_macro_liquidity_output(
             "prompt_messages": payload["prompt_messages"] or None,
             "input_payload": payload["input_payload"] or None,
             "llm_raw_output": payload["llm_raw_output"],
+            "llm_audit_id": llm_result.get("audit_id"),
         }
     )
 
@@ -343,6 +374,9 @@ def _compact_indicators(indicators: dict[str, Any]) -> dict[str, Any]:
         "US10Y",
         "DGS2",
         "US02Y",
+        "DGS3MO",
+        "US03M",
+        "YIELD_SPREAD_2Y_3M",
         "T10YIE",
         "BREAKEVEN_10Y",
         "REAL_10Y",
@@ -368,11 +402,18 @@ def _indicator_snapshot(indicators: dict[str, Any], keys: tuple[str, ...]) -> di
     if item is None:
         return None
     return {
-        "value": item.get("value") or item.get("latest") or item.get("level"),
-        "change": item.get("change_1w") or item.get("weekly_change") or item.get("delta_1w") or item.get("change"),
+        "value": _first_present(item, ("value", "latest", "level")),
+        "change": _first_present(item, ("change_1w", "weekly_change", "delta_1w", "change")),
         "unit": item.get("unit"),
         "updated_at": item.get("updated_at") or item.get("as_of"),
     }
+
+
+def _first_present(item: dict[str, Any], fields: tuple[str, ...]) -> Any:
+    for field in fields:
+        if field in item and item[field] is not None:
+            return item[field]
+    return None
 
 
 def _parse_markdown(text: str) -> str:
@@ -446,7 +487,7 @@ def _build_deterministic_output(
     key_findings: list[str] = []
     risk_points: list[str] = []
     invalid_conditions: list[str] = []
-    watchlist = ["DGS10", "T10YIE", "DXY", "RRPONTSYD", "TGA", "WRESBAL", "DGS2", "SOFR", "EFFR", "IORB"]
+    watchlist = list(_WATCHLIST)
     score = 0
     confidence = 0.45
     status = AgentStatus.SUCCESS

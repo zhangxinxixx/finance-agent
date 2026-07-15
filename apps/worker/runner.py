@@ -64,6 +64,7 @@ from apps.worker.source_readiness_gate import (
     load_premarket_source_status_index as _load_premarket_source_status_index,
     should_apply_source_readiness_gate as _should_apply_source_readiness_gate,
 )
+from dagster_finance.ops.premarket_gate import evaluate_premarket_readiness as _evaluate_premarket_readiness
 from apps.worker import step_dispatcher as _step_dispatcher
 from apps.analysis.agents.quality_gate_evaluator import evaluate_quality_gate
 from database.models.task import StepStatus, TaskRun, TaskStatus
@@ -305,7 +306,14 @@ def run_premarket(
     # Persist unified Analysis Snapshot before generic provenance so failures are reflected.
     analysis_snapshot: dict[str, Any] | None = None
     try:
-        analysis_snapshot_path, analysis_snapshot = _persist_analysis_snapshot(storage_root, run_id, macro_state, cme_state, news_state)
+        analysis_snapshot_path, analysis_snapshot = _persist_analysis_snapshot(
+            storage_root,
+            run_id,
+            macro_state,
+            cme_state,
+            news_state,
+            analysis_context_date=task.trade_date,
+        )
         macro_state.step_summaries["analysis_snapshot"] = {
             "step": "analysis_snapshot",
             "status": "success",
@@ -355,6 +363,7 @@ def run_premarket(
                 "step": "pre_analysis_gate",
                 "status": "blocked",
                 "decision": pre_analysis_gate.get("decision"),
+                "reason_code": pre_analysis_gate.get("reason_code"),
                 "source_ref": pre_analysis_gate.get("source_ref"),
                 "blocked_outputs": blocked_outputs,
             }
@@ -388,9 +397,27 @@ def run_premarket(
                     snapshot_db_id = _db_persist_agent_outputs(
                         db, analysis_snapshot, composite_outputs["agents"], run_id
                     )
-                    _db_persist_final_result(
-                        db, analysis_snapshot, composite_outputs, snapshot_db_id
-                    )
+                    agent_loop_decision = composite_outputs.get("agent_loop_decision")
+                    publish_allowed = bool(getattr(agent_loop_decision, "publish_allowed", False))
+                    if publish_allowed:
+                        _db_persist_final_result(
+                            db, analysis_snapshot, composite_outputs, snapshot_db_id
+                        )
+                    else:
+                        _ensure_review_items(
+                            db,
+                            run_id=run_id,
+                            trade_date=str(analysis_snapshot.get("trade_date") or ""),
+                            card=composite_outputs["strategy_card"],
+                            agents=composite_outputs["agents"],
+                        )
+                        macro_state.step_summaries["db_persist_observation"] = {
+                            "step": "db_persist_observation",
+                            "status": "needs_review",
+                            "publish_allowed": False,
+                            "output_mode": "observe",
+                            "reason_codes": list(getattr(agent_loop_decision, "reasons", []) or []),
+                        }
                 except Exception as db_exc:
                     logger.exception("DB persist of composite analysis outputs failed (file artifacts are safe)")
                     macro_state.step_summaries["db_persist_composite"] = {
@@ -405,20 +432,21 @@ def run_premarket(
                     composite_outputs=composite_outputs,
                     analysis_snapshot=analysis_snapshot,
                 )
-                try:
-                    _register_composite_report_registry_entries(
-                        db,
-                        run_id=run_id,
-                        composite_outputs=composite_outputs,
-                        analysis_snapshot=analysis_snapshot,
-                    )
-                except Exception as db_exc:
-                    logger.exception("Report registry persist of composite analysis outputs failed (file artifacts are safe)")
-                    macro_state.step_summaries["db_persist_composite_report_registry"] = {
-                        "step": "db_persist_composite_report_registry",
-                        "status": "failed",
-                        "error": str(db_exc),
-                    }
+                if bool(getattr(composite_outputs.get("agent_loop_decision"), "publish_allowed", False)):
+                    try:
+                        _register_composite_report_registry_entries(
+                            db,
+                            run_id=run_id,
+                            composite_outputs=composite_outputs,
+                            analysis_snapshot=analysis_snapshot,
+                        )
+                    except Exception as db_exc:
+                        logger.exception("Report registry persist of composite analysis outputs failed (file artifacts are safe)")
+                        macro_state.step_summaries["db_persist_composite_report_registry"] = {
+                            "step": "db_persist_composite_report_registry",
+                            "status": "failed",
+                            "error": str(db_exc),
+                        }
             except Exception as exc:
                 logger.exception("Composite analysis pipeline failed")
                 had_failure = True
@@ -507,11 +535,51 @@ def run_premarket(
 def _load_pre_analysis_gate(*, storage_root: Path, analysis_snapshot: dict[str, Any]) -> dict[str, Any]:
     trade_date = str(analysis_snapshot.get("trade_date") or "")
     if not trade_date:
+        return {
+            "decision": "block",
+            "reason_code": "analysis_snapshot_trade_date_missing",
+            "blocked_outputs": ["full analysis", "knowledge distillation"],
+        }
+
+    legacy_gate = _load_legacy_pre_analysis_gate(storage_root=storage_root, trade_date=trade_date)
+    if _pre_analysis_gate_blocks(legacy_gate):
+        return legacy_gate
+
+    readiness_gate = _evaluate_premarket_readiness(
+        storage_root=storage_root,
+        trade_date=trade_date,
+        observed_at=datetime.now(timezone.utc),
+    )
+    if _pre_analysis_gate_blocks(readiness_gate):
+        return readiness_gate
+    if legacy_gate:
+        return {**legacy_gate, "readiness_gate": readiness_gate}
+    return readiness_gate
+
+
+def _load_legacy_pre_analysis_gate(*, storage_root: Path, trade_date: str) -> dict[str, Any]:
+    date_root = storage_root / "orchestration" / trade_date
+    compatibility_gate = _read_json_dict(date_root / "pre_analysis_gate.json")
+    if compatibility_gate:
+        return compatibility_gate
+
+    latest = _read_json_dict(date_root / "latest.json")
+    if str(latest.get("trade_date") or "") != trade_date:
         return {}
-    path = storage_root / "orchestration" / trade_date / "pre_analysis_gate.json"
+    artifacts = latest.get("artifacts")
+    source_ref = artifacts.get("pre_analysis_gate") if isinstance(artifacts, dict) else None
+    if not isinstance(source_ref, str) or not source_ref:
+        return {}
+    relative_path = Path(source_ref)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        return {}
+    return _read_json_dict(storage_root / relative_path)
+
+
+def _read_json_dict(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
 
@@ -566,6 +634,8 @@ def _persist_analysis_snapshot(
     macro_state: object,
     cme_state: object,
     news_state: object | None = None,
+    *,
+    analysis_context_date: str | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Build and write the unified Analysis Snapshot from in-memory pipeline states.
 
@@ -575,12 +645,24 @@ def _persist_analysis_snapshot(
 
     macro_snapshot = getattr(macro_state, "snapshot_dict", None)
     options_snapshot = getattr(cme_state, "snapshot_dict", None)
-    trade_date = _resolve_analysis_trade_date(macro_snapshot, options_snapshot)
+    trade_date = _resolve_analysis_trade_date(
+        macro_snapshot,
+        options_snapshot,
+        analysis_context_date=analysis_context_date,
+    )
     source_refs = list(getattr(macro_state, "all_source_refs", []) or [])
     source_refs.extend(_cme_source_refs(cme_state))
     source_refs.extend(getattr(news_state, "source_refs", []) or [])
     collected_points = [p.to_dict() for p in getattr(macro_state, "all_points", [])]
     news_snapshot = getattr(news_state, "snapshot_dict", None) if news_state is not None else None
+    from apps.analysis.jin10.daily_context import build_daily_analysis_context
+
+    gold_analysis_context = build_daily_analysis_context(
+        trade_date=trade_date,
+        storage_root=storage_root,
+        asset="XAUUSD",
+        preferred_run_id=run_id,
+    )
 
     snapshot = build_analysis_snapshot(
         asset="XAUUSD",
@@ -591,6 +673,7 @@ def _persist_analysis_snapshot(
         source_refs=source_refs,
         collected_points=collected_points,
         news_snapshot=news_snapshot,
+        gold_analysis_context=gold_analysis_context,
     )
     path = write_analysis_snapshot(snapshot, storage_root=storage_root)
     return path, snapshot
@@ -599,9 +682,13 @@ def _persist_analysis_snapshot(
 def _resolve_analysis_trade_date(
     macro_snapshot: dict[str, Any] | None,
     options_snapshot: dict[str, Any] | None,
+    *,
+    analysis_context_date: str | None = None,
 ) -> str:
-    """Prefer options trade_date, then macro as_of, then current UTC date."""
+    """Resolve the analysis context date, preferring the task's explicit date."""
 
+    if analysis_context_date and analysis_context_date.strip():
+        return analysis_context_date.strip()
     if options_snapshot and options_snapshot.get("trade_date"):
         return str(options_snapshot["trade_date"])
     if macro_snapshot and macro_snapshot.get("as_of"):

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from apps.analysis.jin10.agent_analysis import (
     MISSING,
     _parse_llm_output_to_fields,
+    _validate_llm_output_to_report_fields,
     agent_analysis_prompt_version,
     build_agent_analysis_prompt,
+    build_agent_analysis_prompt_with_trace,
     build_jin10_agent_analysis_report,
     build_jin10_agent_analysis_report_with_llm,
     parse_agent_analysis_markdown,
@@ -15,6 +18,7 @@ from apps.analysis.jin10.agent_analysis import (
 from apps.analysis.jin10.daily_report import build_daily_report_analysis_snapshot
 from apps.analysis.jin10.raw_article import build_jin10_raw_article_report, build_raw_article_context
 from apps.analysis.jin10.visual_report import build_jin10_daily_analysis_report
+from apps.analysis.jin10.prompt_budget import PromptBudgetExceeded, build_prompt_budget_trace
 from apps.collectors.jin10.adapter import build_jin10_outputs, write_jin10_outputs
 from apps.documents.parsing import build_parsed_document
 from apps.documents.schemas import SourceAssetRef, SourceDocument
@@ -67,6 +71,55 @@ def _agent_report():
     return raw_report, daily_report, build_jin10_agent_analysis_report(raw_report, daily_report)
 
 
+def _llm_payload(report) -> dict:
+    payload = report.to_dict()
+    payload.update(
+        title="测试报告",
+        one_line_conclusion="黄金更接近弱修复观察期，4500仍是核心分界位。",
+        market_stage={
+            "label": "弱修复观察期",
+            "reason": "价格尚未完成趋势确认。",
+            "confirmation_matrix": {
+                "阶段": "弱修复观察期",
+                "底部证据": "中等",
+                "趋势反转证据": "偏弱",
+                "价格确认": "未完成",
+                "宏观确认": "部分完成",
+                "资金确认": "未完成",
+            },
+        },
+        key_levels=[{"value": "4500", "asset": "黄金", "source_category": "图表事实", "meaning": "核心分界位"}],
+        scenario_paths=[
+            {"name": "主路径", "trigger": "守住4500", "path": "区间修复", "invalid": "跌破4500"},
+            {"name": "上行路径", "trigger": "收复4600", "path": "修复延续", "invalid": "回落4500"},
+            {"name": "下行路径", "trigger": "跌破4500", "path": "重新承压", "invalid": "收复4600"},
+        ],
+        trading_implications=[
+            {"role": "空仓", "wait_for": "等待确认", "invalid": "跌破4500"},
+            {"role": "已有多单", "wait_for": "观察4600", "invalid": "跌破4500"},
+            {"role": "已有空单", "wait_for": "观察4500", "invalid": "收复4600"},
+        ],
+    )
+    fields = {
+        "title",
+        "one_line_conclusion",
+        "market_stage",
+        "logic_chain",
+        "key_variables",
+        "gold_analysis",
+        "silver_analysis",
+        "cross_asset_analysis",
+        "key_levels",
+        "scenario_paths",
+        "trading_implications",
+        "risk_points",
+        "final_summary",
+        "unresolved_items",
+        "evidence_basis",
+    }
+    return {key: payload[key] for key in fields}
+
+
 def test_build_agent_analysis_prompt_includes_required_framework_terms() -> None:
     raw_report, daily_report, _ = _agent_report()
 
@@ -74,7 +127,8 @@ def test_build_agent_analysis_prompt_includes_required_framework_terms() -> None
 
     assert "报告明确事实" in prompt
     assert "相对前序判断" in prompt
-    assert "不输出 YAML、JSON 或 Agent 入库字段" in prompt
+    assert "最终响应必须遵守末尾 JSON schema" in prompt
+    assert "只返回一个 JSON object" in prompt
     assert "# 1. 最新判断发生了什么变化？" in prompt
     assert "# 7. 三条路径推演" in prompt
     assert "# 8. 操作层面怎么理解？" in prompt
@@ -83,9 +137,10 @@ def test_build_agent_analysis_prompt_includes_required_framework_terms() -> None
     assert "不主动联网" in prompt
     assert raw_report.title in prompt
     assert "央行购金" in prompt
-    assert "=== 正文章节摘要 ===" in prompt
-    assert "=== 图表前后文锚点 ===" in prompt
-    assert "=== 关键位 / 利率 / 期权证据片段 ===" in prompt
+    assert "=== canonical_article_evidence ===" in prompt
+    assert "=== chart_metadata ===" in prompt
+    assert "=== 正文章节摘要 ===" not in prompt
+    assert "=== 图表前后文锚点 ===" not in prompt
     assert "有效跌破" in prompt
     assert "Call OI" in prompt
     assert "Put/Call 关键区间只能作为历史观察信号" in prompt
@@ -112,13 +167,93 @@ def test_build_agent_analysis_prompt_embeds_previous_daily_analysis() -> None:
 
     prompt = build_agent_analysis_prompt(raw_report.to_dict(), daily_report.to_dict(), previous_daily_analysis=previous)
 
-    assert "=== previous_daily_analysis（若存在） ===" in prompt
-    assert "one_line_conclusion: 4366 附近日线底部确认，上涨窗口看向 5000-5200。" in prompt
-    assert "price=4366" in prompt
-    assert "price=4600" in prompt
+    assert "=== analysis_baseline ===" in prompt
+    assert '"one_line_conclusion":"4366 附近日线底部确认，上涨窗口看向 5000-5200。"' in prompt
+    assert '"price":4366' in prompt
+    assert '"price":4600' in prompt
+    assert "=== previous_daily_analysis（若存在） ===" not in prompt
     assert "upside_trigger_primary" not in prompt
     assert "valid_until_event" not in prompt
     assert "evidence_refs" not in prompt
+
+
+def test_build_agent_analysis_prompt_uses_weekly_anchor_and_fresh_context() -> None:
+    raw_report, daily_report, _ = _agent_report()
+    context = {
+        "status": "ready",
+        "weekly_anchor": {
+            "source_kind": "weekly_context_revision",
+            "trade_date": "2026-07-12",
+            "article_id": "weekly-1",
+            "quality_status": "needs_review",
+            "publication_status": "observe",
+            "publish_allowed": False,
+            "executive_summary": "周报偏修复，但仍待利率确认。",
+            "claim_revisions": [{"claim_id": "overall", "action": "weaken", "reason": "实际利率仍高"}],
+        },
+        "latest_market": {"technical": {"price": 4557.55}, "macro": {"indicators": {"US10Y": {"value": 4.5}}}},
+        "latest_news": {"market_mainline": {"summary": "油价冲击", "verification_status": "candidate"}},
+        "gold_mainline": {"dominant_mainline": "fed_policy_path"},
+        "oil_context": {},
+        "freshness": {
+            "weekly_anchor": {"status": "current", "as_of": "2026-07-12"},
+            "market": {"status": "current", "as_of": "2026-07-13"},
+            "news": {"status": "current", "as_of": "2026-07-13"},
+            "oil": {"status": "missing", "as_of": None},
+        },
+        "input_snapshot_ids": {"weekly_anchor": "outputs/weekly.json", "premarket_snapshot": "features/premarket.json"},
+    }
+
+    prompt = build_agent_analysis_prompt(raw_report.to_dict(), daily_report.to_dict(), analysis_context=context)
+
+    assert "=== analysis_baseline ===" in prompt
+    assert "=== latest_market_context（最新价格 / 利率 / CME / COT） ===" in prompt
+    assert "=== latest_news_context（最新消息 / 黄金主线 / 油价链） ===" in prompt
+    assert "周报偏修复，但仍待利率确认" in prompt
+    assert '"publish_allowed":false' in prompt
+    assert '"price":4557.55' in prompt
+    assert "强化 / 维持 / 削弱 / 失效 / 待确认" in prompt
+    assert "Brent/WTI 数值尚未确认" in prompt
+
+
+def test_build_agent_analysis_prompt_uses_one_baseline_and_records_budget_trace() -> None:
+    raw_report, daily_report, _ = _agent_report()
+    context = {
+        "status": "degraded",
+        "baseline_kind": "weekly_fallback",
+        "continuity_status": "weekly_fallback",
+        "analysis_baseline": {
+            "trade_date": "2026-07-19",
+            "one_line_conclusion": "唯一有效周报基准",
+            "key_levels": [{"value": "4000", "meaning": "承接位"}],
+            "source_refs": [{"source_ref": "transport-only-baseline"}],
+        },
+        "weekly_anchor": {"one_line_conclusion": "不得重复的周报副本"},
+        "previous_analysis_report": {"one_line_conclusion": "不得发送的过期日报"},
+        "latest_market": {
+            "technical": {"price": 4060.78},
+            "source_refs": [{"source_ref": "transport-only-market"}],
+        },
+        "input_snapshot_ids": {"analysis_baseline": "outputs/weekly.json"},
+    }
+
+    prompt, trace = build_agent_analysis_prompt_with_trace(
+        raw_report.to_dict(),
+        daily_report.to_dict(),
+        analysis_context=context,
+    )
+
+    assert prompt.count("唯一有效周报基准") == 1
+    assert "不得重复的周报副本" not in prompt
+    assert "不得发送的过期日报" not in prompt
+    assert "transport-only-baseline" not in prompt
+    assert "transport-only-market" not in prompt
+    assert "outputs/weekly.json" in prompt
+    assert trace["within_budget"] is True
+    assert trace["total"]["estimated_tokens"] <= 15_000
+    assert any(
+        item == {"block": "analysis_baseline", "reason": "single_effective_baseline"} for item in trace["trim_reasons"]
+    )
 
 
 def test_build_agent_analysis_prompt_marks_compacted_fallback_chart_mode() -> None:
@@ -180,6 +315,7 @@ def test_build_agent_analysis_prompt_uses_market_observation_framework() -> None
     assert "市场观察 / 市场赔率专用分析" in prompt
     assert "不要套用每日金银报告" in prompt
     assert "# 3. 赔率和观察信号怎么读？" in prompt
+    assert agent_analysis_prompt_version(raw_report, daily_report) == "jin10_agent_analysis_market_odds_v1"
     assert "# 5. 作为辅助决策依据怎么用？" in prompt
     assert "黄金7月触及4200美元的概率升至94%" in prompt
     assert "# 3. 黄金为什么涨 / 为什么跌？" not in prompt
@@ -199,7 +335,14 @@ def test_build_agent_analysis_prompt_uses_positioning_framework() -> None:
             "期权布局变化：4250 看涨期权+624手，看跌期权-2手。\n"
             "# 白银持仓报告\n\n64 看涨期权+40手，看跌期权-10手。"
         ),
-        "charts": [{"seq": 1, "title": "黄金持仓报告", "summary": "看涨期权和看跌期权分布", "image_path": "figures/fig_p1_001.png"}],
+        "charts": [
+            {
+                "seq": 1,
+                "title": "黄金持仓报告",
+                "summary": "看涨期权和看跌期权分布",
+                "image_path": "figures/fig_p1_001.png",
+            }
+        ],
     }
     daily_report = {
         "family": "jin10_positioning_report",
@@ -227,7 +370,9 @@ def test_build_agent_analysis_prompt_uses_technical_levels_framework() -> None:
             "# 国际现货黄金\n\nVAH 4092.61，POC 4064.95，VAL 4032.76。\n"
             "筹码形态：双筹码峰。形态解释：短期关注价值区间突破。"
         ),
-        "charts": [{"seq": 1, "title": "国际现货黄金筹码分布", "summary": "双筹码峰", "image_path": "figures/fig_p1_001.png"}],
+        "charts": [
+            {"seq": 1, "title": "国际现货黄金筹码分布", "summary": "双筹码峰", "image_path": "figures/fig_p1_001.png"}
+        ],
     }
     daily_report = {
         "family": "jin10_technical_levels_report",
@@ -255,7 +400,9 @@ def test_build_agent_analysis_prompt_uses_oil_framework() -> None:
             "# 每日原油报告\n\nWTI原油最终收跌1.76%，报70.08美元/桶；布伦特收跌2.8%，报72.58美元/桶。\n"
             "霍尔木兹海峡仍处于低强度扰动。美国油气钻井总数升至573口。"
         ),
-        "charts": [{"seq": 14, "title": "WTI原油技术指标", "summary": "恐惧贪婪指标", "image_path": "figures/fig_p14_001.png"}],
+        "charts": [
+            {"seq": 14, "title": "WTI原油技术指标", "summary": "恐惧贪婪指标", "image_path": "figures/fig_p14_001.png"}
+        ],
     }
     daily_report = {
         "family": "jin10_oil_report",
@@ -283,7 +430,14 @@ def test_build_agent_analysis_prompt_uses_fx_framework() -> None:
             "# 每日外汇报告\n\n美元指数收跌0.07%，报101.39。10年期美债收益率收报4.371%，2年期美债收益率收报4.098%。\n"
             "CME FedWatch显示，市场已开始将9月潜在加息纳入情景。"
         ),
-        "charts": [{"seq": 11, "title": "消费者信心指数", "summary": "信心回升但不及预期", "image_path": "figures/fig_p11_001.png"}],
+        "charts": [
+            {
+                "seq": 11,
+                "title": "消费者信心指数",
+                "summary": "信心回升但不及预期",
+                "image_path": "figures/fig_p11_001.png",
+            }
+        ],
     }
     daily_report = {
         "family": "jin10_fx_report",
@@ -308,8 +462,14 @@ def test_agent_analysis_prompt_version_tracks_report_type() -> None:
         agent_analysis_prompt_version(raw_report, {"report_type": "market_observation"})
         == "jin10_agent_analysis_market_observation_v1"
     )
-    assert agent_analysis_prompt_version(raw_report, {"report_type": "positioning"}) == "jin10_agent_analysis_positioning_v1"
-    assert agent_analysis_prompt_version(raw_report, {"report_type": "technical_levels"}) == "jin10_agent_analysis_technical_levels_v1"
+    assert (
+        agent_analysis_prompt_version(raw_report, {"report_type": "positioning"})
+        == "jin10_agent_analysis_positioning_v1"
+    )
+    assert (
+        agent_analysis_prompt_version(raw_report, {"report_type": "technical_levels"})
+        == "jin10_agent_analysis_technical_levels_v1"
+    )
     assert agent_analysis_prompt_version(raw_report, {"report_type": "oil"}) == "jin10_agent_analysis_oil_v1"
     assert agent_analysis_prompt_version(raw_report, {"report_type": "fx"}) == "jin10_agent_analysis_fx_v1"
     assert agent_analysis_prompt_version(raw_report, {"report_type": "daily"}) == "jin10_agent_analysis_v3"
@@ -422,7 +582,9 @@ def test_agent_analysis_fallback_does_not_force_three_confirmation_template_for_
             {"title": "报告配图 2", "image_path": "https://cdn-news.jin10.com/2.png"},
         ],
         "source_refs": [],
-        "generated_from": {"article_context": {"paragraph_snippets": [], "key_sentences": [], "chart_summaries": [], "chart_count": 2}},
+        "generated_from": {
+            "article_context": {"paragraph_snippets": [], "key_sentences": [], "chart_summaries": [], "chart_count": 2}
+        },
     }
 
     report = build_jin10_agent_analysis_report(raw_report, None)
@@ -439,10 +601,12 @@ def test_render_jin10_agent_analysis_markdown_contains_fixed_sections() -> None:
     markdown = render_jin10_agent_analysis_markdown(report)
 
     assert "Agent 二次分析报告" in markdown
-    assert "# 分析溯源 / 数据来源" in markdown
-    assert "# 3. 报告核心逻辑" in markdown
-    assert "# 5. 关键位与触发条件" in markdown
-    assert "# 7. 风险与仍待确认项" in markdown
+    assert "分析溯源 / 数据来源" not in markdown
+    assert report.provenance
+    assert "# 5. 当前阶段判断与确认矩阵" in markdown
+    assert "# 6. 关键位更新" in markdown
+    assert "# 7. 三条路径推演" in markdown
+    assert "# 8. 操作层面怎么理解？" in markdown
     assert "## Agent 入库字段" not in markdown
 
 
@@ -467,7 +631,7 @@ def test_llm_agent_analysis_submits_real_images_and_records_visual_trace(monkeyp
     captured = {}
 
     class Response:
-        content = "# 测试｜Agent 二次分析报告\n\n## 一句话结论\n\n图表显示4500，来源 [figure_id=fig_p2_001 page_no=2]。"
+        content = json.dumps(_llm_payload(_agent_report()[2]), ensure_ascii=False)
         model = "gpt-5.5"
         provider = "cockpit"
         latency_ms = 42
@@ -498,13 +662,16 @@ def test_llm_agent_analysis_submits_real_images_and_records_visual_trace(monkeyp
     assert captured["model"] == "gpt-5.6-sol"
     assert captured["reasoning_effort"] == "high"
     assert captured["request_timeout"] == 300.0
+    assert captured["json_mode"] is True
     assert result.generated_from["max_images"] == 25
     assert result.generated_from["vision_model"] == "gpt-5.5"
     assert result.generated_from["submitted_image_count"] == 1
     assert result.generated_from["image_processing_status"] == "success"
     assert result.generated_from["degraded"] is False
     assert result.generated_from["figure_results"][0]["figure_id"] == "fig_p2_001"
-    assert result.generated_from["figure_results"][0]["referenced_in_output"] is True
+    assert result.generated_from["structured_output_validated"] is True
+    assert result.generated_from["prompt_budget"]["within_budget"] is True
+    assert "narrative_markdown" not in result.generated_from
 
 
 def test_llm_agent_analysis_accepts_formal_runtime_overrides(monkeypatch) -> None:
@@ -512,7 +679,7 @@ def test_llm_agent_analysis_accepts_formal_runtime_overrides(monkeypatch) -> Non
     captured = {}
 
     class Response:
-        content = "# 测试｜Agent 二次分析报告\n\n## 一句话结论\n\n保持观察。"
+        content = json.dumps(_llm_payload(_agent_report()[2]), ensure_ascii=False)
         model = "custom-sol"
         provider = "cockpit"
         latency_ms = 10
@@ -565,6 +732,36 @@ def test_llm_agent_analysis_error_fallback_records_visual_degradation(monkeypatc
     assert result.generated_from["degraded"] is True
     assert result.generated_from["degraded_reason"] == "llm_error:RuntimeError"
     assert result.generated_from["submitted_image_count"] == 1
+    assert result.generated_from["prompt_budget"]["within_budget"] is True
+
+
+def test_llm_agent_analysis_prompt_budget_failure_skips_external_call(monkeypatch) -> None:
+    raw_report, daily_report, _ = _agent_report()
+    trace = build_prompt_budget_trace("超限", budget_tokens=0)
+    called = False
+
+    def fake_chat_sync(**kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("budget guard must stop before the external call")
+
+    def fail_prompt(*args, **kwargs):
+        raise PromptBudgetExceeded(trace)
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+    monkeypatch.setattr(
+        "apps.analysis.jin10.agent_analysis.build_agent_analysis_prompt_with_trace",
+        fail_prompt,
+    )
+
+    result = build_jin10_agent_analysis_report_with_llm(raw_report, daily_report)
+
+    assert called is False
+    assert result.generated_from["source"] == "jin10_agent_analysis_fallback_prompt_budget_exceeded"
+    assert result.generated_from["degraded"] is True
+    assert result.generated_from["degraded_reason"] == "prompt_budget_exceeded"
+    assert result.generated_from["prompt_budget"] == trace
 
 
 def test_sanitize_agent_analysis_markdown_removes_agent_storage_section_and_yaml_block() -> None:
@@ -632,6 +829,35 @@ def test_parse_llm_output_to_fields_strips_markdown_separator_from_one_line_conc
     fields = _parse_llm_output_to_fields(markdown, daily={}, raw={})
 
     assert fields["one_line_conclusion"] == "黄金当前更接近弱修复观察期。"
+
+
+def test_validate_llm_structured_output_rejects_incomplete_daily_coverage() -> None:
+    payload = _llm_payload(_agent_report()[2])
+    payload["scenario_paths"] = payload["scenario_paths"][:1]
+
+    try:
+        _validate_llm_output_to_report_fields(json.dumps(payload, ensure_ascii=False), prompt_profile="default_daily")
+    except ValueError as exc:
+        assert "scenario_paths:daily_coverage" in str(exc)
+    else:
+        raise AssertionError("incomplete daily coverage must be rejected")
+
+
+def test_validated_json_and_rendered_markdown_share_conclusion_stage_and_levels() -> None:
+    _, _, fallback = _agent_report()
+    fields = _validate_llm_output_to_report_fields(
+        json.dumps(_llm_payload(fallback), ensure_ascii=False),
+        prompt_profile="default_daily",
+    )
+    for key, value in fields.items():
+        if hasattr(fallback, key):
+            setattr(fallback, key, value)
+
+    markdown = render_jin10_agent_analysis_markdown(fallback)
+
+    assert fields["one_line_conclusion"] in markdown
+    assert fields["market_stage"]["label"] in markdown
+    assert fields["key_levels"][0]["value"] in markdown
 
 
 def test_write_jin10_outputs_writes_agent_analysis_artifacts(tmp_path: Path) -> None:
@@ -832,7 +1058,11 @@ def test_daily_snapshot_conclusion_and_scenarios_follow_input_evidence() -> None
 
     assert "分析师A表示高油价将继续打压国际现货黄金" in snapshot.core_conclusion
     assert any("打压国际现货黄金" in row["summary"] for row in snapshot.scenario_matrix if row["scenario"] == "偏空")
-    assert any("央行购金和ETF资金仍提供长期配置支撑" in row["summary"] for row in snapshot.scenario_matrix if row["scenario"] == "偏多")
+    assert any(
+        "央行购金和ETF资金仍提供长期配置支撑" in row["summary"]
+        for row in snapshot.scenario_matrix
+        if row["scenario"] == "偏多"
+    )
 
 
 def test_daily_snapshot_changes_with_different_parsed_markdown() -> None:
@@ -924,7 +1154,16 @@ def test_agent_analysis_weekly_report_uses_confirmation_model_and_layered_levels
         "charts": [{"title": "图表", "image_path": "figures/fig.png"}],
         "source_refs": [{"source": "jin10_external", "article_id": "220071"}],
     }
-    daily_report = {"family": "jin10_daily_visual", "core_conclusion": "证据不足", "market_prices": [], "logic_chains": [], "watch_variables": [], "key_levels": [], "scenario_matrix": [], "risks": []}
+    daily_report = {
+        "family": "jin10_daily_visual",
+        "core_conclusion": "证据不足",
+        "market_prices": [],
+        "logic_chains": [],
+        "watch_variables": [],
+        "key_levels": [],
+        "scenario_matrix": [],
+        "risks": [],
+    }
 
     report = build_jin10_agent_analysis_report(raw_report, daily_report)
     markdown = render_jin10_agent_analysis_markdown(report)

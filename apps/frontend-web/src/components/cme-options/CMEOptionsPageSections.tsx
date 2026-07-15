@@ -11,11 +11,9 @@ import { SourceTracePanel } from "@/components/cme-options/SourceTracePanel";
 import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPill";
 import { getStatusLabel, getStatusTone } from "@/components/shared/statusMeta";
 import { LoadingSkeleton } from "@/components/shared/LoadingSkeleton";
-import type { CMEOptionsResponse } from "@/types/cme-options";
-
-type NetGexAggregate = ComponentProps<typeof GammaZeroCard>["netGexAggregate"];
+import type { CMEOptionsDecisionResponse, CMEOptionsResponse } from "@/types/cme-options";
 type SourceTraceItems = ComponentProps<typeof SourceTracePanel>["sourceTrace"];
-export type CMEOptionsTab = "overview" | "gex-gamma" | "wall-map" | "scenario" | "data-trace";
+export type CMEOptionsTab = "overview" | "snapshot-overview" | "gex-gamma" | "wall-map" | "scenario" | "data-trace";
 
 export function sourceLabel(source: "api" | "mock" | "unavailable") {
   return getStatusLabel(source, "source");
@@ -103,31 +101,36 @@ export function renderCMEOptionsTabContent({
   activeTab,
   wallScores,
   selectedExpiry,
+  decision,
 }: {
   snapshot: CMEOptionsResponse;
   activeTab: CMEOptionsTab;
   wallScores: CMEOptionsResponse["wall_scores"];
   selectedExpiry: string | undefined;
+  decision?: CMEOptionsDecisionResponse | null;
 }) {
-  const currentPrice = snapshot?.gex?.netgex_aggregate?.gamma_zero?.price ?? 0;
+  const currentPrice = snapshot.parameters?.f_value
+    ?? snapshot.parameters?.report_p0
+    ?? snapshot.gex?.netgex_aggregate?.gamma_zero?.price
+    ?? 0;
 
-  if (activeTab === "overview") {
+  if (activeTab === "overview" || activeTab === "snapshot-overview") {
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
-        <CMEOptionsOverviewGrid snapshot={snapshot} wallScores={wallScores} />
+      <div className="cme-options-tab-stack">
+        <CMEOptionsOverviewGrid snapshot={snapshot} wallScores={wallScores} decision={decision} />
       </div>
     );
   }
 
   if (activeTab === "gex-gamma") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px,0.7fr) minmax(0,1.3fr)", gap: 6, alignItems: "start" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      <div className="cme-options-tab-grid cme-options-tab-grid--left-rail">
+        <div className="cme-options-tab-stack">
           <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={currentPrice} />
           <ChangeTable snapshot={snapshot} />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-          <GammaZeroCard netGexAggregate={snapshot.gex?.netgex_aggregate as NetGexAggregate} wallScores={wallScores} />
+        <div className="cme-options-tab-stack">
+          <GammaZeroCard netGexAggregate={snapshot.gex?.netgex_aggregate} decisionGamma={decision?.gamma_summary} wallScores={wallScores} />
           <GEXBreakdown snapshot={snapshot} selectedExpiry={selectedExpiry} />
           <ExposurePanel snapshot={snapshot} />
         </div>
@@ -137,11 +140,11 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "wall-map") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px,0.65fr) minmax(0,1.35fr)", gap: 6, alignItems: "start" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      <div className="cme-options-tab-grid cme-options-tab-grid--wall-map">
+        <div className="cme-options-tab-stack">
           <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={currentPrice} />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+        <div className="cme-options-tab-stack">
           <OptionsWallTable wallScores={wallScores} />
         </div>
       </div>
@@ -150,22 +153,22 @@ export function renderCMEOptionsTabContent({
 
   if (activeTab === "scenario") {
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(280px,0.76fr)", gap: 5, alignItems: "start" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
+      <div className="cme-options-tab-grid cme-options-tab-grid--right-rail">
+        <div className="cme-options-tab-stack">
           <IVSkewTable snapshot={snapshot} />
           <ExposurePanel snapshot={snapshot} />
         </div>
-        <CMEOptionsRightColumn snapshot={snapshot} />
+        <CMEOptionsRightColumn snapshot={snapshot} decision={decision} />
       </div>
     );
   }
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(280px,0.76fr)", gap: 5, alignItems: "start" }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
+    <div className="cme-options-tab-grid cme-options-tab-grid--right-rail">
+      <div className="cme-options-tab-stack">
         <SourceTracePanel sourceTrace={(snapshot.source_trace ?? []) as SourceTraceItems} />
       </div>
-      <CMEOptionsRightColumn snapshot={snapshot} />
+      <CMEOptionsRightColumn snapshot={snapshot} decision={decision} />
     </div>
   );
 }

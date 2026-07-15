@@ -185,30 +185,6 @@ function mapSourceRef(source: BackendSourceRef): SourceRef {
   };
 }
 
-function mapPayloadSourceRef(source: Record<string, unknown>, index: number): SourceRef {
-  const sourceName = String(source.source_name ?? source.source ?? source.source_id ?? `source-${index}`);
-  return {
-    source_ref: String(source.source_id ?? `${sourceName}:${index}`),
-    label: sourceName,
-    endpoint: typeof source.endpoint === "string" ? source.endpoint : null,
-    artifact_path: typeof source.file_path === "string" ? source.file_path : typeof source.path === "string" ? source.path : null,
-    trade_date: typeof source.data_date === "string" ? source.data_date : typeof source.report_date === "string" ? source.report_date : null,
-    dataDate: typeof source.data_date === "string" ? source.data_date : typeof source.report_date === "string" ? source.report_date : null,
-    asOf: typeof source.captured_at === "string" ? source.captured_at : null,
-    generated_at: typeof source.captured_at === "string" ? source.captured_at : null,
-    provider: typeof source.source_type === "string" ? source.source_type : typeof source.asset_type === "string" ? source.asset_type : null,
-    source_url: typeof source.url === "string" ? source.url : typeof source.source_url === "string" ? source.source_url : null,
-    status: normalizeDataStatus(typeof source.status === "string" ? source.status : "available"),
-  };
-}
-
-function extractPayloadSourceRefs(payload: Record<string, unknown> | null | undefined): SourceRef[] {
-  const refs = Array.isArray(payload?.source_refs) ? payload.source_refs : [];
-  return refs
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
-    .map(mapPayloadSourceRef);
-}
-
 function dedupeSourceRefViews(refs: SourceRef[]): SourceRef[] {
   const seen = new Set<string>();
   return refs.filter((ref) => {
@@ -263,9 +239,55 @@ function normalizeArtifactContent(payload: ReportArtifactPayloadResponse): strin
   }
 }
 
-async function fetchOptionalJson<T>(path: string): Promise<T | null> {
+export function stripEmbeddedSourceSection(content: string): string {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const result: string[] = [];
+  let skipping = false;
+  let skippedHeadingLevel = 0;
+  for (const line of lines) {
+    const heading = line.match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (heading && /(?:数据源|数据来源|Data Sources|Source Refs)/i.test(heading[2])) {
+      skipping = true;
+      skippedHeadingLevel = heading[1].length;
+      continue;
+    }
+    if (skipping && heading && heading[1].length <= skippedHeadingLevel) {
+      skipping = false;
+    }
+    if (!skipping) result.push(line);
+  }
+  return result.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+export function sanitizeReportAnalysisMarkdown(content: string): string {
+  const withoutSources = stripEmbeddedSourceSection(content);
+  const title = withoutSources.match(/^#\s+(XAUUSD 宏观 \/ 流动性更新（[^\n]+）)\s*$/m);
+  const table = withoutSources.match(/## 流动性与利率统一数据表\s*\n([\s\S]*?)(?=\n##\s|$)/);
+  if (!title || !table) return withoutSources;
+
+  const dataRows = table[1]
+    .split("\n")
+    .filter((line) => /^\|/.test(line.trim()))
+    .slice(2);
+  const allRowsMissing = dataRows.length > 0
+    && dataRows.every((line) => (line.match(/明确缺失/g) ?? []).length >= 5);
+  if (!allRowsMissing) return withoutSources;
+
+  return [
+    `# ${title[1]}`,
+    "",
+    "## 本次报告不可用",
+    "",
+    "本次宏观采集没有获得任何有效指标，因此不展示方向、阶段或交易含义判断。",
+    "",
+    "请在数据接入或调度中心检查该次运行的采集失败原因并重试。",
+    "",
+  ].join("\n");
+}
+
+async function fetchOptionalJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
   try {
-    return await fetchJson<T>(path);
+    return await fetchJson<T>(path, { signal });
   } catch (cause) {
     if (cause instanceof ApiError && cause.status === 404) {
       return null;
@@ -274,21 +296,27 @@ async function fetchOptionalJson<T>(path: string): Promise<T | null> {
   }
 }
 
-async function fetchReportArtifactPayload(reportId: string, tab: ReportArtifactTabKey): Promise<ReportArtifactContentView | null> {
+async function fetchReportArtifactPayload(
+  reportId: string,
+  tab: ReportArtifactTabKey,
+  signal?: AbortSignal,
+): Promise<ReportArtifactContentView | null> {
   const config = REPORT_DETAIL_TAB_CONFIG[tab];
   const sourceEndpoint = `${REPORTS_DETAIL_PATH}/${reportId}/${config.endpoint}`;
-  const payload = await fetchOptionalJson<ReportArtifactPayloadResponse>(sourceEndpoint);
+  const payload = await fetchOptionalJson<ReportArtifactPayloadResponse>(sourceEndpoint, signal);
   if (!payload) {
     return null;
   }
+  const format = inferArtifactFormat(payload);
+  const rawContent = normalizeArtifactContent(payload);
   return {
     key: tab,
     label: config.label,
     available: true,
     artifact_type: payload.artifact_type,
     content_type: payload.content_type,
-    format: inferArtifactFormat(payload),
-    content: normalizeArtifactContent(payload),
+    format,
+    content: tab === "analysis" && format === "markdown" ? sanitizeReportAnalysisMarkdown(rawContent) : rawContent,
     path: payload.path,
     asset_base_url: payload.asset_base_url ?? null,
     source_endpoint: sourceEndpoint,
@@ -341,13 +369,14 @@ function mapAnalysisAgentOutput(item: ReportAnalysisAgentOutputResponse): Report
     prompt_version: item.prompt_version ?? null,
     generated_by: item.generated_by ?? null,
     llm_model: item.llm_model ?? null,
+    llm_audit: item.llm_audit ?? null,
     created_at: item.created_at ?? null,
   };
 }
 
-async function fetchReportAnalysisInputs(reportId: string): Promise<ReportAnalysisInputsView | null> {
+async function fetchReportAnalysisInputs(reportId: string, signal?: AbortSignal): Promise<ReportAnalysisInputsView | null> {
   const sourceEndpoint = `${REPORTS_ANALYSIS_INPUTS_PATH}/${reportId}/analysis-inputs`;
-  const payload = await fetchOptionalJson<ReportAnalysisInputsResponse>(sourceEndpoint);
+  const payload = await fetchOptionalJson<ReportAnalysisInputsResponse>(sourceEndpoint, signal);
   if (!payload) {
     return null;
   }
@@ -371,23 +400,23 @@ async function fetchReportAnalysisInputs(reportId: string): Promise<ReportAnalys
   };
 }
 
-export async function fetchReportDetail(reportId: string): Promise<ReportDetailResponse> {
-  return fetchJson<ReportDetailResponse>(`${REPORTS_DETAIL_PATH}/${reportId}`);
+export async function fetchReportDetail(reportId: string, signal?: AbortSignal): Promise<ReportDetailResponse> {
+  return fetchJson<ReportDetailResponse>(`${REPORTS_DETAIL_PATH}/${reportId}`, { signal });
 }
 
-export async function fetchReportDetailView(reportId: string): Promise<ReportDetailView> {
-  const detail = await fetchReportDetail(reportId);
+export async function fetchReportDetailView(reportId: string, signal?: AbortSignal): Promise<ReportDetailView> {
+  const detail = await fetchReportDetail(reportId, signal);
   const artifactTypes = new Set((detail.artifacts ?? []).map((artifact) => artifact.artifact_type?.toLowerCase()).filter(Boolean));
   const shouldFetchTab = (tab: ReportArtifactTabKey) =>
     REPORT_TAB_ARTIFACT_TYPES[tab].some((artifactType) => artifactTypes.has(artifactType));
 
   const [analysis, source, visual, evidence, sourceTrace, analysisInputs] = await Promise.all([
-    shouldFetchTab("analysis") ? fetchReportArtifactPayload(reportId, "analysis") : Promise.resolve(null),
-    shouldFetchTab("source") ? fetchReportArtifactPayload(reportId, "source") : Promise.resolve(null),
-    shouldFetchTab("visual") ? fetchReportArtifactPayload(reportId, "visual") : Promise.resolve(null),
-    shouldFetchTab("evidence") ? fetchReportArtifactPayload(reportId, "evidence") : Promise.resolve(null),
+    shouldFetchTab("analysis") ? fetchReportArtifactPayload(reportId, "analysis", signal) : Promise.resolve(null),
+    shouldFetchTab("source") ? fetchReportArtifactPayload(reportId, "source", signal) : Promise.resolve(null),
+    shouldFetchTab("visual") ? fetchReportArtifactPayload(reportId, "visual", signal) : Promise.resolve(null),
+    shouldFetchTab("evidence") ? fetchReportArtifactPayload(reportId, "evidence", signal) : Promise.resolve(null),
     Promise.resolve(null),
-    fetchReportAnalysisInputs(reportId),
+    fetchReportAnalysisInputs(reportId, signal),
   ]);
 
   const tabs: Partial<Record<ReportArtifactTabKey, ReportArtifactContentView>> = {};
@@ -402,11 +431,12 @@ export async function fetchReportDetailView(reportId: string): Promise<ReportDet
   if (analysisInputs) {
     availableTabs.push("inputs");
   }
-  const dataStatus = normalizeDataStatus(detail.data_status) as DataStatus;
-  const sourceRefs = dedupeSourceRefViews([
-    ...(detail.source_refs ?? []).map(mapSourceRef),
-    ...extractPayloadSourceRefs(detail.structured_payload),
-  ]);
+  const analysisUnavailable = detail.family === "macro_report"
+    && analysis?.content.includes("## 本次报告不可用") === true;
+  const dataStatus = analysisUnavailable
+    ? "unavailable"
+    : normalizeDataStatus(detail.data_status) as DataStatus;
+  const sourceRefs = dedupeSourceRefViews((detail.source_refs ?? []).map(mapSourceRef));
   const artifactRefs = (detail.artifact_refs ?? detail.artifacts ?? []).map(mapArtifactRef);
   const warnings = [...(detail.warnings ?? []), ...(analysisInputs?.warnings ?? [])]
     .filter((item, index, array) => array.findIndex((candidate) => candidate.code === item.code && candidate.message === item.message) === index)
@@ -446,5 +476,7 @@ export async function fetchReportDetailView(reportId: string): Promise<ReportDet
     structured_payload: detail.structured_payload ?? null,
     generation_trace: extractGenerationTrace(detail.structured_payload),
     gold_macro_overview: detail.gold_macro_overview ?? null,
+    market_odds_evidence: detail.market_odds_evidence ?? null,
+    llm_audits: detail.llm_audits ?? [],
   };
 }

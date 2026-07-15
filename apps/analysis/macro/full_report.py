@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -14,10 +15,15 @@ def render_macro_full_report_markdown(
     conclusion: MacroConclusion,
     macro_output: AgentOutput | Mapping[str, Any] | None = None,
 ) -> str:
+    if not snapshot.indicators:
+        return _render_unavailable_report(snapshot)
+
+    llm_markdown = _macro_llm_markdown(macro_output)
+    llm_body = _strip_redundant_llm_sections(_strip_leading_heading(llm_markdown))
     lines: list[str] = [
         f"# XAUUSD 宏观 / 流动性更新（{snapshot.as_of}）", "",
         "## 一句话结论", "",
-        _one_line(conclusion), "",
+        _llm_one_line(llm_markdown) or _one_line(conclusion), "",
         "## 流动性与利率统一数据表", "",
         "| 指标 | 最新日期 | 最新值 | 1周变化 | 1月变化 | 方向解读 |",
         "|---|---|---:|---:|---:|---|",
@@ -34,40 +40,15 @@ def render_macro_full_report_markdown(
             f"{_format_change(indicator, indicator.monthly_change)} | "
             f"{indicator.direction_note or '暂无可用方向解读'} |"
         )
-    llm_markdown = _macro_llm_markdown(macro_output)
     if llm_markdown:
+        if llm_body:
+            lines.extend(["", "## LLM 宏观分析", "", llm_body])
         lines.extend([
-            "", "## LLM 宏观分析", "",
-            _strip_leading_heading(llm_markdown),
-            "", "## 联网补充与系统数据源缺口", "",
-            "规则：如果大模型或人工联网获取到下列信息，而系统快照没有对应 source_ref，必须在报告中标注为“外部联网补充 / 待系统化接入”，不得混写成系统已确认数据。",
-            "",
-            "| 数据项 | 当前系统状态 | 后续优化方向 |",
-            "|---|---|---|",
+            "", "## 口径与规则校验", "",
+            "- 10Y 实际利率主口径：**US10Y - T10YIE**；DFII10 / TIPS 只作补充观察。",
+            "- 2Y-3M 主口径：**DGS2 - DGS3MO**；必须拆分 2Y 与 3M 的变化来源。",
+            f"- 确定性规则预判：**{conclusion.state} / {conclusion.bias}**；仅用于和 LLM 结论交叉核对。",
         ])
-        lines.extend(_external_data_gap_rows(snapshot))
-        lines.extend([
-            "", "## 当前所处环境阶段判断", "",
-            "这里仅保留规则预判作为对照，不代表最终 LLM 结论。", "",
-            f"规则预判更接近：**{conclusion.state}**。", "",
-            _state_sentence(conclusion, snapshot),
-            "",
-            "最终阶段判断必须由 LLM 在完整报告中自行确认；如果 LLM 判断与规则预判不同，需说明差异原因。",
-            "", "## 数据口径说明", "",
-            "- 通胀只看 **T10YIE**。",
-            "- 10Y 实际利率固定采用 **US10Y - T10YIE**。",
-            "- 2Y-3M 利差固定采用 **DGS2 - DGS3MO**，用于判断短端政策拐点和周期低点窗口。",
-            "- FRED:DFII10 / TIPS 实际收益率只作补充观察，不替代主结论评分。",
-            "- DXY 采用系统输入的 DXY 最新值与其 1周 / 1月变化。",
-            "- IORB 采用 Fed 官方 PRATES.json 自动采集。",
-            "- TGA 采用 Treasury FiscalData API 自动采集；缺失时必须显式标记。",
-            "", "## 数据源",
-        ])
-        if snapshot.source_refs:
-            for symbol, ref in snapshot.source_refs.items():
-                lines.append(f"- {symbol}: {ref.get('source', '')} {ref.get('source_url', '')} {ref.get('raw_path', '')}".rstrip())
-        else:
-            lines.append("- None")
         if conclusion.missing_inputs:
             lines.extend(["", "## 明确缺失输入", ""])
             lines.extend(f"- {s}" for s in conclusion.missing_inputs)
@@ -99,7 +80,7 @@ def render_macro_full_report_markdown(
         "|---|---|---:|---|",
         f"| 实际收益率 | {_factor_state(snapshot, 'REAL_10Y')} | 待LLM判断 | 权重 +3/-3；主口径为 US10Y - T10YIE，判断黄金机会成本 |",
         f"| 通胀预期 | {_factor_state(snapshot, 'BREAKEVEN_10Y')} | 待LLM判断 | 权重 +2/-2；只使用 T10YIE 作为主通胀预期口径 |",
-        f"| 利率曲线 / 2Y-3M利差 | {_factor_state(snapshot, 'YIELD_SPREAD_2Y_3M')} | 待LLM判断 | 权重 +2/-2；利差改善提高低点确认概率，恶化提示 4100 低点失败风险 |",
+        f"| 利率曲线 / 2Y-3M利差 | {_factor_state(snapshot, 'YIELD_SPREAD_2Y_3M')} | 待LLM判断 | 不单独评分；必须拆分 2Y 与 3M 驱动，并由实际利率和 DXY 确认 |",
         "| ETF / COT 资金 | 未从识别结果中稳定提取 | 待LLM判断 | 权重 +2/-2；若联网补充，必须标为外部联网补充 / 待系统化接入 |",
         "| 期权结构 | 未从识别结果中稳定提取 | 待LLM判断 | 权重 +1/-1；短线节奏，不单独决定方向 |",
         "| 央行 / 实物需求 | 未从识别结果中稳定提取 | 待LLM判断 | 权重 +2/-1；若联网补充，必须标为外部联网补充 / 待系统化接入 |",
@@ -149,13 +130,7 @@ def render_macro_full_report_markdown(
         "- 黄金含义：由 LLM 判断。",
         "- 交易 / 配置含义：只写研究性含义，不写下单指令。",
         "- 失效条件：由 LLM 明确写出。",
-        "", "## 联网补充与系统数据源缺口", "",
-        "规则：如果大模型或人工联网获取到下列信息，而系统快照没有对应 source_ref，必须在报告中标注为“外部联网补充 / 待系统化接入”，不得混写成系统已确认数据。",
-        "",
-        "| 数据项 | 当前系统状态 | 后续优化方向 |",
-        "|---|---|---|",
     ])
-    lines.extend(_external_data_gap_rows(snapshot))
     lines.extend([
         "", "## 当前所处环境阶段判断", "",
         "这里仅给出规则预判，不代表最终 LLM 结论。", "",
@@ -166,18 +141,13 @@ def render_macro_full_report_markdown(
         "", "## 数据口径说明", "",
         "- 通胀只看 **T10YIE**。",
         "- 10Y 实际利率固定采用 **US10Y - T10YIE**。",
-        "- 2Y-3M 利差固定采用 **DGS2 - DGS3MO**，用于判断短端政策拐点和周期低点窗口。",
+        "- 3M 使用 **US03M / DGS3MO**；2Y-3M 利差固定采用 **DGS2 - DGS3MO**。",
+        "- 2Y-3M 必须拆分 2Y 与 3M 的变化来源，不把转正、走阔或收窄机械等同于宽松。",
         "- FRED:DFII10 / TIPS 实际收益率只作补充观察，不替代主结论评分。",
         "- DXY 采用系统输入的 DXY 最新值与其 1周 / 1月变化。",
         "- IORB 采用 Fed 官方 PRATES.json 自动采集。",
         "- TGA 采用 Treasury FiscalData API 自动采集；缺失时必须显式标记。",
-        "", "## 数据源",
     ])
-    if snapshot.source_refs:
-        for symbol, ref in snapshot.source_refs.items():
-            lines.append(f"- {symbol}: {ref.get('source', '')} {ref.get('source_url', '')} {ref.get('raw_path', '')}".rstrip())
-    else:
-        lines.append("- None")
     if conclusion.missing_inputs:
         lines.extend(["", "## 明确缺失输入", ""])
         lines.extend(f"- {s}" for s in conclusion.missing_inputs)
@@ -210,15 +180,61 @@ def _strip_leading_heading(markdown: str) -> str:
     return markdown
 
 
+def _strip_redundant_llm_sections(markdown: str) -> str:
+    lines = markdown.splitlines()
+    kept: list[str] = []
+    skipped_level = 0
+    for line in lines:
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if heading and re.search(
+            r"一句话结论|流动性与利率统一数据表|固定指标表|新增指标说明|数据源|数据来源|Data Sources|Source Refs",
+            heading.group(2),
+            re.IGNORECASE,
+        ):
+            skipped_level = len(heading.group(1))
+            continue
+        if skipped_level and heading and len(heading.group(1)) <= skipped_level:
+            skipped_level = 0
+        if not skipped_level:
+            kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _llm_one_line(markdown: str) -> str:
+    for line in _strip_leading_heading(markdown).splitlines():
+        candidate = line.strip()
+        if not candidate or candidate.startswith("#") or candidate.startswith(("- ", "* ", "|")):
+            continue
+        return re.sub(r"^\*\*一句话结论[:：]?\*\*\s*", "", candidate).strip()
+    return ""
+
+
+def _render_unavailable_report(snapshot: MacroSnapshot) -> str:
+    missing_count = len(set(snapshot.unavailable_symbols))
+    return "\n".join(
+        [
+            f"# XAUUSD 宏观 / 流动性更新（{snapshot.as_of}）",
+            "",
+            "## 本次报告不可用",
+            "",
+            "本次宏观采集没有获得任何有效指标，因此不生成方向、阶段或交易含义判断。",
+            "",
+            f"- 缺失指标数：{missing_count}",
+            "- 建议：在数据接入或调度中心检查采集失败原因并重试。",
+            "",
+        ]
+    )
+
+
 def _report_order():
-    return ["ON_RRP_USAGE", "ON_RRP_AWARD_RATE", "TGA", "RESERVES", "SOFR", "EFFR", "IORB", "US02Y", "US10Y", "BREAKEVEN_10Y", "REAL_10Y", "YIELD_SPREAD_10Y_2Y", "YIELD_SPREAD_2Y_3M", "DXY"]
+    return ["ON_RRP_USAGE", "ON_RRP_AWARD_RATE", "TGA", "RESERVES", "SOFR", "EFFR", "IORB", "US03M", "US02Y", "YIELD_SPREAD_2Y_3M", "US10Y", "BREAKEVEN_10Y", "REAL_10Y", "YIELD_SPREAD_10Y_2Y", "DXY"]
 
 
 def _label_for(symbol):
     return {
         "ON_RRP_USAGE": "ON RRP 使用量", "ON_RRP_AWARD_RATE": "ON RRP Award Rate", "TGA": "TGA",
         "RESERVES": "Reserve Balances", "SOFR": "SOFR", "EFFR": "EFFR", "IORB": "IORB",
-        "US02Y": "US02Y", "US10Y": "US10Y", "BREAKEVEN_10Y": "10Y Breakeven（T10YIE）",
+        "US03M": "US03M", "US02Y": "US02Y", "US10Y": "US10Y", "BREAKEVEN_10Y": "10Y Breakeven（T10YIE）",
         "REAL_10Y": "10Y 实际利率 = US10Y - T10YIE", "YIELD_SPREAD_10Y_2Y": "10Y-2Y 利差",
         "YIELD_SPREAD_2Y_3M": "2Y-3M 利差", "DXY": "DXY"
     }.get(symbol, symbol)
@@ -262,10 +278,10 @@ def _reserves_change_label(change):
 
 
 def _price_sentence(snapshot):
-    vals = [snapshot.indicators.get(s) for s in ("SOFR", "EFFR", "IORB", "US02Y")]
+    vals = [snapshot.indicators.get(s) for s in ("SOFR", "EFFR", "IORB", "US03M", "US02Y")]
     if all(vals):
-        sofr, effr, iorb, us02y = vals
-        return f"SOFR {sofr.value:.2f}%，EFFR {effr.value:.2f}%，IORB {iorb.value:.2f}%，2Y {us02y.value:.2f}%，短端机会成本仍在高位。"
+        sofr, effr, iorb, us03m, us02y = vals
+        return f"SOFR {sofr.value:.2f}%，EFFR {effr.value:.2f}%，IORB {iorb.value:.2f}%，3M {us03m.value:.2f}%，2Y {us02y.value:.2f}%，短端机会成本仍在高位。"
     return "短端价格层输入不完整，不能确认真正宽松。"
 
 
@@ -331,26 +347,67 @@ def _short_curve_pressure(snapshot):
     spread = snapshot.indicators.get("YIELD_SPREAD_2Y_3M")
     if spread is None:
         return "无法判断"
-    if spread.weekly_change is not None and spread.weekly_change > 0:
-        return f"改善，当前 {_format_value(spread)}，短端政策拐点定价升温"
-    if spread.weekly_change is not None and spread.weekly_change < 0:
-        return f"恶化，当前 {_format_value(spread)}，短端仍偏紧"
-    return f"横盘，当前 {_format_value(spread)}"
+    curve_state = "正斜率" if spread.value > 0 else "倒挂" if spread.value < 0 else "持平"
+    if spread.weekly_change is None or spread.weekly_change == 0:
+        curve_change = "周度基本不变"
+    elif spread.value >= 0:
+        curve_change = "周度走阔" if spread.weekly_change > 0 else "周度收窄"
+    else:
+        curve_change = "倒挂收窄" if spread.weekly_change > 0 else "倒挂加深"
+    return f"当前 {_format_value(spread)}（{curve_state}、{curve_change}）；{_short_curve_driver(snapshot)}"
+
+
+def _short_curve_driver(snapshot):
+    us02y = snapshot.indicators.get("US02Y")
+    us03m = snapshot.indicators.get("US03M")
+    if us02y is None or us03m is None:
+        return "2Y 或 3M 缺失，无法拆分变化来源"
+    two_change = us02y.weekly_change
+    three_change = us03m.weekly_change
+    if two_change is None or three_change is None:
+        return "2Y 或 3M 周变化缺失，无法拆分变化来源"
+    if two_change > 0 and three_change < 0:
+        return "2Y 上行而 3M 下行，鹰派预期与近期政策价格转松并存，曲线变化不能单向解读"
+    if two_change < 0 and three_change > 0:
+        return "2Y 下行而 3M 上行，未来紧缩溢价缓和但当前短端更紧，信号分裂"
+    if two_change >= 0 and three_change >= 0:
+        if two_change > three_change:
+            return "2Y 与 3M 同升且 2Y 升幅更大，未来利率溢价偏鹰"
+        if three_change > two_change:
+            return "2Y 与 3M 同升且 3M 升幅更大，当前短端价格收紧更明显"
+        if two_change > 0:
+            return "2Y 与 3M 同幅上行，曲线未变但短端价格整体收紧"
+        return "2Y 与 3M 均持平，曲线本身未提供新增方向确认"
+    if two_change <= 0 and three_change <= 0:
+        if abs(three_change) > abs(two_change):
+            return "2Y 与 3M 同降且 3M 降幅更大，近期政策价格转松信号较强"
+        if abs(two_change) > abs(three_change):
+            if three_change == 0:
+                return "2Y 下行而 3M 未降，仅代表未来紧缩溢价缓和，当前短端尚未宽松"
+            return "2Y 与 3M 同降但 2Y 降幅更大，未来紧缩溢价缓和更明显"
+        return "2Y 与 3M 同幅下行，短端价格整体转松但曲线未变"
+    return "2Y 与 3M 变化接近，曲线本身未提供新增方向确认"
 
 
 def _rate_structure_rule(snapshot):
     real = snapshot.indicators.get("REAL_10Y")
+    us02y = snapshot.indicators.get("US02Y")
+    us03m = snapshot.indicators.get("US03M")
     spread = snapshot.indicators.get("YIELD_SPREAD_2Y_3M")
-    if real is None or spread is None:
-        return "10Y 实际收益率或 2Y-3M 利差缺失，不能确认短端政策拐点。"
+    if real is None or us02y is None or us03m is None or spread is None:
+        return "10Y 实际收益率、2Y、3M 或 2Y-3M 利差缺失，不能确认短端政策拐点。"
     real_falling = real.weekly_change is not None and real.weekly_change < 0
-    spread_improving = spread.weekly_change is not None and spread.weekly_change > 0
-    spread_worsening = spread.weekly_change is not None and spread.weekly_change < 0
-    if real_falling and spread_improving:
-        return "10Y 实际收益率下行 + 2Y-3M 利差改善，黄金低点确认概率提高。"
-    if real.value >= 2.1 and spread_worsening:
-        return "10Y 实际收益率高企 + 2Y-3M 利差恶化，4100 低点失败概率提高，警惕 3720 剧本。"
-    return "利率结构尚未形成明确共振，继续等待实际收益率与短端利差同向确认。"
+    two_falling = us02y.weekly_change is not None and us02y.weekly_change < 0
+    two_rising = us02y.weekly_change is not None and us02y.weekly_change > 0
+    three_falling = us03m.weekly_change is not None and us03m.weekly_change < 0
+    three_not_falling = us03m.weekly_change is not None and us03m.weekly_change >= 0
+    if real_falling and three_falling:
+        return "10Y 实际收益率与 3M 同步下行，机会成本和近期政策价格共同转松，黄金宏观压力明显缓和。"
+    if real_falling and two_falling and three_not_falling:
+        return "10Y 实际收益率与 2Y 下行，但 3M 未降；未来紧缩溢价缓和，当前短端尚未确认宽松。"
+    if real.value >= 2.1 and two_rising and three_not_falling:
+        return "10Y 实际收益率高企且 2Y 上行，利率结构偏鹰，对黄金继续构成机会成本压力。"
+    return "利率结构尚未形成明确共振，继续等待实际收益率、2Y 与 3M 的共同确认。"
 
 
 def _dominant_variable(conclusion):
@@ -474,30 +531,6 @@ def _systemic_risk_conclusion(snapshot, conclusion):
     if _has_source(snapshot, "HY_OAS", "BAMLH0A0HYM2", "VIX"):
         return "需结合信用利差和波动率再确认"
     return "慢性挤压，尚未由系统数据确认信用扩散或货币信用重估"
-
-
-def _external_data_gap_rows(snapshot):
-    rows = []
-    dxy = snapshot.indicators.get("DXY")
-    dxy_source = _source_for(snapshot, "DXY").lower()
-    if dxy is None:
-        rows.append("| DXY（TradingView 优先） | DXY 缺失 | 接入 TradingView DXY 最新值、1周变化、1月变化，CNBC 仅兜底 |")
-    elif "tradingview" not in dxy_source or dxy.weekly_change is None or dxy.monthly_change is None:
-        rows.append("| DXY（TradingView 优先） | 已有 DXY 最新值，但未完整使用 TradingView 周/月变化 | 修复 TradingView 采集，保留 CNBC fallback 并显式标注 |")
-    rows.extend([
-        _gap_row(snapshot, "ETF / GLD 流向", ("ETF", "GLD"), "接入 WGC / GLD 持仓或可信 ETF flow 数据源"),
-        _gap_row(snapshot, "COT managed money", ("COT",), "接入 CFTC / COTData 持仓结构并绑定 source_ref"),
-        _gap_row(snapshot, "CME 交割 / 实物", ("CME_DELIVERY", "CME"), "复用 CME Daily Bulletin 解析链路输出交割观察"),
-        _gap_row(snapshot, "HY OAS", ("HY_OAS", "BAMLH0A0HYM2"), "接入 FRED BAMLH0A0HYM2 作为系统风险雷达输入"),
-        _gap_row(snapshot, "VIX", ("VIX",), "接入 FRED / CBOE VIX 作为风险溢价输入"),
-    ])
-    return rows
-
-
-def _gap_row(snapshot, label: str, symbols: tuple[str, ...], next_step: str) -> str:
-    if _has_source(snapshot, *symbols):
-        return f"| {label} | 已有系统 source_ref | 继续校验字段完整性和报告映射 |"
-    return f"| {label} | 系统快照未接入；如联网获取只能标为外部补充 | {next_step} |"
 
 
 def _state_sentence(conclusion, snapshot):

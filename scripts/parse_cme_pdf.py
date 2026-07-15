@@ -64,6 +64,7 @@ def main() -> None:
                 "json_path": json_path.as_posix(),
                 "csv_path": csv_path.as_posix(),
                 "trade_date": result.trade_date,
+                "status": status_tag,
                 "rows": len(result.detail_rows),
                 "summary_rows": len(result.summary_rows),
             },

@@ -11,18 +11,20 @@ _KNOWN_SOURCE_DEFS: list[dict[str, Any]] = [
     {"source_key": "openbb_macro", "source_name": "OpenBB Macro/Market", "source_group": "macro", "source_type": "api", "access_method": "openbb_data_layer", "metadata": {"provider_role": "fallback", "fallback_for": ["fred", "fed", "treasury", "dxy"], "fallback_sources": [], "frontend_label": "OpenBB 宏观/市场补充源", "notes": "补充或回退宏观/市场数据；未写入原始/解析工件时不得视为已入库。"}},
     {"source_key": "fed", "source_name": "Federal Reserve", "source_group": "macro", "source_type": "api", "access_method": "fred_api", "metadata": {"provider_role": "official_primary", "fallback_for": [], "fallback_sources": ["openbb_macro", "jin10_news"], "frontend_label": "Federal Reserve 官方源"}},
     {"source_key": "treasury", "source_name": "US Treasury", "source_group": "macro", "source_type": "api", "access_method": "fred_api", "metadata": {"provider_role": "official_primary", "fallback_for": [], "fallback_sources": ["openbb_macro", "jin10_news"], "frontend_label": "US Treasury 官方源"}},
-    {"source_key": "dxy", "source_name": "DXY Index", "source_group": "macro", "source_type": "api", "access_method": "yahoo_finance", "metadata": {"provider_role": "official_primary", "fallback_for": [], "fallback_sources": ["openbb_macro", "jin10_news"], "frontend_label": "DXY 主行情源"}},
+    {"source_key": "dxy", "source_name": "DXY Index", "source_group": "macro", "source_type": "api", "access_method": "tradingview+cnbc", "metadata": {"provider_role": "official_primary", "fallback_for": [], "fallback_sources": ["openbb_macro", "jin10_news"], "frontend_label": "DXY 主行情源"}},
     {"source_key": "cme_daily_bulletin", "source_name": "CME Daily Bulletin", "source_group": "cme", "source_type": "pdf", "access_method": "cme_ftp", "metadata": {"provider_role": "official_primary", "fallback_for": [], "fallback_sources": [], "frontend_label": "CME 官方公告"}},
     {"source_key": "cme_options", "source_name": "CME Options Data", "source_group": "cme", "source_type": "structured", "access_method": "cme_ftp+parser", "metadata": {"provider_role": "derived", "fallback_for": [], "fallback_sources": ["cme_daily_bulletin"], "frontend_label": "CME 解析后期权数据"}},
-    {"source_key": "technical_yahoo", "source_name": "Jin10 XAUUSD Quote / Yahoo Technical", "source_group": "technical", "source_type": "api", "access_method": "jin10_mcp+yahoo_finance", "metadata": {"provider_role": "supplemental", "fallback_for": ["openbb_macro"], "fallback_sources": ["jin10_news"], "frontend_label": "Jin10 黄金实时/技术补充源"}},
+    {"source_key": "technical_yahoo", "source_name": "Jin10 XAUUSD Technical", "source_group": "technical", "source_type": "api", "access_method": "jin10_mcp", "metadata": {"provider_role": "supplemental", "fallback_for": ["openbb_macro"], "fallback_sources": ["jin10_news"], "frontend_label": "Jin10 黄金实时/技术补充源"}},
     {"source_key": "positioning_cot", "source_name": "COT Positioning", "source_group": "positioning", "source_type": "api", "access_method": "cftc_api", "metadata": {"provider_role": "official_primary", "fallback_for": [], "fallback_sources": [], "frontend_label": "COT 官方持仓源"}},
     {"source_key": "jin10_news", "source_name": "Jin10 News", "source_group": "news", "source_type": "scraper", "access_method": "jin10_rss", "metadata": {"provider_role": "supplemental", "fallback_for": ["fred", "fed", "treasury", "dxy", "openbb_macro"], "fallback_sources": [], "frontend_label": "Jin10 新闻/日历补充源", "notes": "提供快讯、日历、事件上下文；不应被前端当作官方宏观时间序列主源。"}},
     {"source_key": "jin10_flash", "source_name": "Jin10 Flash", "source_group": "news", "source_type": "api", "access_method": "jin10_mcp_list_flash", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "event_layer": "realtime_flash", "fallback_for": [], "fallback_sources": ["jin10_news"], "frontend_label": "Jin10 实时快讯", "notes": "Jin10 MCP list_flash 高频缓存源；实时重点事件播报在采集缓存阶段用 MiMo 语义打标。"}},
     {"source_key": "jin10_mcp_flash", "source_name": "Jin10 MCP Flash", "source_group": "news", "source_type": "mcp", "access_method": "mcp", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "event_layer": "realtime_flash", "fallback_for": [], "fallback_sources": ["jin10_news"], "frontend_label": "Jin10 MCP 快讯", "notes": "Jin10 MCP list_flash/search_flash 分 lane 可观测源；用于实时事件雷达和关键词快讯。"}},
     {"source_key": "jin10_mcp_calendar", "source_name": "Jin10 MCP Calendar", "source_group": "news", "source_type": "calendar", "access_method": "mcp", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "event_layer": "calendar_candidate", "fallback_for": [], "fallback_sources": ["bls_calendar", "bea_calendar", "eia_energy"], "frontend_label": "Jin10 MCP 财经日历", "notes": "Jin10 MCP list_calendar 周内财经日历候选；宏观事实仍以官方源确认。"}},
     {"source_key": "jin10_mcp_market", "source_name": "Jin10 MCP Market", "source_group": "technical", "source_type": "mcp", "access_method": "mcp", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "fallback_for": ["technical_yahoo"], "fallback_sources": [], "frontend_label": "Jin10 MCP 行情/K线", "notes": "Jin10 MCP get_quote/get_kline 近端行情源；历史不足时显式降级。"}},
+    {"source_key": "twelvedata_xauusd", "source_name": "Twelve Data XAU/USD", "source_group": "technical", "source_type": "api", "access_method": "twelvedata_rest", "metadata": {"provider_role": "validation_and_fallback", "priority_level": "P0", "fallback_for": ["jin10_mcp_market"], "fallback_sources": [], "frontend_label": "Twelve Data 黄金校验/备用", "provider_symbol": "XAU/USD", "instrument_type": "composite_otc_spot_proxy", "entitlement": "trial", "production_guaranteed": False, "notes": "原生 5m/15m/1h/4h 只做独立校验和整根 K 线故障接管；免费 trial entitlement 变化时必须显式降级。"}},
     {"source_key": "jin10_xnews_public", "source_name": "Jin10 xnews Public", "source_group": "news", "source_type": "scraper", "access_method": "http_document", "metadata": {"provider_role": "supplemental", "priority_level": "P1", "event_layer": "article_context", "fallback_for": [], "fallback_sources": ["jin10_mcp_flash"], "frontend_label": "Jin10 公开文章", "notes": "公开 xnews 详情页正文和图片；只作为 single_source/article context。"}},
     {"source_key": "jin10_datacenter_reports", "source_name": "Jin10 Datacenter Reports", "source_group": "macro", "source_type": "structured", "access_method": "js_data_script", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "fallback_for": [], "fallback_sources": ["fred", "positioning_cot", "cme_options"], "frontend_label": "Jin10 数据中心报表", "notes": "数据中心 JS/API 结构化报表；只做补充展示和交叉验证，不覆盖官方事实。"}},
+    {"source_key": "jin10_minipro_etf_reports", "source_name": "Jin10 Mini Program ETF Reports", "source_group": "positioning", "source_type": "structured", "access_method": "minipro_rest", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "required_for": [], "fallback_policy": "degraded_allowed", "fallback_for": [], "fallback_sources": [], "frontend_label": "Jin10 黄金/白银 ETF 持仓", "notes": "小程序黄金 SPDR 与白银 iShares ETF 日持仓；作为 single_source 补充事实进入审查链，不替代基金官方披露。"}},
     {"source_key": "jin10_svip_reports", "source_name": "Jin10 SVIP Reports", "source_group": "reports", "source_type": "scraper", "access_method": "vip_browser_profile", "metadata": {"provider_role": "supplemental", "priority_level": "P1", "fallback_for": [], "fallback_sources": ["jin10_xnews_public"], "frontend_label": "Jin10 SVIP 授权报告", "notes": "已授权浏览器 profile 下的报告图文资产；缺登录或预览页必须显式标记。"}},
     {"source_key": "jin10_web_important_flash", "source_name": "Jin10 Web Important Flash", "source_group": "news", "source_type": "web_flash", "access_method": "vip_browser_profile", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "event_layer": "realtime_flash", "fallback_for": [], "fallback_sources": ["jin10_mcp_flash", "jin10_news"], "frontend_label": "Jin10 首页重要快讯", "notes": "首页重要市场快讯和重要新闻头条采集；单源 supplemental 上下文。"}},
     {"source_key": "jin10_web_vip_flash", "source_name": "Jin10 Web VIP Flash", "source_group": "news", "source_type": "vip_flash", "access_method": "vip_browser_profile", "metadata": {"provider_role": "supplemental", "priority_level": "P0", "event_layer": "vip_analysis_flash", "fallback_for": [], "fallback_sources": ["jin10_mcp_flash", "jin10_news"], "frontend_label": "Jin10 VIP 快讯", "notes": "首页 VIP 快讯分析采集；必须显式标记登录/VIP 限制。"}},
@@ -34,6 +36,7 @@ _KNOWN_SOURCE_DEFS: list[dict[str, Any]] = [
     {"source_key": "gdelt_news", "source_name": "GDELT DOC News Radar", "source_group": "news", "source_type": "api", "access_method": "gdelt_doc_api", "metadata": {"provider_role": "aggregator", "priority_level": "P0", "event_layer": "candidate_event_radar", "fallback_for": [], "fallback_sources": ["google_news_rss", "jin10_news"], "frontend_label": "GDELT 全球新闻雷达", "notes": "候选事件池，不作为最终事实确认源。"}},
     {"source_key": "google_news_rss", "source_name": "Google News RSS", "source_group": "news", "source_type": "rss", "access_method": "feedparser+httpx", "metadata": {"provider_role": "aggregator", "priority_level": "P0", "event_layer": "candidate_event_radar", "fallback_for": [], "fallback_sources": ["gdelt_news", "jin10_news"], "frontend_label": "Google News RSS 候选扫描", "notes": "免费关键词备用扫描，默认只进入 candidate events。"}},
     {"source_key": "reuters_public_news", "source_name": "Reuters Public Metadata", "source_group": "news", "source_type": "rss", "access_method": "public_metadata", "metadata": {"provider_role": "wire_public_candidate", "priority_level": "P0.5", "event_layer": "candidate_event_radar", "authorized_wire": False, "fallback_for": [], "fallback_sources": ["gdelt_news", "google_news_rss", "jin10_news"], "frontend_label": "Reuters 公开元数据候选源", "notes": "只采公开可访问 metadata；不保存全文，不绕登录，不等同 LSEG/Reuters Connect 授权 wire。"}},
+    {"source_key": "llm_web_search", "source_name": "LLM Web Search Fallback", "source_group": "news", "source_type": "api", "access_method": "responses_web_search", "metadata": {"provider_role": "online_research_fallback", "priority_level": "P1", "event_layer": "candidate_event_radar", "fallback_for": ["gdelt_news", "google_news_rss", "reuters_public_news"], "fallback_sources": [], "frontend_label": "LLM 联网新闻兜底", "notes": "仅在常规发现源没有达到 freshness 目标时触发；必须存在真实 web_search_call URL，结果保持 supplemental/single_source。"}},
 ]
 
 _KNOWN_SOURCE_INDEX: dict[str, dict[str, Any]] = {src["source_key"]: src for src in _KNOWN_SOURCE_DEFS}
@@ -45,7 +48,9 @@ _NEWS_SOURCE_STORAGE_DIRS: dict[str, str] = {
     "gdelt_news": "gdelt",
     "google_news_rss": "google_news_rss",
     "jin10_feishu": "jin10_feishu",
+    "jin10_minipro_etf_reports": "jin10_minipro_etf_reports",
     "reuters_public_news": "reuters_public",
+    "llm_web_search": "llm_web_search",
 }
 _NEWS_FEATURE_FILENAMES: dict[str, str] = {
     "brief_artifact_path": "daily_market_brief.json",
@@ -166,6 +171,20 @@ _SOURCE_OBSERVABILITY: dict[str, dict[str, Any]] = {
         "polling_strategy": {"mode": "cached_market_poll", "cadence": "1m-5m during active session", "query": "Jin10 MCP get_quote/get_kline"},
         "pressure_profile": {"level": "medium", "upgrade_required": True, "recommendation": "行情进入共享缓存和 market_candles，历史不足显式标记 insufficient_history。"},
     },
+    "twelvedata_xauusd": {
+        "database_tables": ["data_source_status", "market_candles"],
+        "artifact_layers": ["storage/raw/market/twelvedata", "storage/monitoring/market_data"],
+        "polling_strategy": {
+            "mode": "cached_market_poll",
+            "cadence": "on closed 5m/15m/1h/4h buckets",
+            "query": "Twelve Data XAU/USD native time_series validation/fallback",
+        },
+        "pressure_profile": {
+            "level": "medium",
+            "upgrade_required": False,
+            "recommendation": "正常日保持约 414 次请求并监控 credit headers；trial entitlement 或 quota 异常时显式降级。",
+        },
+    },
     "jin10_xnews_public": {
         "database_tables": ["data_source_status", "analysis_snapshots.news"],
         "artifact_layers": ["storage/raw/news/jin10_detail_pages", "storage/parsed/news/jin10_detail_pages", "storage/features/news"],
@@ -177,6 +196,24 @@ _SOURCE_OBSERVABILITY: dict[str, dict[str, Any]] = {
         "artifact_layers": ["storage/raw/jin10/datacenter", "storage/parsed/jin10/datacenter"],
         "polling_strategy": {"mode": "structured_report_probe", "cadence": "daily / manual for pilot slugs", "query": "datacenter reportType HTML -> latest JS data script"},
         "pressure_profile": {"level": "medium", "upgrade_required": False, "recommendation": "按 slug 低频刷新并做 schema_changed 降级；不作为官方事实主源。"},
+    },
+    "jin10_minipro_etf_reports": {
+        "database_tables": ["data_source_status", "analysis_snapshots.news", "task_runs", "task_steps"],
+        "artifact_layers": [
+            "storage/raw/news/jin10_minipro_etf_reports",
+            "storage/parsed/news/jin10_minipro_etf_reports",
+            "storage/features/market",
+        ],
+        "polling_strategy": {
+            "mode": "structured_report_probe",
+            "cadence": "daily / premarket",
+            "query": "Jin10 Mini Program ETF reports for SPDR Gold Trust and iShares Silver Trust",
+        },
+        "pressure_profile": {
+            "level": "low",
+            "upgrade_required": False,
+            "recommendation": "日频拉取并归档原始响应；保持 supplemental/single_source 标签。",
+        },
     },
     "jin10_svip_reports": {
         "database_tables": ["data_source_status"],
@@ -243,6 +280,12 @@ _SOURCE_OBSERVABILITY: dict[str, dict[str, Any]] = {
         "artifact_layers": ["storage/raw/news/reuters_public", "storage/parsed/news/reuters_public", "storage/features/news"],
         "polling_strategy": {"mode": "public_metadata_poll", "cadence": "30m+ / manual", "query": "authorized public metadata only"},
         "pressure_profile": {"level": "medium", "upgrade_required": False, "recommendation": "保持公开 metadata 边界；不要为了频率绕过授权。"},
+    },
+    "llm_web_search": {
+        "database_tables": ["data_source_status", "analysis_snapshots.news"],
+        "artifact_layers": ["storage/raw/news/llm_web_search", "storage/parsed/news/llm_web_search", "storage/features/news"],
+        "polling_strategy": {"mode": "fallback_batch", "cadence": "only when freshness gate requires fallback", "query": "bounded financial-news query groups through an actual Responses web_search_call"},
+        "pressure_profile": {"level": "medium", "upgrade_required": False, "recommendation": "仅条件触发；检查 provider capability 与调用成本，不能把模型摘要当官方确认。"},
     },
 }
 
@@ -1176,7 +1219,8 @@ def _latest_artifact_ref_from_layers(layers: list[str]) -> dict[str, Any] | None
         root = _PROJECT_ROOT / layer
         if not root.exists():
             continue
-        for path in root.rglob("*"):
+        candidates = (root,) if root.is_file() else root.rglob("*")
+        for path in candidates:
             if not path.is_file():
                 continue
             try:
@@ -1328,6 +1372,9 @@ def _source_registry_entry(source_def: dict[str, Any]) -> dict[str, Any]:
     mode = str(polling_strategy.get("mode") or "")
     ttl = _FRESHNESS_MODE_TTLS.get(mode)
     metadata = source_def.get("metadata") if isinstance(source_def.get("metadata"), dict) else {}
+    required_for = metadata.get("required_for")
+    if not isinstance(required_for, list):
+        required_for = _SOURCE_REQUIRED_FOR_BY_GROUP.get(source_group, [source_group])
     return {
         "source_key": source_key,
         "source_name": source_def.get("source_name") or source_key,
@@ -1338,7 +1385,7 @@ def _source_registry_entry(source_def: dict[str, Any]) -> dict[str, Any]:
         "expected_frequency": _expected_frequency_from_polling_mode(mode),
         "expected_arrival_time": None,
         "freshness_sla_minutes": None if ttl is None else int(ttl.total_seconds() // 60),
-        "required_for": list(_SOURCE_REQUIRED_FOR_BY_GROUP.get(source_group, [source_group])),
+        "required_for": list(required_for),
         "fallback_policy": _fallback_policy_from_metadata(metadata),
         "owner_module": _owner_module_for_source(source_group),
         "enabled": True,
@@ -1358,6 +1405,9 @@ def _expected_frequency_from_polling_mode(mode: str) -> str:
 
 
 def _fallback_policy_from_metadata(metadata: dict[str, Any]) -> str:
+    explicit_policy = metadata.get("fallback_policy")
+    if isinstance(explicit_policy, str) and explicit_policy.strip():
+        return explicit_policy.strip()
     fallback_sources = metadata.get("fallback_sources")
     fallback_for = metadata.get("fallback_for")
     if isinstance(fallback_sources, list) and fallback_sources:

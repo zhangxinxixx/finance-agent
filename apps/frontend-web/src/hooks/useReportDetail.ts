@@ -18,6 +18,7 @@ export function useReportDetail(reportId: string | undefined): ReportDetailState
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     async function load() {
       if (!reportId) {
@@ -30,7 +31,7 @@ export function useReportDetail(reportId: string | undefined): ReportDetailState
       setIsLoading(true);
       setError(null);
       try {
-        const nextData = await fetchReportDetailView(reportId);
+        const nextData = await fetchReportDetailView(reportId, controller.signal);
         if (!cancelled) {
           setData(nextData);
         }
@@ -50,6 +51,7 @@ export function useReportDetail(reportId: string | undefined): ReportDetailState
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [reportId, reloadToken]);
 

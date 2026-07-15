@@ -44,8 +44,6 @@ def _make_session() -> Session:
 def test_settings_preferences_write_is_reflected_in_status(monkeypatch, tmp_path) -> None:
     session = _make_session()
     monkeypatch.delenv("FRED_API_KEY", raising=False)
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.delenv("MEM0_API_KEY", raising=False)
     monkeypatch.delenv("JIN10_MCP_KEY", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setattr("apps.api.services.settings_service._PROJECT_ROOT", tmp_path)
@@ -117,8 +115,6 @@ def test_settings_source_update_rejects_unknown_source() -> None:
 def test_settings_preferences_reset_restores_defaults_and_history(monkeypatch, tmp_path) -> None:
     session = _make_session()
     monkeypatch.delenv("FRED_API_KEY", raising=False)
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.delenv("MEM0_API_KEY", raising=False)
     monkeypatch.delenv("JIN10_MCP_KEY", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setattr("apps.api.services.settings_service._PROJECT_ROOT", tmp_path)
@@ -218,8 +214,6 @@ def test_settings_history_rollback_restores_previous_source_state(monkeypatch, t
 def test_settings_history_rollback_restores_previous_preference_value(monkeypatch, tmp_path) -> None:
     session = _make_session()
     monkeypatch.delenv("FRED_API_KEY", raising=False)
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.delenv("MEM0_API_KEY", raising=False)
     monkeypatch.delenv("JIN10_MCP_KEY", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setattr("apps.api.services.settings_service._PROJECT_ROOT", tmp_path)
@@ -290,8 +284,6 @@ def test_settings_history_rollback_rejects_secret_events(monkeypatch, tmp_path) 
 def test_settings_history_supports_scope_action_and_actor_filters(monkeypatch, tmp_path) -> None:
     session = _make_session()
     monkeypatch.delenv("FRED_API_KEY", raising=False)
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.delenv("MEM0_API_KEY", raising=False)
     monkeypatch.delenv("JIN10_MCP_KEY", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setattr("apps.api.services.settings_service._PROJECT_ROOT", tmp_path)

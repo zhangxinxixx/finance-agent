@@ -734,3 +734,32 @@ def test_gold_macro_overview_priority_regime_monetary_credit_repricing_prioritiz
 
     assert overview["priority_regime"] == "monetary_credit_repricing"
     assert overview["dominant_mainline"] == "central_bank_gold"
+
+
+def test_gold_macro_overview_exposes_silver_etf_holdings_as_cross_metal_confirmation() -> None:
+    payload = {
+        "asset": "XAUUSD",
+        "status": "available",
+        "as_of": "2026-07-21T08:30:00+00:00",
+        "mainlines": [{"mainline_id": "etf_flows", "coverage_status": "missing", "score": 0}],
+        "event_links": [],
+    }
+    flow_context = {
+        "global_etf_flow": 4.566,
+        "gold_etf_holdings_tonnes": 1003.59,
+        "gold_etf_change_tonnes": 4.566,
+        "gold_etf_reported_on": "2026-07-20",
+        "silver_etf_holdings_tonnes": 15052.89,
+        "silver_etf_change_tonnes": -8.43,
+        "silver_etf_reported_on": "2026-07-20",
+        "cross_metal_confirmation": "divergent",
+        "source_refs": [{"source": "jin10_minipro", "source_tier": "supplemental"}],
+    }
+
+    overview = build_gold_macro_overview(payload, flow_context=flow_context).to_dict()
+    etf = next(row for row in overview["theme_rankings"] if row["mainline_id"] == "etf_flows")
+
+    assert etf["feature_fields"]["gold_etf_holdings_tonnes"] == 1003.59
+    assert etf["feature_fields"]["silver_etf_holdings_tonnes"] == 15052.89
+    assert etf["feature_fields"]["silver_etf_change_tonnes"] == -8.43
+    assert etf["feature_fields"]["cross_metal_confirmation"] == "divergent"

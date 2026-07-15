@@ -65,6 +65,8 @@ class GoldRuntimeModeContract:
             "runtime_contract_only": True,
             "artifact_execution_enabled": False,
             "pipeline_materialized_outputs": False,
+            "declared_agents": list(self.agents_executed),
+            "materialized_stage_envelopes": [],
             "executed_agents": [],
         }
 
@@ -238,6 +240,8 @@ def build_gold_runtime_summary_preview(
         "runtime_contract_only": True,
         "artifact_execution_enabled": False,
         "pipeline_materialized_outputs": False,
+        "declared_agents": list(contract.agents_executed),
+        "materialized_stage_envelopes": [],
         "executed_agents": [],
         "writes": [],
     }
@@ -253,14 +257,18 @@ def build_gold_runtime_execution_summary(
     fallback_tasks_created: list[dict[str, Any]] | None = None,
     fallback_attempts: int = 0,
     warnings: list[str] | None = None,
+    executed_agents: list[str] | None = None,
+    failed_agents: list[str] | None = None,
+    skipped_agents: list[str] | None = None,
+    agent_artifact_refs: dict[str, str] | None = None,
+    declared_agents: list[str] | None = None,
+    materialized_stage_envelopes: list[str] | None = None,
 ) -> dict[str, object]:
     """Return a materialized pipeline summary bound to scheduler/worker evidence.
 
-    Gold v3.0 materializes pipeline outputs, but fixed Agent artifact execution
-    remains a v3.1 concern. Keep ``runtime_contract_only`` true until that
-    artifact execution lane exists, and expose the materialization state
-    explicitly so downstream readers do not confuse planned agents with
-    executed Agent artifacts.
+    ``executed_agents`` records real function execution with independent business
+    output. ``materialized_stage_envelopes`` records lineage-only envelopes and
+    never promotes a stage into executed runtime truth.
     """
 
     summary = build_gold_runtime_summary_preview(run_mode=run_mode, trigger_reason=trigger_reason)
@@ -273,6 +281,7 @@ def build_gold_runtime_execution_summary(
         *[str(item) for item in summary.get("warnings") or []],
         *[str(item) for item in warnings or []],
     }
+    actual_executed_agents = list(dict.fromkeys(executed_agents or []))
     if quality_gate_status == "fallback_required":
         merged_warnings.add("quality_gate_fallback_required")
     elif quality_gate_status == "needs_review":
@@ -297,10 +306,17 @@ def build_gold_runtime_execution_summary(
             "no_strong_conclusion": quality_gate_status == "blocked" or bool(agent_loop.get("no_strong_conclusion")),
             "strategy_card_override": dict(agent_loop.get("strategy_card_override") or {}),
             "review_item_ids": [],
-            "runtime_contract_only": True,
-            "artifact_execution_enabled": False,
+            "runtime_contract_only": not bool(actual_executed_agents),
+            "artifact_execution_enabled": bool(actual_executed_agents),
             "pipeline_materialized_outputs": bool(effective_outputs),
-            "executed_agents": [],
+            "declared_agents": list(dict.fromkeys(declared_agents or [])),
+            "materialized_stage_envelopes": list(
+                dict.fromkeys(materialized_stage_envelopes or [])
+            ),
+            "executed_agents": actual_executed_agents,
+            "failed_agents": list(dict.fromkeys(failed_agents or [])),
+            "skipped_agents": list(dict.fromkeys(skipped_agents or [])),
+            "agent_artifact_refs": dict(agent_artifact_refs or {}),
             "writes": _accepted_output_paths(effective_outputs),
             "warnings": sorted(merged_warnings),
         }
@@ -331,6 +347,12 @@ def _agent_loop_decision_dict(value: Any) -> dict[str, Any]:
 
 
 def _accepted_outputs(*, accepted_outputs: dict[str, Any] | None, agent_loop: dict[str, Any]) -> dict[str, Any]:
+    accepted_reference = agent_loop.get("accepted_output")
+    if isinstance(accepted_reference, dict):
+        if str(accepted_reference.get("source") or "none") == "none":
+            return {}
+        artifact_ref = accepted_reference.get("artifact_ref")
+        return dict(artifact_ref) if isinstance(artifact_ref, dict) else {}
     loop_outputs = agent_loop.get("accepted_outputs")
     if isinstance(loop_outputs, dict) and loop_outputs:
         return dict(loop_outputs)
@@ -349,12 +371,14 @@ def _fallback_tasks(*, explicit: list[dict[str, Any]] | None, agent_loop: dict[s
 def _quality_gate_status(decision: dict[str, Any]) -> QualityGateStatus:
     action = str(decision.get("action") or "")
     review_status = str(decision.get("review_status") or "")
-    if action == "block_publish" or review_status == "blocked" or decision.get("publish_allowed") is False:
+    if action == "block_publish" or review_status == "blocked":
         return "blocked"
     if action in {"fallback", "retry"} or decision.get("fallback_recommended") or decision.get("retry_recommended"):
         return "fallback_required"
     if action == "manual_review" or review_status == "needs_review" or decision.get("manual_review_required"):
         return "needs_review"
+    if decision.get("publish_allowed") is False:
+        return "blocked"
     return "passed"
 
 

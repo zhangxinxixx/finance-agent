@@ -20,7 +20,6 @@ class ReportBase(DeclarativeBase):
 class ReportItem(ReportBase):
     __tablename__ = "report_items"
     __table_args__ = (
-        UniqueConstraint("report_id", name="uq_report_items_report_id"),
         Index("ix_report_items_family_trade_date", "family", "trade_date"),
         Index("ix_report_items_run_id", "run_id"),
         Index("ix_report_items_snapshot_id", "snapshot_id"),
@@ -56,7 +55,6 @@ class ReportItem(ReportBase):
 class ReportArtifact(ReportBase):
     __tablename__ = "report_artifacts"
     __table_args__ = (
-        UniqueConstraint("artifact_id", name="uq_report_artifacts_artifact_id"),
         UniqueConstraint("report_id", "artifact_type", "file_path", name="uq_report_artifacts_report_type_path"),
         Index("ix_report_artifacts_report_id", "report_id"),
         Index("ix_report_artifacts_type", "artifact_type"),

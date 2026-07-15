@@ -50,6 +50,8 @@ _ARTIFACT_QUALITY_METADATA_KEYS = frozenset(
         "usable_for",
         "blocked_for",
         "execution_mode",
+        "publish_allowed",
+        "output_mode",
     }
 )
 

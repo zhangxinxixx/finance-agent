@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +11,7 @@ import pytest
 
 from apps.collectors.dxy.collector import collect_dxy_series
 from apps.collectors.fed.collector import collect_fed_series
+from apps.collectors.fred import collector as fred_collector
 from apps.collectors.fred.collector import collect_fred_series, collect_fred_series_from_payload
 from apps.collectors.treasury.collector import collect_treasury_series
 from apps.runtime import secret_resolver
@@ -83,8 +86,46 @@ def test_fred_collector_passes_retrieved_date_to_api_request(tmp_path: Path) -> 
         )
 
     assert not result.unavailable_symbols
+    assert captured_params["observation_start"] == "2026-03-20"
     assert captured_params["observation_end"] == "2026-06-18"
     assert result.points[-1].date == "2026-06-18"
+
+
+def test_fred_collector_fetches_symbols_concurrently_and_merges_in_request_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fake_collect_symbol(*, symbol, **_kwargs):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03 if symbol == "DGS10" else 0.01)
+        with lock:
+            active -= 1
+        return fred_collector.CollectorResult(
+            points=[],
+            unavailable_symbols=[symbol],
+            source_refs=[{"symbol": symbol, "source": "fred"}],
+        )
+
+    monkeypatch.setattr(fred_collector, "_collect_fred_symbol", fake_collect_symbol)
+    monkeypatch.setenv("FINANCE_AGENT_FRED_MAX_WORKERS", "3")
+
+    result = collect_fred_series(
+        retrieved_date="2026-06-18",
+        storage_root=tmp_path,
+        symbols=("DGS10", "DGS2", "DGS3MO"),
+        api_key="test-key",
+    )
+
+    assert max_active == 3
+    assert result.unavailable_symbols == ["DGS10", "DGS2", "DGS3MO"]
+    assert [ref["symbol"] for ref in result.source_refs] == ["DGS10", "DGS2", "DGS3MO"]
 
 
 def test_fred_collector_marks_unavailable_when_csv_request_fails(tmp_path: Path, monkeypatch) -> None:

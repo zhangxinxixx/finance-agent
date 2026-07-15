@@ -56,6 +56,34 @@ _MACRO_INDICATOR_ORDER = [
     "DXY",
 ]
 
+_MACRO_SOURCE_DEPENDENCIES = {
+    "ON_RRP_USAGE": ("RRPONTSYD",),
+    "ON_RRP_AWARD_RATE": ("RRPONTSYAWARD",),
+    "RESERVES": ("WRESBAL",),
+    "US02Y": ("DGS2",),
+    "US10Y": ("DGS10",),
+    "BREAKEVEN_10Y": ("T10YIE",),
+    "REAL_10Y": ("DGS10", "T10YIE"),
+    "YIELD_SPREAD_10Y_2Y": ("DGS10", "DGS2"),
+    "YIELD_SPREAD_2Y_3M": ("DGS2", "DGS3MO"),
+}
+
+_REPORT_SOURCE_BAD_STATUSES = {
+    "error",
+    "failed",
+    "network_blocked",
+    "rate_limited",
+    "unavailable",
+}
+
+_REPORT_SOURCE_ASSET_ONLY_TYPES = {
+    "agent_analysis_report",
+    "daily_analysis",
+    "image",
+    "meta_json",
+    "raw_article_report",
+}
+
 _BIAS_LABELS = {
     "bullish": "偏多",
     "bearish": "偏空",
@@ -103,7 +131,6 @@ def render_final_report_markdown(
     }
     snapshot_id = _string_or_unavailable(snapshot_data.get("snapshot_id"))
     input_snapshot_ids = _collect_input_snapshot_ids(snapshot_data, outputs)
-    source_refs = _collect_source_refs(snapshot_data, outputs)
     warnings = _collect_warnings(snapshot_warning, snapshot_data, outputs)
 
     lines: list[str] = [
@@ -118,6 +145,7 @@ def render_final_report_markdown(
     lines.extend(_render_macro_data_report(snapshot_data, outputs["macro"], warnings))
     lines.extend(["## 综合报告", ""])
     lines.extend(["### 报告主题", "", _build_report_theme(snapshot_data, outputs), ""])
+    lines.extend(_render_gold_analysis_context(snapshot_data))
     lines.extend(_render_executive_summary(snapshot_data, outputs, warnings, heading_level=3))
     lines.extend(_render_market_view(outputs, heading_level=3))
     lines.extend(_render_evidence_chain(outputs, heading_level=3))
@@ -137,7 +165,6 @@ def render_final_report_markdown(
         lines.append("- unavailable")
     lines.append("")
 
-    lines.extend(_render_source_refs(source_refs))
     lines.extend(
         [
             "## 免责声明",
@@ -148,6 +175,47 @@ def render_final_report_markdown(
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_gold_analysis_context(snapshot: Mapping[str, Any]) -> list[str]:
+    section = snapshot.get("gold_analysis_context")
+    if not isinstance(section, Mapping):
+        return []
+    data = section.get("data") if isinstance(section.get("data"), Mapping) else section
+    if not isinstance(data, Mapping):
+        return []
+    baseline = data.get("analysis_baseline") if isinstance(data.get("analysis_baseline"), Mapping) else {}
+    if not baseline:
+        return []
+    baseline_kind = str(data.get("baseline_kind") or baseline.get("source_kind") or "weekly_anchor")
+    label = {
+        "weekly_anchor": "周末周报",
+        "weekly_fallback": "周报回退（前一日最终综合分析报告缺失）",
+        "previous_analysis_report": "前一日最新综合分析报告",
+        "previous_daily": "前一日最新综合分析报告",
+    }.get(baseline_kind, "前序分析")
+    freshness = data.get("freshness") if isinstance(data.get("freshness"), Mapping) else {}
+    oil_report = data.get("oil_report_summary") if isinstance(data.get("oil_report_summary"), Mapping) else {}
+    lines = [
+        "### 分析基准与当日增量",
+        "",
+        f"- 基准：{label} / {baseline.get('trade_date') or baseline.get('context_as_of') or 'unavailable'} / ref={baseline.get('article_id') or baseline.get('report_id') or baseline.get('run_id') or 'unavailable'}",
+        f"- 基准状态：quality={baseline.get('quality_status') or 'unknown'}；publish_allowed={baseline.get('publish_allowed') if baseline.get('publish_allowed') is not None else 'unknown'}",
+        f"- 上下文状态：{data.get('status') or section.get('status') or 'unknown'}",
+    ]
+    for key, title in (("market", "市场"), ("news", "新闻"), ("oil", "油价")):
+        item = freshness.get(key) if isinstance(freshness.get(key), Mapping) else {}
+        lines.append(f"- {title} freshness：{item.get('status') or 'missing'} / as_of={item.get('as_of') or 'missing'}")
+    if oil_report:
+        lines.append(
+            f"- 原油报告：{oil_report.get('trade_date') or 'missing'} / "
+            f"ref={oil_report.get('article_id') or 'missing'} / quality={oil_report.get('status') or 'unknown'}"
+        )
+        conclusion = str(oil_report.get("one_line_conclusion") or oil_report.get("final_summary") or "").strip()
+        if conclusion:
+            lines.append(f"- 原油报告摘要：{conclusion}")
+    lines.append("")
+    return lines
 
 
 def _build_report_theme(
@@ -344,6 +412,9 @@ def _render_gold_macro_overview(snapshot: Mapping[str, Any], *, heading_level: i
             f"{chain.get('conclusion_code') or 'unknown'} / "
             f"{chain.get('conclusion_label') or chain.get('net_effect') or 'unknown'}。"
         )
+    etf_line = _gold_silver_etf_holdings_line(rankings)
+    if etf_line:
+        lines.append(etf_line)
     if rankings:
         lines.extend(["", "| Rank | 主线 | 方向 | 分数 | 证据 |", "| --- | --- | --- | --- | --- |"])
         for item in rankings[:5]:
@@ -361,6 +432,30 @@ def _render_gold_macro_overview(snapshot: Mapping[str, Any], *, heading_level: i
         lines.extend(_bullets(gaps[:6]))
     lines.append("")
     return lines
+
+
+def _gold_silver_etf_holdings_line(rankings: list[Mapping[str, Any]]) -> str | None:
+    etf_row = next((item for item in rankings if item.get("mainline_id") == "etf_flows"), None)
+    if not isinstance(etf_row, Mapping):
+        return None
+    fields = etf_row.get("feature_fields")
+    if not isinstance(fields, Mapping):
+        return None
+    parts: list[str] = []
+    for label, prefix in (("黄金 SPDR", "gold"), ("白银 iShares", "silver")):
+        holdings = fields.get(f"{prefix}_etf_holdings_tonnes")
+        change = fields.get(f"{prefix}_etf_change_tonnes")
+        reported_on = fields.get(f"{prefix}_etf_reported_on")
+        if holdings is None:
+            continue
+        change_text = "未知"
+        if isinstance(change, (int, float)) and not isinstance(change, bool):
+            change_text = f"{change:+,.2f} 吨"
+        parts.append(f"{label} {float(holdings):,.2f} 吨（日变动 {change_text}，{reported_on or '日期未知'}）")
+    if not parts:
+        return None
+    confirmation = fields.get("cross_metal_confirmation") or "unavailable"
+    return f"- ETF持仓（Jin10 单一补充源）: {'；'.join(parts)}；跨金属确认: {confirmation}。"
 
 
 def _find_gold_macro_overview(snapshot: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -490,14 +585,180 @@ def _collect_input_snapshot_ids(
 def _collect_source_refs(
     snapshot: Mapping[str, Any], outputs: Mapping[str, AgentOutput | None]
 ) -> list[dict[str, Any]]:
-    refs: list[dict[str, Any]] = []
+    refs = _collect_snapshot_report_source_refs(snapshot)
     snapshot_refs = snapshot.get("source_refs")
-    if isinstance(snapshot_refs, list):
-        refs.extend(ref for ref in snapshot_refs if isinstance(ref, dict))
+    snapshot_ref_keys = {
+        _source_ref_exact_key(ref)
+        for ref in snapshot_refs or []
+        if isinstance(ref, dict)
+    } if isinstance(snapshot_refs, list) else set()
     for output in outputs.values():
         if output is not None:
-            refs.extend(output.source_refs)
-    return _dedupe_dicts(refs)
+            refs.extend(
+                dict(ref)
+                for ref in output.source_refs
+                if isinstance(ref, dict) and _source_ref_exact_key(ref) not in snapshot_ref_keys
+            )
+    return _compact_report_source_refs(refs)
+
+
+def _collect_snapshot_report_source_refs(snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Collect only refs tied to report-consumed domain data.
+
+    The snapshot top-level list is a collection ledger. It deliberately contains
+    probes, failed candidates, raw image assets, and feeds that did not contribute
+    to the rendered report. Report provenance is narrower: it follows the domain
+    sections and selected news/report inputs that the renderer actually consumes.
+    """
+
+    refs: list[dict[str, Any]] = []
+
+    macro = _section_data(snapshot, "macro")
+    indicators = macro.get("indicators") if isinstance(macro.get("indicators"), Mapping) else {}
+    macro_refs = macro.get("source_refs") if isinstance(macro.get("source_refs"), Mapping) else {}
+    for indicator_key, indicator in indicators.items():
+        keys = [str(indicator_key)]
+        if isinstance(indicator, Mapping) and indicator.get("symbol"):
+            keys.append(str(indicator["symbol"]))
+        keys.extend(_MACRO_SOURCE_DEPENDENCIES.get(str(indicator_key), ()))
+        for key in keys:
+            ref = macro_refs.get(key)
+            if isinstance(ref, Mapping):
+                refs.append({**dict(ref), "symbol": str(ref.get("symbol") or key)})
+
+    for section_name in ("technical", "positioning", "market_odds"):
+        section = _section_data(snapshot, section_name)
+        section_refs = section.get("source_refs")
+        if isinstance(section_refs, list):
+            refs.extend(dict(ref) for ref in section_refs if isinstance(ref, Mapping))
+
+    options = _section_data(snapshot, "options")
+    data_source = options.get("data_source") if isinstance(options.get("data_source"), Mapping) else {}
+    if data_source.get("source_url"):
+        refs.append(
+            {
+                "source": "cme_daily_bulletin",
+                "source_url": data_source.get("source_url"),
+                "report_date": data_source.get("report_date"),
+                "product": data_source.get("product"),
+                "status": data_source.get("status"),
+            }
+        )
+
+    gold_context = _section_data(snapshot, "gold_analysis_context")
+    for key in ("analysis_baseline", "oil_report_summary"):
+        used_context = gold_context.get(key)
+        if isinstance(used_context, Mapping):
+            used_refs = used_context.get("source_refs")
+            if isinstance(used_refs, list):
+                refs.extend(dict(ref) for ref in used_refs if isinstance(ref, Mapping))
+
+    news = _section_data(snapshot, "news")
+    brief = news.get("daily_market_brief")
+    if isinstance(brief, Mapping) and isinstance(brief.get("daily_market_brief"), Mapping):
+        brief = brief["daily_market_brief"]
+    if isinstance(brief, Mapping):
+        for key in ("confirmed_events", "candidate_events", "unconfirmed_risks", "next_7d_calendar"):
+            _collect_nested_source_refs(brief.get(key), refs)
+        report_inputs = brief.get("report_inputs")
+        if isinstance(report_inputs, Mapping):
+            for key in ("watchlist", "risk_points", "market_observations", "etf_holdings"):
+                _collect_nested_source_refs(report_inputs.get(key), refs)
+
+    return refs
+
+
+def _section_data(snapshot: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    section = snapshot.get(key)
+    if not isinstance(section, Mapping):
+        return {}
+    data = section.get("data")
+    return data if isinstance(data, Mapping) else section
+
+
+def _collect_nested_source_refs(value: Any, refs: list[dict[str, Any]]) -> None:
+    if isinstance(value, Mapping):
+        nested_refs = value.get("source_refs")
+        if isinstance(nested_refs, list):
+            refs.extend(dict(ref) for ref in nested_refs if isinstance(ref, Mapping))
+        for key, nested in value.items():
+            if key != "source_refs":
+                _collect_nested_source_refs(nested, refs)
+    elif isinstance(value, list):
+        for nested in value:
+            _collect_nested_source_refs(nested, refs)
+
+
+def _compact_report_source_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    seen: dict[tuple[str, ...], int] = {}
+    for raw_ref in refs:
+        ref = _normalize_report_source_ref(raw_ref)
+        if ref is None:
+            continue
+        key = _report_source_logical_key(ref)
+        existing_index = seen.get(key)
+        if existing_index is None:
+            seen[key] = len(compacted)
+            compacted.append(ref)
+            continue
+        existing = compacted[existing_index]
+        for field, value in ref.items():
+            if value not in (None, "", [], {}) and existing.get(field) in (None, "", [], {}):
+                existing[field] = value
+    return compacted
+
+
+def _normalize_report_source_ref(raw_ref: Mapping[str, Any]) -> dict[str, Any] | None:
+    ref = dict(raw_ref)
+    if str(ref.get("method") or "").lower() == "placeholder":
+        return None
+    if str(ref.get("status") or "").lower() in _REPORT_SOURCE_BAD_STATUSES:
+        return None
+    if str(ref.get("asset_type") or "").lower() in _REPORT_SOURCE_ASSET_ONLY_TYPES:
+        return None
+
+    source = str(
+        ref.get("source")
+        or ref.get("source_name")
+        or ref.get("provider")
+        or ref.get("source_key")
+        or ""
+    ).strip()
+    if not source:
+        return None
+    ref["source"] = source
+
+    if source == "jin10_external":
+        ref = {
+            key: ref[key]
+            for key in ("source", "article_id", "category_code", "source_url", "status")
+            if ref.get(key) not in (None, "")
+        }
+    return ref
+
+
+def _report_source_logical_key(ref: Mapping[str, Any]) -> tuple[str, ...]:
+    source = str(ref.get("source") or "unknown")
+    for fields in (
+        ("source_ref",),
+        ("article_id",),
+        ("asset", "source_key"),
+        ("symbol",),
+        ("report_date", "product"),
+        ("raw_path",),
+        ("path",),
+        ("source_url",),
+        ("method", "endpoint"),
+    ):
+        values = tuple(str(ref.get(field) or "") for field in fields)
+        if any(values):
+            return (source, *fields, *values)
+    return (source,)
+
+
+def _source_ref_exact_key(ref: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((str(key), str(value)) for key, value in ref.items()))
 
 
 def _collect_warnings(
@@ -1282,16 +1543,6 @@ def build_structured_report(
         title="Data Quality",
         body="\n".join(f"- {q}" for q in quality_items),
         status="ok" if not warnings else "partial",
-    ))
-
-    # 12) Source refs
-    ref_lines = _summarize_source_ref_groups(source_refs)
-    sections.append(_build_section(
-        section_id="source_refs",
-        title="Source Refs",
-        body="\n".join(f"- {r}" for r in ref_lines) if ref_lines else "No source refs.",
-        status="ok" if ref_lines else "unavailable",
-        source_refs=source_refs,
     ))
 
     # ── Risk disclosures ────────────────────────────────────────────────

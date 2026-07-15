@@ -29,7 +29,7 @@ export function StrategyPageErrorState({
   return (
     <div className="finance-page-shell">
       <ErrorState
-        title="每日策略框架加载失败"
+        title="策略决策台加载失败"
         message={message}
         onRetry={onRetry}
         retryLabel="重试"

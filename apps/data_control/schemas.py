@@ -60,6 +60,7 @@ class DataControlArtifacts:
     data_availability_snapshot_path: str
     collection_plan_path: str
     processing_plan_path: str
+    dispatch_plan_path: str
     hourly_report_json_path: str
     hourly_report_md_path: str
 
@@ -68,6 +69,7 @@ class DataControlArtifacts:
             "data_availability_snapshot": self.data_availability_snapshot_path,
             "collection_plan": self.collection_plan_path,
             "processing_plan": self.processing_plan_path,
+            "dispatch_plan": self.dispatch_plan_path,
             "hourly_report_json": self.hourly_report_json_path,
             "hourly_report_md": self.hourly_report_md_path,
         }

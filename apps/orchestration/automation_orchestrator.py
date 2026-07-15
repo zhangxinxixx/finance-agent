@@ -10,6 +10,7 @@ from typing import Any
 from apps.notifications.notification_agent import FeishuNotificationAgent
 from apps.notifications.schemas import NotificationRequest
 from apps.orchestration.agent_registry import load_agent_registry
+from apps.orchestration.execution_lock import append_notification_delivery_log
 from apps.orchestration.notification_policy import build_notification_plan
 from apps.orchestration.schemas import OrchestrationArtifacts
 from apps.orchestration.trigger_router import resolve_trigger
@@ -72,12 +73,17 @@ class AutomationOrchestrator:
             observed_at=now.isoformat(),
         )
         retry_queue = _build_retry_queue(notification_results, notification_plan=notification_plan)
+        notification_dispatch_status = _notification_dispatch_status(
+            send_notifications=send_notifications,
+            notification_plan=notification_plan,
+            notification_results=notification_results,
+        )
         pre_analysis_gate = (
             _build_pre_analysis_gate(storage_root=self.storage_root, trade_date=day, observed_at=now.isoformat(), inputs=inputs)
             if trigger == "pre_analysis"
             else None
         )
-        status = _summary_status(notification_plan)
+        status = _summary_status(notification_plan, notification_dispatch_status=notification_dispatch_status)
         workflow_runs = _build_workflow_runs(
             trade_date=day,
             run_id=resolved_run_id,
@@ -91,6 +97,7 @@ class AutomationOrchestrator:
             notification_results=notification_results,
             pre_analysis_gate=pre_analysis_gate,
             retry_queue=retry_queue,
+            notification_dispatch_status=notification_dispatch_status,
         )
         automation_summary = {
             "trade_date": day,
@@ -102,6 +109,7 @@ class AutomationOrchestrator:
             "send_notifications": send_notifications,
             "notification_request_count": notification_plan["request_count"],
             "notification_results": notification_results,
+            "notification_dispatch_status": notification_dispatch_status,
             "retry_queue": retry_queue,
             "inputs": inputs,
             "workflow_run_count": len(workflow_runs["workflow_runs"]),
@@ -128,9 +136,16 @@ class AutomationOrchestrator:
             "status": status,
             "artifacts": artifacts.to_dict(),
             "notification_results": notification_results,
+            "notification_dispatch_status": notification_dispatch_status,
         }
         if record_task_run:
-            summary["task_run_id"] = _record_orchestrator_task(day=day, artifacts=artifacts, trigger=trigger, notification_count=notification_plan["request_count"])
+            summary["task_run_id"] = _record_orchestrator_task(
+                day=day,
+                artifacts=artifacts,
+                trigger=trigger,
+                notification_count=notification_plan["request_count"],
+                notification_dispatch_status=notification_dispatch_status,
+            )
         return summary
 
     def _persist_notification_outbox(
@@ -143,6 +158,7 @@ class AutomationOrchestrator:
         send_notifications: bool,
     ) -> dict[str, Any]:
         requests: list[dict[str, Any]] = []
+        persistence_errors: list[dict[str, Any]] = []
         outbox_root = self.storage_root / "orchestration" / "outbox"
         outbox_root.mkdir(parents=True, exist_ok=True)
         for index, payload in enumerate(notification_plan.get("requests", [])):
@@ -157,9 +173,7 @@ class AutomationOrchestrator:
                 status = "skipped"
             else:
                 status = "pending_delivery"
-            _write_json_atomic(
-                outbox_path,
-                {
+            outbox_item = {
                     "notification_id": notification_id,
                     "source_run_id": run_id,
                     "trade_date": trade_date,
@@ -172,8 +186,25 @@ class AutomationOrchestrator:
                     "attempts": [],
                     "created_at": observed_at,
                     "updated_at": observed_at,
-                },
-            )
+                }
+            try:
+                _write_json_atomic(outbox_path, outbox_item)
+            except OSError as exc:
+                error = {
+                    "notification_id": notification_id,
+                    "dedupe_key": payload.get("dedupe_key"),
+                    "error": str(exc),
+                }
+                persistence_errors.append(error)
+                requests.append(
+                    {
+                        **payload,
+                        "notification_id": notification_id,
+                        "outbox_ref": None,
+                        "outbox_persist_error": str(exc),
+                    }
+                )
+                continue
             requests.append(
                 {
                     **payload,
@@ -181,7 +212,12 @@ class AutomationOrchestrator:
                     "outbox_ref": _rel(outbox_path, self.storage_root),
                 }
             )
-        return {**notification_plan, "requests": requests, "request_count": len(requests)}
+        return {
+            **notification_plan,
+            "requests": requests,
+            "request_count": len(requests),
+            "outbox_persist_errors": persistence_errors,
+        }
 
     def _finalize_notification_outbox(
         self,
@@ -232,6 +268,19 @@ class AutomationOrchestrator:
         results = []
         for payload in notification_plan.get("requests", []):
             if not isinstance(payload, dict):
+                continue
+            if payload.get("outbox_persist_error"):
+                results.append(
+                    {
+                        "ok": False,
+                        "status": "outbox_persist_failed",
+                        "kind": payload.get("kind"),
+                        "dedupe_key": payload.get("dedupe_key"),
+                        "error": payload.get("outbox_persist_error"),
+                        "attempts": 0,
+                        "notification_id": payload.get("notification_id"),
+                    }
+                )
                 continue
             if payload.get("eligible_to_send") is False:
                 results.append(
@@ -332,6 +381,7 @@ def _resolve_inputs(*, storage_root: Path, trade_date: str, hour: str) -> dict[s
     return {
         "collection_plan": _existing(storage_root, f"data_control/{trade_date}/collection_plan_{hour}.json"),
         "processing_plan": _existing(storage_root, f"data_control/{trade_date}/processing_plan_{hour}.json"),
+        "dispatch_plan": _existing(storage_root, f"data_control/{trade_date}/dispatch_plan_{hour}.json"),
         "hourly_report": _existing(storage_root, f"data_control/{trade_date}/hourly_collection_processing_report_{hour}.json"),
         "downstream_readiness": _existing(storage_root, f"monitoring/{trade_date}/downstream_readiness.json"),
         "event_sla_root": f"event_sla/{trade_date}" if (storage_root / "event_sla" / trade_date).exists() else None,
@@ -389,7 +439,14 @@ def _build_pre_analysis_gate(*, storage_root: Path, trade_date: str, observed_at
     }
 
 
-def _record_orchestrator_task(*, day: str, artifacts: OrchestrationArtifacts, trigger: str, notification_count: int) -> str | None:
+def _record_orchestrator_task(
+    *,
+    day: str,
+    artifacts: OrchestrationArtifacts,
+    trigger: str,
+    notification_count: int,
+    notification_dispatch_status: str,
+) -> str | None:
     with record_task(task_type="automation_orchestrator", task_name="Automation Orchestrator", trade_date=day) as recorder:
         for step_name in (
             "load_agent_registry",
@@ -399,21 +456,42 @@ def _record_orchestrator_task(*, day: str, artifacts: OrchestrationArtifacts, tr
             "dispatch_feishu_notification",
             "write_automation_summary",
         ):
+            step_status = (
+                _notification_dispatch_step_status(notification_dispatch_status)
+                if step_name == "dispatch_feishu_notification"
+                else "success"
+            )
             recorder.step(
                 step_name,
-                status="success",
+                status=step_status,
                 stage="orchestration",
                 task_kind=trigger,
-                output_refs=_output_refs_for_step(step_name, artifacts, notification_count),
+                output_refs=_output_refs_for_step(
+                    step_name,
+                    artifacts,
+                    notification_count,
+                    notification_dispatch_status=notification_dispatch_status,
+                ),
             )
         return recorder.run_id()
 
 
-def _output_refs_for_step(step_name: str, artifacts: OrchestrationArtifacts, notification_count: int) -> list[dict[str, Any]]:
+def _output_refs_for_step(
+    step_name: str,
+    artifacts: OrchestrationArtifacts,
+    notification_count: int,
+    *,
+    notification_dispatch_status: str,
+) -> list[dict[str, Any]]:
     mapping = {
         "build_orchestration_plan": {"artifact_type": "orchestration_plan", "path": artifacts.orchestration_plan_path},
         "build_notification_plan": {"artifact_type": "notification_plan", "path": artifacts.notification_plan_path, "notification_count": notification_count},
         "write_automation_summary": {"artifact_type": "automation_summary", "path": artifacts.automation_summary_path},
+        "dispatch_feishu_notification": {
+            "artifact_type": "notification_dispatch",
+            "path": artifacts.retry_queue_path,
+            "notification_dispatch_status": notification_dispatch_status,
+        },
     }
     item = mapping.get(step_name)
     return [item] if item else []
@@ -433,8 +511,9 @@ def _build_workflow_runs(
     notification_results: list[dict[str, Any]],
     pre_analysis_gate: dict[str, Any] | None = None,
     retry_queue: list[dict[str, Any]] | None = None,
+    notification_dispatch_status: str = "skipped",
 ) -> dict[str, Any]:
-    manual_review_required = status == "blocked" or any(
+    manual_review_required = status in {"blocked", "failed"} or any(
         isinstance(item, dict) and item.get("severity") == "critical" for item in notification_plan.get("requests", [])
     )
     return {
@@ -451,6 +530,7 @@ def _build_workflow_runs(
                 "inputs": inputs,
                 "notification_request_count": notification_plan.get("request_count", 0),
                 "notification_result_count": len(notification_results),
+                "notification_dispatch_status": notification_dispatch_status,
                 "pre_analysis_gate": pre_analysis_gate,
                 "output_refs": _workflow_output_refs(
                     trade_date=trade_date,
@@ -592,29 +672,12 @@ def _parse_datetime(value: str) -> datetime | None:
 
 
 def _append_delivery_log(*, storage_root: Path, trade_date: str, observed_at: str, results: list[dict[str, Any]]) -> None:
-    deliveries = []
-    for result in results:
-        if result.get("status") == "skipped":
-            continue
-        deliveries.append(
-            {
-                "dedupe_key": result.get("dedupe_key"),
-                "kind": result.get("kind"),
-                "status": result.get("status"),
-                "ok": result.get("ok"),
-                "attempts": result.get("attempts"),
-                "sent_at": observed_at,
-                "cooldown_minutes": result.get("cooldown_minutes"),
-                "error": result.get("error"),
-            }
-        )
-    if not deliveries:
-        return
-    path = storage_root / "orchestration" / trade_date / "notification_delivery_log.json"
-    payload = _read_json(path)
-    existing = payload.get("deliveries") if isinstance(payload.get("deliveries"), list) else []
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(path, {"trade_date": trade_date, "deliveries": [*existing, *deliveries]})
+    append_notification_delivery_log(
+        storage_root=storage_root,
+        trade_date=trade_date,
+        observed_at=observed_at,
+        results=results,
+    )
 
 
 def _notification_request_from_dict(payload: dict[str, Any]) -> NotificationRequest:
@@ -651,11 +714,37 @@ def _notification_id(*, run_id: str, index: int, dedupe_key: Any) -> str:
     return uuid.uuid5(uuid.NAMESPACE_URL, identity).hex
 
 
-def _summary_status(notification_plan: dict[str, Any]) -> str:
+def _notification_dispatch_status(
+    *,
+    send_notifications: bool,
+    notification_plan: dict[str, Any],
+    notification_results: list[dict[str, Any]],
+) -> str:
+    if notification_plan.get("outbox_persist_errors"):
+        return "failed"
+    if not send_notifications or not notification_plan.get("request_count"):
+        return "skipped"
+    if any(result.get("status") in {"failed", "outbox_persist_failed"} for result in notification_results):
+        return "partial_success"
+    return "success"
+
+
+def _notification_dispatch_step_status(notification_dispatch_status: str) -> str:
+    return {
+        "skipped": "skipped",
+        "success": "success",
+        "partial_success": "blocked",
+        "failed": "failed",
+    }[notification_dispatch_status]
+
+
+def _summary_status(notification_plan: dict[str, Any], *, notification_dispatch_status: str) -> str:
+    if notification_dispatch_status == "failed":
+        return "failed"
     severities = {str(item.get("severity")) for item in notification_plan.get("requests", []) if isinstance(item, dict)}
     if "critical" in severities:
         return "blocked"
-    if "warning" in severities:
+    if "warning" in severities or notification_dispatch_status == "partial_success":
         return "partial"
     return "normal"
 

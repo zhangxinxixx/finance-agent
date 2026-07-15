@@ -18,9 +18,7 @@ PDF_PATH = Path("storage/raw/cme/daily_bulletin/2026-05-06/Section64_Metals_Opti
 def _resolve_pdf_path() -> Path:
     if PDF_PATH.exists():
         return PDF_PATH
-    fallback = Path("/tmp/finance-agent/workspace/finance-agent/storage/raw/cme/daily_bulletin/2026-05-06/Section64_Metals_Option_Products_2026-05-06.pdf")
-    assert fallback.exists(), fallback
-    return fallback
+    pytest.skip("CME PDF fixture is not shipped in the public repository")
 
 
 def _sum_rows(detail_rows):

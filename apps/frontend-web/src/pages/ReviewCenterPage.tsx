@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { RefreshCw, ShieldCheck } from "lucide-react";
 import { ReviewCenterFilterBar } from "@/components/review-center/ReviewCenterFilterBar";
+import { AnalysisMemoryPanel } from "@/components/analysis-memory/AnalysisMemoryPanel";
 import {
   ReviewCenterEmptyState,
   ReviewCenterErrorBanner,
@@ -127,6 +128,8 @@ export function ReviewCenterPage() {
         total={reviewCenter.total}
         filteredCount={filteredReviews.length}
       />
+
+      <AnalysisMemoryPanel allowReview />
 
       {orchestrationReview.items.length > 0 ? (
         <section className="space-y-3">

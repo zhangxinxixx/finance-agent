@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput
 
@@ -42,6 +42,11 @@ class QualityGateDecision(BaseModel):
     evidence_item_count: int = 0
     max_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    @model_validator(mode="after")
+    def enforce_publish_contract(self) -> "QualityGateDecision":
+        self.publish_allowed = self.action is QualityGateAction.PASS
+        return self
+
 
 _ACTION_RANK = {
     QualityGateAction.PASS: 0,
@@ -76,8 +81,24 @@ def evaluate_quality_gate(
     findings: list[QualityGateFinding] = []
     fallback_actions: list[str] = []
 
+    context = overview.get("gold_analysis_context")
+    if isinstance(context, dict) and str(context.get("status") or "") not in {"", "ready"}:
+        findings.append(
+            QualityGateFinding(
+                code="gold_analysis_context_degraded",
+                severity="manual_review",
+                message="统一黄金分析上下文缺失或过期；综合输出保持 observe/needs_review。",
+                evidence={
+                    "status": context.get("status"),
+                    "baseline_kind": context.get("baseline_kind"),
+                    "freshness": context.get("freshness") or {},
+                },
+            )
+        )
+
     if _has_p0_source_gap(health) and (
-        _has_strong_conclusion(outputs=outputs, overview=overview, max_confidence=max_confidence)
+        health.get("can_build_gold_macro_overview") is False
+        or _has_strong_conclusion(outputs=outputs, overview=overview, max_confidence=max_confidence)
         or _source_health_blocks_strong_conclusion(health)
     ):
         findings.append(
@@ -109,6 +130,36 @@ def evaluate_quality_gate(
                 severity="manual_review",
                 message="High-confidence conclusion has no structured evidence_items for quality review.",
                 evidence={"max_confidence": max_confidence},
+            )
+        )
+
+    coordinator = _output_by_name(outputs, "coordinator_agent")
+    if coordinator is not None and not coordinator.source_refs:
+        findings.append(
+            QualityGateFinding(
+                code="coordinator_source_refs_missing",
+                severity="blocker",
+                message="Coordinator output must retain its own source_refs before publication.",
+            )
+        )
+    if coordinator is not None and coordinator.confidence >= 0.75 and not coordinator.evidence_items:
+        findings.append(
+            QualityGateFinding(
+                code="coordinator_high_confidence_without_evidence_items",
+                severity="manual_review",
+                message="High-confidence Coordinator output has no structured evidence_items.",
+                evidence={"confidence": coordinator.confidence},
+            )
+        )
+
+    coordinator_risk_conflict = _coordinator_risk_conflict(outputs)
+    if coordinator_risk_conflict:
+        findings.append(
+            QualityGateFinding(
+                code="coordinator_risk_conflict",
+                severity="manual_review",
+                message="Coordinator directional conclusion conflicts with the Risk Agent output.",
+                evidence=coordinator_risk_conflict,
             )
         )
 
@@ -171,13 +222,36 @@ def evaluate_quality_gate(
         )
         fallback_actions.append("fallback_reparse")
 
-    if _has_invalid_conditions(outputs):
+    active_blockers = _active_blockers(outputs)
+    if active_blockers:
         findings.append(
             QualityGateFinding(
-                code="invalid_conditions_present",
-                severity="retry",
-                message="Agent output includes invalid_conditions; refresh or rerun before stronger publication.",
-                evidence={"invalid_conditions": _invalid_conditions(outputs)},
+                code="active_blockers_present",
+                severity="blocker",
+                message="Agent output declares current active blockers; publication must stop.",
+                evidence={"active_blockers": active_blockers},
+            )
+        )
+
+    blocking_data_gaps = _blocking_data_gaps(outputs)
+    if blocking_data_gaps:
+        findings.append(
+            QualityGateFinding(
+                code="p0_data_gaps_present",
+                severity="blocker",
+                message="Agent output declares current P0/blocker data gaps; publication must stop.",
+                evidence={"data_gaps": blocking_data_gaps},
+            )
+        )
+
+    review_triggers = _manual_review_triggers(outputs)
+    if review_triggers:
+        findings.append(
+            QualityGateFinding(
+                code="review_triggers_present",
+                severity="manual_review",
+                message="Agent output declares current review triggers.",
+                evidence={"review_triggers": review_triggers},
             )
         )
 
@@ -193,11 +267,29 @@ def evaluate_quality_gate(
         fallback_actions.append("cross_check_with_independent_source")
         fallback_actions.append("downgrade_to_single_source_context_until_confirmed")
 
+    if (
+        _has_external_market_odds(outputs=outputs, overview=overview)
+        and _has_strong_conclusion(outputs=outputs, overview=overview, max_confidence=max_confidence)
+        and not _has_independent_market_confirmation(outputs=outputs, overview=overview)
+    ):
+        findings.append(
+            QualityGateFinding(
+                code="external_market_odds_only_strong_conclusion",
+                severity="blocker",
+                message="External single-source market odds cannot independently support a strong directional conclusion.",
+                evidence={
+                    "source_kind": "jin10_external_market_odds",
+                    "max_confidence": max_confidence,
+                    "independent_market_confirmation": False,
+                },
+            )
+        )
+
     action = _decision_action(findings)
     return QualityGateDecision(
         action=action,
         review_status="blocked" if action is QualityGateAction.BLOCK_PUBLISH else ("pass" if action is QualityGateAction.PASS else "needs_review"),
-        publish_allowed=action is not QualityGateAction.BLOCK_PUBLISH,
+        publish_allowed=action is QualityGateAction.PASS,
         retry_recommended=action is QualityGateAction.RETRY,
         fallback_recommended=action is QualityGateAction.FALLBACK,
         manual_review_required=action in {QualityGateAction.MANUAL_REVIEW, QualityGateAction.FALLBACK},
@@ -206,6 +298,65 @@ def evaluate_quality_gate(
         source_ref_count=len(source_refs),
         evidence_item_count=len(evidence_items),
         max_confidence=max_confidence,
+    )
+
+
+def preserve_unresolved_pre_gate(
+    *,
+    pre_coordinator_decision: QualityGateDecision,
+    post_coordinator_decision: QualityGateDecision,
+) -> QualityGateDecision:
+    """Carry unresolved domain-gate failures into the final post gate.
+
+    Domain fallbacks are observation-only until an independent validator is
+    wired, so adding a Coordinator output cannot by itself erase an earlier
+    publication failure.
+    """
+
+    if pre_coordinator_decision.action is QualityGateAction.PASS:
+        return post_coordinator_decision
+    action = max(
+        (pre_coordinator_decision.action, post_coordinator_decision.action),
+        key=_ACTION_RANK.__getitem__,
+    )
+    findings: list[QualityGateFinding] = []
+    seen: set[tuple[str, str]] = set()
+    for finding in [*pre_coordinator_decision.findings, *post_coordinator_decision.findings]:
+        key = (finding.code, finding.message)
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append(finding)
+    return QualityGateDecision(
+        action=action,
+        review_status=(
+            "blocked"
+            if action is QualityGateAction.BLOCK_PUBLISH
+            else ("pass" if action is QualityGateAction.PASS else "needs_review")
+        ),
+        publish_allowed=action is QualityGateAction.PASS,
+        retry_recommended=action is QualityGateAction.RETRY,
+        fallback_recommended=action is QualityGateAction.FALLBACK,
+        manual_review_required=action in {QualityGateAction.MANUAL_REVIEW, QualityGateAction.FALLBACK},
+        findings=findings,
+        fallback_actions=_dedupe(
+            [
+                *pre_coordinator_decision.fallback_actions,
+                *post_coordinator_decision.fallback_actions,
+            ]
+        ),
+        source_ref_count=max(
+            pre_coordinator_decision.source_ref_count,
+            post_coordinator_decision.source_ref_count,
+        ),
+        evidence_item_count=max(
+            pre_coordinator_decision.evidence_item_count,
+            post_coordinator_decision.evidence_item_count,
+        ),
+        max_confidence=max(
+            pre_coordinator_decision.max_confidence,
+            post_coordinator_decision.max_confidence,
+        ),
     )
 
 
@@ -248,6 +399,26 @@ def _max_confidence(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> 
     return _clamp(max(values or [0.0]))
 
 
+def _output_by_name(outputs: list[AgentOutput], agent_name: str) -> AgentOutput | None:
+    return next((output for output in outputs if output.agent_name == agent_name), None)
+
+
+def _coordinator_risk_conflict(outputs: list[AgentOutput]) -> dict[str, str]:
+    coordinator = _output_by_name(outputs, "coordinator_agent")
+    risk = _output_by_name(outputs, "risk_agent")
+    if coordinator is None or risk is None:
+        return {}
+    directional = {AgentBias.BULLISH, AgentBias.BEARISH}
+    if coordinator.bias not in directional or risk.bias not in directional:
+        return {}
+    if risk.bias is coordinator.bias:
+        return {}
+    return {
+        "coordinator_bias": coordinator.bias.value,
+        "risk_bias": risk.bias.value,
+    }
+
+
 def _has_p0_source_gap(source_health: dict[str, Any]) -> bool:
     if source_health.get("can_build_gold_macro_overview") is False:
         return True
@@ -270,6 +441,50 @@ def _has_strong_conclusion(*, outputs: list[AgentOutput], overview: dict[str, An
     if str(overview.get("net_bias") or "") in {"strong_bullish", "strong_bearish"}:
         return True
     return any(output.bias in {AgentBias.BULLISH, AgentBias.BEARISH} and output.confidence >= 0.75 for output in outputs) or max_confidence >= 0.82
+
+
+def _has_external_market_odds(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:
+    if _contains_external_market_odds(overview):
+        return True
+    return any(
+        _contains_external_market_odds(output.input_payload)
+        or _contains_external_market_odds(output.evidence_items)
+        or _contains_external_market_odds(output.source_refs)
+        for output in outputs
+    )
+
+
+def _contains_external_market_odds(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get("source_kind") == "jin10_external_market_odds" or value.get("observation_type") == "external_market_odds":
+            return True
+        return any(_contains_external_market_odds(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_external_market_odds(item) for item in value)
+    return False
+
+
+def _has_independent_market_confirmation(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:
+    if any(
+        overview.get(key)
+        for key in (
+            "market_derived_odds",
+            "price_context",
+            "rates_context",
+            "official_event_confirmation",
+            "confirmed_market_evidence",
+        )
+    ):
+        return True
+    for output in outputs:
+        category = output.data_category.value if output.data_category is not None else ""
+        if category not in {"confirmed_data", "system_inference"}:
+            continue
+        if output.agent_name in {"news_agent", "jin10_report_analysis_agent"}:
+            continue
+        if output.status.value in {"success", "partial"} and (output.source_refs or output.evidence_items):
+            return True
+    return False
 
 
 def _mixed_without_driver_decomposition(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:
@@ -297,12 +512,35 @@ def _has_driver_lists(value: dict[str, Any]) -> bool:
     return isinstance(bullish, list) and bool(bullish) and isinstance(bearish, list) and bool(bearish)
 
 
-def _has_invalid_conditions(outputs: list[AgentOutput]) -> bool:
-    return bool(_invalid_conditions(outputs))
+def _active_blockers(outputs: list[AgentOutput]) -> list[str]:
+    return _dedupe(str(item) for output in outputs for item in output.active_blockers if str(item).strip())
 
 
-def _invalid_conditions(outputs: list[AgentOutput]) -> list[str]:
-    return _dedupe(str(item) for output in outputs for item in output.invalid_conditions if str(item).strip())
+def _blocking_data_gaps(outputs: list[AgentOutput]) -> list[dict[str, str]]:
+    gaps: list[dict[str, str]] = []
+    for output in outputs:
+        for gap in output.data_gaps:
+            if gap.severity not in {"p0", "blocker"}:
+                continue
+            gaps.append(
+                {
+                    "agent_name": output.agent_name,
+                    "code": gap.code,
+                    "message": gap.message,
+                    "severity": gap.severity,
+                }
+            )
+    return gaps
+
+
+def _manual_review_triggers(outputs: list[AgentOutput]) -> list[str]:
+    claim_status_triggers = {"unsupported_claim", "contradicted_claim"}
+    return _dedupe(
+        str(item)
+        for output in outputs
+        for item in output.review_triggers
+        if str(item).strip().lower() not in claim_status_triggers
+    )
 
 
 def _fact_review_needs_review(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:
@@ -329,10 +567,16 @@ def _claim_review_status(*, outputs: list[AgentOutput], overview: dict[str, Any]
             value = payload.get(key)
             if value:
                 statuses.append(str(value).lower())
-        statuses.extend(str(item).lower() for item in output.invalid_conditions)
-    if any("contradicted" in status for status in statuses):
+        statuses.extend(str(item).strip().lower() for item in output.active_blockers)
+        statuses.extend(str(item).strip().lower() for item in output.review_triggers)
+        statuses.extend(
+            str(item).strip().lower()
+            for item in output.invalidation_conditions
+            if str(item).strip().lower() in {"unsupported_claim", "contradicted_claim"}
+        )
+    if any(status in {"contradicted", "contradicted_claim"} for status in statuses):
         return "contradicted"
-    if any("unsupported" in status for status in statuses):
+    if any(status in {"unsupported", "unsupported_claim"} for status in statuses):
         return "unsupported"
     return None
 

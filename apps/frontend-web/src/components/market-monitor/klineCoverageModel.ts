@@ -1,4 +1,4 @@
-export type KlineTimeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1D";
+export type KlineTimeframe = "5m" | "15m" | "30m" | "1h" | "4h" | "1D";
 
 export interface Jin10KlineCandleLike {
   time: string;
@@ -28,7 +28,6 @@ export interface MarketCandleTimeframeAvailability {
 }
 
 export const KLINE_TIMEFRAMES: Array<{ key: KlineTimeframe; label: string }> = [
-  { key: "1m", label: "1分" },
   { key: "5m", label: "5分" },
   { key: "15m", label: "15分" },
   { key: "30m", label: "30分" },

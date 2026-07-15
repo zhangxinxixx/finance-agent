@@ -51,6 +51,7 @@ def test_contract_enums_match_phase1_baseline() -> None:
         "parsed_file",
         "feature_json",
         "chart_snapshot",
+        "figure_fact_json",
     ]
     assert [item.value for item in ReviewStatus] == [
         "not_required",

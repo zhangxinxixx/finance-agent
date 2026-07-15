@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from apps.features.news.gold_event_mainlines import MAINLINE_META, MAINLINE_ORDER, build_gold_event_mainlines
+from apps.runtime.immutable_artifact import immutable_json_item, write_immutable_artifact_bundle
 
 SCHEMA_VERSION = "gold-macro-overview-v1"
 
@@ -265,16 +266,33 @@ def archive_gold_macro_overview(
     input_snapshot_ids: dict[str, Any] | None = None,
 ) -> str:
     target = storage_root / "analysis" / "gold_mainlines" / retrieved_date / run_id / "gold_macro_overview.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+    payload = gold_macro_overview_payload(
+        retrieved_date=retrieved_date,
+        run_id=run_id,
+        overview=overview,
+        input_snapshot_ids=input_snapshot_ids,
+    )
+    write_immutable_artifact_bundle(
+        [immutable_json_item(target, payload)],
+        storage_root=storage_root,
+    )
+    return target.relative_to(storage_root).as_posix()
+
+
+def gold_macro_overview_payload(
+    *,
+    retrieved_date: str,
+    run_id: str,
+    overview: GoldMacroOverview,
+    input_snapshot_ids: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
         "schema_version": SCHEMA_VERSION,
         "retrieved_date": retrieved_date,
         "run_id": run_id,
         "input_snapshot_ids": dict(input_snapshot_ids or {}),
         **overview.to_dict(),
     }
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return target.relative_to(storage_root).as_posix()
 
 
 def classify_mainlines(event_or_input: dict[str, Any]) -> dict[str, Any]:
@@ -803,7 +821,18 @@ def _etf_flow_features(*, flow_context: dict[str, Any]) -> dict[str, Any] | None
         "asia_gold_etf_flow",
         "apac_etf_flow",
     )
-    if global_flow is None and north_america_flow is None and asia_flow is None:
+    gold_holdings = _context_metric(flow_context, "gold_etf_holdings_tonnes")
+    gold_change = _context_metric(flow_context, "gold_etf_change_tonnes")
+    silver_holdings = _context_metric(flow_context, "silver_etf_holdings_tonnes")
+    silver_change = _context_metric(flow_context, "silver_etf_change_tonnes")
+    cross_metal_confirmation = _context_text(flow_context, "cross_metal_confirmation")
+    if (
+        global_flow is None
+        and north_america_flow is None
+        and asia_flow is None
+        and gold_holdings is None
+        and silver_holdings is None
+    ):
         return None
 
     aggregate_flow = _average_changes(global_flow, north_america_flow, asia_flow)
@@ -827,6 +856,15 @@ def _etf_flow_features(*, flow_context: dict[str, Any]) -> dict[str, Any] | None
             "etf_flow_trend": flow_trend,
             "flow_confirmation_status": confirmation_status,
             "aggregate_etf_flow": aggregate_flow,
+            "gold_etf_fund_name": _context_text(flow_context, "gold_etf_fund_name"),
+            "gold_etf_holdings_tonnes": gold_holdings,
+            "gold_etf_change_tonnes": gold_change,
+            "gold_etf_reported_on": _context_text(flow_context, "gold_etf_reported_on"),
+            "silver_etf_fund_name": _context_text(flow_context, "silver_etf_fund_name"),
+            "silver_etf_holdings_tonnes": silver_holdings,
+            "silver_etf_change_tonnes": silver_change,
+            "silver_etf_reported_on": _context_text(flow_context, "silver_etf_reported_on"),
+            "cross_metal_confirmation": cross_metal_confirmation,
         },
         "source_refs": _flow_source_refs(flow_context=flow_context),
         "missing_data": missing_data,
@@ -837,7 +875,7 @@ def _etf_flow_features(*, flow_context: dict[str, Any]) -> dict[str, Any] | None
         ),
         "freshness": "fresh",
         "direction": _flow_direction(flow_trend=flow_trend, confirmation_status=confirmation_status),
-        "summary": "全球、北美与亚洲黄金 ETF 流向已接入，用于确认宏观叙事是否转化为真实配置资金。",
+        "summary": "黄金与白银 ETF 持仓变化已接入；黄金流向用于主信号，白银用于跨金属资金确认。",
     }
 
 

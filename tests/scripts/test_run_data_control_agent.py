@@ -20,6 +20,7 @@ def test_run_data_control_agent_prints_hourly_summary(monkeypatch, capsys) -> No
                 "data_availability_snapshot": "data_control/2026-07-08/data_availability_snapshot.json",
                 "collection_plan": "data_control/2026-07-08/collection_plan_10.json",
                 "processing_plan": "data_control/2026-07-08/processing_plan_10.json",
+                "dispatch_plan": "data_control/2026-07-08/dispatch_plan_10.json",
                 "hourly_report_json": "data_control/2026-07-08/hourly_collection_processing_report_10.json",
                 "hourly_report_md": "data_control/2026-07-08/hourly_collection_processing_report_10.md",
             },

@@ -77,13 +77,13 @@ def _snapshot(*, report_mode: str = "hybrid", should_generate: bool = True) -> d
     }
 
 
-def test_render_daily_brief_markdown_contains_fixed_sections_and_lineage() -> None:
+def test_render_daily_brief_markdown_contains_fixed_sections_without_source_inventory() -> None:
     markdown = render_daily_brief_markdown(_snapshot())
 
     assert markdown.startswith("# 每日市场快讯")
     for section in [
         "## 一句话结论",
-        "## 分析溯源 / 数据来源",
+        "## 质量标记",
         "## 今日市场状态总览",
         "## 今日为什么变动",
         "## 为什么还不能确认趋势",
@@ -99,8 +99,12 @@ def test_render_daily_brief_markdown_contains_fixed_sections_and_lineage() -> No
     assert "source_confidence: report_derived" in markdown
     assert "single_source_verification_required" in markdown
     assert "4500" in markdown
-    assert "source: reuters" in markdown
-    assert "source_ref: msg:1" in markdown
+    assert "数据来源" not in markdown
+    assert "source: reuters" not in markdown
+    assert "source_ref: msg:1" not in markdown
+    assert "黄金影响评估为利空" in markdown
+    assert "市场处于部分定价状态" in markdown
+    assert "已获行情阈值确认" in markdown
 
 
 def test_render_daily_brief_payload_preserves_snapshot_and_markdown() -> None:
@@ -108,14 +112,14 @@ def test_render_daily_brief_payload_preserves_snapshot_and_markdown() -> None:
     markdown = render_daily_brief_markdown(snapshot)
     payload = render_daily_brief_payload(snapshot, markdown=markdown)
 
-    assert payload["status"] == "available"
+    assert payload["status"] == "partial"
     assert payload["date"] == "2026-06-12"
     assert payload["run_id"] == "run-news"
     assert payload["report_mode"] == "hybrid"
     assert payload["markdown"] == markdown
+    assert payload["source_refs"] == snapshot["source_refs"]
     assert payload["structured"]["core_event_count"] == 1
     assert payload["structured"]["key_article_count"] == 1
-    assert payload["source_refs"] == snapshot["source_refs"]
     assert payload["quality_flags"] == ["single_source_verification_required"]
 
 
@@ -144,6 +148,6 @@ def test_archive_daily_brief_writes_markdown_and_json_artifacts(tmp_path: Path) 
     }
     assert (tmp_path / paths["markdown"]).read_text(encoding="utf-8").startswith("# 每日市场快讯")
     payload = json.loads((tmp_path / paths["json"]).read_text(encoding="utf-8"))
-    assert payload["status"] == "available"
+    assert payload["status"] == "partial"
     assert payload["artifact_path"] == paths["markdown"]
     assert payload["input_snapshot_path"] == "features/news/2026-06-12/run-news/daily_brief_input_snapshot.json"

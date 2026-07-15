@@ -7,11 +7,13 @@ from .analysis import (
     DataSourceStatus,
     FeatureSnapshot,
     FinalAnalysisResult,
+    LLMCallAudit,
     MacroObservation,
     MarketCandle,
     ReviewItem,
     ensure_analysis_tables,
 )
+from .analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition
 from .cme import CmeOptionRow, CmeParseRun, CmeRawFile
 from .execution import ExecutionBase, ExecutionEvent, RunArtifact, ensure_execution_tables
 from .playbook import PlaybookTemplate
@@ -37,12 +39,16 @@ __all__ = [
     # analysis models
     "AnalysisBase",
     "AnalysisSnapshot",
+    "AnalysisState",
+    "AnalysisStateHead",
+    "AnalysisTransition",
     "AgentOutput",
     "DailySourceHealthItem",
     "DailySourceHealthSnapshot",
     "DataSourceStatus",
     "FeatureSnapshot",
     "FinalAnalysisResult",
+    "LLMCallAudit",
     "MacroObservation",
     "MarketCandle",
     "PlaybookTemplate",

@@ -14,6 +14,8 @@ interface StrategyFilterBarProps {
   onRegimeChange: (value: string) => void;
   onRefresh: () => void;
   showAssetTabs?: boolean;
+  showHistoryFilters?: boolean;
+  showRefresh?: boolean;
 }
 
 export function StrategyFilterBar({
@@ -27,6 +29,8 @@ export function StrategyFilterBar({
   onRegimeChange,
   onRefresh,
   showAssetTabs = true,
+  showHistoryFilters = true,
+  showRefresh = true,
 }: StrategyFilterBarProps) {
   return (
     <FAFilterBar
@@ -35,30 +39,34 @@ export function StrategyFilterBar({
         <>
           {showAssetTabs ? (
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">资产</span>
+              <span className="fa-label">资产</span>
               <FATabBar tabs={assetTabs} value={selectedAsset} onChange={onAssetChange} ariaLabel="策略资产筛选" />
             </div>
           ) : null}
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">窗口</span>
-            <FATabBar tabs={STRATEGY_WINDOW_TABS} value={selectedWindow} onChange={onWindowChange} ariaLabel="策略历史窗口筛选" />
-          </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">市场状态</span>
-            <FATabBar tabs={regimeTabs} value={activeRegime} onChange={onRegimeChange} ariaLabel="策略市场状态筛选" />
-          </div>
+          {showHistoryFilters ? (
+            <>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="fa-label">窗口</span>
+                <FATabBar tabs={STRATEGY_WINDOW_TABS} value={selectedWindow} onChange={onWindowChange} ariaLabel="策略历史窗口筛选" />
+              </div>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="fa-label">市场状态</span>
+                <FATabBar tabs={regimeTabs} value={activeRegime} onChange={onRegimeChange} ariaLabel="策略市场状态筛选" />
+              </div>
+            </>
+          ) : null}
         </>
       }
-      right={
+      right={showRefresh ? (
         <button
           type="button"
           onClick={onRefresh}
-          className="inline-flex h-[26px] items-center gap-1 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-[10px] text-[10px] font-semibold text-[var(--fg-2)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)]"
+          className="inline-flex h-[28px] items-center gap-1 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-[10px] text-[length:var(--type-label)] font-semibold text-[var(--fg-2)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)]"
         >
           <RefreshCw size={10} />
           刷新
         </button>
-      }
+      ) : null}
     />
   );
 }

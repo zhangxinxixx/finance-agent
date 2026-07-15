@@ -123,6 +123,77 @@ def _intent_wording(label_zh: str, confidence: float) -> str:
     return label_zh
 
 
+def _directional_targets(
+    candidates: list[float | int | None],
+    *,
+    anchor: float,
+    direction: str,
+) -> list[float]:
+    unique: dict[float, float] = {}
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        value = float(candidate)
+        if direction == "up" and value <= anchor:
+            continue
+        if direction == "down" and value >= anchor:
+            continue
+        unique.setdefault(round(value, 6), value)
+    return sorted(unique.values(), reverse=direction == "down")[:3]
+
+
+def _target_label(index: int) -> str:
+    return {1: "第一目标", 2: "第二目标", 3: "第三目标"}.get(index, f"目标 {index}")
+
+
+def _aggregate_position_levels(result: OptionsAnalysisResult) -> list[dict[str, float | int | None]]:
+    """Aggregate absolute CME inventory by strike across selected expiries."""
+    levels: dict[int, dict[str, float | int]] = {}
+    for metric in result.strike_metrics:
+        level = levels.setdefault(
+            metric.strike,
+            {
+                "strike": metric.strike,
+                "call_oi": 0,
+                "put_oi": 0,
+                "oi_change": 0,
+                "volume": 0,
+                "pnt_block": 0,
+                "total_gex": 0.0,
+                "net_gex": 0.0,
+            },
+        )
+        level["call_oi"] += metric.call_oi
+        level["put_oi"] += metric.put_oi
+        level["oi_change"] += metric.call_oi_change + metric.put_oi_change
+        level["volume"] += metric.call_volume + metric.put_volume
+        level["pnt_block"] += metric.call_pnt + metric.put_pnt + metric.call_block + metric.put_block
+        level["total_gex"] += abs(metric.call_gex) + abs(metric.put_gex)
+        level["net_gex"] += metric.net_gex
+
+    for level in levels.values():
+        level["total_oi"] = int(level["call_oi"]) + int(level["put_oi"])
+        level["distance_pct"] = (
+            (int(level["strike"]) - result.report_p0) / result.report_p0 * 100
+            if result.report_p0
+            else None
+        )
+    return sorted(levels.values(), key=lambda item: (int(item["total_oi"]), int(item["volume"])), reverse=True)
+
+
+def _scenario_levels(
+    result: OptionsAnalysisResult,
+    *,
+    anchor: float | None,
+) -> tuple[list[float], list[float]]:
+    if anchor is None:
+        return [], []
+    strikes = sorted({float(metric.strike) for metric in result.strike_metrics})
+    supports = sorted((strike for strike in strikes if strike < anchor), reverse=True)[:3]
+    resistances = sorted(strike for strike in strikes if strike > anchor)[:4]
+    return supports, resistances
+
+
 def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     """Render the full Chinese Markdown report."""
     lines: list[str] = []
@@ -308,7 +379,12 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     if gz is not None:
         lines.append(f"跨月 NetGEX 零轴（Gamma Zero）: **{gz:.1f}**（{result.netgex.gamma_zero_method}）")
         lines.append("")
-        lines.append("> 跨月 Gamma Zero 是 JUN26 与 JUL26 在同一假设价格网格下的 NetGEX 汇总曲线零点，即 `Σ NetGEX_expiry(F_grid)=0`，不是两个单月 Gamma Zero 的简单平均。")
+        compared_expiries = " 与 ".join(result.expiries[:2])
+        lines.append(
+            f"> 跨月 Gamma Zero 是 {compared_expiries} 在同一假设价格网格下的 "
+            "NetGEX 汇总曲线零点，即 `Σ NetGEX_expiry(F_grid)=0`，不是两个单月 "
+            "Gamma Zero 的简单平均。"
+        )
     lines.append("")
 
     if near_month and next_month:
@@ -479,7 +555,55 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
                     lines.append(f"- **{r['strike']}**：Total GEX {_fmt_num(r['total_gex'])}，上方核心阻力")
             else:
                 lines.append("- 无明显阻力候选")
-            lines.append("")
+        lines.append("")
+
+    # =====================================================================
+    # 3d. 绝对持仓 / 近期流量（独立于 WallScore）
+    # =====================================================================
+    all_position_levels = _aggregate_position_levels(result)
+    nearby_position_levels = [
+        level for level in all_position_levels
+        if level["distance_pct"] is not None and abs(float(level["distance_pct"])) <= 6.0
+    ]
+    position_levels = nearby_position_levels or all_position_levels
+    lines.append("## CME 大额持仓与近期流量")
+    lines.append("")
+    if nearby_position_levels:
+        lines.append("> 本表按 CME report_p0 约 ±6% 主战区筛选后，再按合并绝对 OI 排序；不等同于 WallScore。远端库存仅作参考，墙位与方向判断仍需同时参考 NetGEX、ΔOI 与 PNT/Block。")
+    else:
+        lines.append("> 未提供 CME report_p0 或主战区无有效点位，本表回退为全链绝对 OI 排序；不等同于 WallScore。墙位与方向判断仍需同时参考 NetGEX、ΔOI 与 PNT/Block。")
+    lines.append("")
+    lines.append("| Strike | Call OI | Put OI | Total OI | ΔOI | Volume | PNT/Block | Total GEX | NetGEX | 结构解读 |")
+    lines.append("| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |")
+    for level in position_levels[:10]:
+        net_gex = float(level["net_gex"])
+        interpretation = _wall_role_from_bias(net_gex, int(level["strike"]), gz)
+        lines.append(
+            f"| {level['strike']} | {int(level['call_oi']):,} | {int(level['put_oi']):,} "
+            f"| {int(level['total_oi']):,} | {int(level['oi_change']):+,} | {int(level['volume']):,} "
+            f"| {int(level['pnt_block']):,} | {_fmt_num(float(level['total_gex']))} "
+            f"| {_fmt_num(net_gex)} | {interpretation} |"
+        )
+    lines.append("")
+    remote_levels = [level for level in all_position_levels if level not in position_levels]
+    if nearby_position_levels and remote_levels:
+        lines.append("- 全链远端大仓参考：" + "、".join(f"{level['strike']}（OI {int(level['total_oi']):,}）" for level in remote_levels[:5]) + "。")
+        lines.append("")
+    block_total = sum(metric.call_block + metric.put_block for metric in result.strike_metrics)
+    if block_total <= 0 and any(int(level["pnt_block"]) > 0 for level in all_position_levels):
+        lines.append("- Block 数据本次没有观测到非零值，Block 总量按未核验处理；不要把 0 解读为确定没有 Block 成交。")
+        lines.append("")
+    active_pnt = [level for level in all_position_levels if int(level["pnt_block"]) > 0]
+    if active_pnt:
+        lines.append("### PNT / Block 质量分类")
+        lines.append("")
+        for level in sorted(active_pnt, key=lambda item: int(item["pnt_block"]), reverse=True)[:8]:
+            flow_label = "新增候选" if int(level["oi_change"]) > 0 else "换手/迁仓候选"
+            lines.append(
+                f"- **{level['strike']}**：PNT/Block {int(level['pnt_block']):,}，"
+                f"ΔOI {int(level['oi_change']):+,}，归类为{flow_label}；不将大宗成交单独解读为方向性新增。"
+            )
+        lines.append("")
 
     # =====================================================================
     # 4. Delta / Vega / Theta Exposure
@@ -781,6 +905,58 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     lines.append("")
 
     # =====================================================================
+    # 9b. 三路径推演
+    # =====================================================================
+    lines.append("## 三路径推演")
+    lines.append("")
+    lines.append("> 以日终结构锚生成，不分配主观概率；盘中是否激活，仍需使用当前策略的 5m 触发与 15m 确认。")
+    lines.append("")
+    scenario_anchor = live_p0 or report_p0 or result.forward_price or gz
+    scenario_supports, scenario_resistances = _scenario_levels(result, anchor=scenario_anchor)
+    lower_trigger = scenario_supports[0] if scenario_supports else None
+    lower_targets = scenario_supports[1:]
+    gamma_trigger = gz if gz is not None and (scenario_anchor is None or gz > scenario_anchor) else None
+    upper_trigger = gamma_trigger or (scenario_resistances[0] if scenario_resistances else None)
+    upper_targets = _directional_targets(
+        scenario_resistances,
+        anchor=upper_trigger if upper_trigger is not None else (scenario_anchor or 0.0),
+        direction="up",
+    )
+
+    lines.append("### 主路径：修复震荡")
+    lines.append("")
+    if lower_trigger is not None and upper_trigger is not None:
+        lines.append(f"- **触发/保持：** {lower_trigger:g} 未有效失守，价格围绕结构锚 {scenario_anchor:g} 反复。")
+        lines.append(f"- **目标：** 先测试 {upper_trigger:g}，其后观察是否形成持续接受。")
+        lines.append(f"- **失效：** 有效跌破 {lower_trigger:g} 且回抽不能收回。")
+    else:
+        lines.append("- 当前缺少完整上下边界，不激活区间修复路径。")
+    lines.append("")
+
+    lines.append("### 转强路径：接受 Gamma 翻转带")
+    lines.append("")
+    if upper_trigger is not None:
+        lines.append(f"- **触发：** 重新站上 {upper_trigger:g}，回踩不破并由 15m 确认。")
+        target_text = " → ".join(f"{target:g}" for target in upper_targets) or "上方 Call-GEX 墙"
+        lines.append(f"- **目标：** {target_text}。")
+        invalidation = lower_trigger if lower_trigger is not None else scenario_anchor
+        lines.append(f"- **失效：** 跌回 {invalidation:g} 下方且无法快速收回。")
+    else:
+        lines.append("- Gamma 翻转与上方确认墙不可用，不激活转强路径。")
+    lines.append("")
+
+    lines.append("### 转弱路径：核心地板失守")
+    lines.append("")
+    if lower_trigger is not None:
+        lines.append(f"- **触发：** 有效跌破 {lower_trigger:g}，回抽失败并伴随 Put 保护重新增强。")
+        target_text = " → ".join(f"{target:g}" for target in lower_targets) or "下一 Put-GEX 防守带"
+        lines.append(f"- **目标：** {target_text}。")
+        lines.append(f"- **失效：** 重新收回 {lower_trigger:g} 并站稳。")
+    else:
+        lines.append("- 下方核心地板不可用，不生成转弱目标。")
+    lines.append("")
+
+    # =====================================================================
     # 10. 实盘策略卡片
     # =====================================================================
     lines.append("## 实盘策略卡片")
@@ -810,10 +986,16 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         r2 = resistance_candidates[1]["strike"] if len(resistance_candidates) > 1 else None
         r3 = resistance_candidates[2]["strike"] if len(resistance_candidates) > 2 else None
 
-        # Find no-trade zone (high-gamma area around p0)
-        p0_low = int(p0 * 0.97)  # ~3% below
-        p0_high = int(p0 * 1.03)  # ~3% above
-        no_trade_zone = f"{p0_low}–{p0_high}"
+        if s1 is not None and r1 is not None:
+            no_trade_zone = f"{s1}–{r1}"
+            no_trade_label = (
+                f"**{no_trade_zone} 严格中段不适合追单，边界触发位不属于不交易区。**"
+            )
+        else:
+            p0_low = int(p0 * 0.995)
+            p0_high = int(p0 * 1.005)
+            no_trade_zone = f"{p0_low}–{p0_high}"
+            no_trade_label = f"**{no_trade_zone} 现价附近观察带不适合追单。**"
 
         # --- 主剧本 ---
         lines.append("### 主剧本")
@@ -824,22 +1006,28 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             lines.append("**条件：**")
             lines.append(f"- 价格回踩 {s1} 附近不破，或刺破后快速收回；")
             lines.append("- 15M 出现 failed breakout / second entry 确认；")
-            if r1:
-                lines.append(f"- {r1} 被重新站上并回踩不破。")
+            if gz and p0 < gz:
+                lines.append(
+                    f"- 价格先重新站上 Gamma Zero（{gz:.0f}）；未收复前主剧本不激活。"
+                )
             lines.append("")
             lines.append("**目标：**")
-            lines.append(f"- 第一目标：{r1 or '—'}")
-            if r2:
-                lines.append(f"- 第二目标：{r2}")
-            if r3:
-                lines.append(f"- 第三目标：{r3}")
+            upside_targets = _directional_targets(
+                [r1, r2, r3],
+                anchor=p0,
+                direction="up",
+            )
+            for index, target in enumerate(upside_targets, start=1):
+                lines.append(f"- {_target_label(index)}：{target:g}")
+            if r1 and len(upside_targets) > 1:
+                lines.append(f"- 升级条件：{r1:g} 被重新站上并回踩不破后，才启用后续目标。")
             lines.append("")
             lines.append("**失效：**")
             if s1:
                 lines.append(f"- 跌破 {s1} 后无法收回；")
             if s2:
                 lines.append(f"- {s2} 支撑失守；")
-            if gz:
+            if gz and p0 >= gz:
                 lines.append(f"- 价格跌回 Gamma Zero（{gz:.0f}）下方。")
             lines.append("- 注：站上分水岭只代表进入 Call-GEX 更占优的结构区，仍需上方墙位接受确认，不能单独视为趋势启动。")
         else:
@@ -858,11 +1046,13 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             lines.append("- 期权结构上高 Gamma 压制未被消化。")
             lines.append("")
             lines.append("**目标：**")
-            lines.append(f"- 第一目标：{int(p0 * 0.98)}")
-            if s1:
-                lines.append(f"- 第二目标：{s1}")
-            if s2:
-                lines.append(f"- 第三目标：{s2}")
+            downside_targets = _directional_targets(
+                [int(p0 * 0.98), s1, s2],
+                anchor=p0,
+                direction="down",
+            )
+            for index, target in enumerate(downside_targets, start=1):
+                lines.append(f"- {_target_label(index)}：{target:g}")
         elif not r1:
             lines.append("当前无明显阻力候选，无法构建备剧本。")
         else:
@@ -872,10 +1062,12 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         # --- 不交易区 ---
         lines.append("### 不交易区")
         lines.append("")
-        lines.append(f"**{no_trade_zone} 中段不适合追单。**")
+        lines.append(no_trade_label)
         lines.append("")
         if s1 and r1:
-            lines.append(f"原因：{s1}–{r1} 区间 Gamma 较高，容易出现来回扫损、假突破、磁吸震荡。")
+            lines.append(
+                f"原因：{s1}–{r1} 支撑与阻力之间缺少边缘优势，容易出现来回扫损、假突破和墙位磁吸。"
+            )
         lines.append("更好的执行位置：")
         if s1:
             lines.append(f"- 下方靠近 {s1} 等失败确认；")
@@ -962,7 +1154,11 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         lines.append("### 到期日估算提示")
         lines.append("")
         lines.append("- expiry_source=estimated_from_delivery_month，expiry_confidence=medium。")
-        lines.append("- 近月 T 对 Gamma 较敏感；若 CME 官方到期日与估算差 1 个交易日，JUN26 GEX 与 Gamma Zero 可能小幅变化。")
+        expiry_text = " / ".join(result.expiries) or "相关月份"
+        lines.append(
+            "- 近月 T 对 Gamma 较敏感；若 CME 官方到期日与估算差 1 个交易日，"
+            f"{expiry_text} GEX 与 Gamma Zero 可能小幅变化。"
+        )
         lines.append("")
     if dq.warnings:
         lines.append("### 详细警告")

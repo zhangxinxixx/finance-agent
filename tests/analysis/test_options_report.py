@@ -247,6 +247,8 @@ class TestReportMarkdown:
             "Roll / 换月迁移",
             "I1-I4 机构意图",
             "支撑 / 阻力",
+            "CME 大额持仓与近期流量",
+            "三路径推演",
             "主/副剧本",
             "数据质量与局限性",
         ]
@@ -268,6 +270,71 @@ class TestReportMarkdown:
         # With p0 provided, should have support/resistance section
         assert "支撑" in report
         assert "阻力" in report
+
+    def test_live_strategy_has_ordered_unique_targets_and_valid_conditions(self) -> None:
+        rows = _load_sample_rows()
+        result = build_options_snapshot(
+            rows,
+            trade_date="2026-05-06",
+            p0=4200.0,
+            live_p0=4050.0,
+        )
+
+        report = render_options_report_markdown(result)
+        strategy = report.split("## 实盘策略卡片", 1)[1].split("## 主/副剧本", 1)[0]
+
+        assert "- 第一目标：4100" in strategy
+        assert "- 第二目标：4200" in strategy
+        assert "- 第三目标：4200" not in strategy
+        assert "- 第一目标：4000" in strategy
+        assert "- 第二目标：3969" in strategy
+        assert "价格跌回 Gamma Zero" not in strategy
+        assert "重新站上 Gamma Zero（4078）" in strategy
+        assert "**4000–4100 严格中段不适合追单，边界触发位不属于不交易区。**" in strategy
+
+    def test_report_separates_absolute_oi_and_three_path_conditions(self) -> None:
+        report = self._report(p0=4200.0)
+        inventory = report.split("## CME 大额持仓与近期流量", 1)[1].split("## Delta", 1)[0]
+        scenarios = report.split("## 三路径推演", 1)[1].split("## 实盘策略卡片", 1)[0]
+
+        assert "不等同于 WallScore" in inventory
+        assert "主战区筛选" in inventory
+        assert "Total OI" in inventory
+        assert "PNT/Block" in inventory
+        assert "主路径：修复震荡" in scenarios
+        assert "转强路径" in scenarios
+        assert "转弱路径" in scenarios
+        assert "**触发" in scenarios
+        assert "**目标：**" in scenarios
+        assert "**失效：**" in scenarios
+        assert "概率约" not in scenarios
+
+    def test_report_discloses_unverified_block_when_only_pnt_is_present(self) -> None:
+        row = _option_row(expiry="JUL26", strike=4200)
+        row["pnt_volume"] = 12
+        result = build_options_snapshot([row], trade_date="2026-05-06", p0=4200.0)
+        report = render_options_report_markdown(result)
+        assert "Block 数据本次没有观测到非零值" in report
+
+    def test_expiry_estimation_warning_uses_actual_contract_months(self) -> None:
+        rows = [
+            _option_row(expiry=expiry, option_type=option_type)
+            for expiry in ("AUG26", "SEP26")
+            for option_type in ("CALL", "PUT")
+        ]
+        result = build_options_snapshot(
+            rows,
+            trade_date="2026-05-06",
+            p0=4200.0,
+            user_f=4200.0,
+        )
+
+        report = render_options_report_markdown(result)
+
+        assert "跨月 Gamma Zero 是 AUG26 与 SEP26" in report
+        assert "AUG26 / SEP26 GEX 与 Gamma Zero 可能小幅变化" in report
+        assert "跨月 Gamma Zero 是 JUN26 与 JUL26" not in report
+        assert "JUN26 GEX 与 Gamma Zero 可能小幅变化" not in report
 
 
 # -----------------------------------------------------------------------

@@ -4,6 +4,7 @@ import type { ReportAnalysisAgentOutputView } from "@/types/reports";
 import { ReportTraceDrilldown } from "./ReportTraceDrilldown";
 import { biasLabel, factReviewLabel, factReviewTone, generationModeLabel, isSynthesisOutput, statusTone } from "./reportDetailMeta";
 import { ReportAgentOutputFeedbackForm } from "./ReportAgentOutputFeedbackForm";
+import { Link } from "react-router-dom";
 
 export function ReportAgentOutputCard({ item }: { item: ReportAnalysisAgentOutputView }) {
   const modelLabel = item.llm_model ?? null;
@@ -80,6 +81,21 @@ export function ReportAgentOutputCard({ item }: { item: ReportAnalysisAgentOutpu
         }}
         payloadTitle="技术载荷"
       />
+
+      {item.llm_audit ? (
+        <details className="mt-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card)]">
+          <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold text-[var(--fg-3)]">LLM 审计：实际 Prompt / 输入 / 输出</summary>
+          <div className="space-y-2 border-t border-[var(--border-faint)] px-3 py-3 text-[10px] text-[var(--fg-4)]">
+            {item.llm_audit.available ? (
+              <>
+                <div className="flex flex-wrap gap-2">{Object.entries(item.llm_audit.config).map(([key, value]) => <span key={key} className="rounded-full border border-[var(--border-faint)] px-2 py-1">{key}: {typeof value === "string" ? value : JSON.stringify(value)}</span>)}</div>
+                {item.llm_audit.audit_id ? <Link className="inline-block text-[var(--accent)]" to={`/settings/llm-audit?audit_id=${encodeURIComponent(item.llm_audit.audit_id)}`}>打开完整 Gateway 审计记录 →</Link> : null}
+                <pre className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-md)] bg-[var(--bg-terminal)] p-2 font-mono leading-5">{JSON.stringify({ prompt_messages: item.llm_audit.prompt_messages, input_payload: item.llm_audit.input_payload, output_payload: item.llm_audit.output_payload, raw_output: item.llm_audit.raw_output }, null, 2)}</pre>
+              </>
+            ) : <div>{item.llm_audit.note ?? "历史记录未保存实际 Prompt/输入/输出。"}</div>}
+          </div>
+        </details>
+      ) : null}
 
       <details className="mt-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card)]">
         <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold text-[var(--fg-3)]">反馈记录</summary>

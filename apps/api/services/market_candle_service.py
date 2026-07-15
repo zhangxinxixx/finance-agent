@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from apps.features.market_data import (
+    aggregate_provider_complete_candles,
+    merge_candle_series,
+    select_canonical_xauusd_rows,
+)
 from database.models.analysis import ensure_analysis_tables
 from database.models.engine import DATABASE_URL
 from database.queries.market import list_market_candles
@@ -23,8 +29,7 @@ EXPECTED_INTERVAL_SECONDS = {
 }
 
 _VALID_TIMEFRAMES = set(EXPECTED_INTERVAL_SECONDS)
-_AGGREGATABLE_TIMEFRAMES = {"5m", "15m", "30m", "1h", "4h"}
-_SUPPORTED_ASSETS = {"XAUUSD", "DXY"}
+_SUPPORTED_ASSETS = {"XAUUSD", "DXY", "GC"}
 _TIMEFRAME_ALIASES = {
     "1M": "1m",
     "5M": "5m",
@@ -36,6 +41,7 @@ _TIMEFRAME_ALIASES = {
     "1DAY": "1D",
     "D": "1D",
 }
+_NEW_YORK = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -43,13 +49,12 @@ class SourcePlan:
     source_timeframe: str
     provider: str
     rows: list[Any]
-    aggregated: bool = False
     degraded_reason: str | None = None
 
 
 def get_market_candles(
     asset: str = "XAUUSD",
-    timeframe: str = "1m",
+    timeframe: str = "5m",
     limit: int = 500,
     *,
     session: Any | None = None,
@@ -99,10 +104,13 @@ def get_market_candles(
             limit=requested_limit,
         )
 
-    candles = aggregate_candles(plan.rows, normalized_timeframe)[-requested_limit:] if plan.aggregated else [
-        _row_to_candle(row) for row in plan.rows[-requested_limit:]
-    ]
-    coverage = detect_candle_gaps(candles, normalized_timeframe, requested_limit=requested_limit)
+    candles = [_row_to_candle(row) for row in plan.rows[-requested_limit:]]
+    coverage = detect_candle_gaps(
+        candles,
+        normalized_timeframe,
+        requested_limit=requested_limit,
+        asset=normalized_asset,
+    )
     if plan.degraded_reason:
         coverage["degraded"] = True
         coverage["reason"] = plan.degraded_reason
@@ -118,7 +126,7 @@ def get_market_candles(
         "coverage": coverage,
         "source_trace": {
             "primary_source": f"market_candles:{normalized_asset}:{plan.source_timeframe}",
-            "fallback_source": "market_candles:XAUUSD:1m" if plan.aggregated else None,
+            "fallback_source": "twelvedata_xauusd" if plan.provider == "canonical_xauusd_mixed" else None,
             "latest_raw_path": _row_attr(latest_row, "raw_path") if latest_row is not None else None,
             "latest_update_time": _iso_datetime(_row_attr(latest_row, "updated_at")) if latest_row is not None else None,
         },
@@ -126,81 +134,100 @@ def get_market_candles(
 
 
 def normalize_timeframe(timeframe: str) -> str:
-    raw = str(timeframe or "1m").strip()
+    raw = str(timeframe or "5m").strip()
     normalized = _TIMEFRAME_ALIASES.get(raw.upper(), raw)
-    return normalized if normalized in _VALID_TIMEFRAMES else "1m"
+    return normalized if normalized in _VALID_TIMEFRAMES else "5m"
 
 
 def choose_best_source(session: Any, *, asset: str, timeframe: str, limit: int) -> SourcePlan:
     db_timeframe = _db_timeframe(timeframe)
-    native_rows = list_market_candles(session, asset=asset, timeframe=db_timeframe, limit=limit)
-    if native_rows:
-        return SourcePlan(
-            source_timeframe=timeframe,
-            provider=_provider_from_rows(native_rows),
-            rows=native_rows,
-        )
-
-    if asset == "XAUUSD" and timeframe in _AGGREGATABLE_TIMEFRAMES:
-        fetch_limit = _aggregation_fetch_limit(timeframe, limit)
-        minute_rows = list_market_candles(session, asset=asset, timeframe="1m", limit=fetch_limit)
-        if minute_rows:
+    if asset != "XAUUSD":
+        native_rows = list_market_candles(session, asset=asset, timeframe=db_timeframe, limit=limit)
+        if native_rows:
             return SourcePlan(
-                source_timeframe="1m",
-                provider=_provider_from_rows(minute_rows),
-                rows=minute_rows,
-                aggregated=True,
+                source_timeframe=timeframe,
+                provider=_provider_from_rows(native_rows),
+                rows=native_rows,
             )
 
-    if asset == "XAUUSD" and timeframe == "4h":
-        hourly_rows = list_market_candles(session, asset=asset, timeframe="1h", limit=max(limit * 4, limit))
-        if hourly_rows:
+    if asset == "XAUUSD" and timeframe == "1m":
+        staging_rows = list_market_candles(
+            session,
+            asset=asset,
+            timeframe="1m",
+            limit=limit,
+            source="jin10_mcp_kline_1m",
+        )
+        if staging_rows:
             return SourcePlan(
-                source_timeframe="1h",
-                provider=_provider_from_rows(hourly_rows),
-                rows=hourly_rows,
-                aggregated=True,
-                degraded_reason="4h requested but XAUUSD 1m candles are unavailable; aggregated from 1h rows.",
+                source_timeframe="1m",
+                provider="jin10_mcp_staging",
+                rows=staging_rows,
+                degraded_reason="1m is internal staging; the formal minimum XAUUSD timeframe is 5m.",
+            )
+
+    if asset == "XAUUSD" and timeframe == "5m":
+        candidate_rows = list_market_candles(
+            session,
+            asset=asset,
+            timeframe="5m",
+            limit=max(limit * 3, limit + 10),
+        )
+        canonical_rows = select_canonical_xauusd_rows(candidate_rows)[-limit:]
+        if canonical_rows:
+            return SourcePlan(
+                source_timeframe="5m",
+                provider=_canonical_provider(canonical_rows),
+                rows=canonical_rows,
+            )
+
+    if asset == "XAUUSD" and timeframe in {"15m", "30m", "1h", "4h"}:
+        fetch_limit = _aggregation_fetch_limit_from_five_minutes(timeframe, limit)
+        five_minute_candidates = list_market_candles(
+            session,
+            asset=asset,
+            timeframe="5m",
+            limit=fetch_limit * 3,
+        )
+        local_rows = aggregate_provider_complete_candles(
+            five_minute_candidates,
+            source_timeframe="5m",
+            target_timeframe=timeframe,
+            source=f"canonical_xauusd_5m_aggregate_{timeframe}",
+        )
+        fallback_rows: list[Any] = []
+        if timeframe in {"15m", "1h", "4h"}:
+            fallback_rows = list_market_candles(
+                session,
+                asset=asset,
+                timeframe=timeframe,
+                limit=max(limit * 2, limit + 5),
+                source=f"twelvedata_xauusd_{timeframe}",
+            )
+        merged = merge_candle_series(local_rows, fallback_rows)[-limit:]
+        if merged:
+            return SourcePlan(
+                source_timeframe="5m",
+                provider=_canonical_provider(merged),
+                rows=merged,
+            )
+
+    if asset == "XAUUSD" and timeframe == "1D":
+        native_rows = list_market_candles(session, asset=asset, timeframe="1d", limit=max(limit * 3, limit))
+        compatible_rows = select_canonical_xauusd_rows(native_rows)[-limit:]
+        if compatible_rows:
+            return SourcePlan(
+                source_timeframe="1D",
+                provider=_provider_from_rows(compatible_rows),
+                rows=compatible_rows,
             )
 
     return SourcePlan(
         source_timeframe=timeframe,
         provider="unavailable",
         rows=[],
-        degraded_reason=f"No market_candles rows available for {asset} {timeframe}.",
+        degraded_reason=f"No canonical market_candles rows available for {asset} {timeframe}.",
     )
-
-
-def aggregate_candles(rows: list[Any], timeframe: str) -> list[dict[str, Any]]:
-    interval = EXPECTED_INTERVAL_SECONDS.get(timeframe)
-    if not rows or not interval:
-        return []
-
-    buckets: dict[datetime, list[Any]] = {}
-    for row in sorted(rows, key=lambda item: _row_open_time(item)):
-        open_time = _row_open_time(row)
-        bucket_time = _bucket_time(open_time, interval)
-        buckets.setdefault(bucket_time, []).append(row)
-
-    candles: list[dict[str, Any]] = []
-    for bucket_time in sorted(buckets):
-        bucket_rows = sorted(buckets[bucket_time], key=lambda item: _row_open_time(item))
-        first = bucket_rows[0]
-        last = bucket_rows[-1]
-        volumes = [_row_attr(item, "volume") for item in bucket_rows if _row_attr(item, "volume") is not None]
-        candles.append(
-            {
-                "time": _iso_datetime(bucket_time),
-                "open": float(_row_attr(first, "open")),
-                "high": max(float(_row_attr(item, "high")) for item in bucket_rows),
-                "low": min(float(_row_attr(item, "low")) for item in bucket_rows),
-                "close": float(_row_attr(last, "close")),
-                "volume": sum(float(volume) for volume in volumes) if volumes else None,
-                "source": str(_row_attr(last, "source") or ""),
-                "partial": False,
-            }
-        )
-    return candles
 
 
 def detect_candle_gaps(
@@ -208,10 +235,12 @@ def detect_candle_gaps(
     timeframe: str,
     *,
     requested_limit: int,
+    asset: str = "XAUUSD",
 ) -> dict[str, Any]:
     interval = EXPECTED_INTERVAL_SECONDS.get(timeframe, 60)
     gap_threshold = interval * (3.5 if timeframe == "1D" else 1.5)
     gap_ranges: list[dict[str, Any]] = []
+    excluded_gap_ranges: list[dict[str, Any]] = []
     max_gap_seconds: int | None = None
 
     for current, nxt in zip(candles, candles[1:]):
@@ -221,17 +250,28 @@ def detect_candle_gaps(
             continue
         gap_seconds = int((next_time - current_time).total_seconds())
         if gap_seconds > gap_threshold:
-            gap_ranges.append(
-                {
-                    "from": current_time.isoformat(),
-                    "to": next_time.isoformat(),
-                    "gap_seconds": gap_seconds,
-                }
+            gap_type = _gap_type(
+                current_time,
+                next_time,
+                interval_seconds=interval,
+                asset=asset,
+                timeframe=timeframe,
             )
-            max_gap_seconds = max(max_gap_seconds or gap_seconds, gap_seconds)
+            item = {
+                "from": current_time.isoformat(),
+                "to": next_time.isoformat(),
+                "gap_seconds": gap_seconds,
+                "gap_type": gap_type,
+            }
+            if gap_type in {"market_closed_gap", "maintenance_gap"}:
+                excluded_gap_ranges.append(item)
+            else:
+                gap_ranges.append(item)
+                max_gap_seconds = max(max_gap_seconds or gap_seconds, gap_seconds)
 
     returned = len(candles)
-    low_coverage = requested_limit > 0 and returned < requested_limit * 0.8
+    expected_open_bars = _expected_open_bar_count(candles, interval_seconds=interval, asset=asset, timeframe=timeframe)
+    low_coverage = expected_open_bars > 0 and returned < expected_open_bars * 0.8
     degraded = bool(gap_ranges) or low_coverage
     reason = None
     if gap_ranges:
@@ -247,9 +287,71 @@ def detect_candle_gaps(
         "gap_count": len(gap_ranges),
         "max_gap_seconds": max_gap_seconds,
         "gap_ranges": gap_ranges[:10],
+        "excluded_gap_count": len(excluded_gap_ranges),
+        "excluded_gap_ranges": excluded_gap_ranges[:10],
+        "expected_open_bar_count": expected_open_bars,
+        "coverage_ratio": round(returned / expected_open_bars, 4) if expected_open_bars else None,
         "degraded": degraded,
         "reason": reason,
     }
+
+
+def _gap_type(
+    current: datetime,
+    nxt: datetime,
+    *,
+    interval_seconds: int,
+    asset: str,
+    timeframe: str,
+) -> str:
+    if asset != "XAUUSD" or timeframe == "1D":
+        return "unexpected_missing_gap"
+    cursor = current + timedelta(seconds=interval_seconds)
+    closed_kinds: set[str] = set()
+    while cursor < nxt:
+        closed_kind = _xauusd_closed_kind(cursor)
+        if closed_kind is None:
+            return "unexpected_missing_gap"
+        closed_kinds.add(closed_kind)
+        cursor += timedelta(seconds=interval_seconds)
+    return "market_closed_gap" if "market_closed" in closed_kinds else "maintenance_gap"
+
+
+def _expected_open_bar_count(
+    candles: list[dict[str, Any]],
+    *,
+    interval_seconds: int,
+    asset: str,
+    timeframe: str,
+) -> int:
+    if not candles:
+        return 0
+    first = _parse_time(candles[0].get("time"))
+    last = _parse_time(candles[-1].get("time"))
+    if first is None or last is None:
+        return len(candles)
+    count = 0
+    cursor = first
+    while cursor <= last:
+        if asset != "XAUUSD" or timeframe == "1D" or _xauusd_closed_kind(cursor) is None:
+            count += 1
+        cursor += timedelta(seconds=interval_seconds)
+    return count
+
+
+def _xauusd_closed_kind(value: datetime) -> str | None:
+    local = value.astimezone(_NEW_YORK)
+    weekday = local.weekday()
+    local_time = local.time()
+    if weekday == 5:
+        return "market_closed"
+    if weekday == 6 and local_time < time(18, 0):
+        return "market_closed"
+    if weekday == 4 and local_time >= time(17, 0):
+        return "market_closed"
+    if weekday in {0, 1, 2, 3} and time(17, 0) <= local_time < time(18, 0):
+        return "maintenance"
+    return None
 
 
 def _row_to_candle(row: Any) -> dict[str, Any]:
@@ -302,36 +404,44 @@ def _empty_response(
     }
 
 
-def _aggregation_fetch_limit(timeframe: str, target_limit: int) -> int:
-    multipliers = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240}
-    return (target_limit + 2) * multipliers.get(timeframe, 1)
-
-
-def _bucket_time(open_time: datetime, interval_seconds: int) -> datetime:
-    aware = open_time if open_time.tzinfo else open_time.replace(tzinfo=timezone.utc)
-    bucket_ts = int(aware.timestamp() // interval_seconds) * interval_seconds
-    return datetime.fromtimestamp(bucket_ts, tz=timezone.utc)
+def _aggregation_fetch_limit_from_five_minutes(timeframe: str, target_limit: int) -> int:
+    multipliers = {"15m": 3, "30m": 6, "1h": 12, "4h": 48}
+    return (target_limit + 2) * multipliers[timeframe]
 
 
 def _provider_from_rows(rows: list[Any]) -> str:
     source = str(_row_attr(rows[-1], "source") or "") if rows else ""
+    if source.startswith("canonical_xauusd_5m_aggregate_"):
+        source_ref = _row_attr(rows[-1], "source_ref") or {}
+        components = source_ref.get("component_source_refs", []) if isinstance(source_ref, dict) else []
+        component_sources = {str(item.get("source") or "") for item in components if isinstance(item, dict)}
+        if component_sources and all("jin10" in item for item in component_sources):
+            return "jin10_mcp"
+        if component_sources and all("twelvedata" in item for item in component_sources):
+            return "twelve_data"
+        return "canonical_xauusd_mixed"
     if "jin10" in source:
         return "jin10_mcp"
+    if "twelvedata" in source:
+        return "twelve_data"
     if "yahoo" in source or "openbb" in source:
         return "openbb_yfinance" if "openbb" in source else "yahoo_finance"
     return source or "market_candles"
 
 
+def _canonical_provider(rows: list[Any]) -> str:
+    providers = {_provider_from_rows([row]) for row in rows}
+    if providers == {"jin10_mcp"}:
+        return "jin10_mcp"
+    if providers == {"twelve_data"}:
+        return "twelve_data"
+    if len(providers) > 1:
+        return "canonical_xauusd_mixed"
+    return next(iter(providers), "canonical_xauusd")
+
+
 def _db_timeframe(timeframe: str) -> str:
     return "1d" if timeframe == "1D" else timeframe
-
-
-def _row_open_time(row: Any) -> datetime:
-    value = _row_attr(row, "open_time")
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    parsed = _parse_time(value)
-    return parsed or datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _parse_time(value: Any) -> datetime | None:

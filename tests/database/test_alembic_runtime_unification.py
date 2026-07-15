@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import UniqueConstraint, create_engine, inspect
 
 
 def _metadata_table_names(target_metadata) -> set[str]:
@@ -19,6 +19,46 @@ def test_alembic_env_targets_all_runtime_metadata() -> None:
     assert "execution_events" in table_names
     assert "report_items" in table_names
     assert "cme_option_rows" in table_names
+
+
+def test_alembic_config_preserves_percent_encoded_database_url() -> None:
+    from database.migrations.runtime import build_alembic_config
+
+    database_url = (
+        "postgresql://finance_agent@127.0.0.1/finance_agent"
+        "?options=-csearch_path%3Dfinance_agent_issue65"
+    )
+
+    config = build_alembic_config(database_url)
+
+    assert config.get_main_option("sqlalchemy.url") == database_url
+
+
+def test_report_primary_keys_do_not_duplicate_unique_constraints() -> None:
+    from database.models.report import ReportArtifact, ReportItem
+
+    tables_and_primary_keys = (
+        (ReportItem.__table__, "report_id"),
+        (ReportArtifact.__table__, "artifact_id"),
+    )
+    for table, primary_key_column in tables_and_primary_keys:
+        redundant_uniques = {
+            constraint.name
+            for constraint in table.constraints
+            if isinstance(constraint, UniqueConstraint)
+            and tuple(column.name for column in constraint.columns) == (primary_key_column,)
+        }
+        assert redundant_uniques == set()
+
+    report_artifact_uniques = {
+        (constraint.name, tuple(column.name for column in constraint.columns))
+        for constraint in ReportArtifact.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert (
+        "uq_report_artifacts_report_type_path",
+        ("report_id", "artifact_type", "file_path"),
+    ) in report_artifact_uniques
 
 
 def test_runtime_alembic_upgrade_creates_current_schema(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

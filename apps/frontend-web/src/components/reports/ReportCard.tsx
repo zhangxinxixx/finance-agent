@@ -28,8 +28,9 @@ export function ReportCard({
 
   const dateLabel = item.trade_date || "-";
   const runLabel = shortRunId(item.run_id);
-  const statusLabel = item.available ? "已发布" : "草稿";
-  const statusColor = item.available ? "#10b981" : "#f59e0b";
+  const qualityBlocked = !item.available && item.status === "degraded";
+  const statusLabel = item.available ? "已发布" : qualityBlocked ? "审核未通过" : "草稿";
+  const statusColor = item.available ? "#10b981" : qualityBlocked ? "#ef4444" : "#f59e0b";
   const generatedAtLabel = formatGeneratedAt(item.generated_at);
   const isOpenable = canOpenReport(item);
   const assetLabel = inferAssetLabel(item);

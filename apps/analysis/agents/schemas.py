@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AgentBias(StrEnum):
@@ -29,6 +29,16 @@ class DataCategory(StrEnum):
     SYSTEM_INFERENCE = "system_inference"      # Deterministic agent derivations
 
 
+class AgentDataGap(BaseModel):
+    """Structured current data gap consumed by QualityGate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+    severity: Literal["info", "warning", "p0", "blocker"] = "warning"
+
+
 class AgentOutput(BaseModel):
     """Unified read-only post-processing output contract for pseudo agents."""
 
@@ -44,7 +54,26 @@ class AgentOutput(BaseModel):
     key_findings: list[str]
     risk_points: list[str]
     watchlist: list[str]
-    invalid_conditions: list[str]
+    invalid_conditions: list[str] = Field(
+        default_factory=list,
+        description="Legacy compatibility projection of invalidation_conditions.",
+    )
+    invalidation_conditions: list[str] = Field(
+        default_factory=list,
+        description="Future conditions that would invalidate the analysis; these do not block publication by themselves.",
+    )
+    active_blockers: list[str] = Field(
+        default_factory=list,
+        description="Conditions that are active now and must block publication.",
+    )
+    data_gaps: list[AgentDataGap] = Field(
+        default_factory=list,
+        description="Current structured data gaps; only p0/blocker gaps directly block publication.",
+    )
+    review_triggers: list[str] = Field(
+        default_factory=list,
+        description="Current conditions that require review but are not active publication blockers.",
+    )
     summary: str
     source_refs: list[dict[str, Any]]
     status: AgentStatus
@@ -87,6 +116,7 @@ class AgentOutput(BaseModel):
     llm_provider: str | None = Field(default=None, description="LLM provider name")
     llm_usage: dict[str, Any] | None = Field(default=None, description="Token usage from LLM call")
     llm_latency_ms: int | None = Field(default=None, description="LLM call latency in milliseconds")
+    llm_audit_id: str | None = Field(default=None, description="Immutable shared-gateway audit record id")
     # ── Observability payloads (optional; debug/audit only) ──
     prompt_messages: list[dict[str, str]] | None = Field(
         default=None,
@@ -100,3 +130,19 @@ class AgentOutput(BaseModel):
         default=None,
         description="Raw LLM response text before parsing, when available",
     )
+
+    @model_validator(mode="after")
+    def _sync_legacy_invalidation_alias(self) -> "AgentOutput":
+        combined = _dedupe_strings([*self.invalidation_conditions, *self.invalid_conditions])
+        self.invalidation_conditions = combined
+        self.invalid_conditions = list(combined)
+        return self
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in result:
+            result.append(text)
+    return result

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
 from pydantic import Field
 
 from .common import ReviewStatus, SchemaModel, TraceableResponse
@@ -45,6 +47,19 @@ class StrategyRegimeSummary(SchemaModel):
 class StrategyAssetListResponse(SchemaModel):
     items: list[StrategyAssetSummary] = Field(default_factory=list)
     count: int = 0
+
+
+class LiveStrategyRecomputePreviewResponse(SchemaModel):
+    """Stable, read-only contract for one event recompute preview."""
+
+    schema_version: Literal["live_strategy.recompute_preview.v1"]
+    status: Literal["accepted", "blocked", "unavailable"]
+    event_id: str
+    reasons: list[str] = Field(default_factory=list)
+    event_observation: dict[str, Any] | None = None
+    previous_strategy: dict[str, Any] | None = None
+    candidate_strategy: dict[str, Any] | None = None
+    execution: dict[str, Any] | None = None
 
 
 StrategyAssetSummary.model_rebuild(_types_namespace={"StrategyRegimeSummary": StrategyRegimeSummary})

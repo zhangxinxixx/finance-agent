@@ -24,7 +24,7 @@ def _make_session():
 
 
 def test_settings_keyless_sources_are_unknown_without_local_evidence(monkeypatch, tmp_path):
-    for key in ("FRED_API_KEY", "DASHSCOPE_API_KEY", "MEM0_API_KEY", "JIN10_MCP_KEY", "REDIS_URL"):
+    for key in ("FRED_API_KEY", "JIN10_MCP_KEY", "TWELVE_DATA_API_KEY", "REDIS_URL"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr("apps.api.services.settings_service._PROJECT_ROOT", tmp_path)
 
@@ -33,6 +33,7 @@ def test_settings_keyless_sources_are_unknown_without_local_evidence(monkeypatch
 
     assert sources["openbb"]["status"] == "UNKNOWN"
     assert sources["jin10_mcp"]["status"] == "UNKNOWN"
+    assert sources["twelvedata"]["status"] == "DISCONNECTED"
     assert sources["cme_bulletin"]["status"] == "UNKNOWN"
     assert sources["treasury"]["status"] == "UNKNOWN"
     assert sources["fed_prates"]["status"] == "UNKNOWN"
@@ -41,9 +42,8 @@ def test_settings_keyless_sources_are_unknown_without_local_evidence(monkeypatch
 def test_settings_status_overlays_saved_preferences_and_source_enabled(monkeypatch, tmp_path):
     session = _make_session()
     monkeypatch.delenv("FRED_API_KEY", raising=False)
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.delenv("MEM0_API_KEY", raising=False)
     monkeypatch.delenv("JIN10_MCP_KEY", raising=False)
+    monkeypatch.delenv("TWELVE_DATA_API_KEY", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setattr("apps.api.services.settings_service._PROJECT_ROOT", tmp_path)
     monkeypatch.setattr("apps.runtime.secret_resolver._PROJECT_ROOT", tmp_path)
@@ -79,6 +79,7 @@ def test_settings_status_overlays_saved_preferences_and_source_enabled(monkeypat
 def test_settings_status_includes_masked_stored_secret(monkeypatch, tmp_path):
     session = _make_session()
     monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.delenv("TWELVE_DATA_API_KEY", raising=False)
     monkeypatch.setattr("apps.api.services.settings_service._PROJECT_ROOT", tmp_path)
     monkeypatch.setattr("apps.runtime.secret_resolver._PROJECT_ROOT", tmp_path)
     master_key = Fernet.generate_key().decode()

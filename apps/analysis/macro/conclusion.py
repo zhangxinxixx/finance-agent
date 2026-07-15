@@ -2,7 +2,18 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from apps.analysis.macro.regime import classify_macro_regime
 from apps.features.macro.snapshot import MacroSnapshot
+
+
+_MARKET_PHASE_LABELS = {
+    "rate_pressure": "利率压制态",
+    "transition_release": "过渡释放态",
+    "trend_tailwind": "趋势顺风态",
+    "liquidity_crunch": "流动性踩踏态",
+    "monetary_credit_repricing": "货币信用重定价态",
+    "unavailable": "数据不足态",
+}
 
 
 @dataclass(frozen=True)
@@ -30,6 +41,7 @@ class MacroConclusion:
     risks: list[MacroRisk]
     reasoning: str
     missing_inputs: list[str]
+    market_phase: str
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -47,11 +59,16 @@ class MacroConclusion:
             "risks": [risk.to_dict() for risk in self.risks],
             "reasoning": self.reasoning,
             "missing_inputs": self.missing_inputs,
+            "market_phase": self.market_phase,
         }
 
 
 def build_macro_conclusion(snapshot: MacroSnapshot) -> MacroConclusion:
     ind = snapshot.indicators
+    regime = classify_macro_regime(
+        {symbol: indicator.to_dict() for symbol, indicator in ind.items()}
+    )
+    market_phase = str(regime.get("market_phase") or "unavailable")
     missing_inputs = _missing_required_inputs(ind)
     quantity_layer = _quantity_layer(ind)
     price_layer = _price_layer(ind)
@@ -69,20 +86,13 @@ def build_macro_conclusion(snapshot: MacroSnapshot) -> MacroConclusion:
         bias = "中性偏空"
     else:
         bias = "中性"
-    us10y = ind.get("US10Y")
-    if us10y and us10y.value >= 4.7 and dollar_layer == "逆风" and real_layer in {"重新压制", "高位压制"}:
-        state = "流动性踩踏态"
-    elif real_layer in {"重新压制", "高位压制"} and dollar_layer == "逆风":
-        state = "利率压制态"
-    elif quantity_layer == "偏松" and dollar_layer == "顺风" and price_layer in {"中性", "宽松"}:
-        state = "趋势顺风态"
-    elif quantity_layer == "偏松" and dollar_layer == "顺风":
-        state = "过渡释放态"
-    else:
-        state = "过渡释放态"
-    if state == "趋势顺风态":
+    state = _MARKET_PHASE_LABELS.get(market_phase, "数据不足态")
+    if state == "趋势顺风态" and bias in {"中性偏多", "偏多"}:
         action = "回踩接多 / 突破跟随"
         action_priority = "主要"
+    elif state == "趋势顺风态":
+        action = "等待"
+        action_priority = "等待阶段与方向共振"
     elif state == "过渡释放态" and bias in {"中性偏多", "偏多"}:
         action = "回踩接多 / 等待"
         action_priority = "回踩接多优先，其次等待"
@@ -122,7 +132,10 @@ def build_macro_conclusion(snapshot: MacroSnapshot) -> MacroConclusion:
             "US02Y 重回 4.20% 上方",
             "TGA 回升 + 准备金继续下降",
         ],
-        risks=risks, reasoning=reasoning, missing_inputs=missing_inputs,
+        risks=risks,
+        reasoning=reasoning,
+        missing_inputs=missing_inputs,
+        market_phase=market_phase,
     )
 
 

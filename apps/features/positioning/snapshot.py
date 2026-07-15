@@ -13,9 +13,13 @@ class PositioningSnapshot:
 
     status: str  # "available", "unavailable"
     as_of: str  # Report_Date of latest row
-    commercial_net: float  # latest week Prod_Merc long - short
+    commercial_net: float  # Producer/Merchant + Swap Dealer aggregate proxy
+    producer_net: float | None  # Producer/Merchant long - short
+    swap_net: float | None  # Swap Dealer long - short
     noncomm_net: float  # latest week Managed Money long - short
-    commercial_net_prev: float | None  # previous week for direction
+    commercial_net_prev: float | None  # previous aggregate proxy for direction
+    producer_net_prev: float | None
+    swap_net_prev: float | None
     noncomm_net_prev: float | None
     commercial_direction: str  # "increasing_short", "increasing_long", "flat"
     noncomm_direction: str
@@ -63,9 +67,13 @@ def build_positioning_snapshot(
             return None
 
     commercial_net = _get("commercial_net")
+    producer_net = _get("producer_net")
+    swap_net = _get("swap_net")
     noncomm_net = _get("noncomm_net")
     total_oi = _get("open_interest")
     commercial_net_prev = _get("commercial_net_prev")
+    producer_net_prev = _get("producer_net_prev")
+    swap_net_prev = _get("swap_net_prev")
     noncomm_net_prev = _get("noncomm_net_prev")
 
     if commercial_net is None or noncomm_net is None:
@@ -73,8 +81,12 @@ def build_positioning_snapshot(
             status="unavailable",
             as_of="",
             commercial_net=0.0,
+            producer_net=None,
+            swap_net=None,
             noncomm_net=0.0,
             commercial_net_prev=None,
+            producer_net_prev=None,
+            swap_net_prev=None,
             noncomm_net_prev=None,
             commercial_direction="flat",
             noncomm_direction="flat",
@@ -132,8 +144,12 @@ def build_positioning_snapshot(
         status="available",
         as_of=as_of,
         commercial_net=round(commercial_net, 6),
+        producer_net=round(producer_net, 6) if producer_net is not None else None,
+        swap_net=round(swap_net, 6) if swap_net is not None else None,
         noncomm_net=round(noncomm_net, 6),
         commercial_net_prev=round(commercial_net_prev, 6) if commercial_net_prev is not None else None,
+        producer_net_prev=round(producer_net_prev, 6) if producer_net_prev is not None else None,
+        swap_net_prev=round(swap_net_prev, 6) if swap_net_prev is not None else None,
         noncomm_net_prev=round(noncomm_net_prev, 6) if noncomm_net_prev is not None else None,
         commercial_direction=commercial_direction,
         noncomm_direction=noncomm_direction,

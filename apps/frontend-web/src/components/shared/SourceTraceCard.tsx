@@ -23,14 +23,14 @@ interface SourceTraceCardProps {
 
 export function SourceTraceCard({
   title,
-  eyebrow = "Source Trace",
+  eyebrow = "来源溯源",
   accent = "info",
   sources = [],
   sourceRefs = [],
   compact = false,
   description,
   emptyTitle = "暂无溯源数据",
-  emptyDescription = "当前视图没有可展示的 source trace 或 source refs。",
+  emptyDescription = "当前视图没有可展示的来源轨迹或来源引用。",
   emptyClassName,
   countTone,
   action,
@@ -40,7 +40,7 @@ export function SourceTraceCard({
   const hasTrace = refCount > 0;
   const resolvedAction = action ?? (
     <FAStatusPill tone={countTone ?? (hasTrace ? "info" : "dim")} dot={false}>
-      {`${refCount} refs`}
+      {`${refCount} 条引用`}
     </FAStatusPill>
   );
 

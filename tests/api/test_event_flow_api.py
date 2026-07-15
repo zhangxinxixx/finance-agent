@@ -17,6 +17,7 @@ from apps.api.services.event_flow_service import build_event_flow_market_reactio
 from apps.api.services.event_flow_service import build_event_flow_overview
 from apps.api.services.event_flow_service import build_event_flow_report_inputs
 from apps.api.services.event_flow_service import _normalize_flashes
+from apps.api.services.event_flow_service import _build_event_flow_relations
 from tests.fixtures.news.replay import materialize_news_replay
 
 client = TestClient(app)
@@ -648,10 +649,43 @@ def test_build_event_flow_events_and_detail_from_overview(tmp_path):
     assert detail["event"]["related_news_items"][0]["summary"] == "官员讲话强化高利率预期，美元和美债收益率同步走强。"
     assert detail["event"]["related_news_items"][0]["importance"] == "high"
     assert detail["event"]["related_news_items"][0]["confidence"] == 0.93
+    assert detail["relations"]["relation_mode"] == "explicit"
+    assert [item["evidence_id"] for item in detail["relations"]["evidence"]] == [
+        "reuters_public_news:fed:1",
+    ]
+    assert detail["relations"]["reports"] == []
+    assert detail["relations"]["analysis_snapshots"] == []
+    assert set(detail["relations"]["missing_relation_kinds"]) == {"reports", "analysis_snapshots"}
     assert impact["impact_path"] == ["rates", "dollar", "gold"]
     assert impact["gold_impact"] == "bearish"
     assert market_reaction["status"] == "validated"
     assert market_reaction["market_snapshot"] == {"XAUUSD": {"move_pct": -0.4}}
+
+
+def test_event_flow_relations_mark_heuristic_briefs_and_preserve_explicit_ids():
+    relations = _build_event_flow_relations(
+        {
+            "id": "evt:1",
+            "source_refs": [{"source_ref": "evidence:1", "snapshot_id": "snap:1"}],
+            "report_ids": ["report:1"],
+            "analysis_snapshot_ids": ["snap:2"],
+        },
+        article_briefs=[
+            {
+                "brief_id": "brief:1",
+                "relation_basis": ["affected_asset_overlap"],
+                "source_refs": [{"source_ref": "article:1"}],
+            }
+        ],
+    )
+
+    assert relations["relation_mode"] == "explicit_with_heuristic_fallback"
+    assert relations["evidence"][0]["relation_mode"] == "explicit"
+    assert relations["reports"] == [
+        {"relation_mode": "explicit", "relation_type": "event_report", "report_id": "report:1"}
+    ]
+    assert {item["snapshot_id"] for item in relations["analysis_snapshots"]} == {"snap:1", "snap:2"}
+    assert relations["article_briefs"][0]["relation_mode"] == "heuristic"
 
 
 def test_build_overview_attaches_gold_mainlines_and_enriches_matching_events(tmp_path):

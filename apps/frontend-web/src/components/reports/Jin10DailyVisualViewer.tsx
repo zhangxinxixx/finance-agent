@@ -50,7 +50,7 @@ export function Jin10DailyVisualViewer({
 
   if (error) {
     return (
-      <FACard title="Jin10 报告加载失败" eyebrow="Visual Viewer" accent="down">
+      <FACard title="报告加载失败" eyebrow="Visual Viewer" accent="down">
         <FAWarningBanner
           title="Bundle 产物当前不可用"
           description={error.message}
@@ -71,9 +71,9 @@ export function Jin10DailyVisualViewer({
 
   if (!report) {
     return (
-      <FACard title="暂无 Jin10 报告" eyebrow="Visual Viewer" accent="warn">
+      <FACard title="暂无报告" eyebrow="Visual Viewer" accent="warn">
         <FAEmptyState
-          title="当前没有 Jin10 bundle 产物"
+          title="当前没有报告 bundle 产物"
           description="需要先生成 agent_analysis、daily_visual 或 raw_article 任一产物后才能在此阅读。"
         />
       </FACard>
@@ -95,7 +95,7 @@ export function Jin10DailyVisualViewer({
 
   return (
     <FACard
-      title="Jin10 三产物报告中心"
+      title="三产物报告中心"
       eyebrow="Visual Viewer"
       accent="warn"
       action={
@@ -158,7 +158,7 @@ export function Jin10DailyVisualViewer({
         })}
       </div>
       <div className="space-y-3">
-        <FATabBar tabs={viewTabs} value={selectedView} onChange={onSelectView} ariaLabel="Jin10 视图切换" />
+        <FATabBar tabs={viewTabs} value={selectedView} onChange={onSelectView} ariaLabel="报告视图切换" />
         <div className="text-[11px] text-[var(--fg-4)]">{VIEW_HINTS[selectedView]}</div>
       </div>
 
@@ -170,7 +170,7 @@ export function Jin10DailyVisualViewer({
       ) : activeView.kind === "html" ? (
         <div className="min-h-[78vh] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
           <iframe
-            title={`Jin10 report ${selectedView} ${report.trade_date} ${report.run_id}`}
+            title={`report ${selectedView} ${report.trade_date} ${report.run_id}`}
             srcDoc={activeView.content ?? ""}
             className="min-h-[72vh] w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
             sandbox="allow-same-origin"

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from apps.analysis.agents.fact_review import build_fact_review_agent_output_payload, persist_fact_review_agent_output
+from apps.analysis.agents.fact_review import (
+    build_fact_review_agent_output_payload,
+    build_runtime_fact_review_agent_output,
+    persist_fact_review_agent_output,
+)
+from apps.analysis.agents.schemas import AgentOutput as RuntimeAgentOutput
 from database.models.analysis import AgentOutput, ensure_analysis_tables
 from database.models.report import ensure_report_tables
 from database.models.report import ReportItem
@@ -55,6 +60,55 @@ def _agent_output(
         },
         payload_sha256=f"sha-{agent_name}",
     )
+
+
+def test_build_runtime_fact_review_output_uses_pydantic_contract_without_db_ids() -> None:
+    runtime = RuntimeAgentOutput(
+        version="1.0",
+        agent_name="technical_agent",
+        module="technical",
+        snapshot_id="technical:snap-runtime-review",
+        input_snapshot_ids={"technical": "technical:snap-runtime-review"},
+        bias="neutral",
+        confidence=0.64,
+        key_findings=["Price remains range-bound."],
+        risk_points=[],
+        watchlist=[],
+        invalid_conditions=[],
+        summary="Price remains range-bound.",
+        source_refs=[{"source": "market_candles", "status": "available"}],
+        evidence_refs=[{"artifact_path": "storage/features/technical.json"}],
+        status="success",
+        created_at=datetime(2026, 5, 31, tzinfo=timezone.utc),
+    )
+
+    result = build_runtime_fact_review_agent_output(
+        [runtime],
+        snapshot_id="snap-runtime-review",
+        created_at=datetime(2026, 5, 31, tzinfo=timezone.utc),
+    )
+
+    assert result.agent_name == "fact_review_agent"
+    assert result.input_payload["fact_review_status"] == "passed"
+    reviewed = result.input_payload["reviewed_agent_outputs"][0]
+    assert "agent_output_id" not in reviewed
+    assert reviewed["claims"][0]["claim_id"] == "technical_agent:summary"
+
+
+def test_persisted_fact_review_synthesizes_same_summary_claim_as_runtime() -> None:
+    persisted = _agent_output(
+        agent_name="technical_agent",
+        bias="neutral",
+        claims=[],
+        source_refs=[{"source": "market_candles", "status": "available"}],
+    )
+
+    result = build_fact_review_agent_output_payload([persisted])
+
+    assert result["payload"]["fact_review_status"] == "partial"
+    reviewed = result["payload"]["reviewed_agent_outputs"][0]
+    assert reviewed["claims"][0]["claim_id"] == "technical_agent:summary"
+    assert result["payload"]["claim_reviews"][0]["verdict"] == "partially_supported"
 
 
 def test_build_fact_review_agent_output_payload_reviews_claim_evidence_chain() -> None:
@@ -120,16 +174,70 @@ def test_build_fact_review_agent_output_payload_reviews_claim_evidence_chain() -
     assert claim_reviews["claim-unsupported"]["reviewer_agent_id"] == "fact_review_agent"
 
 
-def test_build_fact_review_agent_output_payload_marks_conflicting_bias_as_contradicted() -> None:
+def test_fact_review_does_not_let_one_optional_unavailable_source_poison_claim() -> None:
+    output = _agent_output(
+        agent_name="macro_liquidity_agent",
+        bias="bullish",
+        source_refs=[
+            {"source_id": "fred:DGS10", "status": "available"},
+            {"source_id": "optional:oil", "status": "unavailable"},
+        ],
+        claims=[
+            {
+                "claim_id": "claim-mixed-source-health",
+                "text": "可用官方利率数据支持当前宏观判断。",
+                "source_refs": [
+                    {"source_id": "fred:DGS10", "status": "available"},
+                    {"source_id": "optional:oil", "status": "unavailable"},
+                ],
+                "evidence_refs": [],
+            }
+        ],
+    )
+
+    payload = build_fact_review_agent_output_payload([output])
+
+    assert payload["payload"]["fact_review_status"] == "partial"
+    assert payload["payload"]["claim_reviews"][0]["verdict"] == "partially_supported"
+
+
+def test_fact_review_marks_claim_insufficient_when_all_sources_are_unavailable() -> None:
+    output = _agent_output(
+        agent_name="macro_liquidity_agent",
+        bias="neutral",
+        source_refs=[
+            {"source_id": "optional:one", "status": "unavailable"},
+            {"source_id": "optional:two", "status": "failed"},
+        ],
+        claims=[
+            {
+                "claim_id": "claim-no-usable-source",
+                "text": "当前没有可用来源支持该判断。",
+                "source_refs": [
+                    {"source_id": "optional:one", "status": "unavailable"},
+                    {"source_id": "optional:two", "status": "failed"},
+                ],
+                "evidence_refs": [{"artifact_path": "storage/outputs/optional.json"}],
+            }
+        ],
+    )
+
+    payload = build_fact_review_agent_output_payload([output])
+
+    assert payload["payload"]["fact_review_status"] == "needs_review"
+    assert payload["payload"]["claim_reviews"][0]["verdict"] == "insufficient_evidence"
+
+
+def test_build_fact_review_agent_output_payload_keeps_cross_variable_biases_supported() -> None:
     bullish = _agent_output(
-        agent_name="jin10_report_analysis_agent",
+        agent_name="macro_liquidity_agent",
         bias="bullish",
         confidence=0.83,
         source_refs=[{"source_id": "src-jin10", "source_name": "Jin10", "source_type": "article", "status": "available"}],
         claims=[
             {
                 "claim_id": "claim-bull",
-                "text": "短线偏多修复仍有效。",
+                "text": "实际利率回落改善黄金的宏观流动性条件。",
                 "claim_type": "market_view",
                 "source_refs": [{"source_id": "src-jin10", "source_name": "Jin10", "source_type": "article", "status": "available"}],
                 "evidence_refs": [{"artifact_path": "storage/outputs/jin10/analysis.md"}],
@@ -138,14 +246,31 @@ def test_build_fact_review_agent_output_payload_marks_conflicting_bias_as_contra
         ],
     )
     bearish = _agent_output(
-        agent_name="cme_options_agent",
+        agent_name="technical_agent",
         bias="bearish",
         confidence=0.79,
         source_refs=[{"source_id": "src-cme", "source_name": "CME", "source_type": "pdf", "status": "available"}],
         claims=[
             {
                 "claim_id": "claim-bear",
-                "text": "结构仍偏空，下破 3300 风险更大。",
+                "text": "技术形态显示 3300 下方存在短期下行风险。",
+                "claim_type": "market_view",
+                "source_refs": [{"source_id": "src-cme", "source_name": "CME", "source_type": "pdf", "status": "available"}],
+                "evidence_refs": [{"artifact_path": "storage/outputs/technical/analysis.md"}],
+                "confidence": 0.79,
+            }
+        ],
+    )
+
+    options_bearish = _agent_output(
+        agent_name="cme_options_agent",
+        bias="bearish",
+        confidence=0.79,
+        source_refs=[{"source_id": "src-cme", "source_name": "CME", "source_type": "pdf", "status": "available"}],
+        claims=[
+            {
+                "claim_id": "claim-options-bear",
+                "text": "期权仓位在 3300 上方形成短期上行阻力。",
                 "claim_type": "market_view",
                 "source_refs": [{"source_id": "src-cme", "source_name": "CME", "source_type": "pdf", "status": "available"}],
                 "evidence_refs": [{"artifact_path": "storage/outputs/cme/options_analysis.md"}],
@@ -154,14 +279,14 @@ def test_build_fact_review_agent_output_payload_marks_conflicting_bias_as_contra
         ],
     )
 
-    payload = build_fact_review_agent_output_payload([bullish, bearish])
+    payload = build_fact_review_agent_output_payload([bullish, bearish, options_bearish])
 
-    assert payload["payload"]["fact_review_status"] == "conflicted"
+    assert payload["payload"]["fact_review_status"] == "passed"
     claim_reviews = {item["claim_id"]: item for item in payload["payload"]["claim_reviews"]}
-    assert claim_reviews["claim-bull"]["verdict"] == "contradicted"
-    assert claim_reviews["claim-bear"]["verdict"] == "contradicted"
-    assert "bias 冲突" in claim_reviews["claim-bull"]["reason"]
-    assert set(payload["payload"]["conflicted_claim_ids"]) == {"claim-bull", "claim-bear"}
+    assert claim_reviews["claim-bull"]["verdict"] == "supported"
+    assert claim_reviews["claim-bear"]["verdict"] == "supported"
+    assert claim_reviews["claim-options-bear"]["verdict"] == "supported"
+    assert payload["payload"]["conflicted_claim_ids"] == []
 
 
 def test_persist_fact_review_agent_output_is_idempotent() -> None:
@@ -274,9 +399,8 @@ def test_persist_fact_review_agent_output_creates_review_items_for_review_worthy
     session.commit()
 
     reviews = {item.claim_id: item for item in list_review_items(session)}
-    assert set(reviews) == {"claim-unsupported", "claim-contradicted"}
+    assert set(reviews) == {"claim-unsupported"}
     assert reviews["claim-unsupported"].agent_output_id is not None
     assert reviews["claim-unsupported"].source_refs[0]["source_id"] == "src-jin10"
     assert reviews["claim-unsupported"].impact_report_ids == ["report-review-001"]
     assert "report_detail" in reviews["claim-unsupported"].impact_modules
-    assert reviews["claim-contradicted"].source_refs[0]["source_id"] == "src-cme"

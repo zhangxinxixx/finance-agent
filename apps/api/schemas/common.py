@@ -49,6 +49,7 @@ class ArtifactType(str, enum.Enum):
     parsed_file = "parsed_file"
     feature_json = "feature_json"
     chart_snapshot = "chart_snapshot"
+    figure_fact_json = "figure_fact_json"
 
 
 class ReviewStatus(str, enum.Enum):

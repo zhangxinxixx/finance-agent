@@ -19,7 +19,9 @@ function readInitialTheme(): AppTheme {
 
 function readInitialSidebarCollapsed(): boolean {
   if (typeof window === "undefined") return false;
-  return window.localStorage.getItem("finance-agent-sidebar-collapsed") === "true";
+  if (window.matchMedia?.("(max-width: 840px)").matches) return true;
+  const stored = window.localStorage.getItem("finance-agent-sidebar-collapsed");
+  return stored === "true";
 }
 
 export function AppShell() {
@@ -36,9 +38,13 @@ export function AppShell() {
     window.localStorage.setItem("finance-agent-theme", theme);
   }, [theme]);
 
-  useEffect(() => {
-    window.localStorage.setItem("finance-agent-sidebar-collapsed", sidebarCollapsed ? "true" : "false");
-  }, [sidebarCollapsed]);
+  function toggleSidebarCollapsed() {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem("finance-agent-sidebar-collapsed", next ? "true" : "false");
+      return next;
+    });
+  }
 
   useLayoutEffect(() => {
     const resetScroll = () => {
@@ -58,7 +64,7 @@ export function AppShell() {
   return (
     <div className={`app-frame text-finance-text-primary ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <div className="app-shell">
-        <AppSidebar collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((current) => !current)} />
+        <AppSidebar collapsed={sidebarCollapsed} onToggleCollapsed={toggleSidebarCollapsed} />
 
         <div className="app-main">
           <AppHeader theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} headerContent={headerContent} />

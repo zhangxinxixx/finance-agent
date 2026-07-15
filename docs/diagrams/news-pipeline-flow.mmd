@@ -1,6 +1,7 @@
 flowchart LR
   subgraph Sources["新闻与事件源"]
     Fed["Fed RSS"]
+    BLS["BLS Calendar"]
     BEA["BEA Calendar"]
     EIA["EIA Energy"]
     GNews["Google News RSS"]
@@ -41,6 +42,7 @@ flowchart LR
   end
 
   Fed --> Collectors
+  BLS --> Collectors
   BEA --> Collectors
   EIA --> Collectors
   GNews --> Collectors

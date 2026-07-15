@@ -8,6 +8,7 @@ import {
 import type { StrategyAssetSummaryViewModel, StrategyViewModel } from "@/types/strategy";
 
 const DEFAULT_STRATEGY_ASSET = "XAUUSD";
+const STRATEGY_OVERVIEW_REFRESH_MS = 15 * 60_000;
 
 interface StrategyState {
   data: StrategyViewModel | null;
@@ -23,7 +24,7 @@ interface StrategyState {
   refetch: () => void;
 }
 
-export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
+export function useStrategy(asset = DEFAULT_STRATEGY_ASSET, traceEnabled = true): StrategyState {
   const [data, setData] = useState<StrategyViewModel | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -36,8 +37,13 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
 
   // Keep a stable ref for cancellation in callbacks
   const mountedRef = useRef(true);
+  const dataRef = useRef<StrategyViewModel | null>(null);
   const assetRef = useRef(asset);
+  const selectedIdRef = useRef<string | null>(null);
+  const latestStrategyCardIdRef = useRef<string | null>(null);
+  const historyPinnedRef = useRef(false);
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
@@ -45,7 +51,17 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
 
   useEffect(() => {
     assetRef.current = asset;
+    selectedIdRef.current = null;
+    latestStrategyCardIdRef.current = null;
+    historyPinnedRef.current = false;
+    dataRef.current = null;
+    setData(null);
+    setSelectedId(null);
   }, [asset]);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   // Initial load: fetch overview (latest + history)
   useEffect(() => {
@@ -57,23 +73,37 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
       setIsDetailLoading(false);
       setIsTraceLoading(false);
       setTraceError(null);
-      setData(null);
-      setSelectedId(null);
       try {
         const [nextData, nextAssetOptions] = await Promise.all([
           fetchStrategyCardsOverview(asset),
           fetchStrategyAssetSummaries(),
         ]);
         if (!cancelled) {
-          setData(nextData);
           setAssetOptions(nextAssetOptions);
-          setSelectedId(nextData.selected_strategy_card_id ?? nextData.history[0]?.strategy_card_id ?? null);
+          const latestId = nextData.selected_strategy_card_id ?? nextData.history[0]?.strategy_card_id ?? null;
+          latestStrategyCardIdRef.current = latestId;
+          if (historyPinnedRef.current && selectedIdRef.current) {
+            setData((previous) => previous
+              ? {
+                  ...previous,
+                  history: nextData.history,
+                  sample_size: nextData.sample_size,
+                }
+              : nextData);
+          } else {
+            dataRef.current = nextData;
+            setData(nextData);
+            selectedIdRef.current = latestId;
+            setSelectedId(latestId);
+          }
         }
       } catch (cause) {
         if (!cancelled) {
-          setData(null);
-          setAssetOptions([]);
-          setError(cause instanceof Error ? cause : new Error("加载策略数据失败"));
+          if (!dataRef.current) {
+            setData(null);
+            setAssetOptions([]);
+            setError(cause instanceof Error ? cause : new Error("加载策略数据失败"));
+          }
         }
       } finally {
         if (!cancelled) {
@@ -90,9 +120,32 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
   }, [asset, reloadToken]);
 
   useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setReloadToken((value) => value + 1);
+    }, STRATEGY_OVERVIEW_REFRESH_MS);
+    return () => window.clearInterval(intervalId);
+  }, [asset]);
+
+  useEffect(() => {
+    if (!traceEnabled) {
+      setIsTraceLoading(false);
+      setTraceError(null);
+      setData((prev) => (prev?.source_trace ? { ...prev, source_trace: null } : prev));
+      return;
+    }
     if (!selectedId) {
       setIsTraceLoading(false);
       setTraceError(null);
+      return;
+    }
+
+    const selectedSnapshotId = data?.selected_strategy_card_id === selectedId
+      ? data.hero.snapshot_id
+      : data?.history.find((item) => item.strategy_card_id === selectedId)?.snapshot_id;
+    if (!selectedSnapshotId) {
+      setIsTraceLoading(false);
+      setTraceError(null);
+      setData((prev) => (prev ? { ...prev, source_trace: null } : prev));
       return;
     }
 
@@ -127,7 +180,7 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
     return () => {
       cancelled = true;
     };
-  }, [selectedId]);
+  }, [selectedId, traceEnabled]);
 
   // Select a specific strategy card by id
   const selectStrategyCard = useCallback(
@@ -137,6 +190,8 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
       if (selectedId === id) return;
 
       const requestedAsset = assetRef.current;
+      historyPinnedRef.current = id !== latestStrategyCardIdRef.current;
+      selectedIdRef.current = id;
       setSelectedId(id);
       setIsDetailLoading(true);
       setTraceError(null);

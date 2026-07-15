@@ -106,18 +106,22 @@ from apps.api.services.processing_monitor_service import (
 )
 from apps.api.routes import data_source_routes
 from apps.api.routes import (
+    analysis_memory_routes,
     agent_analysis_read_routes,
     agent_analysis_run_routes,
     agent_governance_read_routes,
     agent_governance_write_routes,
     event_flow_routes,
+    evaluation_routes,
     execution_read_routes,
     frontend_compat_routes,
     gold_mainline_routes,
     health_routes,
     jin10_market_routes,
     jin10_report_routes,
+    llm_audit_routes,
     knowledge_routes,
+    live_strategy_routes,
     macro_routes,
     market_monitor_routes,
     market_odds_routes,
@@ -511,6 +515,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="finance-agent", version="0.1.0", lifespan=lifespan)
 app.include_router(health_routes.router)
+app.include_router(analysis_memory_routes.router)
 app.include_router(execution_read_routes.router)
 app.include_router(data_source_routes.router)
 app.include_router(review_routes.router)
@@ -524,11 +529,14 @@ app.include_router(orchestration_routes.router)
 app.include_router(macro_routes.router)
 app.include_router(options_routes.router)
 app.include_router(event_flow_routes.router)
+app.include_router(evaluation_routes.router)
 app.include_router(playbook_routes.router)
 app.include_router(knowledge_routes.router)
+app.include_router(live_strategy_routes.router)
 app.include_router(settings_read_routes.router)
 app.include_router(settings_write_routes.router)
 app.include_router(jin10_report_routes.router)
+app.include_router(llm_audit_routes.router)
 app.include_router(news_routes.router)
 app.include_router(gold_mainline_routes.router)
 app.include_router(processing_monitor_routes.router)
@@ -579,6 +587,8 @@ api_strategy_cards = strategy_report_routes.api_strategy_cards
 api_strategy_card_assets = strategy_report_routes.api_strategy_card_assets
 api_strategy_cards_latest = strategy_report_routes.api_strategy_cards_latest
 api_strategy_card_detail = strategy_report_routes.api_strategy_card_detail
+api_live_strategy_latest = live_strategy_routes.api_live_strategy_latest
+api_shadow_evaluation_metrics = evaluation_routes.api_shadow_evaluation_metrics
 api_market_tickers = market_monitor_routes.api_market_tickers
 api_market_monitor = market_monitor_routes.api_market_monitor
 api_market_monitor_history = market_monitor_routes.api_market_monitor_history
@@ -592,6 +602,8 @@ api_report_artifact_asset = reports_routes.api_report_artifact_asset
 api_report_visual = reports_routes.api_report_visual
 api_report_evidence = reports_routes.api_report_evidence
 api_report_analysis_inputs = reports_routes.api_report_analysis_inputs
+api_llm_audits = llm_audit_routes.api_llm_audits
+api_llm_audit_detail = llm_audit_routes.api_llm_audit_detail
 api_market_odds_snapshot = market_odds_routes.api_market_odds_snapshot
 api_market_odds_report = market_odds_routes.api_market_odds_report
 api_tasks = operations_routes.api_tasks
@@ -605,6 +617,7 @@ api_orchestration_manual_review_action = orchestration_routes.api_orchestration_
 api_macro_latest = macro_routes.api_macro_latest
 api_macro_report = macro_routes.api_macro_report
 api_options_snapshot = options_routes.api_options_snapshot
+api_options_decision = options_routes.api_options_decision
 api_options_report = options_routes.api_options_report
 api_options_dates = options_routes.api_options_dates
 api_options_visual_report_latest = options_routes.api_options_visual_report_latest
@@ -913,6 +926,12 @@ class TaskOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     steps: list[StepOut] = []
+
+
+class MemoryContextResponse(BaseModel):
+    task: str
+    context: str
+    source: str
 
 
 # ---- Routes ----

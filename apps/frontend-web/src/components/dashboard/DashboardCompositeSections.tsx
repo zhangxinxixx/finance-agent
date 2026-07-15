@@ -77,7 +77,7 @@ export function DashboardCompositeHeader({ dataDate, hasFullReport, sourceTrace 
           { label: "综合日报", icon: FileText, path: "/reports", color: "var(--brand-hover)", disabled: !hasFullReport },
           { label: "CME期权", icon: LayersIcon, path: "/cme-options", color: "var(--chart-5)", disabled: false },
           { label: "事件流", icon: Newspaper, path: "/event-flow", color: "var(--info)", disabled: false },
-          { label: "每日策略", icon: Target, path: "/strategy", color: "var(--warn)", disabled: false },
+          { label: "策略决策", icon: Target, path: "/strategy", color: "var(--warn)", disabled: false },
         ].map((btn) => {
           const Icon = btn.icon;
           return (

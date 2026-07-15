@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from apps.collectors.news.base import NewsCollectionResult, RawNewsItem
 from apps.features.news.event_candidates import build_event_candidates
+from apps.worker.pipelines import news as news_pipeline
 from apps.worker.pipelines.news import NewsPipelineState, run_news_step
 from database.models.analysis import MarketCandle, ensure_analysis_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
@@ -18,9 +19,13 @@ from tests.fixtures.news.replay import materialize_news_replay
 
 
 @pytest.fixture(autouse=True)
-def _isolate_source_gating():
+def _isolate_source_gating(monkeypatch):
     """Keep news worker tests deterministic unless they explicitly opt into source gating."""
-    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+    monkeypatch.setenv("NEWS_WEB_SEARCH_FALLBACK_ENABLED", "false")
+    with (
+        patch("apps.api.services.source_service.get_data_source_status_index", return_value={}),
+        patch("apps.worker.pipelines.news.get_data_source_statuses", return_value={"sources": []}),
+    ):
         yield
 
 
@@ -109,6 +114,19 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
         collect_summary = run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-news")
         feature_summary = run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-news")
         brief_summary = run_news_step("news_brief", state, storage_root=tmp_path, run_id="run-news")
+        immutable_gold_paths = [
+            tmp_path / brief_summary["gold_macro_overview_path"],
+            tmp_path / brief_summary["source_health_path"],
+            tmp_path / brief_summary["quality_gate_result_path"],
+            *[tmp_path / path for path in brief_summary["agent_artifact_refs"].values()],
+        ]
+        assert Path(brief_summary["source_health_path"]).name == "preliminary_source_health.json"
+        assert Path(brief_summary["quality_gate_result_path"]).name == "preliminary_quality_gate_result.json"
+        initial_mtimes = {path: path.stat().st_mtime_ns for path in immutable_gold_paths}
+        for _ in range(9):
+            brief_summary = run_news_step(
+                "news_brief", state, storage_root=tmp_path, run_id="run-news"
+            )
 
     assert collect_summary["status"] == "success"
     assert collect_summary["raw_news_item_count"] == 2
@@ -122,14 +140,25 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     assert brief_summary["candidate_event_count"] == 1
     assert brief_summary["gold_mainline_count"] == 9
     assert brief_summary["gold_macro_overview_path"] == f"analysis/gold_mainlines/{state.retrieved_date}/run-news/gold_macro_overview.json"
+    assert brief_summary["executed_agents"] == []
+    assert len(brief_summary["materialized_stage_envelopes"]) == 7
+    assert set(brief_summary["agent_artifact_refs"]) == set(
+        brief_summary["materialized_stage_envelopes"]
+    )
+    assert all(path.stat().st_mtime_ns == initial_mtimes[path] for path in immutable_gold_paths)
     assert state.snapshot_dict is not None
     assert state.snapshot_dict["daily_market_brief"]["confirmed_events"][0]["verification_status"] == "official_confirmed"
     assert state.snapshot_dict["gold_event_mainlines"]["mainlines"][0]["mainline_id"] == "fed_policy_path"
     assert state.snapshot_dict["gold_macro_overview"]["theme_rankings"][0]["mainline_id"] == "fed_policy_path"
     assert state.snapshot_dict["gold_macro_overview"]["input_snapshot_ids"]["gold_event_mainlines"] == f"features/news/{state.retrieved_date}/run-news/gold_event_mainlines.json"
+    assert state.snapshot_dict["gold_macro_overview"]["review_status"] == "blocked"
+    assert state.snapshot_dict["gold_agent_execution"]["executed_agents"] == brief_summary["executed_agents"]
+    assert state.snapshot_dict["gold_agent_execution"]["materialized_stage_envelopes"] == brief_summary[
+        "materialized_stage_envelopes"
+    ]
     assert state.snapshot_dict["daily_analysis_triggers"]["trigger_count"] == 0
     assert state.snapshot_dict["daily_brief_input_snapshot"]["report_mode"] == "news_driven"
-    assert state.snapshot_dict["daily_brief_output"]["status"] == "available"
+    assert state.snapshot_dict["daily_brief_output"]["status"] == "partial"
     assert state.snapshot_dict["data_quality"]["daily_analysis_trigger_count"] == 0
     assert state.snapshot_dict["data_quality"]["gold_mainline_count"] == 9
     assert state.snapshot_dict["data_quality"]["gold_event_link_count"] == 2
@@ -197,6 +226,39 @@ def test_news_pipeline_collect_checkpoint_skips_seen_items_on_rerun(tmp_path: Pa
     assert checkpoint_payload["sources"]["gdelt_news"]["last_skipped_duplicate_item_count"] == 1
 
 
+def test_news_pipeline_noncore_gaps_emit_limited_gold_artifacts(tmp_path: Path) -> None:
+    from apps.analysis.agents.source_health import P0_SOURCE_IDS
+
+    state = NewsPipelineState()
+    p0_ready = {
+        "sources": [
+            {
+                "source_key": source_key,
+                "status": "ready",
+                "latest_health_at": "2026-06-10T12:30:00+00:00",
+                "source_refs": [{"source_ref": f"fixture:{source_key}"}],
+            }
+            for source_key in P0_SOURCE_IDS
+        ]
+    }
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=_fake_collectors()),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+        patch("apps.worker.pipelines.news.get_data_source_statuses", return_value=p0_ready),
+    ):
+        run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-limited")
+        run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-limited")
+        summary = run_news_step("news_brief", state, storage_root=tmp_path, run_id="run-limited")
+
+    overview = state.snapshot_dict["gold_macro_overview"]
+    assert overview["source_health"]["overall_status"] == "degraded"
+    assert overview["source_health"]["can_build_gold_macro_overview"] is True
+    assert overview["source_health"]["p0_missing"] == []
+    assert overview["review_status"] != "blocked"
+    assert summary["executed_agents"] == []
+    assert summary["materialized_stage_envelopes"][-1] == "review_gate_agent"
+
+
 def test_news_pipeline_collect_checkpoint_survives_later_collector_failure(tmp_path: Path) -> None:
     def broken_collector(**kwargs):
         raise RuntimeError("network disconnected")
@@ -216,6 +278,143 @@ def test_news_pipeline_collect_checkpoint_survives_later_collector_failure(tmp_p
     assert checkpoint_payload["sources"]["fed_rss"]["last_success_at"] == "2026-06-10T12:31:00+00:00"
     assert checkpoint_payload["sources"]["broken_news"]["last_status"] == "failed"
     assert checkpoint_payload["sources"]["broken_news"]["error"] == "RuntimeError: network disconnected"
+
+
+def test_news_freshness_uses_observed_candidates_before_checkpoint_filtering() -> None:
+    item = RawNewsItem(
+        source_key="reuters_public_news",
+        source_name="Reuters Public Metadata",
+        source_type="aggregator",
+        feed_key="gold_macro",
+        title="Fresh gold headline",
+        url="https://example.test/fresh",
+        domain="example.test",
+        published_at="2026-06-10T12:15:00+00:00",
+        fetched_at="2026-06-10T12:16:00+00:00",
+        duplicate_key="news:reuters_public_news:fresh",
+    )
+
+    result = news_pipeline._assess_news_freshness(
+        [item],
+        [{"collector": "reuters_public_news", "status": "success", "collected_items": 150, "items": 0}],
+        now=datetime(2026, 6, 10, 12, 31, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "fresh"
+    assert result["recent_candidate_count"] == 1
+    assert result["fallback_required"] is False
+
+
+def test_resilient_discovery_collector_retries_network_failure_with_explicit_proxy(
+    monkeypatch,
+) -> None:
+    calls: list[dict] = []
+    item = _raw_item(
+        source_key="google_news_rss",
+        source_type="aggregator",
+        title="Gold headline recovered on retry",
+        event_type="gold_market_narrative",
+        verification_status="single_source",
+    )
+
+    def collector(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return NewsCollectionResult(
+                source_key="google_news_rss",
+                status="unavailable",
+                items=[],
+                source_refs=[{
+                    "source": "google_news_rss",
+                    "query_group": "gold_macro",
+                    "status": "unavailable",
+                    "reason_code": "network_blocked",
+                }],
+                unavailable_feeds=["gold_macro"],
+                warnings=["network failed"],
+            )
+        return NewsCollectionResult(
+            source_key="google_news_rss",
+            status="success",
+            items=[item],
+            source_refs=[{
+                "source": "google_news_rss",
+                "query_group": "gold_macro",
+                "status": "available",
+            }],
+        )
+
+    monkeypatch.setenv("NEWS_HTTP_PROXY", "http://127.0.0.1:7890")
+    wrapped = news_pipeline._resilient_discovery_collector(
+        "google_news_rss",
+        collector,
+        {"gold_macro": "gold query"},
+    )
+
+    result = wrapped(retrieved_date="2026-06-10", storage_root=Path("/tmp/test-news"))
+
+    assert result.status == "success"
+    assert len(result.items) == 1
+    assert len(calls) == 2
+    assert calls[1]["query_groups"] == {"gold_macro": "gold query"}
+    assert calls[1]["request_proxy"] == "http://127.0.0.1:7890"
+    assert calls[1]["trust_env"] is False
+    assert result.unavailable_feeds == []
+    assert result.source_refs[-1]["network_attempt"] == 2
+
+
+def test_news_pipeline_triggers_web_search_fallback_when_discovery_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def unavailable_collector(**kwargs):
+        return NewsCollectionResult(
+            source_key="google_news_rss",
+            status="unavailable",
+            items=[],
+            source_refs=[{"source": "google_news_rss", "status": "unavailable"}],
+            unavailable_feeds=["gold_macro"],
+        )
+
+    fallback_item = _raw_item(
+        source_key="llm_web_search",
+        source_type="online_research_fallback",
+        title="Fresh fallback headline",
+        event_type="gold_macro",
+        verification_status="single_source",
+    )
+
+    def fallback_collector(**kwargs):
+        return NewsCollectionResult(
+            source_key="llm_web_search",
+            status="success",
+            items=[fallback_item],
+            source_refs=[{
+                "source": "llm_web_search",
+                "source_key": "llm_web_search",
+                "status": "available",
+                "verification_status": "single_source",
+            }],
+        )
+
+    monkeypatch.setenv("NEWS_WEB_SEARCH_FALLBACK_ENABLED", "true")
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=[("google_news_rss", unavailable_collector)]),
+        patch("apps.collectors.news.llm_web_search.collect_llm_web_search_news", side_effect=fallback_collector),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+    ):
+        state = NewsPipelineState()
+        summary = run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-fallback")
+
+    assert summary["news_freshness"]["status"] == "fresh"
+    assert summary["news_freshness"]["fallback_attempted"] is True
+    assert summary["news_freshness"]["fallback_status"] == "success"
+    assert state.raw_items[0].source_key == "llm_web_search"
+    diagnostics = json.loads(
+        (tmp_path / summary["artifact_path"]).read_text(encoding="utf-8")
+    )
+    assert diagnostics["summary"]["news_freshness_status"] == "fresh"
+    assert diagnostics["summary"]["news_fallback_attempted"] is True
 
 
 def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp_path: Path) -> None:
@@ -401,7 +600,7 @@ def test_news_pipeline_feature_step_writes_jin10_daily_analysis_triggers(tmp_pat
     assert state.snapshot_dict["gold_macro_overview"]["theme_rankings"][0]["mainline_id"] == "fed_policy_path"
 
 
-def test_run_premarket_executes_news_steps_and_snapshot_contains_brief(tmp_path: Path) -> None:
+def test_run_premarket_executes_news_steps_while_missing_analysis_readiness_is_partial(tmp_path: Path) -> None:
     db = _make_db_session(tmp_path)
     task = TaskRun(name="premarket", status=TaskStatus.pending)
     db.add(task)
@@ -428,8 +627,9 @@ def test_run_premarket_executes_news_steps_and_snapshot_contains_brief(tmp_path:
 
         result = run_premarket(db, task.id, storage_root=tmp_path)
 
-    assert result == TaskStatus.success
+    assert result == TaskStatus.partial_success
     db.refresh(task)
+    assert task.status == TaskStatus.partial_success
     steps = {step.name: step for step in task.steps}
     assert steps["news_collect"].status == StepStatus.success
     assert steps["news_feature"].status == StepStatus.success
@@ -444,7 +644,7 @@ def test_run_premarket_executes_news_steps_and_snapshot_contains_brief(tmp_path:
     assert snapshot["news"]["data"]["gold_event_mainlines"]["mainlines"][0]["mainline_id"] == "fed_policy_path"
     assert snapshot["news"]["data"]["gold_macro_overview"]["input_snapshot_ids"]["gold_event_mainlines"].endswith("/gold_event_mainlines.json")
     assert snapshot["news"]["data"]["daily_brief_input_snapshot"]["report_mode"] == "news_driven"
-    assert snapshot["news"]["data"]["daily_brief_output"]["status"] == "available"
+    assert snapshot["news"]["data"]["daily_brief_output"]["status"] == "partial"
 
 
 def test_news_brief_step_loads_jin10_report_input_artifacts(tmp_path: Path) -> None:

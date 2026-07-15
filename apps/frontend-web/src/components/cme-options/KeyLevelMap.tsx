@@ -132,7 +132,7 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
         />
 
         <FACard
-          title="Pin 位"
+          title="吸附位"
           eyebrow="参考价位"
           accent="info"
           action={<FAStatusPill tone="info">参考位</FAStatusPill>}
@@ -160,7 +160,7 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
                 </div>
               </>
             ) : (
-              <div className="text-[length:var(--text-12)] text-[var(--fg-4)]">当前没有可用于计算 Pin 位的墙位数据。</div>
+              <div className="text-[length:var(--text-12)] text-[var(--fg-4)]">当前没有可用于计算吸附位的墙位数据。</div>
             )}
           </div>
         </FACard>

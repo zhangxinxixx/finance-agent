@@ -38,6 +38,13 @@ def test_build_options_visual_report_vm_maps_core_fields() -> None:
     assert vm.wall_scores
     assert vm.support_levels
     assert vm.resistance_levels
+    assert len(vm.scenarios) == 3
+    assert {scenario.title for scenario in vm.scenarios} == {
+        "主路径 · 修复震荡",
+        "转强路径 · Gamma 接受",
+        "转弱路径 · 地板失守",
+    }
+    assert all("目标" in scenario.detail or "暂不激活" in scenario.detail for scenario in vm.scenarios)
     assert vm.source_refs
 
 

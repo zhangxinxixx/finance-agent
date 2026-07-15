@@ -11,6 +11,7 @@ from apps.scheduler.automation_orchestration import (
     run_notification_retry_queue,
     run_pre_analysis_orchestration,
 )
+from apps.orchestration.execution_lock import orchestration_run_lock
 
 
 class AutomationOrchestrationConfig(Config):
@@ -22,7 +23,7 @@ class AutomationOrchestrationConfig(Config):
     record_task_run: bool = True
 
 
-@op(tags={"pipeline": "automation_orchestration"})
+@op(tags={"pipeline": "automation_orchestration"}, pool="automation_orchestration")
 def automation_orchestration_op(context, config: AutomationOrchestrationConfig) -> dict[str, Any]:
     """Run the existing orchestration wrapper selected by a Dagster schedule."""
     storage_root = Path(config.storage_root)
@@ -50,7 +51,8 @@ def automation_orchestration_op(context, config: AutomationOrchestrationConfig) 
     handler = handlers.get(config.trigger)
     if handler is None:
         raise Failure(description=f"Unsupported automation orchestration trigger: {config.trigger}")
-    result = handler()
+    with orchestration_run_lock(storage_root=storage_root):
+        result = handler()
     status = str(result.get("status") or "").lower()
     context.log.info("Automation orchestration trigger=%s status=%s", config.trigger, status or "completed")
     if status == "failed":
