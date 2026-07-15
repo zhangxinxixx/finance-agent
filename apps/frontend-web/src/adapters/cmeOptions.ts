@@ -4,6 +4,14 @@ import type {
   CMEOptionsAnalysisAgentSummary,
   CMEOptionsCalibration,
   CMEOptionsDataSource,
+  CMEOptionsDecisionKeyLevel,
+  CMEOptionsDecisionMetric,
+  CMEOptionsDecisionOIByExpiry,
+  CMEOptionsDecisionResponse,
+  CMEOptionsDecisionRoll,
+  CMEOptionsDecisionSetup,
+  CMEOptionsDecisionStatus,
+  CMEOptionsDecisionStrategy,
   CMEOptionsExposure,
   CMEOptionsGEX,
   CMEOptionsGEXByExpiry,
@@ -22,6 +30,7 @@ import type {
 const CME_OPTIONS_MOCK_URL = new URL("../mocks/cme-options.json", import.meta.url);
 const CME_OPTIONS_SNAPSHOT_PATH = "/api/options/snapshot";
 const CME_OPTIONS_DATES_PATH = "/api/options/dates";
+const CME_OPTIONS_DECISION_PATH = "/api/options/decision";
 
 function sortDatesDesc(dates: string[]): string[] {
   return [...dates].sort((left, right) => right.localeCompare(left));
@@ -135,6 +144,10 @@ function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function asNullableNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
@@ -145,6 +158,155 @@ function asStringArray(value: unknown): string[] {
 
 function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function asDecisionStatus(value: unknown): CMEOptionsDecisionStatus {
+  return value === "available" || value === "partial" || value === "unavailable" ? value : "unavailable";
+}
+
+function asMetric(value: unknown): CMEOptionsDecisionMetric {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    current: asNullableNumber(raw.current),
+    previous: asNullableNumber(raw.previous),
+    delta: asNullableNumber(raw.delta),
+    pct_change: asNullableNumber(raw.pct_change),
+  };
+}
+
+function asNumberRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])),
+  );
+}
+
+function asNumberArray(value: unknown): number[] {
+  return Array.isArray(value) ? value.filter((item): item is number => typeof item === "number" && Number.isFinite(item)) : [];
+}
+
+function normalizeDecisionStrategy(value: unknown): CMEOptionsDecisionStrategy {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const setup = (item: unknown): CMEOptionsDecisionSetup | null => {
+    if (!item || typeof item !== "object") return null;
+    const setupRaw = item as Record<string, unknown>;
+    return {
+      triggers: asStringArray(setupRaw.triggers),
+      targets: asNumberArray(setupRaw.targets),
+      invalidation: asStringArray(setupRaw.invalidation),
+    };
+  };
+  return {
+    status: asDecisionStatus(raw.status),
+    horizon: typeof raw.horizon === "string" ? raw.horizon : undefined,
+    reason: typeof raw.reason === "string" ? raw.reason : undefined,
+    regime: typeof raw.regime === "string" ? raw.regime : undefined,
+    bias: typeof raw.bias === "string" ? raw.bias : undefined,
+    summary: typeof raw.summary === "string" ? raw.summary : undefined,
+    no_trade_zone: asNumberArray(raw.no_trade_zone),
+    long_setup: setup(raw.long_setup),
+    short_setup: setup(raw.short_setup),
+    confirmation: asStringArray(raw.confirmation),
+    invalidation: asStringArray(raw.invalidation),
+    targets: asNumberArray(raw.targets),
+    structure_bias: typeof raw.structure_bias === "string" ? raw.structure_bias : undefined,
+    oi_trend: typeof raw.oi_trend === "string" ? raw.oi_trend : undefined,
+    sample_count: typeof raw.sample_count === "number" ? raw.sample_count : undefined,
+    required_sample_count: typeof raw.required_sample_count === "number" ? raw.required_sample_count : undefined,
+    sample_window: raw.sample_window && typeof raw.sample_window === "object"
+      ? {
+          from: asString((raw.sample_window as Record<string, unknown>).from),
+          to: asString((raw.sample_window as Record<string, unknown>).to),
+        }
+      : null,
+    call_oi_change: asNullableNumber(raw.call_oi_change),
+    put_oi_change: asNullableNumber(raw.put_oi_change),
+    confidence: asNullableNumber(raw.confidence),
+    risk_notes: asStringArray(raw.risk_notes),
+  };
+}
+
+function normalizeDecisionKeyLevels(value: unknown): CMEOptionsDecisionKeyLevel[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const raw = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const bandRaw = raw.band && typeof raw.band === "object" ? raw.band as Record<string, unknown> : null;
+    return {
+      strike: asNullableNumber(raw.strike),
+      band: bandRaw && asNullableNumber(bandRaw.lower) !== null && asNullableNumber(bandRaw.upper) !== null
+        ? { lower: asNumber(bandRaw.lower), upper: asNumber(bandRaw.upper), step: asNullableNumber(bandRaw.step) }
+        : null,
+      role: asString(raw.role, "unavailable"),
+      strength: typeof raw.strength === "string" ? raw.strength : asNullableNumber(raw.strength),
+      trend: typeof raw.trend === "string" ? raw.trend : null,
+      evidence: asStringArray(raw.evidence),
+      invalidation: asStringArray(raw.invalidation),
+      expiry_scope: asString(raw.expiry_scope, "aggregate"),
+      distance_pct: asNullableNumber(raw.distance_pct),
+    };
+  });
+}
+
+function buildDecisionPath(date?: string): string {
+  return date ? `${CME_OPTIONS_DECISION_PATH}?date=${encodeURIComponent(date)}` : CME_OPTIONS_DECISION_PATH;
+}
+
+function normalizeDecisionResponse(payload: unknown): CMEOptionsDecisionResponse {
+  if (!payload || typeof payload !== "object") {
+    throw new ApiError("CME Options decision API 响应无效", { url: CME_OPTIONS_DECISION_PATH });
+  }
+  const raw = payload as Record<string, unknown>;
+  if (raw.schema_version !== "cme_options_decision.v1") {
+    throw new ApiError("CME Options decision API schema 不兼容", { url: CME_OPTIONS_DECISION_PATH });
+  }
+  const meta = raw.meta && typeof raw.meta === "object" ? raw.meta as Record<string, unknown> : {};
+  const executive = raw.executive_summary && typeof raw.executive_summary === "object" ? raw.executive_summary as Record<string, unknown> : {};
+  const prices = raw.price_context && typeof raw.price_context === "object" ? raw.price_context as Record<string, unknown> : {};
+  const oi = raw.oi_summary && typeof raw.oi_summary === "object" ? raw.oi_summary as Record<string, unknown> : {};
+  const gamma = raw.gamma_summary && typeof raw.gamma_summary === "object" ? raw.gamma_summary as Record<string, unknown> : {};
+  const band = gamma.flip_band && typeof gamma.flip_band === "object" ? gamma.flip_band as Record<string, unknown> : null;
+  const profile = raw.gamma_profile && typeof raw.gamma_profile === "object" ? raw.gamma_profile as Record<string, unknown> : {};
+  const roll = raw.roll_summary && typeof raw.roll_summary === "object" ? raw.roll_summary as Record<string, unknown> : {};
+  const quality = raw.data_quality && typeof raw.data_quality === "object" ? raw.data_quality as Record<string, unknown> : {};
+  const oiByExpiry: CMEOptionsDecisionOIByExpiry[] = Array.isArray(raw.oi_by_expiry) ? raw.oi_by_expiry.map((item) => {
+    const entry = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    return {
+      expiry: asString(entry.expiry, "—"),
+      expiry_scope: asString(entry.expiry_scope, "contract_expiry"),
+      comparison_status: entry.comparison_status === "available" ? "available" : "unavailable",
+      total: asMetric(entry.total), call: asMetric(entry.call), put: asMetric(entry.put),
+    };
+  }) : [];
+  const rolls: CMEOptionsDecisionRoll[] = Array.isArray(roll.items) ? roll.items.map((item) => {
+    const entry = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    return {
+      near_expiry: asString(entry.near_expiry, "—"), far_expiry: asString(entry.far_expiry, "—"),
+      near_oi_delta: asNullableNumber(entry.near_oi_delta), far_oi_delta: asNullableNumber(entry.far_oi_delta),
+      far_put_delta: asNullableNumber(entry.far_put_delta), far_call_delta: asNullableNumber(entry.far_call_delta), labels: asStringArray(entry.labels),
+    };
+  }) : [];
+  return {
+    schema_version: "cme_options_decision.v1", status: asDecisionStatus(raw.status),
+    meta: { current_trade_date: typeof meta.current_trade_date === "string" ? meta.current_trade_date : null, previous_trade_date: typeof meta.previous_trade_date === "string" ? meta.previous_trade_date : null, product: asString(meta.product), lookback_days: asNumber(meta.lookback_days), comparison_status: meta.comparison_status === "available" ? "available" : "unavailable" },
+    executive_summary: { oi_delta: asNullableNumber(executive.oi_delta), gamma_regime: asString(executive.gamma_regime, "unavailable"), roll_status: asDecisionStatus(executive.roll_status), intraday_status: asDecisionStatus(executive.intraday_status) },
+    price_context: { report_p0: asNullableNumber(prices.report_p0), report_p0_source: typeof prices.report_p0_source === "string" ? prices.report_p0_source : null, report_p0_timestamp: typeof prices.report_p0_timestamp === "string" ? prices.report_p0_timestamp : null, live_p0: asNullableNumber(prices.live_p0), live_p0_source: typeof prices.live_p0_source === "string" ? prices.live_p0_source : null, live_p0_timestamp: typeof prices.live_p0_timestamp === "string" ? prices.live_p0_timestamp : null, model_f: asNumberRecord(prices.model_f), price_anchor_rule: typeof prices.price_anchor_rule === "string" ? prices.price_anchor_rule : null },
+    oi_summary: { comparison_status: oi.comparison_status === "available" ? "available" : "unavailable", total: asMetric(oi.total), call: asMetric(oi.call), put: asMetric(oi.put) },
+    oi_by_expiry: oiByExpiry,
+    gamma_summary: { regime: asString(gamma.regime, "unavailable"), net_gex: asNullableNumber(gamma.net_gex), gamma_zero: asNullableNumber(gamma.gamma_zero), method: typeof gamma.method === "string" ? gamma.method : null, flip_band: band && asNullableNumber(band.lower) !== null && asNullableNumber(band.upper) !== null && asNullableNumber(band.step) !== null ? { lower: asNumber(band.lower), upper: asNumber(band.upper), step: asNumber(band.step) } : null, live_price: asNullableNumber(gamma.live_price) },
+    gamma_profile: { price_grid: asNumberArray(profile.price_grid), net_gex_values: asNumberArray(profile.net_gex_values), scope: asString(profile.scope, "aggregate_across_expiries") },
+    key_levels: normalizeDecisionKeyLevels(raw.key_levels),
+    roll_summary: { status: asDecisionStatus(roll.status), reason: typeof roll.reason === "string" ? roll.reason : undefined, items: rolls },
+    intraday_strategy: normalizeDecisionStrategy(raw.intraday_strategy), swing_strategy: normalizeDecisionStrategy(raw.swing_strategy),
+    data_quality: {
+      ...quality,
+      cme_status: typeof quality.cme_status === "string"
+        ? quality.cme_status
+        : Array.isArray(quality.cme_status)
+          ? asStringArray(quality.cme_status)
+          : null,
+      warnings: asStringArray(quality.warnings),
+    },
+  };
 }
 
 function normalizeDataSourceStatus(status: unknown): "FINAL" | "PRELIM" {
@@ -187,8 +349,8 @@ function normalizeWallType(value: unknown, side?: unknown): CMEOptionsWallScore[
   return "Balanced Wall";
 }
 
-function normalizeNetGEXDirection(value: unknown): "positive" | "negative" | "neutral" {
-  return value === "positive" || value === "negative" || value === "neutral" ? value : "neutral";
+function normalizeNetGEXDirection(value: unknown): "positive" | "negative" | "neutral" | null {
+  return value === "positive" || value === "negative" || value === "neutral" ? value : null;
 }
 
 function normalizeSourceTraceItem(value: unknown): CMEOptionsSourceTraceItem | null {
@@ -584,8 +746,8 @@ function createUnavailableResponse(reason: string): CMEOptionsResponse {
     },
     gex: {
       netgex_aggregate: {
-        net_gex: 0,
-        net_gex_direction: "neutral",
+        net_gex: null,
+        net_gex_direction: null,
         gamma_zero: {
           price: 0,
           method: "",
@@ -658,7 +820,7 @@ function normalizeApiSnapshot(payload: RawCMEOptionsSnapshot, date?: string): CM
     parameters: normalizeParameters(payload.parameters),
     gex: {
       netgex_aggregate: {
-        net_gex: asNumber(payload.gex?.netgex_aggregate?.net_gex),
+        net_gex: asNullableNumber(payload.gex?.netgex_aggregate?.net_gex),
         net_gex_direction: normalizeNetGEXDirection(payload.gex?.netgex_aggregate?.net_gex_direction),
         gamma_zero: {
           price: asNumber(payload.gex?.netgex_aggregate?.gamma_zero?.price),
@@ -709,4 +871,9 @@ export async function fetchCMEOptionsData(date?: string): Promise<CMEOptionsResp
       return createUnavailableResponse(`${apiError}; ${mockError}`);
     }
   }
+}
+
+export async function fetchCMEOptionsDecision(date?: string): Promise<CMEOptionsDecisionResponse> {
+  const payload = await fetchJson<unknown>(buildDecisionPath(date));
+  return normalizeDecisionResponse(payload);
 }

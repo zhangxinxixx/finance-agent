@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 export interface FATabOption<TValue extends string = string> {
   value: TValue;
@@ -16,6 +16,16 @@ interface FATabBarProps<TValue extends string = string> {
 }
 
 export function FATabBar<TValue extends string = string>({ tabs, value, onChange, className = "", ariaLabel = "筛选项" }: FATabBarProps<TValue>) {
+  const activeTabRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const activeTab = activeTabRef.current;
+    const tabGroup = activeTab?.parentElement;
+    if (activeTab && tabGroup) {
+      tabGroup.scrollTo({ left: Math.max(0, activeTab.offsetLeft - tabGroup.offsetLeft - 3) });
+    }
+  }, [value]);
+
   return (
     <div className={`inline-flex flex-wrap rounded-[var(--radius-xl)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-1.5 shadow-[var(--shadow-card)] ${className}`} role="group" aria-label={ariaLabel}>
       {tabs.map((tab) => {
@@ -23,6 +33,7 @@ export function FATabBar<TValue extends string = string>({ tabs, value, onChange
         return (
           <button
             key={tab.value}
+            ref={active ? activeTabRef : undefined}
             type="button"
             aria-pressed={active}
             disabled={tab.disabled}
@@ -38,6 +49,7 @@ export function FATabBar<TValue extends string = string>({ tabs, value, onChange
           </button>
         );
       })}
+      <span className="fa-tab-scroll-end-spacer" aria-hidden="true" />
     </div>
   );
 }

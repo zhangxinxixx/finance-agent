@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import fitz
+import pytest
 
 from apps.collectors.cme.downloader import (
     CmeRawFile,
@@ -113,3 +114,36 @@ def test_download_cme_pdf_uses_mocked_bytes_and_returns_json_shape(tmp_path: Pat
     assert result.to_dict()["raw_path"].startswith("raw/cme/daily_bulletin/2025-11-28/")
     assert json.loads(result.to_json())["source_url"] == seen[0]
     assert (tmp_path / result.raw_path).exists()
+
+
+def test_download_cme_pdf_retries_transient_network_failure(tmp_path: Path, monkeypatch) -> None:
+    raw = _make_pdf_bytes(text="Thu, Jul 16, 2026")
+    attempts = 0
+    delays: list[float] = []
+
+    def flaky_download(*, source_url: str) -> bytes:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("CME PDF XHR network error")
+        return raw
+
+    monkeypatch.setattr("apps.collectors.cme.downloader._download_cme_pdf_bytes", flaky_download)
+    monkeypatch.setattr("apps.collectors.cme.downloader.time.sleep", delays.append)
+
+    result = download_cme_pdf(storage_root=tmp_path, max_attempts=3, retry_delay_seconds=0.25)
+
+    assert result.report_date == "2026-07-16"
+    assert attempts == 3
+    assert delays == [0.25, 0.25]
+
+
+def test_download_cme_pdf_reports_exhausted_attempts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "apps.collectors.cme.downloader._download_cme_pdf_bytes",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("CME PDF XHR network error")),
+    )
+    monkeypatch.setattr("apps.collectors.cme.downloader.time.sleep", lambda _: None)
+
+    with pytest.raises(RuntimeError, match="failed after 2 attempts.*XHR network error"):
+        download_cme_pdf(storage_root=tmp_path, max_attempts=2, retry_delay_seconds=0)

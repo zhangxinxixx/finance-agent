@@ -46,6 +46,7 @@ export function DashboardPage() {
         meta={
           <>
             <span className="dashboard-header-summary-item">综合判断：{strategyDirection}</span>
+            <span className="dashboard-header-summary-item">阶段：{integrated.macroRegime}</span>
             <span className="dashboard-header-summary-item">主导变量：{dominantDriver}</span>
             <span className="dashboard-header-summary-item dashboard-header-summary-status">{dataMode}</span>
           </>

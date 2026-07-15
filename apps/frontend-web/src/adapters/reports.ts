@@ -263,9 +263,9 @@ function normalizeArtifactContent(payload: ReportArtifactPayloadResponse): strin
   }
 }
 
-async function fetchOptionalJson<T>(path: string): Promise<T | null> {
+async function fetchOptionalJson<T>(path: string, signal?: AbortSignal): Promise<T | null> {
   try {
-    return await fetchJson<T>(path);
+    return await fetchJson<T>(path, { signal });
   } catch (cause) {
     if (cause instanceof ApiError && cause.status === 404) {
       return null;
@@ -274,10 +274,14 @@ async function fetchOptionalJson<T>(path: string): Promise<T | null> {
   }
 }
 
-async function fetchReportArtifactPayload(reportId: string, tab: ReportArtifactTabKey): Promise<ReportArtifactContentView | null> {
+async function fetchReportArtifactPayload(
+  reportId: string,
+  tab: ReportArtifactTabKey,
+  signal?: AbortSignal,
+): Promise<ReportArtifactContentView | null> {
   const config = REPORT_DETAIL_TAB_CONFIG[tab];
   const sourceEndpoint = `${REPORTS_DETAIL_PATH}/${reportId}/${config.endpoint}`;
-  const payload = await fetchOptionalJson<ReportArtifactPayloadResponse>(sourceEndpoint);
+  const payload = await fetchOptionalJson<ReportArtifactPayloadResponse>(sourceEndpoint, signal);
   if (!payload) {
     return null;
   }
@@ -341,13 +345,14 @@ function mapAnalysisAgentOutput(item: ReportAnalysisAgentOutputResponse): Report
     prompt_version: item.prompt_version ?? null,
     generated_by: item.generated_by ?? null,
     llm_model: item.llm_model ?? null,
+    llm_audit: item.llm_audit ?? null,
     created_at: item.created_at ?? null,
   };
 }
 
-async function fetchReportAnalysisInputs(reportId: string): Promise<ReportAnalysisInputsView | null> {
+async function fetchReportAnalysisInputs(reportId: string, signal?: AbortSignal): Promise<ReportAnalysisInputsView | null> {
   const sourceEndpoint = `${REPORTS_ANALYSIS_INPUTS_PATH}/${reportId}/analysis-inputs`;
-  const payload = await fetchOptionalJson<ReportAnalysisInputsResponse>(sourceEndpoint);
+  const payload = await fetchOptionalJson<ReportAnalysisInputsResponse>(sourceEndpoint, signal);
   if (!payload) {
     return null;
   }
@@ -371,23 +376,23 @@ async function fetchReportAnalysisInputs(reportId: string): Promise<ReportAnalys
   };
 }
 
-export async function fetchReportDetail(reportId: string): Promise<ReportDetailResponse> {
-  return fetchJson<ReportDetailResponse>(`${REPORTS_DETAIL_PATH}/${reportId}`);
+export async function fetchReportDetail(reportId: string, signal?: AbortSignal): Promise<ReportDetailResponse> {
+  return fetchJson<ReportDetailResponse>(`${REPORTS_DETAIL_PATH}/${reportId}`, { signal });
 }
 
-export async function fetchReportDetailView(reportId: string): Promise<ReportDetailView> {
-  const detail = await fetchReportDetail(reportId);
+export async function fetchReportDetailView(reportId: string, signal?: AbortSignal): Promise<ReportDetailView> {
+  const detail = await fetchReportDetail(reportId, signal);
   const artifactTypes = new Set((detail.artifacts ?? []).map((artifact) => artifact.artifact_type?.toLowerCase()).filter(Boolean));
   const shouldFetchTab = (tab: ReportArtifactTabKey) =>
     REPORT_TAB_ARTIFACT_TYPES[tab].some((artifactType) => artifactTypes.has(artifactType));
 
   const [analysis, source, visual, evidence, sourceTrace, analysisInputs] = await Promise.all([
-    shouldFetchTab("analysis") ? fetchReportArtifactPayload(reportId, "analysis") : Promise.resolve(null),
-    shouldFetchTab("source") ? fetchReportArtifactPayload(reportId, "source") : Promise.resolve(null),
-    shouldFetchTab("visual") ? fetchReportArtifactPayload(reportId, "visual") : Promise.resolve(null),
-    shouldFetchTab("evidence") ? fetchReportArtifactPayload(reportId, "evidence") : Promise.resolve(null),
+    shouldFetchTab("analysis") ? fetchReportArtifactPayload(reportId, "analysis", signal) : Promise.resolve(null),
+    shouldFetchTab("source") ? fetchReportArtifactPayload(reportId, "source", signal) : Promise.resolve(null),
+    shouldFetchTab("visual") ? fetchReportArtifactPayload(reportId, "visual", signal) : Promise.resolve(null),
+    shouldFetchTab("evidence") ? fetchReportArtifactPayload(reportId, "evidence", signal) : Promise.resolve(null),
     Promise.resolve(null),
-    fetchReportAnalysisInputs(reportId),
+    fetchReportAnalysisInputs(reportId, signal),
   ]);
 
   const tabs: Partial<Record<ReportArtifactTabKey, ReportArtifactContentView>> = {};
@@ -446,5 +451,7 @@ export async function fetchReportDetailView(reportId: string): Promise<ReportDet
     structured_payload: detail.structured_payload ?? null,
     generation_trace: extractGenerationTrace(detail.structured_payload),
     gold_macro_overview: detail.gold_macro_overview ?? null,
+    market_odds_evidence: detail.market_odds_evidence ?? null,
+    llm_audits: detail.llm_audits ?? [],
   };
 }

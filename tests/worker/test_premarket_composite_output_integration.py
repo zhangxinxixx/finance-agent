@@ -20,7 +20,13 @@ _TRADE_DATE = "2026-05-14"
 @pytest.fixture(autouse=True)
 def _mock_source_status_index():
     """Keep composite analysis output integration tests isolated from source gating by default."""
-    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+    with (
+        patch("apps.api.services.source_service.get_data_source_status_index", return_value={}),
+        patch(
+            "apps.worker.runner._evaluate_premarket_readiness",
+            return_value={"decision": "allow", "reason_code": None, "source_ref": "test:readiness"},
+        ),
+    ):
         yield
 
 
@@ -153,7 +159,7 @@ def test_composite_analysis_pipeline_writes_final_report_and_strategy_card(tmp_p
     from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-composite-artifacts")
-    summaries, _ = _run_composite_analysis_pipeline(
+    summaries, outputs = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-composite-artifacts",
@@ -173,7 +179,9 @@ def test_composite_analysis_pipeline_writes_final_report_and_strategy_card(tmp_p
     assert len(summaries["final_report"]["paths"]) >= 1  # P4-04: may include structured_report.json
     assert "quality_gate_decision" in summaries["final_report"]
     assert "agent_loop_decision" in summaries["final_report"]
-    assert summaries["final_report"]["quality_gate_action"] == summaries["final_report"]["quality_gate_decision"]["action"]
+    assert (
+        summaries["final_report"]["quality_gate_action"] == summaries["final_report"]["quality_gate_decision"]["action"]
+    )
     assert isinstance(summaries["final_report"]["publish_allowed"], bool)
 
     assert "strategy_card" in summaries
@@ -181,10 +189,39 @@ def test_composite_analysis_pipeline_writes_final_report_and_strategy_card(tmp_p
     assert len(summaries["strategy_card"]["paths"]) == 2
     assert "gold_runtime_summary" in summaries
     assert summaries["gold_runtime_summary"]["run_mode"] == "premarket_full_run"
-    assert summaries["gold_runtime_summary"]["runtime_contract_only"] is True
-    assert summaries["gold_runtime_summary"]["artifact_execution_enabled"] is False
-    assert summaries["gold_runtime_summary"]["pipeline_materialized_outputs"] is True
-    assert summaries["gold_runtime_summary"]["executed_agents"] == []
+    assert summaries["gold_runtime_summary"]["runtime_contract_only"] is False
+    assert summaries["gold_runtime_summary"]["artifact_execution_enabled"] is True
+    assert (
+        summaries["gold_runtime_summary"]["pipeline_materialized_outputs"]
+        is summaries["final_report"]["publish_allowed"]
+    )
+    assert summaries["gold_runtime_summary"]["executed_agents"] == ["report_render_agent"]
+    report_agent_path = tmp_path / summaries["final_report"]["report_render_agent_path"]
+    assert report_agent_path.exists()
+    report_agent = json.loads(report_agent_path.read_text(encoding="utf-8"))
+    assert report_agent["agent_name"] == "report_render_agent"
+    expected_artifact_types = (
+        {"final_report", "strategy_card"}
+        if summaries["final_report"]["publish_allowed"]
+        else {"observation_report", "observation_strategy_card"}
+    )
+    assert {item["artifact_type"] for item in report_agent["artifact_refs"]} == expected_artifact_types
+    if not summaries["final_report"]["publish_allowed"]:
+        assert not expected_artifact_types & {"final_report", "strategy_card"}
+    for _ in range(9):
+        rerun_summaries, rerun_outputs = _run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=snapshot,
+            run_id="run-composite-artifacts",
+            created_at=_CREATED_AT,
+        )
+        assert rerun_summaries["final_report"]["paths"] == summaries["final_report"]["paths"]
+        assert rerun_outputs["report_result"]["skipped"] is True
+        assert rerun_outputs["card_result"]["skipped"] is True
+        assert (
+            rerun_outputs["report_render_agent_result"].content_sha256
+            == outputs["report_render_agent_result"].content_sha256
+        )
     assert summaries["gold_runtime_summary"]["quality_gate_status"] in {
         "passed",
         "fallback_required",
@@ -220,6 +257,75 @@ def test_composite_analysis_pipeline_writes_final_report_and_strategy_card(tmp_p
     assert "coordinator" in data["input_snapshot_ids"]
 
 
+def test_composite_runtime_summary_merges_seven_gold_agents_with_report_render(
+    tmp_path: Path,
+) -> None:
+    from apps.analysis.agents.gold_runtime_agents import materialize_gold_runtime_agent_artifacts
+    from apps.worker.runner import _run_composite_analysis_pipeline
+
+    run_id = "run-eight-gold-agents"
+    snapshot = _make_rich_snapshot(run_id=run_id)
+    execution = materialize_gold_runtime_agent_artifacts(
+        storage_root=tmp_path,
+        retrieved_date=_TRADE_DATE,
+        run_id=run_id,
+        as_of=f"{_TRADE_DATE}T09:30:00+00:00",
+        input_snapshot_ids={"analysis_snapshot": snapshot["snapshot_id"]},
+        source_refs=[{"source": "fixture", "source_ref": "fixture:gold"}],
+        canonical_paths={
+            "source_health": f"analysis/gold_mainlines/{_TRADE_DATE}/{run_id}/source_health.json",
+            "gold_event_mainlines": f"features/news/{_TRADE_DATE}/{run_id}/gold_event_mainlines.json",
+            "gold_macro_overview": f"analysis/gold_mainlines/{_TRADE_DATE}/{run_id}/gold_macro_overview.json",
+            "quality_gate_result": f"analysis/gold_mainlines/{_TRADE_DATE}/{run_id}/quality_gate_result.json",
+        },
+        source_health={"overall_status": "degraded"},
+        gold_event_mainlines={"status": "partial", "mainlines": [{"confidence": 0.7}]},
+        gold_macro_overview={
+            "status": "partial",
+            "analysis_readiness": {"ready_count": 6, "total_count": 9},
+        },
+        review_gate={"review_status": "needs_review"},
+    )
+    snapshot["news"] = {
+        "status": "available",
+        "data": {
+            "gold_agent_execution": {
+                "snapshot_id": execution["snapshot_id"],
+                "declared_agents": execution["declared_agents"],
+                "materialized_stage_envelopes": execution[
+                    "materialized_stage_envelopes"
+                ],
+                "executed_agents": execution["executed_agents"],
+                "artifact_paths": execution["artifact_paths"],
+            }
+        },
+    }
+
+    summaries, _ = _run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=snapshot,
+        run_id=run_id,
+        created_at=_CREATED_AT,
+    )
+
+    runtime = summaries["gold_runtime_summary"]
+    assert runtime["executed_agents"] == ["report_render_agent"]
+    assert runtime["declared_agents"] == [
+        "source_health_agent",
+        "event_attribution_agent",
+        "transmission_chain_agent",
+        "driver_decomposition_agent",
+        "mainline_ranking_agent",
+        "gold_macro_overview_agent",
+        "review_gate_agent",
+        "report_render_agent",
+    ]
+    assert runtime["materialized_stage_envelopes"] == runtime["declared_agents"]
+    assert set(runtime["agent_artifact_refs"]) == set(
+        runtime["materialized_stage_envelopes"]
+    )
+
+
 def test_composite_analysis_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) -> None:
     from apps.analysis.agents.quality_gate_evaluator import QualityGateDecision
     from apps.worker.runner import _run_composite_analysis_pipeline
@@ -237,13 +343,155 @@ def test_composite_analysis_pipeline_returns_final_report_quality_gate_metadata(
     assert summaries["final_report"]["quality_gate_decision"] == decision.model_dump(mode="json")
     assert summaries["final_report"]["quality_gate_action"] == decision.action.value
     assert summaries["final_report"]["review_status"] == decision.review_status
-    assert summaries["final_report"]["publish_allowed"] == decision.publish_allowed
+    assert summaries["final_report"]["publish_allowed"] == composite_outputs["agent_loop_decision"].publish_allowed
     runtime_summary = composite_outputs["gold_runtime_summary"]
     assert runtime_summary["quality_gate_decision"] == decision.model_dump(mode="json")
     assert runtime_summary["agent_loop_decision"] == composite_outputs["agent_loop_decision"].model_dump(mode="json")
-    assert runtime_summary["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
-    assert runtime_summary["accepted_outputs"]["strategy_card_paths"] == summaries["strategy_card"]["paths"]
+    if summaries["final_report"]["publish_allowed"]:
+        assert runtime_summary["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
+        assert runtime_summary["accepted_outputs"]["strategy_card_paths"] == summaries["strategy_card"]["paths"]
+    else:
+        assert runtime_summary["accepted_outputs"] == {}
+        assert composite_outputs["observe_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
     assert runtime_summary["fallback_attempts"] == 0
+
+
+def test_composite_analysis_pipeline_primary_pass_renders_primary_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
+    from apps.analysis.agents import coordinator as coordinator_module
+    from apps.worker import runner
+    from apps.worker import composite_analysis_pipeline as pipeline_module
+    from apps.worker.runner import _run_composite_analysis_pipeline
+
+    primary = QualityGateDecision(
+        action=QualityGateAction.PASS,
+        review_status="pass",
+        publish_allowed=True,
+        findings=[],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.7,
+    )
+    events: list[str] = []
+    original_fact_review = pipeline_module.build_runtime_fact_review_agent_output
+    original_coordinator = coordinator_module.coordinate_agent_outputs
+
+    def record_fact_review(*args: object, **kwargs: object):
+        events.append("fact_review")
+        return original_fact_review(*args, **kwargs)
+
+    def record_gate(**_: object):
+        events.append("quality_gate")
+        return primary
+
+    def record_coordinator(*args: object, **kwargs: object):
+        events.append("coordinator")
+        return original_coordinator(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "build_runtime_fact_review_agent_output", record_fact_review)
+    monkeypatch.setattr(runner, "evaluate_quality_gate", record_gate)
+    monkeypatch.setattr(coordinator_module, "coordinate_agent_outputs", record_coordinator)
+
+    summaries, outputs = _run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-primary-pass"),
+        run_id="run-primary-pass",
+        created_at=_CREATED_AT,
+    )
+
+    assert outputs["agent_loop_decision"].fallback_trace["accepted_output"] == "primary"
+    assert outputs["agent_loop_decision"].accepted_output.source == "primary"
+    assert outputs["agent_loop_decision"].accepted_output.agent_name == "coordinator_agent"
+    assert outputs["agent_loop_decision"].accepted_output.artifact_ref is not None
+    assert events == ["fact_review", "quality_gate", "coordinator"]
+    assert "fact_review_agent" in outputs["agents"]
+    assert outputs["agents"]["fact_review_agent"].input_payload["reviewed_agent_outputs"]
+    assert summaries["final_report"]["output_mode"] == "accepted"
+    assert outputs["observe_outputs"] == {}
+    assert (
+        outputs["gold_runtime_summary"]["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
+    )
+    assert (
+        outputs["strategy_card"].input_snapshot_ids["coordinator"] == outputs["agents"]["coordinator_agent"].snapshot_id
+    )
+
+
+def test_composite_analysis_pipeline_primary_pass_rejects_empty_renderer_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
+    from apps.worker import composite_analysis_pipeline as pipeline_module
+    from apps.worker import runner
+    from apps.worker.runner import _run_composite_analysis_pipeline
+
+    primary = QualityGateDecision(
+        action=QualityGateAction.PASS,
+        review_status="pass",
+        publish_allowed=True,
+        findings=[],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.7,
+    )
+    monkeypatch.setattr(runner, "evaluate_quality_gate", lambda **_: primary)
+    monkeypatch.setattr(
+        pipeline_module,
+        "write_final_report",
+        lambda **_: {"artifact_type": "final_report", "paths": [], "skipped": False},
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "write_strategy_card",
+        lambda **_: {"artifact_type": "strategy_card", "paths": [], "skipped": False},
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="accepted output materialization produced no final_report paths",
+    ):
+        _run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=_make_rich_snapshot(run_id="run-empty-render-paths"),
+            run_id="run-empty-render-paths",
+            created_at=_CREATED_AT,
+        )
+
+    report_agent_path = (
+        tmp_path
+        / "analysis"
+        / "gold_mainlines"
+        / _TRADE_DATE
+        / "run-empty-render-paths"
+        / "agent_outputs"
+        / "report_render_output.json"
+    )
+    assert not report_agent_path.exists()
+
+
+def test_accepted_output_validation_rejects_declared_but_missing_artifacts(tmp_path: Path) -> None:
+    from apps.worker.composite_analysis_pipeline import validated_rendered_outputs
+
+    with pytest.raises(
+        RuntimeError,
+        match="accepted final_report artifact is not materialized",
+    ):
+        validated_rendered_outputs(
+            storage_root=tmp_path,
+            snapshot_id="snapshot:missing-artifacts",
+            report_result={
+                "artifact_type": "final_report",
+                "paths": [str(tmp_path / "outputs" / "final_report" / "missing.md")],
+            },
+            card_result={
+                "artifact_type": "strategy_card",
+                "paths": [str(tmp_path / "outputs" / "strategy_card" / "missing.json")],
+            },
+            publish_allowed=True,
+        )
 
 
 def test_composite_analysis_pipeline_executes_fallback_synthesis_before_rendering_when_gate_requires_fallback(
@@ -293,11 +541,17 @@ def test_composite_analysis_pipeline_executes_fallback_synthesis_before_renderin
     )
 
     assert "fallback_synthesis_agent" in composite_outputs["agents"]
+    assert "fact_review_agent" in composite_outputs["agents"]
     assert summaries["final_report"]["fallback_task_results"][0]["task_type"] == "fallback_reanalyze"
-    assert summaries["final_report"]["agent_loop_decision"]["fallback_trace"]["accepted_output"] == "fallback"
+    assert summaries["final_report"]["agent_loop_decision"]["fallback_trace"]["accepted_output"] is None
+    assert summaries["final_report"]["publish_allowed"] is False
     assert composite_outputs["strategy_card"].bias.value == "neutral"
     assert "No strong conclusion" in composite_outputs["strategy_card"].scenario_summary
-    assert composite_outputs["gold_runtime_summary"]["accepted_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
+    assert (
+        composite_outputs["observe_outputs"]["final_report_paths"]
+        == summaries["final_report"]["paths"]
+    )
+    assert composite_outputs["gold_runtime_summary"]["accepted_outputs"] == {}
 
 
 def test_composite_analysis_pipeline_executes_cme_options_reparse_when_gate_requires_reparse(
@@ -349,11 +603,16 @@ def test_composite_analysis_pipeline_executes_cme_options_reparse_when_gate_requ
 
     task_results = summaries["final_report"]["fallback_task_results"]
     assert task_results[0]["task_type"] == "fallback_reparse"
-    assert task_results[0]["status"] == "success"
+    assert task_results[0]["status"] == "observation_only"
+    assert task_results[0]["execution_status"] == "success"
     assert task_results[0]["fallback_output_agent"] == "cme_options_reparse_agent"
+    assert task_results[0]["publish_ready_after_correction"] is False
     assert "cme_options_reparse_agent" in composite_outputs["agents"]
     assert composite_outputs["agents"]["cme_options_reparse_agent"].input_payload["fallback_task"] == "fallback_reparse"
     assert task_results[1]["task_type"] == "fallback_conservative_synthesis"
+    assert summaries["final_report"]["publish_allowed"] is False
+    assert summaries["final_report"]["output_mode"] == "observe"
+    assert composite_outputs["agent_loop_decision"].accepted_output.source == "none"
 
 
 def test_composite_analysis_pipeline_binds_snapshot_id_to_outputs(tmp_path: Path) -> None:
@@ -377,28 +636,28 @@ def test_composite_analysis_pipeline_binds_snapshot_id_to_outputs(tmp_path: Path
     assert input_ids["analysis_snapshot"] == snapshot_id
 
 
-def test_composite_analysis_pipeline_no_overwrite_history(tmp_path: Path) -> None:
-    """composite analysis must not overwrite historical reports — FileExistsError on re-run."""
+def test_composite_analysis_pipeline_idempotent_rerun_preserves_history(tmp_path: Path) -> None:
     from apps.worker.runner import _run_composite_analysis_pipeline
 
     snapshot = _make_rich_snapshot(run_id="run-no-overwrite")
 
-    # first write succeeds
-    _run_composite_analysis_pipeline(
+    _, first = _run_composite_analysis_pipeline(
         storage_root=tmp_path,
         snapshot=snapshot,
         run_id="run-no-overwrite",
         created_at=_CREATED_AT,
     )
 
-    # second write must fail
-    with pytest.raises(FileExistsError, match="already exist"):
-        _run_composite_analysis_pipeline(
-            storage_root=tmp_path,
-            snapshot=snapshot,
-            run_id="run-no-overwrite",
-            created_at=_CREATED_AT,
-        )
+    _, second = _run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=snapshot,
+        run_id="run-no-overwrite",
+        created_at=_CREATED_AT,
+    )
+
+    assert first["report_result"]["paths"] == second["report_result"]["paths"]
+    assert second["report_result"]["skipped"] is True
+    assert second["card_result"]["skipped"] is True
 
 
 def test_enrich_runner_artifact_metadata_skips_inferred_fields_for_missing_file() -> None:
@@ -548,11 +807,92 @@ def test_composite_analysis_pipeline_strategy_card_consumes_gold_macro_condition
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["gold_macro_conditions"]["dominant_mainline"] == "real_rates_usd"
     assert data["gold_macro_conditions"]["net_bias"] == "mixed"
-    assert data["trigger_conditions"] == [
-        "Gold macro context remains mixed with dominant mainline real_rates_usd."
-    ]
+    assert data["trigger_conditions"][0] == ("Gold macro context remains mixed with dominant mainline real_rates_usd.")
     assert any("Gold macro condition" in item for item in data["confirmation_conditions"])
     assert any("GoldMacroOverview dominant mainline changes" in item for item in data["invalid_conditions"])
+
+
+def test_composite_analysis_pipeline_rejected_fallback_writes_observe_outputs_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
+    from apps.worker import runner
+    from apps.worker.runner import _run_composite_analysis_pipeline
+
+    primary = QualityGateDecision(
+        action=QualityGateAction.FALLBACK,
+        review_status="needs_review",
+        publish_allowed=True,
+        fallback_recommended=True,
+        findings=[],
+        fallback_actions=["fallback_reanalyze"],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.7,
+    )
+    rejected = QualityGateDecision(
+        action=QualityGateAction.BLOCK_PUBLISH,
+        review_status="blocked",
+        publish_allowed=False,
+        findings=[],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.3,
+    )
+    monkeypatch.setattr(runner, "evaluate_quality_gate", lambda **_: primary)
+    monkeypatch.setattr("apps.analysis.agents.fallback_executor.evaluate_quality_gate", lambda **_: rejected)
+
+    summaries, outputs = _run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-rejected-fallback"),
+        run_id="run-rejected-fallback",
+        created_at=_CREATED_AT,
+    )
+
+    assert summaries["final_report"]["output_mode"] == "observe"
+    assert summaries["final_report"]["publish_allowed"] is False
+    assert outputs["gold_runtime_summary"]["accepted_outputs"] == {}
+    assert outputs["observe_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
+    card = outputs["strategy_card"]
+    assert card.bias.value == "neutral"
+    assert "Observe and wait" in card.scenario_summary
+    assert any("QualityGate passes" in item for item in card.trigger_conditions)
+    assert any("publish_allowed is false" in item for item in card.invalid_conditions)
+    assert any("observe_wait" in item for item in card.watchlist)
+    assert outputs["gold_runtime_summary"]["executed_agents"] == ["report_render_agent"]
+
+
+def test_composite_analysis_pipeline_renderer_failure_preserves_analysis_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.worker.runner import _run_composite_analysis_pipeline
+
+    overview_path = (
+        tmp_path / "analysis" / "gold_mainlines" / _TRADE_DATE / "run-render-fails" / "gold_macro_overview.json"
+    )
+    overview_path.parent.mkdir(parents=True)
+    overview_path.write_text('{"status":"partial"}\n', encoding="utf-8")
+
+    def fail_strategy_card(**_: object) -> dict:
+        raise RuntimeError("strategy renderer failed")
+
+    monkeypatch.setattr(
+        "apps.worker.composite_analysis_pipeline.write_strategy_card",
+        fail_strategy_card,
+    )
+
+    with pytest.raises(RuntimeError, match="strategy renderer failed"):
+        _run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=_make_rich_snapshot(run_id="run-render-fails"),
+            run_id="run-render-fails",
+            created_at=_CREATED_AT,
+        )
+
+    assert overview_path.read_text(encoding="utf-8") == '{"status":"partial"}\n'
+    assert not (overview_path.parent / "agent_outputs" / "report_render_output.json").exists()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -562,6 +902,8 @@ def test_composite_analysis_pipeline_strategy_card_consumes_gold_macro_condition
 
 def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Path) -> None:
     """Full premarket run with mocked steps should produce composite analysis outputs."""
+    from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
+
     db = _make_db_session(tmp_path)
     ensure_execution_tables(db)
     task = _make_task_with_steps(
@@ -589,10 +931,19 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
                 "intent": {"type": "supportive", "score": 0.65},
                 "gex": {
                     "netgex_aggregate": {"gamma_zero": {"price": 3350}},
-                    "by_expiry": {"2026-06": {"summary": {"net_gex": 2500, "dominant_side": "positive"}, "iv_skew": {"risk_reversal_25d": 0.15}}},
+                    "by_expiry": {
+                        "2026-06": {
+                            "summary": {"net_gex": 2500, "dominant_side": "positive"},
+                            "iv_skew": {"risk_reversal_25d": 0.15},
+                        }
+                    },
                 },
                 "walls": {"block_pnt_walls": [{"strike": 3320, "block": 120, "pnt": 80}]},
-                "data_source": {"status": "FINAL", "input_snapshot_ids": {"raw_file_sha256": "abc123"}, "expiries": ["2026-06", "2026-07"]},
+                "data_source": {
+                    "status": "FINAL",
+                    "input_snapshot_ids": {"raw_file_sha256": "abc123"},
+                    "expiries": ["2026-06", "2026-07"],
+                },
                 "data_quality": {"categories": {"prelim_data": 0}, "warnings": []},
             }
         return {"step": step_name, "status": "success"}
@@ -615,9 +966,19 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
             }
         return {"step": step_name, "status": "success"}
 
+    pass_decision = QualityGateDecision(
+        action=QualityGateAction.PASS,
+        review_status="pass",
+        publish_allowed=True,
+        findings=[],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.68,
+    )
     with (
         patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_cme_step),
         patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch("apps.worker.runner.evaluate_quality_gate", return_value=pass_decision),
     ):
         from apps.worker.runner import run_premarket
 
@@ -638,8 +999,12 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
     # Strategy card may use build_strategy_card's extracted/fallback date.
     sc_json_candidates = list(base.glob(f"strategy_card/XAUUSD/*/{run_id}/strategy_card.json"))
     sc_md_candidates = list(base.glob(f"strategy_card/XAUUSD/*/{run_id}/strategy_card.md"))
+    report_agent_path = (
+        tmp_path / "analysis" / "gold_mainlines" / _TRADE_DATE / run_id / "agent_outputs" / "report_render_output.json"
+    )
     assert len(sc_json_candidates) == 1, f"Expected one strategy_card.json for {run_id}"
     assert len(sc_md_candidates) == 1, f"Expected one strategy_card.md for {run_id}"
+    assert report_agent_path.exists()
 
     # ── Verify step summaries include composite analysis steps ──
     summaries_candidates = list(base.glob(f"run/*/{run_id}/step_summaries.json"))
@@ -649,8 +1014,7 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
     assert "final_report" in summaries["steps"]
 
     support_artifact_paths = {
-        row.file_path
-        for row in db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
+        row.file_path for row in db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
     }
     assert any(path.endswith("premarket_snapshot.json") for path in support_artifact_paths)
     assert any(path.endswith("step_summaries.json") for path in support_artifact_paths)
@@ -662,6 +1026,7 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
     assert str(report_path) in artifacts_by_path
     assert str(sc_json_candidates[0]) in artifacts_by_path
     assert str(sc_md_candidates[0]) in artifacts_by_path
+    assert str(report_agent_path) in artifacts_by_path
     report_artifact = artifacts_by_path[str(report_path)]
     strategy_card_json_artifact = artifacts_by_path[str(sc_json_candidates[0])]
     strategy_card_md_artifact = artifacts_by_path[str(sc_md_candidates[0])]
@@ -676,6 +1041,8 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
 
 def test_run_premarket_with_composite_analysis_registers_report_registry_entries(tmp_path: Path) -> None:
     """Full premarket run should register final report + strategy card into report registry."""
+    from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
+
     db = _make_db_session(tmp_path)
     ensure_execution_tables(db)
     ensure_report_tables(db)
@@ -704,10 +1071,19 @@ def test_run_premarket_with_composite_analysis_registers_report_registry_entries
                 "intent": {"type": "supportive", "score": 0.65},
                 "gex": {
                     "netgex_aggregate": {"gamma_zero": {"price": 3350}},
-                    "by_expiry": {"2026-06": {"summary": {"net_gex": 2500, "dominant_side": "positive"}, "iv_skew": {"risk_reversal_25d": 0.15}}},
+                    "by_expiry": {
+                        "2026-06": {
+                            "summary": {"net_gex": 2500, "dominant_side": "positive"},
+                            "iv_skew": {"risk_reversal_25d": 0.15},
+                        }
+                    },
                 },
                 "walls": {"block_pnt_walls": [{"strike": 3320, "block": 120, "pnt": 80}]},
-                "data_source": {"status": "FINAL", "input_snapshot_ids": {"raw_file_sha256": "abc123"}, "expiries": ["2026-06", "2026-07"]},
+                "data_source": {
+                    "status": "FINAL",
+                    "input_snapshot_ids": {"raw_file_sha256": "abc123"},
+                    "expiries": ["2026-06", "2026-07"],
+                },
                 "data_quality": {"categories": {"prelim_data": 0}, "warnings": []},
             }
         return {"step": step_name, "status": "success"}
@@ -730,9 +1106,19 @@ def test_run_premarket_with_composite_analysis_registers_report_registry_entries
             }
         return {"step": step_name, "status": "success"}
 
+    pass_decision = QualityGateDecision(
+        action=QualityGateAction.PASS,
+        review_status="pass",
+        publish_allowed=True,
+        findings=[],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.68,
+    )
     with (
         patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_cme_step),
         patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch("apps.worker.runner.evaluate_quality_gate", return_value=pass_decision),
     ):
         from apps.worker.runner import run_premarket
 
@@ -744,10 +1130,7 @@ def test_run_premarket_with_composite_analysis_registers_report_registry_entries
     final_report_id = f"final_report:{run_id}"
     strategy_card_id = f"strategy_card:{run_id}"
 
-    report_items = {
-        row.report_id: row
-        for row in db.query(ReportItem).filter(ReportItem.run_id == run_id).all()
-    }
+    report_items = {row.report_id: row for row in db.query(ReportItem).filter(ReportItem.run_id == run_id).all()}
     assert set(report_items) >= {final_report_id, strategy_card_id}
 
     final_report_item = report_items[final_report_id]
@@ -759,14 +1142,23 @@ def test_run_premarket_with_composite_analysis_registers_report_registry_entries
     assert final_report_item.snapshot_id == strategy_card_item.snapshot_id
     assert final_report_item.source_refs
     assert strategy_card_item.source_refs
+    assert final_report_item.report_metadata["publish_allowed"] is True
+    assert final_report_item.report_metadata["output_mode"] == "accepted"
 
-    report_artifacts = db.query(ReportArtifact).filter(ReportArtifact.report_id.in_([final_report_id, strategy_card_id])).all()
+    report_artifacts = (
+        db.query(ReportArtifact).filter(ReportArtifact.report_id.in_([final_report_id, strategy_card_id])).all()
+    )
     artifacts_by_report = {}
     for artifact in report_artifacts:
         artifacts_by_report.setdefault(artifact.report_id, []).append(artifact)
-
-    assert {artifact.artifact_type for artifact in artifacts_by_report[final_report_id]} == {"analysis_md", "structured_json"}
-    assert {artifact.artifact_type for artifact in artifacts_by_report[strategy_card_id]} == {"analysis_md", "structured_json"}
+    assert {artifact.artifact_type for artifact in artifacts_by_report[final_report_id]} == {
+        "analysis_md",
+        "structured_json",
+    }
+    assert {artifact.artifact_type for artifact in artifacts_by_report[strategy_card_id]} == {
+        "analysis_md",
+        "structured_json",
+    }
 
     primary_artifacts = {artifact.report_id: artifact for artifact in report_artifacts if artifact.is_primary}
     assert primary_artifacts[final_report_id].content_type == "text/markdown"
@@ -778,6 +1170,20 @@ def test_run_premarket_with_composite_analysis_registers_report_registry_entries
         assert artifact.byte_size is not None
         assert artifact.generated_at is not None
         assert artifact.source_refs
+
+
+def test_report_registry_sink_refuses_observation_outputs() -> None:
+    from apps.worker.report_registry_sink import register_composite_report_registry_entries
+
+    class ObservationDecision:
+        publish_allowed = False
+
+    register_composite_report_registry_entries(
+        object(),
+        run_id="observe-run",
+        composite_outputs={"agent_loop_decision": ObservationDecision()},
+        analysis_snapshot={"snapshot_id": "observe-snapshot"},
+    )
 
 
 def test_run_premarket_blocks_composite_analysis_when_pre_analysis_gate_blocks(tmp_path: Path) -> None:
@@ -828,7 +1234,46 @@ def test_run_premarket_blocks_composite_analysis_when_pre_analysis_gate_blocks(t
     summaries = json.loads(summaries_candidates[0].read_text(encoding="utf-8"))
     assert summaries["steps"]["pre_analysis_gate"]["decision"] == "block"
     assert summaries["steps"]["composite_analysis_pipeline"]["status"] == "blocked"
-    assert summaries["steps"]["composite_analysis_pipeline"]["blocked_outputs"] == ["full analysis", "knowledge distillation"]
+    assert summaries["steps"]["composite_analysis_pipeline"]["blocked_outputs"] == [
+        "full analysis",
+        "knowledge distillation",
+    ]
+
+
+def test_run_premarket_does_not_start_composite_agents_when_readiness_is_missing(tmp_path: Path) -> None:
+    from dagster_finance.ops.premarket_gate import evaluate_premarket_readiness
+
+    db = _make_db_session(tmp_path)
+    task = _make_task_with_steps(db, ["macro_collect", "macro_feature", "report_render"])
+
+    def mock_macro_step(step_name, state, **kwargs):
+        if step_name == "report_render":
+            state.snapshot_dict = {
+                "as_of": _TRADE_DATE,
+                "indicators": {"DXY": {"value": 101.5, "unit": "index"}},
+                "source_refs": [{"source": "fred", "symbol": "DXY"}],
+            }
+        return {"step": step_name, "status": "success"}
+
+    def fail_if_composite_runs(*args, **kwargs):
+        raise AssertionError("composite agents must not start without downstream readiness")
+
+    with (
+        patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch("apps.worker.runner._run_composite_analysis_pipeline", side_effect=fail_if_composite_runs),
+        patch("apps.worker.runner._evaluate_premarket_readiness", side_effect=evaluate_premarket_readiness),
+    ):
+        from apps.worker.runner import run_premarket
+
+        result = run_premarket(db, task.id, storage_root=tmp_path)
+
+    assert result == TaskStatus.partial_success
+    run_id = str(task.id)
+    summaries_candidates = list((tmp_path / "outputs").glob(f"run/*/{run_id}/step_summaries.json"))
+    assert len(summaries_candidates) == 1
+    summaries = json.loads(summaries_candidates[0].read_text(encoding="utf-8"))
+    assert summaries["steps"]["pre_analysis_gate"]["reason_code"] == "downstream_readiness_missing"
+    assert summaries["steps"]["composite_analysis_pipeline"]["status"] == "blocked"
 
 
 def test_run_premarket_composite_analysis_not_triggered_when_snapshot_fails(tmp_path: Path) -> None:

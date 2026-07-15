@@ -21,7 +21,7 @@ export function TradingViewChart({
     const params = new URLSearchParams({
       symbol,
       interval,
-      timezone: "Etc/UTC",
+      timezone: "Asia/Shanghai",
       theme,
       style: "1",
       locale: "zh_CN",

@@ -1507,6 +1507,10 @@ def test_api_data_sources_registry_exposes_expected_source_contract() -> None:
     assert sources["fred"]["freshness_sla_minutes"] == 2160
     assert "macro_snapshot" in sources["fred"]["required_for"]
     assert sources["fred"]["enabled"] is True
+    assert sources["twelvedata_xauusd"]["domain"] == "technical"
+    assert sources["twelvedata_xauusd"]["expected_frequency"] == "intraday"
+    assert sources["twelvedata_xauusd"]["metadata"]["provider_role"] == "validation_and_fallback"
+    assert sources["twelvedata_xauusd"]["metadata"]["entitlement"] == "trial"
 
 
 def test_api_data_source_history_reads_persisted_snapshots_for_one_source() -> None:

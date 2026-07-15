@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -75,8 +76,8 @@ TASK_CATEGORIES = {
     "governance": {
         "label": "治理任务",
         "color": "#64748b",
-        "description": "系统维护：记忆整理、知识库同步、数据清理",
-        "pattern": ["mem0", "memory", "governance", "maintenance", "cleanup"],
+        "description": "系统维护：知识库同步、数据清理、治理检查",
+        "pattern": ["governance", "maintenance", "cleanup"],
     },
     "other": {
         "label": "其他",
@@ -333,7 +334,12 @@ def _get_cron_job_status() -> list[dict]:
     try:
         from pathlib import Path
         import json
-        jobs_file = Path.home() / ".finance-agent" / "cron" / "jobs.json"
+        jobs_file = Path(
+            os.getenv(
+                "FINANCE_AGENT_SCHEDULER_JOBS_FILE",
+                str(Path.home() / ".finance-agent" / "cron" / "jobs.json"),
+            )
+        )
         if not jobs_file.exists():
             return []
         with open(jobs_file) as f:

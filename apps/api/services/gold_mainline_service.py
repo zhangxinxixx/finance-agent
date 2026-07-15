@@ -130,6 +130,21 @@ def _load_inferred_gold_mainlines(*, date: str, run_id: str, project_root: Path)
         policy_context=_latest_policy_context_for_overview(overview=seed_overview, project_root=project_root),
         geopolitical_context=_latest_geopolitical_context_for_overview(overview=seed_overview, project_root=project_root),
     ).to_dict()
+    # An event artifact is sufficient to publish a traceable degraded overview.
+    # The builder may mark it unavailable when optional context inputs are absent;
+    # retain the event artifact's partial status instead of losing the fallback.
+    if overview.get("status") == "unavailable" and mainlines.get("status") != "unavailable":
+        overview["status"] = "partial"
+    if not overview.get("dominant_mainline"):
+        dominant_forces = mainlines.get("dominant_forces") or []
+        mainline_rows = mainlines.get("mainlines") or []
+        overview["dominant_mainline"] = (
+            next((str(item) for item in dominant_forces if item), None)
+            or next(
+                (str(item.get("mainline_id")) for item in mainline_rows if isinstance(item, dict) and item.get("mainline_id")),
+                None,
+            )
+        )
     overview["retrieved_date"] = str(overview.get("retrieved_date") or date)
     overview["run_id"] = str(overview.get("run_id") or run_id)
     overview["input_snapshot_ids"] = {"gold_event_mainlines": event_ref}

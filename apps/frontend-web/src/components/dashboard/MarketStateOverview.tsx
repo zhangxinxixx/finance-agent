@@ -16,9 +16,8 @@ function directionLabel(direction: SignalDirection) {
   return "中性";
 }
 
-function compactText(value: string): string {
-  const text = translateText(value).replace(/\s+/g, " ").trim();
-  return text.length > 72 ? `${text.slice(0, 72).trim()}...` : text;
+function normalizeText(value: string): string {
+  return translateText(value).replace(/\s+/g, " ").trim();
 }
 
 function LevelRows({ title, rows }: { title: string; rows: Array<{ label: string; value: string; tone?: "up" | "down" | "neutral" }> }) {
@@ -38,7 +37,7 @@ function LevelRows({ title, rows }: { title: string; rows: Array<{ label: string
 }
 
 function formatLevel(value: number): string {
-  return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  return value.toLocaleString("en-US", { maximumFractionDigits: 1 });
 }
 
 function uniqueLevels(levels: number[]): number[] {
@@ -50,6 +49,26 @@ function uniqueLevels(levels: number[]): number[] {
   });
 }
 
+function metricNumber(value: string | number | null | undefined): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Number(value.replace(/,/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function compactDate(value: string | null): string {
+  const match = value?.match(/^\d{4}-(\d{2})-(\d{2})/);
+  return match ? `${match[1]}-${match[2]}` : "日期待确认";
+}
+
+function quickSupportLabel(
+  support: { source_label: string; trade_date: string | null; timeframe: string | null; status: "active" | "broken" | "unknown" },
+): string {
+  const state = support.status === "broken" ? "已跌破" : support.status === "active" ? "支撑观察" : "状态待确认";
+  const timeframe = support.timeframe ? ` ${support.timeframe}` : "";
+  return `${support.source_label}${timeframe} · ${compactDate(support.trade_date)} · ${state}`;
+}
+
 export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewProps) {
   const integrated = buildIntegratedMacroSummary(summary, viewModel);
   const optionsEvidence = buildOptionsEvidenceSummary(summary);
@@ -57,12 +76,14 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
   const dataPct = integrated.dataCompleteness.pct;
   const macroResistance = uniqueLevels(integrated.macroLevels.resistance).slice(0, 1);
   const macroSupport = uniqueLevels(integrated.macroLevels.support).slice(0, 2);
-  const directionText = directionLabel(integrated.direction);
-  const confirmationText = compactText(integrated.tradeImplication);
-  const riskText = compactText(integrated.riskNote);
+  const currentPrice = metricNumber(summary.market_summary.XAUUSD.value);
+  const supportBroken = currentPrice != null && macroSupport.length > 0 && currentPrice < Math.min(...macroSupport);
+  const directionText = integrated.overallBias || directionLabel(integrated.direction);
+  const confirmationText = normalizeText(integrated.tradeImplication);
+  const riskText = normalizeText(integrated.riskNote);
   const keyLevelText = [
     macroResistance[0] == null ? null : `确认 ${formatLevel(macroResistance[0])}`,
-    macroSupport[0] == null ? null : `观察 ${formatLevel(macroSupport[0])}`,
+    macroSupport[0] == null ? null : `${supportBroken ? "待收复" : "观察"} ${formatLevel(macroSupport[0])}`,
     optionsEvidence.pin === "—" ? null : `Pin ${optionsEvidence.pin}`,
   ].filter(Boolean).join(" / ") || "等待关键价位确认";
   const dataQualityText = dataPct == null
@@ -123,13 +144,20 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
 
         <div className="dashboard-decision-section dashboard-decision-side">
           <LevelRows
-            title="宏观交易价位"
+            title="综合交易价位"
             rows={[
               ...macroResistance.map((level) => ({ label: "上方确认区", value: formatLevel(level), tone: "down" as const })),
               ...macroSupport.map((level, index) => ({
-                label: index === 0 ? "下方观察区" : "下方失效区",
+                label: supportBroken
+                  ? index === 0 ? "待收复区" : "已失效线"
+                  : index === 0 ? "下方观察区" : "下方失效区",
                 value: formatLevel(level),
-                tone: "up" as const,
+                tone: supportBroken ? "down" as const : "up" as const,
+              })),
+              ...integrated.quickSupports.map((support) => ({
+                label: quickSupportLabel(support),
+                value: formatLevel(support.level),
+                tone: support.status === "broken" ? "down" as const : support.status === "active" ? "up" as const : "neutral" as const,
               })),
             ]}
           />

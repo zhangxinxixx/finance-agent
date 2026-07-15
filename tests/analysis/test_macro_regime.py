@@ -134,6 +134,28 @@ def test_regime_trend_tailwind():
     assert result["confidence"] > 0.5
 
 
+def test_regime_requires_dxy_direction_to_confirm_trend_tailwind():
+    """A high easing score cannot replace confirmation from the dollar."""
+    indicators = {
+        "REAL_10Y": {"value": 1.2, "daily_change": -0.20, "weekly_change": -0.40},
+        "DXY": {"value": 100.0},
+        "DGS2": {"value": 3.8, "daily_change": -0.15},
+        "DGS10": {"value": 3.5, "daily_change": -0.12},
+        "T10YIE": {"value": 2.3, "daily_change": -0.05},
+        "ON_RRP_USAGE": {"value": 200.0, "daily_change": -50.0},
+        "TGA": {"value": 400.0, "daily_change": -30.0},
+        "SOFR": {"value": 4.3, "daily_change": -0.02},
+        "EFFR": {"value": 4.35, "daily_change": -0.02},
+        "IORB": {"value": 4.4, "daily_change": 0.0},
+    }
+
+    result = classify_macro_regime(indicators)
+
+    assert result["drivers"]["real_yield"]["direction"] == "falling"
+    assert result["drivers"]["dxy"]["direction"] == "unknown"
+    assert result["market_phase"] == "transition_release"
+
+
 def test_regime_transition_release():
     """Mixed signals → transition_release."""
     indicators = {

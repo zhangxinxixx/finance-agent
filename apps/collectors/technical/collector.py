@@ -11,8 +11,6 @@ import httpx
 from apps.runtime.secret_resolver import resolve_runtime_secret
 from apps.parsers.macro.models import CollectorResult, MacroPoint
 
-YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
-YAHOO_TICKER = "GC=F"
 DISPLAY_SYMBOL = "XAUUSD"
 JIN10_MCP_URL = "https://mcp.jin10.com/mcp"
 JIN10_MCP_KEY_ENV = "JIN10_MCP_KEY"
@@ -20,134 +18,22 @@ JIN10_SYMBOL = "XAUUSD"
 
 
 def collect_technical(*, retrieved_date: str, storage_root: Path) -> CollectorResult:
-    """Collect XAUUSD price data from Yahoo Finance chart API (v8).
-
-    Archives raw payload to ``storage/raw/technical/yahoo/<date>/``.
-    Returns a CollectorResult with one MacroPoint (XAUUSD, source=yahoo_finance)
-    and OHLC/SMA data in source_refs notes.
-    """
+    """Collect XAUUSD price data from the Jin10 MCP quote endpoint."""
 
     jin10_result = _collect_from_jin10_quote(retrieved_date=retrieved_date, storage_root=storage_root)
     if jin10_result.points:
         return jin10_result
-
-    params = {"range": "3mo", "interval": "1d"}
-    try:
-        with httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False) as client:
-            response = client.get(YAHOO_CHART_URL, params=params)
-            response.raise_for_status()
-            data = response.json()
-    except Exception as exc:
-        return CollectorResult(
-            points=[],
-            unavailable_symbols=[DISPLAY_SYMBOL],
-            source_refs=[
-                {
-                    "symbol": DISPLAY_SYMBOL,
-                    "source": "yahoo_finance",
-                    "source_url": YAHOO_CHART_URL,
-                    "reason": f"Yahoo Finance request failed: {type(exc).__name__}: {exc}",
-                }
-            ],
-        )
-
-    raw_path = _archive_raw(
-        storage_root=storage_root,
-        source="yahoo",
-        retrieved_date=retrieved_date,
-        symbol=YAHOO_TICKER,
-        payload=data,
-    )
-
-    try:
-        result = data["chart"]["result"][0]
-        meta = result["meta"]
-        quote = result["indicators"]["quote"][0]
-
-        latest_close = float(meta["regularMarketPrice"])
-        previous_close = float(meta.get("chartPreviousClose") or latest_close)
-
-        # Extract OHLC arrays (filter None values)
-        closes_all = [float(x) for x in quote["close"] if x is not None]
-        opens_all = [float(x) for x in quote["open"] if x is not None]
-        highs_all = [float(x) for x in quote["high"] if x is not None]
-        lows_all = [float(x) for x in quote["low"] if x is not None]
-
-        if not closes_all:
-            raise ValueError("No valid close data in Yahoo Finance response")
-
-        # Latest day OHLC
-        latest_open = float(opens_all[-1]) if opens_all else latest_close
-        latest_high = float(highs_all[-1]) if highs_all else latest_close
-        latest_low = float(lows_all[-1]) if lows_all else latest_close
-
-        # Daily change
-        change = round(latest_close - previous_close, 4)
-
-        # SMA20: average of last 20 valid closes
-        sma20 = None
-        if len(closes_all) >= 20:
-            sma20 = round(sum(closes_all[-20:]) / 20.0, 6)
-
-        # SMA50: average of last 50 valid closes
-        sma50 = None
-        if len(closes_all) >= 50:
-            sma50 = round(sum(closes_all[-50:]) / 50.0, 6)
-
-        # Keep up to 50 closes, highs, lows for downstream RSI/ATR computation
-        closes_trimmed = closes_all[-50:]
-        highs_trimmed = highs_all[-50:] if len(highs_all) >= 50 else highs_all
-        lows_trimmed = lows_all[-50:] if len(lows_all) >= 50 else lows_all
-
-    except Exception as exc:
-        return CollectorResult(
-            points=[],
-            unavailable_symbols=[DISPLAY_SYMBOL],
-            source_refs=[
-                {
-                    "symbol": DISPLAY_SYMBOL,
-                    "source": "yahoo_finance",
-                    "source_url": YAHOO_CHART_URL,
-                    "raw_path": raw_path,
-                    "reason": f"Payload parse: {type(exc).__name__}: {exc}",
-                }
-            ],
-        )
-
-    retrieved_at = _utc_now_iso()
-
-    extra: dict = {
-        "open": latest_open,
-        "high": latest_high,
-        "low": latest_low,
-        "change": change,
-        "ma20": sma20,
-        "ma50": sma50,
-        "closes": closes_trimmed,
-        "highs": highs_trimmed,
-        "lows": lows_trimmed,
-    }
-
-    point = MacroPoint(
-        symbol=DISPLAY_SYMBOL,
-        date=retrieved_date,
-        value=latest_close,
-        source="yahoo_finance",
-        source_url=YAHOO_CHART_URL,
-        retrieved_at=retrieved_at,
-        raw_path=raw_path,
-    )
     return CollectorResult(
-        points=[point],
-        unavailable_symbols=[],
+        points=[],
+        unavailable_symbols=list(dict.fromkeys([*jin10_result.unavailable_symbols, DISPLAY_SYMBOL])),
         source_refs=[
+            *jin10_result.source_refs,
             {
                 "symbol": DISPLAY_SYMBOL,
-                "source": "yahoo_finance",
-                "source_url": YAHOO_CHART_URL,
-                "raw_path": raw_path,
-                "notes": extra,
-            }
+                "source": "jin10_quote",
+                "source_url": JIN10_MCP_URL,
+                "reason": "Jin10 XAUUSD quote unavailable; Yahoo collection is disabled",
+            },
         ],
     )
 

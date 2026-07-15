@@ -10,6 +10,8 @@ from apps.api.services import artifact_service, dashboard_service, macro_service
 
 _PROJECT_ROOT = _storage._PROJECT_ROOT
 _try_db_session = _storage._try_db_session
+_ORIGINAL_PROJECT_ROOT = _PROJECT_ROOT
+_ORIGINAL_TRY_DB_SESSION = _try_db_session
 
 
 def _sync_project_root() -> None:
@@ -47,6 +49,16 @@ def get_options_snapshot(date_str: str | None = None, db: Any | None = None) -> 
     return options_service.get_options_snapshot(date_str, db=db)
 
 
+def get_options_decision(
+    date_str: str | None = None,
+    *,
+    lookback_days: int = 5,
+    db: Any | None = None,
+) -> dict[str, Any] | None:
+    _sync_project_root()
+    return options_service.get_options_decision(date_str, lookback_days=lookback_days, db=db)
+
+
 def get_options_report_md(date_str: str | None = None) -> str | None:
     _sync_project_root()
     return options_service.get_options_report_md(date_str)
@@ -63,8 +75,14 @@ def list_options_report_dates() -> list[str]:
 
 
 def get_macro_latest() -> dict[str, Any] | None:
+    root_is_patched = _PROJECT_ROOT != _ORIGINAL_PROJECT_ROOT
+    db_is_patched = _try_db_session is not _ORIGINAL_TRY_DB_SESSION
     _sync_project_root()
-    return macro_service.get_macro_latest()
+    return macro_service.get_macro_latest(
+        project_root=_PROJECT_ROOT,
+        try_db_session=_try_db_session,
+        use_db=not root_is_patched or db_is_patched,
+    )
 
 
 def get_macro_report_md(date_str: str | None = None) -> str | None:
@@ -204,6 +222,7 @@ __all__ = [
     "_try_db_session",
     "_collect_reports",
     "get_options_snapshot",
+    "get_options_decision",
     "get_options_report_md",
     "get_options_visual_report_html",
     "list_options_report_dates",

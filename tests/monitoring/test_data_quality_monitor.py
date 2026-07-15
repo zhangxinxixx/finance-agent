@@ -6,6 +6,7 @@ from pathlib import Path
 
 from apps.monitoring import data_quality_agent
 from apps.monitoring.data_quality_agent import run_data_quality_monitor
+from apps.monitoring.schemas import DataHealthCheck
 
 
 OBSERVED_AT = datetime(2026, 7, 8, 3, 0, tzinfo=timezone.utc)
@@ -96,6 +97,75 @@ def test_data_quality_monitor_writes_three_artifacts_for_full_content(tmp_path, 
     assert readiness["can_run_full_analysis"] is True
     assert readiness["can_run_research_distillation"] is True
     assert "knowledge distillation" in readiness["allowed_outputs"]
+
+
+def test_data_quality_monitor_includes_live_probe_findings_in_readiness(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_storage(storage_root)
+    monkeypatch.setattr(data_quality_agent, "get_data_source_health_latest", lambda date=None: _health_snapshot())
+
+    class ProbeRunner:
+        def run(self, **kwargs):
+            return [
+                DataHealthCheck(
+                    source_key="jin10_mcp_market",
+                    check_type="source_probe",
+                    status="unavailable",
+                    severity="critical",
+                    observed_at=OBSERVED_AT.isoformat(),
+                    reason_code="source_probe_unavailable",
+                    message="market probe unavailable",
+                    blocked_capabilities=("daily_market_snapshot", "full_daily_analysis"),
+                )
+            ]
+
+    result = run_data_quality_monitor(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        record_task_run=False,
+        run_source_probes=True,
+        source_probe_runner=ProbeRunner(),
+    )
+
+    assert result["source_health"]["probe_mode"] == "live"
+    assert result["source_health"]["probe_checks"][0]["reason_code"] == "source_probe_unavailable"
+    assert result["data_quality_report"]["summary"]["probe_problem_count"] == 1
+    assert result["downstream_readiness"]["can_run_full_analysis"] is False
+
+
+def test_data_quality_monitor_includes_consistency_findings_in_readiness(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_storage(storage_root)
+    monkeypatch.setattr(data_quality_agent, "get_data_source_health_latest", lambda date=None: _health_snapshot())
+
+    class ConsistencyChecker:
+        def run(self, **kwargs):
+            return [
+                DataHealthCheck(
+                    source_key="consistency:XAUUSD",
+                    check_type="consistency",
+                    status="partial",
+                    severity="high",
+                    observed_at=OBSERVED_AT.isoformat(),
+                    reason_code="consistency_divergence",
+                    message="XAUUSD sources diverged",
+                    degraded_capabilities=("full_daily_analysis", "technical_trigger_confirmation"),
+                )
+            ]
+
+    result = run_data_quality_monitor(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        record_task_run=False,
+        run_consistency_checks=True,
+        consistency_checker=ConsistencyChecker(),
+    )
+
+    assert result["data_quality_report"]["summary"]["consistency_problem_count"] == 1
+    assert result["downstream_readiness"]["capabilities"]["full_daily_analysis"] == "degraded"
+    assert result["downstream_readiness"]["capabilities"]["daily_market_snapshot"] == "allowed"
 
 
 def test_data_quality_monitor_blocks_distillation_for_preview_content(tmp_path, monkeypatch) -> None:

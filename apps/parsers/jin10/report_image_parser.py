@@ -398,11 +398,28 @@ def parse_report_images(
         or os.getenv("JIN10_MIMO_VL_MODEL", "").strip()
         or DEFAULT_VISION_MODEL
     )
+    vision_markdown_status = _vision_status(vision_markdown_payload or {})
+    vision_layout_status = _vision_status(vision_layout_payload or {})
+    if any(str(item).startswith("vision_markdown_failed:") for item in warnings):
+        vision_markdown_status = "failed"
+    if any(
+        str(item).startswith(("vision_layout_failed:", "vision_unified_failed:"))
+        for item in warnings
+    ):
+        vision_layout_status = "failed"
+    aggregate_status = _aggregate_parse_status(
+        page_payloads=page_payloads,
+        report_type=report_type,
+        vision_markdown=vision_markdown_payload,
+        vision_markdown_status=vision_markdown_status,
+        vision_layout_status=vision_layout_status,
+        body_markdown=body_markdown,
+    )
     status = {
         "article_id": article_id,
         "parser_version": PARSER_VERSION,
         "parser_run_id": parser_run_id,
-        "status": "success" if page_payloads else "empty",
+        "status": aggregate_status["status"],
         "recognition_mode": "vlm",
         "vision_provider": vision_provider,
         "vision_model": vision_model,
@@ -415,13 +432,17 @@ def parse_report_images(
         "cover_page_count": cover_page_count,
         "cover_page_status": str((cover_page or {}).get("status") or ("failed" if cover_pages else "not_applicable")),
         "empty_page_count": empty_page_count,
+        "valid_recognized_page_count": aggregate_status["valid_recognized_page_count"],
+        "recognition_candidate_page_count": aggregate_status["recognition_candidate_page_count"],
+        "empty_page_ratio": aggregate_status["empty_page_ratio"],
+        "substantive_markdown": aggregate_status["substantive_markdown"],
         "warnings": warnings,
     }
     if vision_markdown_payload:
-        status["vision_markdown_status"] = _vision_status(vision_markdown_payload)
+        status["vision_markdown_status"] = vision_markdown_status
         status["vision_pages_total"] = len(vision_markdown_payload.get("pages", []))
     if vision_layout_payload:
-        status["vision_layout_status"] = _vision_status(vision_layout_payload)
+        status["vision_layout_status"] = vision_layout_status
     if any(str(item).startswith("vision_markdown_failed:") for item in warnings) and "vision_markdown_status" not in status:
         status["vision_markdown_status"] = "failed"
     if any(str(item).startswith("vision_layout_failed:") for item in warnings) and "vision_layout_status" not in status:
@@ -2375,6 +2396,65 @@ def _vision_status(payload: dict[str, Any]) -> str:
     return "failed"
 
 
+def _aggregate_parse_status(
+    *,
+    page_payloads: list[dict[str, Any]],
+    report_type: str | None,
+    vision_markdown: dict[str, Any] | None,
+    vision_markdown_status: str,
+    vision_layout_status: str,
+    body_markdown: str,
+) -> dict[str, Any]:
+    """Derive top-level truth from usable recognition, not page-list existence."""
+
+    if not page_payloads:
+        return {
+            "status": "empty",
+            "valid_recognized_page_count": 0,
+            "recognition_candidate_page_count": 0,
+            "empty_page_ratio": 0.0,
+            "substantive_markdown": False,
+        }
+    candidates = [
+        page
+        for page in page_payloads
+        if not _is_visual_cover_page(page_no=int(page.get("page_no") or 0), report_type=report_type)
+    ]
+    recognized_pages = (vision_markdown or {}).get("pages") or []
+    candidate_page_nos = {int(page.get("page_no") or 0) for page in candidates}
+    valid_pages = [
+        page
+        for page in recognized_pages
+        if isinstance(page, dict)
+        and int(page.get("page_no") or 0) in candidate_page_nos
+        and page.get("status") == "success"
+        and _has_meaningful_markdown_content(str(page.get("markdown") or ""))
+    ]
+    candidate_count = len(candidates)
+    valid_count = len({int(page.get("page_no") or 0) for page in valid_pages})
+    missing_count = max(candidate_count - valid_count, 0)
+    empty_ratio = missing_count / candidate_count if candidate_count else 1.0
+    substantive = _has_meaningful_markdown_content(body_markdown)
+    if candidate_count == 0 or valid_count == 0 or not substantive:
+        aggregate = "failed"
+    elif (
+        valid_count == candidate_count
+        and empty_ratio == 0
+        and vision_markdown_status == "success"
+        and vision_layout_status in {"success", "empty"}
+    ):
+        aggregate = "success"
+    else:
+        aggregate = "partial"
+    return {
+        "status": aggregate,
+        "valid_recognized_page_count": valid_count,
+        "recognition_candidate_page_count": candidate_count,
+        "empty_page_ratio": round(empty_ratio, 4),
+        "substantive_markdown": substantive,
+    }
+
+
 def _has_substantive_vision_markdown(markdown: str, *, title: str) -> bool:
     text = str(markdown or "").strip()
     if not text:
@@ -2522,7 +2602,7 @@ def _crop_page_borders(image: np.ndarray) -> np.ndarray:
 
 
 def _is_visual_cover_page(*, page_no: int, report_type: str | None = None) -> bool:
-    if str(report_type or "").strip().lower() in {"positioning", "technical_levels", "oil", "fx"}:
+    if str(report_type or "").strip().lower() in {"positioning", "technical_levels", "oil", "fx", "market_odds"}:
         return False
     return page_no == 1
 

@@ -50,7 +50,7 @@ const POLL_INTERVAL = 10_000; // 10s
  */
 export function useJin10Kline(
   symbol: string = "XAUUSD",
-  timeframe: KlineTimeframe = "1m",
+  timeframe: KlineTimeframe = "5m",
   limit: number = 200,
 ) {
   const [candles, setCandles] = useState<Jin10KlineCandle[]>([]);

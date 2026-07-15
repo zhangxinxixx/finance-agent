@@ -14,7 +14,13 @@ from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 @pytest.fixture(autouse=True)
 def _mock_source_status_index():
     """Keep analysis snapshot integration tests isolated from source gating by default."""
-    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+    with (
+        patch("apps.api.services.source_service.get_data_source_status_index", return_value={}),
+        patch(
+            "apps.worker.runner._evaluate_premarket_readiness",
+            return_value={"decision": "allow", "reason_code": None},
+        ),
+    ):
         yield
 
 
@@ -76,6 +82,80 @@ def test_run_premarket_writes_analysis_snapshot_after_macro_and_options(tmp_path
     assert snapshot["options"]["status"] == "available"
     assert snapshot["positioning"]["status"] == "unavailable"
     assert snapshot["input_snapshot_ids"]["options_detail"] == {"raw_file_sha256": "abc123"}
+
+
+def test_run_premarket_uses_task_trade_date_as_analysis_context(tmp_path: Path):
+    db = _make_db_session(tmp_path)
+    task = TaskRun(
+        name="premarket",
+        status=TaskStatus.pending,
+        trade_date="2026-05-15",
+    )
+    db.add(task)
+    db.flush()
+
+    for name in [
+        "macro_collect",
+        "macro_feature",
+        "cme_download",
+        "cme_parse",
+        "cme_ingest",
+        "option_wall",
+        "report_render",
+        "news_collect",
+        "news_feature",
+        "news_brief",
+    ]:
+        db.add(TaskStep(task_run_id=task.id, name=name, status=StepStatus.pending))
+    db.commit()
+
+    def mock_cme_step(step_name, state, **kwargs):
+        if step_name == "option_wall":
+            state.snapshot_dict = {
+                "trade_date": "2026-05-14",
+                "data_source": {"input_snapshot_ids": {"raw_file_sha256": "abc123"}},
+            }
+        return {"step": step_name, "status": "success"}
+
+    def mock_macro_step(step_name, state, **kwargs):
+        if step_name == "report_render":
+            state.snapshot_dict = {
+                "as_of": "2026-05-15",
+                "indicators": {"DGS10": {"date": "2026-05-15", "value": 4.3}},
+            }
+        return {"step": step_name, "status": "success"}
+
+    def mock_news_step(step_name, state, **kwargs):
+        if step_name == "news_brief":
+            state.snapshot_dict = {
+                "daily_market_brief": {"as_of": "2026-05-15T08:00:00+00:00"}
+            }
+        return {"step": step_name, "status": "success"}
+
+    with (
+        patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_cme_step),
+        patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch("apps.worker.pipelines.news.run_news_step", side_effect=mock_news_step),
+    ):
+        from apps.worker.runner import run_premarket
+
+        result = run_premarket(db, task.id, storage_root=tmp_path)
+
+    assert result == TaskStatus.success
+    snapshot_path = (
+        tmp_path
+        / "features"
+        / "snapshots"
+        / "XAUUSD"
+        / "2026-05-15"
+        / str(task.id)
+        / "premarket_snapshot.json"
+    )
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["trade_date"] == "2026-05-15"
+    assert snapshot["macro"]["status"] == "available"
+    assert snapshot["options"]["status"] == "available"
+    assert snapshot["news"]["status"] == "available"
 
 
 def test_run_premarket_includes_cme_source_refs(tmp_path: Path):

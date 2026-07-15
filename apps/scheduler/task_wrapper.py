@@ -23,6 +23,7 @@ _RECORD_INTERVAL_SECONDS: dict[str, int] = {
     "jin10_flash": 900,
     "jin10_web_flash": 900,
     "jin10_web_article_analysis": 1800,
+    "twelvedata_xauusd_dispatch": 900,
 }
 
 _last_record_time: dict[str, float] = {}

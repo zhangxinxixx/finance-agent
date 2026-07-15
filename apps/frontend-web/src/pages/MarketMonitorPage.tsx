@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { MarketMonitorPageContent } from "@/components/market-monitor/MarketMonitorPageContent";
 import {
   MarketMonitorPageEmptyState,
@@ -32,6 +32,7 @@ function parseMarketMonitorTab(value: string | null): MarketMonitorTab {
 }
 
 export function MarketMonitorPage() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = parseMarketMonitorTab(searchParams.get("tab"));
   const { data, history, historyTimeframe, setHistoryTimeframe, isLoading, isError, error, refetch } = useMarketMonitor();
@@ -65,6 +66,10 @@ export function MarketMonitorPage() {
   }, [requestedTab]);
 
   function handleTabChange(nextTab: MarketMonitorTab) {
+    if (nextTab === "odds") {
+      navigate("/market-monitor/odds");
+      return;
+    }
     setActiveTab(nextTab);
     setSearchParams((current) => {
       const next = new URLSearchParams(current);

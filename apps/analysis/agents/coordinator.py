@@ -143,6 +143,21 @@ def coordinate_agent_outputs(
         if _contains_any(unavailable_modules, {"market_odds"}):
             risk_points.append("市场赔率不可用；无 CME/Polymarket 概率交叉验证。")
 
+    context_status, context_baseline, context_summary, oil_report_summary = _gold_analysis_context(snapshot)
+    if context_baseline:
+        key_findings.append(
+            f"统一分析基准：{context_baseline.get('source_kind') or 'unknown'} "
+            f"{context_baseline.get('trade_date') or context_baseline.get('context_as_of') or 'unknown'}。"
+        )
+        if context_summary:
+            key_findings.append(f"前序基准摘要：{context_summary}")
+    if oil_report_summary:
+        key_findings.append(f"原油报告摘要：{oil_report_summary}")
+    if context_status not in {None, "ready"}:
+        status = AgentStatus.PARTIAL if status is AgentStatus.SUCCESS else status
+        risk_points.append(f"统一分析上下文状态为 {context_status or 'missing'}；综合结论保持观察态。")
+        invalid_conditions.append("统一分析上下文缺失或过期时，不得把综合结论升级为确定性方向。")
+
     if not prior_outputs:
         status = AgentStatus.UNAVAILABLE
         bias = AgentBias.UNAVAILABLE
@@ -189,7 +204,10 @@ def coordinate_agent_outputs(
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
         evidence_items=evidence_items,
-        input_payload={"confidence_kernel": confidence_kernel.model_dump(mode="json")},
+        input_payload={
+            "confidence_kernel": confidence_kernel.model_dump(mode="json"),
+            "gold_analysis_context": _gold_analysis_context_payload(snapshot),
+        },
     )
 
 
@@ -234,6 +252,44 @@ def _source_refs(snapshot: dict[str, Any], outputs: list[AgentOutput]) -> list[d
     for output in outputs:
         refs.extend(dict(item) for item in output.source_refs if isinstance(item, dict))
     return _dedupe_refs(refs)
+
+
+def _gold_analysis_context(snapshot: dict[str, Any]) -> tuple[str | None, dict[str, Any], str, str]:
+    section = snapshot.get("gold_analysis_context")
+    if not isinstance(section, dict):
+        return None, {}, "", ""
+    data = section.get("data") if isinstance(section.get("data"), dict) else {}
+    baseline = data.get("analysis_baseline") if isinstance(data.get("analysis_baseline"), dict) else {}
+    summary = str(baseline.get("executive_summary") or "").strip()
+    oil_report = data.get("oil_report_summary") if isinstance(data.get("oil_report_summary"), dict) else {}
+    oil_summary = str(oil_report.get("one_line_conclusion") or oil_report.get("final_summary") or "").strip()
+    return str(data.get("status") or section.get("status") or ""), baseline, summary[:500], oil_summary[:600]
+
+
+def _gold_analysis_context_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
+    section = snapshot.get("gold_analysis_context")
+    if not isinstance(section, dict):
+        return {"status": "missing"}
+    data = section.get("data") if isinstance(section.get("data"), dict) else {}
+    baseline = data.get("analysis_baseline") if isinstance(data.get("analysis_baseline"), dict) else {}
+    oil_report = data.get("oil_report_summary") if isinstance(data.get("oil_report_summary"), dict) else {}
+    freshness = data.get("freshness") if isinstance(data.get("freshness"), dict) else {}
+    return {
+        "status": data.get("status") or section.get("status"),
+        "baseline_kind": data.get("baseline_kind"),
+        "baseline": {
+            key: baseline.get(key)
+            for key in ("source_kind", "trade_date", "article_id", "quality_status", "publication_status", "publish_allowed")
+            if baseline.get(key) is not None
+        },
+        "oil_report_summary": {
+            key: oil_report.get(key)
+            for key in ("source_kind", "trade_date", "article_id", "title", "status", "one_line_conclusion")
+            if oil_report.get(key) is not None
+        },
+        "freshness": freshness,
+        "input_snapshot_ids": data.get("input_snapshot_ids") or {},
+    }
 
 
 def _confidence_evidence_items(snapshot: dict[str, Any], outputs: list[AgentOutput]) -> list[dict[str, Any]]:

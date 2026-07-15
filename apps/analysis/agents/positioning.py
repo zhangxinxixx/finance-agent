@@ -7,17 +7,17 @@ from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, Da
 
 _AGENT_NAME = "positioning_agent"
 _MODULE = "positioning"
-_VERSION = "1.0"
+_VERSION = "1.1"
 
-# Thresholds for COT commercial net positioning bias
-# Heavy commercial short (commercials are hedging producers → typically bearish for gold)
+# Thresholds for the Producer/Merchant + Swap Dealer aggregate proxy.
 HEAVY_COMMERCIAL_SHORT_THRESHOLD = -200000
-# Commercials net long → bullish signal (producers reducing hedges)
 COMMERCIAL_LONG_THRESHOLD = 0
 
 _WATCHLIST = [
     "COT_GOLD",
     "commercial_net",
+    "producer_net",
+    "swap_net",
     "noncomm_net",
     "open_interest",
 ]
@@ -81,6 +81,8 @@ def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None
     data: dict[str, Any] = data_any if isinstance(data_any, dict) else {}
 
     commercial_net = _to_float(data.get("commercial_net"))
+    producer_net = _to_float(data.get("producer_net"))
+    swap_net = _to_float(data.get("swap_net"))
     noncomm_net = _to_float(data.get("noncomm_net"))
     total_oi = _to_float(data.get("total_oi"))
     commercial_direction = str(data.get("commercial_direction", "flat"))
@@ -123,27 +125,40 @@ def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None
 
     data_points_available += 1
 
-    # Determine bias from commercial net position
+    if producer_net is not None and swap_net is not None:
+        data_points_available += 2
+        key_findings.append(
+            f"Producer/Merchant net position: {producer_net:,.0f} contracts."
+        )
+        key_findings.append(f"Swap Dealer net position: {swap_net:,.0f} contracts.")
+    else:
+        data_points_missing += 1
+        invalid_conditions.append(
+            "Producer/Merchant and Swap Dealer breakdown is missing; "
+            "commercial_net is only an aggregate compatibility proxy."
+        )
+
+    # Determine bias from the compatibility aggregate, without attributing it to producers alone.
     bias: AgentBias
     if commercial_net < HEAVY_COMMERCIAL_SHORT_THRESHOLD:
         bias = AgentBias.BEARISH
         key_findings.append(
-            f"Commercial net position is heavily short ({commercial_net:,.0f} contracts), "
-            f"indicating strong producer hedging — bearish for gold."
+            "Commercial aggregate proxy (Producer/Merchant + Swap Dealer) is heavily "
+            f"net short ({commercial_net:,.0f} contracts) — bearish positioning signal for gold."
         )
         confidence += 0.18
     elif commercial_net > COMMERCIAL_LONG_THRESHOLD:
         bias = AgentBias.BULLISH
         key_findings.append(
-            f"Commercial net position is long ({commercial_net:,.0f} contracts), "
-            f"suggesting reduced producer hedging — bullish for gold."
+            "Commercial aggregate proxy (Producer/Merchant + Swap Dealer) is net long "
+            f"({commercial_net:,.0f} contracts) — bullish positioning signal for gold."
         )
         confidence += 0.12
     else:
         bias = AgentBias.NEUTRAL
         key_findings.append(
-            f"Commercial net position is moderately short ({commercial_net:,.0f} contracts) "
-            f"but not extreme — neutral signal."
+            "Commercial aggregate proxy (Producer/Merchant + Swap Dealer) is moderately "
+            f"net short ({commercial_net:,.0f} contracts) but not extreme — neutral signal."
         )
         confidence += 0.06
 
@@ -170,19 +185,23 @@ def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None
 
     # Direction context
     if commercial_direction == "increasing_short":
-        key_findings.append("Commercial shorts are increasing week-over-week — bearish momentum.")
+        key_findings.append(
+            "Commercial aggregate proxy is becoming more net short week-over-week — bearish momentum."
+        )
         if bias is AgentBias.BEARISH:
             confidence += 0.05
         elif bias is not AgentBias.UNAVAILABLE:
             risk_points.append("Commercial shorts increasing despite non-bearish bias; monitor closely.")
     elif commercial_direction == "increasing_long":
-        key_findings.append("Commercial longs are increasing week-over-week — bullish momentum.")
+        key_findings.append(
+            "Commercial aggregate proxy is becoming more net long week-over-week — bullish momentum."
+        )
         if bias is AgentBias.BULLISH:
             confidence += 0.05
         elif bias is not AgentBias.UNAVAILABLE:
             risk_points.append("Commercial longs increasing despite non-bullish bias; monitor closely.")
     else:
-        key_findings.append("Commercial direction is flat week-over-week.")
+        key_findings.append("Commercial aggregate proxy is flat week-over-week.")
 
     if noncomm_direction == "increasing_long":
         key_findings.append("Speculative longs are increasing — momentum-driven, but watch for crowding.")
@@ -192,11 +211,13 @@ def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None
     # Extreme reading
     if extreme_reading:
         risk_points.append(
-            "COT commercial net position is at an extreme (top/bottom 20% of 52-week range) — "
+            "COT commercial aggregate proxy is at an extreme (top/bottom 20% of 52-week range) — "
             "elevated reversal risk."
         )
         confidence -= 0.06
-        key_findings.append("Commercial net position is at a 52-week extreme — contrarian signal.")
+        key_findings.append(
+            "Commercial aggregate proxy is at a 52-week extreme — contrarian signal."
+        )
 
     # Open interest
     if total_oi is not None and total_oi > 0:

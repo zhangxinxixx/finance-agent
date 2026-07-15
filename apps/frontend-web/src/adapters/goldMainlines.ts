@@ -29,7 +29,7 @@ import type {
 const GOLD_MAINLINES_LATEST_PATH = "/api/gold/mainlines/latest";
 const GOLD_MAINLINE_SET = new Set<string>(GOLD_MAINLINE_IDS);
 const TRANSMISSION_PATH_SET = new Set<string>(GOLD_TRANSMISSION_PATH_IDS);
-const GOLD_STATUS_SET = new Set<string>(["available", "partial", "unavailable", "error", "stale", "fallback", "manual_required", "unknown"]);
+const GOLD_STATUS_SET = new Set<string>(["available", "partial", "unavailable", "error", "stale", "fallback", "manual_required", "blocked", "unknown"]);
 const GOLD_VERIFICATION_STATUS_SET = new Set<string>([
   "official_confirmed",
   "multi_source",

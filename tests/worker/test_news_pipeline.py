@@ -20,7 +20,14 @@ from tests.fixtures.news.replay import materialize_news_replay
 @pytest.fixture(autouse=True)
 def _isolate_source_gating():
     """Keep news worker tests deterministic unless they explicitly opt into source gating."""
-    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+    with (
+        patch("apps.api.services.source_service.get_data_source_status_index", return_value={}),
+        patch("apps.worker.pipelines.news.get_data_source_statuses", return_value={"sources": []}),
+        patch(
+            "apps.worker.runner._evaluate_premarket_readiness",
+            return_value={"decision": "allow", "reason_code": None},
+        ),
+    ):
         yield
 
 
@@ -109,6 +116,17 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
         collect_summary = run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-news")
         feature_summary = run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-news")
         brief_summary = run_news_step("news_brief", state, storage_root=tmp_path, run_id="run-news")
+        immutable_gold_paths = [
+            tmp_path / brief_summary["gold_macro_overview_path"],
+            tmp_path / brief_summary["source_health_path"],
+            tmp_path / brief_summary["quality_gate_result_path"],
+            *[tmp_path / path for path in brief_summary["agent_artifact_refs"].values()],
+        ]
+        initial_mtimes = {path: path.stat().st_mtime_ns for path in immutable_gold_paths}
+        for _ in range(9):
+            brief_summary = run_news_step(
+                "news_brief", state, storage_root=tmp_path, run_id="run-news"
+            )
 
     assert collect_summary["status"] == "success"
     assert collect_summary["raw_news_item_count"] == 2
@@ -122,14 +140,25 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     assert brief_summary["candidate_event_count"] == 1
     assert brief_summary["gold_mainline_count"] == 9
     assert brief_summary["gold_macro_overview_path"] == f"analysis/gold_mainlines/{state.retrieved_date}/run-news/gold_macro_overview.json"
+    assert brief_summary["executed_agents"] == []
+    assert len(brief_summary["materialized_stage_envelopes"]) == 7
+    assert set(brief_summary["agent_artifact_refs"]) == set(
+        brief_summary["materialized_stage_envelopes"]
+    )
+    assert all(path.stat().st_mtime_ns == initial_mtimes[path] for path in immutable_gold_paths)
     assert state.snapshot_dict is not None
     assert state.snapshot_dict["daily_market_brief"]["confirmed_events"][0]["verification_status"] == "official_confirmed"
     assert state.snapshot_dict["gold_event_mainlines"]["mainlines"][0]["mainline_id"] == "fed_policy_path"
     assert state.snapshot_dict["gold_macro_overview"]["theme_rankings"][0]["mainline_id"] == "fed_policy_path"
     assert state.snapshot_dict["gold_macro_overview"]["input_snapshot_ids"]["gold_event_mainlines"] == f"features/news/{state.retrieved_date}/run-news/gold_event_mainlines.json"
+    assert state.snapshot_dict["gold_macro_overview"]["review_status"] == "blocked"
+    assert state.snapshot_dict["gold_agent_execution"]["executed_agents"] == brief_summary["executed_agents"]
+    assert state.snapshot_dict["gold_agent_execution"]["materialized_stage_envelopes"] == brief_summary[
+        "materialized_stage_envelopes"
+    ]
     assert state.snapshot_dict["daily_analysis_triggers"]["trigger_count"] == 0
     assert state.snapshot_dict["daily_brief_input_snapshot"]["report_mode"] == "news_driven"
-    assert state.snapshot_dict["daily_brief_output"]["status"] == "available"
+    assert state.snapshot_dict["daily_brief_output"]["status"] == "partial"
     assert state.snapshot_dict["data_quality"]["daily_analysis_trigger_count"] == 0
     assert state.snapshot_dict["data_quality"]["gold_mainline_count"] == 9
     assert state.snapshot_dict["data_quality"]["gold_event_link_count"] == 2
@@ -195,6 +224,39 @@ def test_news_pipeline_collect_checkpoint_skips_seen_items_on_rerun(tmp_path: Pa
     assert checkpoint_payload["sources"]["fed_rss"]["last_success_at"] == "2026-06-10T12:31:00+00:00"
     assert checkpoint_payload["sources"]["gdelt_news"]["last_accepted_item_count"] == 0
     assert checkpoint_payload["sources"]["gdelt_news"]["last_skipped_duplicate_item_count"] == 1
+
+
+def test_news_pipeline_noncore_gaps_emit_limited_gold_artifacts(tmp_path: Path) -> None:
+    from apps.analysis.agents.source_health import P0_SOURCE_IDS
+
+    state = NewsPipelineState()
+    p0_ready = {
+        "sources": [
+            {
+                "source_key": source_key,
+                "status": "ready",
+                "latest_health_at": "2026-06-10T12:30:00+00:00",
+                "source_refs": [{"source_ref": f"fixture:{source_key}"}],
+            }
+            for source_key in P0_SOURCE_IDS
+        ]
+    }
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=_fake_collectors()),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+        patch("apps.worker.pipelines.news.get_data_source_statuses", return_value=p0_ready),
+    ):
+        run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-limited")
+        run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-limited")
+        summary = run_news_step("news_brief", state, storage_root=tmp_path, run_id="run-limited")
+
+    overview = state.snapshot_dict["gold_macro_overview"]
+    assert overview["source_health"]["overall_status"] == "degraded"
+    assert overview["source_health"]["can_build_gold_macro_overview"] is True
+    assert overview["source_health"]["p0_missing"] == []
+    assert overview["review_status"] != "blocked"
+    assert summary["executed_agents"] == []
+    assert summary["materialized_stage_envelopes"][-1] == "review_gate_agent"
 
 
 def test_news_pipeline_collect_checkpoint_survives_later_collector_failure(tmp_path: Path) -> None:
@@ -444,7 +506,7 @@ def test_run_premarket_executes_news_steps_and_snapshot_contains_brief(tmp_path:
     assert snapshot["news"]["data"]["gold_event_mainlines"]["mainlines"][0]["mainline_id"] == "fed_policy_path"
     assert snapshot["news"]["data"]["gold_macro_overview"]["input_snapshot_ids"]["gold_event_mainlines"].endswith("/gold_event_mainlines.json")
     assert snapshot["news"]["data"]["daily_brief_input_snapshot"]["report_mode"] == "news_driven"
-    assert snapshot["news"]["data"]["daily_brief_output"]["status"] == "available"
+    assert snapshot["news"]["data"]["daily_brief_output"]["status"] == "partial"
 
 
 def test_news_brief_step_loads_jin10_report_input_artifacts(tmp_path: Path) -> None:

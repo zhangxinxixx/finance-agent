@@ -110,6 +110,21 @@ def test_analyze_news_consumes_daily_market_brief_without_upgrading_unconfirmed_
                         "news_highlights": [],
                         "watchlist": [],
                         "risk_points": [],
+                        "market_observations": [
+                            {
+                                "observation_type": "external_market_odds",
+                                "source_kind": "jin10_external_market_odds",
+                                "provider_role": "supplemental_source",
+                                "article_id": "223555",
+                                "extraction_status": "needs_review",
+                                "influence_policy": {
+                                    "can_change_macro_regime": False,
+                                    "can_set_strategy_direction": False,
+                                    "can_block_readiness": False,
+                                },
+                                "items": [{"item_id": "odds-1", "asset": "XAUUSD", "probability": 0.94}],
+                            }
+                        ],
                     },
                     "source_refs": [{"source": "daily_market_brief", "source_ref": "brief:run-001"}],
                 }
@@ -126,3 +141,8 @@ def test_analyze_news_consumes_daily_market_brief_without_upgrading_unconfirmed_
     assert any("gold ETF money" in item for item in output.watchlist)
     assert not any("gold ETF money" in finding for finding in output.key_findings)
     assert any(ref.get("source") == "daily_market_brief" for ref in output.source_refs)
+    assert output.bias is AgentBias.NEUTRAL
+    assert any("外部赔率观察" in item for item in output.watchlist)
+    assert any("不得升级为方向结论" in item for item in output.risk_points)
+    assert output.input_payload["external_market_odds_count"] == 1
+    assert output.evidence_items[0]["provider_role"] == "supplemental_source"

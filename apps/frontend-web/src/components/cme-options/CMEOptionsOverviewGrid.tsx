@@ -259,7 +259,7 @@ function buildLevelCards(snapshot: CMEOptionsResponse, wallScores: CMEOptionsRes
     {
       label: "伽马零点",
       value: formatNumber(gex?.gamma_zero?.price, 1),
-      detail: `${translateEvidence(gex?.gamma_zero?.method ?? "推导值")} / 净伽马 ${formatNumber(gex?.net_gex)}`,
+      detail: `${translateEvidence(gex?.gamma_zero?.method ?? "推导值")} / 聚合净伽马 ${formatNumber(gex?.net_gex)}`,
       tone: "important",
     },
   ];
@@ -369,6 +369,7 @@ function buildAnalystReadout(
   const putWall = resolveDirectionalWall(snapshot, wallScores, "PUT");
   const pinWall = findPinWall(wallScores);
   const riskSignals = snapshot.roll_signals?.map((signal) => translateEvidence(signal.evidence?.[0] ?? signal.roll_type)).slice(0, 2) ?? [];
+  const aggregateDirection = gex?.net_gex_direction ?? null;
   const priceVsGamma = currentPrice !== null && gammaZero !== null
     ? currentPrice < gammaZero
       ? "价格低于伽马零点，向下波动更容易被放大"
@@ -380,7 +381,7 @@ function buildAnalystReadout(
   return [
     {
       label: "当前环境",
-      value: gex?.net_gex_direction === "negative" ? "负伽马风险" : gex?.net_gex_direction === "positive" ? "正伽马缓冲" : "中性吸附",
+      value: aggregateDirection === "negative" ? "负伽马风险" : aggregateDirection === "positive" ? "正伽马缓冲" : aggregateDirection === "neutral" ? "中性吸附" : "聚合方向未提供",
       detail: priceVsGamma,
       tone: "important",
     },

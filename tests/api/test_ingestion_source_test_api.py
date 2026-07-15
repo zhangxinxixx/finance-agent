@@ -51,6 +51,25 @@ class _FakeMCPClient:
         }
 
 
+class _FakeMarketMCPClient(_FakeMCPClient):
+    quote_payload = {"status": 200, "data": {"code": "XAUUSD", "price": "4072.10"}}
+    kline_payload = {
+        "status": 200,
+        "data": {
+            "klines": [
+                {"time": 1784044200, "close": "4071.24"},
+                {"time": 1784044140, "close": "4071.58"},
+            ]
+        },
+    }
+
+    def get_quote(self, code):
+        return self.quote_payload
+
+    def get_kline(self, code, count):
+        return self.kline_payload
+
+
 def _write_web_flash_briefs_artifact(
     project_root: Path,
     *,
@@ -174,6 +193,62 @@ def test_ingestion_source_test_runs_jin10_flash_probe_and_archives_preview(monke
         response.artifacts["raw_path"],
         response.artifacts["parsed_path"],
     }
+
+
+def test_ingestion_source_test_market_probe_is_live_when_quote_and_kline_exist(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service.Jin10MCPClient", _FakeMarketMCPClient)
+
+    response = main.api_ingestion_source_test("jin10_mcp_market", body=DataSourceTestRequest(limit=2), db=session)
+
+    assert response.status == "ok"
+    assert response.data_status.value == "live"
+    assert response.summary["quote_available"] is True
+    assert response.summary["kline_available"] is True
+    assert response.summary["missing_components"] == []
+
+
+def test_ingestion_source_test_market_probe_is_partial_when_quote_is_missing(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+
+    class PartialMarketClient(_FakeMarketMCPClient):
+        quote_payload = {}
+
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service.Jin10MCPClient", PartialMarketClient)
+
+    response = main.api_ingestion_source_test("jin10_mcp_market", body=DataSourceTestRequest(limit=2), db=session)
+
+    assert response.status == "partial"
+    assert response.data_status.value == "partial"
+    assert response.summary["reason_code"] == "market_probe_partial"
+    assert response.summary["missing_components"] == ["quote"]
+    assert response.preview[0]["price"] is None
+    run = main.api_run_detail(response.run_id, db=session).model_dump(mode="json")
+    assert run["status"] == "partial_success"
+
+
+def test_ingestion_source_test_market_probe_is_unavailable_when_all_components_are_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    session = _make_session()
+
+    class EmptyMarketClient(_FakeMarketMCPClient):
+        quote_payload = {}
+        kline_payload = {}
+
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service.Jin10MCPClient", EmptyMarketClient)
+
+    response = main.api_ingestion_source_test("jin10_mcp_market", body=DataSourceTestRequest(limit=2), db=session)
+
+    assert response.status == "unavailable"
+    assert response.data_status.value == "unavailable"
+    assert response.summary["reason_code"] == "market_probe_unavailable"
+    assert response.summary["missing_components"] == ["quote", "kline"]
+    run = main.api_run_detail(response.run_id, db=session).model_dump(mode="json")
+    assert run["status"] == "failed"
 
 
 def test_ingestion_source_test_reads_web_important_flash_latest_artifact(monkeypatch, tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ EVENT_SLA_STEP_NAMES = (
     "run_quality_gate",
     "build_analysis_conclusion",
     "build_trading_strategy",
+    "write_live_strategy_recompute_request",
     "build_sla_report",
     "write_notification_request",
     "record_sla_result",
@@ -112,18 +113,18 @@ def build_analysis_report(*, event: EventSnapshot, status: str, strategy: dict[s
     return "\n".join(lines).rstrip() + "\n"
 
 
-def build_notification_request(*, event: EventSnapshot, status: str, elapsed_minutes: float, analysis_report_path: str) -> dict[str, Any]:
+def build_notification_request(*, event: EventSnapshot, status: str, sla: dict[str, Any], analysis_report_path: str) -> dict[str, Any]:
     severity = "success" if status == "success" else ("warning" if status == "partial_success" else "critical")
     request = NotificationRequest(
         kind=_notification_kind(status),
         title=f"Event SLA {status}: {event.title}",
-        summary=f"{event.source_key} status={status}; elapsed={elapsed_minutes:.1f}m",
+        summary=f"{event.source_key} status={status}; elapsed={float(sla['end_to_end_sla_minutes']):.1f}m",
         severity=severity,  # type: ignore[arg-type]
         facts={
             "event_id": event.event_id,
             "source_key": event.source_key,
             "status": status,
-            "elapsed_minutes": elapsed_minutes,
+            **sla,
             "sla_minutes": 30,
             "analysis_report": analysis_report_path,
         },
@@ -151,8 +152,7 @@ def build_sla_trace(
     *,
     event: EventSnapshot,
     status: str,
-    observed_at: str,
-    elapsed_minutes: float,
+    sla: dict[str, Any],
     artifacts: dict[str, str],
 ) -> dict[str, Any]:
     step_outcomes = event_step_outcomes(event=event, status=status)
@@ -161,13 +161,29 @@ def build_sla_trace(
         "event_id": event.event_id,
         "source_key": event.source_key,
         "status": status,
-        "detected_at": event.detected_at,
-        "completed_at": observed_at,
-        "elapsed_minutes": elapsed_minutes,
+        **sla,
         "sla_minutes": 30,
-        "within_sla": elapsed_minutes <= 30,
+        "within_sla": float(sla["end_to_end_sla_minutes"]) <= 30,
         "artifacts": artifacts,
-        "steps": [{"name": name, **step_outcomes[name]} for name in EVENT_SLA_STEP_NAMES],
+        "steps": [
+            {
+                "name": name,
+                **step_outcomes[name],
+                **(
+                    {
+                        "output_refs": [
+                            {
+                                "artifact_type": "live_strategy_recompute_request",
+                                "path": artifacts["live_strategy_recompute_request"],
+                            }
+                        ]
+                    }
+                    if name == "write_live_strategy_recompute_request"
+                    else {}
+                ),
+            }
+            for name in EVENT_SLA_STEP_NAMES
+        ],
     }
 
 

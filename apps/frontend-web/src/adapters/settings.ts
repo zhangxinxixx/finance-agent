@@ -148,8 +148,6 @@ const SOURCE_VISUALS: Record<string, { icon: string; color: string }> = {
   cme_bulletin: { icon: "FileText", color: "#f97316" },
   treasury: { icon: "Landmark", color: "#10b981" },
   fed_prates: { icon: "Landmark", color: "#22c55e" },
-  dashscope: { icon: "TrendingUp", color: "#a855f7" },
-  mem0: { icon: "BookOpen", color: "#8b5cf6" },
 };
 
 export function sourceStatusTone(source: SettingsDataSource): FAStatusTone {

@@ -25,10 +25,9 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 _SECRET_ENV_TO_SOURCE_KEY: dict[str, str] = {
-    "DASHSCOPE_API_KEY": "dashscope",
     "FRED_API_KEY": "fred",
     "JIN10_MCP_KEY": "jin10_mcp",
-    "MEM0_API_KEY": "mem0",
+    "TWELVE_DATA_API_KEY": "twelvedata",
 }
 
 

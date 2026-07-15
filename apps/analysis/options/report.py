@@ -123,6 +123,29 @@ def _intent_wording(label_zh: str, confidence: float) -> str:
     return label_zh
 
 
+def _directional_targets(
+    candidates: list[float | int | None],
+    *,
+    anchor: float,
+    direction: str,
+) -> list[float]:
+    unique: dict[float, float] = {}
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        value = float(candidate)
+        if direction == "up" and value <= anchor:
+            continue
+        if direction == "down" and value >= anchor:
+            continue
+        unique.setdefault(round(value, 6), value)
+    return sorted(unique.values(), reverse=direction == "down")[:3]
+
+
+def _target_label(index: int) -> str:
+    return {1: "第一目标", 2: "第二目标", 3: "第三目标"}.get(index, f"目标 {index}")
+
+
 def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     """Render the full Chinese Markdown report."""
     lines: list[str] = []
@@ -308,7 +331,12 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     if gz is not None:
         lines.append(f"跨月 NetGEX 零轴（Gamma Zero）: **{gz:.1f}**（{result.netgex.gamma_zero_method}）")
         lines.append("")
-        lines.append("> 跨月 Gamma Zero 是 JUN26 与 JUL26 在同一假设价格网格下的 NetGEX 汇总曲线零点，即 `Σ NetGEX_expiry(F_grid)=0`，不是两个单月 Gamma Zero 的简单平均。")
+        compared_expiries = " 与 ".join(result.expiries[:2])
+        lines.append(
+            f"> 跨月 Gamma Zero 是 {compared_expiries} 在同一假设价格网格下的 "
+            "NetGEX 汇总曲线零点，即 `Σ NetGEX_expiry(F_grid)=0`，不是两个单月 "
+            "Gamma Zero 的简单平均。"
+        )
     lines.append("")
 
     if near_month and next_month:
@@ -810,10 +838,16 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         r2 = resistance_candidates[1]["strike"] if len(resistance_candidates) > 1 else None
         r3 = resistance_candidates[2]["strike"] if len(resistance_candidates) > 2 else None
 
-        # Find no-trade zone (high-gamma area around p0)
-        p0_low = int(p0 * 0.97)  # ~3% below
-        p0_high = int(p0 * 1.03)  # ~3% above
-        no_trade_zone = f"{p0_low}–{p0_high}"
+        if s1 is not None and r1 is not None:
+            no_trade_zone = f"{s1}–{r1}"
+            no_trade_label = (
+                f"**{no_trade_zone} 严格中段不适合追单，边界触发位不属于不交易区。**"
+            )
+        else:
+            p0_low = int(p0 * 0.995)
+            p0_high = int(p0 * 1.005)
+            no_trade_zone = f"{p0_low}–{p0_high}"
+            no_trade_label = f"**{no_trade_zone} 现价附近观察带不适合追单。**"
 
         # --- 主剧本 ---
         lines.append("### 主剧本")
@@ -824,22 +858,28 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             lines.append("**条件：**")
             lines.append(f"- 价格回踩 {s1} 附近不破，或刺破后快速收回；")
             lines.append("- 15M 出现 failed breakout / second entry 确认；")
-            if r1:
-                lines.append(f"- {r1} 被重新站上并回踩不破。")
+            if gz and p0 < gz:
+                lines.append(
+                    f"- 价格先重新站上 Gamma Zero（{gz:.0f}）；未收复前主剧本不激活。"
+                )
             lines.append("")
             lines.append("**目标：**")
-            lines.append(f"- 第一目标：{r1 or '—'}")
-            if r2:
-                lines.append(f"- 第二目标：{r2}")
-            if r3:
-                lines.append(f"- 第三目标：{r3}")
+            upside_targets = _directional_targets(
+                [r1, r2, r3],
+                anchor=p0,
+                direction="up",
+            )
+            for index, target in enumerate(upside_targets, start=1):
+                lines.append(f"- {_target_label(index)}：{target:g}")
+            if r1 and len(upside_targets) > 1:
+                lines.append(f"- 升级条件：{r1:g} 被重新站上并回踩不破后，才启用后续目标。")
             lines.append("")
             lines.append("**失效：**")
             if s1:
                 lines.append(f"- 跌破 {s1} 后无法收回；")
             if s2:
                 lines.append(f"- {s2} 支撑失守；")
-            if gz:
+            if gz and p0 >= gz:
                 lines.append(f"- 价格跌回 Gamma Zero（{gz:.0f}）下方。")
             lines.append("- 注：站上分水岭只代表进入 Call-GEX 更占优的结构区，仍需上方墙位接受确认，不能单独视为趋势启动。")
         else:
@@ -858,11 +898,13 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             lines.append("- 期权结构上高 Gamma 压制未被消化。")
             lines.append("")
             lines.append("**目标：**")
-            lines.append(f"- 第一目标：{int(p0 * 0.98)}")
-            if s1:
-                lines.append(f"- 第二目标：{s1}")
-            if s2:
-                lines.append(f"- 第三目标：{s2}")
+            downside_targets = _directional_targets(
+                [int(p0 * 0.98), s1, s2],
+                anchor=p0,
+                direction="down",
+            )
+            for index, target in enumerate(downside_targets, start=1):
+                lines.append(f"- {_target_label(index)}：{target:g}")
         elif not r1:
             lines.append("当前无明显阻力候选，无法构建备剧本。")
         else:
@@ -872,10 +914,12 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         # --- 不交易区 ---
         lines.append("### 不交易区")
         lines.append("")
-        lines.append(f"**{no_trade_zone} 中段不适合追单。**")
+        lines.append(no_trade_label)
         lines.append("")
         if s1 and r1:
-            lines.append(f"原因：{s1}–{r1} 区间 Gamma 较高，容易出现来回扫损、假突破、磁吸震荡。")
+            lines.append(
+                f"原因：{s1}–{r1} 支撑与阻力之间缺少边缘优势，容易出现来回扫损、假突破和墙位磁吸。"
+            )
         lines.append("更好的执行位置：")
         if s1:
             lines.append(f"- 下方靠近 {s1} 等失败确认；")
@@ -962,7 +1006,11 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         lines.append("### 到期日估算提示")
         lines.append("")
         lines.append("- expiry_source=estimated_from_delivery_month，expiry_confidence=medium。")
-        lines.append("- 近月 T 对 Gamma 较敏感；若 CME 官方到期日与估算差 1 个交易日，JUN26 GEX 与 Gamma Zero 可能小幅变化。")
+        expiry_text = " / ".join(result.expiries) or "相关月份"
+        lines.append(
+            "- 近月 T 对 Gamma 较敏感；若 CME 官方到期日与估算差 1 个交易日，"
+            f"{expiry_text} GEX 与 Gamma Zero 可能小幅变化。"
+        )
         lines.append("")
     if dq.warnings:
         lines.append("### 详细警告")

@@ -247,6 +247,32 @@ def test_daily_market_brief_merges_positioning_and_technical_level_report_inputs
     }
 
 
+def test_daily_market_brief_routes_external_odds_by_contract_not_source_key_name() -> None:
+    bundle = build_event_candidates([], as_of="2026-07-03T14:00:00+08:00")
+    brief = build_daily_market_brief(
+        event_bundle=bundle,
+        impact_assessments=[],
+        market_reactions=[],
+        as_of="2026-07-03T14:00:00+08:00",
+        report_input_artifacts=[{
+            "source_key": "opaque_artifact_key",
+            "source_kind": "jin10_external_market_odds",
+            "article_id": "223555",
+            "published_at": "2026-07-03T14:00:00+08:00",
+            "source_verification_status": "single_source",
+            "extraction_status": "accepted",
+            "items": [{"item_id": "odds-1", "asset": "XAUUSD", "probability": 0.94}],
+            "source_refs": [{"source_ref": "jin10:223555"}],
+        }],
+    )
+    observation = brief.to_dict()["report_inputs"]["market_observations"][0]
+    assert observation["observation_type"] == "external_market_odds"
+    assert observation["source_kind"] == "jin10_external_market_odds"
+    assert observation["influence_policy"]["can_change_macro_regime"] is False
+    assert observation["influence_policy"]["can_set_strategy_direction"] is False
+    assert observation["influence_policy"]["can_block_readiness"] is False
+
+
 def test_daily_market_brief_merges_market_observation_report_inputs() -> None:
     bundle = build_event_candidates([], as_of="2026-06-10T10:00:00+00:00")
 

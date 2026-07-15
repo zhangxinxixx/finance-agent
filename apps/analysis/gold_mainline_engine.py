@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from apps.features.news.gold_event_mainlines import MAINLINE_META, MAINLINE_ORDER, build_gold_event_mainlines
+from apps.runtime.immutable_artifact import immutable_json_item, write_immutable_artifact_bundle
 
 SCHEMA_VERSION = "gold-macro-overview-v1"
 
@@ -265,16 +266,33 @@ def archive_gold_macro_overview(
     input_snapshot_ids: dict[str, Any] | None = None,
 ) -> str:
     target = storage_root / "analysis" / "gold_mainlines" / retrieved_date / run_id / "gold_macro_overview.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+    payload = gold_macro_overview_payload(
+        retrieved_date=retrieved_date,
+        run_id=run_id,
+        overview=overview,
+        input_snapshot_ids=input_snapshot_ids,
+    )
+    write_immutable_artifact_bundle(
+        [immutable_json_item(target, payload)],
+        storage_root=storage_root,
+    )
+    return target.relative_to(storage_root).as_posix()
+
+
+def gold_macro_overview_payload(
+    *,
+    retrieved_date: str,
+    run_id: str,
+    overview: GoldMacroOverview,
+    input_snapshot_ids: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
         "schema_version": SCHEMA_VERSION,
         "retrieved_date": retrieved_date,
         "run_id": run_id,
         "input_snapshot_ids": dict(input_snapshot_ids or {}),
         **overview.to_dict(),
     }
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return target.relative_to(storage_root).as_posix()
 
 
 def classify_mainlines(event_or_input: dict[str, Any]) -> dict[str, Any]:

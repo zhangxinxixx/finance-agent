@@ -3,6 +3,8 @@ import { BarChart3, RefreshCw } from "lucide-react";
 
 import { fetchCMEOptionsDates } from "../adapters/cmeOptions";
 import { CMEOptionsKpiStrip } from "../components/cme-options/CMEOptionsKpiStrip";
+import { CMEOptionsDecisionWorkspace } from "../components/cme-options/CMEOptionsDecisionWorkspace";
+import { CMEOptionsOverviewGrid } from "../components/cme-options/CMEOptionsOverviewGrid";
 import {
   CMEOptionsIntentSummary,
   CMEOptionsLoadingShell,
@@ -21,6 +23,7 @@ import { FAStatusPill } from "../components/shared/FAStatusPill";
 import { FAWorkspaceHeader } from "../components/shared/FAWorkspaceHeader";
 import { ErrorState } from "../components/shared/ErrorState";
 import { useCMEOptions } from "../hooks/useCMEOptions";
+import { useCMEOptionsDecision } from "../hooks/useCMEOptionsDecision";
 import type { CMEOptionsResponse } from "../types/cme-options";
 
 /* ── Main Page ──────────────────────────────────────── */
@@ -61,6 +64,7 @@ export function CMEOptionsPage() {
 
   const shouldLoadSnapshot = !isDatesLoading && (availableDates.length === 0 || selectedDate !== undefined);
   const { data, isLoading, isError, error, refetch } = useCMEOptions(selectedDate, shouldLoadSnapshot);
+  const decisionState = useCMEOptionsDecision(selectedDate, shouldLoadSnapshot);
   const snapshot = data as CMEOptionsResponse | null;
   const source = snapshot?.source ?? "unavailable";
   const hasData = snapshot?.has_data !== false;
@@ -130,7 +134,7 @@ export function CMEOptionsPage() {
             onChange={(value) => setActiveTab(value as CMEOptionsTab)}
             ariaLabel="期权结构视图切换"
             actions={(
-              <button type="button" onClick={refetch} className="fa-workspace-toolbar-button" title="刷新 CME 期权结构">
+              <button type="button" onClick={() => { refetch(); decisionState.refetch(); }} className="fa-workspace-toolbar-button" title="刷新 CME 期权结构">
                 <RefreshCw size={12} />
                 刷新
               </button>
@@ -140,6 +144,7 @@ export function CMEOptionsPage() {
               { label: "来源", value: sourceLabel(source) },
               ...(status ? [{ label: "公告", value: reportStatusLabel(status) }] : []),
               ...(factReviewStatus ? [{ label: "复核", value: reviewStatusLabel(factReviewStatus) }] : []),
+              ...(decisionState.data ? [{ label: "决策", value: decisionState.data.status === "available" ? "可用" : decisionState.data.status === "partial" ? "部分可用" : "不可用" }] : []),
             ]}
             secondaryLabel="合约"
             secondaryItems={[
@@ -191,7 +196,18 @@ export function CMEOptionsPage() {
       bodyClassName="fa-page-stack"
     >
       <div className="px-1 pb-4">
-        {snapshot ? renderCMEOptionsTabContent({ snapshot, activeTab, wallScores, selectedExpiry }) : null}
+        {snapshot && activeTab === "overview" ? (
+          <div className="fa-page-stack">
+            <CMEOptionsDecisionWorkspace decision={decisionState.data} isLoading={decisionState.isLoading} error={decisionState.error} />
+            <section className="cme-decision-snapshot-analysis" aria-label="完整结构分析">
+              <div className="cme-decision-snapshot-heading">
+                <div><span>Snapshot Deep Analysis</span><strong>完整结构分析</strong></div>
+                <p>保留原始 CME snapshot 的完整结构、风险与溯源阅读路径。</p>
+              </div>
+              <CMEOptionsOverviewGrid snapshot={snapshot} wallScores={wallScores} />
+            </section>
+          </div>
+        ) : snapshot ? renderCMEOptionsTabContent({ snapshot, activeTab, wallScores, selectedExpiry }) : null}
       </div>
     </FAPageScaffold>
   );

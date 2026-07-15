@@ -24,13 +24,13 @@ export function CMEOptionsKpiStrip({ snapshot }: CMEOptionsKpiStripProps) {
   const gammaZero = gex?.gamma_zero?.price;
   const forwardPrice = snapshot.parameters?.f_value ?? gammaZero;
   const netGex = gex?.net_gex;
-  const direction = gex?.net_gex_direction ?? "neutral";
+  const direction = gex?.net_gex_direction ?? null;
   const expiryCount = snapshot.data_source?.expiries?.length ?? 0;
   const rowCount = snapshot.data_source?.row_count ?? 0;
 
-  const structure = direction === "negative" ? "负伽马" : direction === "positive" ? "正伽马" : "中性";
+  const structure = direction === "negative" ? "负伽马" : direction === "positive" ? "正伽马" : direction === "neutral" ? "中性" : "未提供";
   const kpis: KpiItem[] = [
-    { label: "净伽马", value: formatNumber(netGex) },
+    { label: "聚合净伽马", value: formatNumber(netGex) },
     { label: "伽马零点", value: formatNumber(gammaZero, 1) },
     { label: "远期价", value: formatNumber(forwardPrice, 1) },
     { label: "到期月", value: formatNumber(expiryCount) },
@@ -39,7 +39,7 @@ export function CMEOptionsKpiStrip({ snapshot }: CMEOptionsKpiStripProps) {
 
   return (
     <div className="cme-options-kpi-strip">
-      <div className={`cme-options-kpi-structure cme-options-kpi-structure--${direction}`}>
+      <div className={`cme-options-kpi-structure cme-options-kpi-structure--${direction ?? "unavailable"}`}>
         <span>结构</span>
         <strong>{structure}</strong>
       </div>

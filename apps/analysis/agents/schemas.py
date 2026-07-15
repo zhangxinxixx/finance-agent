@@ -87,6 +87,7 @@ class AgentOutput(BaseModel):
     llm_provider: str | None = Field(default=None, description="LLM provider name")
     llm_usage: dict[str, Any] | None = Field(default=None, description="Token usage from LLM call")
     llm_latency_ms: int | None = Field(default=None, description="LLM call latency in milliseconds")
+    llm_audit_id: str | None = Field(default=None, description="Immutable shared-gateway audit record id")
     # ── Observability payloads (optional; debug/audit only) ──
     prompt_messages: list[dict[str, str]] | None = Field(
         default=None,

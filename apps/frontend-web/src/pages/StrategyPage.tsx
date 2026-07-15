@@ -12,11 +12,17 @@ import { StrategyHeroSection } from "@/components/strategy/StrategyHeroSection";
 import { StrategyScenarioSection } from "@/components/strategy/StrategyScenarioSection";
 import { StrategyModuleSignalsSection, StrategyPlaybookMatchesSection } from "@/components/strategy/StrategySignalsPanels";
 import { StrategyDataTraceSection } from "@/components/strategy/StrategyTracePanel";
+import { LiveStrategyWorkspace } from "@/components/strategy/LiveStrategyWorkspace";
+import { ShadowEvaluationPanel } from "@/components/strategy/ShadowEvaluationPanel";
 import {
   DEFAULT_STRATEGY_ASSET,
   useStrategyPageState,
 } from "@/hooks/useStrategyPageState";
 import { useStrategy } from "@/hooks/useStrategy";
+import { useLiveStrategy } from "@/hooks/useLiveStrategy";
+import { useLatestShadowEvaluation } from "@/hooks/useShadowEvaluation";
+import { useShadowEvaluationHistory } from "@/hooks/useShadowEvaluationHistory";
+import { ShadowEvaluationHistoryPanel } from "@/components/strategy/ShadowEvaluationHistoryPanel";
 
 // ── Page ──
 
@@ -31,6 +37,9 @@ function strategyDataMode(source: string, status: string): DataMode {
 
 export function StrategyPage() {
   const [selectedAsset, setSelectedAsset] = useState<string>(DEFAULT_STRATEGY_ASSET);
+  const liveStrategy = useLiveStrategy(selectedAsset === "XAUUSD" ? "XAUUSD" : null);
+  const shadowEvaluation = useLatestShadowEvaluation(selectedAsset === "XAUUSD");
+  const shadowEvaluationHistory = useShadowEvaluationHistory(selectedAsset === "XAUUSD");
   const {
     data,
     isLoading,
@@ -78,15 +87,42 @@ export function StrategyPage() {
           regimeTabs={regimeTabs}
           activeRegime={activeRegime}
           onRegimeChange={setSelectedRegime}
-          onRefresh={refetch}
+          onRefresh={() => {
+            refetch();
+            liveStrategy.refetch();
+            shadowEvaluation.refetch();
+            shadowEvaluationHistory.refetch();
+          }}
         />
       )}
       bodyClassName="fa-page-stack strategy-page-body"
     >
       <DataModeBanner
         mode={strategyDataMode(data.source, data.status)}
-        reason={data.unavailable_reason ?? "每日策略框架只展示后端 StrategyCard read model；日内实时更新链路未接入时会显式标记，不由前端补造。"}
+        reason={data.unavailable_reason ?? "每日 StrategyCard 与 live_strategy.v1 独立取数；实时链路降级时不会由前端补造。"}
       />
+
+      {selectedAsset === "XAUUSD" ? (
+        <>
+          <LiveStrategyWorkspace
+            data={liveStrategy.data}
+            isLoading={liveStrategy.isLoading}
+            error={liveStrategy.error}
+          />
+          <ShadowEvaluationPanel
+            data={shadowEvaluation.data}
+            isLoading={shadowEvaluation.isLoading}
+            isUnavailable={shadowEvaluation.isUnavailable}
+            error={shadowEvaluation.error}
+          />
+          <ShadowEvaluationHistoryPanel
+            data={shadowEvaluationHistory.data}
+            isLoading={shadowEvaluationHistory.isLoading}
+            isUnavailable={shadowEvaluationHistory.isUnavailable}
+            error={shadowEvaluationHistory.error}
+          />
+        </>
+      ) : null}
 
       <StrategyHeroSection
         hero={data.hero}

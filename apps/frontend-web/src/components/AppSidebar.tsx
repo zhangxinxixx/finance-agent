@@ -39,6 +39,7 @@ const navItems = [
   { id: "review-center", zh: "人工复核", icon: ShieldCheck, path: "/review-center" },
   { id: "strategy", zh: "每日策略", icon: Target, path: "/strategy" },
   { id: "settings", zh: "系统设置", icon: Settings, path: "/settings" },
+  { id: "llm-audit", zh: "LLM 审计", icon: Bot, path: "/settings/llm-audit" },
 ];
 
 interface AppSidebarProps {

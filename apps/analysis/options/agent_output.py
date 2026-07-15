@@ -11,6 +11,23 @@ _SYSTEM_PROMPT = "你是一位专业 CME / COMEX 黄金期权结构分析师。�
 _PROMPT_VERSION = "cme_options_agent_v1"
 
 
+def bind_options_snapshot_lineage(
+    snapshot: dict[str, Any],
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    bound = dict(snapshot)
+    trade_date = str(bound.get("trade_date") or "")
+    resolved_run_id = _resolve_run_id(bound, run_id)
+    snapshot_id = str(bound.get("snapshot_id") or f"options:{trade_date}:{resolved_run_id}")
+    data_source = dict(bound.get("data_source") or {})
+    data_source["input_snapshot_ids"] = _build_input_snapshot_ids(bound, snapshot_id)
+    bound["run_id"] = resolved_run_id
+    bound["snapshot_id"] = snapshot_id
+    bound["data_source"] = data_source
+    return bound
+
+
 def build_options_agent_output_payload(
     snapshot: dict[str, Any],
     *,
@@ -19,10 +36,11 @@ def build_options_agent_output_payload(
     llm_markdown: str | None = None,
     llm_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    snapshot = bind_options_snapshot_lineage(snapshot, run_id=run_id)
     artifact_dir_path = Path(artifact_dir)
     trade_date = str(snapshot.get("trade_date") or "")
-    resolved_run_id = _resolve_run_id(snapshot, run_id)
-    snapshot_id = str(snapshot.get("snapshot_id") or f"options:{trade_date}:{resolved_run_id}")
+    resolved_run_id = str(snapshot["run_id"])
+    snapshot_id = str(snapshot["snapshot_id"])
     source_refs = _build_source_refs(snapshot)
     input_snapshot_ids = _build_input_snapshot_ids(snapshot, snapshot_id)
     wrapped_snapshot = {
@@ -79,6 +97,7 @@ def build_options_agent_output_payload(
             ],
             "input_payload": {"options_snapshot": snapshot},
             "llm_raw_output": enhanced_markdown,
+            "llm_audit_id": llm_meta.get("audit_id"),
             "narrative_md": narrative_md,
             "report_json": snapshot,
             "artifact_refs": artifact_refs,
@@ -144,6 +163,8 @@ def persist_options_agent_output(
 def _resolve_run_id(snapshot: dict[str, Any], run_id: str | None) -> str:
     if run_id:
         return str(run_id)
+    if snapshot.get("run_id"):
+        return str(snapshot["run_id"])
     data_source = snapshot.get("data_source") or {}
     input_snapshot_ids = data_source.get("input_snapshot_ids") or {}
     raw_file_sha256 = input_snapshot_ids.get("raw_file_sha256")

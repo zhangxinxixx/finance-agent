@@ -12,10 +12,15 @@ def test_hourly_orchestration_scheduler_wrapper_calls_orchestrator(monkeypatch, 
 
     def fake_run_data_control_agent(**kwargs):
         calls.append({"data_control": kwargs})
+        readiness_path = kwargs["storage_root"] / "monitoring" / kwargs["trade_date"] / "downstream_readiness.json"
+        assert readiness_path.is_file()
         return {"status": "partial", "artifacts": {"hourly_report_json": "data_control/2026-07-08/hourly.json"}}
 
     def fake_run_data_quality_monitor(**kwargs):
         calls.append({"data_quality": kwargs})
+        readiness_path = kwargs["storage_root"] / "monitoring" / kwargs["trade_date"] / "downstream_readiness.json"
+        readiness_path.parent.mkdir(parents=True, exist_ok=True)
+        readiness_path.write_text('{"readiness":"blocked"}', encoding="utf-8")
         return {"downstream_readiness": {"readiness": "blocked"}}
 
     def fake_run_automation_orchestrator(**kwargs):
@@ -37,14 +42,14 @@ def test_hourly_orchestration_scheduler_wrapper_calls_orchestrator(monkeypatch, 
     assert result["trigger"] == "hourly"
     assert result["data_control"]["status"] == "partial"
     assert result["data_quality"]["downstream_readiness"]["readiness"] == "blocked"
-    assert list(calls[0]) == ["data_control"]
-    assert list(calls[1]) == ["data_quality"]
+    assert list(calls[0]) == ["data_quality"]
+    assert list(calls[1]) == ["data_control"]
     assert list(calls[2]) == ["orchestrator"]
-    assert calls[0]["data_control"]["trade_date"] == "2026-07-08"
-    assert calls[0]["data_control"]["observed_at"] == datetime(2026, 7, 8, 10, 0, tzinfo=timezone.utc)
-    assert calls[0]["data_control"]["record_task_run"] is True
-    assert calls[1]["data_quality"]["trade_date"] == "2026-07-08"
-    assert calls[1]["data_quality"]["record_task_run"] is True
+    assert calls[0]["data_quality"]["trade_date"] == "2026-07-08"
+    assert calls[0]["data_quality"]["record_task_run"] is True
+    assert calls[1]["data_control"]["trade_date"] == "2026-07-08"
+    assert calls[1]["data_control"]["observed_at"] == datetime(2026, 7, 8, 10, 0, tzinfo=timezone.utc)
+    assert calls[1]["data_control"]["record_task_run"] is True
     assert calls[2]["orchestrator"]["trigger"] == "hourly"
     assert calls[2]["orchestrator"]["trade_date"] == "2026-07-08"
     assert calls[2]["orchestrator"]["hour"] == "10"

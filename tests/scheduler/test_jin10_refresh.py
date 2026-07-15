@@ -24,7 +24,7 @@ class _FakeClient:
 
     def get_kline(self, symbol: str, count: int = 100):
         assert symbol == "XAUUSD"
-        assert count == 100
+        assert count == 5
         return {
             "data": {
                 "klines": [
@@ -35,7 +35,7 @@ class _FakeClient:
         }
 
 
-def test_refresh_jin10_kline_cache_inserts_only_new_rows(monkeypatch):
+def test_refresh_jin10_kline_cache_upserts_overlapping_rows(monkeypatch, tmp_path):
     engine = create_engine("sqlite:///:memory:", echo=False)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     with session_factory() as session:
@@ -48,8 +48,21 @@ def test_refresh_jin10_kline_cache_inserts_only_new_rows(monkeypatch):
                 open=4462.47,
                 high=4464.30,
                 low=4461.88,
-                close=4462.81,
+                close=4400.0,
                 volume=20,
+                source="jin10_mcp_kline_1m",
+            )
+        )
+        session.add(
+            MarketCandle(
+                asset="XAUUSD",
+                timeframe="1m",
+                open_time=datetime(2026, 6, 4, 6, 0, tzinfo=UTC),
+                open=4300.0,
+                high=4301.0,
+                low=4299.0,
+                close=4300.5,
+                volume=None,
                 source="jin10_mcp_kline_1m",
             )
         )
@@ -59,7 +72,10 @@ def test_refresh_jin10_kline_cache_inserts_only_new_rows(monkeypatch):
     monkeypatch.setattr(scheduler, "Jin10MCPClient", _FakeClient)
     monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
 
-    scheduler.refresh_jin10_kline_cache()
+    scheduler.refresh_jin10_kline_cache(
+        now=datetime(2026, 6, 5, 7, 49, tzinfo=UTC),
+        storage_root=tmp_path,
+    )
 
     with session_factory() as session:
         rows = session.query(MarketCandle).order_by(MarketCandle.open_time.asc()).all()
@@ -69,9 +85,61 @@ def test_refresh_jin10_kline_cache_inserts_only_new_rows(monkeypatch):
             latest_open_time = latest_open_time.replace(tzinfo=UTC)
         assert latest_open_time == datetime.fromtimestamp(1780645680, tz=UTC)
         assert rows[-1].close == 4463.04
+        assert rows[0].close == 4462.81
         assert rows[-1].source == "jin10_mcp_kline_1m"
         assert rows[-1].source_ref["source_key"] == "jin10_mcp_market"
         assert rows[-1].source_ref["source"] == "jin10_mcp"
+        assert rows[-1].source_ref["source_role"] == "staging_primary"
+        assert rows[-1].raw_path
+
+
+class _FiveMinuteClient(_FakeClient):
+    def get_kline(self, symbol: str, count: int = 5):
+        assert symbol == "XAUUSD"
+        assert count == 5
+        base = datetime(2026, 6, 5, 7, 45, tzinfo=UTC)
+        return {
+            "data": {
+                "klines": [
+                    {
+                        "time": int((base + timedelta(minutes=index)).timestamp()),
+                        "open": str(4460 + index),
+                        "high": str(4462 + index),
+                        "low": str(4459 + index),
+                        "close": str(4460.5 + index),
+                        "volume": 10 + index,
+                    }
+                    for index in range(5)
+                ]
+            }
+        }
+
+
+def test_refresh_jin10_kline_cache_materializes_only_complete_closed_5m(monkeypatch, tmp_path):
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(scheduler, "_get_mcp_key", lambda: "fake-key")
+    monkeypatch.setattr(scheduler, "Jin10MCPClient", _FiveMinuteClient)
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+
+    scheduler.refresh_jin10_kline_cache(
+        now=datetime(2026, 6, 5, 7, 50, 45, tzinfo=UTC),
+        storage_root=tmp_path,
+    )
+
+    with session_factory() as session:
+        rows = session.query(MarketCandle).order_by(MarketCandle.timeframe.asc(), MarketCandle.open_time.asc()).all()
+        five_minute = [row for row in rows if row.timeframe == "5m"]
+
+    assert len(five_minute) == 1
+    assert five_minute[0].open_time.replace(tzinfo=UTC) == datetime(2026, 6, 5, 7, 45, tzinfo=UTC)
+    assert five_minute[0].open == 4460.0
+    assert five_minute[0].high == 4466.0
+    assert five_minute[0].low == 4459.0
+    assert five_minute[0].close == 4464.5
+    assert five_minute[0].volume is None
+    assert five_minute[0].source == "jin10_mcp_derived_5m"
+    assert five_minute[0].source_ref["component_count"] == 5
 
 
 def test_refresh_market_candle_daily_cache_upserts_daily_assets(monkeypatch):
@@ -81,7 +149,7 @@ def test_refresh_market_candle_daily_cache_upserts_daily_assets(monkeypatch):
 
     def fake_collect_daily_market_candles(*, storage_root, asset: str, range_: str):
         assert range_ == "10d"
-        offset = 0 if asset == "XAUUSD" else 1
+        offset = 0 if asset == "GC" else 1
         return (
             [
                 {
@@ -105,7 +173,7 @@ def test_refresh_market_candle_daily_cache_upserts_daily_assets(monkeypatch):
 
     with session_factory() as session:
         rows = session.query(MarketCandle).order_by(MarketCandle.asset.asc()).all()
-        assert [row.asset for row in rows] == ["DXY", "XAUUSD"]
+        assert [row.asset for row in rows] == ["DXY", "GC"]
         assert {row.timeframe for row in rows} == {"1d"}
         assert rows[0].source_ref["refresh_role"] == "scheduled_daily_gap_repair"
         assert rows[1].source_ref["refresh_role"] == "scheduled_daily_gap_repair"
@@ -211,12 +279,24 @@ def test_refresh_jin10_flash_cache_handles_data_items_shape(monkeypatch, tmp_pat
     monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
     monkeypatch.setitem(sys.modules, "httpx", type("FakeHttpxModule", (), {"Client": _FakeFlashHttpxClient})())
 
-    def fake_chat_sync(*, messages, provider, model, temperature, max_tokens, json_mode, max_retries):
+    def fake_chat_sync(
+        *,
+        messages,
+        provider,
+        model,
+        temperature,
+        max_tokens,
+        json_mode,
+        max_retries,
+        audit_context,
+    ):
         assert provider == "mimo"
         assert model == "mimo-v2.5"
         assert temperature == 0.0
         assert json_mode is True
         assert max_retries == 1
+        assert audit_context["caller"] == "jin10_refresh.classify_jin10_flash_items_with_llm"
+        assert audit_context["input_payload"]["item_count"] == 50
         assert "不要按固定关键词机械判断" in messages[0]["content"]
         labels = [
             {

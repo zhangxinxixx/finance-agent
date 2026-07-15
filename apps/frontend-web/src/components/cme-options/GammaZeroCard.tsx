@@ -28,22 +28,22 @@ function formatInteger(value: number | null | undefined) {
 }
 
 export function GammaZeroCard({ netGexAggregate, wallScores = [] }: GammaZeroCardProps) {
-  const direction = netGexAggregate.net_gex_direction ?? "neutral";
+  const direction = netGexAggregate.net_gex_direction ?? null;
   const gammaZero = netGexAggregate.gamma_zero;
 
   const callWall = [...wallScores].filter((w) => w.side === "CALL").sort((a, b) => b.wall_score - a.wall_score)[0];
   const putWall = [...wallScores].filter((w) => w.side === "PUT").sort((a, b) => b.wall_score - a.wall_score)[0];
-  const directionStyles = {
+  const directionStyles = direction === null ? "text-[var(--fg-5)]" : {
     positive: "text-[var(--up)]",
     negative: "text-[var(--down)]",
     neutral: "text-[var(--fg-4)]",
   }[direction];
-  const directionLabel = {
+  const directionLabel = direction === null ? "未提供" : {
     positive: "正伽马",
     negative: "负伽马",
     neutral: "中性",
   }[direction];
-  const directionStatus = {
+  const directionStatus = direction === null ? "neutral" : {
     positive: "up",
     negative: "down",
     neutral: "neutral",
@@ -83,9 +83,9 @@ export function GammaZeroCard({ netGexAggregate, wallScores = [] }: GammaZeroCar
       <div style={{ padding: "12px 14px", background: "var(--bg-card-inner)", border: "1px solid var(--border)", borderRadius: 3 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <span style={{ fontSize: "var(--text-10)", color: "var(--fg-4)" }}>看跌伽马主导</span>
+            <span style={{ fontSize: "var(--text-10)", color: "var(--fg-4)" }}>看跌伽马状态</span>
             <span className={`fa-num ${direction === "negative" ? "text-[var(--down)]" : "text-[var(--fg-5)]"}`} style={{ fontSize: "var(--text-10)", fontWeight: 600 }}>
-              {direction === "negative" ? "活跃" : "偏弱"}
+              {direction === null ? "未提供" : direction === "negative" ? "活跃" : "偏弱"}
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>

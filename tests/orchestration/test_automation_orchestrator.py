@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from apps.orchestration import automation_orchestrator
 from apps.orchestration.automation_orchestrator import run_automation_orchestrator
@@ -24,6 +26,24 @@ def _seed_upstream_artifacts(storage_root: Path) -> None:
     _write_json(
         storage_root / "data_control" / "2026-07-08" / "processing_plan_10.json",
         {"trade_date": "2026-07-08", "hour": "10", "status": "blocked", "blocked_steps": [{"reason_code": "downstream_quality_gate_blocked"}]},
+    )
+    _write_json(
+        storage_root / "data_control" / "2026-07-08" / "dispatch_plan_10.json",
+        {
+            "trade_date": "2026-07-08",
+            "hour": "10",
+            "status": "ready",
+            "execution_owner": "automation_orchestrator",
+            "auto_execute": False,
+            "requests": [
+                {
+                    "request_id": "data-control:2026-07-08:10:jin10_mcp_flash:jin10_flash_refresh",
+                    "source_key": "jin10_mcp_flash",
+                    "task_key": "jin10_flash_refresh",
+                    "status": "ready",
+                }
+            ],
+        },
     )
     _write_json(
         storage_root / "data_control" / "2026-07-08" / "hourly_collection_processing_report_10.json",
@@ -98,6 +118,7 @@ def test_automation_orchestrator_writes_plans_from_existing_agent_outputs(tmp_pa
     assert plan["trigger"]["type"] == "hourly"
     assert [step["agent_name"] for step in plan["steps"]] == ["data_control_agent", "data_quality_monitor", "feishu_notification_agent"]
     assert plan["inputs"]["collection_plan"].endswith("collection_plan_10.json")
+    assert plan["inputs"]["dispatch_plan"].endswith("dispatch_plan_10.json")
     assert plan["inputs"]["downstream_readiness"].endswith("downstream_readiness.json")
 
     notification_plan = json.loads((storage_root / artifacts["notification_plan"]).read_text(encoding="utf-8"))
@@ -108,6 +129,7 @@ def test_automation_orchestrator_writes_plans_from_existing_agent_outputs(tmp_pa
     summary = json.loads((storage_root / artifacts["automation_summary"]).read_text(encoding="utf-8"))
     assert summary["status"] == "blocked"
     assert summary["send_notifications"] is False
+    assert summary["notification_dispatch_status"] == "skipped"
     workflow_runs = json.loads((storage_root / artifacts["workflow_runs"]).read_text(encoding="utf-8"))
     assert workflow_runs["workflow_runs"][0]["trigger"] == "hourly"
     assert workflow_runs["workflow_runs"][0]["manual_review_required"] is True
@@ -428,6 +450,7 @@ def test_automation_orchestrator_records_retry_queue_for_failed_notification(tmp
     )
 
     assert result["notification_results"][0]["status"] == "failed"
+    assert result["notification_dispatch_status"] == "partial_success"
     assert result["notification_results"][0]["next_retry_at"] == "2026-07-08T10:34:00+00:00"
     summary = json.loads((storage_root / result["artifacts"]["automation_summary"]).read_text(encoding="utf-8"))
     retry_item = summary["retry_queue"][0]
@@ -499,6 +522,35 @@ def test_automation_orchestrator_persists_delivery_log_for_cooldown(tmp_path) ->
     assert sent == ["hourly_report", "incident"]
 
 
+def test_notification_delivery_log_append_is_atomic_under_concurrency(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    barrier = threading.Barrier(2)
+    original_read_json = automation_orchestrator._read_json
+
+    def synchronized_read(path):
+        payload = original_read_json(path)
+        barrier.wait(timeout=2)
+        return payload
+
+    monkeypatch.setattr(automation_orchestrator, "_read_json", synchronized_read)
+
+    def append(kind: str) -> None:
+        automation_orchestrator._append_delivery_log(
+            storage_root=storage_root,
+            trade_date="2026-07-08",
+            observed_at=OBSERVED_AT.isoformat(),
+            results=[{"kind": kind, "status": "sent", "ok": True, "attempts": 1}],
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(append, ["hourly_report", "incident"]))
+
+    delivery_log = json.loads(
+        (storage_root / "orchestration" / "2026-07-08" / "notification_delivery_log.json").read_text(encoding="utf-8")
+    )
+    assert {item["kind"] for item in delivery_log["deliveries"]} == {"hourly_report", "incident"}
+
+
 def test_automation_orchestrator_records_task_run_when_enabled(tmp_path, monkeypatch) -> None:
     storage_root = tmp_path / "storage"
     _seed_upstream_artifacts(storage_root)
@@ -536,3 +588,94 @@ def test_automation_orchestrator_records_task_run_when_enabled(tmp_path, monkeyp
     assert result["task_run_id"] == "auto-run-1"
     assert calls[0]["record_task"]["task_type"] == "automation_orchestrator"
     assert calls[1]["step_name"] == "load_agent_registry"
+    dispatch = next(call for call in calls if call.get("step_name") == "dispatch_feishu_notification")
+    assert dispatch["status"] == "skipped"
+    assert dispatch["output_refs"][0]["notification_dispatch_status"] == "skipped"
+
+
+def test_automation_orchestrator_records_retryable_delivery_failure_as_blocked_step(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_upstream_artifacts(storage_root)
+    calls: list[dict] = []
+
+    class Sender:
+        def send(self, request):
+            return type(
+                "Result",
+                (),
+                {"to_dict": lambda self: {"ok": False, "status": "failed", "kind": request.kind, "error": "temporary"}},
+            )()
+
+    class Recorder:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def step(self, step_name: str, **kwargs):
+            calls.append({"step_name": step_name, **kwargs})
+
+        def run_id(self):
+            return "auto-run-failed-delivery"
+
+    monkeypatch.setattr(automation_orchestrator, "record_task", lambda **_kwargs: Recorder())
+
+    result = run_automation_orchestrator(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        trigger="hourly",
+        hour="10",
+        record_task_run=True,
+        send_notifications=True,
+        notification_agent=Sender(),
+    )
+
+    dispatch = next(call for call in calls if call.get("step_name") == "dispatch_feishu_notification")
+    assert result["notification_dispatch_status"] == "partial_success"
+    assert dispatch["status"] == "blocked"
+    assert dispatch["output_refs"][0]["notification_dispatch_status"] == "partial_success"
+
+
+def test_automation_orchestrator_records_outbox_persistence_failure_as_failed_step(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_upstream_artifacts(storage_root)
+    calls: list[dict] = []
+    original_write_json_atomic = automation_orchestrator._write_json_atomic
+
+    def fail_outbox_write(path, payload):
+        if path.parent.name == "outbox":
+            raise OSError("outbox unavailable")
+        return original_write_json_atomic(path, payload)
+
+    class Recorder:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def step(self, step_name: str, **kwargs):
+            calls.append({"step_name": step_name, **kwargs})
+
+        def run_id(self):
+            return "auto-run-outbox-failure"
+
+    monkeypatch.setattr(automation_orchestrator, "_write_json_atomic", fail_outbox_write)
+    monkeypatch.setattr(automation_orchestrator, "record_task", lambda **_kwargs: Recorder())
+
+    result = run_automation_orchestrator(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        trigger="hourly",
+        hour="10",
+        record_task_run=True,
+        send_notifications=True,
+    )
+
+    dispatch = next(call for call in calls if call.get("step_name") == "dispatch_feishu_notification")
+    assert result["status"] == "failed"
+    assert result["notification_dispatch_status"] == "failed"
+    assert dispatch["status"] == "failed"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
 from apps.analysis.macro.conclusion import build_macro_conclusion
@@ -11,6 +12,7 @@ from apps.features.macro.snapshot import build_macro_snapshot
 def test_current_manual_macro_doc_generates_target_conclusion() -> None:
     snapshot = build_macro_snapshot(_current_doc_points(), as_of="2026-05-08")
     conclusion = build_macro_conclusion(snapshot)
+    assert conclusion.market_phase == "transition_release"
     assert conclusion.bias == "中性偏多"
     assert conclusion.quantity_layer == "偏松"
     assert conclusion.price_layer == "钱仍贵"
@@ -30,17 +32,18 @@ def test_current_manual_macro_doc_generates_target_conclusion() -> None:
     assert "回踩接多" in markdown
 
 
-def test_recent_trade_day_macro_doc_maps_to_rate_pressure() -> None:
+def test_recent_trade_day_macro_doc_uses_authoritative_transition_phase() -> None:
     snapshot = build_macro_snapshot(_recent_trade_day_points(), as_of="2026-06-26")
     conclusion = build_macro_conclusion(snapshot)
 
+    assert conclusion.market_phase == "transition_release"
     assert conclusion.bias == "中性偏空"
     assert conclusion.quantity_layer == "分裂偏紧"
     assert conclusion.price_layer == "钱仍贵"
     assert conclusion.dollar_layer == "逆风"
-    assert conclusion.state == "利率压制态"
-    assert conclusion.action == "反弹空 / 等待"
-    assert conclusion.action_priority == "等待反弹空 / 等确认"
+    assert conclusion.state == "过渡释放态"
+    assert conclusion.action == "等待"
+    assert conclusion.action_priority == "主要"
     assert "DXY 跌破 100.8" in conclusion.trigger_upgrade
     assert "10Y 实际利率跌回 2.10% 下方" in conclusion.trigger_upgrade
     assert "DXY 重新上破 101.8" in conclusion.trigger_downgrade
@@ -50,21 +53,35 @@ def test_recent_trade_day_macro_doc_maps_to_rate_pressure() -> None:
     assert "准备金周变化 -82.030B" in conclusion.reasoning
 
     markdown = render_macro_full_report_markdown(snapshot, conclusion)
-    assert "利率压制态" in markdown
+    assert "过渡释放态" in markdown
     assert "分裂偏紧" in markdown
-    assert "反弹空" in markdown
+    assert "过渡释放态下的等待" in markdown
     assert "DXY 跌破 100.8" in markdown
     assert "10Y 实际利率跌回 2.10% 下方" in markdown
     assert "实际收益率 | 高位压制 | 待LLM判断" in markdown
     assert "利率曲线 / 2Y-3M利差" in markdown
-    assert "规则预判更接近：**利率压制态**。" in markdown
-    assert "规则预判更接近：**利率压制态**。" in markdown
+    assert "规则预判更接近：**过渡释放态**。" in markdown
     assert "## 系统性风险雷达" in markdown
     assert "## 三路径推演" in markdown
     assert "## 联网补充与系统数据源缺口" in markdown
     assert "ETF / GLD 流向" in markdown
     assert "系统快照未接入；如联网获取只能标为外部补充" in markdown
     assert "规则预判方向与动作仅供对照，不是最终结论。" in markdown
+
+
+def test_trend_tailwind_without_bullish_bias_does_not_create_long_action() -> None:
+    snapshot = build_macro_snapshot(_recent_trade_day_points(), as_of="2026-06-26")
+
+    with patch(
+        "apps.analysis.macro.conclusion.classify_macro_regime",
+        return_value={"market_phase": "trend_tailwind"},
+    ):
+        conclusion = build_macro_conclusion(snapshot)
+
+    assert conclusion.state == "趋势顺风态"
+    assert conclusion.bias == "中性偏空"
+    assert conclusion.action == "等待"
+    assert conclusion.action_priority == "等待阶段与方向共振"
 
 
 def test_macro_reasoning_matches_neutral_dollar_layer() -> None:

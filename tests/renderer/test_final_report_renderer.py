@@ -277,6 +277,31 @@ def test_table_text_escapes_markdown_table_breakers():
 def test_render_final_report_markdown_includes_gold_macro_overview_context():
     snapshot = {
         **_snapshot(),
+        "gold_analysis_context": {
+            "status": "ready",
+            "data": {
+                "baseline_kind": "previous_analysis_report",
+                "analysis_baseline": {
+                    "source_kind": "final_analysis_report",
+                        "trade_date": "2026-07-13",
+                        "run_id": "composite-20260713",
+                    "quality_status": "accepted",
+                    "publish_allowed": None,
+                },
+                "freshness": {
+                    "market": {"status": "current", "as_of": "2026-05-14"},
+                    "news": {"status": "current", "as_of": "2026-05-14"},
+                    "oil": {"status": "missing", "as_of": None},
+                },
+                "oil_report_summary": {
+                    "source_kind": "jin10_oil_analysis",
+                    "trade_date": "2026-07-13",
+                    "article_id": "224998",
+                    "status": "accepted",
+                    "one_line_conclusion": "供应冲击支撑近月油价，但高油价的需求反噬仍待确认。",
+                },
+            },
+        },
         "gold_macro_overview": {
             "dominant_mainline": "fed_policy_path",
             "priority_regime": "policy_event_cycle",
@@ -328,6 +353,11 @@ def test_render_final_report_markdown_includes_gold_macro_overview_context():
     assert "### 黄金九主线总览" in markdown
     assert "主导主线: fed_policy_path" in markdown
     assert "优先环境: policy_event_cycle" in markdown
+    assert "分析基准与当日增量" in markdown
+    assert "前一日最新综合分析报告 / 2026-07-13 / ref=composite-20260713" in markdown
+    assert "油价 freshness：missing" in markdown
+    assert "原油报告：2026-07-13 / ref=224998 / quality=accepted" in markdown
+    assert "原油报告摘要：供应冲击支撑近月油价" in markdown
     assert "FOMC window prioritizes Fed path." in markdown
     assert "ready 4/9" in markdown
     assert "战争-石油-利率链: C / 两者抵消，黄金震荡" in markdown

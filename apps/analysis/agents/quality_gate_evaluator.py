@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput
 
@@ -42,6 +42,11 @@ class QualityGateDecision(BaseModel):
     evidence_item_count: int = 0
     max_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    @model_validator(mode="after")
+    def enforce_publish_contract(self) -> "QualityGateDecision":
+        self.publish_allowed = self.action is QualityGateAction.PASS
+        return self
+
 
 _ACTION_RANK = {
     QualityGateAction.PASS: 0,
@@ -76,8 +81,24 @@ def evaluate_quality_gate(
     findings: list[QualityGateFinding] = []
     fallback_actions: list[str] = []
 
+    context = overview.get("gold_analysis_context")
+    if isinstance(context, dict) and str(context.get("status") or "") not in {"", "ready"}:
+        findings.append(
+            QualityGateFinding(
+                code="gold_analysis_context_degraded",
+                severity="manual_review",
+                message="统一黄金分析上下文缺失或过期；综合输出保持 observe/needs_review。",
+                evidence={
+                    "status": context.get("status"),
+                    "baseline_kind": context.get("baseline_kind"),
+                    "freshness": context.get("freshness") or {},
+                },
+            )
+        )
+
     if _has_p0_source_gap(health) and (
-        _has_strong_conclusion(outputs=outputs, overview=overview, max_confidence=max_confidence)
+        health.get("can_build_gold_macro_overview") is False
+        or _has_strong_conclusion(outputs=outputs, overview=overview, max_confidence=max_confidence)
         or _source_health_blocks_strong_conclusion(health)
     ):
         findings.append(
@@ -193,11 +214,29 @@ def evaluate_quality_gate(
         fallback_actions.append("cross_check_with_independent_source")
         fallback_actions.append("downgrade_to_single_source_context_until_confirmed")
 
+    if (
+        _has_external_market_odds(outputs=outputs, overview=overview)
+        and _has_strong_conclusion(outputs=outputs, overview=overview, max_confidence=max_confidence)
+        and not _has_independent_market_confirmation(outputs=outputs, overview=overview)
+    ):
+        findings.append(
+            QualityGateFinding(
+                code="external_market_odds_only_strong_conclusion",
+                severity="blocker",
+                message="External single-source market odds cannot independently support a strong directional conclusion.",
+                evidence={
+                    "source_kind": "jin10_external_market_odds",
+                    "max_confidence": max_confidence,
+                    "independent_market_confirmation": False,
+                },
+            )
+        )
+
     action = _decision_action(findings)
     return QualityGateDecision(
         action=action,
         review_status="blocked" if action is QualityGateAction.BLOCK_PUBLISH else ("pass" if action is QualityGateAction.PASS else "needs_review"),
-        publish_allowed=action is not QualityGateAction.BLOCK_PUBLISH,
+        publish_allowed=action is QualityGateAction.PASS,
         retry_recommended=action is QualityGateAction.RETRY,
         fallback_recommended=action is QualityGateAction.FALLBACK,
         manual_review_required=action in {QualityGateAction.MANUAL_REVIEW, QualityGateAction.FALLBACK},
@@ -270,6 +309,50 @@ def _has_strong_conclusion(*, outputs: list[AgentOutput], overview: dict[str, An
     if str(overview.get("net_bias") or "") in {"strong_bullish", "strong_bearish"}:
         return True
     return any(output.bias in {AgentBias.BULLISH, AgentBias.BEARISH} and output.confidence >= 0.75 for output in outputs) or max_confidence >= 0.82
+
+
+def _has_external_market_odds(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:
+    if _contains_external_market_odds(overview):
+        return True
+    return any(
+        _contains_external_market_odds(output.input_payload)
+        or _contains_external_market_odds(output.evidence_items)
+        or _contains_external_market_odds(output.source_refs)
+        for output in outputs
+    )
+
+
+def _contains_external_market_odds(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get("source_kind") == "jin10_external_market_odds" or value.get("observation_type") == "external_market_odds":
+            return True
+        return any(_contains_external_market_odds(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_external_market_odds(item) for item in value)
+    return False
+
+
+def _has_independent_market_confirmation(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:
+    if any(
+        overview.get(key)
+        for key in (
+            "market_derived_odds",
+            "price_context",
+            "rates_context",
+            "official_event_confirmation",
+            "confirmed_market_evidence",
+        )
+    ):
+        return True
+    for output in outputs:
+        category = output.data_category.value if output.data_category is not None else ""
+        if category not in {"confirmed_data", "system_inference"}:
+            continue
+        if output.agent_name in {"news_agent", "jin10_report_analysis_agent"}:
+            continue
+        if output.status.value in {"success", "partial"} and (output.source_refs or output.evidence_items):
+            return True
+    return False
 
 
 def _mixed_without_driver_decomposition(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:

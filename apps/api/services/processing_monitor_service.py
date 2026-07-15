@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from apps.analysis.agents.gold_artifacts import GoldAgentArtifact
 from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
 from apps.contracts.gold import (
@@ -25,6 +28,33 @@ TRACE_MODES = [
 
 MAINLINES = list(GOLD_MAINLINE_IDS)
 TRANSMISSION_CHAINS = list(GOLD_TRANSMISSION_CHAIN_IDS)
+
+_GOLD_AGENT_ARTIFACTS = (
+    ("source_health_agent", "source_health_output.json"),
+    ("event_attribution_agent", "event_attribution_output.json"),
+    ("transmission_chain_agent", "transmission_chain_output.json"),
+    ("driver_decomposition_agent", "driver_decomposition_output.json"),
+    ("mainline_ranking_agent", "mainline_ranking_output.json"),
+    ("gold_macro_overview_agent", "gold_macro_overview_output.json"),
+    ("review_gate_agent", "review_gate_output.json"),
+    ("report_render_agent", "report_render_output.json"),
+)
+
+_GOLD_AGENT_TRACE_NODES = {
+    "source_health_agent": ("source_health_check",),
+    "event_attribution_agent": ("mainline_attribution",),
+    "transmission_chain_agent": ("transmission_chain_detection",),
+    "driver_decomposition_agent": ("driver_decomposition",),
+    "mainline_ranking_agent": ("mainline_attribution",),
+    "gold_macro_overview_agent": ("gold_macro_overview",),
+    "review_gate_agent": ("review_gate",),
+    "report_render_agent": ("reports", "strategy"),
+}
+_RUN_SCOPED_TRACE_NODES = frozenset(
+    node_id
+    for node_ids in _GOLD_AGENT_TRACE_NODES.values()
+    for node_id in node_ids
+) | {"event_flow_feature"}
 
 TRACE_PATH = [
     {"node_id": "source_health_check", "label": "Source Health", "stage": "health"},
@@ -63,6 +93,7 @@ def get_processing_overview(*, project_root: Path | None = None) -> dict[str, An
         "run_id": gold_payload.get("run_id"),
         "asset": overview.get("asset") or "XAUUSD",
         "generated_from": gold_payload.get("artifact_path"),
+        "execution_summary": context["execution_summary"],
         "trace_modes": TRACE_MODES,
         "trace_path": _trace_path(
             gold_payload=gold_payload,
@@ -71,6 +102,7 @@ def get_processing_overview(*, project_root: Path | None = None) -> dict[str, An
             source_refs=source_refs,
             artifact_refs=artifact_refs,
             source_health=source_health,
+            agent_artifact_refs=context["execution_summary"]["used_data"]["agent_artifact_refs"],
         ),
         "input_coverage": _input_coverage(event_links=event_links, source_refs=source_refs, artifact_refs=artifact_refs),
         "mainline_coverage": _mainline_coverage(
@@ -152,6 +184,16 @@ def _load_processing_context(*, root: Path) -> dict[str, Any]:
         key="source_ref",
     )
     artifact_refs = _unique_refs(_list_of_dicts(overview.get("artifact_refs")), key="file_path")
+    agent_envelopes = _load_agent_envelopes(
+        root=root,
+        artifact_path=gold_payload.get("artifact_path"),
+        run_id=str(gold_payload.get("run_id") or ""),
+    )
+    execution_summary = _execution_summary(
+        gold_payload=gold_payload,
+        overview=overview,
+        envelopes=agent_envelopes,
+    )
     return {
         "gold_payload": gold_payload,
         "overview": overview,
@@ -159,7 +201,143 @@ def _load_processing_context(*, root: Path) -> dict[str, Any]:
         "event_links": event_links,
         "source_refs": source_refs,
         "artifact_refs": artifact_refs,
+        "agent_envelopes": agent_envelopes,
+        "execution_summary": execution_summary,
     }
+
+
+def _execution_summary(
+    *,
+    gold_payload: dict[str, Any],
+    overview: dict[str, Any],
+    envelopes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    failed_steps = [
+        str(envelope["agent_name"])
+        for envelope in envelopes
+        if envelope.get("status") == "failed"
+    ]
+    input_snapshot_ids: dict[str, Any] = {}
+    source_refs: list[dict[str, Any]] = []
+    agent_artifact_refs: list[dict[str, Any]] = []
+    report_render: dict[str, Any] | None = None
+    for envelope in envelopes:
+        for key, value in _dict(envelope.get("input_snapshot_ids")).items():
+            input_snapshot_ids.setdefault(str(key), value)
+        source_refs.extend(_list_of_dicts(envelope.get("source_refs")))
+        agent_artifact_refs.append(
+            {
+                "agent_name": envelope["agent_name"],
+                "status": envelope["status"],
+                "file_path": envelope["_file_path"],
+            }
+        )
+        if envelope["agent_name"] == "report_render_agent":
+            report_render = envelope
+
+    render_refs = _list_of_dicts(report_render.get("artifact_refs")) if report_render else []
+    report_refs = [ref for ref in render_refs if ref.get("artifact_type") == "final_report"]
+    strategy_card_refs = [ref for ref in render_refs if ref.get("artifact_type") == "strategy_card"]
+    quality_gate = _quality_gate(overview=overview)
+    publish_allowed = quality_gate.get("publish_allowed")
+    review_status = str(quality_gate.get("review_status") or "missing")
+    has_rendered_output = bool(report_refs and strategy_card_refs)
+    if has_rendered_output and (publish_allowed is False or review_status == "blocked"):
+        final_mode = "observe"
+    elif has_rendered_output and publish_allowed is True:
+        final_mode = "accepted"
+    else:
+        final_mode = "unavailable"
+
+    if failed_steps:
+        execution_status = "failed"
+    elif review_status == "blocked":
+        execution_status = "blocked"
+    elif (
+        len(envelopes) < len(_GOLD_AGENT_ARTIFACTS)
+        or any(envelope.get("status") != "success" for envelope in envelopes)
+        or str(gold_payload.get("status") or "") not in {"success", "available", "complete", "ready"}
+        or final_mode == "unavailable"
+    ):
+        execution_status = "partial"
+    else:
+        execution_status = "success"
+
+    return {
+        "status": execution_status,
+        "failed_steps": failed_steps,
+        "used_data": {
+            "input_snapshot_ids": input_snapshot_ids,
+            "source_refs": _unique_refs(source_refs, key="source_ref"),
+            "agent_artifact_refs": agent_artifact_refs,
+        },
+        "final_output": {
+            "mode": final_mode,
+            "publish_allowed": publish_allowed,
+            "review_status": review_status,
+            "report_artifact_refs": report_refs,
+            "strategy_card_artifact_refs": strategy_card_refs,
+        },
+    }
+
+
+def _load_agent_envelopes(
+    *,
+    root: Path,
+    artifact_path: Any,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    overview_path = _resolve_project_artifact_path(root=root, value=artifact_path)
+    if overview_path is None:
+        return []
+    agent_outputs_dir = overview_path.parent / "agent_outputs"
+    envelopes: list[dict[str, Any]] = []
+    for expected_agent, filename in _GOLD_AGENT_ARTIFACTS:
+        path = agent_outputs_dir / filename
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _is_valid_agent_envelope(
+            payload,
+            expected_agent=expected_agent,
+            run_id=run_id,
+        ):
+            continue
+        envelope = dict(payload)
+        envelope["_file_path"] = path.relative_to(root).as_posix()
+        envelopes.append(envelope)
+    return envelopes
+
+
+def _is_valid_agent_envelope(
+    payload: Any,
+    *,
+    expected_agent: str,
+    run_id: str,
+) -> bool:
+    if not isinstance(payload, dict) or not run_id:
+        return False
+    try:
+        envelope = GoldAgentArtifact.model_validate(payload)
+    except ValidationError:
+        return False
+    return envelope.agent_name == expected_agent and envelope.run_id == run_id
+
+
+def _resolve_project_artifact_path(*, root: Path, value: Any) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    relative = Path(value)
+    if relative.is_absolute():
+        return None
+    resolved_root = root.resolve()
+    candidates = (root / relative, root / "storage" / relative)
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.is_relative_to(resolved_root) and resolved.is_file():
+            return resolved
+    return None
 
 
 def _find_event_link(
@@ -193,13 +371,24 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
     overview = context["overview"]
     source_health = _artifact_source_health(overview=overview)
     read_time_source_health = _dict(gold_payload.get("read_time_source_health"))
+    trace_header = _trace_header(
+        gold_payload=gold_payload,
+        overview=overview,
+        event=event,
+        query=query,
+    )
     if event is None:
+        empty_detail = _empty_trace_detail()
         return {
             "status": "not_found",
             "date": gold_payload.get("date"),
             "run_id": gold_payload.get("run_id"),
+            "asset": overview.get("asset") or "XAUUSD",
+            "trace_header": trace_header,
             "query": query,
             "matched_event": None,
+            "mainlines": [],
+            "transmission_chains": [],
             "trace_path": _trace_path(
                 gold_payload=gold_payload,
                 overview=overview,
@@ -207,6 +396,8 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
                 source_refs=[],
                 artifact_refs=context["artifact_refs"],
                 source_health=source_health,
+                agent_artifact_refs=context["execution_summary"]["used_data"]["agent_artifact_refs"],
+                expose_stage_refs=True,
             ),
             "source_health": source_health,
             "quality_gate": _quality_gate(overview=overview),
@@ -216,6 +407,7 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
             "source_refs": [],
             "artifact_refs": context["artifact_refs"],
             "view_bindings": _view_bindings(gold_payload=gold_payload, overview=overview, event_links=[], source_refs=[]),
+            **empty_detail,
         }
 
     event_source_refs = _unique_refs(_list_of_dicts(event.get("source_refs")), key="source_ref")
@@ -226,11 +418,19 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
         "input_id": str(event.get("input_id") or query.get("input_id") or ""),
         "source_ref": event_source_refs[0].get("source_ref") if event_source_refs else query.get("source_ref"),
     }
+    view_bindings = _view_bindings(
+        gold_payload=gold_payload,
+        overview=overview,
+        event_links=[event],
+        source_refs=event_source_refs,
+    )
+    trace_detail = _trace_detail(context=context, view_bindings=view_bindings)
     return {
         "status": "matched",
         "date": gold_payload.get("date"),
         "run_id": gold_payload.get("run_id"),
         "asset": overview.get("asset") or "XAUUSD",
+        "trace_header": trace_header,
         "query": response_query,
         "matched_event": {
             "event_id": event.get("event_id"),
@@ -247,6 +447,10 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
             source_refs=event_source_refs,
             artifact_refs=context["artifact_refs"],
             source_health=source_health,
+            agent_artifact_refs=context["execution_summary"]["used_data"]["agent_artifact_refs"],
+            agent_envelopes=context["agent_envelopes"],
+            input_snapshot_ids=context["execution_summary"]["used_data"]["input_snapshot_ids"],
+            expose_stage_refs=True,
         ),
         "source_health": source_health,
         "quality_gate": _quality_gate(overview=overview),
@@ -255,8 +459,199 @@ def _trace_payload(*, context: dict[str, Any], event: dict[str, Any] | None, que
         "read_time_generated_at": gold_payload.get("read_time_generated_at") or datetime.now(timezone.utc).isoformat(),
         "source_refs": event_source_refs,
         "artifact_refs": context["artifact_refs"],
-        "view_bindings": _view_bindings(gold_payload=gold_payload, overview=overview, event_links=[event], source_refs=event_source_refs),
+        "view_bindings": view_bindings,
+        **trace_detail,
     }
+
+
+def _trace_header(
+    *,
+    gold_payload: dict[str, Any],
+    overview: dict[str, Any],
+    event: dict[str, Any] | None,
+    query: dict[str, str],
+) -> dict[str, Any]:
+    _query_type, query_value = next(iter(query.items()))
+    quality_gate = _quality_gate(overview=overview)
+    trace_id = (
+        str(event.get("processing_trace_id") or event.get("event_id") or "")
+        if event is not None
+        else str(query.get("processing_trace_id") or "")
+    )
+    return {
+        "trace_id": trace_id,
+        "run_id": gold_payload.get("run_id"),
+        "entity_type": "event" if event is not None else "unknown",
+        "entity_id": event.get("event_id") if event is not None else query_value,
+        "status": "matched" if event is not None else "not_found",
+        "review_status": quality_gate.get("review_status"),
+        "publish_allowed": quality_gate.get("publish_allowed"),
+        "as_of": overview.get("as_of") or gold_payload.get("as_of"),
+    }
+
+
+def _empty_trace_detail() -> dict[str, Any]:
+    return {
+        "primary_output": {},
+        "fallback_outputs": [],
+        "accepted_output": {},
+        "accepted_output_source": "none",
+        "fallback_review": _fallback_review(review_gate={}),
+        "agent_envelopes": [],
+        "input_snapshot_ids": {},
+        "evidence_refs": [],
+        "evidence_items": [],
+        "affected_views": [],
+    }
+
+
+def _trace_detail(
+    *,
+    context: dict[str, Any],
+    view_bindings: list[dict[str, str]],
+) -> dict[str, Any]:
+    overview = context["overview"]
+    review_gate = _dict(overview.get("review_gate"))
+    agent_loop_decision = _dict(review_gate.get("agent_loop_decision"))
+    envelope_projections = [
+        _agent_envelope_projection(envelope)
+        for envelope in context["agent_envelopes"]
+    ]
+    primary_output = _primary_output_projection(envelope_projections)
+    fallback_outputs = _fallback_output_summaries(
+        _dict(review_gate.get("fallback_outputs"))
+    )
+    accepted_output_source, accepted_output = _accepted_output_projection(
+        review_gate=review_gate,
+        agent_loop_decision=agent_loop_decision,
+        execution_summary=context["execution_summary"],
+        primary_output=primary_output,
+        fallback_outputs=fallback_outputs,
+    )
+    input_snapshot_ids: dict[str, Any] = {}
+    evidence_refs: list[dict[str, Any]] = []
+    evidence_items: list[dict[str, Any]] = []
+    for envelope in envelope_projections:
+        for key, value in _dict(envelope.get("input_snapshot_ids")).items():
+            input_snapshot_ids.setdefault(str(key), value)
+        evidence_refs.extend(_list_of_dicts(envelope.get("evidence_refs")))
+        evidence_items.extend(_list_of_dicts(envelope.get("evidence_items")))
+
+    affected_views = [
+        str(binding["view"])
+        for binding in view_bindings
+        if binding.get("status") == "bound"
+    ]
+    if "ProcessingMonitor" not in affected_views:
+        affected_views.append("ProcessingMonitor")
+    return {
+        "primary_output": primary_output,
+        "fallback_outputs": fallback_outputs,
+        "accepted_output": accepted_output,
+        "accepted_output_source": accepted_output_source,
+        "fallback_review": _fallback_review(review_gate=review_gate),
+        "agent_envelopes": envelope_projections,
+        "input_snapshot_ids": input_snapshot_ids,
+        "evidence_refs": _unique_refs(evidence_refs, key="evidence_ref"),
+        "evidence_items": _unique_refs(evidence_items, key="evidence_id"),
+        "affected_views": affected_views,
+    }
+
+
+def _agent_envelope_projection(envelope: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "scope": "run",
+        "agent_name": envelope["agent_name"],
+        "run_id": envelope["run_id"],
+        "snapshot_id": envelope["snapshot_id"],
+        "status": envelope["status"],
+        "confidence": envelope.get("confidence"),
+        "created_at": envelope.get("created_at"),
+        "input_snapshot_ids": _dict(envelope.get("input_snapshot_ids")),
+        "source_refs": _list_of_dicts(envelope.get("source_refs")),
+        "artifact_refs": _list_of_dicts(envelope.get("artifact_refs")),
+        "evidence_refs": _list_of_dicts(envelope.get("evidence_refs")),
+        "evidence_items": _list_of_dicts(envelope.get("evidence_items")),
+        "data_quality": list(envelope.get("data_quality") or []),
+        "file_path": envelope["_file_path"],
+    }
+
+
+def _primary_output_projection(
+    envelope_projections: list[dict[str, Any]],
+) -> dict[str, Any]:
+    report_render = next(
+        (
+            envelope
+            for envelope in envelope_projections
+            if envelope.get("agent_name") == "report_render_agent"
+        ),
+        None,
+    )
+    if report_render is None:
+        return {}
+    artifact_refs = [
+        ref
+        for ref in _list_of_dicts(report_render.get("artifact_refs"))
+        if ref.get("artifact_type") in {"final_report", "strategy_card"}
+    ]
+    artifact_types = {str(ref.get("artifact_type")) for ref in artifact_refs}
+    if artifact_types != {"final_report", "strategy_card"}:
+        return {}
+    return {
+        "scope": "run",
+        "agent_name": "report_render_agent",
+        "run_id": report_render.get("run_id"),
+        "snapshot_id": report_render.get("snapshot_id"),
+        "status": report_render.get("status"),
+        "file_path": report_render.get("file_path"),
+        "artifact_refs": artifact_refs,
+    }
+
+
+def _accepted_output_projection(
+    *,
+    review_gate: dict[str, Any],
+    agent_loop_decision: dict[str, Any],
+    execution_summary: dict[str, Any],
+    primary_output: dict[str, Any],
+    fallback_outputs: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    if (
+        review_gate.get("publish_allowed") is not True
+        or agent_loop_decision.get("publish_allowed") is False
+    ):
+        return "none", {}
+
+    accepted_reference = agent_loop_decision.get("accepted_output")
+    if isinstance(accepted_reference, dict):
+        source = str(accepted_reference.get("source") or "none")
+        artifact_ref = _dict(accepted_reference.get("artifact_ref"))
+        if source == "primary":
+            if not primary_output or not artifact_ref:
+                return "none", {}
+            return "primary", primary_output
+        if source == "corrective_fallback":
+            return ("fallback", artifact_ref) if artifact_ref else ("none", {})
+        return "none", {}
+
+    # Legacy persisted decisions predate the typed accepted-output reference.
+    # Keep them readable, but never use this inference for new decisions.
+    fallback_trace = _dict(agent_loop_decision.get("fallback_trace"))
+    selected = str(fallback_trace.get("accepted_output") or "")
+    if selected == "primary":
+        return ("primary", primary_output) if primary_output else ("none", {})
+    if selected == "fallback":
+        accepted_outputs = _dict(agent_loop_decision.get("accepted_outputs"))
+        if accepted_outputs:
+            return "fallback", accepted_outputs
+        if fallback_outputs:
+            return "fallback", {"outputs": fallback_outputs}
+        return "none", {}
+    final_output = _dict(execution_summary.get("final_output"))
+    if final_output.get("mode") == "accepted" and primary_output:
+        return "primary", primary_output
+    return "none", {}
 
 
 def _event_mainlines(event: dict[str, Any]) -> list[str]:
@@ -282,6 +677,10 @@ def _trace_path(
     source_refs: list[dict[str, Any]],
     artifact_refs: list[dict[str, Any]],
     source_health: dict[str, Any],
+    agent_artifact_refs: list[dict[str, Any]],
+    agent_envelopes: list[dict[str, Any]] | None = None,
+    input_snapshot_ids: dict[str, Any] | None = None,
+    expose_stage_refs: bool = False,
 ) -> list[dict[str, Any]]:
     has_events = bool(event_links)
     has_source_refs = bool(source_refs)
@@ -307,6 +706,13 @@ def _trace_path(
         "strategy": "Strategy",
         "source_trace": "SourceTrace",
     }
+    agent_refs_by_node: dict[str, list[dict[str, Any]]] = {}
+    for artifact_ref in agent_artifact_refs:
+        node_ids = _GOLD_AGENT_TRACE_NODES.get(str(artifact_ref.get("agent_name") or ""))
+        if node_ids is None:
+            continue
+        for node_id in node_ids:
+            agent_refs_by_node.setdefault(node_id, []).append(artifact_ref)
 
     result: list[dict[str, Any]] = []
     for node in TRACE_PATH:
@@ -314,6 +720,14 @@ def _trace_path(
         status = "missing"
         source_ref_count = 0
         artifact_ref_count = 0
+        stage_source_refs, stage_artifact_refs = _trace_stage_refs(
+            node_id=node_id,
+            event_links=event_links,
+            source_refs=source_refs,
+            agent_envelopes=agent_envelopes or [],
+            input_snapshot_ids=input_snapshot_ids or {},
+            expose_stage_refs=expose_stage_refs,
+        )
 
         if node_id == "source_health_check":
             status = _coverage_from_source_health(source_health)
@@ -348,15 +762,167 @@ def _trace_path(
             source_ref_count = len(source_refs) if node_id == "source_trace" else 0
             artifact_ref_count = len(artifact_refs)
 
+        if expose_stage_refs:
+            source_ref_count = len(stage_source_refs)
+            artifact_ref_count = len(stage_artifact_refs)
+
         result.append(
             {
                 **node,
                 "status": status,
                 "source_ref_count": source_ref_count,
                 "artifact_ref_count": artifact_ref_count,
+                "warnings": _trace_stage_values(
+                    node_id=node_id,
+                    field="warnings",
+                    overview=overview,
+                ),
+                "missing_data": _trace_stage_values(
+                    node_id=node_id,
+                    field="missing_data",
+                    overview=overview,
+                ),
+                "agent_artifact_refs": _unique_refs(
+                    agent_refs_by_node.get(node_id, []),
+                    key="file_path",
+                ),
+                "source_refs": stage_source_refs,
+                "artifact_refs": stage_artifact_refs,
+                "scope": "run" if node_id in _RUN_SCOPED_TRACE_NODES else "event",
             }
         )
     return result
+
+
+def _trace_stage_refs(
+    *,
+    node_id: str,
+    event_links: list[dict[str, Any]],
+    source_refs: list[dict[str, Any]],
+    agent_envelopes: list[dict[str, Any]],
+    input_snapshot_ids: dict[str, Any],
+    expose_stage_refs: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not expose_stage_refs or not event_links:
+        return [], []
+
+    if node_id == "jin10_message_raw":
+        return (
+            _trace_source_ref_links(source_refs),
+            _source_path_artifact_refs(
+                source_refs,
+                field="raw_path",
+                artifact_type="raw_input",
+                expected_root="raw",
+            ),
+        )
+    if node_id == "jin10_flash_parse":
+        return (
+            _trace_source_ref_links(source_refs),
+            _source_path_artifact_refs(
+                source_refs,
+                field="parsed_path",
+                artifact_type="parsed_event",
+                expected_root="parsed",
+            ),
+        )
+    if node_id == "event_flow_feature":
+        return (
+            _trace_source_ref_links(source_refs),
+            _feature_artifact_refs(input_snapshot_ids),
+        )
+    if node_id == "source_trace":
+        return _trace_source_ref_links(source_refs), []
+
+    stage_agents = {agent_name for agent_name, node_ids in _GOLD_AGENT_TRACE_NODES.items() if node_id in node_ids}
+    stage_envelopes = [
+        envelope for envelope in agent_envelopes if str(envelope.get("agent_name") or "") in stage_agents
+    ]
+    stage_source_refs = _trace_source_ref_links(
+        [ref for envelope in stage_envelopes for ref in _list_of_dicts(envelope.get("source_refs"))],
+    )
+    stage_artifact_refs = _unique_refs(
+        [ref for envelope in stage_envelopes for ref in _list_of_dicts(envelope.get("artifact_refs"))],
+        key="path",
+    )
+    if node_id == "reports":
+        stage_artifact_refs = [ref for ref in stage_artifact_refs if ref.get("artifact_type") == "final_report"]
+    elif node_id == "strategy":
+        stage_artifact_refs = [ref for ref in stage_artifact_refs if ref.get("artifact_type") == "strategy_card"]
+    return stage_source_refs, stage_artifact_refs
+
+
+def _trace_source_ref_links(source_refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    for source_ref in source_refs:
+        ref_id = source_ref.get("source_ref")
+        if not isinstance(ref_id, str) or not ref_id:
+            continue
+        link = {"source_ref": ref_id}
+        source = source_ref.get("source")
+        if isinstance(source, str) and source:
+            link["source"] = source
+        links.append(link)
+    return _unique_refs(links, key="source_ref")
+
+
+def _feature_artifact_refs(input_snapshot_ids: dict[str, Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for snapshot_name, value in input_snapshot_ids.items():
+        if not isinstance(value, str) or not value.strip():
+            continue
+        path = value.strip().replace("\\", "/")
+        parts = path.split("/")
+        if path.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+            continue
+        feature_parts = parts[1:] if parts[:1] == ["storage"] else parts
+        if not feature_parts or feature_parts[0] != "features":
+            continue
+        refs.append({"artifact_type": str(snapshot_name), "path": path})
+    return _unique_refs(refs, key="path")
+
+
+def _source_path_artifact_refs(
+    source_refs: list[dict[str, Any]],
+    *,
+    field: str,
+    artifact_type: str,
+    expected_root: str,
+) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for source_ref in source_refs:
+        value = source_ref.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        path = value.strip().replace("\\", "/")
+        parts = path.split("/")
+        if path.startswith("/") or any(part in {"", ".", ".."} for part in parts):
+            continue
+        artifact_parts = parts[1:] if parts[:1] == ["storage"] else parts
+        if not artifact_parts or artifact_parts[0] != expected_root:
+            continue
+        refs.append({"artifact_type": artifact_type, "path": path})
+    return _unique_refs(refs, key="path")
+
+
+def _trace_stage_values(
+    *,
+    node_id: str,
+    field: str,
+    overview: dict[str, Any],
+) -> list[str]:
+    if node_id == "source_health_check":
+        owner = _dict(overview.get("source_health"))
+    elif node_id == "gold_macro_overview":
+        owner = overview
+    elif node_id == "review_gate":
+        owner = _dict(overview.get("review_gate"))
+    else:
+        return []
+    values = owner.get(field)
+    if not isinstance(values, list):
+        return []
+    return _unique_strings(item for item in values if isinstance(item, str) and item)
 
 
 def _input_coverage(*, event_links: list[dict[str, Any]], source_refs: list[dict[str, Any]], artifact_refs: list[dict[str, Any]]) -> dict[str, int]:
@@ -536,9 +1102,13 @@ def _fallback_review(*, review_gate: dict[str, Any]) -> dict[str, Any]:
         "primary_outputs": _unique_strings(str(item) for item in agent_loop_decision.get("fallback_of") or []),
         "fallback_outputs": _fallback_output_summaries(fallback_outputs),
         "accepted_outputs": _dict(agent_loop_decision.get("accepted_outputs")),
+        "fallback_tasks": _list_of_dicts(agent_loop_decision.get("fallback_tasks")),
         "task_results": _list_of_dicts(review_gate.get("fallback_task_results")),
         "reasons": _unique_strings(str(item) for item in agent_loop_decision.get("reasons") or []),
         "review_items": _list_of_dicts(fallback_trace.get("review_items")),
+        "fallback_quality_gate_decision": _dict(agent_loop_decision.get("fallback_quality_gate_decision")),
+        "no_strong_conclusion": bool(agent_loop_decision.get("no_strong_conclusion")),
+        "strategy_card_override": _dict(agent_loop_decision.get("strategy_card_override")),
     }
 
 

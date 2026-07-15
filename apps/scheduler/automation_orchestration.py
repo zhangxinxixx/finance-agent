@@ -15,6 +15,7 @@ from apps.monitoring import run_data_quality_monitor
 from apps.notifications.notification_agent import FeishuNotificationAgent
 from apps.notifications.schemas import NotificationRequest
 from apps.orchestration import run_automation_orchestrator
+from apps.orchestration.execution_lock import append_notification_delivery_log
 
 _DEFAULT_NO_PROXY = "127.0.0.1,localhost,::1"
 
@@ -31,13 +32,13 @@ def run_hourly_orchestration(
     now = _ensure_utc(observed_at or datetime.now(timezone.utc))
     day = trade_date or now.date().isoformat()
     _ensure_no_proxy()
-    data_control_result = run_data_control_agent(
+    data_quality_result = run_data_quality_monitor(
         storage_root=storage_root,
         trade_date=day,
         observed_at=now,
         record_task_run=record_task_run,
     )
-    data_quality_result = run_data_quality_monitor(
+    data_control_result = run_data_control_agent(
         storage_root=storage_root,
         trade_date=day,
         observed_at=now,
@@ -331,25 +332,12 @@ def _retry_item_due(item: dict[str, Any], observed_at: datetime) -> bool:
 
 
 def _append_delivery_log(*, base: Path, trade_date: str, observed_at: str, results: list[dict[str, Any]]) -> None:
-    deliveries = []
-    for result in results:
-        deliveries.append(
-            {
-                "dedupe_key": result.get("dedupe_key"),
-                "kind": result.get("kind"),
-                "status": result.get("status"),
-                "ok": result.get("ok"),
-                "sent_at": observed_at,
-                "retried_at": result.get("retried_at"),
-                "error": result.get("error"),
-            }
-        )
-    if not deliveries:
-        return
-    path = base / "notification_delivery_log.json"
-    payload = _read_json(path)
-    existing = payload.get("deliveries") if isinstance(payload.get("deliveries"), list) else []
-    _write_json(path, {"trade_date": trade_date, "deliveries": [*existing, *deliveries]})
+    append_notification_delivery_log(
+        storage_root=base.parent.parent,
+        trade_date=trade_date,
+        observed_at=observed_at,
+        results=results,
+    )
 
 
 def _read_json(path: Path) -> dict[str, Any]:

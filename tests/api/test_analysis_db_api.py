@@ -837,6 +837,57 @@ def test_list_strategy_cards_two_cards_sorted_by_date(tmp_path: Path):
         assert "markdown" not in item
 
 
+def test_list_strategy_cards_same_day_uses_generated_time_not_run_id(tmp_path: Path):
+    from apps.api.data_service import list_strategy_cards
+
+    session = _make_inmem_session()
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/strategy_card/XAUUSD/2026-05-14/z-old/strategy_card.json": json.dumps(
+                {"strategy_card_id": "old-card", "created_at": "2026-05-14T08:00:00+00:00"}
+            ),
+            "storage/outputs/strategy_card/XAUUSD/2026-05-14/a-new/strategy_card.json": json.dumps(
+                {"strategy_card_id": "new-card", "created_at": "2026-05-14T10:00:00+00:00"}
+            ),
+        },
+    )
+
+    def _fake_try_db():
+        return session
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_SESSION_REF, _fake_try_db),
+    ):
+        result = list_strategy_cards(limit=1)
+
+    assert result["items"][0]["strategy_card_id"] == "new-card"
+    assert result["items"][0]["run_id"] == "a-new"
+    assert result["items"][0]["updated_at"] == "2026-05-14T10:00:00+00:00"
+
+
+def test_fs_strategy_card_limit_is_applied_after_same_day_timestamp_sort(tmp_path: Path):
+    from apps.api.services.report_service import _collect_fs_strategy_cards
+
+    _make_tree(
+        tmp_path,
+        {
+            "XAUUSD/2026-05-14/z-old/strategy_card.json": json.dumps(
+                {"strategy_card_id": "old-card", "created_at": "2026-05-14T08:00:00+00:00"}
+            ),
+            "XAUUSD/2026-05-14/a-new/strategy_card.json": json.dumps(
+                {"strategy_card_id": "new-card", "created_at": "2026-05-14T10:00:00+00:00"}
+            ),
+        },
+    )
+
+    with mock.patch("apps.api.services.report_service._PROJECT_ROOT", tmp_path):
+        items = _collect_fs_strategy_cards(tmp_path, "XAUUSD", limit=1)
+
+    assert [item["strategy_card_id"] for item in items] == ["new-card"]
+
+
 def test_list_strategy_cards_limit(tmp_path: Path):
     """list_strategy_cards respects limit parameter."""
     from apps.api.data_service import list_strategy_cards

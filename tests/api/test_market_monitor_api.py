@@ -53,7 +53,7 @@ def test_market_monitor_history_route_is_registered():
     assert "series" in payload
 
 
-def test_market_monitor_overview_uses_latest_candle_when_tickers_missing(monkeypatch):
+def test_market_monitor_overview_does_not_use_gc_f_as_xauusd_fallback(monkeypatch):
     engine = create_engine("sqlite:///:memory:", echo=False)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     with session_factory() as session:
@@ -87,12 +87,11 @@ def test_market_monitor_overview_uses_latest_candle_when_tickers_missing(monkeyp
     data = get_market_monitor_overview()
 
     xauusd = next(item for item in data["metrics"] if item["key"] == "XAUUSD")
-    assert xauusd["latest_value"] == 3358.5
-    assert xauusd["status"] == "ok"
-    assert xauusd["interpretation"] == "market_candles_latest"
+    assert xauusd["latest_value"] is None
+    assert xauusd["status"] == "unavailable"
 
 
-def test_market_monitor_history_1d_returns_intraday_metadata(monkeypatch):
+def test_market_monitor_history_1d_does_not_sample_hourly_rows(monkeypatch):
     engine = create_engine("sqlite:///:memory:", echo=False)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     with session_factory() as session:
@@ -113,126 +112,108 @@ def test_market_monitor_history_1d_returns_intraday_metadata(monkeypatch):
     monkeypatch.setattr("apps.api.services.market_service._market_session_factory", lambda: session_factory)
     data = get_market_monitor_history(limit=30, timeframe="1D")
     assert data["timeframe"] == "1D"
-    assert data["source_timeframe"] == "1h"
-    assert data["available_fields"] == ["XAUUSD", "DXY"]
+    assert data["source_timeframe"] == "1d"
+    assert data["available_fields"][:2] == ["XAUUSD", "DXY"]
     assert data["degraded"] is True
-    assert data["series"][0]["XAUUSD"] == 3362.0
-    assert data["series"][0]["xauusd_ohlc"] == {
-        "open": 3360.0,
-        "high": 3365.0,
-        "low": 3358.0,
-        "close": 3362.0,
-    }
+    assert data["series"] == []
 
 
-def test_market_monitor_history_15m_aggregates_real_minute_candles(monkeypatch):
+def test_market_monitor_history_15m_aggregates_canonical_five_minute_candles(monkeypatch):
     engine = create_engine("sqlite:///:memory:", echo=False)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     base_time = datetime(2026, 6, 4, 1, 0, tzinfo=UTC)
     with session_factory() as session:
         ensure_analysis_tables(session)
-        for index in range(16):
-            price = 3360.0 + index
+        for index in range(3):
+            price = 3360.0 + index * 5
             upsert_market_candle(
                 session,
                 asset="XAUUSD",
-                timeframe="1m",
-                open_time=base_time + timedelta(minutes=index),
+                timeframe="5m",
+                open_time=base_time + timedelta(minutes=index * 5),
                 open=price,
                 high=price + 2.0,
                 low=price - 1.0,
                 close=price + 0.5,
-                source="jin10_mcp_kline_1m",
+                source="jin10_mcp_derived_5m",
             )
         session.commit()
 
     monkeypatch.setattr("apps.api.services.market_service._market_session_factory", lambda: session_factory)
     data = get_market_monitor_history(limit=30, timeframe="15M")
     assert data["timeframe"] == "15M"
-    assert data["source_timeframe"] == "1m"
-    assert data["available_points"] == 2
+    assert data["source_timeframe"] == "5m"
+    assert data["available_points"] == 1
     assert data["series"][0]["date"] == base_time.isoformat()
     assert data["series"][0]["xauusd_ohlc"] == {
         "open": 3360.0,
-        "high": 3376.0,
+        "high": 3372.0,
         "low": 3359.0,
-        "close": 3374.5,
-    }
-    assert data["series"][1]["date"] == (base_time + timedelta(minutes=15)).isoformat()
-    assert data["series"][1]["xauusd_ohlc"] == {
-        "open": 3375.0,
-        "high": 3377.0,
-        "low": 3374.0,
-        "close": 3375.5,
+        "close": 3370.5,
     }
 
 
-def test_market_monitor_history_30m_keeps_latest_open_bucket(monkeypatch):
+def test_market_monitor_history_30m_rejects_incomplete_bucket(monkeypatch):
     engine = create_engine("sqlite:///:memory:", echo=False)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     base_time = datetime(2026, 6, 5, 7, 30, tzinfo=UTC)
     with session_factory() as session:
         ensure_analysis_tables(session)
-        for index in range(24):
+        for index in range(5):
             price = 4460.0 + index * 0.1
             upsert_market_candle(
                 session,
                 asset="XAUUSD",
-                timeframe="1m",
-                open_time=base_time + timedelta(minutes=index),
+                timeframe="5m",
+                open_time=base_time + timedelta(minutes=index * 5),
                 open=price,
                 high=price + 0.5,
                 low=price - 0.5,
                 close=price + 0.2,
-                source="jin10_mcp_kline_1m",
+                source="jin10_mcp_derived_5m",
             )
         session.commit()
 
     monkeypatch.setattr("apps.api.services.market_service._market_session_factory", lambda: session_factory)
     data = get_market_monitor_history(limit=8, timeframe="30M")
     assert data["timeframe"] == "30M"
-    assert data["source_timeframe"] == "1m"
-    assert data["available_points"] == 1
-    assert data["series"][0]["date"] == base_time.isoformat()
-    assert data["series"][0]["xauusd_ohlc"] == {
-        "open": 4460.0,
-        "high": 4462.8,
-        "low": 4459.5,
-        "close": 4462.5,
-    }
+    assert data["source_timeframe"] == "30m"
+    assert data["available_points"] == 0
+    assert data["series"] == []
+    assert data["degraded"] is True
 
 
-def test_market_monitor_history_1d_prefers_minute_candles_when_available(monkeypatch):
+def test_market_monitor_history_5m_returns_canonical_bars(monkeypatch):
     engine = create_engine("sqlite:///:memory:", echo=False)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     base_time = datetime(2026, 6, 5, 9, 0, tzinfo=UTC)
     with session_factory() as session:
         ensure_analysis_tables(session)
-        for index in range(120):
+        for index in range(2):
             price = 4400.0 + index * 0.1
             upsert_market_candle(
                 session,
                 asset="XAUUSD",
-                timeframe="1m",
-                open_time=base_time + timedelta(minutes=index),
+                timeframe="5m",
+                open_time=base_time + timedelta(minutes=index * 5),
                 open=price,
                 high=price + 1.0,
                 low=price - 1.0,
                 close=price + 0.2,
-                source="jin10_mcp_kline_1m",
+                source="jin10_mcp_derived_5m",
             )
         session.commit()
 
     monkeypatch.setattr("apps.api.services.market_service._market_session_factory", lambda: session_factory)
-    data = get_market_monitor_history(limit=8, timeframe="1D")
-    assert data["timeframe"] == "1D"
-    assert data["source_timeframe"] == "1m"
+    data = get_market_monitor_history(limit=8, timeframe="5M")
+    assert data["timeframe"] == "5M"
+    assert data["source_timeframe"] == "5m"
     assert data["available_points"] == 2
     assert data["series"][0]["date"] == base_time.isoformat()
-    assert data["series"][1]["date"] == (base_time + timedelta(hours=1)).isoformat()
+    assert data["series"][1]["date"] == (base_time + timedelta(minutes=5)).isoformat()
 
 
-def test_market_monitor_history_daily_prefers_market_candle_prices(monkeypatch, tmp_path):
+def test_market_monitor_history_daily_excludes_gc_f_misclassified_as_xauusd(monkeypatch, tmp_path):
     macro_root = tmp_path / "storage" / "features" / "macro" / "2026-06-04"
     macro_root.mkdir(parents=True, exist_ok=True)
     (macro_root / "macro_snapshot.json").write_text(
@@ -271,11 +252,6 @@ def test_market_monitor_history_daily_prefers_market_candle_prices(monkeypatch, 
     data = get_market_monitor_history(limit=30, timeframe="1M")
     assert data["timeframe"] == "1M"
     assert data["source_timeframe"] == "1d"
-    assert data["series"][0]["XAUUSD"] == 3358.5
+    assert data["series"][0]["XAUUSD"] is None
     assert data["series"][0]["DXY"] == 99.1
-    assert data["series"][0]["xauusd_ohlc"] == {
-        "open": 3350.0,
-        "high": 3360.0,
-        "low": 3348.0,
-        "close": 3358.5,
-    }
+    assert data["series"][0]["xauusd_ohlc"] is None

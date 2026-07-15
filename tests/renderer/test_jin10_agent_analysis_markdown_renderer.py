@@ -65,8 +65,8 @@ def test_render_jin10_agent_analysis_markdown_contains_fixed_sections() -> None:
 
     assert "Agent 二次分析报告" in markdown
     assert "# 分析溯源 / 数据来源" in markdown
-    assert "# 5. 关键位与触发条件" in markdown
-    assert "# 7. 风险与仍待确认项" in markdown
+    assert "# 6. 关键位更新" in markdown
+    assert "# 风险与仍待确认项" in markdown
     assert "## 确认口径与时间尺度" not in markdown
     assert "## Agent 入库字段" not in markdown
     assert "agent_stage_label: reversal_watch_window" not in markdown
@@ -76,7 +76,7 @@ def test_render_jin10_agent_analysis_markdown_contains_fixed_sections() -> None:
     assert "4400" not in markdown
 
 
-def test_render_jin10_agent_analysis_markdown_prefers_llm_narrative_and_strips_storage_section() -> None:
+def test_render_jin10_agent_analysis_markdown_ignores_legacy_narrative_and_uses_structured_fields() -> None:
     report = Jin10AgentAnalysisReport(
         document_id="doc-1",
         trade_date="2026-05-25",
@@ -125,8 +125,9 @@ trade_stance: wait_for_confirmation
 
     markdown = render_jin10_agent_analysis_markdown(report)
 
-    assert "当前反弹不能直接视为反攻信号。" in markdown
-    assert "# 3. 报告核心逻辑" in markdown
+    assert "兜底结论" in markdown
+    assert "当前反弹不能直接视为反攻信号。" not in markdown
+    assert "# 3. 黄金为什么涨 / 为什么跌？" in markdown
     assert "## Agent 入库字段" not in markdown
     assert "trade_stance: wait_for_confirmation" not in markdown
 
@@ -212,3 +213,53 @@ def test_render_trading_implications_reads_like_guidance_not_field_dump() -> Non
     assert "只有当以下条件出现" in markdown
     assert "当前判断需要回撤或重做" in markdown
     assert "修复被数据反向打断" in markdown
+
+
+def test_renderer_omits_missing_optional_guidance_fields_and_duplicate_suffixes() -> None:
+    report = Jin10AgentAnalysisReport(
+        document_id="doc-4",
+        trade_date="2026-07-16",
+        run_id="224688",
+        article_id="224688",
+        title="测试日报｜Agent 二次分析报告",
+        family="jin10_agent_analysis",
+        asset="XAUUSD",
+        source_report_family="jin10_daily_visual",
+        source_artifact_refs=[],
+        one_line_conclusion="修复仍待确认。",
+        provenance=[],
+        evidence_basis={"report_facts": [], "author_views": []},
+        market_stage={"label": "修复反弹态", "reason": "确认不足。"},
+        logic_chain=[],
+        key_variables=[],
+        gold_analysis="",
+        silver_analysis="",
+        cross_asset_analysis={},
+        key_levels=[],
+        scenario_paths=[{
+            "name": "主路径",
+            "path": "维持区间观察。",
+            "trigger": "价格未突破确认区。",
+            "invalid": "价格突破确认区。",
+        }],
+        trading_implications=[{
+            "role": "空仓",
+            "wait_for": "等待价格和宏观共振。",
+            "invalid": "价格跌破支撑。",
+        }],
+        risk_points=[],
+        final_summary="等待确认。",
+        unresolved_items=[],
+        source_refs=[],
+        generated_from={},
+    )
+
+    markdown = render_jin10_agent_analysis_markdown(report)
+
+    assert markdown.count("Agent 二次分析报告") == 1
+    assert "- 风险点：\n" not in markdown
+    assert "- 置信度：\n" not in markdown
+    assert "unavailable" not in markdown
+    assert "。。" not in markdown
+    assert markdown.count("等待价格和宏观共振") == 1
+    assert "当前更适合的做法是：等待价格和宏观共振。" in markdown

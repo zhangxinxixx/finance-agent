@@ -120,6 +120,9 @@ function ReportDetailCompactTabs({
 }
 
 export function ReportGoldMacroOverviewCard({ data }: { data: ReportDetailView }) {
+  const reportType = typeof data.structured_payload?.report_type === "string" ? data.structured_payload.report_type : "";
+  const isMarketObservation = data.meta.family === "jin10_market_observation_report" || reportType === "market_observation";
+  if (isMarketObservation) return null;
   const overview = data.gold_macro_overview;
   if (!overview) return null;
   const topRankings = [...(overview.theme_rankings ?? [])]

@@ -133,7 +133,13 @@ def _mock_jin10_mcp_collectors():
 @pytest.fixture(autouse=True)
 def _mock_source_status_index():
     """Keep worker integration tests deterministic unless a test opts into source gating explicitly."""
-    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+    with (
+        patch("apps.api.services.source_service.get_data_source_status_index", return_value={}),
+        patch(
+            "apps.worker.runner._evaluate_premarket_readiness",
+            return_value={"decision": "allow", "reason_code": None},
+        ),
+    ):
         yield
 
 
@@ -532,7 +538,7 @@ class TestStepCollect:
         assert len(state.all_points) == 0
         assert "TGA" in state.all_unavailable
 
-    def test_collect_uses_data_layer_when_official_source_missing(self, tmp_path):
+    def test_collect_does_not_use_yahoo_market_fallback_when_official_source_missing(self, tmp_path):
         state = MacroPipelineState()
         fallback_fred = _make_data_layer_fred_result(
             points=[
@@ -582,16 +588,16 @@ class TestStepCollect:
 
         assert summary["status"] == "success"
         assert any(point.symbol == "DGS10" and point.source == "openbb_fred" for point in state.all_points)
-        assert any(point.symbol == "DXY" and point.source == "openbb_yfinance" for point in state.all_points)
+        assert not any(point.source == "openbb_yfinance" for point in state.all_points)
         assert "DGS2" in state.all_unavailable
-        assert "^VIX" in state.all_unavailable
+        assert "DXY" in state.all_unavailable
 
         collectors = {item["collector"]: item for item in summary["collectors"]}
         assert collectors["fred"]["status"] == "failed"
         assert collectors["data_layer_fred_rates"]["status"] == "partial"
         assert collectors["data_layer_fred_rates"]["added_points"] == 1
-        assert collectors["data_layer_market_prices"]["status"] == "partial"
-        assert collectors["data_layer_market_prices"]["added_points"] == 1
+        assert collectors["data_layer_market_prices"]["status"] == "skipped"
+        assert collectors["data_layer_market_prices"]["reason"] == "yahoo_market_collection_disabled"
 
     def test_collect_merges_data_layer_source_refs_and_unavailable(self, tmp_path):
         state = MacroPipelineState()
@@ -621,7 +627,7 @@ class TestStepCollect:
         assert "DGS30" in state.all_unavailable
         assert state.all_unavailable.count("DGS30") == 1
         assert any(ref.get("source") == "openbb_fred" and ref.get("symbol") == "DGS30" for ref in state.all_source_refs)
-        assert any(ref.get("source") == "openbb_yfinance" and ref.get("symbol") == "DX-Y.NYB" for ref in state.all_source_refs)
+        assert not any(ref.get("source") == "openbb_yfinance" for ref in state.all_source_refs)
 
     def test_collect_data_layer_failure_is_non_fatal_and_records_status(self, tmp_path):
         state = MacroPipelineState()

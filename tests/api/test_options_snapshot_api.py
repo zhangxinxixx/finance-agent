@@ -165,3 +165,35 @@ def test_api_options_snapshot_returns_analysis_read_model(tmp_path: Path) -> Non
 
     rows = session.query(AgentOutput).all()
     assert {row.agent_name for row in rows} == {"cme_options_agent", "fact_review_agent", "synthesis_agent"}
+
+
+def test_api_options_snapshot_attaches_analysis_to_lineage_bound_standalone_output(tmp_path: Path) -> None:
+    snapshot_id = "options:2026-06-01:run-options-001"
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/cme_options/2026-06-01/options_analysis.json": json.dumps(
+                {
+                    "trade_date": "2026-06-01",
+                    "run_id": "run-options-001",
+                    "snapshot_id": snapshot_id,
+                    "data_source": {
+                        "product": "OG",
+                        "status": "PRELIM",
+                        "input_snapshot_ids": {"options_analysis_snapshot": snapshot_id},
+                    },
+                    "source_trace": [],
+                }
+            ),
+        },
+    )
+    session = _make_session()
+    _seed_options_outputs(session)
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = api_main.api_options_snapshot(date="2026-06-01", db=session)
+
+    assert payload["run_id"] == "run-options-001"
+    assert payload["snapshot_id"] == snapshot_id
+    assert payload["analysis"]["cme_options_agent"]["summary_zh"] == "Gamma Zero 下方仍偏防守，反弹需要先收复 3350。"
+    assert payload["analysis"]["synthesis"] is not None

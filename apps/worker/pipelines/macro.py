@@ -45,9 +45,6 @@ from database.queries.report import upsert_report_artifact, upsert_report_item
 
 MACRO_STEPS = {"macro_collect", "macro_feature", "report_render"}
 
-_MARKET_PROXY_SYMBOL_MAP = {
-    "DX-Y.NYB": "DXY",
-}
 logger = logging.getLogger(__name__)
 
 
@@ -393,24 +390,12 @@ def _step_collect(
             "error": str(exc),
         })
 
-    try:
-        market_fallback = data_service.collect_market_prices(retrieved_date=today)
-        collector_statuses.append(
-            _merge_data_layer_result(
-                result=market_fallback,
-                collector_name="data_layer_market_prices",
-                all_points=all_points,
-                all_unavailable=all_unavailable,
-                all_refs=all_refs,
-                symbol_aliases=_MARKET_PROXY_SYMBOL_MAP,
-            )
-        )
-    except Exception as exc:
-        collector_statuses.append({
-            "collector": "data_layer_market_prices",
-            "status": "failed",
-            "error": str(exc),
-        })
+    collector_statuses.append({
+        "collector": "data_layer_market_prices",
+        "status": "skipped",
+        "reason": "yahoo_market_collection_disabled",
+        "warnings": ["Yahoo market proxy collection is disabled"],
+    })
 
     state.all_points = all_points
     state.all_unavailable = list(dict.fromkeys(all_unavailable))
@@ -511,16 +496,16 @@ _MACRO_STATUS_CONTRACTS: dict[str, dict[str, Any]] = {
         },
     },
     "technical_yahoo": {
-        "source_name": "Jin10 XAUUSD Quote / Yahoo Technical",
+        "source_name": "Jin10 XAUUSD Technical",
         "source_group": "technical",
         "source_type": "api",
-        "access_method": "jin10_mcp+yahoo_finance",
+        "access_method": "jin10_mcp",
         "metadata": {
             "provider_role": "supplemental",
             "fallback_for": ["openbb_macro"],
             "fallback_sources": ["jin10_news"],
             "frontend_label": "Jin10 黄金实时/技术补充源",
-            "notes": "黄金现货价格优先使用 Jin10 XAUUSD 实时报价；Yahoo Finance 仅作为技术指标兜底。",
+            "notes": "黄金现货价格与日内 OHLC 使用 Jin10 XAUUSD；历史技术指标不足时显式降级。",
         },
     },
     "positioning_cot": {
@@ -645,6 +630,29 @@ def _upsert_macro_point_observations(
     return len(rows), len(set(raw_artifact_ids.values()))
 
 
+def persist_macro_points(
+    db_session: Session,
+    *,
+    storage_root: Path,
+    all_points: list[MacroPoint],
+    all_refs: list[dict[str, str]],
+    run_id: str | None,
+) -> tuple[int, int]:
+    """Persist normalized macro points and their raw-file lineage.
+
+    This narrow public seam is shared by the worker pipeline and the legacy
+    backfill script.  It stores observations and artifact references only;
+    collector response bodies remain in the file-backed raw layer.
+    """
+    return _upsert_macro_point_observations(
+        db_session,
+        storage_root=storage_root,
+        all_points=all_points,
+        all_refs=all_refs,
+        run_id=run_id,
+    )
+
+
 def _register_macro_raw_artifacts(
     db_session: Session,
     *,
@@ -653,7 +661,10 @@ def _register_macro_raw_artifacts(
     all_refs: list[dict[str, str]],
     run_id: str | None,
 ) -> dict[tuple[str, str, str, str], str]:
-    if not run_id:
+    # RunArtifact lineage is keyed to a persisted TaskRun UUID. Backfill
+    # scripts may use human-readable run labels; observations can still keep
+    # those labels, but artifact registration must quietly remain disabled.
+    if not _is_uuid_string(run_id):
         return {}
 
     storage = LocalFileSystemArtifactStorage(root=storage_root)
@@ -1147,6 +1158,32 @@ def _upsert_macro_feature_snapshots(
         ],
     )
     return len(rows)
+
+
+def persist_macro_feature_snapshots(
+    db_session: Session,
+    *,
+    snapshot_payload: dict[str, Any],
+    conclusion_payload: dict[str, Any],
+    snapshot_artifact_path: Path,
+    conclusion_artifact_path: Path,
+    trade_date: str,
+    run_id: str | None,
+    source_refs: list[dict[str, Any]],
+    unavailable_symbols: list[str],
+) -> int:
+    """Persist the computed macro snapshot and conclusion payloads."""
+    return _upsert_macro_feature_snapshots(
+        db_session,
+        snapshot_payload=snapshot_payload,
+        conclusion_payload=conclusion_payload,
+        snapshot_artifact_path=snapshot_artifact_path,
+        conclusion_artifact_path=conclusion_artifact_path,
+        trade_date=trade_date,
+        run_id=run_id,
+        source_refs=source_refs,
+        unavailable_symbols=unavailable_symbols,
+    )
 
 
 def _register_macro_render_artifacts(

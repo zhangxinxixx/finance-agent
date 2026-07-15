@@ -6,6 +6,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from apps.features.jin10.market_odds_evidence import SOURCE_KIND as JIN10_ODDS_SOURCE_KIND
+from apps.features.jin10.market_odds_evidence import to_daily_market_observation
+
 
 @dataclass(frozen=True)
 class DailyMarketBrief:
@@ -177,6 +180,10 @@ def _supplemental_report_inputs(artifacts: list[dict[str, Any]]) -> dict[str, li
         if not isinstance(artifact, dict):
             continue
         source_key = str(artifact.get("source_key") or "").strip()
+        source_kind = str(artifact.get("source_kind") or "").strip()
+        if source_kind == JIN10_ODDS_SOURCE_KIND:
+            result["market_observations"].append(to_daily_market_observation(artifact))
+            continue
         items = [dict(item) for item in artifact.get("items") or artifact.get("inputs") or [] if isinstance(item, dict)]
         if not items:
             continue

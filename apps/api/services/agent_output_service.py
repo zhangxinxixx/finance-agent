@@ -117,6 +117,16 @@ def build_agent_output_summary(row) -> dict[str, Any]:
     if fact_review_status is None and runtime_meta.get("registry_id") == "synthesis_agent":
         fact_review_status = payload.get("synthesis_status")
     prompt_metadata = prompt_metadata_from_row(row)
+    generated_from = payload.get("generated_from") if isinstance(payload.get("generated_from"), dict) else {}
+    llm_model = row.llm_model or generated_from.get("model")
+    llm_provider = getattr(row, "llm_provider", None) or generated_from.get("provider")
+    llm_usage = row.token_usage or generated_from.get("tokens")
+    llm_elapsed_seconds = row.llm_elapsed_seconds
+    if llm_elapsed_seconds is None and generated_from.get("latency_ms") is not None:
+        try:
+            llm_elapsed_seconds = float(generated_from["latency_ms"]) / 1000.0
+        except (TypeError, ValueError):
+            llm_elapsed_seconds = None
 
     return {
         "agent_output_id": row.id,
@@ -156,9 +166,10 @@ def build_agent_output_summary(row) -> dict[str, Any]:
         "prompt_version": prompt_metadata["prompt_version"],
         "prompt_checksum": prompt_metadata["prompt_checksum"],
         "prompt_source_file": prompt_metadata["prompt_source_file"],
-        "llm_model": row.llm_model,
-        "llm_usage": row.token_usage,
-        "llm_elapsed_seconds": row.llm_elapsed_seconds,
+        "llm_model": llm_model,
+        "llm_provider": llm_provider,
+        "llm_usage": llm_usage,
+        "llm_elapsed_seconds": llm_elapsed_seconds,
         "prompt_version_id": row.prompt_version_id,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }

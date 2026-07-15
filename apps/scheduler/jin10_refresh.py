@@ -15,8 +15,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from dotenv import dotenv_values
-from sqlalchemy import func
-
 from apps.analysis.agents.jin10_flash_semantic_filter import (
     AGENT_ID as JIN10_FLASH_SEMANTIC_FILTER_AGENT_ID,
     build_jin10_flash_semantic_filter_prompt_template,
@@ -26,13 +24,15 @@ from apps.collectors.jin10.web_flash import collect_jin10_web_flash_with_browser
 from apps.collectors.jin10.mcp_client import Jin10MCPClient
 from apps.collectors.news.base import RawNewsItem
 from apps.collectors.news.jin10_detail_fetcher import fetch_jin10_detail_page
+from apps.features.market_data import aggregate_complete_candles
 from apps.features.news.jin10_article_briefs import archive_jin10_article_briefs, build_jin10_article_briefs
 from apps.features.news.jin10_web_flash_briefs import archive_jin10_web_flash_briefs, build_jin10_web_flash_briefs
 from apps.llm.gateway import chat_sync
 from apps.runtime.secret_resolver import resolve_runtime_secret
-from database.models.analysis import MarketCandle, ensure_analysis_tables
+from apps.parsers.macro.storage import archive_raw_payload
+from database.models.analysis import ensure_analysis_tables
 from database.models.engine import SessionLocal
-from database.queries.market import upsert_market_candle
+from database.queries.market import delete_market_candles_before, list_market_candles, upsert_market_candle
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,9 @@ _JIN10_MCP_URL = "https://mcp.jin10.com/mcp"
 _JIN10_MCP_KEY_ENV = "JIN10_MCP_KEY"
 _JIN10_CALENDAR_PAST_WINDOW_DAYS = 7
 _JIN10_CALENDAR_FUTURE_WINDOW_DAYS = 14
-_DEFAULT_JIN10_BROWSER_PROFILE = Path.home() / ".finance-agent" / "jin10_browser_profile"
+_DEFAULT_JIN10_BROWSER_PROFILE = Path(
+    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
+).expanduser()
 _JIN10_WEB_FLASH_HOMEPAGE_URL = "https://www.jin10.com/"
 _JIN10_WEB_ARTICLE_ANALYSIS_KEYWORDS = (
     "黄金",
@@ -70,7 +72,7 @@ QUOTE_SYMBOLS = [
 ]
 
 KLINE_SYMBOLS = ["XAUUSD"]
-DAILY_MARKET_CANDLE_ASSETS = ("XAUUSD", "DXY")
+DAILY_MARKET_CANDLE_ASSETS = ("GC", "DXY")
 _JIN10_MCP_MARKET_SOURCE_KEY = "jin10_mcp_market"
 
 
@@ -436,30 +438,38 @@ def refresh_jin10_quotes_cache() -> None:
         logger.debug("Jin10 quotes cache refreshed: %d symbols", len(quotes))
 
 
-def refresh_jin10_kline_cache(*, count: int = 100) -> None:
-    """拉取 Jin10 近端 1m K 线并增量写入 market_candles。"""
+def refresh_jin10_kline_cache(
+    *,
+    count: int = 5,
+    now: datetime | None = None,
+    storage_root: Path | None = None,
+) -> None:
+    """Refresh overlapping Jin10 staging minutes and materialize complete 5m bars."""
     mcp_key = _get_mcp_key()
     if not mcp_key:
         logger.debug("Jin10 MCP key not configured; skipping kline refresh")
         return
 
     try:
+        collected_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        resolved_storage_root = (storage_root or Path("./storage")).resolve()
         with Jin10MCPClient(mcp_key=mcp_key) as client, SessionLocal() as session:
             ensure_analysis_tables(session)
             imported = 0
+            derived = 0
             for symbol in KLINE_SYMBOLS:
-                latest_open_time = session.query(func.max(MarketCandle.open_time)).filter(
-                    MarketCandle.asset == symbol,
-                    MarketCandle.timeframe == "1m",
-                ).scalar()
-                latest_open_time = _normalize_existing_open_time(latest_open_time)
                 payload = client.get_kline(symbol, count=min(max(count, 1), 100))
+                raw_path = archive_raw_payload(
+                    storage_root=resolved_storage_root,
+                    source="jin10_mcp",
+                    retrieved_date=collected_at.date().isoformat(),
+                    symbol=f"kline_{symbol}",
+                    payload=payload,
+                )
                 rows = _extract_kline_rows(payload)
                 for row in rows:
                     candle = _normalize_kline_row(row)
                     if candle is None:
-                        continue
-                    if latest_open_time is not None and candle["open_time"] <= latest_open_time:
                         continue
                     upsert_market_candle(
                         session,
@@ -477,11 +487,61 @@ def refresh_jin10_kline_cache(*, count: int = 100) -> None:
                             "source": "jin10_mcp",
                             "source_key": _JIN10_MCP_MARKET_SOURCE_KEY,
                             "provider_timeframe": "1m",
+                            "provider_symbol": symbol,
+                            "instrument_type": "otc_spot_quote_proxy",
+                            "source_role": "staging_primary",
+                            "quality_status": "staging",
+                            "retrieved_at": collected_at.isoformat(),
+                            "retention_policy_hours": 24,
+                            "volume_semantics": "unavailable_or_quote_activity",
                         },
+                        raw_path=raw_path,
                     )
                     imported += 1
+                minute_rows = list_market_candles(
+                    session,
+                    asset=symbol,
+                    timeframe="1m",
+                    limit=120,
+                    source="jin10_mcp_kline_1m",
+                )
+                complete_five_minute = aggregate_complete_candles(
+                    minute_rows,
+                    source_timeframe="1m",
+                    target_timeframe="5m",
+                    source="jin10_mcp_derived_5m",
+                    closed_before=collected_at - timedelta(seconds=30),
+                )
+                for candle in complete_five_minute[-24:]:
+                    upsert_market_candle(
+                        session,
+                        asset=symbol,
+                        timeframe="5m",
+                        open_time=candle.open_time,
+                        open=candle.open,
+                        high=candle.high,
+                        low=candle.low,
+                        close=candle.close,
+                        volume=None,
+                        source=candle.source,
+                        source_ref={
+                            **candle.source_ref,
+                            "provider": "jin10_mcp",
+                            "provider_symbol": symbol,
+                            "retrieved_at": collected_at.isoformat(),
+                        },
+                        raw_path=raw_path,
+                    )
+                    derived += 1
+                delete_market_candles_before(
+                    session,
+                    asset=symbol,
+                    timeframe="1m",
+                    source="jin10_mcp_kline_1m",
+                    before=collected_at - timedelta(hours=24),
+                )
             session.commit()
-            logger.debug("Jin10 kline cache refreshed: imported=%d", imported)
+            logger.debug("Jin10 kline cache refreshed: minute_upserts=%d derived_5m_upserts=%d", imported, derived)
     except Exception as exc:
         logger.warning("Jin10 MCP kline refresh failed: %s", exc)
 
@@ -569,14 +629,6 @@ def _normalize_kline_row(row: dict[str, Any]) -> dict[str, Any] | None:
         }
     except (TypeError, ValueError):
         return None
-
-
-def _normalize_existing_open_time(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def refresh_jin10_calendar_cache() -> None:
@@ -1068,6 +1120,10 @@ def classify_jin10_flash_items_with_llm(items: list[dict[str, Any]]) -> list[dic
             max_tokens=1800,
             json_mode=True,
             max_retries=1,
+            audit_context={
+                "caller": "jin10_refresh.classify_jin10_flash_items_with_llm",
+                "input_payload": {"item_count": len(items), "items": items},
+            },
         )
         labels = _parse_flash_classifier_response(response.content, len(items))
     except Exception as exc:

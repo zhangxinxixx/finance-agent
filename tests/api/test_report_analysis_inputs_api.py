@@ -126,7 +126,7 @@ def _seed_agent_outputs(session: Session) -> None:
                 "artifact_refs": ["storage/outputs/jin10/2026-05-26/run-std-001/agent_analysis_report.md"],
                 "claims": [{"claim_id": "claim-jin10-1", "text": "金价短线偏强"}],
             },
-            "llm_model": "qwen3-vl-plus",
+            "llm_model": "gpt-5.6-luna",
             "token_usage": {"input": 1200, "output": 680},
         },
     )
@@ -244,7 +244,7 @@ def test_report_analysis_inputs_returns_snapshot_and_agent_outputs(tmp_path: Pat
     assert payload["synthesis_outputs"] == []
     jin10_output = next(item for item in payload["agent_outputs"] if item["agent_name"] == "jin10_report_analysis_agent")
     assert jin10_output["claims"][0]["claim_id"] == "claim-jin10-1"
-    assert jin10_output["llm_model"] == "qwen3-vl-plus"
+    assert jin10_output["llm_model"] == "gpt-5.6-luna"
     assert jin10_output["claims"][0]["claim_type"] == "market_view"
     assert jin10_output["claim_reviews"] == []
     assert jin10_output["artifact_refs"][0]["artifact_type"] == "analysis_md"

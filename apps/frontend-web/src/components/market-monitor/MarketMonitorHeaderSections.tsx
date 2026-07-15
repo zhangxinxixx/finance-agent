@@ -3,7 +3,7 @@ import type { MarketMonitorHistoryResponse } from "@/adapters/marketMonitor";
 import { FAWorkspaceHeader } from "@/components/shared/FAWorkspaceHeader";
 import type { MarketMonitorMockFile, MarketMonitorStatus } from "@/types/market-monitor";
 
-type MarketMonitorTab = "overview" | "pricing-chain" | "cross-asset" | "calendar";
+type MarketMonitorTab = "overview" | "pricing-chain" | "cross-asset" | "calendar" | "odds";
 
 export function MarketMonitorLoadingPanel() {
   return (

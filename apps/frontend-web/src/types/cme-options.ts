@@ -33,8 +33,8 @@ export interface CMEOptionsGammaZero {
 }
 
 export interface CMEOptionsNetGEXAggregate {
-  net_gex: number;
-  net_gex_direction: CMEOptionsNetGEXDirection;
+  net_gex: number | null;
+  net_gex_direction: CMEOptionsNetGEXDirection | null;
   gamma_zero: CMEOptionsGammaZero;
 }
 
@@ -282,3 +282,126 @@ export interface CMEOptionsSnapshot {
 export interface CMEOptionsMockFile extends CMEOptionsSnapshot {}
 
 export interface CMEOptionsResponse extends CMEOptionsSnapshot {}
+
+// ── Decision ViewModel ──
+
+export type CMEOptionsDecisionStatus = "available" | "partial" | "unavailable";
+
+export interface CMEOptionsDecisionMetric {
+  current: number | null;
+  previous: number | null;
+  delta: number | null;
+  pct_change: number | null;
+}
+
+export interface CMEOptionsDecisionOIByExpiry {
+  expiry: string;
+  expiry_scope: string;
+  comparison_status: "available" | "unavailable";
+  total: CMEOptionsDecisionMetric;
+  call: CMEOptionsDecisionMetric;
+  put: CMEOptionsDecisionMetric;
+}
+
+export interface CMEOptionsDecisionGammaSummary {
+  regime: string;
+  net_gex: number | null;
+  gamma_zero: number | null;
+  method: string | null;
+  flip_band: { lower: number; upper: number; step: number } | null;
+  live_price: number | null;
+}
+
+export interface CMEOptionsDecisionKeyLevel {
+  strike: number | null;
+  band: { lower: number; upper: number; step?: number | null } | null;
+  role: string;
+  strength: number | string | null;
+  trend: string | null;
+  evidence: string[];
+  invalidation: string[];
+  expiry_scope: string;
+  distance_pct: number | null;
+}
+
+export interface CMEOptionsDecisionRoll {
+  near_expiry: string;
+  far_expiry: string;
+  near_oi_delta: number | null;
+  far_oi_delta: number | null;
+  far_put_delta: number | null;
+  far_call_delta: number | null;
+  labels: string[];
+}
+
+export interface CMEOptionsDecisionSetup {
+  triggers: string[];
+  targets: number[];
+  invalidation: string[];
+}
+
+export interface CMEOptionsDecisionStrategy {
+  status: CMEOptionsDecisionStatus;
+  horizon?: string;
+  reason?: string;
+  regime?: string;
+  bias?: string;
+  summary?: string;
+  no_trade_zone?: number[];
+  long_setup?: CMEOptionsDecisionSetup | null;
+  short_setup?: CMEOptionsDecisionSetup | null;
+  confirmation?: string[];
+  invalidation?: string[];
+  targets?: number[];
+  structure_bias?: string;
+  oi_trend?: string;
+  sample_count?: number;
+  required_sample_count?: number;
+  sample_window?: { from: string; to: string } | null;
+  call_oi_change?: number | null;
+  put_oi_change?: number | null;
+  confidence?: number | null;
+  risk_notes: string[];
+}
+
+export interface CMEOptionsDecisionResponse {
+  schema_version: "cme_options_decision.v1";
+  status: CMEOptionsDecisionStatus;
+  meta: {
+    current_trade_date: string | null;
+    previous_trade_date: string | null;
+    product: string;
+    lookback_days: number;
+    comparison_status: "available" | "unavailable";
+  };
+  executive_summary: {
+    oi_delta: number | null;
+    gamma_regime: string;
+    roll_status: CMEOptionsDecisionStatus;
+    intraday_status: CMEOptionsDecisionStatus;
+  };
+  price_context: {
+    report_p0: number | null;
+    report_p0_source: string | null;
+    report_p0_timestamp: string | null;
+    live_p0: number | null;
+    live_p0_source: string | null;
+    live_p0_timestamp: string | null;
+    model_f: Record<string, number>;
+    price_anchor_rule: string | null;
+  };
+  oi_summary: {
+    comparison_status: "available" | "unavailable";
+    total: CMEOptionsDecisionMetric;
+    call: CMEOptionsDecisionMetric;
+    put: CMEOptionsDecisionMetric;
+  };
+  oi_by_expiry: CMEOptionsDecisionOIByExpiry[];
+  gamma_summary: CMEOptionsDecisionGammaSummary;
+  gamma_profile: { price_grid: number[]; net_gex_values: number[]; scope: string };
+  key_levels: CMEOptionsDecisionKeyLevel[];
+  roll_summary: { status: CMEOptionsDecisionStatus; reason?: string; items: CMEOptionsDecisionRoll[] };
+  intraday_strategy: CMEOptionsDecisionStrategy;
+  swing_strategy: CMEOptionsDecisionStrategy;
+  data_quality: { cme_status: string | string[] | null; warnings: string[]; [key: string]: unknown };
+}

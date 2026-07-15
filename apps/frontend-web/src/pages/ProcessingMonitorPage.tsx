@@ -1,10 +1,11 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useOutletContext, useSearchParams } from "react-router-dom";
-import { ArrowRight, Network, RefreshCw, Search, ShieldCheck, Workflow } from "lucide-react";
+import { ArrowRight, CircleX, Network, RefreshCw, Search, ShieldCheck, Workflow } from "lucide-react";
 
 import {
   fetchProcessingOverview,
   fetchProcessingTrace,
+  fetchArtifactSourceTrace,
   fetchProcessingTraceByChain,
   fetchProcessingTraceByEvent,
   fetchProcessingTraceByInput,
@@ -12,6 +13,8 @@ import {
   fetchProcessingTraceBySourceRef,
 } from "@/adapters/processingMonitor";
 import type { AppShellOutletContext } from "@/components/AppShell";
+import { TraceDetailPanels } from "@/components/processing-monitor/TraceDetailPanels";
+import { ArtifactSourceTracePanel } from "@/components/processing-monitor/ArtifactSourceTracePanel";
 import { ErrorState } from "@/components/shared/ErrorState";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
@@ -21,10 +24,12 @@ import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
 import { LoadingSkeleton } from "@/components/shared/LoadingSkeleton";
 import type {
   ProcessingOverviewResponse,
+  ProcessingExecutionSummary,
   ProcessingQualityGate,
   ProcessingTraceMode,
   ProcessingTracePathNode,
   ProcessingTraceResponse,
+  ArtifactSourceTraceLookup,
 } from "@/types/processing-monitor";
 
 const TRACE_MODE_OPTIONS: Array<{ value: ProcessingTraceMode; label: string; placeholder: string }> = [
@@ -34,11 +39,12 @@ const TRACE_MODE_OPTIONS: Array<{ value: ProcessingTraceMode; label: string; pla
   { value: "input_id", label: "Input ID", placeholder: "input:oil" },
   { value: "mainline", label: "主线", placeholder: "geopolitical_war" },
   { value: "transmission_chain", label: "传导链", placeholder: "war_oil_rate_chain" },
+  { value: "artifact_id", label: "Artifact ID", placeholder: "artifact UUID" },
 ];
 
 function statusTone(value: string | null | undefined): FAStatusTone {
   const normalized = (value ?? "").toLowerCase();
-  if (["covered", "bound", "matched", "pass", "available", "ok", "complete", "ready"].includes(normalized)) return "up";
+  if (["covered", "bound", "matched", "pass", "available", "ok", "complete", "ready", "success", "succeeded"].includes(normalized)) return "up";
   if (["partial", "degraded", "stale", "needs_review", "pending"].includes(normalized)) return "warn";
   if (["missing", "blocked", "not_found", "failed", "error", "unavailable"].includes(normalized)) return "down";
   return "neutral";
@@ -59,6 +65,11 @@ function statusLabel(value: string | null | undefined): string {
     partial: "部分可用",
     unavailable: "不可用",
     ready: "就绪",
+    success: "成功",
+    succeeded: "成功",
+    failed: "失败",
+    observe: "观察等待",
+    accepted: "已采用",
   };
   return labels[value ?? ""] ?? value ?? "未知";
 }
@@ -165,6 +176,73 @@ function OverviewSummary({ overview }: { overview: ProcessingOverviewResponse })
       <SummaryMetric label="Source Ref" value={coverage.source_ref_count} tone={coverage.without_source_ref_count ? "warn" : "up"} />
       <SummaryMetric label="视图绑定" value={`${boundViews}/${overview.view_bindings.length}`} tone={boundViews === overview.view_bindings.length ? "up" : "warn"} />
     </div>
+  );
+}
+
+function artifactPaths(refs: ProcessingExecutionSummary["final_output"]["report_artifact_refs"]): string[] {
+  return refs
+    .map((ref) => ref.file_path || ref.path)
+    .filter((path): path is string => typeof path === "string" && path.length > 0);
+}
+
+function outputModeLabel(mode: ProcessingExecutionSummary["final_output"]["mode"]): string {
+  if (mode === "accepted") return "已采用";
+  if (mode === "observe") return "观察等待";
+  return "不可用";
+}
+
+function ExecutionSummaryPanel({ summary }: { summary: ProcessingExecutionSummary }) {
+  const inputCount = Object.keys(summary.used_data.input_snapshot_ids).length;
+  const reportPaths = artifactPaths(summary.final_output.report_artifact_refs);
+  const strategyCardPaths = artifactPaths(summary.final_output.strategy_card_artifact_refs);
+
+  return (
+    <FACard
+      title="本次执行摘要"
+      eyebrow="Execution Summary"
+      accent={summary.status === "failed" || summary.status === "blocked" ? "down" : summary.status === "partial" ? "warn" : "up"}
+      action={<FAStatusPill tone={statusTone(summary.status)}>{statusLabel(summary.status)}</FAStatusPill>}
+    >
+      <div className="grid gap-3 lg:grid-cols-[0.85fr_1.15fr]">
+        <div className="grid gap-2">
+          <div className="grid grid-cols-3 gap-2">
+            <SummaryMetric label="Input Snapshot" value={inputCount} />
+            <SummaryMetric label="Source Ref" value={summary.used_data.source_refs.length} />
+            <SummaryMetric label="Agent Artifact" value={summary.used_data.agent_artifact_refs.length} />
+          </div>
+          <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2 text-[length:var(--type-caption)] leading-4">
+            <div className="font-semibold text-[var(--fg-5)]">失败步骤</div>
+            <div className={`mt-1 break-words ${summary.failed_steps.length ? "text-[var(--danger)]" : "text-[var(--fg-3)]"}`}>
+              {summary.failed_steps.length ? summary.failed_steps.join(" / ") : "无失败步骤"}
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[length:var(--type-caption)] font-semibold text-[var(--fg-5)]">最终输出</span>
+              <FAStatusPill tone={summary.final_output.mode === "accepted" ? "up" : summary.final_output.mode === "observe" ? "warn" : "down"} dot={false}>
+                {outputModeLabel(summary.final_output.mode)}
+              </FAStatusPill>
+            </div>
+            <span className="text-[length:var(--type-caption)] text-[var(--fg-5)]">
+              {statusLabel(summary.final_output.review_status)} · {summary.final_output.publish_allowed === null ? "发布状态未知" : summary.final_output.publish_allowed ? "允许发布" : "禁止发布"}
+            </span>
+          </div>
+          <div className="mt-3 grid gap-2 text-[length:var(--type-caption)] leading-4 md:grid-cols-2">
+            <div>
+              <div className="font-semibold text-[var(--fg-5)]">Report</div>
+              <div className="mt-1 break-all text-[var(--fg-3)]">{reportPaths.length ? reportPaths.join(" / ") : "—"}</div>
+            </div>
+            <div>
+              <div className="font-semibold text-[var(--fg-5)]">Strategy Card</div>
+              <div className="mt-1 break-all text-[var(--fg-3)]">{strategyCardPaths.length ? strategyCardPaths.join(" / ") : "—"}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </FACard>
   );
 }
 
@@ -485,6 +563,7 @@ function traceQueryFromSearchParams(params: URLSearchParams): { mode: Processing
     ["input_id", "input_id"],
     ["mainline", "mainline"],
     ["transmission_chain", "transmission_chain"],
+    ["artifact_id", "artifact_id"],
   ];
   for (const [key, nextMode] of aliases) {
     const value = params.get(key)?.trim();
@@ -498,6 +577,7 @@ export function ProcessingMonitorPage() {
   const [searchParams] = useSearchParams();
   const [overview, setOverview] = useState<ProcessingOverviewResponse | null>(null);
   const [trace, setTrace] = useState<ProcessingTraceResponse | null>(null);
+  const [artifactTraceLookup, setArtifactTraceLookup] = useState<ArtifactSourceTraceLookup | null>(null);
   const [mode, setMode] = useState<ProcessingTraceMode>("processing_trace_id");
   const [queryValue, setQueryValue] = useState("");
   const [loadingOverview, setLoadingOverview] = useState(true);
@@ -537,9 +617,21 @@ export function ProcessingMonitorPage() {
     setQueryValue(initialQuery.value);
     setLoadingTrace(true);
     setTraceError(null);
-    queryTrace(initialQuery.mode, initialQuery.value)
+    setTrace(null);
+    setArtifactTraceLookup(null);
+    const query = initialQuery.mode === "artifact_id"
+      ? fetchArtifactSourceTrace(initialQuery.value)
+      : queryTrace(initialQuery.mode, initialQuery.value);
+    query
       .then((result) => {
-        if (!cancelled) setTrace(result);
+        if (cancelled) return;
+        if (initialQuery.mode === "artifact_id") {
+          setTrace(null);
+          setArtifactTraceLookup(result as ArtifactSourceTraceLookup);
+        } else {
+          setArtifactTraceLookup(null);
+          setTrace(result as ProcessingTraceResponse);
+        }
       })
       .catch((error) => {
         if (!cancelled) setTraceError(error instanceof Error ? error.message : "Trace 查询失败");
@@ -560,13 +652,34 @@ export function ProcessingMonitorPage() {
 
     setLoadingTrace(true);
     setTraceError(null);
+    setTrace(null);
+    setArtifactTraceLookup(null);
     try {
-      setTrace(await queryTrace(mode, value));
+      if (mode === "artifact_id") {
+        setArtifactTraceLookup(await fetchArtifactSourceTrace(value));
+      } else {
+        setTrace(await queryTrace(mode, value));
+      }
     } catch (error) {
       setTraceError(error instanceof Error ? error.message : "Trace 查询失败");
     } finally {
       setLoadingTrace(false);
     }
+  }
+
+  function handleModeChange(nextMode: ProcessingTraceMode) {
+    setMode(nextMode);
+    setQueryValue("");
+    setTrace(null);
+    setArtifactTraceLookup(null);
+    setTraceError(null);
+  }
+
+  function clearTraceQuery() {
+    setQueryValue("");
+    setTrace(null);
+    setArtifactTraceLookup(null);
+    setTraceError(null);
   }
 
   if (loadingOverview && !overview) {
@@ -625,7 +738,7 @@ export function ProcessingMonitorPage() {
           </div>
           <select
             value={mode}
-            onChange={(event) => setMode(event.target.value as ProcessingTraceMode)}
+            onChange={(event) => handleModeChange(event.target.value as ProcessingTraceMode)}
             className="h-8 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 text-[11px] font-semibold text-[var(--fg-2)] outline-none focus:border-[var(--brand-border)]"
           >
             {TRACE_MODE_OPTIONS.map((item) => (
@@ -638,6 +751,17 @@ export function ProcessingMonitorPage() {
             placeholder={selectedMode.placeholder}
             className="h-8 min-w-0 flex-1 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 text-[11px] text-[var(--fg-2)] outline-none placeholder:text-[var(--fg-5)] focus:border-[var(--brand-border)]"
           />
+          {queryValue || trace || artifactTraceLookup ? (
+            <button
+              type="button"
+              aria-label="清空 Trace 查询"
+              title="清空 Trace 查询"
+              onClick={clearTraceQuery}
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] text-[var(--fg-4)] transition hover:border-[var(--brand-border)] hover:text-[var(--fg-1)]"
+            >
+              <CircleX size={14} />
+            </button>
+          ) : null}
           <button
             type="submit"
             disabled={!queryValue.trim() || loadingTrace}
@@ -657,6 +781,7 @@ export function ProcessingMonitorPage() {
         ) : null}
 
         <OverviewSummary overview={overview} />
+        <ExecutionSummaryPanel summary={overview.execution_summary} />
 
         <FACard
           title="加工链路"
@@ -675,7 +800,14 @@ export function ProcessingMonitorPage() {
         </FACard>
 
         {traceError ? <ErrorState title="Trace 查询失败" message={traceError} className="!p-4" /> : null}
-        <TraceDetail trace={trace} />
+        {mode !== "artifact_id" ? <TraceDetail trace={trace} /> : null}
+        {trace ? <TraceDetailPanels trace={trace} /> : null}
+        {artifactTraceLookup?.status === "matched" ? <ArtifactSourceTracePanel trace={artifactTraceLookup.trace} /> : null}
+        {artifactTraceLookup?.status === "not_found" ? (
+          <FACard title="Artifact Source Trace" eyebrow="SourceTraceResponse" accent="none">
+            <FAEmptyState title="未找到 Artifact Source Trace" description="该 artifact_id 未命中后端 source trace；请核对标识或确认产物已登记。" />
+          </FACard>
+        ) : null}
 
         <QualityGatePanel qualityGate={overview.quality_gate} />
         <CoverageMatrix overview={overview} />

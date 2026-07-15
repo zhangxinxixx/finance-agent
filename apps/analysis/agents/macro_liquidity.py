@@ -14,6 +14,9 @@ _MODULE = "macro"
 _VERSION = "1.0"
 _SYSTEM_PROMPT = "你是一位专业的宏观流动性研究员。只输出 Markdown 正文。"
 _PROMPT_VERSION = "macro_liquidity_agent_v1"
+_DEFAULT_LLM_PROVIDER = "cockpit"
+_DEFAULT_LLM_MODEL = "gpt-5.6-sol"
+_DEFAULT_LLM_REASONING_EFFORT = "high"
 
 _DXY_KEYS = ("DXY", "dxy")
 _REAL_YIELD_KEYS = ("REAL_10Y", "REAL_YIELD_10Y", "real_yield_10y", "US10Y_REAL", "10Y_REAL_YIELD")
@@ -96,14 +99,30 @@ def invoke_macro_liquidity_llm(
         }
 
     prompt = build_macro_liquidity_prompt(snapshot, deterministic_output=deterministic_output)
+    provider = os.getenv("MACRO_LIQUIDITY_LLM_PROVIDER", _DEFAULT_LLM_PROVIDER)
+    model = os.getenv("MACRO_LIQUIDITY_LLM_MODEL", os.getenv("LLM_COCKPIT_MODEL", _DEFAULT_LLM_MODEL))
+    reasoning_effort = os.getenv(
+        "MACRO_LIQUIDITY_LLM_REASONING_EFFORT",
+        os.getenv("LLM_COCKPIT_REASONING_EFFORT", _DEFAULT_LLM_REASONING_EFFORT),
+    )
     response = chat_sync(
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
+        provider=provider,
+        model=model,
+        reasoning_effort=reasoning_effort,
         temperature=0.3,
         max_tokens=4096,
         max_retries=0,
+        audit_context={
+            "caller": "macro_liquidity.invoke_macro_liquidity_llm",
+            "run_id": snapshot.get("run_id"),
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "trade_date": snapshot.get("trade_date"),
+            "input_payload": build_macro_liquidity_structured_payload(snapshot, deterministic_output=deterministic_output),
+        },
     )
     return {
         "markdown": _parse_markdown(response.content),
@@ -111,8 +130,10 @@ def invoke_macro_liquidity_llm(
         "provider": response.provider,
         "latency_ms": response.latency_ms,
         "tokens": response.usage,
+        "reasoning_effort": response.reasoning_effort,
         "prompt_version": _PROMPT_VERSION,
         "skipped": False,
+        "audit_id": getattr(response, "audit_id", None),
     }
 
 
@@ -267,6 +288,7 @@ def _merge_macro_liquidity_output(
             "prompt_messages": payload["prompt_messages"] or None,
             "input_payload": payload["input_payload"] or None,
             "llm_raw_output": payload["llm_raw_output"],
+            "llm_audit_id": llm_result.get("audit_id"),
         }
     )
 

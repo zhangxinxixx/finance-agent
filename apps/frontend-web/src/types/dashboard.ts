@@ -64,6 +64,18 @@ export interface WallLevel {
   distance_pct: number;
 }
 
+export interface DashboardQuickSupportLevel {
+  level: number;
+  label: string;
+  source: "cme_options" | "jin10_daily_report" | string;
+  source_label: string;
+  trade_date: string | null;
+  timeframe: string | null;
+  basis: string;
+  status: "active" | "broken" | "unknown";
+  source_ref: string;
+}
+
 export interface OptionsSummary {
   trade_date: string;
   product: string;
@@ -178,8 +190,11 @@ export interface ReportItem {
 export interface DashboardCompositeAnalysisStatus {
   status: "available" | "partial" | "stale" | "missing" | string;
   trade_date: string | null;
+  run_id?: string | null;
   strategy_trade_date: string | null;
+  strategy_run_id?: string | null;
   final_report_trade_date: string | null;
+  final_report_run_id?: string | null;
   latest_report_date: string | null;
   latest_eligible_context_date: string | null;
   degraded_newer_reports: Array<{
@@ -297,6 +312,7 @@ export interface DashboardIntegratedMacroReadModel {
   confidence: number | null;
   reasoning: string;
   trade_implication: string;
+  quick_supports: DashboardQuickSupportLevel[];
   trigger_upgrade: string[];
   trigger_downgrade: string[];
   invalidation: string[];

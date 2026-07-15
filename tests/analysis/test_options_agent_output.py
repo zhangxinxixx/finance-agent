@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from apps.analysis.options.agent_output import (
+    bind_options_snapshot_lineage,
     build_options_agent_output_payload,
     persist_options_agent_output,
 )
@@ -70,6 +71,21 @@ def test_build_options_agent_output_payload_binds_prompt_artifacts_and_claims(tm
     assert payload["payload"]["artifact_refs"][-1].endswith("/options_analysis_agent_report.md")
     assert payload["payload"]["claims"]
     assert payload["payload"]["data_category"] == "external_opinion"
+
+
+def test_bind_options_snapshot_lineage_uses_one_identity_for_artifact_and_agent_output():
+    snapshot, _ = _snapshot_dict()
+
+    bound = bind_options_snapshot_lineage(snapshot)
+
+    assert bound["run_id"] == "abc123def456ghi7"
+    assert bound["snapshot_id"] == "options:2026-05-06:abc123def456ghi7"
+    assert bound["data_source"]["input_snapshot_ids"] == {
+        "raw_file_sha256": "abc123def456ghi789",
+        "options_analysis_snapshot": "options:2026-05-06:abc123def456ghi7",
+    }
+    assert "run_id" not in snapshot
+    assert "snapshot_id" not in snapshot
 
 
 def test_persist_options_agent_output_is_idempotent_and_allows_llm_enrichment(tmp_path):

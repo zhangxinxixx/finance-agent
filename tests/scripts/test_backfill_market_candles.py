@@ -226,8 +226,10 @@ def test_backfill_market_candles_offline_import(tmp_path: Path) -> None:
     session = sessionmaker(bind=engine, expire_on_commit=False)()
     rows = session.query(MarketCandle).order_by(MarketCandle.open_time.asc()).all()
     assert len(rows) == 2
-    assert rows[0].asset == "XAUUSD"
+    assert rows[0].asset == "GC"
     assert rows[0].timeframe == "1d"
+    assert rows[0].source_ref["provider_symbol"] == "GC=F"
+    assert rows[0].source_ref["instrument_type"] == "futures_continuous_proxy"
     assert rows[1].close == 3324.0
 
 

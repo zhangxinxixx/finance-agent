@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,12 +30,14 @@ from apps.analysis.jin10.agent_analysis import (
 )
 from apps.analysis.agents.schemas import AgentBias, AgentStatus
 from apps.analysis.jin10.daily_report import build_daily_report_analysis_snapshot
+from apps.analysis.jin10.daily_context import build_daily_analysis_context
 from apps.analysis.jin10.visual_report import build_jin10_daily_analysis_report
 from apps.analysis.jin10.raw_article import build_jin10_raw_article_report, render_jin10_raw_article_markdown
 from apps.analysis.jin10.placeholder import build_analysis_index
 from apps.documents.parsing import build_parsed_document
 from apps.documents.schemas import SourceAssetRef, SourceDocument
 from apps.extractors.report_fact_extractor import extract_report_facts
+from apps.features.jin10.market_odds_evidence import build_jin10_market_odds_evidence, write_market_odds_evidence
 from apps.parsers.jin10.report import build_parsed_index
 from apps.parsers.jin10.report_image_parser import figure_analysis_image_data_url, write_parse_artifacts
 from apps.renderer.html.jin10_daily import render_jin10_daily_html
@@ -79,6 +82,7 @@ def build_jin10_outputs(
     date: str,
     category: str | None = None,
     article_ids: list[str] | None = None,
+    storage_root: Path | str = "storage",
 ) -> dict[str, dict[str, Any]]:
     """Build raw, parsed and analysis indexes from external Jin10 files."""
 
@@ -100,7 +104,12 @@ def build_jin10_outputs(
         for item in parsed["reports"]
     }
     daily_reports = [
-        _build_daily_report_bundle(report, parsed_report_map.get(report["article_id"]), raw["source_refs"])
+        _build_daily_report_bundle(
+            report,
+            parsed_report_map.get(report["article_id"]),
+            raw["source_refs"],
+            storage_root=storage_root,
+        )
         for report in raw["reports"]
         if _report_type_for_raw_report(report) in JIN10_OUTPUT_REPORT_TYPES
     ]
@@ -129,9 +138,32 @@ def write_jin10_outputs(outputs: dict[str, dict[str, Any]], *, storage_root: Pat
         )
 
     parsed_artifacts = outputs.get("parsed", {}).get("artifacts", {})
+    parsed_reports = {
+        str(item.get("article_id")): item
+        for item in outputs.get("parsed", {}).get("reports", [])
+        if isinstance(item, dict) and item.get("article_id")
+    }
+    market_odds_features: dict[str, Any] = {}
     for article_id, artifacts in parsed_artifacts.items():
         base = root / "parsed" / "jin10" / date / article_id
         write_parse_artifacts(artifacts, base)
+        parsed_report = parsed_reports.get(str(article_id)) or {}
+        if _is_market_odds_parsed_report(parsed_report):
+            figures_payload = artifacts.get("figures") if isinstance(artifacts, dict) else {}
+            feature = build_jin10_market_odds_evidence(
+                article_id=str(article_id),
+                published_at=_market_odds_published_at(parsed_report, fallback_date=date),
+                parser_version=str((figures_payload or {}).get("parser_version") or "jin10-vlm-parser-unknown"),
+                figures=list((figures_payload or {}).get("figures") or []),
+                vision_layout=artifacts.get("vision_layout") if isinstance(artifacts, dict) else None,
+                markdown_context=str(parsed_report.get("body_text") or (artifacts.get("body_markdown") if isinstance(artifacts, dict) else "") or ""),
+                source_refs=list(parsed_report.get("source_refs") or []) or [{
+                    "source_ref": f"jin10:{article_id}",
+                    "url": parsed_report.get("source_url"),
+                }],
+            )
+            write_market_odds_evidence(feature, output_dir=root / "features" / "jin10" / date / str(article_id))
+            market_odds_features[str(article_id)] = feature
 
     for report in outputs.get("daily_reports", []):
         base = root / "outputs" / "jin10" / report["trade_date"] / report["run_id"]
@@ -152,8 +184,35 @@ def write_jin10_outputs(outputs: dict[str, dict[str, Any]], *, storage_root: Pat
             encoding="utf-8",
         )
         (base / "agent_analysis_report.md").write_text(report["agent_analysis_markdown"], encoding="utf-8")
+        if isinstance(report.get("daily_analysis_context"), dict):
+            (base / "daily_analysis_context.json").write_text(
+                json.dumps(report["daily_analysis_context"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        feature = market_odds_features.get(str(report["run_id"]))
+        if feature is not None:
+            write_market_odds_evidence(feature, output_dir=base)
 
     return targets
+
+
+def _is_market_odds_parsed_report(report: dict[str, Any]) -> bool:
+    text = " ".join(str(report.get(key) or "") for key in ("report_type", "series", "subcategory", "title"))
+    return "market_odds" in text.lower() or any(marker in text for marker in ("市场赔率数据表", "市场赔率表", "赔率表"))
+
+
+def _market_odds_published_at(report: dict[str, Any], *, fallback_date: str) -> str:
+    explicit = str(report.get("published_at") or "").strip()
+    if explicit:
+        return explicit
+    text = str(report.get("body_text") or "")
+    match = re.search(r"截至(?P<year>20\d{2})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日(?P<hour>\d{1,2})点", text)
+    if match:
+        return (
+            f'{int(match.group("year")):04d}-{int(match.group("month")):02d}-{int(match.group("day")):02d}'
+            f'T{int(match.group("hour")):02d}:00:00+08:00'
+        )
+    return f"{fallback_date}T00:00:00+08:00"
 
 
 def build_jin10_agent_output_payload(
@@ -170,13 +229,20 @@ def build_jin10_agent_output_payload(
     daily_report = dict(report["json"])
     agent_report = dict(report["agent_analysis_json"])
     agent_markdown = str(report["agent_analysis_markdown"])
-    prompt = build_agent_analysis_prompt(raw_report, daily_report)
+    market_odds_evidence = report.get("market_odds_evidence") if isinstance(report.get("market_odds_evidence"), dict) else None
+    analysis_context = report.get("daily_analysis_context") if isinstance(report.get("daily_analysis_context"), dict) else None
+    prompt = build_agent_analysis_prompt(
+        raw_report,
+        daily_report,
+        analysis_context=analysis_context,
+        market_odds_evidence=market_odds_evidence,
+    )
     prompt_version = agent_analysis_prompt_version(raw_report, daily_report)
 
     generated_from = dict(agent_report.get("generated_from") or {})
     generated_source = str(generated_from.get("source") or "")
-    generated_by = "llm" if "llm" in generated_source else "rule"
-    status = _jin10_agent_status(agent_report, generated_source)
+    generated_by = "llm" if generated_source == "jin10_agent_analysis_llm" else "rule"
+    status = _jin10_agent_status(agent_report, generated_source, report.get("quality_audit"))
     bias = _jin10_agent_bias(agent_report)
     confidence = _jin10_agent_confidence(agent_report, generated_by, status)
     source_refs = [dict(item) for item in agent_report.get("source_refs") or [] if isinstance(item, dict)]
@@ -187,14 +253,29 @@ def build_jin10_agent_output_payload(
         str(storage_root_path / "outputs" / "jin10" / trade_date / run_id / "raw_article_report.md"),
         str(storage_root_path / "outputs" / "jin10" / trade_date / run_id / "daily_analysis.json"),
         str(storage_root_path / "outputs" / "jin10" / trade_date / run_id / "daily_analysis.html"),
+        *(
+            [str(storage_root_path / "outputs" / "jin10" / trade_date / run_id / "daily_analysis_context.json")]
+            if analysis_context is not None
+            else []
+        ),
         str(storage_root_path / "outputs" / "jin10" / trade_date / run_id / "agent_analysis_report.json"),
         str(storage_root_path / "outputs" / "jin10" / trade_date / run_id / "agent_analysis_report.md"),
     ]
+    if market_odds_evidence is not None:
+        artifact_refs.append(str(storage_root_path / "outputs" / "jin10" / trade_date / run_id / "market_odds_evidence.json"))
     visual_family = str(daily_report.get("family") or "jin10_daily_visual")
     input_snapshot_ids = {
         "jin10_raw_article_report": f"jin10:{trade_date}:{run_id}:raw_article_report",
         visual_family: f"jin10:{trade_date}:{run_id}:daily_analysis",
     }
+    if analysis_context is not None:
+        input_snapshot_ids.update(
+            {
+                f"daily_context_{key}": str(value)
+                for key, value in (analysis_context.get("input_snapshot_ids") or {}).items()
+                if value
+            }
+        )
 
     key_findings = [
         f"市场阶段：{agent_report.get('market_stage', {}).get('label') or 'unavailable'}",
@@ -258,9 +339,12 @@ def build_jin10_agent_output_payload(
             "input_payload": {
                 "raw_report": raw_report,
                 "daily_report": daily_report,
+                "market_odds_evidence": market_odds_evidence,
+                "daily_analysis_context": analysis_context,
                 "vlm_reparse_input": report.get("vlm_reparse_input"),
             },
-            "llm_raw_output": agent_markdown if generated_by == "llm" else None,
+            "llm_raw_output": generated_from.get("llm_structured_output") if generated_by == "llm" else None,
+            "llm_audit_id": generated_from.get("audit_id"),
             "narrative_md": agent_markdown,
             "report_json": agent_report,
             "artifact_refs": artifact_refs,
@@ -298,21 +382,29 @@ def persist_jin10_agent_outputs(
         for report in outputs.get("daily_reports", []):
             payload = build_jin10_agent_output_payload(report, storage_root=storage_root)
             row = upsert_agent_output(session, payload)
-            fact_review = persist_fact_review_agent_output(session, snapshot_id=row.snapshot_id)
-            synthesis = persist_synthesis_agent_output(session, snapshot_id=row.snapshot_id)
-            persisted.append(
-                {
-                    "agent_output_id": row.id,
-                    "run_id": row.run_id,
-                    "snapshot_id": row.snapshot_id,
-                    "agent_name": row.agent_name,
-                    "trade_date": payload["trade_date"],
-                    "fact_review_agent_output_id": fact_review["agent_output_id"],
-                    "fact_review_status": fact_review["fact_review_status"],
-                    "synthesis_agent_output_id": synthesis["agent_output_id"],
-                    "synthesis_status": synthesis["synthesis_status"],
-                }
-            )
+            quality_status = str((report.get("quality_audit") or {}).get("status") or "rejected")
+            summary = {
+                "agent_output_id": row.id,
+                "run_id": row.run_id,
+                "snapshot_id": row.snapshot_id,
+                "agent_name": row.agent_name,
+                "trade_date": payload["trade_date"],
+                "quality_status": quality_status,
+                "fact_review_agent_output_id": None,
+                "fact_review_status": "blocked_by_quality_audit",
+                "synthesis_agent_output_id": None,
+                "synthesis_status": "blocked_by_quality_audit",
+            }
+            if quality_status == "accepted":
+                fact_review = persist_fact_review_agent_output(session, snapshot_id=row.snapshot_id)
+                synthesis = persist_synthesis_agent_output(session, snapshot_id=row.snapshot_id)
+                summary.update(
+                    fact_review_agent_output_id=fact_review["agent_output_id"],
+                    fact_review_status=fact_review["fact_review_status"],
+                    synthesis_agent_output_id=synthesis["agent_output_id"],
+                    synthesis_status=synthesis["synthesis_status"],
+                )
+            persisted.append(summary)
         if own_session:
             session.commit()
         return persisted
@@ -343,7 +435,10 @@ def persist_jin10_task_runs(
             run_id = str(report.get("run_id") or "")
             quality_audit = report.get("quality_audit") or {}
             quality_status = str(quality_audit.get("status") or "accepted")
-            task_status = TaskStatus.success if quality_status == "accepted" else TaskStatus.degraded
+            task_status = {
+                "accepted": TaskStatus.success,
+                "needs_review": TaskStatus.partial_success,
+            }.get(quality_status, TaskStatus.degraded)
             error_summary = None if quality_status == "accepted" else f"jin10 report quality audit: {quality_status}"
             now = datetime.now(timezone.utc)
             existing = (
@@ -389,9 +484,9 @@ def persist_jin10_task_runs(
                         transition_task_step(
                             session,
                             step,
-                            StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
+                            StepStatus.blocked if quality_status != "accepted" else StepStatus.success,
                             source="jin10_adapter",
-                            blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
+                            blocked_reason=f"quality_audit {quality_status}" if quality_status != "accepted" else None,
                         )
                         break
                 else:
@@ -407,16 +502,16 @@ def persist_jin10_task_runs(
                         step_order=5,
                         output_json=json.dumps(quality_audit, ensure_ascii=False),
                         error_json=json.dumps(quality_audit, ensure_ascii=False) if quality_status != "accepted" else None,
-                        blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
+                        blocked_reason=f"quality_audit {quality_status}" if quality_status != "accepted" else None,
                     )
                     session.add(quality_step)
                     session.flush()
                     transition_task_step(
                         session,
                         quality_step,
-                        StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
+                        StepStatus.blocked if quality_status != "accepted" else StepStatus.success,
                         source="jin10_adapter",
-                        blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
+                        blocked_reason=f"quality_audit {quality_status}" if quality_status != "accepted" else None,
                     )
                 for step in existing_steps:
                     _register_jin10_step_artifacts(
@@ -554,7 +649,7 @@ def persist_jin10_task_runs(
                     step_order=5,
                     output_json=json.dumps(quality_audit, ensure_ascii=False),
                     error_json=json.dumps(quality_audit, ensure_ascii=False) if quality_status != "accepted" else None,
-                    blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
+                    blocked_reason=f"quality_audit {quality_status}" if quality_status != "accepted" else None,
                 ),
             ]
             session.add_all(steps)
@@ -573,9 +668,9 @@ def persist_jin10_task_runs(
                     transition_task_step(
                         session,
                         step,
-                        StepStatus.blocked if quality_status == "rejected" else StepStatus.success,
+                        StepStatus.blocked if quality_status != "accepted" else StepStatus.success,
                         source="jin10_adapter",
-                        blocked_reason="report rejected by quality audit" if quality_status == "rejected" else None,
+                        blocked_reason=f"quality_audit {quality_status}" if quality_status != "accepted" else None,
                     )
                     continue
                 transition_task_step(session, step, StepStatus.success, source="jin10_adapter")
@@ -1143,6 +1238,8 @@ def _build_daily_report_bundle(
     report: dict[str, Any],
     parsed_report: dict[str, Any] | None,
     source_refs: list[dict[str, Any]],
+    *,
+    storage_root: Path | str,
 ) -> dict[str, Any]:
     parsed_artifacts = (parsed_report or {}).get("_runtime_artifacts")
     report_identity = _report_identity_for_raw_report(report, parsed_report)
@@ -1194,7 +1291,7 @@ def _build_daily_report_bundle(
         "content_access": content_access,
         "report_identity": report_identity,
     }
-    quality_audit = _build_report_quality_audit(
+    input_quality_audit = _build_report_quality_audit(
         report=report,
         parsed_report=parsed_report,
         raw_article=raw_article.to_dict(),
@@ -1206,21 +1303,56 @@ def _build_daily_report_bundle(
             return figure_analysis_image_data_url(parsed_artifacts, chart)
 
         figure_loader = load_figure_image
+    market_odds_feature = None
+    if parsed_artifacts is not None and _is_market_odds_parsed_report({**(parsed_report or {}), "title": report.get("title")}):
+        figures_payload = parsed_artifacts.get("figures") if isinstance(parsed_artifacts, dict) else {}
+        market_odds_feature = build_jin10_market_odds_evidence(
+            article_id=str(report["article_id"]),
+            published_at=_market_odds_published_at(parsed_report or {}, fallback_date=str(report["date"])),
+            parser_version=str((figures_payload or {}).get("parser_version") or "jin10-vlm-parser-unknown"),
+            figures=list((figures_payload or {}).get("figures") or []),
+            vision_layout=parsed_artifacts.get("vision_layout"),
+            markdown_context=str((parsed_report or {}).get("body_text") or parsed_artifacts.get("body_markdown") or ""),
+            source_refs=[dict(item) for item in document.source_refs],
+        )
+    daily_analysis_context = None
+    if report_type == "daily":
+        daily_analysis_context = build_daily_analysis_context(
+            trade_date=str(report["date"]),
+            storage_root=storage_root,
+            asset="XAUUSD",
+        )
     agent_analysis = build_jin10_agent_analysis_report_with_llm(
         raw_article,
         visual,
         figure_image_loader=figure_loader,
+        analysis_context=daily_analysis_context,
+        market_odds_evidence=market_odds_feature.model_dump(mode="json") if market_odds_feature is not None else None,
     )
     visual_json = visual.to_dict()
     visual_json["report_type"] = report_type
     visual_json["report_identity"] = report_identity
+    agent_analysis_markdown = _prepend_content_access_notice(
+        render_jin10_agent_analysis_markdown(agent_analysis),
+        content_access=content_access,
+    )
+    output_quality_audit = _build_agent_output_quality_audit(
+        agent_report=agent_analysis.to_dict(),
+        rendered_markdown=agent_analysis_markdown,
+    )
+    quality_audit = _combine_quality_audits(input_quality_audit, output_quality_audit)
+    visual_json["input_quality_audit"] = input_quality_audit
+    visual_json["output_quality_audit"] = output_quality_audit
     visual_json["quality_audit"] = quality_audit
     raw_article_json = raw_article.to_dict()
     raw_article_json["report_identity"] = report_identity
+    raw_article_json["input_quality_audit"] = input_quality_audit
     raw_article_json["quality_audit"] = quality_audit
     raw_article_json["content_access"] = content_access
     agent_analysis_json = agent_analysis.to_dict()
     agent_analysis_json["report_identity"] = report_identity
+    agent_analysis_json["input_quality_audit"] = input_quality_audit
+    agent_analysis_json["output_quality_audit"] = output_quality_audit
     agent_analysis_json["quality_audit"] = quality_audit
     agent_analysis_json["content_access"] = content_access
     agent_analysis_json["generated_from"] = {
@@ -1231,17 +1363,18 @@ def _build_daily_report_bundle(
     return {
         "trade_date": report["date"],
         "run_id": report["article_id"],
+        "input_quality_audit": input_quality_audit,
+        "output_quality_audit": output_quality_audit,
         "quality_audit": quality_audit,
         "vlm_reparse_input": _jin10_vlm_reparse_input(report),
+        "market_odds_evidence": market_odds_feature.model_dump(mode="json") if market_odds_feature is not None else None,
+        "daily_analysis_context": daily_analysis_context,
         "raw_article_json": raw_article_json,
         "raw_article_markdown": render_jin10_raw_article_markdown(raw_article),
         "json": visual_json,
         "html": render_jin10_daily_html(visual),
         "agent_analysis_json": agent_analysis_json,
-        "agent_analysis_markdown": _prepend_content_access_notice(
-            render_jin10_agent_analysis_markdown(agent_analysis),
-            content_access=content_access,
-        ),
+        "agent_analysis_markdown": agent_analysis_markdown,
     }
 
 
@@ -1428,6 +1561,118 @@ def _build_report_quality_audit(
     }
 
 
+def _build_agent_output_quality_audit(
+    *,
+    agent_report: dict[str, Any],
+    rendered_markdown: str,
+) -> dict[str, Any]:
+    """Audit the final structured report and its rendered representation."""
+
+    reasons: list[dict[str, str]] = []
+    generated_from = agent_report.get("generated_from") or {}
+    prompt_profile = str(generated_from.get("prompt_profile") or "default_daily")
+    source = str(generated_from.get("source") or "")
+
+    required_text = ("one_line_conclusion", "gold_analysis", "final_summary")
+    missing_text = [field for field in required_text if not str(agent_report.get(field) or "").strip()]
+    if missing_text:
+        reasons.append({"code": "required_output_missing", "message": ",".join(missing_text)})
+    if not agent_report.get("source_refs"):
+        reasons.append({"code": "source_refs_missing", "message": "final analysis has no source_refs"})
+
+    if prompt_profile == "default_daily":
+        matrix = (agent_report.get("market_stage") or {}).get("confirmation_matrix")
+        required_matrix = {"阶段", "底部证据", "趋势反转证据", "价格确认", "宏观确认", "资金确认"}
+        if not isinstance(matrix, dict) or not required_matrix.issubset(matrix):
+            reasons.append({"code": "daily_confirmation_matrix_missing", "message": "daily confirmation matrix is incomplete"})
+        if not agent_report.get("key_levels"):
+            reasons.append({"code": "daily_key_levels_missing", "message": "daily report has no key levels"})
+        if len(agent_report.get("scenario_paths") or []) < 3:
+            reasons.append({"code": "daily_scenario_coverage_low", "message": "fewer than three scenario paths"})
+        if len(agent_report.get("trading_implications") or []) < 3:
+            reasons.append({"code": "daily_role_coverage_low", "message": "fewer than three trading roles"})
+        daily_context = generated_from.get("daily_context")
+        if isinstance(daily_context, dict):
+            freshness = daily_context.get("freshness") or {}
+            if str(daily_context.get("baseline_kind") or "") == "weekly_fallback":
+                reasons.append(
+                    {
+                        "code": "daily_baseline_fallback",
+                        "message": "previous daily report is missing; latest weekly report was used as an explicit fallback",
+                    }
+                )
+            if str(daily_context.get("status") or "") != "ready":
+                reasons.append({"code": "daily_context_degraded", "message": "weekly, market, or news context is not current"})
+            for key in ("analysis_baseline", "market", "news"):
+                state = str((freshness.get(key) or {}).get("status") or "missing")
+                if state != "current":
+                    reasons.append({"code": f"daily_{key}_context_{state}", "message": f"{key} context status={state}"})
+            oil_state = str((freshness.get("oil") or {}).get("status") or "missing")
+            if oil_state != "current":
+                reasons.append({"code": f"daily_oil_context_{oil_state}", "message": f"oil context status={oil_state}"})
+
+    conclusion = str(agent_report.get("one_line_conclusion") or "").strip()
+    stage_label = str((agent_report.get("market_stage") or {}).get("label") or "").strip()
+    level_values = [
+        str(item.get("value") or item.get("price") or "").strip()
+        for item in agent_report.get("key_levels") or []
+        if isinstance(item, dict)
+    ]
+    if conclusion and conclusion not in rendered_markdown:
+        reasons.append({"code": "render_conclusion_mismatch", "message": "JSON conclusion missing from Markdown"})
+    if stage_label and stage_label not in rendered_markdown:
+        reasons.append({"code": "render_stage_mismatch", "message": "JSON stage missing from Markdown"})
+    missing_levels = [value for value in level_values if value and value not in rendered_markdown]
+    if missing_levels:
+        reasons.append({"code": "render_levels_mismatch", "message": ",".join(missing_levels[:5])})
+
+    strong_terms = ("已经形成", "反转完成", "上涨启动", "确定突破", "必然")
+    evidence_basis = agent_report.get("evidence_basis") or {}
+    evidence_count = sum(len(evidence_basis.get(key) or []) for key in ("report_facts", "chart_support"))
+    if any(term in conclusion for term in strong_terms) and evidence_count == 0:
+        reasons.append({"code": "strong_conclusion_without_evidence", "message": conclusion[:160]})
+
+    submitted_images = int(generated_from.get("submitted_image_count") or 0)
+    figure_results = generated_from.get("figure_results") or []
+    if figure_results and submitted_images == 0:
+        reasons.append({"code": "multimodal_images_not_submitted", "message": "figures existed but no image was submitted"})
+    if generated_from.get("degraded"):
+        reasons.append({"code": "analysis_degraded", "message": str(generated_from.get("degraded_reason") or "unknown")})
+    if source.endswith("fallback_after_llm_error"):
+        reasons.append({"code": "deterministic_fallback", "message": "LLM output was not accepted"})
+
+    blocking_codes = {
+        "required_output_missing",
+        "source_refs_missing",
+        "render_conclusion_mismatch",
+        "render_stage_mismatch",
+        "render_levels_mismatch",
+    }
+    status = "accepted"
+    if any(reason["code"] in blocking_codes for reason in reasons):
+        status = "rejected"
+    elif reasons:
+        status = "needs_review"
+    return {"status": status, "reasons": reasons, "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
+def _combine_quality_audits(input_audit: dict[str, Any], output_audit: dict[str, Any]) -> dict[str, Any]:
+    statuses = {str(input_audit.get("status") or "rejected"), str(output_audit.get("status") or "rejected")}
+    if "rejected" in statuses:
+        status = "rejected"
+    elif "needs_review" in statuses:
+        status = "needs_review"
+    else:
+        status = "accepted"
+    return {
+        "status": status,
+        "input_quality_audit": input_audit,
+        "output_quality_audit": output_audit,
+        "reasons": [*(input_audit.get("reasons") or []), *(output_audit.get("reasons") or [])],
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _report_type_for_raw_report(report: dict[str, Any]) -> str:
     classification = classify_jin10_report(
         category_code=str(report.get("category_code") or ""),
@@ -1452,7 +1697,16 @@ def _report_family_for_raw_report(report: dict[str, Any]) -> str:
     return classification.report_family
 
 
-def _jin10_agent_status(agent_report: dict[str, Any], generated_source: str) -> AgentStatus:
+def _jin10_agent_status(
+    agent_report: dict[str, Any],
+    generated_source: str,
+    quality_audit: dict[str, Any] | None = None,
+) -> AgentStatus:
+    quality_status = str((quality_audit or agent_report.get("quality_audit") or {}).get("status") or "rejected")
+    if quality_status == "rejected":
+        return AgentStatus.FAILED
+    if quality_status == "needs_review":
+        return AgentStatus.PARTIAL
     unresolved = [str(item).strip() for item in agent_report.get("unresolved_items") or [] if str(item).strip()]
     if generated_source.endswith("fallback_after_llm_error"):
         return AgentStatus.PARTIAL

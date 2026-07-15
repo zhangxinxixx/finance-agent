@@ -193,6 +193,26 @@ def test_build_daily_brief_input_snapshot_empty_mode_is_explicitly_degraded() ->
     assert data["quality_flags"] == ["no_actionable_inputs"]
 
 
+def test_news_driven_brief_without_articles_or_market_validation_is_partial() -> None:
+    snapshot = build_daily_brief_input_snapshot(
+        retrieved_date="2026-06-12",
+        run_id="run-news-no-confirmation",
+        daily_market_brief={"market_mainline": {"status": "unavailable"}, "source_refs": []},
+        daily_analysis_triggers={"triggers": [_trigger()]},
+        jin10_article_briefs={"briefs": []},
+        report_events={"items": []},
+        market_reactions=[],
+    )
+
+    data = snapshot.to_dict()
+
+    assert data["report_mode"] == "news_driven"
+    assert data["key_articles"] == []
+    assert data["market_reactions"] == []
+    assert "missing_market_validation" in data["quality_flags"]
+    assert "missing_key_articles" in data["quality_flags"]
+
+
 def test_archive_daily_brief_input_snapshot_writes_feature_artifact(tmp_path: Path) -> None:
     snapshot = build_daily_brief_input_snapshot(
         retrieved_date="2026-06-12",

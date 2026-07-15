@@ -8,6 +8,8 @@ from pydantic import Field
 
 from .claim import Claim, ClaimReview
 from .common import DataStatus, ReportLifecycleStatus, ReviewStatus, SchemaModel, TraceableResponse
+from .market_odds_evidence import MarketOddsEvidenceViewModel
+from .llm_audit import LLMAuditSummary, ReportLLMAuditView
 from .review import ReviewItem
 from .source_trace import ArtifactRef, SnapshotRef, SourceRef
 
@@ -37,6 +39,8 @@ class ReportDetail(ReportSummary):
     structured_payload: dict | None = None
     report_identity: dict | None = None
     gold_macro_overview: dict | None = None
+    market_odds_evidence: MarketOddsEvidenceViewModel | None = None
+    llm_audits: list[LLMAuditSummary] = Field(default_factory=list)
 
 
 class ReportDeterministicInput(SchemaModel):
@@ -79,6 +83,7 @@ class ReportAnalysisAgentOutput(SchemaModel):
     prompt_version: str | None = None
     generated_by: str | None = None
     llm_model: str | None = None
+    llm_audit: ReportLLMAuditView | None = None
     created_at: datetime | None = None
 
 
@@ -95,7 +100,7 @@ class ReportAnalysisInputs(TraceableResponse):
 
 
 ReportSummary.model_rebuild(_types_namespace={"SourceRef": SourceRef, "ArtifactRef": ArtifactRef})
-ReportDetail.model_rebuild(_types_namespace={"SourceRef": SourceRef, "ArtifactRef": ArtifactRef, "SnapshotRef": SnapshotRef})
+ReportDetail.model_rebuild(_types_namespace={"SourceRef": SourceRef, "ArtifactRef": ArtifactRef, "SnapshotRef": SnapshotRef, "MarketOddsEvidenceViewModel": MarketOddsEvidenceViewModel, "LLMAuditSummary": LLMAuditSummary})
 ReportDeterministicInput.model_rebuild(
     _types_namespace={"SourceRef": SourceRef, "ArtifactRef": ArtifactRef, "SnapshotRef": SnapshotRef}
 )
@@ -106,6 +111,7 @@ ReportAnalysisAgentOutput.model_rebuild(
         "SnapshotRef": SnapshotRef,
         "Claim": Claim,
         "ClaimReview": ClaimReview,
+        "ReportLLMAuditView": ReportLLMAuditView,
     }
 )
 ReportAnalysisInputs.model_rebuild(
@@ -115,5 +121,6 @@ ReportAnalysisInputs.model_rebuild(
         "SnapshotRef": SnapshotRef,
         "Claim": Claim,
         "ClaimReview": ClaimReview,
+        "ReportLLMAuditView": ReportLLMAuditView,
     }
 )

@@ -52,6 +52,48 @@ def test_resolve_report_identity_marks_unclassified_cover_for_review() -> None:
     assert identity["verification_status"] == "needs_review"
 
 
+def test_resolve_market_observation_identity_from_cover_classification() -> None:
+    identity = resolve_jin10_report_identity(
+        category_code="458",
+        category="市场观察",
+        title="美伊相互指责但都踩住刹车 | 每日市场观察06.29",
+        report_type="market_observation",
+        cover_text="每日市场观察\n美伊相互指责但都踩住刹车，有限度报复与停火框架共存",
+    )
+
+    assert identity["classification_label"] == "每日市场观察"
+    assert identity["report_type"] == "market_observation"
+    assert identity["verification_status"] == "confirmed"
+
+
+def test_resolve_master_review_identity_from_footer_classification() -> None:
+    identity = resolve_jin10_report_identity(
+        category_code="786",
+        category="周末·大师复盘",
+        title="美伊局势再现波澜，是冲突升级还是筹码重估？｜大师复盘-金十数据VIP",
+        report_type="research",
+        cover_text="杰维斯复盘：市场如何为安全困境定价？\n周末·大师复盘 | 金十数据 VIP",
+    )
+
+    assert identity["classification_label"] == "周末·大师复盘"
+    assert identity["report_type"] == "research"
+    assert identity["verification_status"] == "confirmed"
+
+
+def test_resolve_research_identity_from_cover_series() -> None:
+    identity = resolve_jin10_report_identity(
+        category_code="458",
+        category="VIP智库",
+        title="新闻交易员：韩国那边不是普通回调，是拥挤交易在漏风-金十数据VIP",
+        report_type="research",
+        cover_text="新闻交易员",
+    )
+
+    assert identity["classification_label"] == "新闻交易员"
+    assert identity["report_type"] == "research"
+    assert identity["verification_status"] == "confirmed"
+
+
 def test_classify_market_observation_reports_from_vip_titles() -> None:
     daily_observation = classify_jin10_report(category="VIP智库", title="VIP每日市场观察：黄金等待非农确认")
     odds_table = classify_jin10_report(category="VIP智库", title="市场赔率表：降息概率与黄金风险偏好")
@@ -62,8 +104,26 @@ def test_classify_market_observation_reports_from_vip_titles() -> None:
     assert daily_observation.asset_scope == "cross_asset"
     assert odds_table.report_type == "market_observation"
     assert odds_table.report_family == "jin10_market_observation_report"
+    assert odds_table.series == "market_odds"
+    assert odds_table.subcategory == "market_odds"
     assert odds_data_table.report_type == "market_observation"
     assert odds_data_table.report_family == "jin10_market_observation_report"
+    assert odds_data_table.series == "market_odds"
+    assert odds_data_table.subcategory == "market_odds"
+
+
+def test_resolve_market_odds_identity_from_cover_classification() -> None:
+    identity = resolve_jin10_report_identity(
+        category_code="458",
+        category="市场观察",
+        title="加息跌破半数，黄金赔率变脸｜市场赔率数据表-金十数据VIP",
+        report_type="market_observation",
+        cover_text="金十数据VIP\n市场赔率数据表\n截至2026年7月3日14点",
+    )
+
+    assert identity["classification_label"] == "市场赔率数据表"
+    assert identity["report_type"] == "market_observation"
+    assert identity["verification_status"] == "confirmed"
 
 
 def test_classify_non_daily_gold_articles_as_research_even_under_daily_category() -> None:

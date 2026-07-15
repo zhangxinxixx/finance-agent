@@ -26,7 +26,7 @@ function coverage(overrides: Partial<MarketCandleCoverage> = {}): MarketCandleCo
 
 function testClassifiesCoverageStates(): void {
   expect(
-    classifyMarketCandleCoverage({ timeframe: "1m", coverage: coverage() }).status === "available",
+    classifyMarketCandleCoverage({ timeframe: "5m", coverage: coverage() }).status === "available",
     "healthy coverage should be available",
   );
   expect(
@@ -38,7 +38,7 @@ function testClassifiesCoverageStates(): void {
     "single-row coverage should be unavailable",
   );
   expect(
-    classifyMarketCandleCoverage({ timeframe: "1m", error: "HTTP 500" }).reason === "HTTP 500",
+    classifyMarketCandleCoverage({ timeframe: "5m", error: "HTTP 500" }).reason === "HTTP 500",
     "error should become unavailable reason",
   );
 }

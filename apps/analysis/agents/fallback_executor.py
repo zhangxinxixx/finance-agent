@@ -24,6 +24,8 @@ class AgentLoopFallbackExecution(BaseModel):
     task_results: list[dict[str, Any]] = Field(default_factory=list)
     fallback_agent_outputs: dict[str, AgentOutput] = Field(default_factory=dict)
     fallback_quality_gate_decision: QualityGateDecision | None = None
+    corrective_fallback_succeeded: bool = False
+    unresolved_reason_codes: list[str] = Field(default_factory=list)
 
 
 def build_fallback_tasks(decision: QualityGateDecision) -> list[AgentLoopFallbackTask]:
@@ -72,10 +74,24 @@ def execute_agent_loop_fallback_tasks(
         task_results.append(result)
         if output is not None:
             fallback_agent_outputs[output.agent_name] = output
+            result["execution_status"] = result.get("status")
+            result["status"] = "observation_only"
+            result["publish_ready_after_correction"] = False
+
+    primary_reason_codes = [finding.code for finding in primary_quality_gate_decision.findings]
+    unresolved_reason_codes = [
+        code for code in primary_reason_codes
+    ]
+    # No independent validator is wired in this slice.  Dedicated fallbacks are
+    # useful observation evidence only and must never restore publication.
+    corrective_fallback_succeeded = False
 
     fallback = _conservative_fallback_output(
         primary=primary,
         tasks=tasks,
+        primary_quality_gate_decision=primary_quality_gate_decision,
+        task_results=task_results,
+        unresolved_reason_codes=unresolved_reason_codes,
         created_at=created_at,
     )
     fallback_agent_outputs[fallback.agent_name] = fallback
@@ -91,9 +107,10 @@ def execute_agent_loop_fallback_tasks(
         {
             "task_type": "fallback_conservative_synthesis",
             "reason": "conservative_fallback_after_quality_gate",
-            "status": "success",
+            "status": "observation_only",
             "fallback_output_agent": fallback.agent_name,
             "fallback_of": f"{primary.agent_name}:{primary.snapshot_id}",
+            "unresolved_reason_codes": unresolved_reason_codes,
         }
     )
     return AgentLoopFallbackExecution(
@@ -101,6 +118,8 @@ def execute_agent_loop_fallback_tasks(
         task_results=task_results,
         fallback_agent_outputs=fallback_agent_outputs,
         fallback_quality_gate_decision=fallback_quality_gate_decision,
+        corrective_fallback_succeeded=corrective_fallback_succeeded,
+        unresolved_reason_codes=unresolved_reason_codes,
     )
 
 
@@ -583,6 +602,9 @@ def _conservative_fallback_output(
     *,
     primary: AgentOutput,
     tasks: list[AgentLoopFallbackTask],
+    primary_quality_gate_decision: QualityGateDecision,
+    task_results: list[dict[str, Any]],
+    unresolved_reason_codes: list[str],
     created_at: datetime,
 ) -> AgentOutput:
     source_refs = [dict(ref) for ref in primary.source_refs if isinstance(ref, dict)]
@@ -613,7 +635,9 @@ def _conservative_fallback_output(
             "Review primary vs fallback output before restoring any strong conclusion.",
             *list(primary.watchlist),
         ],
-        invalid_conditions=[],
+        invalid_conditions=_dedupe_strings(
+            [*list(primary.invalid_conditions), *unresolved_reason_codes]
+        ),
         summary="No strong conclusion: fallback conservative synthesis is in effect.",
         source_refs=source_refs,
         status=AgentStatus.PARTIAL,
@@ -632,8 +656,23 @@ def _conservative_fallback_output(
                 "bias": primary.bias.value,
                 "status": primary.status.value,
             },
+            "primary_gate_findings": [
+                finding.model_dump(mode="json")
+                for finding in primary_quality_gate_decision.findings
+            ],
+            "unresolved_reason_codes": list(unresolved_reason_codes),
+            "primary_invalid_conditions": list(primary.invalid_conditions),
+            "dedicated_fallback_results": [dict(item) for item in task_results],
         },
     )
+
+
+def _resolved_reason_codes(task_type: str) -> set[str]:
+    if task_type == "fallback_reparse":
+        return {"parse_or_required_field_quality_gap"}
+    if task_type in {"fallback_cross_check", "cross_check_with_independent_source"}:
+        return {"single_source_important_conclusion"}
+    return set()
 
 
 def _combined_source_refs(agent_outputs: list[AgentOutput]) -> list[dict[str, Any]]:

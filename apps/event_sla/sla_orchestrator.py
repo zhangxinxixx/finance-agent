@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from apps.event_sla.event_watcher import discover_events
+from apps.event_sla.recompute_request import build_live_strategy_recompute_request
 from apps.event_sla.schemas import EventSlaArtifacts, EventSnapshot
 from apps.event_sla.sla_reporter import (
     EVENT_SLA_STEP_NAMES,
@@ -66,30 +69,61 @@ class EventSlaOrchestrator:
         created_count = 0
         reused_count = 0
         for event in events:
-            previous = ledger_events.get(event.event_id)
+            previous_key, previous = _find_previous_event(ledger_events=ledger_events, event=event)
+            first_seen_at = str((previous or {}).get("first_seen_at") or event.first_seen_at or event.detected_at)
+            event = replace(event, first_seen_at=first_seen_at)
             observation_hash = _event_observation_hash(event)
             if _can_reuse_event(
                 previous=previous,
                 observation_hash=observation_hash,
                 storage_root=self.storage_root,
             ):
+                if previous_key is not None and previous_key != event.event_id:
+                    previous = {
+                        **previous,
+                        "event_id": event.event_id,
+                        "first_seen_at": first_seen_at,
+                    }
+                    ledger_events.pop(previous_key, None)
+                    ledger_events[event.event_id] = previous
+                    write_event_execution_ledger(
+                        storage_root=self.storage_root,
+                        trade_date=day,
+                        payload={
+                            "trade_date": day,
+                            "updated_at": observed_at.isoformat(),
+                            "events": ledger_events,
+                        },
+                    )
                 results.append(_reused_event_result(event=event, previous=previous))
                 reused_count += 1
                 continue
-            result = self._run_event(event=event, observed_at=observed_at, record_task_run=record_task_run)
-            result["observation_hash"] = observation_hash
+            result = self._run_event(
+                event=event,
+                observation_hash=observation_hash,
+                observed_at=observed_at,
+                record_task_run=record_task_run,
+            )
             results.append(result)
             created_count += 1
             history = _execution_history(previous)
+            if previous_key is not None and previous_key != event.event_id:
+                ledger_events.pop(previous_key, None)
+            sla = result["sla"]
             ledger_events[event.event_id] = {
                 "event_id": event.event_id,
                 "event_hash": event.event_hash,
                 "observation_hash": observation_hash,
                 "source_key": event.source_key,
+                "article_id": event.article_id,
+                "published_at": event.published_at,
+                "first_seen_at": first_seen_at,
+                "detected_at": event.detected_at,
+                "analysis_started_at": sla["analysis_started_at"],
                 "status": result["status"],
                 "artifacts": result["artifacts"],
                 "task_run_id": result["task_run_id"],
-                "completed_at": observed_at.isoformat(),
+                "completed_at": sla["completed_at"],
                 "execution_count": len(history) + 1,
                 "history": history,
             }
@@ -110,20 +144,30 @@ class EventSlaOrchestrator:
             "events": results,
         }
 
-    def _run_event(self, *, event: EventSnapshot, observed_at: datetime, record_task_run: bool) -> dict[str, Any]:
+    def _run_event(
+        self,
+        *,
+        event: EventSnapshot,
+        observation_hash: str,
+        observed_at: datetime,
+        record_task_run: bool,
+    ) -> dict[str, Any]:
+        processing_started = perf_counter()
         quality_gate = _read_quality_gate(storage_root=self.storage_root, trade_date=event.trade_date)
         status = event_status(event=event, quality_gate=quality_gate)
         level = evidence_level(event)
         strategy = build_trading_strategy(event=event, evidence_level=level)
-        event_dir = self.storage_root / "event_sla" / event.trade_date / event.event_id
+        event_dir = self.storage_root / "event_sla" / event.trade_date / event.event_id / observation_hash[:12]
         event_dir.mkdir(parents=True, exist_ok=True)
-        artifacts = self._write_outputs(
+        artifacts, sla = self._write_outputs(
             event=event,
+            observation_hash=observation_hash,
             event_dir=event_dir,
             status=status,
             observed_at=observed_at,
             strategy=strategy,
             quality_gate=quality_gate,
+            processing_started=processing_started,
         )
         task_run_id = None
         if record_task_run:
@@ -131,29 +175,34 @@ class EventSlaOrchestrator:
         return {
             "event_id": event.event_id,
             "event_hash": event.event_hash,
+            "observation_hash": observation_hash,
             "source_key": event.source_key,
             "status": status,
             "execution_mode": "executed",
             "evidence_level": level,
             "artifacts": artifacts.to_dict(),
             "task_run_id": task_run_id,
+            "sla": sla,
         }
 
     def _write_outputs(
         self,
         *,
         event: EventSnapshot,
+        observation_hash: str,
         event_dir: Path,
         status: str,
         observed_at: datetime,
         strategy: dict[str, Any],
         quality_gate: dict[str, Any] | None,
-    ) -> EventSlaArtifacts:
+        processing_started: float,
+    ) -> tuple[EventSlaArtifacts, dict[str, Any]]:
         event_snapshot_path = event_dir / "event_snapshot.json"
         analysis_report_path = event_dir / "analysis_report.md"
         trading_strategy_path = event_dir / "trading_strategy.md"
         trading_strategy_json_path = event_dir / "trading_strategy.json"
         notification_request_path = event_dir / "notification_request.json"
+        live_strategy_recompute_request_path = event_dir / "live_strategy_recompute_request.json"
         sla_trace_path = event_dir / "sla_trace.json"
 
         artifacts = EventSlaArtifacts(
@@ -162,31 +211,42 @@ class EventSlaOrchestrator:
             trading_strategy_path=rel(trading_strategy_path, self.storage_root),
             trading_strategy_json_path=rel(trading_strategy_json_path, self.storage_root),
             notification_request_path=rel(notification_request_path, self.storage_root),
+            live_strategy_recompute_request_path=rel(live_strategy_recompute_request_path, self.storage_root),
             sla_trace_path=rel(sla_trace_path, self.storage_root),
         )
-        elapsed = _elapsed_minutes(event.detected_at, observed_at)
+        processing_duration_minutes = max(0.0, (perf_counter() - processing_started) / 60)
+        completed_at = observed_at + timedelta(minutes=processing_duration_minutes)
+        sla = _sla_metrics(event=event, analysis_started_at=observed_at, completed_at=completed_at)
         analysis_report = build_analysis_report(event=event, status=status, strategy=strategy, quality_gate=quality_gate)
         notification_request = build_notification_request(
             event=event,
             status=status,
-            elapsed_minutes=elapsed,
+            sla=sla,
             analysis_report_path=artifacts.analysis_report_path,
+        )
+        recompute_request = build_live_strategy_recompute_request(
+            event=event,
+            observation_hash=observation_hash,
+            evidence_level=evidence_level(event),
+            event_status=status,
+            quality_gate=quality_gate,
+            created_at=observed_at.isoformat(),
         )
         trace = build_sla_trace(
             event=event,
             status=status,
-            observed_at=observed_at.isoformat(),
-            elapsed_minutes=elapsed,
+            sla=sla,
             artifacts=artifacts.to_dict(),
         )
 
-        _write_json(event_snapshot_path, event.to_dict())
+        _write_json(event_snapshot_path, {**event.to_dict(), "observation_hash": observation_hash})
         analysis_report_path.write_text(analysis_report, encoding="utf-8")
         trading_strategy_path.write_text(render_strategy_markdown(strategy), encoding="utf-8")
         _write_json(trading_strategy_json_path, strategy)
         _write_json(notification_request_path, notification_request)
+        _write_json(live_strategy_recompute_request_path, recompute_request)
         _write_json(sla_trace_path, trace)
-        return artifacts
+        return artifacts, sla
 
 
 def run_event_sla_pipeline(
@@ -259,6 +319,12 @@ def _output_refs_for_step(
                 {"artifact_type": "analysis_md", "path": artifacts.trading_strategy_path},
                 {"artifact_type": "structured_json", "path": artifacts.trading_strategy_json_path},
             ],
+            "write_live_strategy_recompute_request": [
+                {
+                    "artifact_type": "live_strategy_recompute_request",
+                    "path": artifacts.live_strategy_recompute_request_path,
+                }
+            ],
             "build_sla_report": [
                 {"artifact_type": "structured_json", "path": artifacts.sla_trace_path}
             ],
@@ -293,14 +359,13 @@ def _artifact_usage_metadata(
             "execution_mode": execution_mode,
         }
     if step_name == "build_trading_strategy":
-        if step_status == "blocked":
-            quality_status = "preview" if evidence_level(event) == "preview" else "blocked_output"
-            usable_for = ["observation"]
-            blocked_for = ["actionable_strategy"]
-        else:
-            quality_status = "success"
-            usable_for = ["observation", "actionable_strategy"]
-            blocked_for = []
+        quality_status = "observation_only"
+        usable_for = ["observation"]
+        blocked_for = ["recompute_authority", "direct_execution"]
+    elif step_name == "write_live_strategy_recompute_request":
+        quality_status = "request_only"
+        usable_for = ["recompute_resolution"]
+        blocked_for = ["direct_execution", "strategy_freeze"]
     elif step_name == "build_analysis_conclusion" and event_status != "success":
         quality_status = "degraded" if event_status == "partial_success" else "blocked_output"
         usable_for = ["observation"]
@@ -358,6 +423,16 @@ def _reused_event_result(*, event: EventSnapshot, previous: dict[str, Any]) -> d
         "artifacts": previous.get("artifacts"),
         "task_run_id": None,
         "source_task_run_id": previous.get("task_run_id"),
+        "sla": {
+            key: previous.get(key)
+            for key in (
+                "published_at",
+                "first_seen_at",
+                "detected_at",
+                "analysis_started_at",
+                "completed_at",
+            )
+        },
     }
 
 
@@ -373,6 +448,10 @@ def _execution_history(previous: Any) -> list[dict[str, Any]]:
             "status",
             "artifacts",
             "task_run_id",
+            "published_at",
+            "first_seen_at",
+            "detected_at",
+            "analysis_started_at",
             "completed_at",
         )
     }
@@ -385,11 +464,65 @@ def _read_quality_gate(*, storage_root: Path, trade_date: str) -> dict[str, Any]
     return payload or None
 
 
-def _elapsed_minutes(detected_at: str, observed_at: datetime) -> float:
-    detected = datetime.fromisoformat(detected_at)
-    if detected.tzinfo is None:
-        detected = detected.replace(tzinfo=timezone.utc)
-    return max(0.0, (observed_at - detected.astimezone(timezone.utc)).total_seconds() / 60)
+def _find_previous_event(
+    *,
+    ledger_events: dict[str, Any],
+    event: EventSnapshot,
+) -> tuple[str | None, dict[str, Any] | None]:
+    direct = ledger_events.get(event.event_id)
+    if isinstance(direct, dict):
+        return event.event_id, direct
+    legacy_prefixes = [f"{event.event_id}_"]
+    if event.source_key == "cme_gold_options_bulletin":
+        legacy_prefixes.append(f"{event.source_key}_{event.trade_date}_")
+    for key, value in ledger_events.items():
+        if isinstance(value, dict) and any(str(key).startswith(prefix) for prefix in legacy_prefixes):
+            return str(key), value
+    return None, None
+
+
+def _sla_metrics(
+    *,
+    event: EventSnapshot,
+    analysis_started_at: datetime,
+    completed_at: datetime,
+) -> dict[str, Any]:
+    detected_at = _parse_datetime(event.detected_at) or analysis_started_at
+    first_seen_at = _parse_datetime(event.first_seen_at) or detected_at
+    published_at = _parse_datetime(event.published_at) or first_seen_at
+    detection_lag = _minutes_between(published_at, detected_at)
+    processing_duration = _minutes_between(analysis_started_at, completed_at)
+    end_to_end = _minutes_between(published_at, completed_at)
+    return {
+        "published_at": published_at.isoformat(),
+        "first_seen_at": first_seen_at.isoformat(),
+        "detected_at": detected_at.isoformat(),
+        "analysis_started_at": analysis_started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "detection_lag_minutes": detection_lag,
+        "processing_duration_minutes": processing_duration,
+        "end_to_end_sla_minutes": end_to_end,
+        "elapsed_minutes": end_to_end,
+    }
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _minutes_between(start: datetime, end: datetime) -> float:
+    return max(0.0, (end - start).total_seconds() / 60)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

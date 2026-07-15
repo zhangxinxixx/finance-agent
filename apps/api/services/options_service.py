@@ -5,11 +5,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from apps.analysis.options.decision import build_options_decision
+from apps.api.services.market_candle_service import get_market_candles
 from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.agent_output_service import build_agent_output_summary
 from apps.api.services.review_service import build_review_item_response
 from database.queries.analysis import list_agent_outputs
 from database.queries.review import list_review_items
+from database.queries.cme import get_available_cme_trade_dates, get_cme_option_rows
 
 
 from datetime import date as _date, timedelta
@@ -74,22 +77,31 @@ def get_options_snapshot(date_str: str | None = None, db: Session | None = None)
             return None
 
     def _load_from_snapshot(date: str) -> dict[str, Any] | None:
-        date_dir = snap_base / date
-        if not date_dir.exists():
-            return None
-        for run_dir in sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True):
-            snap_path = run_dir / "premarket_snapshot.json"
-            if not snap_path.exists():
-                continue
-            try:
-                snap = json.loads(snap_path.read_text(encoding="utf-8"))
-                options_raw = snap.get("options")
-                if isinstance(options_raw, dict) and options_raw.get("status") == "available":
-                    options = options_raw.get("data")
-                    if isinstance(options, dict):
+        if snap_base.exists():
+            date_dirs = sorted((d for d in snap_base.iterdir() if d.is_dir()), reverse=True)
+            direct_date_dir = snap_base / date
+            if direct_date_dir in date_dirs:
+                date_dirs.remove(direct_date_dir)
+                date_dirs.insert(0, direct_date_dir)
+            for date_dir in date_dirs:
+                for run_dir in sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True):
+                    snap_path = run_dir / "premarket_snapshot.json"
+                    if not snap_path.exists():
+                        continue
+                    try:
+                        snap = json.loads(snap_path.read_text(encoding="utf-8"))
+                        options_raw = snap.get("options")
+                        if not isinstance(options_raw, dict) or options_raw.get("status") != "available":
+                            continue
+                        options = options_raw.get("data")
+                        if not isinstance(options, dict):
+                            continue
+                        options_trade_date = str(options.get("trade_date") or date_dir.name)
+                        if options_trade_date != date:
+                            continue
                         return _finalize_snapshot_payload(options, trade_date=date, run_id=run_dir.name)
-            except Exception:
-                continue
+                    except Exception:
+                        continue
         # Also check features directory (option_wall step output)
         features_date_dir = cme_features / date
         if features_date_dir.exists():
@@ -131,6 +143,163 @@ def get_options_snapshot(date_str: str | None = None, db: Session | None = None)
         if loaded is not None:
             return _attach_analysis(loaded)
     return None
+
+
+def get_options_decision(
+    date_str: str | None = None,
+    *,
+    lookback_days: int = 5,
+    db: Session | None = None,
+) -> dict[str, Any] | None:
+    """Read the decision ViewModel from a stored snapshot and local DB inputs."""
+    snapshot = get_options_snapshot(date_str, db=db)
+    if snapshot is None:
+        return None
+
+    trade_date = str(snapshot.get("trade_date") or date_str or "")
+    product = str((snapshot.get("data_source") or {}).get("product") or "OG")
+    expiry_values = (snapshot.get("data_source") or {}).get("expiries") or []
+    expiries = {str(value) for value in expiry_values if value}
+    current_rows: list[Any] = []
+    previous_rows: list[Any] | None = None
+    previous_snapshot: dict[str, Any] | None = None
+    history_rows_by_date: dict[str, list[Any]] = {}
+    row_source_refs: list[dict[str, Any]] = []
+    live_context: dict[str, Any] = {}
+    database_dates: list[str] = []
+    if db is not None:
+        database_dates = [
+            item
+            for item in get_available_cme_trade_dates(
+                db,
+                product=product,
+                limit=max(lookback_days + 5, 20),
+            )
+            if item <= trade_date
+        ]
+        try:
+            candles = get_market_candles(asset="XAUUSD", timeframe="5m", limit=1, session=db)
+            latest = (candles.get("candles") or [])[-1:]
+            if latest:
+                candle = latest[0]
+                live_context = {
+                    "price": candle.get("close"),
+                    "timestamp": candle.get("time"),
+                    "source": candle.get("source"),
+                }
+        except Exception:
+            # An unavailable local candle must degrade only intraday fields.
+            live_context = {}
+
+    candidate_dates = sorted(
+        {
+            candidate
+            for candidate in [*database_dates, *list_options_report_dates()]
+            if candidate <= trade_date
+        },
+        reverse=True,
+    )
+    for candidate in candidate_dates:
+        rows = (
+            get_cme_option_rows(
+                db,
+                report_date=candidate,
+                product=product,
+                expiries=expiries or None,
+            )
+            if db is not None and candidate in database_dates
+            else []
+        )
+        if rows:
+            source_ref = {
+                "name": "cme_option_rows",
+                "source_ref": f"database://cme_option_rows/{candidate}",
+                "status": "ok",
+                "trade_date": candidate,
+                "source_kind": "database",
+            }
+        else:
+            rows, source_ref = _load_archived_cme_rows(
+                candidate,
+                product=product,
+                expiries=expiries,
+            )
+        if not rows:
+            continue
+        history_rows_by_date[candidate] = rows
+        if source_ref is not None:
+            row_source_refs.append(source_ref)
+        if candidate == trade_date:
+            current_rows = rows
+        elif previous_rows is None:
+            previous_rows = rows
+            previous_snapshot = get_options_snapshot(candidate, db=db)
+        if len(history_rows_by_date) >= lookback_days and current_rows and previous_rows is not None:
+            break
+
+    decision_snapshot = dict(snapshot)
+    decision_snapshot["source_trace"] = [
+        *list(snapshot.get("source_trace") or []),
+        *row_source_refs,
+    ]
+
+    return build_options_decision(
+        decision_snapshot,
+        current_rows=current_rows,
+        previous_rows=previous_rows,
+        previous_snapshot=previous_snapshot,
+        history_rows_by_date=history_rows_by_date,
+        live_price_context=live_context,
+        lookback_days=lookback_days,
+        endpoint=f"/api/options/decision?date={trade_date}&lookback_days={lookback_days}",
+    )
+
+
+def _load_archived_cme_rows(
+    trade_date: str,
+    *,
+    product: str,
+    expiries: set[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Load final parsed detail rows for one date when the read DB has a gap."""
+    date_dir = _PROJECT_ROOT / "storage" / "parsed" / "cme" / trade_date
+    if not date_dir.is_dir():
+        return [], None
+
+    candidates: list[tuple[int, Path, dict[str, Any]]] = []
+    for path in sorted(date_dir.glob("*/cme_parse_result.json"), reverse=True):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str(payload.get("trade_date") or trade_date) != trade_date:
+            continue
+        status = str(payload.get("status") or payload.get("version_type") or "").upper()
+        priority = 2 if status == "FINAL" else 1 if status.startswith("PRELIM") else 0
+        candidates.append((priority, path, payload))
+
+    for _, path, payload in sorted(candidates, key=lambda item: (item[0], str(item[1])), reverse=True):
+        rows = [
+            dict(row)
+            for row in payload.get("detail_rows") or []
+            if isinstance(row, dict)
+            and str(row.get("product") or row.get("product_code") or "") == product
+            and (not expiries or str(row.get("expiry") or "") in expiries)
+        ]
+        if not rows:
+            continue
+        status = str(payload.get("status") or payload.get("version_type") or "unknown").upper()
+        relative_path = str(path.relative_to(_PROJECT_ROOT))
+        return rows, {
+            "name": "cme_option_rows_archive_fallback",
+            "source_ref": relative_path,
+            "file": relative_path,
+            "status": "ok",
+            "trade_date": trade_date,
+            "source_kind": "archived_parse",
+            "version_type": status,
+        }
+    return [], None
 
 
 def _finalize_snapshot_payload(
@@ -708,6 +877,7 @@ def list_options_report_dates() -> list[str]:
                     and options_raw.get("status") == "available"
                     and isinstance(options_raw.get("data"), dict)
                 ):
-                    dates.add(date_dir.name)
+                    options_trade_date = str(options_raw["data"].get("trade_date") or date_dir.name)
+                    dates.add(options_trade_date)
                     break
     return sorted(dates, reverse=True)

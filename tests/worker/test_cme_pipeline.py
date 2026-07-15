@@ -47,7 +47,13 @@ SAMPLE_ROWS_PATH = FIXTURES / "sample_option_rows.json"
 @pytest.fixture(autouse=True)
 def _mock_source_status_index():
     """Keep CME worker tests isolated from source gating unless a test opts in explicitly."""
-    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+    with (
+        patch("apps.api.services.source_service.get_data_source_status_index", return_value={}),
+        patch(
+            "apps.worker.runner._evaluate_premarket_readiness",
+            return_value={"decision": "allow", "reason_code": None},
+        ),
+    ):
         yield
 
 

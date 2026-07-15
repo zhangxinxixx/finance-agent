@@ -10,6 +10,7 @@ import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { ReportAnalysisInputsPanel } from "@/components/reports/ReportAnalysisInputsPanel";
+import { ReportMarketOddsMatrix } from "@/components/reports/ReportMarketOddsMatrix";
 import { ReportArtifactPanel } from "@/components/reports/ReportArtifactPanel";
 import { shortId } from "@/components/reports/reportDetailMeta";
 import { useReportDetail } from "@/hooks/useReportDetail";
@@ -123,8 +124,24 @@ export function ReportDetailPage() {
         />
 
         <ReportGoldMacroOverviewCard data={data} />
+        <ReportMarketOddsMatrix data={data} />
         <ReportMarketObservationCard data={data} />
         <ReportGenerationTraceCard data={data} onTabChange={setActiveTab} />
+
+        {data.llm_audits.length > 0 ? (
+          <section className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-[12px] font-semibold text-[var(--fg-2)]">LLM 调用审计</div>
+                <div className="mt-1 text-[11px] text-[var(--fg-4)]">本报告关联 {data.llm_audits.length} 次 Gateway 调用；可查看实际配置、Prompt、输入、输出和重试链。</div>
+              </div>
+              <Link className="rounded-[var(--radius-md)] border border-[var(--border)] px-3 py-1.5 text-[11px] text-[var(--accent)]" to={`/settings/llm-audit?report_id=${encodeURIComponent(data.report_id)}`}>打开完整审计页 →</Link>
+            </div>
+            <div className="mt-3 grid gap-2 lg:grid-cols-2">
+              {data.llm_audits.slice(0, 6).map((audit) => <Link key={audit.audit_id} to={`/settings/llm-audit?audit_id=${encodeURIComponent(audit.audit_id)}&report_id=${encodeURIComponent(data.report_id)}`} className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2 text-[10px] text-[var(--fg-3)]"><div className="font-semibold">{audit.caller} · {audit.status}</div><div className="mt-1 text-[var(--fg-5)]">{audit.model_resolved ?? "-"} · Prompt {audit.prompt_char_count} 字符 · 输出 {audit.response_char_count} 字符 · {audit.created_at ?? "-"}</div></Link>)}
+            </div>
+          </section>
+        ) : null}
 
         {data.warnings.length > 0 ? (
           <div className="space-y-2">

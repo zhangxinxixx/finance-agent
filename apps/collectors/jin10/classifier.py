@@ -71,6 +71,12 @@ _MARKET_OBSERVATION_MARKERS = ("VIP每日市场观察", "每日市场观察", "�
 _MASTER_REVIEW_MARKERS = ("周末·大师复盘", "大师复盘", "master_review")
 _CLASSIFICATION_LABELS: tuple[tuple[str, str], ...] = (
     ("黄金投资者周报", "weekly"),
+    ("周末·大师复盘", "research"),
+    ("新闻交易员", "research"),
+    ("市场赔率数据表", "market_observation"),
+    ("市场赔率表", "market_observation"),
+    ("VIP每日市场观察", "market_observation"),
+    ("每日市场观察", "market_observation"),
     ("每日金银报告", "daily"),
     ("黄金周报", "weekly"),
     ("持仓报告", "positioning"),
@@ -262,12 +268,20 @@ def _category_for_type(report_type: str) -> str:
 
 
 def _series_for_category(*, code: str, text: str) -> str:
+    if _looks_like_market_odds(text=text):
+        return "market_odds"
     if code == "786" or _looks_like_master_review(text=text):
         return "master_review"
     return ""
 
 
 def _subcategory_for_category(*, code: str, text: str) -> str:
+    if _looks_like_market_odds(text=text):
+        return "market_odds"
     if code == "786" or _looks_like_master_review(text=text):
         return "master_review"
     return ""
+
+
+def _looks_like_market_odds(*, text: str) -> bool:
+    return any(marker in text for marker in ("市场赔率数据表", "市场赔率表", "赔率表"))

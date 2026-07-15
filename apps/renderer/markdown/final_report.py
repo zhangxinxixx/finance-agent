@@ -118,6 +118,7 @@ def render_final_report_markdown(
     lines.extend(_render_macro_data_report(snapshot_data, outputs["macro"], warnings))
     lines.extend(["## 综合报告", ""])
     lines.extend(["### 报告主题", "", _build_report_theme(snapshot_data, outputs), ""])
+    lines.extend(_render_gold_analysis_context(snapshot_data))
     lines.extend(_render_executive_summary(snapshot_data, outputs, warnings, heading_level=3))
     lines.extend(_render_market_view(outputs, heading_level=3))
     lines.extend(_render_evidence_chain(outputs, heading_level=3))
@@ -148,6 +149,47 @@ def render_final_report_markdown(
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_gold_analysis_context(snapshot: Mapping[str, Any]) -> list[str]:
+    section = snapshot.get("gold_analysis_context")
+    if not isinstance(section, Mapping):
+        return []
+    data = section.get("data") if isinstance(section.get("data"), Mapping) else section
+    if not isinstance(data, Mapping):
+        return []
+    baseline = data.get("analysis_baseline") if isinstance(data.get("analysis_baseline"), Mapping) else {}
+    if not baseline:
+        return []
+    baseline_kind = str(data.get("baseline_kind") or baseline.get("source_kind") or "weekly_anchor")
+    label = {
+        "weekly_anchor": "周末周报",
+        "weekly_fallback": "周报回退（前一日最终综合分析报告缺失）",
+        "previous_analysis_report": "前一日最新综合分析报告",
+        "previous_daily": "前一日最新综合分析报告",
+    }.get(baseline_kind, "前序分析")
+    freshness = data.get("freshness") if isinstance(data.get("freshness"), Mapping) else {}
+    oil_report = data.get("oil_report_summary") if isinstance(data.get("oil_report_summary"), Mapping) else {}
+    lines = [
+        "### 分析基准与当日增量",
+        "",
+        f"- 基准：{label} / {baseline.get('trade_date') or baseline.get('context_as_of') or 'unavailable'} / ref={baseline.get('article_id') or baseline.get('report_id') or baseline.get('run_id') or 'unavailable'}",
+        f"- 基准状态：quality={baseline.get('quality_status') or 'unknown'}；publish_allowed={baseline.get('publish_allowed') if baseline.get('publish_allowed') is not None else 'unknown'}",
+        f"- 上下文状态：{data.get('status') or section.get('status') or 'unknown'}",
+    ]
+    for key, title in (("market", "市场"), ("news", "新闻"), ("oil", "油价")):
+        item = freshness.get(key) if isinstance(freshness.get(key), Mapping) else {}
+        lines.append(f"- {title} freshness：{item.get('status') or 'missing'} / as_of={item.get('as_of') or 'missing'}")
+    if oil_report:
+        lines.append(
+            f"- 原油报告：{oil_report.get('trade_date') or 'missing'} / "
+            f"ref={oil_report.get('article_id') or 'missing'} / quality={oil_report.get('status') or 'unknown'}"
+        )
+        conclusion = str(oil_report.get("one_line_conclusion") or oil_report.get("final_summary") or "").strip()
+        if conclusion:
+            lines.append(f"- 原油报告摘要：{conclusion}")
+    lines.append("")
+    return lines
 
 
 def _build_report_theme(

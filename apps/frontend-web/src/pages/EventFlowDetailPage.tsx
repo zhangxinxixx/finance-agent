@@ -20,6 +20,7 @@ import { formatDateTime } from "@/lib/date";
 import { compactSourceLabel, dedupeSourceRefs, normalizeSourceRefs } from "@/lib/sourceRefs";
 import { CATEGORY_MAP, getReportDetailId, shortRunId } from "@/components/reports/reportListMeta";
 import { findRelatedBriefs } from "@/components/event-flow/eventFlowMatching";
+import { normalizeEventDateCandidates } from "@/components/event-flow/eventFlowDate";
 import type { Jin10ArticleBrief, Jin10ArticleBriefBundle, EventFlowTimelineItem } from "@/types/event-flow";
 import type { ReportIndexItem } from "@/types/reports";
 import type { SourceRef } from "@/types/common";
@@ -71,27 +72,13 @@ function riskTone(riskLevel: string | null | undefined): "up" | "warn" | "down" 
   return "dim";
 }
 
-function normalizeEventDateCandidates(event: EventFlowTimelineItem): string[] {
-  const values = [event.date, event.time]
-    .filter((item): item is string => Boolean(item))
-    .map((item) => item.trim());
-  const result = new Set<string>();
-  for (const value of values) {
-    const md = value.match(/^(\d{2})-(\d{2})$/);
-    if (md) {
-      result.add(`2026-${md[1]}-${md[2]}`);
-    }
-    const ymd = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (ymd) {
-      result.add(`${ymd[1]}-${ymd[2]}-${ymd[3]}`);
-    }
-  }
-  return Array.from(result);
-}
-
-function findRelatedReports(event: EventFlowTimelineItem | null, reports: ReportIndexItem[]): ReportIndexItem[] {
+function findRelatedReports(
+  event: EventFlowTimelineItem | null,
+  reports: ReportIndexItem[],
+  fallbackDates: readonly string[] = [],
+): ReportIndexItem[] {
   if (!event) return [];
-  const dateCandidates = new Set(normalizeEventDateCandidates(event));
+  const dateCandidates = new Set(normalizeEventDateCandidates(event, fallbackDates));
   const assetText = `${event.assets ?? ""} ${event.title} ${event.desc}`.toLowerCase();
   const prefersGold = assetText.includes("xau") || assetText.includes("gold") || assetText.includes("黄金");
 
@@ -576,8 +563,15 @@ export function EventFlowDetailPage() {
   );
 
   const relatedReports = useMemo(
-    () => (activeEvent ? findRelatedReports(activeEvent, indexItems) : []),
-    [activeEvent, indexItems],
+    () => {
+      if (!activeEvent) return [];
+      const fallbackDates = [
+        data?.article_briefs?.date,
+        ...(data?.source_refs ?? []).flatMap((ref) => [ref.trade_date, ref.dataDate, ref.asOf, ref.generated_at]),
+      ].filter((value): value is string => Boolean(value));
+      return findRelatedReports(activeEvent, indexItems, fallbackDates);
+    },
+    [activeEvent, data?.article_briefs?.date, data?.source_refs, indexItems],
   );
 
   if (isLoading && !data) {

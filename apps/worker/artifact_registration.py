@@ -57,6 +57,20 @@ def register_composite_output_artifacts(
     report_result = composite_outputs.get("report_result") if isinstance(composite_outputs, dict) else None
     card_result = composite_outputs.get("card_result") if isinstance(composite_outputs, dict) else None
     card = composite_outputs.get("strategy_card") if isinstance(composite_outputs, dict) else None
+    report_agent_result = (
+        composite_outputs.get("report_render_agent_result")
+        if isinstance(composite_outputs, dict)
+        else None
+    )
+    agent_loop_decision = (
+        composite_outputs.get("agent_loop_decision")
+        if isinstance(composite_outputs, dict)
+        else None
+    )
+    publish_allowed = bool(getattr(agent_loop_decision, "publish_allowed", False))
+    output_mode = "accepted" if publish_allowed else "observe"
+    report_artifact_label = "final_report" if publish_allowed else "observation_report"
+    card_artifact_label = "strategy_card" if publish_allowed else "observation_strategy_card"
 
     artifacts: list[dict[str, Any]] = []
     if isinstance(report_result, dict):
@@ -68,9 +82,11 @@ def register_composite_output_artifacts(
                 artifacts.append(
                     enrich_runner_artifact_metadata(
                         {
-                            "artifact_id": f"{run_id}:final_report:{index}",
+                            "artifact_id": f"{run_id}:{report_artifact_label}:{index}",
                             "artifact_type": "analysis_md" if path.endswith(".md") else "structured_json",
                             "file_path": path,
+                            "publish_allowed": publish_allowed,
+                            "output_mode": output_mode,
                         }
                     )
                 )
@@ -83,12 +99,28 @@ def register_composite_output_artifacts(
                 artifacts.append(
                     enrich_runner_artifact_metadata(
                         {
-                            "artifact_id": f"{run_id}:strategy_card:{index}",
+                            "artifact_id": f"{run_id}:{card_artifact_label}:{index}",
                             "artifact_type": "analysis_md" if path.endswith(".md") else "structured_json",
                             "file_path": path,
+                            "publish_allowed": publish_allowed,
+                            "output_mode": output_mode,
                         }
                     )
                 )
+    report_agent_path = getattr(report_agent_result, "target_path", None)
+    if isinstance(report_agent_path, str) and report_agent_path:
+        artifacts.append(
+            enrich_runner_artifact_metadata(
+                {
+                    "artifact_id": f"{run_id}:report_render_agent",
+                    "artifact_type": "structured_json",
+                    "file_path": report_agent_path,
+                    "execution_mode": "agent_artifact",
+                    "publish_allowed": publish_allowed,
+                    "output_mode": output_mode,
+                }
+            )
+        )
     if not artifacts:
         return
 

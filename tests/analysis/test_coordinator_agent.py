@@ -104,6 +104,46 @@ def test_aligned_macro_options_outputs_schema_valid_final_view():
     assert output.input_snapshot_ids["risk"] == "risk:2026-05-14"
 
 
+def test_coordinator_exposes_fixed_daily_baseline_and_degrades_stale_context():
+    snapshot = _snapshot()
+    snapshot["gold_analysis_context"] = {
+        "status": "degraded",
+        "data": {
+            "status": "degraded",
+            "baseline_kind": "previous_analysis_report",
+            "analysis_baseline": {
+                "source_kind": "final_analysis_report",
+                "trade_date": "2026-07-13",
+                "run_id": "composite-20260713",
+                "executive_summary": "前一日综合报告基准",
+            },
+            "freshness": {"analysis_baseline": {"status": "stale"}},
+            "oil_report_summary": {
+                "trade_date": "2026-07-13",
+                "article_id": "224998",
+                "status": "accepted",
+                "one_line_conclusion": "原油供应冲击仍强，但需求反噬尚未确认。",
+            },
+            "input_snapshot_ids": {"analysis_baseline": "outputs/final_report/XAUUSD/2026-07-13/composite-20260713/structured_report.json"},
+        },
+    }
+
+    output = coordinate_agent_outputs(
+        snapshot,
+        macro_output=_macro(),
+        options_output=_options(),
+        risk_output=_risk(),
+        created_at=_CREATED_AT,
+    )
+
+    assert output.status is AgentStatus.PARTIAL
+    assert any("统一分析基准" in item for item in output.key_findings)
+    assert any("前一日综合报告基准" in item for item in output.key_findings)
+    assert any("原油报告摘要" in item for item in output.key_findings)
+    assert any("观察态" in item for item in output.risk_points)
+    assert output.input_payload["gold_analysis_context"]["baseline_kind"] == "previous_analysis_report"
+
+
 def test_conflicting_macro_options_exposes_conflict_and_caps_confidence():
     output = coordinate_agent_outputs(
         _snapshot(),

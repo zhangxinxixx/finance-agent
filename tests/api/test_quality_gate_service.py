@@ -164,7 +164,7 @@ def test_quality_gate_stops_fact_review_needs_review_from_strong_publication() -
     )
 
     assert decision.action is QualityGateAction.MANUAL_REVIEW
-    assert decision.publish_allowed is True
+    assert decision.publish_allowed is False
     assert any(finding.code == "fact_review_needs_review" for finding in decision.findings)
 
 

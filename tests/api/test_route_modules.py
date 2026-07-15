@@ -611,6 +611,13 @@ def test_main_reexports_premarket_handlers() -> None:
     assert get_task_logs is modular_get_task_logs
 
 
+def test_main_reexports_health_handlers() -> None:
+    from apps.api.main import health
+    from apps.api.routes.health_routes import health as modular_health
+
+    assert health is modular_health
+
+
 def test_main_reexports_gold_mainline_handlers() -> None:
     from apps.api.main import (
         api_gold_mainlines,
@@ -890,6 +897,21 @@ def test_app_registers_modular_strategy_report_routes() -> None:
     assert route_map["/api/strategy-cards/assets"] is modular_api_strategy_card_assets
     assert route_map["/api/strategy-cards/latest"] is modular_api_strategy_cards_latest
     assert route_map["/api/strategy-cards/{strategy_card_id}"] is modular_api_strategy_card_detail
+
+
+def test_app_registers_modular_live_strategy_routes() -> None:
+    from apps.api.routes.live_strategy_routes import (
+        api_live_strategy_latest as modular_api_live_strategy_latest,
+        api_live_strategy_recompute_preview as modular_api_live_strategy_recompute_preview,
+    )
+
+    route_map = _route_endpoint_map()
+
+    assert route_map["/api/live-strategy/latest"] is modular_api_live_strategy_latest
+    assert (
+        route_map["/api/live-strategy/recompute-preview"]
+        is modular_api_live_strategy_recompute_preview
+    )
 
 
 def test_app_registers_modular_market_monitor_routes() -> None:
@@ -1245,6 +1267,7 @@ def test_app_registers_modular_health_routes() -> None:
 
     assert route_map["/health"] is modular_health
     assert route_map["/api/health"] is modular_health
+    assert "/api/memory/context" not in route_map
 
 
 def test_app_registers_modular_agent_governance_read_routes() -> None:

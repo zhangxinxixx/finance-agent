@@ -69,8 +69,7 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
       <section className="knowledge-ops-section">
         <SectionHeading eyebrow="Sync" title="同步健康" />
         <div className="knowledge-row-list">
-          <SyncItem name="Knowledge Vault" status="已同步" color="green" />
-          <SyncItem name="Mem0 / 向量库" status="已索引" color="green" />
+          <SyncItem name="本地知识库" status="已同步" color="green" />
           <SyncItem name="回测样本库" status="待补样本" color="orange" />
         </div>
         {selectedItem && (

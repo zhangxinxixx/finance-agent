@@ -11,6 +11,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from apps.output.weekly_context_revision import write_weekly_context_revision
+from apps.renderer.markdown.weekly_context_revision import build_weekly_context_revision_payload
 from apps.worker.pipelines.macro_event_followup import generate_macro_event_followup
 from database.models.analysis import ensure_analysis_tables
 from database.models.task import ensure_task_tables
@@ -535,6 +537,75 @@ def test_report_detail_macro_event_followup_adapter_uses_trade_date_scoped_repor
     assert detail["run_id"] == "run-shared"
     assert detail["structured_payload"]["trade_date"] == "2026-05-16"
     assert detail["structured_payload"]["impact_assessment"]["summary"] == "Older summary"
+
+
+def test_report_detail_reads_weekly_context_revision_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    snapshot = {
+        "status": "ready",
+        "asset": "XAUUSD",
+        "trade_date": "2026-07-19",
+        "context_as_of": "2026-07-19T11:14:10+00:00",
+        "anchor": {
+            "article_id": "224965",
+            "report_date": "2026-07-18",
+            "run_id": "224965",
+            "title": "黄金投资者周报",
+            "baseline_quality_status": "accepted",
+            "baseline_artifact_refs": [{"path": "outputs/jin10/2026-07-18/224965/agent_analysis_report.json"}],
+        },
+        "input_snapshot_ids": {"weekly_baseline": "outputs/jin10/2026-07-18/224965/agent_analysis_report.json"},
+        "freshness": {"baseline": {"status": "available", "as_of": "2026-07-18"}},
+        "baseline_claims": [
+            {
+                "claim_id": "overall_thesis",
+                "category": "overall_thesis",
+                "claim": "底部逐步夯实",
+                "source_path": "one_line_conclusion",
+            }
+        ],
+        "new_evidence": [],
+        "confirmation_matrix": {
+            "price": {"status": "observed", "current_price": 4016.55},
+            "rates": {"status": "confirmed", "real_10y": 2.35, "us10y": 4.57},
+            "options": {"status": "confirmed", "gamma_zero": 4126.43},
+        },
+        "positioning_check": {"status": "confirmed", "as_of": "2026-07-14"},
+        "dominant_transmission_chain": {"status": "observed"},
+        "scenario_updates": [],
+        "watch_items": [],
+        "revision_risk": {"level": "monitor", "reason": "monitor", "quality_flags": []},
+        "source_refs": [],
+        "quality_flags": [],
+    }
+    payload = build_weekly_context_revision_payload(snapshot, run_id="weekly-revision-run")
+    write_weekly_context_revision(
+        storage_root=tmp_path / "storage",
+        asset="XAUUSD",
+        trade_date="2026-07-19",
+        run_id="weekly-revision-run",
+        source_markdown="# source\n",
+        analysis_markdown="# analysis\n",
+        structured_payload=payload.model_dump(mode="json"),
+    )
+    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    factory = _make_session_factory()
+
+    with factory() as db:
+        detail = api_main.api_report_detail(
+            "weekly_context_revision:2026-07-19:weekly-revision-run",
+            db=db,
+        ).model_dump(mode="json")
+
+    assert detail["family"] == "weekly_context_revision_supplement"
+    assert detail["trade_date"] == "2026-07-19"
+    assert detail["data_status"] == "live"
+    assert detail["structured_payload"]["anchor"]["article_id"] == "224965"
+    assert detail["structured_payload"]["publish_allowed"] is True
 
 
 def test_report_detail_reads_generated_macro_event_followup_artifacts(

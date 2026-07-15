@@ -127,7 +127,13 @@ def render_and_write_macro_event_followup(
     trade_date = str(input_snapshot.get("trade_date") or "")
     structured = build_macro_event_followup_structured_payload(input_snapshot)
     deterministic_analysis = render_macro_event_followup_analysis_markdown(structured.model_dump(mode="python"))
-    llm_result = invoke_macro_event_followup_llm(input_snapshot)
+    llm_result = invoke_macro_event_followup_llm(
+        input_snapshot,
+        audit_context={
+            "run_id": run_id,
+            "report_id": f"macro_event_followup:{trade_date}:{run_id}",
+        },
+    )
     analysis_markdown = llm_result.get("markdown") or deterministic_analysis
     result = write_macro_event_followup(
         storage_root=storage_root,
@@ -138,6 +144,7 @@ def render_and_write_macro_event_followup(
         analysis_markdown=analysis_markdown,
         structured_payload=structured.model_dump(mode="json"),
     )
+    result["llm_audit_id"] = llm_result.get("audit_id")
     result["report_registry_upserts"] = _register_macro_event_followup_report(
         db_session,
         result=result,

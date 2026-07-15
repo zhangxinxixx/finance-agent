@@ -151,6 +151,57 @@ class AgentOutput(AnalysisBase):
     prompt_version: Mapped["PromptVersion | None"] = relationship("PromptVersion")
 
 
+class LLMCallAudit(AnalysisBase):
+    """Append-only audit record for one shared-gateway LLM invocation.
+
+    Request payloads are sanitized before they reach this model. In particular,
+    API credentials are never included and image data URLs are replaced by
+    deterministic hash/size metadata.
+    """
+
+    __tablename__ = "llm_call_audits"
+    __table_args__ = (
+        Index("ix_llm_call_audit_created_at", "created_at"),
+        Index("ix_llm_call_audit_status", "status"),
+        Index("ix_llm_call_audit_provider_model", "provider_resolved", "model_resolved"),
+        Index("ix_llm_call_audit_run_id", "run_id"),
+        Index("ix_llm_call_audit_report_id", "report_id"),
+        Index("ix_llm_call_audit_trade_date", "trade_date"),
+        Index("ix_llm_call_audit_context_gin", "context", postgresql_using="gin"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    call_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    caller: Mapped[str] = mapped_column(String(255), nullable=False, default="unknown")
+    provider_requested: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_resolved: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_requested: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_resolved: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reasoning_effort_requested: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reasoning_effort_resolved: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    request_config: Mapped[dict] = mapped_column(JSONB_COMPAT, nullable=False, default=dict)
+    request_messages: Mapped[list] = mapped_column(JSONB_COMPAT, nullable=False, default=list)
+    request_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    usage: Mapped[dict] = mapped_column(JSONB_COMPAT, nullable=False, default=dict)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempts: Mapped[list] = mapped_column(JSONB_COMPAT, nullable=False, default=list)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context: Mapped[dict] = mapped_column(JSONB_COMPAT, nullable=False, default=dict)
+    source_refs: Mapped[list] = mapped_column(JSONB_COMPAT, nullable=False, default=list)
+    run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    snapshot_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    report_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    trade_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now(), nullable=False
+    )
+
+
 class FinalAnalysisResult(AnalysisBase):
     """Persist C4 final report / strategy card / run summaries index."""
 

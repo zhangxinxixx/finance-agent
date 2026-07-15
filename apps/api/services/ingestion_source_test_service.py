@@ -188,11 +188,34 @@ def _probe_mcp_market(*, limit: int) -> _ProbeOutcome:
         kline_payload = client.get_kline(_DEFAULT_MARKET_CODE, count=min(limit, 5))
     quote = quote_payload.get("data", quote_payload)
     klines = _extract_list(kline_payload, keys=("klines", "list", "data"))
+    quote_price = (quote.get("close") or quote.get("price")) if isinstance(quote, dict) else None
+    quote_available = quote_price is not None
+    kline_available = bool(klines)
+    missing_components = [
+        component
+        for component, available in (("quote", quote_available), ("kline", kline_available))
+        if not available
+    ]
+    if not missing_components:
+        status = "ok"
+        data_status = DataStatus.live
+        reason_code = "ok"
+        reason = None
+    elif quote_available or kline_available:
+        status = "partial"
+        data_status = DataStatus.partial
+        reason_code = "market_probe_partial"
+        reason = f"Missing market probe components: {', '.join(missing_components)}"
+    else:
+        status = "unavailable"
+        data_status = DataStatus.unavailable
+        reason_code = "market_probe_unavailable"
+        reason = "Neither quote nor kline data is available"
     preview = [
         {
             "kind": "quote",
             "code": _DEFAULT_MARKET_CODE,
-            "price": quote.get("close") or quote.get("price") if isinstance(quote, dict) else None,
+            "price": quote_price,
             "change": quote.get("ups_price") if isinstance(quote, dict) else None,
             "change_percent": quote.get("ups_percent") if isinstance(quote, dict) else None,
         }
@@ -207,17 +230,24 @@ def _probe_mcp_market(*, limit: int) -> _ProbeOutcome:
         for item in klines[:limit]
     )
     return _ProbeOutcome(
-        status="ok",
-        data_status=DataStatus.live,
+        status=status,
+        data_status=data_status,
         summary={
             "code": _DEFAULT_MARKET_CODE,
+            "quote_available": quote_available,
+            "kline_available": kline_available,
             "kline_count": len(klines),
             "sample_count": len(preview),
             "method": "mcp.get_quote+mcp.get_kline",
+            "reason_code": reason_code,
+            "reason": reason,
+            "missing_components": missing_components,
         },
         preview=preview,
         raw_payload={"quote": quote_payload, "kline": kline_payload},
         source_type="mcp",
+        error_message=reason if data_status == DataStatus.unavailable else None,
+        error_type=reason_code if data_status == DataStatus.unavailable else None,
     )
 
 

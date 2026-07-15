@@ -13,7 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from apps.analysis.gold_mainline_engine import archive_gold_macro_overview, build_gold_macro_overview
+from apps.analysis.agents.gold_artifacts import write_canonical_gold_json
+from apps.analysis.agents.gold_runtime_agents import (
+    build_gold_review_gate,
+    build_gold_runtime_gate,
+    materialize_gold_runtime_agent_artifacts,
+)
+from apps.analysis.gold_mainline_engine import build_gold_macro_overview, gold_macro_overview_payload
+from apps.api.services.source_service import get_data_source_statuses
 from apps.collectors.news.base import NewsCollectionResult, RawNewsItem
 from apps.features.news.daily_brief_snapshot import archive_daily_brief_input_snapshot, build_daily_brief_input_snapshot
 from apps.features.news.daily_market_brief import DailyMarketBrief, archive_daily_market_brief, build_daily_market_brief
@@ -358,23 +365,90 @@ def _step_brief(
     )
     gold_event_mainlines_payload = _gold_event_mainlines_payload(state)
     gold_macro_overview = build_gold_macro_overview(gold_event_mainlines_payload)
-    gold_macro_overview_snapshot = gold_macro_overview.to_dict()
-    gold_macro_overview_snapshot["input_snapshot_ids"] = {
+    input_snapshot_ids = {
         "gold_event_mainlines": state.artifact_paths.get("gold_event_mainlines"),
     }
-    gold_macro_overview_path = archive_gold_macro_overview(
-        storage_root=storage_root,
+    gold_macro_overview_path = (
+        Path("analysis") / "gold_mainlines" / state.retrieved_date / run_key / "gold_macro_overview.json"
+    ).as_posix()
+    gold_macro_overview_snapshot = gold_macro_overview_payload(
         retrieved_date=state.retrieved_date,
         run_id=run_key,
         overview=gold_macro_overview,
-        input_snapshot_ids={"gold_event_mainlines": state.artifact_paths.get("gold_event_mainlines")},
+        input_snapshot_ids=input_snapshot_ids,
     )
+    run_base = Path("analysis") / "gold_mainlines" / state.retrieved_date / run_key
+    source_health_path = (run_base / "source_health.json").as_posix()
+    quality_gate_result_path = (run_base / "quality_gate_result.json").as_posix()
+    runtime_gate = _gold_runtime_gate_for_worker(
+        overview=gold_macro_overview_snapshot,
+        persisted_source_health_path=storage_root / source_health_path,
+    )
+    gold_macro_overview_snapshot["source_health"] = runtime_gate["source_health"]
+    gold_macro_overview_snapshot["review_gate"] = runtime_gate["review_gate"]
+    gold_macro_overview_snapshot["review_status"] = runtime_gate["review_gate"]["review_status"]
+    gold_macro_overview_snapshot["review_blocking_reasons"] = runtime_gate["review_gate"]["blocking_reasons"]
+    if runtime_gate["review_gate"]["review_status"] == "blocked":
+        gold_macro_overview_snapshot["status"] = "blocked"
+    write_canonical_gold_json(
+        storage_root / gold_macro_overview_path,
+        gold_macro_overview_snapshot,
+        storage_root=storage_root,
+    )
+    write_canonical_gold_json(
+        storage_root / source_health_path,
+        runtime_gate["source_health"],
+        storage_root=storage_root,
+    )
+    write_canonical_gold_json(
+        storage_root / quality_gate_result_path,
+        runtime_gate["review_gate"],
+        storage_root=storage_root,
+    )
+    gold_agent_execution = materialize_gold_runtime_agent_artifacts(
+        storage_root=storage_root,
+        retrieved_date=state.retrieved_date,
+        run_id=run_key,
+        as_of=str(gold_macro_overview_snapshot.get("as_of") or state.retrieved_date),
+        input_snapshot_ids=input_snapshot_ids,
+        source_refs=[
+            dict(item)
+            for item in gold_macro_overview_snapshot.get("source_refs") or []
+            if isinstance(item, dict)
+        ],
+        canonical_paths={
+            "source_health": source_health_path,
+            "gold_event_mainlines": str(state.artifact_paths.get("gold_event_mainlines") or ""),
+            "gold_macro_overview": gold_macro_overview_path,
+            "quality_gate_result": quality_gate_result_path,
+        },
+        source_health=runtime_gate["source_health"],
+        gold_event_mainlines=gold_event_mainlines_payload,
+        gold_macro_overview=gold_macro_overview_snapshot,
+        review_gate=runtime_gate["review_gate"],
+    )
+    gold_agent_execution_snapshot = {
+        "snapshot_id": gold_agent_execution["snapshot_id"],
+        "declared_agents": gold_agent_execution["declared_agents"],
+        "materialized_stage_envelopes": gold_agent_execution[
+            "materialized_stage_envelopes"
+        ],
+        "executed_agents": gold_agent_execution["executed_agents"],
+        "runtime_contract_only": gold_agent_execution["runtime_contract_only"],
+        "artifact_paths": gold_agent_execution["artifact_paths"],
+    }
 
     state.daily_market_brief = brief
     state.gold_macro_overview = gold_macro_overview
     state.artifact_paths.update({
         "daily_market_brief": brief_path,
         "gold_macro_overview": gold_macro_overview_path,
+        "source_health": source_health_path,
+        "quality_gate_result": quality_gate_result_path,
+        **{
+            f"agent:{agent_name}": str(path)
+            for agent_name, path in gold_agent_execution["artifact_paths"].items()
+        },
     })
     trigger_bundle = state.daily_analysis_triggers.to_dict() if state.daily_analysis_triggers is not None else None
     report_events = state.report_event_extraction.to_dict() if state.report_event_extraction is not None else None
@@ -413,6 +487,7 @@ def _step_brief(
         "daily_market_brief": brief.to_dict(),
         "gold_event_mainlines": gold_event_mainlines_payload,
         "gold_macro_overview": gold_macro_overview_snapshot,
+        "gold_agent_execution": gold_agent_execution_snapshot,
         "daily_analysis_triggers": trigger_bundle,
         "daily_brief_input_snapshot": daily_brief_input_snapshot.to_dict(),
         "daily_brief_output": daily_brief_output,
@@ -437,15 +512,81 @@ def _step_brief(
         "gold_mainline_count": len(gold_event_mainlines_payload.get("mainlines") or []),
         "gold_verification_item_count": len(gold_macro_overview.verification_matrix),
         "gold_dominant_mainline": gold_macro_overview.dominant_mainline,
+        "source_health_path": source_health_path,
+        "quality_gate_result_path": quality_gate_result_path,
+        "declared_agents": gold_agent_execution["declared_agents"],
+        "materialized_stage_envelopes": gold_agent_execution[
+            "materialized_stage_envelopes"
+        ],
+        "executed_agents": gold_agent_execution["executed_agents"],
+        "runtime_contract_only": gold_agent_execution["runtime_contract_only"],
+        "agent_artifact_refs": gold_agent_execution["artifact_paths"],
+        "artifact_refs": [
+            {
+                "artifact_id": f"{run_key}:{name}",
+                "artifact_type": "structured_json",
+                "file_path": str(storage_root / path),
+            }
+            for name, path in {
+                "gold_macro_overview": gold_macro_overview_path,
+                "source_health": source_health_path,
+                "quality_gate_result": quality_gate_result_path,
+                **gold_agent_execution["artifact_paths"],
+            }.items()
+        ],
+        "source_refs": gold_macro_overview_snapshot.get("source_refs") or [],
+        "input_snapshot_ids": input_snapshot_ids,
         "positioning_input_count": data_quality.get("positioning_input_count", 0),
         "technical_level_input_count": data_quality.get("technical_level_input_count", 0),
     }
 
 
+def _gold_runtime_gate_for_worker(
+    *,
+    overview: dict[str, Any],
+    persisted_source_health_path: Path,
+) -> dict[str, dict[str, Any]]:
+    if persisted_source_health_path.is_file():
+        persisted = json.loads(persisted_source_health_path.read_text(encoding="utf-8"))
+        if not isinstance(persisted, dict):
+            raise ValueError("persisted source_health artifact must be an object")
+        return {
+            "source_health": persisted,
+            "review_gate": build_gold_review_gate(source_health=persisted, overview=overview),
+        }
+    try:
+        return build_gold_runtime_gate(
+            source_statuses=get_data_source_statuses(),
+            overview=overview,
+        )
+    except Exception as exc:
+        source_health = {
+            "overall_status": "degraded",
+            "as_of": str(overview.get("as_of") or "") or None,
+            "p0_missing": [],
+            "p1_missing": [],
+            "p2_missing": [],
+            "stale_sources": [],
+            "fresh_sources": [],
+            "source_freshness": {},
+            "mainline_impact": {},
+            "can_build_gold_macro_overview": True,
+            "can_emit_strong_conclusion": False,
+            "blocked_mainlines": [],
+            "degraded_mainlines": [],
+            "blocking_reasons": ["source health unavailable: no strong conclusion"],
+            "warnings": [f"source_health_unavailable: {exc.__class__.__name__}"],
+        }
+        return {
+            "source_health": source_health,
+            "review_gate": build_gold_review_gate(source_health=source_health, overview=overview),
+        }
+
+
 def _load_report_input_artifacts(*, storage_root: Path, retrieved_date: str, run_id: str) -> list[dict[str, Any]]:
     feature_dir = storage_root / "features" / "news" / retrieved_date / run_id
     artifacts: list[dict[str, Any]] = []
-    for filename in ("positioning.json", "technical_levels.json", "market_observations.json"):
+    for filename in ("positioning.json", "technical_levels.json", "market_observations.json", "market_odds_evidence.json"):
         path = feature_dir / filename
         if not path.is_file():
             continue

@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,8 @@ import fitz
 DAILY_BULLETIN_INDEX_URL = "https://www.cmegroup.com/daily-bulletin/index.html"
 DAILY_BULLETIN_BASE_URL = "https://www.cmegroup.com/daily_bulletin/current"
 DEFAULT_SECTION_FILE = "Section64_Metals_Option_Products.pdf"
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_RETRY_DELAY_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -87,9 +90,28 @@ def download_cme_pdf(
     section_file: str = DEFAULT_SECTION_FILE,
     report_date: str | None = None,
     storage_root: Path = Path("."),
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    retry_delay_seconds: float = DEFAULT_RETRY_DELAY_SECONDS,
 ) -> CmeRawFile:
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+    if retry_delay_seconds < 0:
+        raise ValueError("retry_delay_seconds must be non-negative")
+
     source_url = build_daily_bulletin_url(section_file)
-    raw = _download_cme_pdf_bytes(source_url=source_url)
+    raw: bytes | None = None
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            raw = _download_cme_pdf_bytes(source_url=source_url)
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_attempts:
+                time.sleep(retry_delay_seconds)
+    if raw is None:
+        raise RuntimeError(f"CME PDF download failed after {max_attempts} attempts: {last_error}") from last_error
+
     fallback_report_date = "" if report_date in (None, "", "latest") else report_date
     return archive_cme_pdf(
         raw,

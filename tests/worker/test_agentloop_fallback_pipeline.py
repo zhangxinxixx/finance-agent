@@ -9,7 +9,7 @@ def _decision(action: QualityGateAction) -> QualityGateDecision:
     return QualityGateDecision(
         action=action,
         review_status="pass" if action is QualityGateAction.PASS else ("blocked" if action is QualityGateAction.BLOCK_PUBLISH else "needs_review"),
-        publish_allowed=action is not QualityGateAction.BLOCK_PUBLISH,
+        publish_allowed=action is QualityGateAction.PASS,
         fallback_recommended=action is QualityGateAction.FALLBACK,
         findings=[],
         fallback_actions=["fallback_cross_check"] if action is QualityGateAction.FALLBACK else [],
@@ -19,7 +19,7 @@ def _decision(action: QualityGateAction) -> QualityGateDecision:
     )
 
 
-def test_runtime_summary_uses_fallback_outputs_when_fallback_quality_gate_passes() -> None:
+def test_runtime_summary_rejects_unvalidated_fallback_outputs() -> None:
     primary = _decision(QualityGateAction.FALLBACK)
     fallback = _decision(QualityGateAction.PASS)
     agent_loop = evaluate_agent_quality_gate(
@@ -30,6 +30,8 @@ def test_runtime_summary_uses_fallback_outputs_when_fallback_quality_gate_passes
             "strategy_card_paths": ["/tmp/fallback/strategy_card.json"],
         },
         fallback_quality_gate_decision=fallback,
+        corrective_fallback_succeeded=True,
+        unresolved_reason_codes=[],
     )
 
     summary = build_gold_runtime_execution_summary(
@@ -43,12 +45,10 @@ def test_runtime_summary_uses_fallback_outputs_when_fallback_quality_gate_passes
     )
 
     assert summary["quality_gate_status"] == "fallback_required"
-    assert summary["accepted_outputs"] == {
-        "final_report_paths": ["/tmp/fallback/final_report.md"],
-        "strategy_card_paths": ["/tmp/fallback/strategy_card.json"],
-    }
-    assert summary["writes"] == ["/tmp/fallback/final_report.md", "/tmp/fallback/strategy_card.json"]
-    assert summary["agent_loop_decision"]["fallback_trace"]["accepted_output"] == "fallback"
+    assert summary["accepted_outputs"] == {}
+    assert summary["writes"] == []
+    assert summary["agent_loop_decision"]["fallback_trace"]["accepted_output"] is None
+    assert summary["no_strong_conclusion"] is True
 
 
 def test_runtime_summary_blocks_strong_conclusion_when_fallback_quality_gate_fails() -> None:
@@ -68,7 +68,7 @@ def test_runtime_summary_blocks_strong_conclusion_when_fallback_quality_gate_fai
         accepted_outputs={"final_report_paths": ["/tmp/primary/final_report.md"]},
     )
 
-    assert summary["accepted_outputs"] == {"final_report_paths": ["/tmp/primary/final_report.md"]}
+    assert summary["accepted_outputs"] == {}
     assert summary["no_strong_conclusion"] is True
     assert summary["strategy_card_override"] == {
         "bias": "neutral",

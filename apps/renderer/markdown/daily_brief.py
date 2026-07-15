@@ -78,7 +78,12 @@ def render_daily_brief_payload(
 ) -> dict[str, Any]:
     data = _snapshot_dict(snapshot)
     rendered_markdown = markdown if markdown is not None else render_daily_brief_markdown(data)
-    status = "empty" if not bool(data.get("should_generate")) or data.get("report_mode") == "empty" else "available"
+    if not bool(data.get("should_generate")) or data.get("report_mode") == "empty":
+        status = "empty"
+    elif _list(data.get("quality_flags")):
+        status = "partial"
+    else:
+        status = "available"
     return {
         "status": status,
         "date": data.get("date"),
@@ -146,9 +151,46 @@ def _render_empty_flash(data: dict[str, Any]) -> str:
 
 
 def _one_line_conclusion(data: dict[str, Any]) -> str:
+    events = [_dict(item) for item in _list(data.get("core_events"))]
+    if events:
+        event = events[0]
+        validation = (
+            "已获行情阈值确认"
+            if any(bool(_dict(item).get("threshold_hit")) for item in _list(data.get("market_reactions")))
+            else "尚缺行情阈值确认，仅作待验证主线"
+        )
+        event_summary = (
+            _text(event.get("what_happened"))
+            or _text(event.get("title"))
+            or "核心事件待确认"
+        )
+        impact = {
+            "bullish": "利多",
+            "bearish": "利空",
+            "neutral": "中性",
+            "mixed": "多空交织",
+        }.get(_text(event.get("gold_impact")).lower(), "待确认")
+        pricing = {
+            "fully_priced": "已充分定价",
+            "partially_priced": "部分定价",
+            "not_priced": "尚未定价",
+            "unpriced": "尚未定价",
+        }.get(_text(event.get("pricing_status")).lower(), "待确认")
+        return (
+            f"今日主线：{event_summary}；黄金影响评估为{impact}，"
+            f"市场处于{pricing}状态，{validation}。"
+        )
+
+    articles = [_dict(item) for item in _list(data.get("key_articles"))]
+    if articles:
+        return (
+            f"报告主线：{_text(articles[0].get('headline'))}；"
+            "尚缺独立事件与行情验证，当前仅作研究线索。"
+        )
+
     inputs = [str(item) for item in _list(data.get("one_line_inputs")) if str(item).strip()]
     if inputs:
-        return "；".join(inputs[:2])
+        return f"待验证主线：{inputs[0]}；当前没有足够结构化证据形成稳定方向结论。"
     return "当前没有足够输入形成稳定结论。"
 
 

@@ -65,23 +65,15 @@ def test_technical_collector_prefers_jin10_xauusd_quote(tmp_path: Path, monkeypa
     assert ref["notes"]["change_pct"] == -0.79
 
 
-def test_technical_collector_falls_back_to_yahoo_when_jin10_missing_key(tmp_path: Path, monkeypatch) -> None:
+def test_technical_collector_does_not_call_yahoo_when_jin10_missing_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("JIN10_MCP_KEY", raising=False)
     monkeypatch.delenv("SETTINGS_MASTER_KEY", raising=False)
     monkeypatch.setattr(secret_resolver, "_PROJECT_ROOT", tmp_path)
-    payload = {
-        "chart": {
-            "result": [{
-                "meta": {"regularMarketPrice": 4510.5, "chartPreviousClose": 4500.0},
-                "indicators": {"quote": [{"close": [4490.0, 4510.5], "open": [4480.0, 4501.0], "high": [4520.0, 4525.0], "low": [4475.0, 4495.0]}]},
-            }]
-        }
-    }
-    response = httpx.Response(200, content=json.dumps(payload).encode(), request=httpx.Request("GET", "https://test/"))
-
-    with patch("httpx.Client.get", return_value=response):
+    with patch("httpx.Client.get") as yahoo_get:
         result = collect_technical(retrieved_date="2026-05-21", storage_root=tmp_path)
 
-    assert result.unavailable_symbols == []
-    assert result.points[0].source == "yahoo_finance"
-    assert result.points[0].value == 4510.5
+    yahoo_get.assert_not_called()
+    assert result.points == []
+    assert result.unavailable_symbols == ["XAUUSD"]
+    assert result.source_refs[-1]["source"] == "jin10_quote"
+    assert "Yahoo collection is disabled" in result.source_refs[-1]["reason"]

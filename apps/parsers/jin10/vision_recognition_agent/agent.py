@@ -406,6 +406,15 @@ class VisionMarkdownClient:
             kwargs["reasoning_effort"] = self.reasoning_effort
         if self.request_timeout is not None:
             kwargs["request_timeout"] = self.request_timeout
+        kwargs["audit_context"] = {
+            "caller": "jin10_vision.VisionMarkdownClient._chat_with_image",
+            "input_payload": {
+                "text_prompt": text_prompt,
+                "image_data_url": image_data_url,
+                "provider": self.provider,
+                "model": self.model,
+            },
+        }
         response = chat_sync(**kwargs)
         return response.content
 
@@ -724,7 +733,7 @@ def _normalize_report_type(report_type: str | None) -> str:
 
 def _prompt_profile_for_report_type(report_type: str | None) -> str:
     value = _normalize_report_type(report_type)
-    if value in {"positioning", "technical_levels", "oil", "fx"}:
+    if value in {"positioning", "technical_levels", "oil", "fx", "market_odds"}:
         return value
     return "default"
 
@@ -743,6 +752,8 @@ def _build_page_markdown_prompt(
         return _build_oil_page_markdown_prompt(page_no=page_no, figures=figures)
     if prompt_profile == "fx":
         return _build_fx_page_markdown_prompt(page_no=page_no, figures=figures)
+    if prompt_profile == "market_odds":
+        return _build_market_odds_page_markdown_prompt(page_no=page_no, figures=figures)
     return _build_default_page_markdown_prompt(page_no=page_no, figures=figures)
 
 
@@ -768,6 +779,22 @@ def _build_default_page_markdown_prompt(*, page_no: int, figures: list[dict[str,
 7. 如果这一页是“封面/日期/导语/目录/免责声明”的壳页，只保留真正可读的导语或摘要正文。
 8. 对壳页不要输出重复的报告总标题、日期、目录条目、联系方式、VIP 系列列表、免责声明。
 9. 如果除了这些壳信息外没有正文，就返回空字符串。
+
+本页可用图表图片：
+{figure_block}
+"""
+
+
+def _build_market_odds_page_markdown_prompt(*, page_no: int, figures: list[dict[str, Any]]) -> str:
+    figure_block = _figure_prompt_block(figures)
+    return f"""请把这张金十市场赔率数据表第 {page_no} 页完整转写为 Markdown。你是结构化 OCR，不是分析师，不做市场预测。
+
+要求：
+1. 这是单页主内容，不是封面；必须保留标题、统计时间、品种、方向、目标价位、触及概率、月份和单位。
+2. 按黄金、白银、原油、外汇、利率或报告实际出现的品种保持原始阅读顺序。
+3. 明确区分“向上触及”和“向下触及”，不要把触及概率改写为方向预测。
+4. 整页赔率面板插入给定 Markdown 图片，同时保留页面中可读的关键概率正文。
+5. 不输出页眉、页脚、网址、联系方式、广告和免责声明；不补造模糊数字。
 
 本页可用图表图片：
 {figure_block}
@@ -857,12 +884,15 @@ def _build_page_unified_prompt(
         "technical_levels": "技术点位报告",
         "oil": "每日原油报告",
         "fx": "每日外汇报告",
+        "market_odds": "市场赔率数据表",
     }.get(prompt_profile, "金银日报或周报")
 
     if preserve_cover_identity:
         cover_rule = """这是封面页。只保留正式报告分类、日期、本期主题和导语；正式报告分类与本期主题分别返回 title block。正式分类可能位于页面底部，例如“黄金投资者周报”“每日金银报告”“每日市场观察”“周末·大师复盘”“持仓报告”。联系方式、VIP 列表、目录、APP 广告和免责声明不得进入 markdown 或 blocks。"""
     else:
         cover_rule = "忽略页眉、页脚、联系方式、网址、广告和免责声明。"
+        if prompt_profile == "market_odds":
+            cover_rule += " 这是市场赔率数据表主内容页，不是封面；整页赔率面板应作为一个完整 table/image bbox，并逐字保留品种、目标价位、向上/向下触及概率、月份和统计时间。"
 
     return f"""你是页面识别与裁剪定位器。唯一任务是 OCR 和 bbox 定位。
 

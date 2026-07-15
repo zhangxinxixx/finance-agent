@@ -242,6 +242,12 @@ def _analyze_daily_market_brief(
     unconfirmed_risks = _dict_list(brief.get("unconfirmed_risks"))
     next_calendar = _dict_list(brief.get("next_7d_calendar"))
     report_inputs = brief.get("report_inputs") if isinstance(brief.get("report_inputs"), dict) else {}
+    external_market_odds = [
+        item
+        for item in _dict_list(report_inputs.get("market_observations"))
+        if item.get("source_kind") == "jin10_external_market_odds"
+        or item.get("observation_type") == "external_market_odds"
+    ]
     market_mainline = brief.get("market_mainline") if isinstance(brief.get("market_mainline"), dict) else {}
 
     key_findings: list[str] = []
@@ -269,6 +275,12 @@ def _analyze_daily_market_brief(
         watchlist.append(_event_line(prefix="报告观察", event=item))
     for item in _dict_list(report_inputs.get("risk_points"))[:5]:
         risk_points.append(str(item))
+    for observation in external_market_odds[:5]:
+        items = _dict_list(observation.get("items"))
+        article_id = str(observation.get("article_id") or "unknown")
+        watchlist.append(f"外部赔率观察: Jin10 {article_id} | {len(items)} 条 | 仅作辅助证据")
+        if observation.get("extraction_status") != "accepted":
+            risk_points.append(f"外部赔率 {article_id} 含待复核识别项，不得升级为方向结论。")
     for item in next_calendar[:5]:
         watchlist.append(
             f"官方日历: {item.get('event_name') or item.get('what_happened') or 'unknown'}"
@@ -282,6 +294,8 @@ def _analyze_daily_market_brief(
         invalid_conditions.append("No official-confirmed news event in daily_market_brief.")
     if candidate_events or unconfirmed_risks:
         invalid_conditions.append("Single-source or unofficial events must remain watchlist until verified.")
+    if external_market_odds:
+        invalid_conditions.append("External market odds cannot independently set direction, macro regime, confidence, or readiness.")
 
     confidence = 0.58
     if confirmed_events:
@@ -312,12 +326,29 @@ def _analyze_daily_market_brief(
         status=AgentStatus.SUCCESS,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
+        input_payload={
+            "daily_market_brief": brief,
+            "external_market_odds": external_market_odds,
+            "external_market_odds_count": len(external_market_odds),
+        },
         evidence_refs=[{
             "type": "daily_market_brief",
             "confirmed_event_count": len(confirmed_events),
             "candidate_event_count": len(candidate_events),
             "unconfirmed_risk_count": len(unconfirmed_risks),
         }],
+        evidence_items=[
+            {
+                "factor": "external_market_odds",
+                "source_kind": "jin10_external_market_odds",
+                "provider_role": "supplemental_source",
+                "source_tier": "external_single_source",
+                "article_id": observation.get("article_id"),
+                "extraction_status": observation.get("extraction_status"),
+                "influence_policy": observation.get("influence_policy") or {},
+            }
+            for observation in external_market_odds
+        ],
     )
 
 

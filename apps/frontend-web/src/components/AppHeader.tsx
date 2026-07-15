@@ -30,6 +30,7 @@ const viewLabels: Record<string, string> = {
   "/strategy": "每日策略框架",
   "/settings": "系统设置",
   "/settings/audit": "审计日志",
+  "/settings/llm-audit": "LLM 调用审计",
 };
 
 function getViewLabel(pathname: string): string {
