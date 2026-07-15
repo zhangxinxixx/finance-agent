@@ -68,6 +68,7 @@ export default defineConfig({
       "/api": {
         target: proxyTarget,
         changeOrigin: true,
+        xfwd: true,
       },
       "/dagster": {
         target: dagsterTarget,

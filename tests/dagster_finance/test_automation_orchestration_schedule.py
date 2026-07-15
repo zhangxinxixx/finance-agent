@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+from time import sleep
+
 import pytest
 from dagster import Failure, build_op_context, build_schedule_context
 
@@ -28,20 +33,57 @@ def test_definitions_register_automation_orchestration_job_and_schedules() -> No
 
 
 def test_automation_schedules_launch_the_expected_trigger_config() -> None:
-    context = build_schedule_context()
+    scheduled_at = datetime(2026, 7, 8, 10, 30, tzinfo=timezone.utc)
+    context = build_schedule_context(scheduled_execution_time=scheduled_at)
 
-    assert automation_hourly_schedule(context) == {
-        "ops": {"automation_orchestration_op": {"config": {"trigger": "hourly"}}}
+    requests = {
+        "hourly": automation_hourly_schedule(context),
+        "event_sla": automation_event_sla_schedule(context),
+        "pre_analysis": automation_pre_analysis_schedule(context),
+        "notification_retry": automation_notification_retry_schedule(context),
     }
-    assert automation_event_sla_schedule(context) == {
-        "ops": {"automation_orchestration_op": {"config": {"trigger": "event_sla"}}}
-    }
-    assert automation_pre_analysis_schedule(context) == {
-        "ops": {"automation_orchestration_op": {"config": {"trigger": "pre_analysis"}}}
-    }
-    assert automation_notification_retry_schedule(context) == {
-        "ops": {"automation_orchestration_op": {"config": {"trigger": "notification_retry"}}}
-    }
+    for trigger, request in requests.items():
+        assert request.run_config == {
+            "ops": {"automation_orchestration_op": {"config": {"trigger": trigger}}}
+        }
+        assert request.run_key == f"automation:{trigger}:2026-07-08T10:30:00+00:00"
+        assert request.tags["automation/trigger"] == trigger
+
+
+def test_automation_op_uses_single_concurrency_pool() -> None:
+    assert automation_orchestration_op._pool == "automation_orchestration"
+
+
+def test_automation_op_serializes_formal_orchestration_runs(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    active = 0
+    max_active = 0
+    guard = Lock()
+
+    def run_hourly_orchestration(**_kwargs):
+        nonlocal active, max_active
+        with guard:
+            active += 1
+            max_active = max(max_active, active)
+        sleep(0.05)
+        with guard:
+            active -= 1
+        return {"status": "normal"}
+
+    monkeypatch.setattr(
+        "dagster_finance.ops.automation_orchestration.run_hourly_orchestration",
+        run_hourly_orchestration,
+    )
+
+    def run_once(_index: int):
+        return automation_orchestration_op(
+            build_op_context(),
+            AutomationOrchestrationConfig(trigger="hourly", storage_root=str(tmp_path)),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(run_once, range(2)))
+
+    assert max_active == 1
 
 
 def test_automation_op_dispatches_the_selected_existing_wrapper(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

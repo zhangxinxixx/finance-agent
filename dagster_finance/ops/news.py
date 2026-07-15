@@ -5,7 +5,7 @@ Wraps existing step functions from apps.worker.pipelines.news.
 
 from pathlib import Path
 
-from dagster import Config, Out, Output, op
+from dagster import Config, In, Nothing, Out, Output, op
 
 from apps.worker.pipelines.news import NewsPipelineState, run_news_step
 from dagster_finance.ops.summary_status import raise_for_failed_summary
@@ -16,6 +16,7 @@ class NewsConfig(Config):
 
 
 @op(
+    ins={"task_run_ready": In(Nothing)},
     out={"state": Out(NewsPipelineState, description="Initialized news state")},
     tags={"pipeline": "news", "step": "init"},
 )

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from database.models.analysis import AgentOutput
+from apps.analysis.agents.schemas import (
+    AgentBias,
+    AgentOutput as RuntimeAgentOutput,
+    AgentStatus,
+)
+from database.models.analysis import AgentOutput as PersistedAgentOutput
 from database.models.report import ReportItem
 from database.queries.analysis import list_agent_outputs, upsert_agent_output
 from database.queries.review import upsert_review_item
@@ -16,8 +21,8 @@ from database.queries.review import upsert_review_item
 _PROMPT_VERSION = "fact_review_rules_v1"
 _SKIP_AGENT_NAMES = {"fact_review_agent", "synthesis_agent", "coordinator", "coordinator_agent"}
 _UNAVAILABLE_SOURCE_STATUSES = {"unavailable", "failed", "error"}
-_CONFLICT_CLAIM_TYPES = {"market_view", "strategy_condition", "causal_inference"}
 _REVIEW_QUEUE_VERDICTS = {"unsupported", "contradicted"}
+_STRUCTURED_CONTRADICTION_FIELDS = ("subject", "metric", "predicate", "horizon", "scope", "observation_time")
 
 
 def build_fact_review_prompt_template() -> str:
@@ -25,15 +30,15 @@ def build_fact_review_prompt_template() -> str:
 
 任务边界：
 1. 不改写 raw / parsed / features。
-2. 只审查 claims、source_refs、evidence_refs、上游 Agent bias。
+2. 只审查 claims、source_refs、evidence_refs；不根据上游 Agent 的总体 bias 推断事实矛盾。
 3. 输出 verdict 仅允许：supported / partially_supported / unsupported / contradicted / insufficient_evidence。
 
 规则：
 - claim 同时具备 source_refs 与 evidence_refs，且来源状态可用 => supported
 - 仅具备 source_refs 或 evidence_refs 之一 => partially_supported
 - 同时缺少 source_refs 与 evidence_refs => unsupported
-- 来源状态为 unavailable / failed / error，或上游 Agent 状态不可用 => insufficient_evidence
-- bullish 与 bearish Agent 同时存在时，market_view / strategy_condition / causal_inference claims 标为 contradicted
+- 上游 Agent 状态不可用，或 claim 的所有来源均为 unavailable / failed / error => insufficient_evidence
+- 仅当 claim 具有完整的 subject、metric、predicate、horizon、scope、observation_time 结构化字段，且存在显式结构化冲突时，才可标为 contradicted；当前非结构化 claim 不推断矛盾
 
 输入模板：
 {{reviewed_agent_outputs}}
@@ -45,7 +50,7 @@ def build_fact_review_prompt_template() -> str:
 
 
 def build_fact_review_agent_output_payload(
-    agent_outputs: Iterable[AgentOutput],
+    agent_outputs: Iterable[PersistedAgentOutput],
     *,
     snapshot_id: str | None = None,
     asset: str | None = None,
@@ -62,12 +67,11 @@ def build_fact_review_agent_output_payload(
     resolved_trade_date = trade_date or _iso_date(reference.trade_date)
     resolved_run_id = run_id or reference.run_id
 
-    conflict_map = _build_conflict_map(review_targets)
     claim_reviews: list[dict[str, Any]] = []
 
     for row in review_targets:
         for claim in _claims_from_row(row):
-            verdict, reason, conflicting_refs = _review_claim(claim, row, conflict_map)
+            verdict, reason, conflicting_refs = _review_claim(claim, row, review_targets)
             claim_reviews.append(
                 {
                     "claim_id": str(claim.get("claim_id") or f"{row.agent_name}:claim"),
@@ -139,7 +143,7 @@ def build_fact_review_agent_output_payload(
                 "reviewed_agent_outputs": reviewed_agent_outputs,
             },
             "fact_review_status": fact_review_status,
-            "review_scope": ["claims", "source_refs", "evidence_refs", "agent_bias_conflict"],
+            "review_scope": ["claims", "source_refs", "evidence_refs", "structured_claim_contradiction"],
             "reviewed_agent_outputs": reviewed_agent_outputs,
             "verdict_counts": counts,
             "claim_reviews": claim_reviews,
@@ -156,6 +160,95 @@ def build_fact_review_agent_output_payload(
             "artifact_refs": [],
         },
     }
+
+
+def build_runtime_fact_review_agent_output(
+    agent_outputs: Iterable[RuntimeAgentOutput],
+    *,
+    snapshot_id: str,
+    created_at: datetime,
+) -> RuntimeAgentOutput:
+    """Review in-memory domain outputs without fabricating persistence identifiers."""
+
+    review_targets = [row for row in agent_outputs if row.agent_name not in _SKIP_AGENT_NAMES]
+    if not review_targets:
+        raise ValueError("fact_review_agent requires at least one upstream agent output")
+
+    claim_reviews: list[dict[str, Any]] = []
+    reviewed_agent_outputs: list[dict[str, Any]] = []
+    for row in review_targets:
+        claims = _claims_from_row(row)
+        reviewed_agent_outputs.append(
+            {
+                "agent_name": row.agent_name,
+                "module": row.module,
+                "snapshot_id": row.snapshot_id,
+                "bias": row.bias.value,
+                "status": row.status.value,
+                "source_refs": list(row.source_refs),
+                "claims": claims,
+            }
+        )
+        for claim in claims:
+            verdict, reason, conflicting_refs = _review_claim(claim, row, review_targets)
+            claim_reviews.append(
+                {
+                    "claim_id": str(claim.get("claim_id") or f"{row.agent_name}:claim"),
+                    "verdict": verdict,
+                    "reason": reason,
+                    "conflicting_refs": conflicting_refs,
+                    "suggested_action": _suggested_action(verdict),
+                    "reviewer_agent_id": "fact_review_agent",
+                }
+            )
+
+    verdict_counts = Counter(review["verdict"] for review in claim_reviews)
+    counts = {
+        verdict: verdict_counts.get(verdict, 0)
+        for verdict in (
+            "supported",
+            "partially_supported",
+            "unsupported",
+            "contradicted",
+            "insufficient_evidence",
+        )
+    }
+    fact_review_status = _fact_review_status(counts, len(claim_reviews))
+    source_refs = _dedupe_dicts(ref for row in review_targets for ref in row.source_refs)
+    evidence_refs = _dedupe_dicts(ref for row in review_targets for ref in row.evidence_refs)
+    input_snapshot_ids = {row.agent_name: row.snapshot_id for row in review_targets}
+    return RuntimeAgentOutput(
+        version="1.0",
+        agent_name="fact_review_agent",
+        module="fact_review",
+        snapshot_id=f"{snapshot_id}:fact_review",
+        input_snapshot_ids=input_snapshot_ids,
+        bias=AgentBias.MIXED if fact_review_status == "conflicted" else AgentBias.NEUTRAL,
+        confidence=_review_confidence(counts, len(claim_reviews)),
+        key_findings=_build_key_findings(counts, review_targets),
+        risk_points=_build_risk_points(claim_reviews),
+        watchlist=[row.agent_name for row in review_targets],
+        invalid_conditions=_build_invalid_conditions(counts),
+        summary=_build_summary_text(counts),
+        source_refs=source_refs,
+        evidence_refs=evidence_refs,
+        status=AgentStatus(_agent_status(fact_review_status)),
+        created_at=created_at,
+        data_quality=[f"fact_review:{fact_review_status}"],
+        input_payload={
+            "generated_by": "rule",
+            "prompt_version": _PROMPT_VERSION,
+            "fact_review_status": fact_review_status,
+            "claim_review_status": (
+                "contradicted" if counts["contradicted"] else "unsupported" if counts["unsupported"] else "supported"
+            ),
+            "reviewed_agent_outputs": reviewed_agent_outputs,
+            "verdict_counts": counts,
+            "claim_reviews": claim_reviews,
+            "unsupported_claim_ids": [item["claim_id"] for item in claim_reviews if item["verdict"] == "unsupported"],
+            "conflicted_claim_ids": [item["claim_id"] for item in claim_reviews if item["verdict"] == "contradicted"],
+        },
+    )
 
 
 def persist_fact_review_agent_output(
@@ -176,7 +269,7 @@ def persist_fact_review_agent_output(
     }
 
 
-def _sync_review_items(session: Any, row: AgentOutput) -> int:
+def _sync_review_items(session: Any, row: PersistedAgentOutput) -> int:
     payload = row.payload if isinstance(row.payload, dict) else {}
     reviewed_agent_outputs = payload.get("reviewed_agent_outputs")
     claim_reviews = payload.get("claim_reviews")
@@ -327,27 +420,26 @@ def _find_related_report_ids(session: Any, *, run_id: str | None, snapshot_id: s
 
 def _review_claim(
     claim: dict[str, Any],
-    row: AgentOutput,
-    conflict_map: dict[str, list[str]],
+    row: PersistedAgentOutput | RuntimeAgentOutput,
+    review_targets: list[PersistedAgentOutput] | list[RuntimeAgentOutput],
 ) -> tuple[str, str, list[dict[str, Any]]]:
     claim_id = str(claim.get("claim_id") or f"{row.agent_name}:claim")
-    claim_type = str(claim.get("claim_type") or "market_view")
     source_refs = claim.get("source_refs") if isinstance(claim.get("source_refs"), list) else list(row.source_refs or [])
     evidence_refs = claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) else []
-    conflicting_agents = conflict_map.get(row.agent_name, [])
 
-    if row.status in _UNAVAILABLE_SOURCE_STATUSES or _has_unavailable_source(source_refs):
+    if row.status in _UNAVAILABLE_SOURCE_STATUSES or _all_sources_unavailable(source_refs):
         return (
             "insufficient_evidence",
             "来源状态不可用，当前 claim 无法验证。",
             [],
         )
 
-    if conflicting_agents and claim_type in _CONFLICT_CLAIM_TYPES:
+    conflicting_refs = _find_structured_conflicts(claim, row, review_targets)
+    if conflicting_refs:
         return (
             "contradicted",
-            f"与 {', '.join(conflicting_agents)} 的 bias 冲突，需人工复核。",
-            [{"agent_name": agent_name, "reason": "bias_conflict"} for agent_name in conflicting_agents],
+            "存在显式结构化事实矛盾，需人工复核。",
+            conflicting_refs,
         )
 
     if not source_refs and not evidence_refs:
@@ -367,33 +459,66 @@ def _review_claim(
     return ("supported", f"Claim {claim_id} 具备基础证据链。", [])
 
 
-def _build_conflict_map(agent_outputs: list[AgentOutput]) -> dict[str, list[str]]:
-    bullish = [row for row in agent_outputs if str(row.bias).lower() == "bullish"]
-    bearish = [row for row in agent_outputs if str(row.bias).lower() == "bearish"]
-    if not bullish or not bearish:
-        return {}
+def _find_structured_conflicts(
+    claim: dict[str, Any],
+    row: PersistedAgentOutput | RuntimeAgentOutput,
+    review_targets: list[PersistedAgentOutput] | list[RuntimeAgentOutput],
+) -> list[dict[str, Any]]:
+    """Extension point for explicit structured contradiction matching.
 
-    conflict_map: dict[str, list[str]] = {}
-    for row in bullish:
-        conflict_map[row.agent_name] = [item.agent_name for item in bearish]
-    for row in bearish:
-        conflict_map[row.agent_name] = [item.agent_name for item in bullish]
-    return conflict_map
+    Existing claim payloads do not have the required identity/time fields, and
+    bias or free text is not a fact-conflict signal.  When the schema gains an
+    explicit comparable value/polarity contract, implement matching here.
+    """
 
-
-def _claims_from_row(row: AgentOutput) -> list[dict[str, Any]]:
-    claims = row.payload.get("claims") if isinstance(row.payload, dict) else None
-    if not isinstance(claims, list):
+    if not all(claim.get(field) is not None for field in _STRUCTURED_CONTRADICTION_FIELDS):
         return []
-    return [item for item in claims if isinstance(item, dict)]
+    # The current schema has no explicit comparable value/polarity field, so
+    # even structurally identified claims cannot be declared contradictory yet.
+    _ = row, review_targets
+    return []
 
 
-def _has_unavailable_source(source_refs: list[dict[str, Any]]) -> bool:
-    for ref in source_refs:
-        status = str(ref.get("status") or "").lower()
-        if status in _UNAVAILABLE_SOURCE_STATUSES:
-            return True
-    return False
+def _claims_from_row(row: PersistedAgentOutput | RuntimeAgentOutput) -> list[dict[str, Any]]:
+    if isinstance(row, RuntimeAgentOutput):
+        payload = row.input_payload
+        evidence_refs = list(row.evidence_refs)
+    else:
+        payload = row.payload
+        evidence_refs = (
+            list(payload.get("evidence_refs") or payload.get("artifact_refs") or [])
+            if isinstance(payload, dict)
+            else []
+        )
+    claims = payload.get("claims") if isinstance(payload, dict) else None
+    explicit_claims = [item for item in claims if isinstance(item, dict)] if isinstance(claims, list) else []
+    if explicit_claims:
+        return explicit_claims
+    return [
+        {
+            "claim_id": f"{row.agent_name}:summary",
+            "claim_type": "market_view",
+            "claim_text": row.summary,
+            "source_refs": list(row.source_refs or []),
+            "evidence_refs": evidence_refs,
+        }
+    ]
+
+
+def _all_sources_unavailable(source_refs: list[dict[str, Any]]) -> bool:
+    """Return true only when every declared claim source is explicitly unusable.
+
+    Agent summaries may carry the complete analysis snapshot lineage, including
+    optional degraded sources.  One unavailable optional source must not poison
+    otherwise usable evidence from the same claim.
+    """
+
+    statuses = [
+        str(ref.get("status") or "").strip().lower()
+        for ref in source_refs
+        if isinstance(ref, dict)
+    ]
+    return bool(statuses) and all(status in _UNAVAILABLE_SOURCE_STATUSES for status in statuses)
 
 
 def _fact_review_status(counts: dict[str, int], total_claims: int) -> str:
@@ -415,7 +540,7 @@ def _build_summary_text(counts: dict[str, int]) -> str:
     if counts["unsupported"]:
         parts.append(f"{counts['unsupported']} 条缺少证据链")
     if counts["contradicted"]:
-        parts.append(f"{counts['contradicted']} 条结论存在 bias 冲突")
+        parts.append(f"{counts['contradicted']} 条结论存在结构化事实矛盾")
     if counts["insufficient_evidence"]:
         parts.append(f"{counts['insufficient_evidence']} 条来源不可验证")
     if not parts:
@@ -423,10 +548,13 @@ def _build_summary_text(counts: dict[str, int]) -> str:
     return f"事实审查发现 {'、'.join(parts)}。"
 
 
-def _build_key_findings(counts: dict[str, int], agent_outputs: list[AgentOutput]) -> list[str]:
+def _build_key_findings(
+    counts: dict[str, int],
+    agent_outputs: list[PersistedAgentOutput] | list[RuntimeAgentOutput],
+) -> list[str]:
     findings = [f"已审查 {len(agent_outputs)} 个 Agent 输出，累计 {sum(counts.values())} 条 claims。"]
     if counts["contradicted"]:
-        findings.append(f"发现 {counts['contradicted']} 条 bias 冲突 claim。")
+        findings.append(f"发现 {counts['contradicted']} 条结构化事实矛盾 claim。")
     if counts["unsupported"] or counts["insufficient_evidence"]:
         findings.append(
             f"发现 {counts['unsupported'] + counts['insufficient_evidence']} 条需人工补证的 claim。"
@@ -446,7 +574,7 @@ def _build_risk_points(claim_reviews: list[dict[str, Any]]) -> list[str]:
 def _build_invalid_conditions(counts: dict[str, int]) -> list[str]:
     invalid_conditions: list[str] = []
     if counts["contradicted"]:
-        invalid_conditions.append("存在跨 Agent bias 冲突时，不得直接生成强方向综合结论。")
+        invalid_conditions.append("存在结构化事实矛盾时，不得直接生成强方向综合结论。")
     if counts["unsupported"] or counts["insufficient_evidence"]:
         invalid_conditions.append("存在缺证或不可验证 claim 时，不得将其作为页面主结论依据。")
     return invalid_conditions

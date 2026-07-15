@@ -7,14 +7,24 @@ from typing import Any
 
 from apps.api.services.source_service import get_data_source_health_latest
 from apps.monitoring.completeness_checker import build_artifact_completeness_checks, jin10_report_access_checks
+from apps.monitoring.consistency_checker import MarketConsistencyChecker
 from apps.monitoring.freshness_rules import MONITORED_JIN10_SOURCES, build_source_freshness_checks
 from apps.monitoring.schemas import DATA_QUALITY_CAPABILITIES, DataHealthCheck, MonitoringArtifacts
+from apps.monitoring.source_probe_runner import DEFAULT_PROBE_SOURCE_KEYS, SourceProbeRunner
 from apps.runtime.task_recorder import record_task
 
 
 class DataQualityMonitorAgent:
-    def __init__(self, *, storage_root: Path | str = "storage"):
+    def __init__(
+        self,
+        *,
+        storage_root: Path | str = "storage",
+        source_probe_runner: SourceProbeRunner | None = None,
+        consistency_checker: MarketConsistencyChecker | None = None,
+    ) -> None:
         self.storage_root = Path(storage_root)
+        self.source_probe_runner = source_probe_runner
+        self.consistency_checker = consistency_checker
 
     def run(
         self,
@@ -22,21 +32,48 @@ class DataQualityMonitorAgent:
         trade_date: str | None = None,
         observed_at: datetime | None = None,
         record_task_run: bool = True,
+        run_source_probes: bool = False,
+        probe_source_keys: tuple[str, ...] = DEFAULT_PROBE_SOURCE_KEYS,
+        probe_limit: int = 5,
+        run_consistency_checks: bool = False,
     ) -> dict[str, Any]:
         now = observed_at or datetime.now(timezone.utc)
         day = trade_date or now.date().isoformat()
         source_snapshot = get_data_source_health_latest(date=day)
         freshness_checks = build_source_freshness_checks(health_snapshot=source_snapshot, observed_at=now)
+        probe_checks = (
+            (self.source_probe_runner or SourceProbeRunner()).run(
+                observed_at=now,
+                source_keys=probe_source_keys,
+                limit=probe_limit,
+            )
+            if run_source_probes
+            else []
+        )
         completeness_checks = build_artifact_completeness_checks(storage_root=self.storage_root, trade_date=day, observed_at=now)
         permission_checks = jin10_report_access_checks(storage_root=self.storage_root, trade_date=day, observed_at=now)
-        all_checks = [*freshness_checks, *completeness_checks, *permission_checks]
-        source_health = _source_health_report(day=day, observed_at=now, source_snapshot=source_snapshot, freshness_checks=freshness_checks)
+        consistency_checks = (
+            (self.consistency_checker or MarketConsistencyChecker(storage_root=self.storage_root)).run(observed_at=now)
+            if run_consistency_checks
+            else []
+        )
+        all_checks = [*freshness_checks, *probe_checks, *completeness_checks, *permission_checks, *consistency_checks]
+        source_health = _source_health_report(
+            day=day,
+            observed_at=now,
+            source_snapshot=source_snapshot,
+            freshness_checks=freshness_checks,
+            probe_checks=probe_checks,
+            probes_enabled=run_source_probes,
+        )
         data_quality = _data_quality_report(
             day=day,
             observed_at=now,
             checks=all_checks,
+            probe_checks=probe_checks,
             completeness_checks=completeness_checks,
             permission_checks=permission_checks,
+            consistency_checks=consistency_checks,
         )
         downstream = _downstream_readiness(day=day, observed_at=now, checks=all_checks)
         artifacts = self._write_reports(day=day, source_health=source_health, data_quality=data_quality, downstream=downstream)
@@ -81,11 +118,25 @@ def run_data_quality_monitor(
     trade_date: str | None = None,
     observed_at: datetime | None = None,
     record_task_run: bool = True,
+    run_source_probes: bool = False,
+    probe_source_keys: tuple[str, ...] = DEFAULT_PROBE_SOURCE_KEYS,
+    probe_limit: int = 5,
+    source_probe_runner: SourceProbeRunner | None = None,
+    run_consistency_checks: bool = False,
+    consistency_checker: MarketConsistencyChecker | None = None,
 ) -> dict[str, Any]:
-    return DataQualityMonitorAgent(storage_root=storage_root).run(
+    return DataQualityMonitorAgent(
+        storage_root=storage_root,
+        source_probe_runner=source_probe_runner,
+        consistency_checker=consistency_checker,
+    ).run(
         trade_date=trade_date,
         observed_at=observed_at,
         record_task_run=record_task_run,
+        run_source_probes=run_source_probes,
+        probe_source_keys=probe_source_keys,
+        probe_limit=probe_limit,
+        run_consistency_checks=run_consistency_checks,
     )
 
 
@@ -95,14 +146,20 @@ def _source_health_report(
     observed_at: datetime,
     source_snapshot: dict[str, Any],
     freshness_checks: list[DataHealthCheck],
+    probe_checks: list[DataHealthCheck],
+    probes_enabled: bool,
 ) -> dict[str, Any]:
+    source_checks = [*freshness_checks, *probe_checks]
     return {
         "trade_date": day,
         "observed_at": observed_at.isoformat(),
-        "source": "data_source_health_read_model",
-        "overall_status": _overall_status(freshness_checks),
+        "source": "data_source_health_read_model+ingestion_source_test" if probes_enabled else "data_source_health_read_model",
+        "overall_status": _overall_status(source_checks),
         "monitored_sources": list(MONITORED_JIN10_SOURCES),
+        "probe_mode": "live" if probes_enabled else "disabled",
+        "probed_sources": [check.source_key for check in probe_checks],
         "checks": [check.to_dict() for check in freshness_checks],
+        "probe_checks": [check.to_dict() for check in probe_checks],
         "upstream_snapshot": {
             "snapshot_date": source_snapshot.get("snapshot_date"),
             "as_of": source_snapshot.get("as_of"),
@@ -117,8 +174,10 @@ def _data_quality_report(
     day: str,
     observed_at: datetime,
     checks: list[DataHealthCheck],
+    probe_checks: list[DataHealthCheck],
     completeness_checks: list[DataHealthCheck],
     permission_checks: list[DataHealthCheck],
+    consistency_checks: list[DataHealthCheck],
 ) -> dict[str, Any]:
     problem_checks = [check for check in checks if check.status != "ok"]
     return {
@@ -130,8 +189,10 @@ def _data_quality_report(
             "total_checks": len(checks),
             "problem_count": len(problem_checks),
             "freshness_problem_count": sum(1 for check in checks if check.check_type == "freshness" and check.status != "ok"),
+            "probe_problem_count": sum(1 for check in probe_checks if check.status != "ok"),
             "completeness_problem_count": sum(1 for check in completeness_checks if check.status != "ok"),
             "permission_problem_count": sum(1 for check in permission_checks if check.status != "ok"),
+            "consistency_problem_count": sum(1 for check in consistency_checks if check.status != "ok"),
         },
         "blocking_issues": [_issue(check) for check in problem_checks if check.blocked_capabilities],
         "degraded_issues": [_issue(check) for check in problem_checks if check.degraded_capabilities],

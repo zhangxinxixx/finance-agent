@@ -2,6 +2,7 @@ import type { CMEOptionsCalibration, CMEOptionsDataSource, CMEOptionsNetGEXAggre
 import { FACard } from "../shared/FACard";
 import { FAMetricCard } from "../shared/FAMetricCard";
 import { FAStatusPill, type FAStatusTone } from "../shared/FAStatusPill";
+import { translateDecisionText } from "./cmeOptionsFormat";
 
 interface OptionsMarketReadoutProps {
   dataSource: CMEOptionsDataSource;
@@ -75,7 +76,7 @@ export function OptionsMarketReadout({ dataSource, netGexAggregate, wallScores, 
 
       {calibration.calibration_warnings?.[0] ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-2">
-          <div className="text-[length:var(--text-10)] leading-4 text-[var(--fg-4)]">{calibration.calibration_warnings[0]}</div>
+          <div className="text-[length:var(--type-body-sm)] leading-4 text-[var(--fg-4)]">{translateDecisionText(calibration.calibration_warnings[0])}</div>
         </div>
       ) : null}
     </FACard>

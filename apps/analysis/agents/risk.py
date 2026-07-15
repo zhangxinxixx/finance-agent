@@ -123,6 +123,7 @@ def analyze_risk(
         status = AgentStatus.UNAVAILABLE
 
     confidence = _confidence(macro, options, status, unavailable_modules, risk_points, invalid_conditions)
+    bullish_drivers, bearish_drivers = _directional_drivers(macro, options)
     if not key_findings and bias is AgentBias.UNAVAILABLE:
         key_findings = []
     elif not key_findings:
@@ -145,6 +146,10 @@ def analyze_risk(
         status=status,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
+        input_payload={
+            "bullish_drivers": bullish_drivers,
+            "bearish_drivers": bearish_drivers,
+        },
     )
 
 
@@ -254,6 +259,19 @@ def _risk_aware_bias(bias: AgentBias) -> AgentBias:
     if bias is AgentBias.MIXED:
         return AgentBias.MIXED
     return AgentBias.UNAVAILABLE
+
+
+def _directional_drivers(
+    macro: AgentOutput | None,
+    options: AgentOutput | None,
+) -> tuple[list[str], list[str]]:
+    drivers = {AgentBias.BULLISH: [], AgentBias.BEARISH: []}
+    for output in (macro, options):
+        if output is None or output.bias not in _DIRECTIONAL_BIASES:
+            continue
+        detail = output.key_findings[0] if output.key_findings else output.summary
+        drivers[output.bias].append(f"{output.agent_name}: {detail}")
+    return drivers[AgentBias.BULLISH], drivers[AgentBias.BEARISH]
 
 
 def _confidence(

@@ -14,13 +14,22 @@ def build_hourly_report(
     availability_snapshot: dict[str, Any],
     collection_plan: dict[str, Any],
     processing_plan: dict[str, Any],
+    dispatch_plan: dict[str, Any],
 ) -> dict[str, Any]:
     status = _status(availability_snapshot=availability_snapshot, processing_plan=processing_plan)
     readiness = processing_plan.get("quality_gate") if isinstance(processing_plan.get("quality_gate"), dict) else {}
+    quality_gate_evaluation = (
+        processing_plan.get("quality_gate_evaluation")
+        if isinstance(processing_plan.get("quality_gate_evaluation"), dict)
+        else {"status": "missing", "reason_code": "downstream_readiness_missing"}
+    )
     allowed_outputs = readiness.get("allowed_outputs") or []
     blocked_outputs = readiness.get("blocked_outputs") or []
     capabilities = readiness.get("capabilities") if isinstance(readiness.get("capabilities"), dict) else None
-    if capabilities is not None:
+    if quality_gate_evaluation.get("status") != "current":
+        main_readiness = "blocked"
+        knowledge_readiness = "blocked"
+    elif capabilities is not None:
         main_readiness = _readiness_label(capabilities.get("full_daily_analysis"))
         knowledge_readiness = _readiness_label(capabilities.get("knowledge_distillation"))
     else:
@@ -48,7 +57,9 @@ def build_hourly_report(
         "availability": availability_snapshot,
         "collection": _collection_summary(collection_plan),
         "processing": _processing_summary(processing_plan),
+        "dispatch": dispatch_plan.get("summary") or {},
         "quality_gate": readiness,
+        "quality_gate_evaluation": quality_gate_evaluation,
         "allowed_outputs": allowed_outputs,
         "blocked_outputs": blocked_outputs,
         "next_hour_plan": _next_hour_plan(collection_plan=collection_plan, processing_plan=processing_plan),
@@ -87,11 +98,16 @@ def render_hourly_report_markdown(report: dict[str, Any]) -> str:
         f"- 缺失 artifact：{len(processing.get('missing_artifacts', []))}",
         f"- 阻断步骤：{len(processing.get('blocked_steps', []))}",
         "",
-        "## 4. 下游影响",
+        "## 4. 派发计划",
+        f"- 可派发：{(report.get('dispatch') or {}).get('ready', 0)}",
+        f"- 待 Worker：{(report.get('dispatch') or {}).get('planned', 0)}",
+        f"- 人工处理：{(report.get('dispatch') or {}).get('manual_required', 0)}",
+        "",
+        "## 5. 下游影响",
         f"- 允许输出：{', '.join(report.get('allowed_outputs', [])) or '-'}",
         f"- 禁止输出：{', '.join(report.get('blocked_outputs', [])) or '-'}",
         "",
-        "## 5. 下一小时计划",
+        "## 6. 下一小时计划",
     ]
     lines.extend(f"- {item}" for item in report.get("next_hour_plan", []))
     return "\n".join(lines).rstrip() + "\n"

@@ -40,6 +40,8 @@ def test_gold_runtime_orchestration_contract_declares_required_run_modes() -> No
     assert premarket["runtime_contract_only"] is True
     assert premarket["artifact_execution_enabled"] is False
     assert premarket["pipeline_materialized_outputs"] is False
+    assert premarket["declared_agents"] == premarket["planned_agents_executed"]
+    assert premarket["materialized_stage_envelopes"] == []
     assert premarket["executed_agents"] == []
 
 
@@ -71,12 +73,19 @@ def test_gold_runtime_execution_summary_maps_quality_gate_fallback() -> None:
             "fallback_recommended": True,
         },
         accepted_outputs={"final_report_paths": ["/tmp/final_report.md"]},
+        declared_agents=["source_health_agent", "review_gate_agent"],
+        materialized_stage_envelopes=["source_health_agent", "review_gate_agent"],
     )
 
     assert summary["source"] == "gold_runtime_execution_summary"
     assert summary["runtime_contract_only"] is True
     assert summary["artifact_execution_enabled"] is False
     assert summary["pipeline_materialized_outputs"] is True
+    assert summary["declared_agents"] == ["source_health_agent", "review_gate_agent"]
+    assert summary["materialized_stage_envelopes"] == [
+        "source_health_agent",
+        "review_gate_agent",
+    ]
     assert summary["executed_agents"] == []
     assert summary["quality_gate_status"] == "fallback_required"
     assert summary["review_status"] == "needs_review"
@@ -84,6 +93,49 @@ def test_gold_runtime_execution_summary_maps_quality_gate_fallback() -> None:
     assert summary["fallback_tasks_created"] == []
     assert summary["accepted_outputs"] == {"final_report_paths": ["/tmp/final_report.md"]}
     assert summary["writes"] == ["/tmp/final_report.md"]
+
+
+def test_gold_runtime_execution_summary_reports_only_materialized_agents() -> None:
+    summary = build_gold_runtime_execution_summary(
+        run_mode="premarket_full_run",
+        executed_agents=["source_health_agent", "review_gate_agent"],
+        failed_agents=[],
+        skipped_agents=["report_render_agent"],
+        accepted_outputs={"gold_macro_overview_path": "analysis/gold/overview.json"},
+    )
+
+    assert summary["runtime_contract_only"] is False
+    assert summary["artifact_execution_enabled"] is True
+    assert summary["executed_agents"] == ["source_health_agent", "review_gate_agent"]
+    assert summary["failed_agents"] == []
+    assert summary["skipped_agents"] == ["report_render_agent"]
+
+
+def test_gold_runtime_execution_summary_does_not_override_typed_none_accepted_output() -> None:
+    summary = build_gold_runtime_execution_summary(
+        run_mode="premarket_full_run",
+        quality_gate_decision={
+            "action": "fallback",
+            "review_status": "needs_review",
+            "publish_allowed": False,
+        },
+        agent_loop_decision={
+            "decision": "needs_review",
+            "review_status": "needs_review",
+            "publish_allowed": False,
+            "accepted_output": {
+                "source": "none",
+                "agent_name": None,
+                "snapshot_id": None,
+                "artifact_ref": None,
+            },
+            "accepted_outputs": {},
+        },
+        accepted_outputs={"final_report_paths": ["/tmp/stale-final-report.md"]},
+    )
+
+    assert summary["accepted_outputs"] == {}
+    assert summary["writes"] == []
 
 
 def test_major_event_reprice_routes_geopolitical_oil_events_to_war_oil_rate_chain() -> None:

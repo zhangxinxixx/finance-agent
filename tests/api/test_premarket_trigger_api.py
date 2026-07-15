@@ -315,7 +315,7 @@ def test_premarket_preflight_blocks_when_source_readiness_is_blocked(
 ) -> None:
     session_factory, _session = _make_session_factory()
 
-    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr("apps.api.routes.premarket_routes.SessionLocal", session_factory)
     monkeypatch.setattr(
         api_main.pipeline_contract_service,
         "build_premarket_pipeline_source_readiness",
@@ -351,7 +351,7 @@ def test_premarket_preflight_force_true_keeps_blockers_visible_but_allows_launch
 ) -> None:
     session_factory, _session = _make_session_factory()
 
-    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr("apps.api.routes.premarket_routes.SessionLocal", session_factory)
     monkeypatch.setattr(
         api_main.pipeline_contract_service,
         "build_premarket_pipeline_source_readiness",
@@ -376,7 +376,7 @@ def test_premarket_preflight_force_true_keeps_blockers_visible_but_allows_launch
 def test_trigger_premarket_blocks_when_source_readiness_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
     session_factory, _session = _make_session_factory()
 
-    monkeypatch.setattr(api_main, "SessionLocal", session_factory)
+    monkeypatch.setattr("apps.api.routes.premarket_routes.SessionLocal", session_factory)
     monkeypatch.setattr(
         api_main.pipeline_contract_service,
         "build_premarket_pipeline_source_readiness",

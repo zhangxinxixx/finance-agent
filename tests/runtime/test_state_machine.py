@@ -36,12 +36,22 @@ def test_map_dagster_status_to_task_status_uses_shared_active_set() -> None:
         assert map_dagster_status_to_task_status(status) == TaskStatus.running.value
     assert map_dagster_status_to_task_status("SUCCESS") == TaskStatus.success.value
     assert map_dagster_status_to_task_status("FAILURE") == TaskStatus.failed.value
+    assert map_dagster_status_to_task_status("CANCELED") == TaskStatus.cancelled.value
+    assert map_dagster_status_to_task_status("CANCELLED") == TaskStatus.cancelled.value
     assert map_dagster_status_to_task_status("OTHER") == TaskStatus.pending.value
 
 
 def test_derive_task_run_status_handles_partial_and_blocked_rollups() -> None:
     assert derive_task_run_status([StepStatus.success, StepStatus.failed]) == TaskStatus.partial_success
     assert derive_task_run_status([StepStatus.blocked, StepStatus.blocked]) == TaskStatus.blocked
+    assert derive_task_run_status(
+        [StepStatus.blocked, StepStatus.blocked],
+        has_partial_signal=True,
+    ) == TaskStatus.blocked
+    assert derive_task_run_status(
+        [StepStatus.blocked, StepStatus.blocked],
+        has_degraded_signal=True,
+    ) == TaskStatus.blocked
     assert derive_task_run_status([StepStatus.success, StepStatus.success], has_partial_signal=True) == (
         TaskStatus.partial_success
     )

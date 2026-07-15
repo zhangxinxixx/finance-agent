@@ -13,7 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 
-from apps.api.schemas.common import ArtifactType, DataStatus, ReportLifecycleStatus, WarningItem
+from apps.api.schemas.common import ArtifactType, DataStatus, ReportLifecycleStatus, ReviewStatus, WarningItem
 from apps.api.schemas.report import ReportAnalysisAgentOutput, ReportAnalysisInputs, ReportDeterministicInput
 from apps.api.schemas.report import ReportArtifact as ReportArtifactSchema
 from apps.api.schemas.report import ReportDetail
@@ -22,9 +22,11 @@ from apps.api.services._report_lineage import resolve_report_lineage_context
 from apps.api.services._storage import _PROJECT_ROOT, _iso, _latest_asset_date_run, _try_db_session
 from apps.api.services._trace_refs import coerce_artifact_type, dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
 from apps.api.services.agent_output_service import build_agent_output_summary
+from apps.api.services.llm_audit_service import audit_summary, build_report_llm_audit_view
 from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
+from apps.api.services.report_market_odds_service import load_report_market_odds_view
 from apps.analysis.macro.regime import classify_macro_regime
-from apps.renderer.contracts import MacroEventFollowupStructuredPayload
+from apps.renderer.contracts import MacroEventFollowupStructuredPayload, WeeklyContextRevisionPayload
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
 from database.models.report import ReportArtifact as ReportArtifactModel
 from database.models.report import ReportItem
@@ -78,11 +80,40 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
             artifacts = query_report_artifacts(db, report_id)
             detail = _build_report_detail_from_item(item, artifacts)
             detail = _enrich_report_detail_with_lineage_warnings(db, detail)
-            return _enrich_report_detail_with_gold_macro_context(detail)
+            detail = _enrich_report_detail_with_llm_audits(db, detail)
+            return _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
     except (OperationalError, ProgrammingError):
         pass
     detail = _build_legacy_report_detail(db, report_id)
-    return _enrich_report_detail_with_gold_macro_context(detail) if detail is not None else None
+    if detail is None:
+        return None
+    detail = _enrich_report_detail_with_llm_audits(db, detail)
+    return _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
+
+
+def _enrich_report_detail_with_llm_audits(db: Session, detail: ReportDetail) -> ReportDetail:
+    """Attach gateway audit summaries without making report detail depend on them."""
+
+    from database.queries.llm_audit import list_llm_call_audits
+
+    rows_by_id = {}
+    for report_id, run_id in ((detail.report_id, None), (None, detail.run_id)):
+        if not report_id and not run_id:
+            continue
+        rows, _ = list_llm_call_audits(db, limit=200, report_id=report_id, run_id=run_id)
+        rows_by_id.update({row.id: row for row in rows})
+    return detail.model_copy(update={"llm_audits": [audit_summary(row) for row in rows_by_id.values()]})
+
+
+def _enrich_report_detail_with_market_odds(detail: ReportDetail) -> ReportDetail:
+    if detail.market_odds_evidence is not None:
+        return detail
+    view = load_report_market_odds_view(
+        storage_root=_PROJECT_ROOT / "storage",
+        trade_date=detail.trade_date,
+        article_id=detail.report_id.rsplit(":", 1)[-1],
+    )
+    return detail.model_copy(update={"market_odds_evidence": view}) if view is not None else detail
 
 
 def get_report_artifacts(db: Session, report_id: str) -> list[ReportArtifactSchema] | None:
@@ -343,6 +374,7 @@ def _build_report_agent_output(row: AgentOutput) -> ReportAnalysisAgentOutput:
         prompt_version=summary["prompt_version"],
         generated_by=summary["generated_by"],
         llm_model=summary["llm_model"],
+        llm_audit=build_report_llm_audit_view(row),
         created_at=row.created_at,
     )
 
@@ -556,6 +588,10 @@ def _build_legacy_report_detail(db: Session, report_id: str) -> ReportDetail | N
     if legacy_macro_followup is not None:
         return legacy_macro_followup
 
+    legacy_weekly_revision = _legacy_weekly_context_revision_detail(report_id)
+    if legacy_weekly_revision is not None:
+        return legacy_weekly_revision
+
     legacy_jin10 = _legacy_jin10_report_detail(report_id)
     if legacy_jin10 is not None:
         return legacy_jin10
@@ -746,6 +782,79 @@ def _legacy_macro_event_followup_detail(report_id: str) -> ReportDetail | None:
     )
 
 
+def _legacy_weekly_context_revision_detail(report_id: str) -> ReportDetail | None:
+    revision_id = _strip_report_type_prefix(report_id, "weekly_context_revision")
+    revision_date: str | None = None
+    revision_run_id = revision_id
+    if ":" in revision_id:
+        revision_date, revision_run_id = revision_id.split(":", 1)
+
+    if revision_date:
+        run_dir = (
+            _PROJECT_ROOT
+            / "storage"
+            / "outputs"
+            / "weekly_context_revision"
+            / "XAUUSD"
+            / revision_date
+            / revision_run_id
+        )
+        base = (revision_date, run_dir) if run_dir.is_dir() else None
+    else:
+        base = _find_run_dir(
+            _PROJECT_ROOT / "storage" / "outputs" / "weekly_context_revision" / "XAUUSD",
+            revision_run_id,
+        )
+    if base is None:
+        return None
+    trade_date, run_dir = base
+    artifacts = _artifact_schemas_from_paths(
+        report_id=report_id,
+        generated_at=None,
+        path_specs=[
+            (ArtifactType.source_md, run_dir / "source.md", True, "text/markdown"),
+            (ArtifactType.analysis_md, run_dir / "analysis.md", False, "text/markdown"),
+            (ArtifactType.structured_json, run_dir / "report_structured.json", False, "application/json"),
+        ],
+    )
+    if not artifacts:
+        return None
+    payload = _load_weekly_context_revision_payload(run_dir)
+    observe_only = payload is None or not payload.publish_allowed
+    warnings = [
+        WarningItem(
+            code="legacy-report-adapter",
+            message="Legacy weekly context revision adapted to report detail",
+        )
+    ]
+    if observe_only:
+        warnings.append(
+            WarningItem(
+                code="weekly-revision-observe-only",
+                message="Weekly context revision is observe-only and must not replace an accepted baseline report.",
+            )
+        )
+    return ReportDetail(
+        run_id=revision_run_id,
+        snapshot_id=None,
+        data_status=(
+            DataStatus.partial
+            if observe_only or _missing_files(artifacts)
+            else DataStatus.live
+        ),
+        artifact_refs=artifacts,
+        warnings=warnings,
+        report_id=report_id,
+        family=_report_index_family("weekly_context_revision"),
+        title=_report_index_title("weekly_context_revision", trade_date),
+        asset="XAUUSD",
+        trade_date=trade_date,
+        lifecycle_status=ReportLifecycleStatus.generated,
+        artifacts=artifacts,
+        structured_payload=(
+            payload.model_dump(mode="json") if payload is not None else _load_structured_payload(artifacts)
+        ),
+    )
 def _legacy_jin10_report_detail(report_id: str) -> ReportDetail | None:
     base = _find_run_dir(_PROJECT_ROOT / "storage" / "outputs" / "jin10", report_id)
     if base is None:
@@ -787,6 +896,9 @@ def _legacy_jin10_report_detail(report_id: str) -> ReportDetail | None:
         resolved_title = _jin10_source_title(raw_payload, external_meta) or str(daily_payload.get("title") or agent_payload.get("title") or "").strip() or "Jin10 daily report"
     structured_payload = _build_legacy_jin10_structured_payload(run_dir=run_dir, artifacts=artifacts)
     generation_trace = (structured_payload or {}).get("_generation_trace") if isinstance(structured_payload, dict) else {}
+    quality_audit = _normalize_jin10_quality_audit(agent_payload, raw_payload, daily_payload)
+    quality_needs_review = _jin10_report_status(quality_audit) != "ready"
+    quality_blocks_content = _jin10_quality_blocks_content(quality_audit)
     semantic_needs_review = (
         isinstance(generation_trace, dict)
         and ((generation_trace.get("quality_audit") or {}).get("semantic_review_status") == "needs_review")
@@ -812,18 +924,41 @@ def _legacy_jin10_report_detail(report_id: str) -> ReportDetail | None:
                 hint="先重跑图文 parser loop；parser 通过后再执行 rebuild_jin10_agent_analysis。",
             )
         )
+    if quality_needs_review:
+        reason_codes = ", ".join((quality_audit or {}).get("reason_codes") or []) or "quality_audit_failed"
+        warnings.append(
+            WarningItem(
+                code="jin10-quality-gate-blocked" if quality_blocks_content else "jin10-quality-audit-needs-review",
+                message=(
+                    "Jin10 报告未提取到足够正文或图表证据，降级分析稿已停止展示"
+                    if quality_blocks_content
+                    else "Jin10 报告未通过质量审计，需要人工复核"
+                ),
+                field="structured_payload._generation_trace.quality_audit",
+                hint=f"quality reason codes: {reason_codes}",
+            )
+        )
+
+    needs_review = quality_needs_review or semantic_needs_review or asset_needs_review
 
     return ReportDetail(
         run_id=report_id,
         snapshot_id=None,
-        data_status=DataStatus.partial if semantic_needs_review or asset_needs_review or _missing_standard_artifacts(artifacts) or _missing_files(artifacts) else DataStatus.live,
+        data_status=(
+            DataStatus.unavailable
+            if quality_blocks_content
+            else DataStatus.partial
+            if needs_review or _missing_standard_artifacts(artifacts) or _missing_files(artifacts)
+            else DataStatus.live
+        ),
         artifact_refs=artifacts,
         warnings=warnings,
         report_id=report_id,
         family=resolved_family,
         title=resolved_title,
         trade_date=trade_date,
-        lifecycle_status=ReportLifecycleStatus.needs_review if semantic_needs_review or asset_needs_review else ReportLifecycleStatus.generated,
+        lifecycle_status=ReportLifecycleStatus.needs_review if needs_review else ReportLifecycleStatus.generated,
+        review_status=ReviewStatus.pending if needs_review else ReviewStatus.not_required,
         artifacts=artifacts,
         source_refs=dedupe_source_refs(
             [
@@ -1761,6 +1896,7 @@ def _build_strategy_card_summary(
     source_refs: list,
     artifact_refs: list[str],
     market_regime: str | None = None,
+    updated_at: str | None = None,
 ) -> dict[str, Any]:
     return {
         "strategy_card_id": strategy_card_id,
@@ -1768,10 +1904,11 @@ def _build_strategy_card_summary(
         "trade_date": trade_date,
         "run_id": run_id,
         "snapshot_id": snapshot_id,
-        "status": sc_data.get("status"),
+        "status": _strategy_card_status(sc_data),
         "bias": sc_data.get("bias"),
         "confidence": sc_data.get("confidence"),
         "market_regime": market_regime if market_regime is not None else sc_data.get("market_regime"),
+        "updated_at": updated_at or _strategy_card_payload_timestamp(sc_data),
         "paths": paths,
         "source_refs": source_refs or [],
         "artifact_refs": artifact_refs,
@@ -1799,7 +1936,7 @@ def _build_strategy_card_detail(
         "trade_date": trade_date,
         "run_id": run_id,
         "snapshot_id": snapshot_id,
-        "status": sc_data.get("status"),
+        "status": _strategy_card_status(sc_data),
         "bias": sc_data.get("bias"),
         "confidence": sc_data.get("confidence"),
         "market_regime": market_regime if market_regime is not None else sc_data.get("market_regime"),
@@ -2065,7 +2202,7 @@ def _build_strategy_hero(
     market_regime: str | None,
 ) -> dict[str, Any]:
     return {
-        "status": sc_data.get("status") or "available",
+        "status": _strategy_card_status(sc_data),
         "bias": sc_data.get("bias") or "",
         "direction": sc_data.get("direction") or "unknown",
         "confidence": sc_data.get("confidence"),
@@ -2075,6 +2212,22 @@ def _build_strategy_hero(
         "snapshot_id": snapshot_id,
         "source_refs": source_refs,
     }
+
+
+def _strategy_card_status(sc_data: dict[str, Any]) -> str:
+    explicit_status = str(sc_data.get("status") or "").strip().lower()
+    if explicit_status in {"available", "partial", "unavailable", "error"}:
+        return explicit_status
+
+    data_quality = {
+        str(item).strip().lower()
+        for item in sc_data.get("data_quality") or []
+        if str(item).strip()
+    }
+    scenario_summary = str(sc_data.get("scenario_summary") or "").lower()
+    if data_quality.intersection({"observe_wait", "no_strong_conclusion"}) or "blocked" in scenario_summary:
+        return "partial"
+    return "available" if sc_data else "unavailable"
 
 
 def _build_strategy_scenario(sc_data: dict[str, Any]) -> dict[str, Any] | None:
@@ -2171,8 +2324,6 @@ def _collect_fs_strategy_cards(base: Path, asset: str, limit: int) -> list[dict[
         return items
     for date_dir in sorted((d for d in asset_dir.iterdir() if d.is_dir()), reverse=True):
         for run_dir in sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True):
-            if len(items) >= limit:
-                return items
             json_path = run_dir / "strategy_card.json"
             if not json_path.exists():
                 continue
@@ -2198,14 +2349,41 @@ def _collect_fs_strategy_cards(base: Path, asset: str, limit: int) -> list[dict[
                     source_refs=[],
                     artifact_refs=[str(json_path.relative_to(_PROJECT_ROOT))],
                     market_regime=market_regime,
+                    updated_at=(
+                        _strategy_card_payload_timestamp(sc_data)
+                        or _generated_at_from_paths(json_path, md_path)
+                    ),
                 )
             )
-    return items
+        if len(items) >= limit:
+            break
+    return sorted(items, key=_strategy_card_sort_key, reverse=True)[:limit]
 
 
-def _strategy_card_sort_key(item: dict[str, Any]) -> tuple[str, str, str]:
+def _strategy_card_payload_timestamp(sc_data: dict[str, Any]) -> str | None:
+    for key in ("updated_at", "created_at", "generated_at"):
+        value = sc_data.get(key)
+        if isinstance(value, str) and _strategy_card_timestamp_value(value) > 0:
+            return value
+    return None
+
+
+def _strategy_card_timestamp_value(value: Any) -> float:
+    if not isinstance(value, str) or not value.strip():
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _strategy_card_sort_key(item: dict[str, Any]) -> tuple[str, float, str, str]:
     return (
         str(item.get("trade_date") or ""),
+        _strategy_card_timestamp_value(item.get("updated_at")),
         str(item.get("run_id") or ""),
         str(item.get("strategy_card_id") or ""),
     )
@@ -2461,6 +2639,10 @@ def list_strategy_cards(asset: str = "XAUUSD", limit: int = 20) -> dict[str, Any
                             source_refs=row.source_refs if isinstance(row.source_refs, list) else [],
                             artifact_refs=artifact_refs,
                             market_regime=market_regime,
+                            updated_at=(
+                                _generated_at_from_datetime(getattr(row, "updated_at", None))
+                                or _generated_at_from_datetime(getattr(row, "created_at", None))
+                            ),
                         )
                     )
         except Exception:
@@ -2611,6 +2793,33 @@ def get_jin10_daily_report_latest() -> dict[str, Any] | None:
             payload = _load_jin10_daily_report(date_dir.name, run_dir.name)
             if payload is not None and _is_jin10_daily_storage_payload(payload):
                 return payload
+    return None
+
+
+def get_jin10_agent_analysis_latest() -> dict[str, Any] | None:
+    """Return the latest accepted Jin10 daily agent-analysis payload."""
+
+    base = _PROJECT_ROOT / "storage" / "outputs" / "jin10"
+    if not base.exists():
+        return None
+    for date_dir in sorted((d for d in base.iterdir() if d.is_dir()), reverse=True):
+        for run_dir in sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True):
+            daily_payload = _read_optional_json(run_dir / "daily_analysis.json")
+            agent_payload = _read_optional_json(run_dir / "agent_analysis_report.json")
+            if not daily_payload or not agent_payload:
+                continue
+            if not _is_jin10_daily_storage_payload(
+                daily_payload,
+                title_candidates=(agent_payload.get("title"),),
+            ):
+                continue
+            quality_audit = _normalize_jin10_quality_audit(agent_payload, daily_payload)
+            if _jin10_report_status(quality_audit) != "ready":
+                return None
+            result = dict(agent_payload)
+            result.setdefault("trade_date", date_dir.name)
+            result.setdefault("run_id", run_dir.name)
+            return result
     return None
 
 
@@ -2784,6 +2993,15 @@ def _jin10_report_status(quality_audit: dict[str, Any] | None) -> str:
     if status in {"rejected", "needs_review", "failed"}:
         return "degraded"
     return "ready"
+
+
+def _jin10_quality_blocks_content(quality_audit: dict[str, Any] | None) -> bool:
+    status = str((quality_audit or {}).get("status") or "accepted").strip().lower()
+    reason_codes = set((quality_audit or {}).get("reason_codes") or [])
+    return status in {"rejected", "failed"} or (
+        status == "needs_review"
+        and bool(reason_codes & {"evidence_insufficient", "parse_degraded", "fallback_chart_only"})
+    )
 
 
 def _build_jin10_view_payload(*, kind: str, content: str | None, path: Path, asset_base_url: str | None = None) -> dict[str, Any]:
@@ -3104,7 +3322,11 @@ def _collect_jin10_reports() -> list[dict[str, Any]]:
                     ),
                     "source_title": source_title,
                     "format": "json+html",
-                    "available": (run_dir / "daily_analysis.json").exists() and (run_dir / "daily_analysis.html").exists(),
+                    "available": (
+                        (run_dir / "daily_analysis.json").exists()
+                        and (run_dir / "daily_analysis.html").exists()
+                        and not _jin10_quality_blocks_content(quality_audit)
+                    ),
                     "generated_at": _generated_at_from_paths(
                         run_dir / "daily_analysis.json",
                         run_dir / "daily_analysis.html",
@@ -3395,6 +3617,44 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
                         ),
                     }
                 )
+    weekly_revision_base = _PROJECT_ROOT / "storage" / "outputs" / "weekly_context_revision" / asset
+    if weekly_revision_base.exists():
+        for date_dir in sorted((item for item in weekly_revision_base.iterdir() if item.is_dir()), reverse=True):
+            for run_dir in sorted((run for run in date_dir.iterdir() if run.is_dir()), reverse=True):
+                payload = _load_weekly_context_revision_payload(run_dir)
+                available = payload is not None and all(
+                    (run_dir / filename).exists()
+                    for filename in ("source.md", "analysis.md", "report_structured.json")
+                )
+                if not available:
+                    continue
+                first_revision = payload.claim_revisions[0] if payload.claim_revisions else None
+                reports.append(
+                    {
+                        "type": "weekly_context_revision",
+                        "trade_date": date_dir.name,
+                        "run_id": run_dir.name,
+                        "report_id": _typed_report_id(
+                            "weekly_context_revision",
+                            f"{date_dir.name}:{run_dir.name}",
+                        ),
+                        "family": _report_index_family("weekly_context_revision"),
+                        "title": _report_index_title("weekly_context_revision", date_dir.name),
+                        "format": "markdown+json",
+                        "available": True,
+                        "anchor_trade_date": payload.anchor.report_date,
+                        "anchor_article_id": payload.anchor.article_id,
+                        "quality_status": payload.quality_status,
+                        "publication_status": payload.publication_status,
+                        "publish_allowed": payload.publish_allowed,
+                        "summary": first_revision.reason if first_revision is not None else None,
+                        "generated_at": _generated_at_from_paths(
+                            run_dir / "source.md",
+                            run_dir / "analysis.md",
+                            run_dir / "report_structured.json",
+                        ),
+                    }
+                )
     reports = _dedupe_reports_index_items(reports)
     reports.sort(key=lambda x: (x["trade_date"], x.get("run_id") or "", x["type"]), reverse=True)
     return {"asset": asset, "reports": [r for r in reports if r.get("available", False)]}
@@ -3405,6 +3665,7 @@ def _report_index_family(report_type: str) -> str:
         "final_report": "final_report_markdown",
         "macro_report": "macro_report",
         "macro_event_followup": "macro_event_followup_supplement",
+        "weekly_context_revision": "weekly_context_revision_supplement",
         "strategy_card": "strategy_card",
         "options_report": "options_report_markdown",
         "options_visual_report": "cme_options_visual",
@@ -3420,6 +3681,7 @@ def _report_index_title(report_type: str, trade_date: str) -> str:
         "final_report": f"XAUUSD 综合报告（{trade_date}）",
         "macro_report": f"XAUUSD 宏观分析报告（{trade_date}）",
         "macro_event_followup": f"XAUUSD 宏观事件跟进补充（{trade_date}）",
+        "weekly_context_revision": f"XAUUSD 周报最新上下文修正（{trade_date}）",
         "strategy_card": f"XAUUSD 策略卡片（{trade_date}）",
         "options_report": f"黄金期权结构报告（{trade_date}）",
         "options_visual_report": f"黄金期权可视报告（{trade_date}）",
@@ -3442,6 +3704,16 @@ def _load_macro_event_followup_payload(run_dir: Path) -> MacroEventFollowupStruc
         return None
     try:
         return MacroEventFollowupStructuredPayload.model_validate(payload)
+    except ValidationError:
+        return None
+
+
+def _load_weekly_context_revision_payload(run_dir: Path) -> WeeklyContextRevisionPayload | None:
+    payload = _read_optional_json(run_dir / "report_structured.json")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return WeeklyContextRevisionPayload.model_validate(payload)
     except ValidationError:
         return None
 

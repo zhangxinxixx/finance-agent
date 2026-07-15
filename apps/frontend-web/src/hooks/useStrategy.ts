@@ -96,6 +96,16 @@ export function useStrategy(asset = DEFAULT_STRATEGY_ASSET): StrategyState {
       return;
     }
 
+    const selectedSnapshotId = data?.selected_strategy_card_id === selectedId
+      ? data.hero.snapshot_id
+      : data?.history.find((item) => item.strategy_card_id === selectedId)?.snapshot_id;
+    if (!selectedSnapshotId) {
+      setIsTraceLoading(false);
+      setTraceError(null);
+      setData((prev) => (prev ? { ...prev, source_trace: null } : prev));
+      return;
+    }
+
     let cancelled = false;
     const requestedAsset = assetRef.current;
 

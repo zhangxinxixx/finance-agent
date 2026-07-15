@@ -1,139 +1,75 @@
 # 报告系统
 
-## 目标
-
-报告系统负责把 raw / parsed / features / analysis / agent outputs 转成可阅读、可追溯、可复核的报告产物。
-
-当前报告系统同时存在：
-
-- 标准 report tables / report detail API
-- legacy final report / strategy card API
-- CME options visual report
-- Jin10 report bundle
-
-## 关键代码
-
-- `database/models/report.py`
-- `apps/api/schemas/report.py`
-- `apps/api/services/report_service.py`
-- `apps/output/final_report.py`
-- `apps/renderer/markdown/final_report.py`
-- `apps/renderer/html/options_visual.py`
-- `apps/analysis/jin10/*`
-- `apps/analysis/options/*`
+> 代码基线：2026-07-21。
 
 ## 标准模型
 
-表：
+- `report_items` 保存报告身份、family、日期、run/snapshot、状态和来源。
+- `report_artifacts` 保存 artifact type、路径、hash、content type、版本和来源。
+- `/api/reports/*` 提供索引、详情、artifact、source、analysis、visual、evidence 和 analysis-inputs read model。
 
-- `report_items`
-- `report_artifacts`
+公共 `ArtifactType` 包括：`source_md`、`analysis_md`、`visual_html`、`structured_json`、`raw_file`、`parsed_file`、`feature_json`、`chart_snapshot`。
 
-主要 API：
+## 报告族
 
-- `GET /api/reports/index`
-- `GET /api/reports/dates`
-- `GET /api/reports/{report_id}`
-- `GET /api/reports/{report_id}/artifacts`
-- `GET /api/reports/{report_id}/source`
-- `GET /api/reports/{report_id}/analysis`
-- `GET /api/reports/{report_id}/visual`
-- `GET /api/reports/{report_id}/evidence`
-- `GET /api/reports/{report_id}/analysis-inputs`
+| 报告族 | 当前接口 |
+| --- | --- |
+| 综合报告 | `/api/final-report/latest`、`/api/final-report`、标准 report API |
+| 策略卡片 | `/api/strategy-card*`、`/api/strategy-cards*` |
+| CME Options | `/api/options/report`、`/api/options/visual-report*` |
+| Macro | `/api/macro/report` |
+| Jin10 daily/weekly/bundle | `/api/jin10/*report*` |
+| Market Odds | `/api/market-odds/report` |
+| 新闻日报/触发/follow-up | `/api/news/daily-*` |
 
-## 三产物 / 四文件约定
+legacy 专用接口与标准 report API 仍并存。新增消费者应优先使用标准 report identity 和 artifact registry；兼容接口需明确标注来源与状态。
 
-文档和后续开发统一按以下 artifact 理解：
+## Accepted 与 observe-only
 
-```text
-source.md
-analysis.md
-visual.html
-report_structured.json
+Canonical composite analysis 根据 Quality Gate 决定输出模式：
+
+- `accepted`：允许写正式 `final_report` 和 `strategy_card`。
+- `observe`：只写 `observation_report` / `observation_strategy_card`，供诊断和复核，不进入正式消费面。
+
+```mermaid
+flowchart LR
+    Candidate[Analysis candidate] --> Gate{Quality Gate}
+    Gate -->|publish_allowed=true| Accepted[Accepted identity]
+    Accepted --> Report[Final report]
+    Accepted --> Card[Strategy card]
+    Gate -->|publish_allowed=false| Observe[Observation identity]
+    Observe --> ObservationReport[Observation report]
+    Observe --> Review[Diagnostics / manual review]
 ```
 
-实际代码状态：
+{% hint style="danger" %}
+下游不能按“最新文件”决定正式输出，必须跟随 accepted identity 和 `publish_allowed`。
+{% endhint %}
 
-- `source.md`：标准 API 有 `/source` 入口；各报告族是否都有 source artifact 需验证。
-- `analysis.md`：final report、options、Jin10 已有 Markdown/analysis 类产物；标准 artifact 覆盖需验证。
-- `visual.html`：CME visual report 和 Jin10 bundle 支持 HTML 视图；标准 `/visual` API 已存在。
-- `report_structured.json`：final report renderer 构建 structured report；写入路径需按具体 run 验证。
+“文件生成成功”不等于“允许发布”。前端和下游服务必须消费 `publish_allowed` / accepted identity，而不是仅按最新文件名选择。
 
-## 当前报告族
+## Artifact 完整性
 
-| 报告族 | 当前入口 | 说明 |
-| --- | --- | --- |
-| Final Report | `/api/final-report/latest`、`/api/final-report`、`/api/reports/{report_id}` | 综合分析链路 输出 |
-| Strategy Card | `/api/strategy-card/latest`、`/api/strategy-card`、`/api/strategy-cards*` | 策略卡 read model |
-| CME Options | `/api/options/report`、`/api/options/visual-report*`、`/api/reports/{report_id}` | Markdown + HTML visual |
-| Macro | `/api/macro/report`、`storage/outputs/macro/*` | 宏观快照 Markdown |
-| Macro Event Follow-up | 待新增 `/api/reports/{report_id}` 标准入口 | 非交易日宏观/新闻事件影响补充报告，不替代正式综合报告 |
-| Jin10 Daily / Weekly | `/api/jin10/daily-report*`、`/api/jin10/weekly-report*`、`/api/jin10/report-bundle*` | 报告 bundle + assets |
-| Market Odds | `/api/market-odds/report` | 结构化摘要 |
+一个报告族不必强制生成所有展示格式，但实际声明的 artifact 必须：
 
-## 非交易日补充报告口径
+- 文件存在且非空；
+- `artifact_type` 与内容一致；
+- 绑定 report、run、snapshot 和 source refs；
+- 记录 hash、生成时间和 content type（可取得时）；
+- 缺失时返回 unavailable/partial，不伪造占位文件。
 
-`macro_event_followup` 是后续新增的正式落盘报告族，用于非交易日补充说明当天宏观/新闻事件对最近一个开盘日正式综合结论的影响。
+## 前端职责
 
-边界：
+`ReportsPage` 只做索引和筛选；`ReportDetailPage` 展示 source、analysis、visual、evidence、analysis inputs、Agent outputs、Fact Review 和 LLM audit。页面不重新拼装报告结论。
 
-- 只在非交易日生成；第一版先覆盖周末，节假日交易日历后续补强。
-- `trade_date` 使用非交易日当天日期，便于按日回看。
-- `anchor_trade_date` 指向最近一个开盘日，表示被补充的正式 `final_report / strategy_card` 日期。
-- 不生成新的 `final_report`，不生成新的 `strategy_card`，不把补充报告展示成正式交易结论。
-- Dashboard 可以同时展示最近开盘日正式结论和当天补充分析，但必须分别标注 `anchor_trade_date` 与 `trade_date`。
-- Reports / Report Detail 应把该报告标为“补充分析”，和“综合报告”区分。
+## 当前风险
 
-建议 artifact 路径：
+- 历史报告可能没有完整 `ReportItem` / `ReportArtifact`。
+- legacy 与标准入口可能对同一报告返回不同形态。
+- 各 family 的 artifact 覆盖度仍需逐族 regression；不能把 API 存在写成所有文件均已生成。
 
-```text
-storage/outputs/macro_event_followup/XAUUSD/<trade_date>/<run_id>/
-  source.md
-  analysis.md
-  report_structured.json
-```
+## 相关内容
 
-建议结构化字段：
-
-- `report_type`: `macro_event_followup`
-- `trade_date`: 非交易日当天
-- `anchor_trade_date`: 最近开盘日
-- `anchor_report_refs`: 上一开盘日 `final_report / strategy_card` 的 report/artifact refs
-- `new_macro_events`: 当天新增宏观、新闻和事件输入
-- `impact_assessment`: 对上一开盘日结论的强化、削弱、扰动或暂不影响判断
-- `watch_items`: 下一个开盘日前需要观察的事件、价位、数据和风险
-- `revision_risk`: 是否需要在下一个开盘日前人工复核或重新生成正式综合报告
-- `source_refs`: 最新新闻、宏观、Event Flow、原正式报告等来源引用
-
-## 前端展示
-
-文件：
-
-- `apps/frontend-web/src/pages/ReportsPage.tsx`
-- `apps/frontend-web/src/pages/ReportDetailPage.tsx`
-- `apps/frontend-web/src/adapters/reports.ts`
-
-Report Detail 当前支持：
-
-- artifact 列表
-- source
-- analysis
-- visual
-- evidence
-- analysis inputs
-- source trace
-
-## 风险
-
-- legacy API 和标准 report API 并存，容易出现同一报告多个入口。
-- 各报告族的 artifact naming 未完全统一。
-- 部分历史产物没有 run_id / snapshot_id。
-- Report Detail 需要显式标记 fallback / legacy / unavailable。
-
-## 后续方向
-
-- 每个报告族都登记 `ReportItem`。
-- 每个报告族都登记 source / analysis / visual / structured / evidence artifact。
-- 所有报告都绑定 `run_id`、`snapshot_id`、`source_refs`、`artifact_refs`。
-- Report Detail 只做展示，不做 report 数据拼装。
-- `macro_event_followup` 优先走标准 report tables / report detail API，不新增 legacy 专用报告端点。
+- [Agent 架构](05_AGENT_ARCHITECTURE.md)
+- [Run、Snapshot 与 SourceTrace](07_SOURCE_TRACE_AND_RUN.md)
+- [API 映射](10_API_MAP.md)

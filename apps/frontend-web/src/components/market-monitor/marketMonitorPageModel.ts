@@ -7,7 +7,7 @@ import type {
   MarketMonitorStatus,
 } from "@/types/market-monitor";
 
-export type MarketMonitorTab = "overview" | "pricing-chain" | "cross-asset" | "calendar";
+export type MarketMonitorTab = "overview" | "pricing-chain" | "cross-asset" | "calendar" | "odds";
 
 export type MarketMonitorShape = {
   generated_at?: string | null;
@@ -59,5 +59,6 @@ export function buildMarketMonitorTabOptions() {
     { value: "pricing-chain", label: "定价链" },
     { value: "cross-asset", label: "跨资产" },
     { value: "calendar", label: "日历 / 事件" },
+    { value: "odds", label: "市场赔率" },
   ] satisfies Array<{ value: MarketMonitorTab; label: string }>;
 }

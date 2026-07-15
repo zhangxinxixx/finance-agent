@@ -37,7 +37,7 @@ RAW_REPORT = {
         {
             "source": "jin10_external",
             "asset_type": "report_md",
-            "path": "/tmp/finance-agent/jin10-reports/2026-06-11/technical_levels/301/report.md",
+            "path": "/tmp/jin10-reports/2026-06-11/technical_levels/301/report.md",
             "source_url": "https://svip.jin10.com/news/301",
         }
     ],

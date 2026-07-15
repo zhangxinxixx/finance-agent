@@ -78,14 +78,13 @@ _SOURCE_META: dict[str, dict[str, str | None]] = {
     "fred": {"name": "FRED API", "description": "美联储经济数据 (FRED)", "secret_env": "FRED_API_KEY"},
     "openbb": {"name": "OpenBB SDK", "description": "聚合数据平台", "secret_env": None},
     "jin10_mcp": {"name": "Jin10 MCP", "description": "金十数据 MCP 服务", "secret_env": "JIN10_MCP_KEY"},
+    "twelvedata": {"name": "Twelve Data", "description": "XAU/USD 校验与故障备用", "secret_env": "TWELVE_DATA_API_KEY"},
     "cme_bulletin": {"name": "CME Daily Bulletin", "description": "CME 官方每日公告 PDF", "secret_env": None},
     "treasury": {"name": "Treasury FiscalData", "description": "美国财政部财政数据 API", "secret_env": None},
     "fed_prates": {"name": "Fed PRATES", "description": "美联储准备金利率数据", "secret_env": None},
-    "dashscope": {"name": "DashScope (Qwen-VL)", "description": "阿里云视觉模型 (Jin10 解析)", "secret_env": "DASHSCOPE_API_KEY"},
-    "mem0": {"name": "Mem0 记忆层", "description": "项目记忆与上下文", "secret_env": "MEM0_API_KEY"},
 }
 
-_SECRET_BACKED_SOURCES = {"fred", "dashscope", "mem0"}
+_SECRET_BACKED_SOURCES = {"fred", "twelvedata"}
 _EVIDENCE_BACKED_SOURCES = {"openbb", "jin10_mcp", "cme_bulletin", "treasury", "fed_prates"}
 
 
@@ -409,11 +408,10 @@ def _collect_source_status(
         "fred": _runtime_secret_available("FRED_API_KEY", db=db),
         "openbb": openbb_available,
         "jin10_mcp": jin10_available,
+        "twelvedata": _runtime_secret_available("TWELVE_DATA_API_KEY", db=db),
         "cme_bulletin": cme_available,
         "treasury": macro_available,
         "fed_prates": macro_available,
-        "dashscope": _runtime_secret_available("DASHSCOPE_API_KEY", db=db),
-        "mem0": _runtime_secret_available("MEM0_API_KEY", db=db),
     }
 
     return [
@@ -485,7 +483,12 @@ def _collect_global_config() -> list[dict[str, str]]:
         {"label": "Redis", "value": "已连接" if os.getenv("REDIS_URL") else "未配置"},
         {"label": "Storage Root", "value": str(_PROJECT_ROOT / "storage")},
         {"label": "Output Root", "value": str(_PROJECT_ROOT / "storage" / "outputs")},
-        {"label": "Knowledge Vault", "value": os.path.expanduser("~/Finance-Agent-Knowledge-Vault")},
+        {
+            "label": "Knowledge Vault",
+            "value": os.path.expanduser(
+                os.getenv("FINANCE_AGENT_KNOWLEDGE_VAULT", "~/Finance-Agent-Knowledge-Vault")
+            ),
+        },
         {"label": "Jin10 Reports Dir", "value": os.path.expanduser("~/jin10-reports")},
     ]
 

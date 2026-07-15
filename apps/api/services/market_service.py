@@ -15,6 +15,7 @@ from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.agent_read_model import build_market_regime_agent_summary
 from apps.api.services.macro_service import get_macro_latest
 from apps.api.services.options_service import get_options_snapshot
+from apps.features.market_data import is_xauusd_compatible_row
 from database.models.analysis import ensure_analysis_tables
 from database.models.engine import DATABASE_URL
 from database.queries.market import list_market_candles, list_market_candles_by_assets
@@ -659,68 +660,62 @@ def get_market_monitor_overview() -> dict[str, Any]:
 
 def get_market_monitor_history(limit: int = 30, timeframe: str = "1M") -> dict[str, Any]:
     normalized_timeframe = str(timeframe or "1M").upper()
-    if normalized_timeframe in {"15M", "30M", "1H", "4H", "1D"}:
+    if normalized_timeframe in {"5M", "15M", "30M", "1H", "4H"}:
         return _get_market_monitor_intraday_history(limit=limit, timeframe=normalized_timeframe)
     return _get_market_monitor_daily_history(limit=limit, timeframe=normalized_timeframe)
 
 
-def _get_market_monitor_intraday_history(limit: int = 30, timeframe: str = "1D") -> dict[str, Any]:
+def _get_market_monitor_intraday_history(limit: int = 30, timeframe: str = "15M") -> dict[str, Any]:
+    from apps.api.services.market_candle_service import get_market_candles
+
     session_factory = _market_session_factory()
     points: list[dict[str, Any]] = []
-    timeframe_to_limit = {
-        "15M": 32,
-        "30M": 32,
-        "1H": 32,
-        "4H": 40,
-        "1D": 30,
-    }
-    source_limit = timeframe_to_limit.get(timeframe, 30)
-    source_timeframe = "1h"
-    degraded_reason = ""
+    service_timeframe = {
+        "5M": "5m",
+        "15M": "15m",
+        "30M": "30m",
+        "1H": "1h",
+        "4H": "4h",
+    }[timeframe]
     with session_factory() as session:
         ensure_analysis_tables(session)
-        if timeframe in {"15M", "30M", "1D"}:
-            bucket_minutes = 15 if timeframe == "15M" else 30 if timeframe == "30M" else 60
-            minute_limit = max(limit * bucket_minutes + bucket_minutes, source_limit * bucket_minutes)
-            minute_rows = list_market_candles(session, asset="XAUUSD", timeframe="1m", limit=minute_limit)
-            if minute_rows:
-                xau_rows = _aggregate_intraday_rows(minute_rows, bucket_minutes=bucket_minutes)[-limit:]
-                source_timeframe = "1m"
-            else:
-                xau_rows = list_market_candles(session, asset="XAUUSD", timeframe="1h", limit=max(limit, source_limit))
-                xau_rows = _sample_intraday_rows(xau_rows, timeframe=timeframe)
-                degraded_reason = f"{timeframe} requested but XAUUSD 1m candles are unavailable; fell back to 1h rows."
-        else:
-            xau_rows = list_market_candles(session, asset="XAUUSD", timeframe="1h", limit=max(limit, source_limit))
-            xau_rows = _sample_intraday_rows(xau_rows, timeframe=timeframe)
+        candle_payload = get_market_candles(
+            asset="XAUUSD",
+            timeframe=service_timeframe,
+            limit=limit,
+            session=session,
+        )
 
-    for row in xau_rows:
-        key = _row_value(row, "open_time").isoformat()
+    for candle in candle_payload["candles"]:
+        key = str(candle["time"])
         points.append(
             {
                 "date": key,
-                "XAUUSD": _row_value(row, "close"),
+                "XAUUSD": candle["close"],
                 "xauusd_ohlc": {
-                    "open": _row_value(row, "open"),
-                    "high": _row_value(row, "high"),
-                    "low": _row_value(row, "low"),
-                    "close": _row_value(row, "close"),
+                    "open": candle["open"],
+                    "high": candle["high"],
+                    "low": candle["low"],
+                    "close": candle["close"],
                 },
                 "DXY": None,
             }
         )
 
-    degraded = len(points) < min(limit, 24 if timeframe == "1D" else 8) or bool(degraded_reason)
-    message = degraded_reason or "小时间级别当前仅对 XAUUSD 提供真实价格曲线；DXY 保持日线，不伪造更细粒度走势。"
+    coverage = candle_payload["coverage"]
+    degraded = bool(coverage.get("degraded"))
+    message = coverage.get("reason") or "分钟和小时周期仅提供 canonical XAUUSD；DXY 保持日线。"
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "timeframe": timeframe,
-        "source_timeframe": source_timeframe,
+        "source_timeframe": candle_payload["source_timeframe"],
+        "provider": candle_payload["provider"],
         "series": points,
         "available_points": len(points),
         "available_fields": ["XAUUSD", "DXY"],
         "degraded": degraded,
         "message": message,
+        "source_trace": candle_payload["source_trace"],
     }
 
 
@@ -732,49 +727,6 @@ def _row_value(row: Any, field: str) -> Any:
     if field == "open_time" and isinstance(value, datetime) and value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value
-
-
-def _aggregate_intraday_rows(rows: list[Any], *, bucket_minutes: int) -> list[dict[str, Any]]:
-    buckets: dict[datetime, list[Any]] = {}
-    for row in rows:
-        open_time = _row_value(row, "open_time")
-        bucket_time = _bucket_open_time(open_time, bucket_minutes=bucket_minutes)
-        buckets.setdefault(bucket_time, []).append(row)
-
-    aggregated: list[dict[str, Any]] = []
-    for bucket_time in sorted(buckets):
-        bucket_rows = sorted(buckets[bucket_time], key=lambda item: _row_value(item, "open_time"))
-        first = bucket_rows[0]
-        last = bucket_rows[-1]
-        volumes = [_row_value(item, "volume") for item in bucket_rows if _row_value(item, "volume") is not None]
-        aggregated.append(
-            {
-                "open_time": bucket_time,
-                "open": float(_row_value(first, "open")),
-                "high": max(float(_row_value(item, "high")) for item in bucket_rows),
-                "low": min(float(_row_value(item, "low")) for item in bucket_rows),
-                "close": float(_row_value(last, "close")),
-                "volume": sum(float(volume) for volume in volumes) if volumes else None,
-            }
-        )
-    return aggregated
-
-
-def _bucket_open_time(open_time: datetime, *, bucket_minutes: int) -> datetime:
-    minute = (open_time.minute // bucket_minutes) * bucket_minutes
-    return open_time.replace(minute=minute, second=0, microsecond=0)
-
-
-def _sample_intraday_rows(rows: list[Any], *, timeframe: str) -> list[Any]:
-    if timeframe in {"1D", "1H"}:
-        return rows[-30:]
-    if timeframe == "4H":
-        return rows[-40::4]
-    if timeframe == "30M":
-        return rows[-30:]
-    if timeframe == "15M":
-        return rows[-30:]
-    return rows[-30:]
 
 
 def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") -> dict[str, Any]:
@@ -806,6 +758,8 @@ def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") ->
 
     prices_by_date: dict[str, dict[str, float]] = {}
     for row in price_rows:
+        if row.asset == "XAUUSD" and not is_xauusd_compatible_row(row):
+            continue
         day = row.open_time.date().isoformat()
         prices_by_date.setdefault(day, {})
         prices_by_date[day][row.asset] = row.close
@@ -819,11 +773,14 @@ def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") ->
         day_prices = prices_by_date.get(day, {})
         if "XAUUSD" in day_prices:
             point["XAUUSD"] = day_prices["XAUUSD"]
+        else:
+            point.setdefault("XAUUSD", None)
         if "DXY" in day_prices and point.get("DXY") is None:
             point["DXY"] = day_prices["DXY"]
+        point.setdefault("xauusd_ohlc", None)
         points.append(point)
 
-    daily_xau_rows = [row for row in price_rows if row.asset == "XAUUSD"]
+    daily_xau_rows = [row for row in price_rows if row.asset == "XAUUSD" and is_xauusd_compatible_row(row)]
     daily_xau_by_date = {
         row.open_time.date().isoformat(): {
             "open": row.open,
@@ -884,10 +841,12 @@ def _latest_market_candle(*, asset: str, timeframe: str) -> dict[str, Any] | Non
         session_factory = _market_session_factory()
         with session_factory() as session:
             ensure_analysis_tables(session)
-            rows = list_market_candles(session, asset=asset, timeframe=timeframe, limit=1)
+            rows = list_market_candles(session, asset=asset, timeframe=timeframe, limit=20)
     except Exception as exc:
         logger.debug("Market candle fallback unavailable for %s %s: %s", asset, timeframe, exc)
         return None
+    if asset == "XAUUSD":
+        rows = [row for row in rows if is_xauusd_compatible_row(row)]
     if not rows:
         return None
     row = rows[-1]

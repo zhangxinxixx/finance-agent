@@ -38,7 +38,7 @@ def _parse_report(report: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
         title=report["title"],
         published_at=meta.get("published_at"),
         image_entries=report["images"],
-        report_type=str(report.get("report_type") or ""),
+        report_type=_parser_report_type(report),
     )
     report_text = _select_report_text(markdown_text=markdown_text, artifacts=artifacts)
     source_document = _build_source_document(
@@ -88,6 +88,19 @@ def _parse_report(report: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any
         "blocks": [block.to_dict() for block in parsed_document.blocks],
         "body_text": source_document.report_text,
     }, artifacts
+
+
+def _parser_report_type(report: dict[str, Any]) -> str:
+    report_type = str(report.get("report_type") or "").strip().lower()
+    if report_type != "market_observation":
+        return report_type
+    text = " ".join(
+        str(report.get(key) or "")
+        for key in ("series", "subcategory", "title")
+    )
+    if "market_odds" in text or any(marker in text for marker in ("市场赔率数据表", "市场赔率表", "赔率表")):
+        return "market_odds"
+    return report_type
 
 
 def _select_report_text(*, markdown_text: str, artifacts: dict[str, Any]) -> str:

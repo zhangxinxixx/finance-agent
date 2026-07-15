@@ -1,9 +1,9 @@
-"""Dagster ops for the C4 agent pipeline.
+"""Dagster ops for the canonical analysis pipeline.
 
 Wraps the C3 agents, coordinator, and strategy card builder.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,110 @@ from apps.renderer.markdown.final_report import build_structured_report, render_
 
 class AgentConfig(Config):
     storage_root: str = "./storage"
+
+
+@op(tags={"pipeline": "canonical_analysis", "step": "canonical_composite_analysis"})
+def canonical_composite_analysis_op(
+    context,
+    config: AgentConfig,
+    snapshot: dict[str, Any],
+    readiness_gate: dict[str, Any],
+) -> dict[str, Any]:
+    """Delegate Dagster execution to the canonical gated composite pipeline."""
+
+    if readiness_gate.get("decision") != "allow":
+        reason_code = readiness_gate.get("reason_code") or "premarket_readiness_blocked"
+        context.log.warning("Premarket readiness gate blocked domain agents: %s", reason_code)
+        return {
+            "premarket_readiness_gate": readiness_gate,
+            "summaries": {
+                "premarket": {
+                    "step": "premarket_readiness_gate",
+                    "status": "blocked",
+                    "reason_code": reason_code,
+                },
+                "final_report": {
+                    "output_mode": "blocked",
+                    "status": "blocked",
+                    "reason_code": reason_code,
+                },
+            },
+            "quality_gate_decision": {
+                "action": "block_publish",
+                "reason_codes": [reason_code],
+            },
+            "agent_loop_decision": {"decision": "blocked", "reason_code": reason_code},
+            "output_mode": "blocked",
+            "report_result": None,
+            "card_result": None,
+        }
+
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+
+    context.log.info("Running canonical FactReview/QualityGate composite analysis")
+    summaries, outputs = run_composite_analysis_pipeline(
+        storage_root=Path(config.storage_root),
+        snapshot=snapshot,
+        run_id=context.run_id,
+        created_at=_canonical_created_at(snapshot),
+    )
+    return {
+        "premarket_readiness_gate": readiness_gate,
+        "summaries": summaries,
+        "quality_gate_decision": _to_dict(outputs["quality_gate_decision"]),
+        "agent_loop_decision": _to_dict(outputs["agent_loop_decision"]),
+        "output_mode": summaries["final_report"]["output_mode"],
+        "report_result": outputs["report_result"],
+        "card_result": outputs["card_result"],
+    }
+
+
+def _canonical_created_at(snapshot: dict[str, Any]) -> datetime:
+    """Return the snapshot's stable, timezone-aware canonical artifact time.
+
+    Canonical composite artifacts are immutable for a Dagster run/snapshot pair,
+    so a retry must not take its timestamp from the worker's wall clock.
+    """
+
+    metadata = snapshot.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    snapshot_time = snapshot.get("snapshot_time")
+    if snapshot_time is None:
+        snapshot_time = metadata.get("snapshot_time")
+    if snapshot_time is not None:
+        return _parse_snapshot_datetime(snapshot_time, field_name="snapshot_time")
+
+    as_of = snapshot.get("as_of")
+    if as_of is None:
+        as_of = metadata.get("as_of")
+    if as_of is None:
+        raise ValueError("canonical composite analysis requires snapshot_time or as_of")
+    return _parse_snapshot_datetime(as_of, field_name="as_of")
+
+
+def _parse_snapshot_datetime(value: Any, *, field_name: str) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        if field_name == "as_of":
+            try:
+                parsed_date = date.fromisoformat(value)
+            except ValueError:
+                pass
+            else:
+                return datetime.combine(parsed_date, time.min, tzinfo=timezone.utc)
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"canonical composite analysis has invalid {field_name}: {value!r}") from exc
+    else:
+        raise ValueError(f"canonical composite analysis has invalid {field_name}: {value!r}")
+
+    if parsed.tzinfo is not None:
+        return parsed
+    raise ValueError(f"canonical composite analysis {field_name} must include a timezone")
 
 
 def _to_dict(result: Any) -> dict[str, Any]:
@@ -42,7 +146,7 @@ def _coerce_agent_output(value: Any, *, name: str):
 
 
 @op(
-    tags={"pipeline": "c4", "step": "macro_liquidity"},
+    tags={"pipeline": "canonical_analysis", "step": "macro_liquidity"},
 )
 def macro_liquidity_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
     from apps.analysis.agents.macro_liquidity import analyze_macro_liquidity
@@ -53,7 +157,7 @@ def macro_liquidity_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any
 
 
 @op(
-    tags={"pipeline": "c4", "step": "cme_options"},
+    tags={"pipeline": "canonical_analysis", "step": "cme_options"},
 )
 def cme_options_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
     from apps.analysis.agents.cme_options import analyze_cme_options
@@ -64,7 +168,7 @@ def cme_options_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 @op(
-    tags={"pipeline": "c4", "step": "risk"},
+    tags={"pipeline": "canonical_analysis", "step": "risk"},
 )
 def risk_agent_op(
     context,
@@ -85,7 +189,7 @@ def risk_agent_op(
 
 
 @op(
-    tags={"pipeline": "c4", "step": "technical"},
+    tags={"pipeline": "canonical_analysis", "step": "technical"},
 )
 def technical_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
     from apps.analysis.agents.technical import analyze_technical
@@ -96,7 +200,7 @@ def technical_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 @op(
-    tags={"pipeline": "c4", "step": "positioning"},
+    tags={"pipeline": "canonical_analysis", "step": "positioning"},
 )
 def positioning_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
     from apps.analysis.agents.positioning import analyze_positioning
@@ -107,7 +211,7 @@ def positioning_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 @op(
-    tags={"pipeline": "c4", "step": "news"},
+    tags={"pipeline": "canonical_analysis", "step": "news"},
 )
 def news_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
     from apps.analysis.agents.news import analyze_news
@@ -118,7 +222,7 @@ def news_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 @op(
-    tags={"pipeline": "c4", "step": "market_odds"},
+    tags={"pipeline": "canonical_analysis", "step": "market_odds"},
 )
 def market_odds_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
     from apps.analysis.agents.market_odds import analyze_market_odds
@@ -129,7 +233,7 @@ def market_odds_agent_op(context, snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 @op(
-    tags={"pipeline": "c4", "step": "coordinator"},
+    tags={"pipeline": "canonical_analysis", "step": "coordinator"},
 )
 def coordinator_op(
     context,
@@ -160,7 +264,7 @@ def coordinator_op(
 
 
 @op(
-    tags={"pipeline": "c4", "step": "final_report"},
+    tags={"pipeline": "canonical_analysis", "step": "final_report"},
 )
 def final_report_op(
     context,
@@ -221,7 +325,7 @@ def final_report_op(
 
 @op(
     required_resource_keys={"db_session"},
-    tags={"pipeline": "c4", "step": "strategy_card"},
+    tags={"pipeline": "canonical_analysis", "step": "strategy_card"},
 )
 def strategy_card_op(
     context,

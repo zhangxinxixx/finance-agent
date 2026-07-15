@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from apps.api.data_service import (
     get_options_report_md,
+    get_options_decision,
     get_options_snapshot,
     get_options_visual_report_html,
     list_options_report_dates,
@@ -20,6 +21,19 @@ router = APIRouter()
 def api_options_snapshot(date: str | None = None, db: Session = Depends(get_db)):
     """返回 CME 期权分析 JSON snapshot。不传 date 则返回最新。"""
     data = get_options_snapshot(date, db=db)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Options snapshot not found")
+    return data
+
+
+@router.get("/api/options/decision")
+def api_options_decision(
+    date: str | None = None,
+    lookback_days: int = Query(default=5, ge=1, le=20),
+    db: Session = Depends(get_db),
+):
+    """Return the stable, read-only CME options decision ViewModel."""
+    data = get_options_decision(date, lookback_days=lookback_days, db=db)
     if data is None:
         raise HTTPException(status_code=404, detail="Options snapshot not found")
     return data

@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll Finance Agent report sources during publication windows
+
+[Timer]
+OnCalendar=*-*-* 09..20:0/10:00
+Persistent=true
+AccuracySec=30s
+Unit=report-window-scanner.service
+
+[Install]
+WantedBy=timers.target

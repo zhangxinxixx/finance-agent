@@ -1,127 +1,73 @@
-# Run / Snapshot / SourceTrace
+# Run、Snapshot 与 SourceTrace
 
-## 目标
+> 代码基线：2026-07-21。
 
-把每个前端结论、报告、策略卡片和 Agent 输出追溯到：
+## 追溯目标
 
-- raw source
-- parsed artifact
-- feature snapshot
-- analysis snapshot
-- agent output
-- report artifact
-- strategy card
+```mermaid
+flowchart LR
+    Source[External source] --> Raw[Raw artifact]
+    Raw --> Parsed[Parsed artifact]
+    Parsed --> Feature[Feature snapshot]
+    Feature --> Analysis[Analysis snapshot]
+    Analysis --> Agent[Agent output]
+    Agent --> Fact[Fact Review]
+    Fact --> Report[Report artifact]
+    Fact --> Strategy[Strategy artifact]
+    Analysis --> Run[Run / step / event views]
+```
+
+{% hint style="info" %}
+历史 artifact 缺少完整引用时，系统应返回 partial 或 unavailable；不能根据文件名猜测并补造 lineage。
+{% endhint %}
 
 ## Run
 
-模型：
+`TaskRun` 是 canonical run，`TaskStep` 是 canonical step。Dagster premarket job 在开始、成功和失败路径同步生命周期；旧 TaskRun 可被 preflight 标记为 `stale`。
 
-- `database/models/task.py` 的 `TaskRun`
-- `database/models/task.py` 的 `TaskStep`
+只读接口：
 
-API：
-
-- `GET /api/runs`
-- `GET /api/runs/{run_id}`
-- `GET /api/runs/{run_id}/steps`
-- `GET /api/runs/{run_id}/logs`
-- `GET /api/runs/{run_id}/artifacts`
-
-前端：
-
-- `/agent-tasks`
-- `/agent-tasks/:runId`
-- `apps/frontend-web/src/adapters/agentTasks.ts`
+- `/api/runs`
+- `/api/runs/{run_id}`
+- `/api/runs/{run_id}/steps`
+- `/api/runs/{run_id}/logs`
+- `/api/runs/{run_id}/artifacts`
+- `/api/runs/{run_id}/events`
+- `/api/artifacts/{artifact_id}`
 
 ## Snapshot
 
-模型：
-
-- `database/models/analysis.py` 的 `AnalysisSnapshot`
-
-文件：
-
-- `apps/analysis/snapshots/builder.py`
-- `apps/worker/runner.py` 的 `_persist_analysis_snapshot()`
-
-关键字段：
-
-- `snapshot_id`
-- `asset`
-- `trade_date`
-- `run_id`
-- `input_snapshot_ids`
-- `source_refs`
-- `macro`
-- `options`
-- `positioning`
-- `news`
-- `technical`
-- `payload`
-- `artifact_path`
+`AnalysisSnapshot` 记录 `snapshot_id`、asset、trade date、run、payload、`input_snapshot_ids`、`source_refs`、status 和 artifact path。Premarket merge 会把 macro、CME、news 与 Gold daily context 合并为同一输入快照。
 
 ## SourceTrace
 
-API schema：
+接口：
 
-- `apps/api/schemas/source_trace.py`
+- `/api/source-trace/{snapshot_id}`
+- `/api/source-trace/by-report/{report_id}`
+- `/api/source-trace/by-strategy/{strategy_card_id}`
+- `/api/source-trace/by-artifact/{artifact_id}`
 
-Service：
+公共 contract 使用 `SourceRef`、`ArtifactRef`、`SnapshotRef` 和 `SourceTraceResponse`。前端 Report、Strategy、Run detail 和 Processing Monitor 都应沿这些 id 下钻。
 
-- `apps/api/services/source_trace_service.py`
+## Processing trace
 
-API：
+加工监控还提供按 `trace_id`、`event_id`、`input_id`、`source_ref`、`mainline`、`chain_id` 的只读检索，用于补充 run-centric lineage；它不能替代 source refs 与 artifact registry。
 
-- `GET /api/source-trace/{snapshot_id}`
-- `GET /api/source-trace/by-report/{report_id}`
-- `GET /api/source-trace/by-strategy/{strategy_card_id}`
+## 验收问题
 
-前端消费：
+任意正式结论都应能回答：
 
-- Reports / Report Detail
-- Strategy Center
-- Agent Tasks
+1. 来自哪个 `run_id` 和 `snapshot_id`？
+2. 使用了哪些 input snapshots 与外部来源？
+3. 中间和最终 artifact 在哪里、hash 是什么？
+4. 是否包含 stale、partial、fallback、mock 或 manual-required 输入？
+5. Quality Gate 接受了哪个 candidate？若未接受，为什么仍可见？
 
-## ArtifactRef / SourceRef / SnapshotRef
+历史 artifact 缺少这些字段时，应显式返回不可追溯或部分可追溯，不能补造 lineage。
 
-Pydantic schema：
+## 相关内容
 
-- `SourceRef`
-- `ArtifactRef`
-- `SnapshotRef`
-- `SourceTraceResponse`
-
-用途：
-
-- `SourceRef` 描述外部数据或 raw source。
-- `ArtifactRef` 描述本地文件产物。
-- `SnapshotRef` 描述 feature/analysis snapshot。
-
-## 当前链路
-
-```text
-TaskRun
-  -> TaskStep
-    -> input_refs / output_refs / source_refs / artifact_refs
-  -> AnalysisSnapshot
-    -> AgentOutput
-    -> FinalAnalysisResult
-      -> ReportItem / ReportArtifact
-      -> StrategyCard read model
-```
-
-当前不足：
-
-- 并非所有 legacy report 都有完整 `ReportItem` / `ReportArtifact`。
-- TaskStep 的 `artifact_refs` 与最终 ReportArtifact 之间还需要统一。
-- domain agents/final report/strategy card 在 worker 末尾执行，未完全拆成显式 TaskStep。
-
-## 验收标准
-
-后续任意重要 report / strategy / dashboard 指标，都应能回答：
-
-- 这个结论来自哪个 `run_id`？
-- 用了哪个 `snapshot_id`？
-- 原始数据 `source_refs` 是什么？
-- 中间和最终 `artifact_refs` 在哪里？
-- 是否包含 mock / fallback / stale / manual_required？
+- [数据模型与存储](04_DATA_MODEL_AND_STORAGE.md)
+- [Trace Schema](TRACE_SCHEMA.md)
+- [报告系统](06_REPORT_SYSTEM.md)

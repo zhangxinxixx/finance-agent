@@ -364,7 +364,14 @@ def _render_report_markdown(
 
 
 def _extract_anchor_text(html: str, start: int) -> str | None:
-    snippet = html[start:start + 1200]
+    snippet = _category_item_snippet(html, start)
+    match = re.search(
+        r'class="jin10-news-list-item-title"[^>]*>(?P<title>.*?)</p>',
+        snippet,
+        flags=re.DOTALL,
+    )
+    if match:
+        return _clean_text(re.sub(r"<[^>]+>", " ", match.group("title")))
     match = re.search(r">([^<]{6,200})</a>", snippet)
     if not match:
         return None
@@ -372,14 +379,34 @@ def _extract_anchor_text(html: str, start: int) -> str | None:
 
 
 def _extract_time_nearby(html: str, start: int) -> str | None:
-    snippet = html[start:start + 600]
+    snippet = _category_item_snippet(html, start)
+    match = re.search(
+        r'class="jin10-news-list-item-display_datetime"[^>]*>.*?<span>(?P<time>[^<]+)</span>\s*</span>',
+        snippet,
+        flags=re.DOTALL,
+    )
+    if match:
+        return _clean_text(match.group("time"))
     return _match_group(snippet, r"(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)")
 
 
 def _extract_summary_nearby(html: str, start: int) -> str | None:
-    snippet = html[start:start + 1200]
+    snippet = _category_item_snippet(html, start)
+    match = re.search(
+        r'class="jin10-news-list-item-introduction"[^>]*>(?P<summary>.*?)</div>',
+        snippet,
+        flags=re.DOTALL,
+    )
+    if match:
+        return _clean_text(re.sub(r"<[^>]+>", " ", match.group("summary")))
     match = re.search(r"<p[^>]*>([^<]{12,300})</p>", snippet)
     return _clean_text(match.group(1)) if match else None
+
+
+def _category_item_snippet(html: str, start: int) -> str:
+    end_match = re.search(r'<div\s+data-id="\d+"', html[start + 1 :])
+    end = start + 1 + end_match.start() if end_match else min(len(html), start + 12_000)
+    return html[start:end]
 
 
 def _extract_report_body(html: str) -> str:

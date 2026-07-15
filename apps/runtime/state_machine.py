@@ -90,8 +90,10 @@ def map_dagster_status_to_task_status(status: str | None) -> str:
         return TaskStatus.running.value
     if value == "SUCCESS":
         return TaskStatus.success.value
-    if value in {"FAILURE", "CANCELED", "CANCELLED"}:
+    if value == "FAILURE":
         return TaskStatus.failed.value
+    if value in {"CANCELED", "CANCELLED"}:
+        return TaskStatus.cancelled.value
     return TaskStatus.pending.value
 
 
@@ -115,12 +117,12 @@ def derive_task_run_status(
 
     if failed:
         return TaskStatus.partial_success if success_like or blocked else TaskStatus.failed
+    if blocked == len(statuses):
+        return TaskStatus.blocked
     if has_degraded_signal:
         return TaskStatus.degraded
     if has_partial_signal or (success_like and blocked):
         return TaskStatus.partial_success
-    if blocked == len(statuses):
-        return TaskStatus.blocked
     if success_like:
         return TaskStatus.success
     return TaskStatus.pending

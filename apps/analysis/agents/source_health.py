@@ -57,21 +57,23 @@ SOURCE_REQUIREMENTS: dict[str, dict[str, Any]] = {
         "label": "2Y Treasury",
         "aliases": {"treasury_2y", "DGS2", "us2y"},
         "mainlines": ["fed_policy_path", "real_rates_usd"],
-        "allowed_staleness_seconds": 60 * 60 * 24,
+        # Daily US market series can legitimately remain on Friday's value
+        # through the following US session / publication window.
+        "allowed_staleness_seconds": 60 * 60 * 24 * 4,
     },
     "treasury_10y": {
         "priority": "P0",
         "label": "10Y Treasury",
         "aliases": {"treasury_10y", "US10Y", "DGS10", "us10y"},
         "mainlines": ["real_rates_usd"],
-        "allowed_staleness_seconds": 60 * 60 * 24,
+        "allowed_staleness_seconds": 60 * 60 * 24 * 4,
     },
     "tips_10y": {
         "priority": "P0",
         "label": "10Y TIPS real yield",
         "aliases": {"tips_10y", "REAL_10Y", "DFII10", "real_rates"},
         "mainlines": ["real_rates_usd"],
-        "allowed_staleness_seconds": 60 * 60 * 24,
+        "allowed_staleness_seconds": 60 * 60 * 24 * 4,
     },
     "fed_macro_events": {
         "priority": "P0",
@@ -106,7 +108,7 @@ SOURCE_REQUIREMENTS: dict[str, dict[str, Any]] = {
         "label": "breakeven inflation",
         "aliases": {"breakeven_inflation", "BREAKEVEN_10Y", "T10YIE", "inflation_expectations"},
         "mainlines": ["real_rates_usd", "oil_prices"],
-        "allowed_staleness_seconds": 60 * 60 * 24,
+        "allowed_staleness_seconds": 60 * 60 * 24 * 4,
     },
     "fedwatch_ois": {
         "priority": "P1",
@@ -336,10 +338,18 @@ def build_gold_v3_source_health(
     )
 
     warnings = [f"Mainline-scoped P0 source missing: {source_id}" for source_id in p0_missing]
-    warnings.extend(f"Mainline-scoped P0 source stale: {source_id}" for source_id in stale_sources if source_id in P0_SOURCE_IDS)
+    warnings.extend(
+        f"Mainline-scoped P0 source stale: {source_id}"
+        for source_id in stale_sources
+        if source_id in P0_SOURCE_IDS
+    )
     warnings.extend(f"P1 source missing: {source_id}" for source_id in p1_missing)
     warnings.extend(f"P2 source missing: {source_id}" for source_id in p2_missing)
-    warnings.extend(f"Non-P0 source stale: {source_id}" for source_id in stale_sources if source_id not in P0_SOURCE_IDS)
+    warnings.extend(
+        f"Non-P0 source stale: {source_id}"
+        for source_id in stale_sources
+        if source_id not in P0_SOURCE_IDS
+    )
 
     if blocking_reasons:
         overall_status = "blocked"
@@ -364,6 +374,171 @@ def build_gold_v3_source_health(
         degraded_mainlines=degraded_mainlines,
         blocking_reasons=blocking_reasons,
         warnings=warnings,
+    )
+
+
+def source_statuses_from_analysis_snapshot(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Derive canonical source-health rows from a completed unified snapshot.
+
+    The news branch builds an early Gold overview while the macro, technical,
+    and CME branches are still running.  Final quality gating must therefore
+    use the evidence present in the completed snapshot instead of reusing that
+    preliminary branch-local source-health card.
+    """
+
+    snapshot_time = str(snapshot.get("snapshot_time") or "")
+    refs = _snapshot_source_refs(snapshot)
+    rows: list[dict[str, Any]] = []
+
+    def add(
+        source_key: str,
+        *,
+        updated_at: str | None,
+        source_ref: dict[str, Any] | None,
+    ) -> None:
+        if not updated_at or source_ref is None:
+            return
+        rows.append(
+            {
+                "source_key": source_key,
+                "status": "available",
+                "latest_health_at": updated_at,
+                "source_refs": [{"source_ref": _snapshot_ref_value(source_ref, fallback=source_key)}],
+            }
+        )
+
+    technical = _available_section_data(snapshot, "technical")
+    technical_ref = _find_snapshot_ref(
+        refs,
+        lambda ref: str(ref.get("symbol") or "").upper() == "XAUUSD"
+        or str(ref.get("method") or "").upper() in {"GET_QUOTE:XAUUSD", "GET_KLINE:XAUUSD"},
+    )
+    if technical and technical.get("price") not in {None, ""}:
+        quote_time = None
+        if technical_ref and isinstance(technical_ref.get("notes"), dict):
+            quote_time = technical_ref["notes"].get("quote_time")
+        add(
+            "xauusd_price",
+            updated_at=str(quote_time or snapshot_time),
+            source_ref=technical_ref,
+        )
+        add(
+            "technical_levels",
+            updated_at=str(quote_time or snapshot_time),
+            source_ref=technical_ref,
+        )
+
+    macro = _available_section_data(snapshot, "macro")
+    indicators = macro.get("indicators") if isinstance(macro.get("indicators"), dict) else {}
+    indicator_sources = {
+        "dxy": ("DXY", ("DXY",)),
+        "treasury_2y": ("US02Y", ("DGS2", "US02Y")),
+        "treasury_10y": ("US10Y", ("DGS10", "US10Y")),
+        "tips_10y": ("REAL_10Y", ("DFII10", "REAL_10Y")),
+        "breakeven_inflation": ("BREAKEVEN_10Y", ("T10YIE", "BREAKEVEN_10Y")),
+    }
+    for source_key, (indicator_key, symbols) in indicator_sources.items():
+        indicator = indicators.get(indicator_key)
+        if not isinstance(indicator, dict) or indicator.get("value") in {None, ""}:
+            continue
+        symbol_set = {symbol.upper() for symbol in symbols}
+        ref = _find_snapshot_ref(
+            refs,
+            lambda item, symbol_set=symbol_set: str(item.get("symbol") or "").upper() in symbol_set,
+        )
+        add(source_key, updated_at=str(indicator.get("date") or snapshot_time), source_ref=ref)
+
+    fed_ref = _find_snapshot_ref(
+        refs,
+        lambda ref: (
+            (str(ref.get("source") or "").lower() == "fed_rss" and _snapshot_ref_is_ready(ref))
+            or str(ref.get("method") or "").lower() == "list_calendar"
+        ),
+    )
+    add("fed_macro_events", updated_at=snapshot_time, source_ref=fed_ref)
+
+    oil_ref = _find_snapshot_ref(
+        refs,
+        lambda ref: str(ref.get("method") or "").upper() == "GET_QUOTE:USOIL",
+    )
+    add("brent_wti", updated_at=snapshot_time, source_ref=oil_ref)
+
+    geopolitical_ref = _find_snapshot_ref(
+        refs,
+        lambda ref: _snapshot_ref_is_ready(ref)
+        and str(ref.get("source") or "").lower() in {"reuters_public_news", "google_news_rss"}
+        and str(ref.get("query_group") or "").lower() in {"middle_east", "middle_east_hormuz"},
+    )
+    add("geopolitical_news", updated_at=snapshot_time, source_ref=geopolitical_ref)
+
+    positioning = _available_section_data(snapshot, "positioning")
+    cot_ref = _find_snapshot_ref(refs, lambda ref: str(ref.get("source") or "").lower() == "cftc")
+    if positioning:
+        add("comex_cot", updated_at=str(positioning.get("as_of") or snapshot_time), source_ref=cot_ref)
+
+    options = _available_section_data(snapshot, "options")
+    cme_ref = _find_snapshot_ref(
+        refs,
+        lambda ref: str(ref.get("source") or "").lower() == "cme_daily_bulletin",
+    )
+    if options:
+        cme_updated_at = cme_ref.get("report_date") if cme_ref else None
+        if not cme_updated_at:
+            cme_updated_at = options.get("generated_at")
+        add("cme_options", updated_at=str(cme_updated_at or snapshot_time), source_ref=cme_ref)
+
+    eia_ref = _find_snapshot_ref(
+        refs,
+        lambda ref: str(ref.get("source") or "").lower() == "eia_energy" and _snapshot_ref_is_ready(ref),
+    )
+    add("eia_inventory", updated_at=snapshot_time, source_ref=eia_ref)
+
+    usdcnh_ref = _find_snapshot_ref(
+        refs,
+        lambda ref: str(ref.get("method") or "").upper() == "GET_QUOTE:USDCNH",
+    )
+    add("usdcnh", updated_at=snapshot_time, source_ref=usdcnh_ref)
+    return rows
+
+
+def _available_section_data(snapshot: dict[str, Any], section_name: str) -> dict[str, Any]:
+    section = snapshot.get(section_name)
+    if not isinstance(section, dict) or str(section.get("status") or "").lower() != "available":
+        return {}
+    return section.get("data") if isinstance(section.get("data"), dict) else {}
+
+
+def _snapshot_source_refs(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    refs = [dict(ref) for ref in snapshot.get("source_refs") or [] if isinstance(ref, dict)]
+    for section_name in ("macro", "technical", "options", "positioning", "news"):
+        data = _available_section_data(snapshot, section_name)
+        nested = data.get("source_refs")
+        if isinstance(nested, dict):
+            refs.extend(dict(ref) for ref in nested.values() if isinstance(ref, dict))
+        elif isinstance(nested, list):
+            refs.extend(dict(ref) for ref in nested if isinstance(ref, dict))
+    return refs
+
+
+def _find_snapshot_ref(
+    refs: list[dict[str, Any]],
+    predicate: Any,
+) -> dict[str, Any] | None:
+    return next((ref for ref in refs if predicate(ref) and _snapshot_ref_is_ready(ref)), None)
+
+
+def _snapshot_ref_is_ready(ref: dict[str, Any]) -> bool:
+    status = str(ref.get("status") or "available").strip().lower()
+    return status not in {"failed", "error", "unavailable", "network_blocked", "rate_limited"}
+
+
+def _snapshot_ref_value(ref: dict[str, Any], *, fallback: str) -> str:
+    return str(
+        ref.get("source_ref")
+        or ref.get("raw_path")
+        or ref.get("parsed_path")
+        or ref.get("source_url")
+        or fallback
     )
 
 
@@ -475,6 +650,11 @@ def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
     candidate = value.replace("Z", "+00:00")
+    # A date-only observation represents that reporting day, not midnight at
+    # its start.  Using end-of-day avoids falsely aging Friday daily data by
+    # almost an extra 24 hours on the following session.
+    if len(candidate) == 10:
+        candidate = f"{candidate}T23:59:59+00:00"
     try:
         parsed = datetime.fromisoformat(candidate)
     except ValueError:

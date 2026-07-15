@@ -11,9 +11,10 @@ export function shortId(value: string | undefined): string {
 export function reportFamilyLabel(value: string | undefined): string {
   if (!value) return "-";
   if (value === "macro_event_followup_supplement") return "宏观事件补充分析";
-  if (value === "jin10_weekly_visual") return "Jin10 周报";
-  if (value === "jin10_daily_visual") return "Jin10 日报";
-  if (value === "jin10_market_observation_report") return "Jin10 市场观察";
+  if (value === "weekly_context_revision_supplement") return "周报上下文修订";
+  if (value === "jin10_weekly_visual") return "周报";
+  if (value === "jin10_daily_visual") return "日报";
+  if (value === "jin10_market_observation_report") return "市场观察";
   return value;
 }
 
@@ -21,8 +22,8 @@ export function reportTitleLabel(value: string | undefined): string {
   if (!value) return "-";
   const normalized = value.trim().toLowerCase();
   if (normalized.includes("宏观事件跟进补充")) return "宏观事件补充分析";
-  if (normalized === "jin10 daily report") return "Jin10 日报";
-  if (normalized === "jin10 weekly report") return "Jin10 周报";
+  if (normalized === "jin10 daily report") return "日报";
+  if (normalized === "jin10 weekly report") return "周报";
   if (normalized === "daily report") return "日报";
   if (normalized === "weekly report") return "周报";
   return value;

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -28,6 +29,7 @@ from apps.api.data_service import (
     list_unified_dates,
 )
 from apps.api.main import app, api_strategy_card_detail, api_strategy_cards_latest
+from apps.api.services.report_service import get_jin10_agent_analysis_latest
 from apps.worker.pipelines.macro_event_followup import generate_macro_event_followup
 from database.models.analysis import ensure_analysis_tables
 from database.queries.analysis import upsert_final_analysis_result
@@ -39,6 +41,13 @@ client = TestClient(app)
 _PROJECT_ROOT_PATCH = "apps.api.data_service._PROJECT_ROOT"
 _RS_PROJECT_ROOT_PATCH = "apps.api.services.report_service._PROJECT_ROOT"
 _DB_SESSION_PATCH = "apps.api.data_service._try_db_session"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_report_api_from_runtime_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Filesystem report tests must not consume the developer database."""
+
+    monkeypatch.setattr(_DB_SESSION_PATCH, lambda: None)
 
 
 # ── helpers ──
@@ -64,6 +73,68 @@ def _make_report_session():
     ensure_analysis_tables(engine)
     ensure_report_tables(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
+
+
+def _weekly_context_revision_payload(*, publish_allowed: bool = False) -> dict:
+    quality_status = "accepted" if publish_allowed else "needs_review"
+    return {
+        "report_type": "weekly_context_revision",
+        "schema_version": "1.0.0",
+        "asset": "XAUUSD",
+        "trade_date": "2026-07-19",
+        "run_id": "weekly-revision-run",
+        "context_as_of": "2026-07-19T11:14:10+00:00",
+        "anchor": {
+            "article_id": "224965",
+            "report_date": "2026-07-18",
+            "run_id": "224965",
+            "title": "黄金投资者周报",
+            "baseline_quality_status": "accepted" if publish_allowed else "needs_review",
+            "baseline_artifact_refs": [{"path": "outputs/jin10/2026-07-18/224965/agent_analysis_report.json"}],
+        },
+        "input_snapshot_ids": {"weekly_baseline": "outputs/jin10/2026-07-18/224965/agent_analysis_report.json"},
+        "freshness": {"baseline": {"status": "available", "as_of": "2026-07-18"}},
+        "baseline_claims": [{"claim_id": "overall_thesis", "claim": "底部逐步夯实"}],
+        "new_evidence": [],
+        "claim_revisions": [
+            {
+                "claim_id": "overall_thesis",
+                "original_claim": "底部逐步夯实",
+                "action": "weaken",
+                "reason": "价格和利率确认尚未完成。",
+                "evidence_refs": ["price", "rates"],
+                "confidence_before": "low" if not publish_allowed else "medium",
+                "confidence_after": "low" if not publish_allowed else "medium",
+            }
+        ],
+        "executive_summary": "价格和利率确认尚未完成。",
+        "confirmation_matrix": {
+            "price": {"status": "observed"},
+            "rates": {"status": "confirmed"},
+            "options": {"status": "confirmed"},
+        },
+        "positioning_check": {"status": "confirmed", "as_of": "2026-07-14"},
+        "dominant_transmission_chain": {"status": "observed"},
+        "scenario_updates": [],
+        "watch_items": [],
+        "revision_risk": {
+            "level": "monitor" if publish_allowed else "needs_review",
+            "reason": "价格和利率确认尚未完成。",
+            "quality_flags": [] if publish_allowed else ["baseline_needs_review"],
+        },
+        "quality_status": quality_status,
+        "publication_status": "accepted" if publish_allowed else "observe",
+        "publish_allowed": publish_allowed,
+        "analysis_provenance": {
+            "source": "deterministic_fallback",
+            "model": None,
+            "provider": None,
+            "reasoning_effort": None,
+            "prompt_version": None,
+            "llm_status": "skipped",
+        },
+        "source_refs": [],
+    }
 
 
 # ── _latest_asset_date_run ──
@@ -658,6 +729,32 @@ def test_list_options_report_dates_includes_new_cme_output(tmp_path: Path):
     assert dates == ["2026-05-19", "2026-05-18", "2026-05-07", "2026-05-05"]
 
 
+def test_snapshot_options_use_nested_trade_date_in_listing_and_lookup(tmp_path: Path):
+    _make_tree(tmp_path, {
+        "storage/features/snapshots/XAUUSD/2026-07-16/run-replay/premarket_snapshot.json": json.dumps({
+            "trade_date": "2026-07-16",
+            "options": {
+                "status": "available",
+                "data": {
+                    "trade_date": "2026-07-15",
+                    "data_source": {"product": "OG", "status": "PRELIM"},
+                },
+            },
+        }),
+    })
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        dates = list_options_report_dates()
+        options = get_options_snapshot("2026-07-15")
+        wrong_date_options = get_options_snapshot("2026-07-16")
+
+    assert dates == ["2026-07-15"]
+    assert options is not None
+    assert options["trade_date"] == "2026-07-15"
+    assert options["run_id"] == "run-replay"
+    assert wrong_date_options is None
+
+
 def test_get_options_visual_report_html_falls_back_to_markdown(tmp_path: Path):
     _make_tree(tmp_path, {
         "storage/outputs/cme/2026-05-19/run-new/options_analysis.md": "# CME\n\nvisual fallback",
@@ -682,6 +779,14 @@ def test_get_options_visual_report_html_latest_falls_back_when_html_missing(tmp_
     assert data["trade_date"] == "2026-05-19"
     assert data["run_id"] == "run-new"
     assert "latest visual fallback" in data["content"]
+
+
+def test_strategy_card_observe_wait_quality_is_partial_not_available() -> None:
+    from apps.api.services.report_service import _strategy_card_status
+
+    assert _strategy_card_status({"data_quality": ["no_strong_conclusion", "observe_wait"]}) == "partial"
+    assert _strategy_card_status({"scenario_summary": "Observe and wait (blocked)."}) == "partial"
+    assert _strategy_card_status({"status": "available", "data_quality": ["observe_wait"]}) == "available"
 
 
 def test_list_reports_index_includes_visual_report_runs_without_html(tmp_path: Path):
@@ -797,6 +902,28 @@ def test_get_jin10_report_bundle_latest_prefers_agent_analysis(tmp_path: Path):
     assert data["views"]["raw_article"]["asset_base_url"] == "/api/jin10/report-bundle/2026-05-21/219824/asset/"
 
 
+def test_get_jin10_agent_analysis_latest_requires_accepted_daily_report(tmp_path: Path):
+    _make_tree(tmp_path, {
+        "storage/outputs/jin10/2026-05-21/219824/agent_analysis_report.json": json.dumps({
+            "article_id": "219824",
+            "quality_audit": {"status": "accepted", "reasons": []},
+            "key_levels": [{"value": "3944.71美元"}],
+        }, ensure_ascii=False),
+        "storage/outputs/jin10/2026-05-21/219824/daily_analysis.json": json.dumps({
+            "article_id": "219824",
+            "family": "jin10_daily_visual",
+        }, ensure_ascii=False),
+    })
+
+    with mock.patch(_RS_PROJECT_ROOT_PATCH, tmp_path):
+        data = get_jin10_agent_analysis_latest()
+
+    assert data is not None
+    assert data["trade_date"] == "2026-05-21"
+    assert data["run_id"] == "219824"
+    assert data["key_levels"][0]["value"] == "3944.71美元"
+
+
 def test_get_jin10_report_bundle_keeps_missing_views_explicit(tmp_path: Path):
     _make_tree(tmp_path, {
         "storage/outputs/jin10/2026-05-21/219824/daily_analysis.html": "<html><body>daily</body></html>",
@@ -842,7 +969,7 @@ def test_get_jin10_report_bundle_exposes_quality_audit(tmp_path: Path):
     assert data["quality_audit"]["reasons"][0]["message"] == "no stable evidence extracted"
 
 
-def test_list_reports_index_marks_rejected_jin10_report_degraded(tmp_path: Path):
+def test_list_reports_index_hides_rejected_jin10_report(tmp_path: Path):
     _make_tree(tmp_path, {
         "storage/outputs/jin10/2026-06-12/221592/daily_analysis.html": "<html><body>daily</body></html>",
         "storage/outputs/jin10/2026-06-12/221592/daily_analysis.json": json.dumps(
@@ -867,11 +994,7 @@ def test_list_reports_index_marks_rejected_jin10_report_degraded(tmp_path: Path)
     ):
         index = list_reports_index()
 
-    [item] = [report for report in index["reports"] if report["type"] == "jin10_daily_report"]
-    assert item["trade_date"] == "2026-06-12"
-    assert item["status"] == "degraded"
-    assert item["quality_audit"]["status"] == "rejected"
-    assert item["quality_audit"]["reason_codes"] == ["evidence_insufficient"]
+    assert [report for report in index["reports"] if report["type"] == "jin10_daily_report"] == []
 
 
 def test_list_reports_index_different_dates(tmp_path: Path):
@@ -1083,6 +1206,31 @@ def test_api_reports_index_exposes_macro_event_followup_as_supplemental_report(t
     assert item["report_id"] == "macro_event_followup:2026-05-17:run-followup"
     assert item["anchor_trade_date"] == "2026-05-16"
     assert item["summary"] == "Supplement keeps formal view intact."
+
+
+def test_api_reports_index_exposes_weekly_context_revision_as_observe_only_supplement(tmp_path: Path):
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/weekly_context_revision/XAUUSD/2026-07-19/weekly-revision-run/source.md": "# source",
+            "storage/outputs/weekly_context_revision/XAUUSD/2026-07-19/weekly-revision-run/analysis.md": "# analysis",
+            "storage/outputs/weekly_context_revision/XAUUSD/2026-07-19/weekly-revision-run/report_structured.json": json.dumps(
+                _weekly_context_revision_payload()
+            ),
+        },
+    )
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        resp = client.get("/api/reports/index")
+
+    assert resp.status_code == 200
+    [item] = [report for report in resp.json()["reports"] if report["type"] == "weekly_context_revision"]
+    assert item["family"] == "weekly_context_revision_supplement"
+    assert item["report_id"] == "weekly_context_revision:2026-07-19:weekly-revision-run"
+    assert item["anchor_trade_date"] == "2026-07-18"
+    assert item["anchor_article_id"] == "224965"
+    assert item["publication_status"] == "observe"
+    assert item["publish_allowed"] is False
 
 
 def test_api_reports_index_reads_generated_macro_event_followup_artifacts(tmp_path: Path):

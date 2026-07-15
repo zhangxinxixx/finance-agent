@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 from database.models.analysis import AnalysisBase
+from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
 _TRADE_DATE = "2026-05-14"
@@ -19,7 +20,13 @@ _TRADE_DATE = "2026-05-14"
 @pytest.fixture(autouse=True)
 def _isolate_source_gating():
     """Keep composite analysis DB integration tests deterministic unless they opt into source gating explicitly."""
-    with patch("apps.api.services.source_service.get_data_source_status_index", return_value={}):
+    with (
+        patch("apps.api.services.source_service.get_data_source_status_index", return_value={}),
+        patch(
+            "apps.worker.runner._evaluate_premarket_readiness",
+            return_value={"decision": "allow", "reason_code": None, "source_ref": "test:readiness"},
+        ),
+    ):
         yield
 
 
@@ -39,6 +46,18 @@ def _make_task_with_steps(db, step_names: list[str]) -> TaskRun:
         db.add(TaskStep(task_run_id=task.id, name=name, status=StepStatus.pending))
     db.commit()
     return task
+
+
+def _quality_gate_decision(action: QualityGateAction) -> QualityGateDecision:
+    return QualityGateDecision(
+        action=action,
+        review_status="pass" if action is QualityGateAction.PASS else "blocked",
+        publish_allowed=action is QualityGateAction.PASS,
+        findings=[],
+        source_ref_count=1,
+        evidence_item_count=1,
+        max_confidence=0.68,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -93,7 +112,13 @@ def test_db_sink_persists_analysis_snapshot(tmp_path: Path) -> None:
             }
         return {"step": step_name, "status": "success"}
 
-    with patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step):
+    with (
+        patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch(
+            "apps.worker.runner.evaluate_quality_gate",
+            return_value=_quality_gate_decision(QualityGateAction.PASS),
+        ),
+    ):
         from apps.worker.runner import run_premarket
 
         result = run_premarket(db, task.id, storage_root=tmp_path)
@@ -229,7 +254,13 @@ def test_db_sink_persists_final_analysis_result(tmp_path: Path) -> None:
             }
         return {"step": step_name, "status": "success"}
 
-    with patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step):
+    with (
+        patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch(
+            "apps.worker.runner.evaluate_quality_gate",
+            return_value=_quality_gate_decision(QualityGateAction.PASS),
+        ),
+    ):
         from apps.worker.runner import run_premarket
 
         result = run_premarket(db, task.id, storage_root=tmp_path)
@@ -250,10 +281,12 @@ def test_db_sink_persists_final_analysis_result(tmp_path: Path) -> None:
     assert fr.strategy_card_json_path is not None, "strategy_card_json_path must be set"
     assert fr.strategy_card_md_path is not None, "strategy_card_md_path must be set"
     assert fr.run_summaries["gold_runtime_summary"]["run_mode"] == "premarket_full_run"
-    assert fr.run_summaries["gold_runtime_summary"]["runtime_contract_only"] is True
-    assert fr.run_summaries["gold_runtime_summary"]["artifact_execution_enabled"] is False
-    assert fr.run_summaries["gold_runtime_summary"]["pipeline_materialized_outputs"] is True
-    assert fr.run_summaries["gold_runtime_summary"]["executed_agents"] == []
+    assert fr.run_summaries["gold_runtime_summary"]["runtime_contract_only"] is False
+    assert fr.run_summaries["gold_runtime_summary"]["artifact_execution_enabled"] is True
+    assert fr.run_summaries["gold_runtime_summary"]["pipeline_materialized_outputs"] is bool(
+        fr.run_summaries["gold_runtime_summary"]["accepted_outputs"]
+    )
+    assert fr.run_summaries["gold_runtime_summary"]["executed_agents"] == ["report_render_agent"]
     assert "quality_gate_status" in fr.run_summaries["gold_runtime_summary"]
 
     from apps.api.services.task_service import get_task_run_response
@@ -268,6 +301,49 @@ def test_db_sink_persists_final_analysis_result(tmp_path: Path) -> None:
         "needs_review",
         "blocked",
     }
+
+
+def test_db_sink_does_not_persist_observation_as_final_analysis_result(tmp_path: Path) -> None:
+    from database.models.analysis import FinalAnalysisResult as DBFinalResult
+    from database.models.execution import RunArtifact, ensure_execution_tables
+
+    db = _make_db_session(tmp_path)
+    ensure_execution_tables(db)
+    task = _make_task_with_steps(db, ["macro_collect", "macro_feature", "report_render"])
+
+    def mock_macro_step(step_name, state, **kwargs):
+        if step_name == "report_render":
+            state.snapshot_dict = {
+                "as_of": _TRADE_DATE,
+                "indicators": {"DGS10": {"value": 4.42, "unit": "percent"}},
+                "source_refs": [{"symbol": "DGS10", "source": "fred"}],
+            }
+        return {"step": step_name, "status": "success"}
+
+    with (
+        patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch(
+            "apps.worker.runner.evaluate_quality_gate",
+            return_value=_quality_gate_decision(QualityGateAction.BLOCK_PUBLISH),
+        ),
+    ):
+        from apps.worker.runner import run_premarket
+
+        result = run_premarket(db, task.id, storage_root=tmp_path)
+
+    assert result == TaskStatus.success
+    assert db.query(DBFinalResult).all() == []
+    assert not list((tmp_path / "outputs" / "final_report").rglob("final_report.md"))
+    assert list((tmp_path / "outputs" / "observation_report").rglob("final_report.md"))
+    assert list((tmp_path / "outputs" / "observation_strategy_card").rglob("strategy_card.json"))
+    observation_artifacts = [
+        item
+        for item in db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
+        if "publish_allowed" in (item.artifact_metadata or {})
+    ]
+    assert observation_artifacts
+    assert all(item.artifact_metadata["publish_allowed"] is False for item in observation_artifacts)
+    assert all(item.artifact_metadata["output_mode"] == "observe" for item in observation_artifacts)
 
 
 def test_db_sink_preserves_source_refs_and_snapshot_ids(tmp_path: Path) -> None:
@@ -311,6 +387,10 @@ def test_db_sink_preserves_source_refs_and_snapshot_ids(tmp_path: Path) -> None:
     with (
         patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_cme_step),
         patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch(
+            "apps.worker.runner.evaluate_quality_gate",
+            return_value=_quality_gate_decision(QualityGateAction.PASS),
+        ),
     ):
         from apps.worker.runner import run_premarket
 
@@ -382,6 +462,10 @@ def test_db_sink_files_still_written(tmp_path: Path) -> None:
     with (
         patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_cme_step),
         patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
+        patch(
+            "apps.worker.runner.evaluate_quality_gate",
+            return_value=_quality_gate_decision(QualityGateAction.PASS),
+        ),
     ):
         from apps.worker.runner import run_premarket
 
@@ -460,6 +544,10 @@ def test_db_sink_error_does_not_lose_file_artifacts(tmp_path: Path) -> None:
         patch("apps.worker.pipelines.cme.run_cme_step", side_effect=mock_cme_step),
         patch("apps.worker.pipelines.macro.run_macro_step", side_effect=mock_macro_step),
         patch("apps.worker.runner.upsert_analysis_snapshot", side_effect=mock_upsert_fail),
+        patch(
+            "apps.worker.runner.evaluate_quality_gate",
+            return_value=_quality_gate_decision(QualityGateAction.PASS),
+        ),
     ):
         from apps.worker.runner import run_premarket
 

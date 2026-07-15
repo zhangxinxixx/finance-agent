@@ -41,6 +41,7 @@ def _resolve_source_configured(source_key: str, access_method: str | None) -> bo
         "jin10_mcp_flash": "JIN10_MCP_KEY",
         "jin10_mcp_calendar": "JIN10_MCP_KEY",
         "jin10_mcp_market": "JIN10_MCP_KEY",
+        "twelvedata_xauusd": "TWELVE_DATA_API_KEY",
         "jin10_xnews_public": None,  # 公开页面
         "jin10_datacenter_reports": "JIN10_MCP_KEY",
         "jin10_svip_reports": None,  # 需要浏览器登录

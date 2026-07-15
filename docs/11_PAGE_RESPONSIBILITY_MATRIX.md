@@ -1,16 +1,25 @@
 # 页面职责矩阵
 
-| 页面 | 当前状态 | 目标职责 | 主要组件/文件 | API 依赖 | 可 mock | 验收标准 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Dashboard | 已实现 | 总览、关键判断、报告/策略/市场入口 | `DashboardPage.tsx`、`components/dashboard/*`、`adapters/api.ts` | `/api/dashboard/summary`、`/api/reports/dates`、`/api/strategy-card/latest` | 可 fallback，但需标注 | 页面加载、数据状态可见、跳转有效 |
-| Data Ingestion | 已实现/部分 fallback | 数据源健康、重试、手工上传登记 | `DataIngestionPage.tsx`、`components/data-ingestion/*`、`adapters/dataIngestion.ts` | `/api/data-sources/status`、`/api/data-status/summary`、`/api/ingestion/*` | 可先 mock | 状态区分 live/stale/fallback/mock/manual_required |
-| Event Flow | 已实现 | 快讯、日历、事件流 overview 和详情 | `EventFlowPage.tsx`、`EventFlowDetailPage.tsx`、`adapters/eventFlow.ts` | `/api/events/flow/overview` | 可空态 | 事件详情可定位 source |
-| Market Monitor | 已实现/部分 fallback | 市场概览、实时图、pricing chain、跨资产、事件 | `MarketMonitorPage.tsx`、`components/market-monitor/*`、`adapters/marketMonitor.ts` | `/api/market/monitor`、`/api/market/tickers`、`/api/macro/latest`、`/api/market/monitor/history` | 可 fallback | 明确行情状态和时间戳 |
-| CME Options | 已实现 | 期权概览、Gamma/GEX、墙位、skew/flow、scenario、trace | `CMEOptionsPage.tsx`、`components/cme-options/*`、`adapters/cmeOptions.ts` | `/api/options/snapshot`、`/api/options/dates` | 可 fallback | 不在前端计算核心期权指标 |
-| Reports | 已实现 | 报告索引、报告族筛选、进入详情 | `ReportsPage.tsx`、`adapters/reports.ts` | `/api/reports/index`、`/api/reports/dates`、Jin10/Final/Options APIs | 不建议伪造 | 每个 report 能进入 detail 或显示 unavailable |
-| Report Detail | 已实现 | 可视化、LLM 分析、原文、证据、输入、溯源、版本/复盘 | `ReportDetailPage.tsx`、`adapters/reports.ts` | `/api/reports/{report_id}/*`、`/api/source-trace/by-report/{report_id}` | 仅空态 | 三产物/溯源可见或显式缺失 |
-| Knowledge Base | 已实现 | 知识列表与详情 | `KnowledgeBasePage.tsx`、`adapters/knowledge.ts` | `/api/knowledge/items*` | 可空态 | 知识条目 source 和类型明确 |
-| Agent Tasks | 已实现 | Run 控制台、步骤、artifact、agent inspection | `AgentTasksPage.tsx`、`AgentTaskDetailPage.tsx`、`adapters/agentTasks.ts` | `/api/runs*`、`/api/reviews`、`/api/agent-analysis/inspect` | 可 mock 开发 | 单 run 可看步骤和 artifact |
-| Review Center | 已实现 | 人工复核队列和处理动作 | `ReviewCenterPage.tsx` | `/api/reviews*` | 不建议伪造 | action 后状态一致 |
-| Strategy Center | 已实现 | 策略卡列表/详情/资产选择 | `StrategyPage.tsx`、`adapters/strategy.ts` | `/api/strategy-cards*` | 可 fallback | 显示非自动交易定位和 source trace |
-| Settings | 已实现 | 配置中心、数据源开关、secret、Agent/Prompt governance | `SettingsPage.tsx`、`SettingsAuditPage.tsx`、`adapters/settings.ts`、`adapters/agentRegistry.ts` | `/api/settings*`、`/api/agents/*`、`/api/playbooks*` | 不建议伪造写操作 | 写操作有审计记录，secret 不明文回显 |
+> 代码基线：2026-07-21。
+
+| 页面 | 权威输入 | 页面可以做 | 页面不能做 |
+| --- | --- | --- | --- |
+| Dashboard | dashboard summary、reports、strategy | 汇总与跳转 | 用行情 freshness 推断分析 freshness |
+| Gold Mainlines | gold mainlines/runtime contract | 展示主线与证据 | 本地重算主线结论 |
+| Rates & Dollar | macro/market/mainline read models | 展示利率美元驱动 | 生成最终交易方向 |
+| Oil & Geopolitics | event/mainline read models | 展示地缘传导 | 把候选新闻当确认事实 |
+| Data Ingestion | data source status/health | 测试、重试、上传 | 隐藏 stale/failure/manual-required |
+| Event Flow | event/brief/report-input APIs | link、ignore、include、review | 绕过 action API 改状态 |
+| Feishu Monitor | Feishu/Jin10 read models | 监控与筛选 | 把登录失败显示为“无消息” |
+| Market Monitor | tickers/monitor/candles/macro | 图表和跨资产观察 | 在前端算策略或核心指标 |
+| CME Options | option snapshot/decision/report | 展示墙、decision、visual | 重算 Black-76 / GEX |
+| Reports | report index/detail/artifacts | 筛选、阅读、下钻 | 拼装新的报告结论 |
+| Knowledge | knowledge/playbook APIs | 展示版本与关联 | 混淆知识模板和当前运行状态 |
+| Scheduler | pipeline contract、runs、preflight | 展示 DAG、触发和状态 | 假定 trigger success 等于 pipeline success |
+| Processing Monitor | processing trace APIs | 按链路下钻 | 替代 source trace registry |
+| Review Center | review APIs | 批准、拒绝、重跑、fallback | 直接覆盖历史输出 |
+| Strategy | strategy/live/shadow APIs | accepted 策略与评估 | 把 observe-only 当正式策略 |
+| Settings | settings/agent/playbook APIs | 受控配置与治理 | 回显 secret、绕过审计 |
+| LLM Audit | LLM audit APIs | 查看模型调用证据 | 将审计记录当市场事实 |
+
+所有页面共同验收：路由可达、loading/error/empty 有区别、业务日期与更新时间可见、非 live 状态有明确标签、source/run/report ID 可下钻。

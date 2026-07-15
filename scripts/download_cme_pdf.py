@@ -9,7 +9,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from apps.collectors.cme.downloader import DEFAULT_SECTION_FILE, download_cme_pdf  # noqa: E402
+from apps.collectors.cme.downloader import (  # noqa: E402
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_RETRY_DELAY_SECONDS,
+    DEFAULT_SECTION_FILE,
+    download_cme_pdf,
+)
 
 
 def main() -> None:
@@ -17,6 +22,13 @@ def main() -> None:
     parser.add_argument("--section", default=DEFAULT_SECTION_FILE, help="Daily bulletin section PDF filename")
     parser.add_argument("--date", default="latest", help="YYYY-MM-DD or latest")
     parser.add_argument("--storage-root", default=str(PROJECT_ROOT), help="Project root / storage root")
+    parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS, help="Transient download attempts")
+    parser.add_argument(
+        "--retry-delay-seconds",
+        type=float,
+        default=DEFAULT_RETRY_DELAY_SECONDS,
+        help="Delay between transient download attempts",
+    )
     args = parser.parse_args()
 
     try:
@@ -24,6 +36,8 @@ def main() -> None:
             section_file=args.section,
             report_date=args.date,
             storage_root=Path(args.storage_root),
+            max_attempts=args.max_attempts,
+            retry_delay_seconds=args.retry_delay_seconds,
         )
     except Exception as exc:
         print(f"cme download failed: {exc}", file=sys.stderr)

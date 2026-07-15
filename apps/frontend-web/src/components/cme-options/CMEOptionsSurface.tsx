@@ -4,19 +4,21 @@ interface CMEOptionsSurfaceProps {
   title?: string;
   action?: ReactNode;
   children: ReactNode;
+  className?: string;
+  bodyClassName?: string;
   bodyStyle?: CSSProperties;
 }
 
-export function CMEOptionsSurface({ title, action, children, bodyStyle }: CMEOptionsSurfaceProps) {
+export function CMEOptionsSurface({ title, action, children, className = "", bodyClassName = "", bodyStyle }: CMEOptionsSurfaceProps) {
   return (
-    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", overflow: "hidden" }}>
+    <div className={`cme-options-surface ${className}`.trim()}>
       {(title || action) && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "var(--bg-panel)", borderBottom: "1px solid var(--border)" }}>
+        <div className="cme-options-surface-header">
           {title ? <span className="cme-options-surface-title">{title}</span> : null}
           {action}
         </div>
       )}
-      <div style={{ padding: 12, ...bodyStyle }}>{children}</div>
+      <div className={`cme-options-surface-body ${bodyClassName}`.trim()} style={bodyStyle}>{children}</div>
     </div>
   );
 }

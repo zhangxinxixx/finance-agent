@@ -22,7 +22,9 @@ DETAIL_FETCH_STEP = "detail_fetch"
 VIP_BROWSER_FALLBACK_STEP = "vip_browser_fallback"
 DAILY_ANALYSIS_STEP = "daily_analysis"
 PLAN_VERSION = "daily-analysis-followup-plan-v1"
-DEFAULT_JIN10_BROWSER_PROFILE = Path.home() / ".finance-agent" / "jin10_browser_profile"
+DEFAULT_JIN10_BROWSER_PROFILE = Path(
+    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
+).expanduser()
 VIP_BROWSER_FALLBACK_SOURCE_KEY = "jin10_vip_browser_fallback"
 VIP_FALLBACK_PARTIAL_SNAPSHOT_ERRORS = {
     "login_required",

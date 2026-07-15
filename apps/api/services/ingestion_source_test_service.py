@@ -13,6 +13,7 @@ from apps.api.schemas.common import ArtifactType, DataStatus
 from apps.api.schemas.data_source import DataSourceTestRequest, DataSourceTestResponse
 from apps.api.schemas.source_trace import ArtifactRef, SourceRef
 from apps.collectors.jin10.datacenter import DEFAULT_DATACENTER_SLUGS, fetch_datacenter_report
+from apps.collectors.jin10.etf_reports import ETF_REPORTS, fetch_jin10_etf_report
 from apps.collectors.jin10.mcp_client import Jin10MCPClient
 from apps.collectors.news.jin10_detail_fetcher import DEFAULT_JIN10_BROWSER_PROFILE
 from apps.api.services.jin10_web_flash_brief_service import get_jin10_web_flash_briefs_latest
@@ -31,6 +32,7 @@ _SUPPORTED_SOURCE_KEYS = {
     "jin10_mcp_market",
     "jin10_xnews_public",
     "jin10_datacenter_reports",
+    "jin10_minipro_etf_reports",
     "jin10_svip_reports",
 } | _WEB_FLASH_SOURCE_KEYS
 
@@ -124,7 +126,88 @@ def _run_probe(*, source_key: str, limit: int, run_id: str, slug: str | None = N
         return _probe_web_flash_artifact(source_key=source_key, limit=limit)
     if source_key == "jin10_datacenter_reports":
         return _probe_datacenter(run_id=run_id, slug=slug)
+    if source_key == "jin10_minipro_etf_reports":
+        return _probe_minipro_etf_reports(limit=limit)
     return _probe_svip_profile()
+
+
+def _probe_minipro_etf_reports(*, limit: int) -> _ProbeOutcome:
+    import httpx
+
+    retrieved_date = datetime.now(UTC).date().isoformat()
+    reports: list[dict[str, Any]] = []
+    errors: list[str] = []
+    with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+        for asset, config in ETF_REPORTS.items():
+            try:
+                reports.append(
+                    fetch_jin10_etf_report(
+                        client=client,
+                        retrieved_date=retrieved_date,
+                        asset=asset,
+                        config=config,
+                    )
+                )
+            except Exception as exc:
+                errors.append(f"{asset}: {type(exc).__name__}: {exc}")
+
+    preview: list[dict[str, Any]] = []
+    for envelope in reports:
+        payload = envelope.get("payload")
+        if not isinstance(payload, dict) or payload.get("status") != 200:
+            errors.append(f"{envelope.get('asset')}: upstream status is not 200")
+            continue
+        rows = payload.get("data")
+        usable_rows = [row for row in rows or [] if isinstance(row, dict)]
+        latest = max(usable_rows, key=lambda row: str(row.get("reported_on") or ""), default=None)
+        if latest is None:
+            errors.append(f"{envelope.get('asset')}: no usable rows")
+            continue
+        preview.append(
+            {
+                "asset": envelope.get("asset"),
+                "fund_name": envelope.get("fund_name"),
+                "reported_on": latest.get("reported_on"),
+                "holdings_tonnes": latest.get("trust"),
+                "change_tonnes": latest.get("change"),
+                "value_usd": latest.get("value"),
+            }
+        )
+
+    if len(preview) == len(ETF_REPORTS):
+        status = "ok"
+        data_status = DataStatus.live
+        reason_code = "ok"
+    elif preview:
+        status = "partial"
+        data_status = DataStatus.partial
+        reason_code = "etf_probe_partial"
+    else:
+        status = "unavailable"
+        data_status = DataStatus.unavailable
+        reason_code = "etf_probe_unavailable"
+    return _ProbeOutcome(
+        status=status,
+        data_status=data_status,
+        summary={
+            "report_count": len(preview),
+            "expected_report_count": len(ETF_REPORTS),
+            "sample_count": min(len(preview), limit),
+            "method": "jin10_minipro.etf_reports",
+            "reason_code": reason_code,
+            "errors": errors,
+        },
+        preview=preview[:limit],
+        raw_payload={
+            "source_key": "jin10_minipro_etf_reports",
+            "retrieved_date": retrieved_date,
+            "reports": reports,
+            "errors": errors,
+        },
+        source_type="structured",
+        error_message="; ".join(errors) if data_status == DataStatus.unavailable else None,
+        error_type=reason_code if data_status == DataStatus.unavailable else None,
+    )
 
 
 def _probe_mcp_flash(*, limit: int) -> _ProbeOutcome:
@@ -188,11 +271,34 @@ def _probe_mcp_market(*, limit: int) -> _ProbeOutcome:
         kline_payload = client.get_kline(_DEFAULT_MARKET_CODE, count=min(limit, 5))
     quote = quote_payload.get("data", quote_payload)
     klines = _extract_list(kline_payload, keys=("klines", "list", "data"))
+    quote_price = (quote.get("close") or quote.get("price")) if isinstance(quote, dict) else None
+    quote_available = quote_price is not None
+    kline_available = bool(klines)
+    missing_components = [
+        component
+        for component, available in (("quote", quote_available), ("kline", kline_available))
+        if not available
+    ]
+    if not missing_components:
+        status = "ok"
+        data_status = DataStatus.live
+        reason_code = "ok"
+        reason = None
+    elif quote_available or kline_available:
+        status = "partial"
+        data_status = DataStatus.partial
+        reason_code = "market_probe_partial"
+        reason = f"Missing market probe components: {', '.join(missing_components)}"
+    else:
+        status = "unavailable"
+        data_status = DataStatus.unavailable
+        reason_code = "market_probe_unavailable"
+        reason = "Neither quote nor kline data is available"
     preview = [
         {
             "kind": "quote",
             "code": _DEFAULT_MARKET_CODE,
-            "price": quote.get("close") or quote.get("price") if isinstance(quote, dict) else None,
+            "price": quote_price,
             "change": quote.get("ups_price") if isinstance(quote, dict) else None,
             "change_percent": quote.get("ups_percent") if isinstance(quote, dict) else None,
         }
@@ -207,17 +313,24 @@ def _probe_mcp_market(*, limit: int) -> _ProbeOutcome:
         for item in klines[:limit]
     )
     return _ProbeOutcome(
-        status="ok",
-        data_status=DataStatus.live,
+        status=status,
+        data_status=data_status,
         summary={
             "code": _DEFAULT_MARKET_CODE,
+            "quote_available": quote_available,
+            "kline_available": kline_available,
             "kline_count": len(klines),
             "sample_count": len(preview),
             "method": "mcp.get_quote+mcp.get_kline",
+            "reason_code": reason_code,
+            "reason": reason,
+            "missing_components": missing_components,
         },
         preview=preview,
         raw_payload={"quote": quote_payload, "kline": kline_payload},
         source_type="mcp",
+        error_message=reason if data_status == DataStatus.unavailable else None,
+        error_type=reason_code if data_status == DataStatus.unavailable else None,
     )
 
 

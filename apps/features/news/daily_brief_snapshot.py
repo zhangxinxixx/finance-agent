@@ -347,8 +347,10 @@ def _quality_flags(
         _trigger_source_confidence(trigger) in {"single_source", "unverified"} for trigger in triggers
     ):
         flags.append("single_source_verification_required")
-    if key_articles and not has_market_validation:
+    if not has_market_validation:
         flags.append("missing_market_validation")
+    if not key_articles and not has_market_validation:
+        flags.append("missing_key_articles")
     return flags
 
 

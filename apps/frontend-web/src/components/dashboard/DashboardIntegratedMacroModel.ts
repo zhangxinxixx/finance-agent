@@ -1,4 +1,4 @@
-import type { DashboardMetric, DashboardSummary, DashboardViewModel, SignalDirection, SourceTraceItem } from "@/types/dashboard";
+import type { DashboardMetric, DashboardQuickSupportLevel, DashboardSummary, DashboardViewModel, SignalDirection, SourceTraceItem } from "@/types/dashboard";
 import { translateText } from "./judgmentFormat";
 import { formatOptionalNumber, getWallBias, translateIntent } from "./CMEOptionsSummaryFormat";
 
@@ -21,6 +21,7 @@ export interface DashboardIntegratedMacroSummary {
   decisionSummary: string;
   riskNote: string;
   tradeImplication: string;
+  quickSupports: DashboardQuickSupportLevel[];
   macroLevels: {
     resistance: number[];
     support: number[];
@@ -44,6 +45,10 @@ export interface DashboardOptionsEvidenceSummary {
   callWall: string;
   putWall: string;
   sourceRefs: SourceTraceItem[];
+  analysisSummary: string | null;
+  upgradeCondition: string | null;
+  failureCondition: string | null;
+  revisionNote: string | null;
   usageNote: string;
 }
 
@@ -111,6 +116,11 @@ function uniqueItems(items: Array<string | null | undefined>, fallback: string):
   return values.length ? values : [fallback];
 }
 
+function firstReadModelItem(items: string[] | undefined, pattern: RegExp): string | null {
+  const item = items?.find((value) => pattern.test(value));
+  return item ? translateText(item).trim() || null : null;
+}
+
 function sourceDataCompleteness(sourceTrace: DashboardSummary["source_trace"]): DashboardIntegratedMacroSummary["dataCompleteness"] {
   const total = sourceTrace.length;
   const ok = sourceTrace.filter((trace) => trace.status === "ok").length;
@@ -175,8 +185,11 @@ export function buildIntegratedMacroSummary(
     metricState(summary.macro_liquidity.BANK_RESERVES, "银行准备金"),
   ].join("；");
   const wallBias = getWallBias(summary.cme_options.wall_score);
+  const readModelOptionsAlignment = readModel?.options_alignment
+    ? translateText(readModel.options_alignment).trim() || null
+    : null;
   const optionsAlignment =
-    cleanText(readModel?.options_alignment) ??
+    readModelOptionsAlignment ??
     `${translateIntent(summary.cme_options.intent)}，${wallBias.label}；仅作为价格结构约束与短线反应证据`;
   const invalidation = uniqueItems(
     [
@@ -203,7 +216,7 @@ export function buildIntegratedMacroSummary(
     cleanText(readModel?.reasoning) ??
     `${directionLabel(direction)}判断仍由${dominantDrivers.slice(0, 2).join("与")}主导。${dollarState}，${ratesState}；流动性侧${liquidityState}，当前更适合作为宏观背景强弱观察，不单独构成趋势信号。`;
   const optionsMemo =
-    cleanText(readModel?.options_alignment) ??
+    readModelOptionsAlignment ??
     `CME 期权结构显示${translateIntent(summary.cme_options.intent)}、${wallBias.label}，更适合作为短线价格吸附、墙位反应和结构约束证据，不应单独推导宏观方向。`;
   const riskNote = invalidation[0];
 
@@ -226,6 +239,7 @@ export function buildIntegratedMacroSummary(
     decisionSummary: decisionSummaryFor(direction),
     riskNote,
     tradeImplication: cleanText(readModel?.trade_implication) ?? tradeImplicationFor(direction),
+    quickSupports: readModel?.quick_supports ?? [],
     macroLevels: {
       resistance: summary.strategy.key_levels.resistance.length ? summary.strategy.key_levels.resistance : summary.conclusion.resistance_levels,
       support: summary.strategy.key_levels.support.length ? summary.strategy.key_levels.support : summary.conclusion.support_levels,
@@ -236,6 +250,7 @@ export function buildIntegratedMacroSummary(
 
 export function buildOptionsEvidenceSummary(summary: DashboardSummary): DashboardOptionsEvidenceSummary {
   const options = summary.cme_options;
+  const readModel = summary.integrated_macro ?? null;
   const confidence = Math.max(0, Math.min(1, options.confidence?.score ?? options.intent_score ?? 0));
   const callWall = strongestWall(options.upper_resistance_walls);
   const putWall = strongestWall(options.lower_support_walls);
@@ -243,6 +258,24 @@ export function buildOptionsEvidenceSummary(summary: DashboardSummary): Dashboar
     .filter((trace) => /cme|option|options|期权/i.test(`${trace.name} ${trace.source_ref}`))
     .slice(0, 3);
   const fallbackRefs = sourceRefs.length ? sourceRefs : summary.source_trace.slice(0, 2);
+  const analysisSummary = readModel?.options_alignment
+    ? translateText(readModel.options_alignment).trim() || null
+    : null;
+  const upgradeCondition = firstReadModelItem(
+    readModel?.trigger_upgrade,
+    /XAUUSD.*(?:站上|确认区|期权结构)|(?:站上|确认区).*XAUUSD/i,
+  );
+  const failureCondition = firstReadModelItem(
+    [...(readModel?.trigger_downgrade ?? []), ...(readModel?.invalidation ?? [])],
+    /XAUUSD.*(?:跌破|支撑)|(?:跌破|失效).*支撑|价格有效跌破/i,
+  );
+  const rawRevisionNote = firstReadModelItem(readModel?.risks, /CME.*PRELIM|PRELIM.*(?:墙位|修订|版本)/i)
+    ?? ((options.data_status || options.confidence?.data_status || "").toUpperCase().startsWith("PRELIM")
+      ? "CME 为最新 PRELIM 数据，可用于当前结构分析；后续版本可能调整墙位、Gamma Zero 与置信度。"
+      : null);
+  const revisionNote = analysisSummary && /PRELIM.*(?:修订|调整)|(?:修订|调整).*PRELIM/i.test(analysisSummary)
+    ? null
+    : rawRevisionNote;
 
   return {
     reportType: "CME 期权结构报告",
@@ -255,6 +288,10 @@ export function buildOptionsEvidenceSummary(summary: DashboardSummary): Dashboar
     callWall: formatOptionalNumber(callWall, 0),
     putWall: formatOptionalNumber(putWall, 0),
     sourceRefs: fallbackRefs,
+    analysisSummary,
+    upgradeCondition,
+    failureCondition,
+    revisionNote,
     usageNote: "用于观察短线价格吸附、墙位反应和结构风险，不单独作为黄金宏观方向判断。",
   };
 }

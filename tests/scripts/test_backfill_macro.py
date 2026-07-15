@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from apps.parsers.macro.models import CollectorResult
+from apps.parsers.macro.models import CollectorResult, MacroPoint
 import scripts.backfill_macro as backfill_macro
 
 
@@ -57,7 +57,7 @@ def test_backfill_macro_marks_fred_unavailable_without_fixture_fallback(tmp_path
         ),
     ):
         with patch.object(backfill_macro, "PROJECT_ROOT", tmp_path):
-            argv = ["backfill_macro.py", "--date", "2026-05-06", "--run-id", "run-a"]
+            argv = ["backfill_macro.py", "--date", "2026-05-06", "--run-id", "run-a", "--no-db"]
             with patch.object(sys, "argv", argv):
                 backfill_macro.main()
 
@@ -96,7 +96,7 @@ def test_backfill_macro_same_date_runs_keep_history(tmp_path: Path) -> None:
     ):
         with patch.object(backfill_macro, "PROJECT_ROOT", tmp_path):
             for run_id in ("run-a", "run-b"):
-                argv = ["backfill_macro.py", "--date", "2026-05-06", "--run-id", run_id]
+                argv = ["backfill_macro.py", "--date", "2026-05-06", "--run-id", run_id, "--no-db"]
                 with patch.object(sys, "argv", argv):
                     backfill_macro.main()
 
@@ -117,14 +117,14 @@ def test_backfill_macro_same_date_runs_keep_history(tmp_path: Path) -> None:
 @pytest.mark.parametrize("bad_date", ["../../escape", "2026/05/06", "not-a-date"])
 def test_backfill_macro_rejects_unsafe_dates(bad_date: str, tmp_path: Path) -> None:
     with patch.object(backfill_macro, "PROJECT_ROOT", tmp_path):
-        argv = ["backfill_macro.py", "--date", bad_date, "--run-id", "run-a"]
+        argv = ["backfill_macro.py", "--date", bad_date, "--run-id", "run-a", "--no-db"]
         with patch.object(sys, "argv", argv), pytest.raises(SystemExit):
             backfill_macro.main()
 
 
 def test_backfill_macro_rejects_unsafe_run_id(tmp_path: Path) -> None:
     with patch.object(backfill_macro, "PROJECT_ROOT", tmp_path):
-        argv = ["backfill_macro.py", "--date", "2026-05-06", "--run-id", ".."]
+        argv = ["backfill_macro.py", "--date", "2026-05-06", "--run-id", "..", "--no-db"]
         with patch.object(sys, "argv", argv), pytest.raises(ValueError):
             backfill_macro.main()
 
@@ -141,7 +141,7 @@ def test_backfill_macro_does_not_record_task_runs_without_flag(tmp_path: Path) -
         patch("scripts.backfill_macro.collect_dxy_series", return_value=collector_result),
     ):
         with patch.object(backfill_macro, "PROJECT_ROOT", tmp_path):
-            argv = ["backfill_macro.py", "--date", "2026-05-06", "--run-id", "run-a"]
+            argv = ["backfill_macro.py", "--date", "2026-05-06", "--run-id", "run-a", "--no-db"]
             with patch.object(sys, "argv", argv):
                 backfill_macro.main()
 
@@ -167,6 +167,7 @@ def test_backfill_macro_records_task_runs_when_flag_enabled(tmp_path: Path) -> N
                 "--run-id",
                 "run-a",
                 "--record-task-runs",
+                "--no-db",
             ]
             with patch.object(sys, "argv", argv):
                 backfill_macro.main()
@@ -182,3 +183,83 @@ def test_backfill_macro_records_task_runs_when_flag_enabled(tmp_path: Path) -> N
         "macro_feature",
         "report_render",
     ]
+
+
+def test_persist_to_database_writes_normalized_points_and_features(tmp_path: Path) -> None:
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.committed = False
+            self.rolled_back = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+    session = _FakeSession()
+    point = MacroPoint(
+        symbol="DGS10",
+        date="2026-05-06",
+        value=4.2,
+        source="fred",
+        source_url="https://example.test/fred",
+        retrieved_at="2026-05-06T00:00:00+00:00",
+        raw_path="raw/macro/fred/2026-05-06.json",
+    )
+
+    with (
+        patch.object(backfill_macro, "SessionLocal", return_value=session),
+        patch.object(backfill_macro, "ensure_analysis_tables") as ensure_tables,
+        patch.object(backfill_macro, "persist_macro_points", return_value=(1, 1)) as persist_points,
+        patch.object(backfill_macro, "persist_macro_feature_snapshots", return_value=2) as persist_features,
+    ):
+        result = backfill_macro._persist_to_database(
+            enabled=True,
+            storage_root=tmp_path / "storage",
+            all_points=[point],
+            source_refs=[{"symbol": "DGS10", "source": "fred", "raw_path": point.raw_path}],
+            run_id="run-a",
+            as_of="2026-05-06",
+            snapshot_payload={"unavailable_symbols": []},
+            conclusion_payload={},
+            snapshot_path=tmp_path / "snapshot.json",
+            conclusion_path=tmp_path / "conclusion.json",
+        )
+
+    ensure_tables.assert_called_once_with(session)
+    persist_points.assert_called_once()
+    persist_features.assert_called_once()
+    assert session.committed is True
+    assert session.rolled_back is False
+    assert result == {
+        "enabled": True,
+        "macro_observation_upserts": 1,
+        "raw_artifact_registry_upserts": 1,
+        "feature_snapshot_upserts": 2,
+    }
+
+
+def test_persist_to_database_skips_without_normalized_data(tmp_path: Path) -> None:
+    with patch.object(backfill_macro, "SessionLocal") as session_local:
+        result = backfill_macro._persist_to_database(
+            enabled=True,
+            storage_root=tmp_path / "storage",
+            all_points=[],
+            source_refs=[{"symbol": "DGS10", "source": "fred", "reason": "timeout"}],
+            run_id="run-a",
+            as_of="2026-05-06",
+            snapshot_payload={"unavailable_symbols": ["DGS10"]},
+            conclusion_payload={},
+            snapshot_path=tmp_path / "snapshot.json",
+            conclusion_path=tmp_path / "conclusion.json",
+        )
+
+    session_local.assert_not_called()
+    assert result["skipped"] == "no_normalized_data"

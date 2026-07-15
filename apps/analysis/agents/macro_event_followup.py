@@ -21,7 +21,7 @@ def build_macro_event_followup_prompt(snapshot: Mapping[str, Any]) -> str:
     )
 
 
-def invoke_macro_event_followup_llm(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+def invoke_macro_event_followup_llm(snapshot: Mapping[str, Any], *, audit_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from apps.llm.gateway import chat_sync
 
     if _should_skip_live_llm():
@@ -44,6 +44,12 @@ def invoke_macro_event_followup_llm(snapshot: Mapping[str, Any]) -> dict[str, An
         temperature=0.3,
         max_tokens=4096,
         max_retries=0,
+        audit_context={
+            "caller": "macro_event_followup.invoke_macro_event_followup_llm",
+            "trade_date": snapshot.get("trade_date"),
+            "input_payload": snapshot,
+            **dict(audit_context or {}),
+        },
     )
     return {
         "markdown": _parse_markdown(response.content),
@@ -53,6 +59,7 @@ def invoke_macro_event_followup_llm(snapshot: Mapping[str, Any]) -> dict[str, An
         "tokens": response.usage,
         "prompt_version": _PROMPT_VERSION,
         "skipped": False,
+        "audit_id": getattr(response, "audit_id", None),
     }
 
 

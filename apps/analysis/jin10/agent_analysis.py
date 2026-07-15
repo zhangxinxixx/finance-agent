@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from apps.analysis.jin10.agent_prompt_profiles import typed_report_prompt_spec
+from apps.analysis.jin10.daily_context import compact_context_for_prompt, compact_context_metadata
 from apps.analysis.jin10.multimodal import ImageLoader, build_multimodal_user_content
 from apps.documents.schemas import Jin10AgentAnalysisReport, Jin10DailyAnalysisReport, Jin10RawArticleReport
 
@@ -39,6 +40,29 @@ def build_agent_analysis_prompt(
     daily_report: dict[str, Any] | None = None,
     *,
     previous_daily_analysis: dict[str, Any] | None = None,
+    analysis_context: dict[str, Any] | None = None,
+    market_odds_evidence: dict[str, Any] | None = None,
+) -> str:
+    """Build the report-specific prompt plus the canonical JSON contract."""
+
+    body = _build_agent_analysis_prompt_body(
+        raw_report,
+        daily_report,
+        previous_daily_analysis=previous_daily_analysis,
+        analysis_context=analysis_context,
+        market_odds_evidence=market_odds_evidence,
+    )
+    profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
+    return f"{body.rstrip()}\n\n{_structured_output_contract(profile)}\n"
+
+
+def _build_agent_analysis_prompt_body(
+    raw_report: dict[str, Any],
+    daily_report: dict[str, Any] | None = None,
+    *,
+    previous_daily_analysis: dict[str, Any] | None = None,
+    analysis_context: dict[str, Any] | None = None,
+    market_odds_evidence: dict[str, Any] | None = None,
 ) -> str:
     """Build the future LLM prompt for Jin10 raw-report post analysis."""
 
@@ -65,6 +89,34 @@ def build_agent_analysis_prompt(
     level_snippet_block = "\n".join(f"- {item}" for item in article_context.get("level_snippets") or []) or f"- {MISSING}"
     chart_summary_block = "\n".join(f"- {item}" for item in article_context.get("chart_summaries") or []) or f"- {MISSING}"
     previous_block = _compact_previous_analysis(previous_daily_analysis)
+    prompt_context = compact_context_for_prompt(analysis_context)
+    baseline_block = json.dumps(prompt_context.get("analysis_baseline") or {}, ensure_ascii=False, indent=2)
+    weekly_anchor_block = json.dumps(prompt_context.get("weekly_anchor") or {}, ensure_ascii=False, indent=2)
+    previous_daily_block = json.dumps(
+        prompt_context.get("previous_analysis_report") or prompt_context.get("previous_daily") or {},
+        ensure_ascii=False,
+        indent=2,
+    )
+    market_context_block = json.dumps(prompt_context.get("latest_market") or {}, ensure_ascii=False, indent=2)
+    news_context_block = json.dumps(
+        {
+            "latest_news": prompt_context.get("latest_news") or {},
+            "gold_mainline": prompt_context.get("gold_mainline") or {},
+            "oil_context": prompt_context.get("oil_context") or {},
+            "oil_report_summary": prompt_context.get("oil_report_summary") or {},
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    context_lineage_block = json.dumps(
+        {
+            "status": prompt_context.get("status"),
+            "freshness": prompt_context.get("freshness") or {},
+            "input_snapshot_ids": prompt_context.get("input_snapshot_ids") or {},
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
     chart_render_mode = str(article_context.get("chart_render_mode") or "none")
     chart_mode_note = (
         "当前图表为页图 fallback：仅代表归档页面截图，不代表已经完成逐图结构化解析；若缺少图表摘要或邻近正文，不要把页图本身当成强图表证据。"
@@ -85,6 +137,7 @@ def build_agent_analysis_prompt(
             chart_summary_block=chart_summary_block,
             chart_render_mode=chart_render_mode,
             chart_mode_note=chart_mode_note,
+            market_odds_evidence=market_odds_evidence,
         )
     prompt_profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
     if prompt_profile != "default_daily":
@@ -105,7 +158,7 @@ def build_agent_analysis_prompt(
         )
     return f"""你是一名专业的宏观市场与贵金属分析 Agent，默认使用简体中文。
 
-任务：仅基于下方 Jin10 报告识别结果、图表清单与结构化摘要，写一份更接近日报研究会话风格的黄金市场二次分析报告。
+任务：以上周末黄金周报分析为锚，结合下方当日 Jin10 日报、最新市场快照和新闻上下文，写一份增量更新的黄金日报二次分析报告。
 
 写作目标：
 - 先给结论，再讲“相对前序判断当前有哪些更新”，再展开逻辑、关键位、触发条件和风险。
@@ -119,7 +172,7 @@ def build_agent_analysis_prompt(
 3. 不把报告观点包装成事实；必要时用“报告认为”“图表显示”“我的推论是”。
 4. 不给确定性预测；所有交易判断都要写触发条件、失效条件、风险点、关键观察变量。
 5. 缺失内容写“{MISSING}”，不要补造。
-6. 不输出 YAML、JSON 或 Agent 入库字段；那些是存储字段，不属于人读报告正文。
+6. 不输出 YAML 或 Agent 入库字段；最终响应必须遵守末尾 JSON schema。
 7. 正文不要使用大段复杂表格；关键位允许使用紧凑列表或紧凑表格。
 8. 不得把前序报告价位写成本次报告明确事实；关键位来源要区分本次报告、前序延续、图表线索、Agent 保留框架。
 9. 不得输出无条件交易建议，所有操作判断必须绑定触发条件、失效条件和风险点。
@@ -143,6 +196,13 @@ def build_agent_analysis_prompt(
 27. 若输入提供同一时点当前价和预计区间，可计算 `区间位置=(当前价-下沿)/(上沿-下沿)`，并说明当前处于下半部、中性区或上半部；缺少同一时点当前价时不得估算。
 28. 管理资金空头占比较低属于双向信号：既表示趋势性做空不拥挤，也意味着后续逼空燃料可能有限；默认按中性证据处理。
 29. 标题优先使用“线索增强”“需求降温”“尚待确认”等条件化措辞。除非价格、OI、波动率与宏观变量共同确认，否则禁止使用“先见底”“反转完成”“上涨启动”。
+30. `analysis_baseline` 是本日报的唯一前序基准：周一必须使用上周末周报，周二至周五必须优先使用前一日最终综合分析报告；当日日报只是新增事实，不得替代长期分析记忆。
+31. 若前一日最终综合分析报告缺失，才允许回退最近周报，并在正文说明“前一日最终综合分析报告缺失，已回退周报”；不得把回退伪装成连续分析链。
+32. 周报或前一日报若为 `observe`、`needs_review` 或 `publish_allowed=false`，只能作为待验证假设，不能当成已确认结论。
+33. 新证据与前序基准冲突时，必须明确使用“强化 / 维持 / 削弱 / 失效 / 待确认”的变化动作；不能为了连续性机械维持前序结论。
+34. 每类上下文严格使用自身 `as_of` / `trade_date`。`freshness` 为 stale、missing 或 invalid 时必须写明缺口，禁止把旧数据包装成当日事实。
+35. 新闻事件必须按 `verification_status` 与 `need_verification` 分层；候选新闻和未定价事件不得写成已由市场确认。
+36. 油价上下文缺失时，可以讨论新闻所示的油价风险链，但必须标记“Brent/WTI 数值尚未确认”，不得补造价格。
 
 阶段标签可选：{', '.join(STAGE_LABELS)}。
 
@@ -239,6 +299,24 @@ chart_render_mode: {chart_render_mode}
 === previous_daily_analysis（若存在） ===
 {previous_block}
 
+=== analysis_baseline（周一周报 / 后续前一日最终综合分析报告） ===
+{baseline_block}
+
+=== weekend_weekly_anchor（周级背景） ===
+{weekly_anchor_block}
+
+=== previous_daily_analysis（前一日最终综合分析报告） ===
+{previous_daily_block}
+
+=== latest_market_context（最新价格 / 利率 / CME / COT） ===
+{market_context_block}
+
+=== latest_news_context（最新消息 / 黄金主线 / 油价链） ===
+{news_context_block}
+
+=== context_freshness_and_lineage ===
+{context_lineage_block}
+
 写作细节：
 - 优先提炼最关键的图表或数据支持，不必预设图表类型。
 - 如果正文不足但图表摘要和关键句存在，必须如实说明“正文证据有限，但图表/摘要显示……”，不要假装拿到了完整长文。
@@ -246,10 +324,42 @@ chart_render_mode: {chart_render_mode}
 - 如果报告给出了明确价格与区间，必须写进判断，不要只写抽象方向。
 - 用贴近盘面与策略讨论的表述，优先写“今天相对前序判断发生了什么变化”，但不要被某一篇样本的固定措辞绑定。
 - 如果 `previous_daily_analysis` 明确给出了阶段、关键位或目标区，而本次报告又没有直接推翻，允许把它们保留为“前序框架”；但必须明确哪些内容已经被本次报告降温、延后或改为条件成立后才有效。
+- 如果提供了 `analysis_baseline`，开头必须先概括该基准来自周报还是前一日最终综合分析报告，再说明当日证据对它执行了哪种变化动作；前序与当日价位冲突时优先解释时间尺度和数据日期，不得静默覆盖。
 - 传导链、黄金路径、白银路径可以由模型自行组织，不必机械套模板。
 - 不要出现“当前会话形成的核心判断脉络”“当前会话形成的关键位体系”这类会话内元表述。
 
-请只输出 Markdown 报告正文。"""
+请按下方结构化输出契约返回分析结果。"""
+
+
+def _structured_output_contract(prompt_profile: str) -> str:
+    daily_requirements = """
+日报/周报 profile 额外要求：
+- `market_stage` 必须包含 `label`、`reason` 和 `confirmation_matrix`；confirmation_matrix 至少覆盖阶段、底部证据、趋势反转证据、价格确认、宏观确认、资金确认。
+- `key_levels` 至少 1 项；每项至少包含 `value`、`asset`、`source_category`、`meaning`。
+- `scenario_paths` 恰好覆盖主路径、修复/上行路径、失败/下行路径，每项包含 `name`、`trigger`、`path`、`invalid`。
+- `trading_implications` 至少覆盖空仓、已有多单、已有空单，每项包含 `role`、`wait_for`、`invalid`。
+""" if prompt_profile == "default_daily" else "该 profile 只需覆盖自身专题框架，不得强行套用金银日报的确认矩阵和三路径。"
+    return f"""=== 结构化输出契约（必须遵守） ===
+只返回一个 JSON object，不要返回 Markdown、代码围栏或额外说明。字段 schema：
+{{
+  "title": "string",
+  "one_line_conclusion": "string",
+  "market_stage": {{"label": "string", "reason": "string", "confirmation_matrix": {{}}}},
+  "logic_chain": ["string"],
+  "key_variables": [{{"name": "string", "status": "string", "evidence": "string"}}],
+  "gold_analysis": "string",
+  "silver_analysis": "string",
+  "cross_asset_analysis": {{"asset_or_driver": "analysis"}},
+  "key_levels": [{{"value": "string", "asset": "string", "source_category": "string", "meaning": "string"}}],
+  "scenario_paths": [{{"name": "string", "trigger": "string", "path": "string", "invalid": "string"}}],
+  "trading_implications": [{{"role": "string", "wait_for": "string", "invalid": "string"}}],
+  "risk_points": ["string"],
+  "final_summary": "string",
+  "unresolved_items": ["string"],
+  "evidence_basis": {{"report_facts": ["string"], "author_views": ["string"], "chart_support": ["string"]}}
+}}
+所有字段必须存在；未知内容使用“{MISSING}”，不得省略字段或用 Markdown 代替 JSON。
+{daily_requirements}"""
 
 
 def _agent_analysis_prompt_profile(*, raw_report: dict[str, Any], daily_report: dict[str, Any] | None) -> str:
@@ -260,6 +370,8 @@ def _agent_analysis_prompt_profile(*, raw_report: dict[str, Any], daily_report: 
     if report_type in {"daily", "weekly"} or family in {"jin10_daily_visual", "jin10_weekly_visual"}:
         return "default_daily"
     if _is_market_observation_report(raw_report=raw_report, daily_report=daily_report):
+        if _is_market_odds_report(raw_report=raw_report, daily_report=daily_report):
+            return "market_odds"
         return "market_observation"
     text = " ".join(
         str(item or "")
@@ -287,6 +399,8 @@ def _agent_analysis_prompt_profile(*, raw_report: dict[str, Any], daily_report: 
 
 def agent_analysis_prompt_version(raw_report: dict[str, Any], daily_report: dict[str, Any] | None = None) -> str:
     if _is_market_observation_report(raw_report=raw_report, daily_report=daily_report):
+        if _is_market_odds_report(raw_report=raw_report, daily_report=daily_report):
+            return "jin10_agent_analysis_market_odds_v1"
         return "jin10_agent_analysis_market_observation_v1"
     profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
     return f"jin10_agent_analysis_{profile}_v1" if profile != "default_daily" else "jin10_agent_analysis_v3"
@@ -313,6 +427,26 @@ def _is_market_observation_report(*, raw_report: dict[str, Any], daily_report: d
         or daily.get("report_type") == "market_observation"
         or any(marker in text for marker in ("每日市场观察", "VIP每日市场观察", "市场赔率表", "市场赔率数据表"))
     )
+
+
+def _is_market_odds_report(*, raw_report: dict[str, Any], daily_report: dict[str, Any] | None) -> bool:
+    daily = daily_report or {}
+    generated_from = daily.get("generated_from") if isinstance(daily.get("generated_from"), dict) else {}
+    text = " ".join(
+        str(item or "")
+        for item in (
+            raw_report.get("title"),
+            raw_report.get("article_markdown"),
+            raw_report.get("series"),
+            raw_report.get("subcategory"),
+            daily.get("title"),
+            daily.get("series"),
+            daily.get("subcategory"),
+            generated_from.get("series"),
+            generated_from.get("subcategory"),
+        )
+    )
+    return "market_odds" in text or any(marker in text for marker in ("市场赔率数据表", "市场赔率表", "赔率表"))
 
 
 def _market_observation_kind(*values: str | None) -> str:
@@ -359,7 +493,7 @@ def _build_typed_report_analysis_prompt(
 2. 必须区分：报告明确事实、图表/页图线索、报告作者观点、Agent 辅助解读、仍需确认部分。
 3. 不给确定性预测；任何交易或观察含义都必须绑定触发条件、失效条件和风险点。
 4. 缺失内容写“{MISSING}”，不要补造。
-5. 不输出 YAML、JSON 或 Agent 入库字段。
+5. 不输出 YAML 或 Agent 入库字段；最终响应必须遵守末尾 JSON schema。
 6. 这不是固定金银日报 prompt；不要机械输出“最新判断发生了什么变化 / 黄金为什么涨跌 / 三条路径推演”。
 
 推荐主框架如下，标题可以贴合材料，但章节语义必须覆盖：
@@ -409,7 +543,7 @@ chart_render_mode: {chart_render_mode}
 === structured_analysis 摘要 ===
 {daily_block}
 
-请只输出 Markdown 报告正文。"""
+请按末尾结构化输出契约返回分析结果。"""
 
 
 def _build_market_observation_prompt(
@@ -426,8 +560,10 @@ def _build_market_observation_prompt(
     chart_summary_block: str,
     chart_render_mode: str,
     chart_mode_note: str,
+    market_odds_evidence: dict[str, Any] | None,
 ) -> str:
     kind = _market_observation_kind(str(raw_report.get("title") or ""), str(raw_report.get("article_markdown") or ""))
+    odds_items_block, odds_evidence_block = _market_odds_prompt_blocks(market_odds_evidence)
     return f"""你是一名专业的宏观市场观察与赔率数据分析 Agent，默认使用简体中文。
 
 任务：仅基于下方 Jin10 市场观察 / 市场赔率材料，写一份“辅助决策证据”分析。不要套用每日金银报告，不要把它写成黄金日报，不要沿用“黄金为什么涨 / 为什么跌”“三条路径推演”“前序日报判断”这些固定日报模板。
@@ -442,7 +578,7 @@ def _build_market_observation_prompt(
 5. 市场赔率要按品种拆读：黄金、白银、原油、美元/日元、就业/美联储路径、航运/地缘或其他报告中出现的变量。
 6. 每个变量尽量写“赔率变化 -> 市场预期 -> 对黄金/风险偏好/美元/原油的辅助含义 -> 失效条件”。
 7. 如果材料只有图片或页图 fallback，明确写“图像证据可见但结构化抽取有限”；如果正文已提供概率数据，必须优先引用正文里的具体概率，不得再说没有内容。
-8. 不输出 YAML、JSON 或 Agent 入库字段。
+8. 不输出 YAML 或 Agent 入库字段；最终响应必须遵守末尾 JSON schema。
 
 推荐主框架如下，标题可以贴合材料，但章节语义必须覆盖：
 # <标题>｜市场观察辅助分析
@@ -469,7 +605,13 @@ article_id: {raw_report.get('article_id') or MISSING}
 title: {raw_report.get('title') or MISSING}
 source_url: {raw_report.get('source_url') or MISSING}
 
-=== raw_report article_markdown ===
+=== 结构化 market_odds_evidence items（第一优先级） ===
+{odds_items_block}
+
+=== evidence refs / OCR / figures（第二优先级） ===
+{odds_evidence_block}
+
+=== raw_report article_markdown（仅作上下文补充） ===
 {str(raw_report.get('article_markdown') or '').strip()}
 
 === 正文关键片段 ===
@@ -500,7 +642,51 @@ chart_render_mode: {chart_render_mode}
 === structured_analysis 摘要 ===
 {daily_block}
 
-请只输出 Markdown 报告正文。"""
+请按末尾结构化输出契约返回分析结果。"""
+
+
+def _market_odds_prompt_blocks(evidence: dict[str, Any] | None) -> tuple[str, str]:
+    payload = dict(evidence or {})
+    items = [dict(item) for item in payload.get("items") or [] if isinstance(item, dict)]
+    if not items:
+        return MISSING, MISSING
+    structured_items = [
+        {
+            key: item.get(key)
+            for key in (
+                "item_id",
+                "panel_id",
+                "asset",
+                "event_type",
+                "predicate",
+                "target_value",
+                "target_unit",
+                "horizon_start",
+                "horizon_end",
+                "probability",
+                "probability_semantics",
+                "outcome_label",
+                "extraction_status",
+            )
+        }
+        for item in items
+    ]
+    evidence_rows = [
+        {
+            "item_id": item.get("item_id"),
+            "page_no": item.get("page_no"),
+            "figure_id": item.get("figure_id"),
+            "bbox": item.get("bbox"),
+            "ocr_text": item.get("ocr_text"),
+            "source_refs": item.get("source_refs") or [],
+            "evidence_refs": item.get("evidence_refs") or [],
+        }
+        for item in items
+    ]
+    return (
+        json.dumps(structured_items, ensure_ascii=False, indent=2),
+        json.dumps(evidence_rows, ensure_ascii=False, indent=2),
+    )
 
 
 def parse_agent_analysis_markdown(text: str) -> str:
@@ -829,6 +1015,28 @@ def _dedupe(values: list[str]) -> list[str]:
         if cleaned and cleaned not in seen:
             seen.add(cleaned)
             result.append(cleaned)
+    return result
+
+
+def _merge_source_refs(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            marker = str(
+                item.get("source_ref")
+                or item.get("url")
+                or item.get("source_url")
+                or item.get("raw_path")
+                or item.get("path")
+                or item
+            )
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(dict(item))
     return result
 
 
@@ -1296,12 +1504,10 @@ def build_jin10_agent_analysis_report_with_llm(
     daily_report: Jin10DailyAnalysisReport | dict[str, Any] | None = None,
     *,
     figure_image_loader: ImageLoader | None = None,
+    analysis_context: dict[str, Any] | None = None,
+    market_odds_evidence: dict[str, Any] | None = None,
 ) -> Jin10AgentAnalysisReport:
-    """Build Jin10 agent analysis using LLM, with deterministic fallback.
-
-    Calls LLM with build_agent_analysis_prompt(), parses the markdown output
-    into structured Jin10AgentAnalysisReport fields.
-    """
+    """Build Jin10 analysis from a validated JSON response, with explicit fallback."""
     from apps.llm.gateway import chat_sync
 
     raw = _to_dict(raw_report)
@@ -1309,13 +1515,48 @@ def build_jin10_agent_analysis_report_with_llm(
     fallback = build_jin10_agent_analysis_report(raw_report, daily_report)
     prompt_version = agent_analysis_prompt_version(raw, daily)
     llm_config = _agent_llm_config()
-    previous_daily_analysis = load_previous_jin10_agent_analysis(
-        trade_date=str(fallback.trade_date or raw.get("trade_date") or ""),
-        run_id=str(fallback.run_id or raw.get("article_id") or ""),
-    )
+    prompt_profile = _agent_analysis_prompt_profile(raw_report=raw, daily_report=daily)
+    effective_context = analysis_context if prompt_profile == "default_daily" else None
+    if effective_context:
+        context_metadata = compact_context_metadata(effective_context)
+        prompt_context = compact_context_for_prompt(effective_context)
+        fallback.generated_from["daily_context"] = context_metadata
+        fallback.source_artifact_refs = _dedupe(
+            [
+                *fallback.source_artifact_refs,
+                *[str(value) for value in (effective_context.get("input_snapshot_ids") or {}).values() if value],
+            ]
+        )
+        fallback.source_refs = _merge_source_refs(
+            fallback.source_refs,
+            list(effective_context.get("source_refs") or []),
+        )
+        fallback.provenance = _dedupe(
+            [
+                *fallback.provenance,
+                "以上周末周报分析为基准，结合最新市场快照、CME/COT、宏观与新闻上下文做增量更新。",
+            ]
+        )
+        fallback.evidence_basis["weekly_anchor"] = prompt_context.get("weekly_anchor") or {}
+        fallback.evidence_basis["latest_context"] = {
+            "market": prompt_context.get("latest_market") or {},
+            "news_mainline": (prompt_context.get("latest_news") or {}).get("market_mainline") or {},
+            "gold_mainline": prompt_context.get("gold_mainline") or {},
+            "oil_context": prompt_context.get("oil_context") or {},
+            "oil_report_summary": prompt_context.get("oil_report_summary") or {},
+            "freshness": prompt_context.get("freshness") or {},
+        }
+        fallback.evidence_basis["agent_inference_scope"] = (
+            "基于归档周报、当日 Jin10 日报与带独立日期的市场/新闻快照进行条件化增量推演。"
+        )
 
     # Build prompt
-    prompt = build_agent_analysis_prompt(raw, daily, previous_daily_analysis=previous_daily_analysis)
+    prompt = build_agent_analysis_prompt(
+        raw,
+        daily,
+        analysis_context=effective_context,
+        market_odds_evidence=market_odds_evidence,
+    )
     multimodal_plan = build_multimodal_user_content(
         prompt,
         raw,
@@ -1339,10 +1580,21 @@ def build_jin10_agent_analysis_report_with_llm(
             temperature=0.3,
             max_tokens=llm_config["max_tokens"],
             max_retries=0,
+            json_mode=True,
+            audit_context={
+                "caller": "jin10.build_jin10_agent_analysis_report_with_llm",
+                "run_id": fallback.run_id,
+                "snapshot_id": f"jin10:{fallback.trade_date}:{fallback.run_id}:agent_analysis",
+                "trade_date": fallback.trade_date,
+                "report_id": str(fallback.run_id or fallback.article_id),
+                "input_snapshot_ids": {
+                    "raw_report": fallback.source_artifact_refs,
+                    "daily_context": (effective_context or {}).get("input_snapshot_ids") if effective_context else {},
+                },
+            },
         )
-        llm_markdown = sanitize_agent_analysis_markdown(response.content)
-        llm_fields = _parse_llm_output_to_fields(llm_markdown, daily, raw)
-        figure_results = _mark_figure_output_references(multimodal_plan.figure_results, llm_markdown)
+        llm_fields = _validate_llm_output_to_report_fields(response.content, prompt_profile=prompt_profile)
+        figure_results = [dict(item) for item in multimodal_plan.figure_results]
         degraded = multimodal_plan.status == "degraded"
 
         return Jin10AgentAnalysisReport(
@@ -1350,30 +1602,29 @@ def build_jin10_agent_analysis_report_with_llm(
             trade_date=fallback.trade_date,
             run_id=fallback.run_id,
             article_id=fallback.article_id,
-            title=llm_fields.get("title") or fallback.title,
+            title=llm_fields["title"],
             family="jin10_agent_analysis",
             asset=fallback.asset,
             source_report_family=fallback.source_report_family,
             source_artifact_refs=fallback.source_artifact_refs,
-            one_line_conclusion=llm_fields.get("one_line_conclusion") or fallback.one_line_conclusion,
+            one_line_conclusion=llm_fields["one_line_conclusion"],
             provenance=fallback.provenance,
             evidence_basis={
                 **fallback.evidence_basis,
-                **(llm_fields.get("evidence_basis") or {}),
-                "llm_markdown": llm_markdown,
+                **llm_fields["evidence_basis"],
             },
-            market_stage=llm_fields.get("market_stage") or fallback.market_stage,
-            logic_chain=llm_fields.get("logic_chain") or fallback.logic_chain,
-            key_variables=llm_fields.get("key_variables") or fallback.key_variables,
-            gold_analysis=llm_fields.get("gold_analysis") or fallback.gold_analysis,
-            silver_analysis=llm_fields.get("silver_analysis") or fallback.silver_analysis,
-            cross_asset_analysis=llm_fields.get("cross_asset_analysis") or fallback.cross_asset_analysis,
-            key_levels=llm_fields.get("key_levels") or fallback.key_levels,
-            scenario_paths=llm_fields.get("scenario_paths") or fallback.scenario_paths,
-            trading_implications=llm_fields.get("trading_implications") or fallback.trading_implications,
-            risk_points=llm_fields.get("risk_points") or fallback.risk_points,
-            final_summary=llm_fields.get("final_summary") or fallback.final_summary,
-            unresolved_items=llm_fields.get("unresolved_items") or fallback.unresolved_items,
+            market_stage=llm_fields["market_stage"],
+            logic_chain=llm_fields["logic_chain"],
+            key_variables=llm_fields["key_variables"],
+            gold_analysis=llm_fields["gold_analysis"],
+            silver_analysis=llm_fields["silver_analysis"],
+            cross_asset_analysis=llm_fields["cross_asset_analysis"],
+            key_levels=llm_fields["key_levels"],
+            scenario_paths=llm_fields["scenario_paths"],
+            trading_implications=llm_fields["trading_implications"],
+            risk_points=llm_fields["risk_points"],
+            final_summary=llm_fields["final_summary"],
+            unresolved_items=llm_fields["unresolved_items"],
             source_refs=fallback.source_refs,
             generated_from={
                 "source": "jin10_agent_analysis_llm",
@@ -1384,6 +1635,7 @@ def build_jin10_agent_analysis_report_with_llm(
                 "max_images": llm_config["max_images"],
                 "latency_ms": response.latency_ms,
                 "tokens": response.usage,
+                "audit_id": getattr(response, "audit_id", None),
                 "vision_model": response.model,
                 "submitted_image_count": multimodal_plan.submitted_image_count,
                 "image_processing_status": multimodal_plan.status,
@@ -1393,9 +1645,11 @@ def build_jin10_agent_analysis_report_with_llm(
                 "raw_report_family": fallback.generated_from.get("raw_report_family") or raw.get("family"),
                 "daily_report_family": fallback.generated_from.get("daily_report_family") or daily.get("family"),
                 "prompt_version": prompt_version,
-                "prompt_profile": _agent_analysis_prompt_profile(raw_report=raw, daily_report=daily),
+                "prompt_profile": prompt_profile,
+                "daily_context": compact_context_metadata(effective_context),
                 "prompt_ready": True,
-                "narrative_markdown": llm_markdown,
+                "structured_output_validated": True,
+                "llm_structured_output": llm_fields,
                 "fallback_generated_from": fallback.generated_from,
             },
         )
@@ -1414,8 +1668,97 @@ def build_jin10_agent_analysis_report_with_llm(
         fallback.generated_from["image_processing_status"] = multimodal_plan.status
         fallback.generated_from["degraded"] = True
         fallback.generated_from["degraded_reason"] = f"llm_error:{type(exc).__name__}"
+        fallback.generated_from["llm_error_message"] = str(exc)[:500]
+        fallback.generated_from["structured_output_validated"] = False
         fallback.generated_from["figure_results"] = multimodal_plan.figure_results
         return fallback
+
+
+_LLM_REQUIRED_FIELDS: dict[str, type] = {
+    "title": str,
+    "one_line_conclusion": str,
+    "market_stage": dict,
+    "logic_chain": list,
+    "key_variables": list,
+    "gold_analysis": str,
+    "silver_analysis": str,
+    "cross_asset_analysis": dict,
+    "key_levels": list,
+    "scenario_paths": list,
+    "trading_implications": list,
+    "risk_points": list,
+    "final_summary": str,
+    "unresolved_items": list,
+    "evidence_basis": dict,
+}
+
+
+def _validate_llm_output_to_report_fields(content: str, *, prompt_profile: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(str(content or ""))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"LLM response is not valid JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("LLM response must be a JSON object")
+
+    errors: list[str] = []
+    for field, expected_type in _LLM_REQUIRED_FIELDS.items():
+        value = payload.get(field)
+        if not isinstance(value, expected_type):
+            errors.append(f"{field}:expected_{expected_type.__name__}")
+        elif expected_type is str and not value.strip():
+            errors.append(f"{field}:empty")
+    for field in ("logic_chain", "key_variables", "risk_points"):
+        if isinstance(payload.get(field), list) and not payload[field]:
+            errors.append(f"{field}:empty")
+    for field in ("logic_chain", "risk_points", "unresolved_items"):
+        if isinstance(payload.get(field), list) and any(not isinstance(item, str) for item in payload[field]):
+            errors.append(f"{field}:items_must_be_strings")
+    object_list_fields = ("key_variables", "key_levels", "scenario_paths", "trading_implications")
+    for field in object_list_fields:
+        if isinstance(payload.get(field), list) and any(not isinstance(item, dict) for item in payload[field]):
+            errors.append(f"{field}:items_must_be_objects")
+    if isinstance(payload.get("cross_asset_analysis"), dict) and any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in payload["cross_asset_analysis"].items()
+    ):
+        errors.append("cross_asset_analysis:values_must_be_strings")
+    market_stage = payload.get("market_stage") if isinstance(payload.get("market_stage"), dict) else {}
+    if not str(market_stage.get("label") or "").strip() or not str(market_stage.get("reason") or "").strip():
+        errors.append("market_stage:missing_label_or_reason")
+
+    if prompt_profile == "default_daily":
+        matrix = market_stage.get("confirmation_matrix")
+        required_matrix = {"阶段", "底部证据", "趋势反转证据", "价格确认", "宏观确认", "资金确认"}
+        if not isinstance(matrix, dict) or not required_matrix.issubset(matrix):
+            errors.append("market_stage.confirmation_matrix:daily_coverage")
+        if not payload.get("key_levels"):
+            errors.append("key_levels:daily_coverage")
+        elif any(
+            not all(str(item.get(key) or "").strip() for key in ("value", "asset", "source_category", "meaning"))
+            for item in payload["key_levels"]
+            if isinstance(item, dict)
+        ):
+            errors.append("key_levels:daily_item_schema")
+        if len(payload.get("scenario_paths") or []) < 3:
+            errors.append("scenario_paths:daily_coverage")
+        elif any(
+            not all(str(item.get(key) or "").strip() for key in ("name", "trigger", "path", "invalid"))
+            for item in payload["scenario_paths"]
+            if isinstance(item, dict)
+        ):
+            errors.append("scenario_paths:daily_item_schema")
+        if len(payload.get("trading_implications") or []) < 3:
+            errors.append("trading_implications:daily_coverage")
+        elif any(
+            not all(str(item.get(key) or "").strip() for key in ("role", "wait_for", "invalid"))
+            for item in payload["trading_implications"]
+            if isinstance(item, dict)
+        ):
+            errors.append("trading_implications:daily_item_schema")
+    if errors:
+        raise ValueError("LLM structured output validation failed: " + ", ".join(errors))
+    return payload
 
 
 def _agent_llm_config() -> dict[str, Any]:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from apps.contracts.gold import GOLD_MAINLINE_IDS
+from apps.runtime.immutable_artifact import immutable_json_item, write_immutable_artifact_bundle
 
 SCHEMA_VERSION = "gold-event-mainlines-v1"
 RULE_VERSION = "gold-event-mainlines-rules-v2"
@@ -225,13 +226,15 @@ def archive_gold_event_mainlines(
     bundle: GoldEventMainlinesBundle,
 ) -> str:
     target = storage_root / "features" / "news" / retrieved_date / run_id / "gold_event_mainlines.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "retrieved_date": retrieved_date,
         "run_id": run_id,
         **bundle.to_dict(),
     }
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_immutable_artifact_bundle(
+        [immutable_json_item(target, payload)],
+        storage_root=storage_root,
+    )
     return target.relative_to(storage_root).as_posix()
 
 

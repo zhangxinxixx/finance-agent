@@ -43,6 +43,7 @@ def test_agent_output_accepts_required_schema_and_serializes_to_json():
     assert output.risk_points == ["CPI release may invalidate the setup"]
     assert output.watchlist == ["DGS10", "T10YIE"]
     assert output.invalid_conditions == ["analysis snapshot is stale"]
+    assert output.invalidation_conditions == ["analysis snapshot is stale"]
     assert output.summary == "Macro backdrop is neutral."
     assert output.source_refs == []
     assert output.evidence_items == []
@@ -55,6 +56,25 @@ def test_agent_output_accepts_required_schema_and_serializes_to_json():
     assert encoded["source_refs"] == []
     assert encoded["evidence_items"] == []
     json.dumps(encoded, ensure_ascii=False)
+
+
+def test_agent_output_projects_new_invalidation_contract_to_legacy_field():
+    payload = _valid_payload()
+    payload["invalid_conditions"] = []
+    payload["invalidation_conditions"] = ["Invalidate if real yields reverse."]
+    payload["active_blockers"] = ["canonical candle is unavailable"]
+    payload["data_gaps"] = [
+        {"code": "missing_xauusd_price", "message": "Canonical XAUUSD price is missing.", "severity": "p0"}
+    ]
+    payload["review_triggers"] = ["macro_options_conflict"]
+
+    output = AgentOutput.model_validate(payload)
+
+    assert output.invalid_conditions == ["Invalidate if real yields reverse."]
+    assert output.invalidation_conditions == output.invalid_conditions
+    assert output.active_blockers == ["canonical candle is unavailable"]
+    assert output.data_gaps[0].code == "missing_xauusd_price"
+    assert output.review_triggers == ["macro_options_conflict"]
 
 
 def test_agent_output_accepts_structured_evidence_items():

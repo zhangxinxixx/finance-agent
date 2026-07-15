@@ -48,6 +48,14 @@ storage/logs/*
 !storage/logs/.gitkeep
 logs/
 
+# Local generated analysis, monitoring, and orchestration artifacts
+/storage/analysis/
+/storage/data_control/
+/storage/event_sla/
+/storage/monitoring/
+/storage/orchestration/
+/storage/probes/
+
 # Test fixtures can be committed, but not large PDFs over 5MB
 tests/fixtures/**/*.pdf
 !tests/fixtures/cme/.gitkeep

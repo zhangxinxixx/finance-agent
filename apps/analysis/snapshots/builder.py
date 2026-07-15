@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,7 @@ def build_analysis_snapshot(
     snapshot_time: str | None = None,
     collected_points: list[dict[str, Any]] | None = None,
     news_snapshot: dict[str, Any] | None = None,
+    gold_analysis_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one deterministic premarket analysis snapshot from existing artifacts.
 
@@ -36,15 +37,39 @@ def build_analysis_snapshot(
         "options": f"options:{trade_date}:{run_id}",
     }
 
-    options_detail = _extract_options_input_snapshot_ids(options_snapshot)
+    macro_future = _macro_future_observations(macro_snapshot, trade_date)
+    options_future = _options_future_observations(options_snapshot, trade_date)
+    news_future = _news_future_observations(news_snapshot, trade_date)
+
+    options_detail = (
+        _extract_options_input_snapshot_ids(options_snapshot)
+        if not options_future
+        else {}
+    )
     if options_detail:
         input_snapshot_ids["options_detail"] = options_detail
+    context_ids = (
+        (gold_analysis_context or {}).get("input_snapshot_ids")
+        if isinstance(gold_analysis_context, dict)
+        else None
+    )
+    if isinstance(context_ids, dict):
+        input_snapshot_ids["gold_analysis_context"] = dict(context_ids)
 
-    technical_section = _build_technical_section(collected_points or [], source_refs or [])
-    positioning_section = _build_positioning_section(collected_points or [])
-    market_odds_section = _build_market_odds_section(
-        asset=asset, trade_date=trade_date, run_id=run_id,
-        options_snapshot=options_snapshot,
+    all_points = collected_points or []
+    bounded_context_points = _context_points_on_or_before(all_points, trade_date)
+    bounded_market_points = _market_points_on_or_before(all_points, trade_date)
+    technical_section = _build_technical_section(bounded_market_points, source_refs or [])
+    positioning_section = _build_positioning_section(bounded_market_points)
+    market_odds_section = (
+        _bounded_section(options_snapshot, trade_date, options_future)
+        if options_future
+        else _build_market_odds_section(
+            asset=asset,
+            trade_date=trade_date,
+            run_id=run_id,
+            options_snapshot=options_snapshot,
+        )
     )
 
     return {
@@ -55,14 +80,23 @@ def build_analysis_snapshot(
         "snapshot_time": timestamp,
         "run_id": run_id,
         "input_snapshot_ids": input_snapshot_ids,
-        "macro": _section(macro_snapshot),
-        "options": _section(options_snapshot),
+        "macro": _bounded_macro_section(macro_snapshot, trade_date, macro_future),
+        "options": _bounded_section(options_snapshot, trade_date, options_future),
         "positioning": positioning_section,
-        "news": _section(news_snapshot) if news_snapshot is not None else _build_news_section(collected_points or [], source_refs or []),
-        "jin10": _build_jin10_section(collected_points or []),
+        "news": _bounded_section(news_snapshot, trade_date, news_future) if news_snapshot is not None else _build_news_section(bounded_context_points, source_refs or [], trade_date),
+        "jin10": _build_jin10_section(bounded_context_points),
         "technical": technical_section,
         "market_odds": market_odds_section,
-        "source_refs": _merge_source_refs(source_refs, macro_snapshot),
+        "gold_analysis_context": (
+            {"status": "available", "data": copy.deepcopy(gold_analysis_context)}
+            if isinstance(gold_analysis_context, dict)
+            else {"status": "unavailable", "reason": "gold_analysis_context_not_available"}
+        ),
+        "source_refs": _merge_source_refs(
+            source_refs,
+            macro_snapshot,
+            gold_analysis_context.get("source_refs") if isinstance(gold_analysis_context, dict) else None,
+        ),
     }
 
 
@@ -120,6 +154,169 @@ def _section(data: dict[str, Any] | None) -> dict[str, Any]:
     return {"status": "available", "data": copy.deepcopy(data)}
 
 
+def _bounded_section(
+    data: dict[str, Any] | None,
+    trade_date: str,
+    future_observations: list[dict[str, str]],
+) -> dict[str, Any]:
+    if data is None:
+        return _section(None)
+    if future_observations:
+        return {
+            "status": "unavailable",
+            "reason": "future_dated_input",
+            "analysis_context_date": trade_date,
+            "future_observations": future_observations,
+        }
+    return _section(data)
+
+
+def _bounded_macro_section(
+    data: dict[str, Any] | None,
+    trade_date: str,
+    future_observations: list[dict[str, str]],
+) -> dict[str, Any]:
+    section = _bounded_section(data, trade_date, future_observations)
+    if section.get("status") != "available" or not isinstance(data, dict):
+        return section
+    indicators = data.get("indicators")
+    if isinstance(indicators, dict) and indicators:
+        return section
+    return {
+        "status": "unavailable",
+        "reason": "no_macro_indicators",
+        "analysis_context_date": trade_date,
+        "unavailable_symbols": list(data.get("unavailable_symbols") or []),
+    }
+
+
+def _macro_future_observations(
+    snapshot: dict[str, Any] | None,
+    trade_date: str,
+) -> list[dict[str, str]]:
+    if not snapshot:
+        return []
+    candidates: list[tuple[str, Any]] = [("as_of", snapshot.get("as_of"))]
+    indicators = snapshot.get("indicators")
+    if isinstance(indicators, dict):
+        for symbol, indicator in indicators.items():
+            if isinstance(indicator, dict):
+                candidates.append((f"indicators.{symbol}.date", indicator.get("date")))
+    return _future_observations(candidates, trade_date)
+
+
+def _options_future_observations(
+    snapshot: dict[str, Any] | None,
+    trade_date: str,
+) -> list[dict[str, str]]:
+    if not snapshot:
+        return []
+    candidates: list[tuple[str, Any]] = [
+        ("trade_date", snapshot.get("trade_date")),
+        ("as_of", snapshot.get("as_of")),
+    ]
+    data_source = snapshot.get("data_source")
+    if isinstance(data_source, dict):
+        candidates.extend(
+            [
+                ("data_source.report_date", data_source.get("report_date")),
+                ("data_source.trade_date", data_source.get("trade_date")),
+            ]
+        )
+    return _future_observations(candidates, trade_date)
+
+
+def _news_future_observations(
+    snapshot: dict[str, Any] | None,
+    trade_date: str,
+) -> list[dict[str, str]]:
+    if not snapshot:
+        return []
+    anchor_keys = ("trade_date", "as_of", "retrieved_date", "date")
+    candidates = [(key, snapshot.get(key)) for key in anchor_keys]
+    for section, value in snapshot.items():
+        if not isinstance(value, dict):
+            continue
+        candidates.extend(
+            (f"{section}.{key}", value.get(key))
+            for key in anchor_keys
+        )
+    return _future_observations(candidates, trade_date)
+
+
+def _future_observations(
+    candidates: list[tuple[str, Any]],
+    trade_date: str,
+) -> list[dict[str, str]]:
+    try:
+        context_date = date.fromisoformat(trade_date[:10])
+    except (TypeError, ValueError):
+        return []
+    future: list[dict[str, str]] = []
+    for field, value in candidates:
+        if not isinstance(value, str):
+            continue
+        try:
+            observation_date = date.fromisoformat(value[:10])
+        except ValueError:
+            continue
+        if observation_date > context_date:
+            future.append({"field": field, "date": observation_date.isoformat()})
+    return sorted(future, key=lambda item: (item["date"], item["field"]))
+
+
+def _market_points_on_or_before(
+    points: list[dict[str, Any]],
+    trade_date: str,
+) -> list[dict[str, Any]]:
+    try:
+        context_date = date.fromisoformat(trade_date[:10])
+    except (TypeError, ValueError):
+        return []
+    bounded: list[dict[str, Any]] = []
+    for point in points:
+        symbol = str(point.get("symbol") or "")
+        if symbol != "XAUUSD" and not symbol.startswith("COT_GOLD"):
+            continue
+        value = point.get("date")
+        if not isinstance(value, str):
+            continue
+        try:
+            observation_date = date.fromisoformat(value[:10])
+        except ValueError:
+            continue
+        if observation_date <= context_date:
+            bounded.append(point)
+    return bounded
+
+
+def _context_points_on_or_before(
+    points: list[dict[str, Any]],
+    trade_date: str,
+) -> list[dict[str, Any]]:
+    """Keep point-in-time inputs while preserving upcoming calendar events."""
+    try:
+        context_date = date.fromisoformat(trade_date[:10])
+    except (TypeError, ValueError):
+        return []
+    bounded: list[dict[str, Any]] = []
+    for point in points:
+        symbol = str(point.get("symbol") or "")
+        if symbol.startswith("NEWS_EVENT:"):
+            bounded.append(point)
+            continue
+        value = point.get("date")
+        if not isinstance(value, str):
+            continue
+        try:
+            observation_date = date.fromisoformat(value[:10])
+        except ValueError:
+            continue
+        if observation_date <= context_date:
+            bounded.append(point)
+    return bounded
+
+
 def _extract_options_input_snapshot_ids(options_snapshot: dict[str, Any] | None) -> dict[str, Any]:
     if not options_snapshot:
         return {}
@@ -135,11 +332,13 @@ def _extract_options_input_snapshot_ids(options_snapshot: dict[str, Any] | None)
 def _merge_source_refs(
     source_refs: list[dict[str, Any]] | None,
     macro_snapshot: dict[str, Any] | None,
+    context_refs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     refs.extend(copy.deepcopy(source_refs or []))
     if macro_snapshot and isinstance(macro_snapshot.get("source_refs"), list):
         refs.extend(copy.deepcopy(macro_snapshot["source_refs"]))
+    refs.extend(copy.deepcopy(context_refs or []))
 
     unique: dict[str, dict[str, Any]] = {}
     for ref in refs:
@@ -161,8 +360,8 @@ def _build_technical_section(
 ) -> dict[str, Any]:
     """Build the technical snapshot section from collected MacroPoints.
 
-    Extracts XAUUSD close price from collected points and OHLC / SMA
-    data from the corresponding source_ref notes (Yahoo Finance).
+    Extracts XAUUSD close price from collected points and available OHLC / SMA
+    data from the corresponding source-ref notes.
     """
     from apps.features.technical.snapshot import build_technical_snapshot
 
@@ -177,7 +376,7 @@ def _build_technical_section(
     except (TypeError, ValueError, KeyError):
         return {"status": "unavailable", "reason": "xauusd_close_missing_or_invalid"}
 
-    # Find OHLC / SMA extras from source_refs notes (Yahoo Finance)
+    # Find OHLC / SMA extras from the selected XAUUSD market source.
     open_: float | None = None
     high: float | None = None
     low: float | None = None
@@ -191,7 +390,7 @@ def _build_technical_section(
     for ref in source_refs:
         if not isinstance(ref, dict):
             continue
-        if ref.get("symbol") == "XAUUSD" and ref.get("source") == "yahoo_finance":
+        if ref.get("symbol") == "XAUUSD" and ref.get("source") in {"jin10_quote", "yahoo_finance"}:
             notes = ref.get("notes")
             if isinstance(notes, dict):
                 open_ = _try_float(notes.get("open"))
@@ -268,14 +467,13 @@ def _build_positioning_section(
 def _build_news_section(
     collected_points: list[dict[str, Any]],
     source_refs: list[dict[str, Any]],
+    trade_date: str,
 ) -> dict[str, Any]:
     """Build the news snapshot section from collected MacroPoints.
 
     Extracts NEWS_EVENT:* and NEWS_FLASH points and builds a NewsSnapshot.
     """
     from apps.features.news.snapshot import build_news_snapshot
-    from datetime import datetime, timezone
-
     news_points = [
         p for p in collected_points
         if isinstance(p.get("symbol"), str) and (
@@ -291,7 +489,7 @@ def _build_news_section(
         if isinstance(r, dict) and r.get("source") == "jin10_mcp"
     ]
 
-    as_of = datetime.now(timezone.utc).date().isoformat()
+    as_of = f"{trade_date[:10]}T00:00:00+00:00"
     snapshot = build_news_snapshot(
         points=news_points,
         as_of=as_of,

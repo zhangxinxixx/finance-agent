@@ -38,7 +38,7 @@ class MacroDataService:
         优先 OpenBB FRED（需 FRED_API_KEY），失败则尝试 Jin10 行情兜底。
         """
         retrieved_date = retrieved_date or date.today().isoformat()
-        symbols = symbols or _DEFAULT_FRED_SYMBOLS
+        symbols = symbols or DEFAULT_FRED_RATE_SYMBOLS
 
         from apps.collectors.openbb.collector import collect_fred_rates_via_openbb
 
@@ -445,7 +445,7 @@ class NewsDataService:
 
 # ── Default symbols ────────────────────────────────────────────────────
 
-_DEFAULT_FRED_SYMBOLS: tuple[str, ...] = (
+DEFAULT_FRED_RATE_SYMBOLS: tuple[str, ...] = (
     "DGS10", "DGS2", "DGS3MO", "DGS30", "DFII10", "DFII5",
     "FEDFUNDS", "SOFR", "T10Y2Y", "T10YIE",
 )

@@ -27,6 +27,13 @@ _PROJECT_ROOT_PATCH = "apps.api.data_service._PROJECT_ROOT"
 _TRY_DB_SESSION_PATCH = "apps.api.data_service._try_db_session"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_macro_api_from_runtime_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep filesystem discovery tests independent from the developer database."""
+
+    monkeypatch.setattr(_TRY_DB_SESSION_PATCH, lambda: None)
+
+
 def _make_tree(root: Path, files: dict[str, str | None]) -> None:
     """按 {relative_path: content} 创建目录和文件；content=None 则只建目录。"""
     for rel, content in files.items():

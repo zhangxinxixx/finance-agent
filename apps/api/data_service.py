@@ -47,6 +47,16 @@ def get_options_snapshot(date_str: str | None = None, db: Any | None = None) -> 
     return options_service.get_options_snapshot(date_str, db=db)
 
 
+def get_options_decision(
+    date_str: str | None = None,
+    *,
+    lookback_days: int = 5,
+    db: Any | None = None,
+) -> dict[str, Any] | None:
+    _sync_project_root()
+    return options_service.get_options_decision(date_str, lookback_days=lookback_days, db=db)
+
+
 def get_options_report_md(date_str: str | None = None) -> str | None:
     _sync_project_root()
     return options_service.get_options_report_md(date_str)
@@ -204,6 +214,7 @@ __all__ = [
     "_try_db_session",
     "_collect_reports",
     "get_options_snapshot",
+    "get_options_decision",
     "get_options_report_md",
     "get_options_visual_report_html",
     "list_options_report_dates",

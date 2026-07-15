@@ -1,0 +1,16 @@
+[Unit]
+Description=Finance Agent report publication window scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/finance-agent
+Environment=no_proxy=127.0.0.1,localhost,::1
+Environment=UV_CACHE_DIR=/tmp/uv-cache
+EnvironmentFile=-%h/workspace/finance-agent/.env
+ExecStartPre=%h/workspace/finance-agent/scripts/start_local_services.sh
+ExecStart=/usr/bin/env DATABASE_URL=postgresql://finance_agent:finance_agent@127.0.0.1:55432/finance_agent %h/.local/bin/uv run python scripts/run_report_window_scan.py
+
+[Install]
+WantedBy=default.target

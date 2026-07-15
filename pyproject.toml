@@ -16,7 +16,6 @@ dependencies = [
     "apscheduler>=3.10",
     "python-dotenv>=1.0",
     "openai>=2.37",
-    "mem0ai>=0.1",
     "pandas>=2.2",
     "pymupdf>=1.25",
     "playwright>=1.59",

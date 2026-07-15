@@ -1,34 +1,34 @@
 from __future__ import annotations
 
-from apps.analysis.jin10.agent_analysis import sanitize_agent_analysis_markdown
 from apps.documents.schemas import Jin10AgentAnalysisReport
 
 
 def render_jin10_agent_analysis_markdown(report: Jin10AgentAnalysisReport) -> str:
-    narrative = sanitize_agent_analysis_markdown(
-        str(report.generated_from.get("narrative_markdown") or report.evidence_basis.get("llm_markdown") or "")
-    )
-    if narrative:
-        return narrative.rstrip() + "\n"
-
+    """Render Markdown exclusively from the validated report object."""
     return _render_structured_narrative(report)
 
 
 def _render_structured_narrative(report: Jin10AgentAnalysisReport) -> str:
     update_lines = _render_update_section(report)
+    daily_context_lines = _render_daily_context(report)
     confirmation_model_lines = _render_confirmation_model(report.logic_chain)
     confirmation_rule_lines = _render_confirmation_rules(report) if confirmation_model_lines else []
+    title_suffix = "｜Agent 二次分析报告"
+    report_title = report.title.strip()
+    while report_title.endswith(title_suffix):
+        report_title = report_title[: -len(title_suffix)].rstrip()
     lines = [
-        f"# {report.title}｜Agent 二次分析报告",
+        f"# {report_title}{title_suffix}",
         "",
         "## 一句话结论",
         "",
         report.one_line_conclusion,
         "",
-        "# 分析溯源 / 数据来源",
-        "",
-        *_render_list(report.provenance),
-        "",
+        *(
+            ["## 分析基准与当日上下文", "", *daily_context_lines, ""]
+            if daily_context_lines
+            else []
+        ),
         "# 1. 最新报告相对前序判断的变化",
         "",
         *_render_list(update_lines),
@@ -41,11 +41,11 @@ def _render_structured_narrative(report: Jin10AgentAnalysisReport) -> str:
         "",
         *_render_list([str(item) for item in report.evidence_basis.get("author_views", [])]),
         "",
-        "# 3. 报告核心逻辑",
+        "# 3. 黄金为什么涨 / 为什么跌？",
         "",
         *_render_list(report.logic_chain or [report.final_summary]),
         "",
-        "# 4. 当前阶段判断",
+        "# 4. 报告核心观点：短线、中期、长期分开",
         "",
         f"- 阶段标签：{report.market_stage.get('label', '')}",
         f"- 判断依据：{report.market_stage.get('reason', '')}",
@@ -60,19 +60,23 @@ def _render_structured_narrative(report: Jin10AgentAnalysisReport) -> str:
         "",
         *_render_mapping(report.cross_asset_analysis),
         "",
-        "# 5. 关键位与触发条件",
+        "# 5. 当前阶段判断与确认矩阵",
+        "",
+        *_render_confirmation_matrix(report.market_stage),
+        "",
+        "# 6. 关键位更新",
         "",
         *_render_key_levels(report.key_levels),
     "",
-        "# 6. 交易 / 配置含义",
+        "# 7. 三条路径推演",
         "",
         *_render_scenarios(report.scenario_paths),
         "",
-        "## 执行含义",
+        "# 8. 操作层面怎么理解？",
         "",
         *_render_trading_implications(report.trading_implications),
         "",
-        "# 7. 风险与仍待确认项",
+        "# 风险与仍待确认项",
         "",
         *_render_list(report.risk_points),
         "",
@@ -80,7 +84,7 @@ def _render_structured_narrative(report: Jin10AgentAnalysisReport) -> str:
         "",
         *_render_list(report.unresolved_items),
         "",
-        "## 收口",
+        "# 最终综合判断",
         "",
         report.final_summary,
         "",
@@ -101,9 +105,51 @@ def _render_structured_narrative(report: Jin10AgentAnalysisReport) -> str:
                     *confirmation_rule_lines,
                 ]
             )
-        insert_at = lines.index("# 6. 交易 / 配置含义")
+        insert_at = lines.index("# 7. 三条路径推演")
         lines[insert_at:insert_at] = confirmation_block + [""]
     return "\n".join(lines)
+
+
+def _render_daily_context(report: Jin10AgentAnalysisReport) -> list[str]:
+    context = report.generated_from.get("daily_context")
+    if not isinstance(context, dict) or not context:
+        return []
+    anchor = context.get("analysis_baseline") or context.get("weekly_anchor") or {}
+    baseline_kind = str(context.get("baseline_kind") or anchor.get("source_kind") or "weekly_anchor")
+    baseline_label = {
+        "weekly_anchor": "周末周报",
+        "weekly_fallback": "周报回退（前一日最终综合分析报告缺失）",
+        "previous_analysis_report": "前一日最新综合分析报告",
+        "previous_daily": "前一日最新综合分析报告",
+    }.get(baseline_kind, "前序分析")
+    freshness = context.get("freshness") or {}
+    lines = [
+        (
+            f"- 分析基准（{baseline_label}）："
+            f"{anchor.get('trade_date') or anchor.get('context_as_of') or 'missing'} / "
+            f"ref={anchor.get('article_id') or anchor.get('report_id') or anchor.get('run_id') or 'missing'} / "
+            f"{anchor.get('title') or '未提供标题'}"
+        ),
+        (
+            "- 基准状态："
+            f"quality={anchor.get('quality_status') or 'unknown'}；"
+            f"publication={anchor.get('publication_status') or 'unknown'}；"
+            f"publish_allowed={anchor.get('publish_allowed') if anchor.get('publish_allowed') is not None else 'unknown'}"
+        ),
+    ]
+    for key, label in (("market", "市场"), ("news", "新闻"), ("oil", "油价")):
+        item = freshness.get(key) or {}
+        lines.append(
+            f"- {label}上下文：status={item.get('status') or 'missing'}；as_of={item.get('as_of') or 'missing'}；age_days={item.get('age_days') if item.get('age_days') is not None else 'unknown'}"
+        )
+    return lines
+
+
+def _render_confirmation_matrix(market_stage: dict[str, object]) -> list[str]:
+    matrix = market_stage.get("confirmation_matrix")
+    if not isinstance(matrix, dict) or not matrix:
+        return ["- 确认矩阵：未提供"]
+    return [f"- {key}：{value}" for key, value in matrix.items()]
 
 
 def _render_update_section(report: Jin10AgentAnalysisReport) -> list[str]:
@@ -340,13 +386,20 @@ def _render_key_levels(rows: list[dict[str, object]]) -> list[str]:
     rendered: list[str] = []
     if trading:
         rendered.append("### 短中期交易位")
-        rendered.extend(f"- {row.get('label', '关键位')}：{row.get('value')}" for row in trading)
+        rendered.extend(_render_key_level(row) for row in trading)
     if long_term:
         if rendered:
             rendered.append("")
         rendered.append("### 长期情景位（报告作者长期观点，不作为短线追单依据）")
-        rendered.extend(f"- {row.get('label', '长期情景')}：{row.get('value')}" for row in long_term)
+        rendered.extend(_render_key_level(row, default_label="长期情景") for row in long_term)
     return rendered
+
+
+def _render_key_level(row: dict[str, object], *, default_label: str = "关键位") -> str:
+    label = row.get("label") or row.get("asset") or default_label
+    details = [str(row.get("source_category") or "").strip(), str(row.get("meaning") or "").strip()]
+    suffix = "｜".join(item for item in details if item)
+    return f"- {label}：{row.get('value')}{f'｜{suffix}' if suffix else ''}"
 
 
 def _render_scenarios(rows: list[dict[str, object]]) -> list[str]:
@@ -354,17 +407,19 @@ def _render_scenarios(rows: list[dict[str, object]]) -> list[str]:
         return ["- 未提供"]
     rendered: list[str] = []
     for row in rows:
-        rendered.extend(
-            [
-                f"### {row.get('path', '路径')}",
-                f"- 概要：{row.get('summary', '')}",
-                f"- 触发条件：{row.get('trigger', '')}",
-                f"- 失效条件：{row.get('invalid', '')}",
-                f"- 风险点：{'；'.join(str(item) for item in row.get('risk_points', []))}",
-                f"- 置信度：{row.get('confidence', '')}",
-                "",
-            ]
-        )
+        risk_points = _joined_items(row.get("risk_points"))
+        confidence = str(row.get("confidence") or "").strip()
+        rendered.extend([
+            f"### {row.get('name') or row.get('path') or '路径'}",
+            f"- 概要：{row.get('summary') or row.get('path') or ''}",
+            f"- 触发条件：{row.get('trigger', '')}",
+            f"- 失效条件：{row.get('invalid', '')}",
+        ])
+        if risk_points:
+            rendered.append(f"- 风险点：{risk_points}")
+        if confidence:
+            rendered.append(f"- 置信度：{confidence}")
+        rendered.append("")
     rendered.pop()
     return rendered
 
@@ -374,18 +429,34 @@ def _render_trading_implications(rows: list[dict[str, object]]) -> list[str]:
         return ["- 未提供"]
     rendered: list[str] = []
     for row in rows:
-        stance = str(row.get("stance", "")).strip()
-        trigger = str(row.get("trigger", "")).strip()
+        role = str(row.get("role", "")).strip()
+        stance = str(row.get("stance") or "").strip()
+        wait_for = str(row.get("wait_for") or "").strip()
+        trigger = str(row.get("trigger") or row.get("wait_for") or "").strip()
         invalid = str(row.get("invalid", "")).strip()
-        risk_points = "；".join(str(item) for item in row.get("risk_points", []))
-        watch_variables = "；".join(str(item) for item in row.get("watch_variables", []))
-        rendered.extend(
-            [
-                f"- 当前更适合的做法是：{stance or '继续观察'}。",
-                f"- 只有当以下条件出现，才考虑顺着报告方向推进：{trigger or 'unavailable'}。",
-                f"- 如果出现以下情况，当前判断需要回撤或重做：{invalid or 'unavailable'}。",
-                f"- 执行层最需要提前防的风险：{risk_points or 'unavailable'}。",
-                f"- 这一步真正要盯的变量：{watch_variables or 'unavailable'}。",
-            ]
-        )
+        risk_points = _joined_items(row.get("risk_points"))
+        watch_variables = _joined_items(row.get("watch_variables"))
+        if role:
+            rendered.append(f"### {role}")
+        rendered.append(_sentence_line("当前更适合的做法是", stance or wait_for or "继续观察"))
+        if trigger and trigger != wait_for:
+            rendered.append(_sentence_line("只有当以下条件出现，才考虑顺着报告方向推进", trigger))
+        if invalid:
+            rendered.append(_sentence_line("如果出现以下情况，当前判断需要回撤或重做", invalid))
+        if risk_points:
+            rendered.append(_sentence_line("执行层最需要提前防的风险", risk_points))
+        if watch_variables:
+            rendered.append(_sentence_line("这一步真正要盯的变量", watch_variables))
     return rendered
+
+
+def _joined_items(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    return "；".join(str(item).strip() for item in value if str(item).strip())
+
+
+def _sentence_line(label: str, value: str) -> str:
+    sentence = value.strip()
+    suffix = "" if sentence.endswith(("。", "！", "？", ".", "!", "?")) else "。"
+    return f"- {label}：{sentence}{suffix}"

@@ -47,6 +47,37 @@ def test_parse_category_entries_extracts_ids_titles_and_urls():
     assert entries[0].published_at == "2026-05-22 08:00"
 
 
+def test_parse_category_entries_handles_current_nested_card_markup():
+    html = """
+    <div data-id="224688" class="jin10-news-list-item news">
+      <a href="https://xnews.jin10.com/details/224688" target="_blank">
+        <div class="jin10-news-list-item-thumb"><div class="image"></div></div>
+      </a>
+      <div class="jin10-news-list-item-info">
+        <a href="https://xnews.jin10.com/details/224688" target="_blank">
+          <p class="jin10-news-list-item-title">CPI与PPI助黄金两度反弹</p>
+          <div class="jin10-news-list-item-introduction">黄金在数据公布后反弹。</div>
+          <span class="jin10-news-list-item-display_datetime">
+            <svg><path d="M0 0"></path></svg><span>19分钟前</span>
+          </span>
+        </a>
+      </div>
+    </div>
+    <div data-id="224691" class="jin10-news-list-item news">
+      <a href="/details/224691"><p class="jin10-news-list-item-title">原油报告</p></a>
+    </div>
+    """
+
+    entries = parse_category_entries(html)
+
+    assert [(entry.article_id, entry.title) for entry in entries] == [
+        ("224688", "CPI与PPI助黄金两度反弹"),
+        ("224691", "原油报告"),
+    ]
+    assert entries[0].published_at == "19分钟前"
+    assert entries[0].summary == "黄金在数据公布后反弹。"
+
+
 def test_parse_svip_report_html_builds_markdown_with_images():
     html = """
     <html><head>

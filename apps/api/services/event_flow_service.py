@@ -136,6 +136,10 @@ def _translate_english(text: Any, *, field: str) -> str:
             model=model,
             temperature=0.0,
             max_tokens=min(2048, max(256, len(normalized) * 2)),
+            audit_context={
+                "caller": "event_flow_service._translate_english",
+                "input_payload": {"field": field, "text": normalized},
+            },
         )
     except Exception as exc:
         logger.warning(
@@ -303,6 +307,7 @@ def build_event_flow_event_detail(event_id: str) -> dict[str, Any] | None:
         return None
     event_refs = event.get("source_refs") if isinstance(event.get("source_refs"), list) else []
     page_refs = overview.get("source_refs") if isinstance(overview.get("source_refs"), list) else []
+    article_briefs = _related_article_briefs(overview, event)
     return {
         "status": overview.get("status") or "unavailable",
         "source": overview.get("source") or "unavailable",
@@ -310,7 +315,8 @@ def build_event_flow_event_detail(event_id: str) -> dict[str, Any] | None:
         "event": event,
         "source_refs": event_refs,
         "page_source_refs": page_refs,
-        "article_briefs": _related_article_briefs(overview, event),
+        "article_briefs": article_briefs,
+        "relations": _build_event_flow_relations(event, article_briefs=article_briefs),
         "warnings": overview.get("warnings") if isinstance(overview.get("warnings"), list) else [],
     }
 
@@ -736,9 +742,120 @@ def _related_article_briefs(overview: dict[str, Any], event: dict[str, Any]) -> 
             continue
         brief_assets = set(str(asset) for asset in brief.get("asset_tags") or [] if asset)
         brief_topics = set(str(topic) for topic in brief.get("topic_tags") or [] if topic)
-        if assets.intersection(brief_assets) or (event_type and event_type in brief_topics):
-            related.append(brief)
+        match_basis: list[str] = []
+        if assets.intersection(brief_assets):
+            match_basis.append("affected_asset_overlap")
+        if event_type and event_type in brief_topics:
+            match_basis.append("event_type_topic_overlap")
+        if match_basis:
+            # Keep the existing brief payload backward compatible while making
+            # the non-authoritative association explicit for API consumers.
+            item = dict(brief)
+            item["relation_mode"] = "heuristic"
+            item["relation_basis"] = match_basis
+            related.append(item)
     return related[:10]
+
+
+def _build_event_flow_relations(
+    event: dict[str, Any],
+    *,
+    article_briefs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build an explicit relation read model without inventing edges.
+
+    Event ``source_refs`` are the only currently durable event->evidence edge.
+    Article briefs remain the existing asset/topic fallback and are marked as
+    heuristic. Report and analysis-snapshot edges are emitted only when their
+    identifiers are present in the event payload or source refs.
+    """
+    source_refs = [ref for ref in event.get("source_refs") or [] if isinstance(ref, dict)]
+    evidence: list[dict[str, Any]] = []
+    snapshots: list[dict[str, Any]] = []
+    seen_evidence: set[str] = set()
+    seen_snapshots: set[str] = set()
+    for ref in source_refs:
+        source_ref = str(ref.get("source_ref") or ref.get("path") or "").strip()
+        if not source_ref:
+            continue
+        evidence_key = source_ref
+        if evidence_key not in seen_evidence:
+            evidence.append({
+                "relation_mode": "explicit",
+                "relation_type": "event_evidence",
+                "evidence_id": source_ref,
+                "source_ref": source_ref,
+                "source": ref.get("source"),
+                "title": ref.get("title"),
+                "published_at": ref.get("published_at"),
+            })
+            seen_evidence.add(evidence_key)
+        snapshot_id = str(ref.get("snapshot_id") or "").strip()
+        if snapshot_id and snapshot_id not in seen_snapshots:
+            snapshots.append({
+                "relation_mode": "explicit",
+                "relation_type": "event_analysis_snapshot",
+                "snapshot_id": snapshot_id,
+                "source_ref": source_ref,
+            })
+            seen_snapshots.add(snapshot_id)
+
+    reports = _explicit_event_relation_records(event, ("report_id", "report_ids", "related_report_id", "related_report_ids"), "report_id", "event_report")
+    snapshots.extend(
+        item for item in _explicit_event_relation_records(
+            event,
+            ("snapshot_id", "snapshot_ids", "analysis_snapshot_id", "analysis_snapshot_ids"),
+            "snapshot_id",
+            "event_analysis_snapshot",
+        )
+        if str(item.get("snapshot_id") or "") not in seen_snapshots
+    )
+    for item in snapshots:
+        seen_snapshots.add(str(item.get("snapshot_id") or ""))
+
+    mode = "explicit"
+    if article_briefs:
+        mode = "explicit_with_heuristic_fallback"
+    missing_relation_kinds = [kind for kind, values in (("reports", reports), ("analysis_snapshots", snapshots)) if not values]
+    return {
+        "relation_mode": mode,
+        "event": {"relation_mode": "explicit", "event_id": str(event.get("id") or "")},
+        "evidence": evidence,
+        "article_briefs": [
+            {
+                "relation_mode": "heuristic",
+                "relation_type": "event_article_brief",
+                "brief_id": str(brief.get("brief_id") or brief.get("id") or ""),
+                "relation_basis": list(brief.get("relation_basis") or []),
+                "source_refs": [dict(ref) for ref in brief.get("source_refs") or [] if isinstance(ref, dict)],
+            }
+            for brief in article_briefs
+        ],
+        "reports": reports,
+        "analysis_snapshots": snapshots,
+        "missing_relation_kinds": missing_relation_kinds,
+    }
+
+
+def _explicit_event_relation_records(
+    event: dict[str, Any],
+    fields: tuple[str, ...],
+    id_key: str,
+    relation_type: str,
+) -> list[dict[str, Any]]:
+    values: list[Any] = []
+    for field in fields:
+        value = event.get(field)
+        values.extend(value if isinstance(value, list) else [value] if value else [])
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        identifier = str(value.get(id_key) if isinstance(value, dict) else value or "").strip()
+        if not identifier or identifier in seen:
+            continue
+        records.append({"relation_mode": "explicit", "relation_type": relation_type, id_key: identifier})
+        seen.add(identifier)
+    return records
 
 
 def _apply_latest_followup_read_model(

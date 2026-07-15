@@ -4,16 +4,24 @@ import base64
 from datetime import datetime, timezone
 from pathlib import Path
 
-from apps.analysis.agents.quality_gate import evaluate_agent_quality_gate, execute_agent_loop_fallback_tasks
+import pytest
+
+from apps.analysis.agents.quality_gate import (
+    AcceptedOutputReference,
+    AgentLoopDecision,
+    evaluate_agent_quality_gate,
+    execute_agent_loop_fallback_tasks,
+    execute_conservative_synthesis_fallback,
+)
 from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
-from apps.analysis.agents.schemas import AgentBias, AgentStatus
+from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
 
 
 def _decision(action: QualityGateAction, *, findings: list[dict] | None = None) -> QualityGateDecision:
     return QualityGateDecision(
         action=action,
         review_status="pass" if action is QualityGateAction.PASS else ("blocked" if action is QualityGateAction.BLOCK_PUBLISH else "needs_review"),
-        publish_allowed=action is not QualityGateAction.BLOCK_PUBLISH,
+        publish_allowed=action is QualityGateAction.PASS,
         fallback_recommended=action is QualityGateAction.FALLBACK,
         retry_recommended=action is QualityGateAction.RETRY,
         manual_review_required=action in {QualityGateAction.FALLBACK, QualityGateAction.MANUAL_REVIEW},
@@ -25,7 +33,31 @@ def _decision(action: QualityGateAction, *, findings: list[dict] | None = None) 
     )
 
 
-def test_agent_loop_accepts_fallback_output_without_silently_overwriting_primary() -> None:
+def _output(*, agent_name: str, snapshot_id: str) -> AgentOutput:
+    return AgentOutput.model_validate(
+        {
+            "version": "1.0",
+            "agent_name": agent_name,
+            "module": "test",
+            "snapshot_id": snapshot_id,
+            "input_snapshot_ids": {"analysis_snapshot": snapshot_id},
+            "bias": "neutral",
+            "confidence": 0.5,
+            "key_findings": [],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "summary": "test output",
+            "source_refs": [],
+            "status": "success",
+            "created_at": "2026-07-06T09:30:00+00:00",
+            "evidence_items": [],
+            "data_quality": [],
+        }
+    )
+
+
+def test_agent_loop_accepts_independently_validated_corrective_fallback() -> None:
     primary = _decision(
         QualityGateAction.FALLBACK,
         findings=[{"code": "unsupported_claim", "severity": "fallback", "message": "Unsupported claim.", "evidence": {}}],
@@ -35,17 +67,42 @@ def test_agent_loop_accepts_fallback_output_without_silently_overwriting_primary
     result = evaluate_agent_quality_gate(
         agent_outputs=[{"agent_name": "gold_macro_overview_agent", "snapshot_id": "primary-snap"}],
         primary_quality_gate_decision=primary,
-        fallback_outputs={"final_report_paths": ["storage/outputs/fallback/final_report.md"]},
+        corrective_fallback_output=_output(agent_name="corrective_agent", snapshot_id="corrective-snap"),
         fallback_quality_gate_decision=fallback,
+        corrective_fallback_succeeded=True,
+        independent_validator_passed=True,
+        unresolved_reason_codes=[],
         review_items=[{"review_id": "review-1", "reason": "unsupported_claim"}],
     )
 
     assert result.decision == "passed"
-    assert result.accepted_outputs == {"final_report_paths": ["storage/outputs/fallback/final_report.md"]}
+    assert result.accepted_output.source == "corrective_fallback"
+    assert result.accepted_output.agent_name == "corrective_agent"
+    assert result.accepted_output.snapshot_id == "corrective-snap"
+    assert result.accepted_output.artifact_ref is None
     assert result.fallback_of == ["gold_macro_overview_agent:primary-snap"]
     assert result.fallback_trace["fallback_used"] is True
     assert result.fallback_trace["accepted_output"] == "fallback"
     assert result.fallback_trace["review_items"] == [{"review_id": "review-1", "reason": "unsupported_claim"}]
+
+
+def test_agent_loop_rejects_conservative_fallback_even_if_its_gate_passes() -> None:
+    result = evaluate_agent_quality_gate(
+        agent_outputs=[{"agent_name": "gold_macro_overview_agent", "snapshot_id": "primary-snap"}],
+        primary_quality_gate_decision=_decision(
+            QualityGateAction.FALLBACK,
+            findings=[{"code": "unsupported_claim", "severity": "fallback", "message": "Unsupported.", "evidence": {}}],
+        ),
+        corrective_fallback_output=_output(agent_name="corrective_agent", snapshot_id="corrective-snap"),
+        fallback_quality_gate_decision=_decision(QualityGateAction.PASS),
+        corrective_fallback_succeeded=False,
+        unresolved_reason_codes=["unsupported_claim"],
+    )
+
+    assert result.publish_allowed is False
+    assert result.accepted_output.source == "none"
+    assert result.fallback_trace["accepted_output"] is None
+    assert result.fallback_trace["unresolved_reason_codes"] == ["unsupported_claim"]
 
 
 def test_agent_loop_failed_fallback_degrades_to_observe_wait_and_no_strong_conclusion() -> None:
@@ -61,13 +118,13 @@ def test_agent_loop_failed_fallback_degrades_to_observe_wait_and_no_strong_concl
     result = evaluate_agent_quality_gate(
         agent_outputs=[{"agent_name": "cme_options_agent", "snapshot_id": "primary-snap"}],
         primary_quality_gate_decision=primary,
-        fallback_outputs={"final_report_paths": ["storage/outputs/fallback/final_report.md"]},
+        corrective_fallback_output=_output(agent_name="corrective_agent", snapshot_id="corrective-snap"),
         fallback_quality_gate_decision=fallback,
     )
 
     assert result.decision == "blocked"
     assert result.publish_allowed is False
-    assert result.accepted_outputs == {}
+    assert result.accepted_output.source == "none"
     assert result.no_strong_conclusion is True
     assert result.strategy_card_override == {
         "bias": "neutral",
@@ -76,7 +133,75 @@ def test_agent_loop_failed_fallback_degrades_to_observe_wait_and_no_strong_concl
     }
 
 
-def test_execute_agent_loop_fallback_tasks_builds_conservative_synthesis_output() -> None:
+def test_agent_loop_needs_review_without_accepted_fallback_cannot_publish() -> None:
+    result = evaluate_agent_quality_gate(
+        agent_outputs=[{"agent_name": "gold_macro_overview_agent", "snapshot_id": "primary-snap"}],
+        primary_quality_gate_decision=_decision(QualityGateAction.MANUAL_REVIEW),
+    )
+
+    assert result.decision == "needs_review"
+    assert result.publish_allowed is False
+    assert result.accepted_output.source == "none"
+    assert result.no_strong_conclusion is True
+
+
+def test_primary_accepted_reference_is_not_preempted_by_present_fallback() -> None:
+    primary = _output(agent_name="coordinator_agent", snapshot_id="primary-snap")
+    result = evaluate_agent_quality_gate(
+        agent_outputs=[primary],
+        primary_quality_gate_decision=_decision(QualityGateAction.PASS),
+        primary_output=primary,
+        corrective_fallback_output=_output(agent_name="corrective_agent", snapshot_id="fallback-snap"),
+        fallback_quality_gate_decision=_decision(QualityGateAction.PASS),
+        corrective_fallback_succeeded=True,
+        independent_validator_passed=True,
+    )
+
+    assert result.publish_allowed is True
+    assert result.accepted_output.source == "primary"
+    assert result.accepted_output.agent_name == "coordinator_agent"
+    assert result.accepted_output.snapshot_id == "primary-snap"
+
+
+def test_agent_loop_decision_rejects_publish_without_accepted_reference() -> None:
+    with pytest.raises(ValueError, match="publish_allowed"):
+        AgentLoopDecision(
+            decision="passed",
+            review_status="pass",
+            publish_allowed=True,
+        )
+
+
+def test_agent_loop_decision_rejects_legacy_selection_drift() -> None:
+    with pytest.raises(ValueError, match="contradicts"):
+        AgentLoopDecision(
+            decision="passed",
+            review_status="pass",
+            publish_allowed=True,
+            accepted_output=AcceptedOutputReference(
+                source="primary",
+                agent_name="coordinator_agent",
+                snapshot_id="primary-snap",
+            ),
+            fallback_trace={"accepted_output": "fallback"},
+        )
+
+
+def test_missing_accepted_reference_cannot_publish_or_expose_accepted_outputs() -> None:
+    result = evaluate_agent_quality_gate(
+        primary_quality_gate_decision=_decision(QualityGateAction.PASS),
+        fallback_outputs={"final_report_paths": ["planned/not-accepted.md"]},
+    )
+
+    assert result.publish_allowed is False
+    assert result.accepted_output.source == "none"
+    assert result.accepted_output.agent_name is None
+    assert result.accepted_output.snapshot_id is None
+    assert result.accepted_output.artifact_ref is None
+    assert result.accepted_outputs == {}
+
+
+def test_execute_conservative_synthesis_fallback_uses_explicit_coordinator_output() -> None:
     primary = {
         "version": "1.0",
         "agent_name": "coordinator_agent",
@@ -103,9 +228,16 @@ def test_execute_agent_loop_fallback_tasks_builds_conservative_synthesis_output(
 
     from apps.analysis.agents.schemas import AgentOutput
 
-    execution = execute_agent_loop_fallback_tasks(
+    domain_execution = execute_agent_loop_fallback_tasks(
         agent_outputs=[AgentOutput.model_validate(primary)],
         primary_quality_gate_decision=primary_decision,
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+    execution = execute_conservative_synthesis_fallback(
+        primary_output=AgentOutput.model_validate(primary),
+        primary_quality_gate_decision=primary_decision,
+        prior_execution=domain_execution,
         source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
         created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
     )
@@ -193,7 +325,8 @@ def test_execute_agent_loop_fallback_tasks_runs_independent_source_cross_check()
     )
 
     assert execution.task_results[0]["task_type"] == "cross_check_with_independent_source"
-    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["status"] == "observation_only"
+    assert execution.task_results[0]["execution_status"] == "success"
     assert execution.task_results[0]["fallback_output_agent"] == "fallback_cross_check_agent"
     assert "fallback_cross_check_agent" in execution.fallback_agent_outputs
     cross_check = execution.fallback_agent_outputs["fallback_cross_check_agent"]
@@ -202,6 +335,53 @@ def test_execute_agent_loop_fallback_tasks_runs_independent_source_cross_check()
     assert cross_check.input_payload["independent_source_count"] == 2
     assert cross_check.input_payload["checked_agents"] == ["coordinator_agent", "cme_options_agent"]
     assert cross_check.input_payload["fallback_of"]["agent_name"] == "coordinator_agent"
+
+
+def test_cross_check_counts_provider_families_not_two_datasets_from_same_provider() -> None:
+    from apps.analysis.agents.schemas import AgentOutput
+
+    primary = AgentOutput.model_validate(
+        {
+            "version": "1.0",
+            "agent_name": "coordinator_agent",
+            "module": "coordinator",
+            "snapshot_id": "snap-same-provider",
+            "input_snapshot_ids": {"analysis_snapshot": "snap-same-provider"},
+            "bias": "bullish",
+            "confidence": 0.76,
+            "key_findings": ["Rates and dollar moved."],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "summary": "Directional view.",
+            "source_refs": [
+                {"source": "fred", "source_ref": "fred:DGS10"},
+                {"source": "fred", "source_ref": "fred:DTWEXBGS"},
+            ],
+            "status": "success",
+            "created_at": "2026-07-06T09:30:00+00:00",
+            "evidence_items": [{"factor": "rates", "source_tier": "official"}],
+        }
+    )
+    decision = QualityGateDecision(
+        action=QualityGateAction.FALLBACK,
+        review_status="needs_review",
+        publish_allowed=False,
+        findings=[{"code": "single_source_important_conclusion", "severity": "fallback", "message": "single"}],
+        fallback_actions=["cross_check_with_independent_source"],
+    )
+
+    execution = execute_agent_loop_fallback_tasks(
+        agent_outputs=[primary],
+        primary_quality_gate_decision=decision,
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+
+    cross_check = execution.fallback_agent_outputs["fallback_cross_check_agent"]
+    assert cross_check.input_payload["independent_source_count"] == 1
+    assert cross_check.input_payload["independent_source_keys"] == ["fred"]
+    assert cross_check.status is AgentStatus.PARTIAL
 
 
 def test_execute_agent_loop_fallback_tasks_downgrades_single_source_context() -> None:
@@ -256,7 +436,8 @@ def test_execute_agent_loop_fallback_tasks_downgrades_single_source_context() ->
     )
 
     assert execution.task_results[0]["task_type"] == "downgrade_to_single_source_context_until_confirmed"
-    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["status"] == "observation_only"
+    assert execution.task_results[0]["execution_status"] == "success"
     assert execution.task_results[0]["fallback_output_agent"] == "single_source_downgrade_agent"
     downgrade = execution.fallback_agent_outputs["single_source_downgrade_agent"]
     assert downgrade.bias is AgentBias.NEUTRAL
@@ -312,18 +493,34 @@ def test_execute_agent_loop_fallback_tasks_does_not_mark_unimplemented_reparse_s
         max_confidence=0.58,
     )
 
-    execution = execute_agent_loop_fallback_tasks(
+    domain_execution = execute_agent_loop_fallback_tasks(
         agent_outputs=[primary],
         primary_quality_gate_decision=primary_decision,
         source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
         created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
     )
 
-    assert execution.task_results[0]["task_type"] == "fallback_reparse"
-    assert execution.task_results[0]["status"] == "queued_not_implemented"
-    assert execution.task_results[0]["fallback_output_agent"] is None
+    assert domain_execution.task_results[0]["task_type"] == "fallback_reparse"
+    assert domain_execution.task_results[0]["status"] == "queued_not_implemented"
+    assert domain_execution.task_results[0]["fallback_output_agent"] is None
+    assert "fallback_synthesis_agent" not in domain_execution.fallback_agent_outputs
+
+    execution = execute_conservative_synthesis_fallback(
+        primary_output=primary,
+        primary_quality_gate_decision=primary_decision,
+        prior_execution=domain_execution,
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+
     assert execution.task_results[1]["task_type"] == "fallback_conservative_synthesis"
-    assert execution.task_results[1]["status"] == "success"
+    assert execution.task_results[1]["status"] == "observation_only"
+    assert execution.corrective_fallback_succeeded is False
+    assert execution.unresolved_reason_codes == ["parse_or_required_field_quality_gap"]
+    fallback = execution.fallback_agent_outputs["fallback_synthesis_agent"]
+    assert "parse_or_required_field_quality_gap" in fallback.active_blockers
+    assert fallback.input_payload["primary_gate_findings"][0]["code"] == "parse_or_required_field_quality_gap"
+    assert fallback.input_payload["dedicated_fallback_results"][0]["status"] == "queued_not_implemented"
 
 
 def test_execute_agent_loop_fallback_tasks_runs_cme_options_reparse_when_snapshot_available() -> None:
@@ -402,14 +599,16 @@ def test_execute_agent_loop_fallback_tasks_runs_cme_options_reparse_when_snapsho
     )
 
     assert execution.task_results[0]["task_type"] == "fallback_reparse"
-    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["status"] == "observation_only"
+    assert execution.task_results[0]["execution_status"] == "success"
     assert execution.task_results[0]["fallback_output_agent"] == "cme_options_reparse_agent"
     assert "cme_options_reparse_agent" in execution.fallback_agent_outputs
     reparse = execution.fallback_agent_outputs["cme_options_reparse_agent"]
     assert reparse.agent_name == "cme_options_reparse_agent"
     assert reparse.input_payload["fallback_of"]["agent_name"] == "cme_options_agent"
     assert reparse.input_payload["fallback_task"] == "fallback_reparse"
-    assert execution.task_results[1]["task_type"] == "fallback_conservative_synthesis"
+    assert len(execution.task_results) == 1
+    assert "fallback_synthesis_agent" not in execution.fallback_agent_outputs
 
 
 def test_execute_agent_loop_fallback_tasks_runs_jin10_report_reparse_from_archived_inputs() -> None:
@@ -495,7 +694,8 @@ def test_execute_agent_loop_fallback_tasks_runs_jin10_report_reparse_from_archiv
     )
 
     assert execution.task_results[0]["task_type"] == "fallback_reparse"
-    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["status"] == "observation_only"
+    assert execution.task_results[0]["execution_status"] == "success"
     assert execution.task_results[0]["fallback_output_agent"] == "jin10_report_reparse_agent"
     reparse = execution.fallback_agent_outputs["jin10_report_reparse_agent"]
     assert reparse.agent_name == "jin10_report_reparse_agent"
@@ -506,7 +706,8 @@ def test_execute_agent_loop_fallback_tasks_runs_jin10_report_reparse_from_archiv
     assert reparse.input_payload["raw_report"]["article_id"] == "218330"
     assert reparse.source_refs == [{"source": "jin10_external", "article_id": "218330"}]
     assert any(item["factor"] == "jin10_report_reparse" for item in reparse.evidence_items)
-    assert execution.task_results[1]["task_type"] == "fallback_conservative_synthesis"
+    assert len(execution.task_results) == 1
+    assert "fallback_synthesis_agent" not in execution.fallback_agent_outputs
 
 
 def test_execute_agent_loop_fallback_tasks_runs_jin10_vlm_reparse_from_image_inputs(
@@ -514,8 +715,6 @@ def test_execute_agent_loop_fallback_tasks_runs_jin10_vlm_reparse_from_image_inp
     monkeypatch,
 ) -> None:
     from apps.analysis.agents.schemas import AgentOutput
-    from apps.parsers.jin10.qwen_vl_markdown import MissingDashScopeApiKey
-
     image_path = tmp_path / "page-002.png"
     image_path.write_bytes(
         base64.b64decode(
@@ -524,7 +723,7 @@ def test_execute_agent_loop_fallback_tasks_runs_jin10_vlm_reparse_from_image_inp
     )
 
     def no_live_vlm(*_: object, **__: object) -> dict:
-        raise MissingDashScopeApiKey("test disables live VLM")
+        raise RuntimeError("test disables live VLM")
 
     monkeypatch.setattr("apps.parsers.jin10.report_image_parser.recognize_pages_unified", no_live_vlm)
 
@@ -596,7 +795,8 @@ def test_execute_agent_loop_fallback_tasks_runs_jin10_vlm_reparse_from_image_inp
     )
 
     assert execution.task_results[0]["task_type"] == "fallback_reparse"
-    assert execution.task_results[0]["status"] == "success"
+    assert execution.task_results[0]["status"] == "observation_only"
+    assert execution.task_results[0]["execution_status"] == "success"
     assert execution.task_results[0]["fallback_output_agent"] == "jin10_vlm_reparse_agent"
     reparse = execution.fallback_agent_outputs["jin10_vlm_reparse_agent"]
     assert reparse.agent_name == "jin10_vlm_reparse_agent"

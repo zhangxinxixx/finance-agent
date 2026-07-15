@@ -1,12 +1,20 @@
 """Dagster schedules for Automation Orchestrator."""
 
-from dagster import schedule
+from datetime import datetime, timezone
+
+from dagster import RunRequest, schedule
 
 from dagster_finance.jobs.automation_orchestration_job import automation_orchestration_job
 
 
-def _launch_config(trigger: str) -> dict[str, object]:
-    return {"ops": {"automation_orchestration_op": {"config": {"trigger": trigger}}}}
+def _launch_request(context, trigger: str) -> RunRequest:
+    scheduled_at = context.scheduled_execution_time or datetime.now(timezone.utc)
+    tick = scheduled_at.astimezone(timezone.utc).isoformat()
+    return RunRequest(
+        run_key=f"automation:{trigger}:{tick}",
+        run_config={"ops": {"automation_orchestration_op": {"config": {"trigger": trigger}}}},
+        tags={"automation/trigger": trigger, "automation/tick": tick},
+    )
 
 
 @schedule(
@@ -16,8 +24,8 @@ def _launch_config(trigger: str) -> dict[str, object]:
     name="automation_hourly",
     description="Run hourly data-control and orchestration checks",
 )
-def automation_hourly_schedule(_context):
-    return _launch_config("hourly")
+def automation_hourly_schedule(context):
+    return _launch_request(context, "hourly")
 
 
 @schedule(
@@ -27,8 +35,8 @@ def automation_hourly_schedule(_context):
     name="automation_event_sla",
     description="Run event SLA checks every five minutes",
 )
-def automation_event_sla_schedule(_context):
-    return _launch_config("event_sla")
+def automation_event_sla_schedule(context):
+    return _launch_request(context, "event_sla")
 
 
 @schedule(
@@ -38,8 +46,8 @@ def automation_event_sla_schedule(_context):
     name="automation_pre_analysis",
     description="Run pre-analysis readiness orchestration at 20:00 Beijing time",
 )
-def automation_pre_analysis_schedule(_context):
-    return _launch_config("pre_analysis")
+def automation_pre_analysis_schedule(context):
+    return _launch_request(context, "pre_analysis")
 
 
 @schedule(
@@ -49,5 +57,5 @@ def automation_pre_analysis_schedule(_context):
     name="automation_notification_retry",
     description="Retry queued notifications every five minutes",
 )
-def automation_notification_retry_schedule(_context):
-    return _launch_config("notification_retry")
+def automation_notification_retry_schedule(context):
+    return _launch_request(context, "notification_retry")

@@ -40,7 +40,7 @@ class ImportResult:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill market candles into market_candles.")
-    parser.add_argument("--asset", default="XAUUSD", help="Supported: XAUUSD, DXY")
+    parser.add_argument("--asset", default="GC", help="Supported: GC (GC=F), XAUUSD (1m staging), DXY")
     parser.add_argument("--timeframe", default="1d", help="Supported now: 1d, 1h, 1m")
     parser.add_argument("--range", dest="range_", default="1y", help="Historical range for 1d fallback fetches, for example 3mo/1y/2y/5y.")
     parser.add_argument("--start-date", default="", help="Optional start date YYYY-MM-DD for OpenBB-backed 1d/1h fetches.")
@@ -64,12 +64,16 @@ def main() -> None:
 
     asset = args.asset.upper()
     timeframe = args.timeframe.lower()
-    if asset not in {"XAUUSD", "DXY"}:
-        raise SystemExit(f"unsupported --asset {asset!r}; currently only XAUUSD and DXY are implemented")
+    if asset not in {"GC", "XAUUSD", "DXY"}:
+        raise SystemExit(f"unsupported --asset {asset!r}; currently only GC, XAUUSD and DXY are implemented")
     if timeframe not in {"1d", "1h", "1m"}:
         raise SystemExit(f"unsupported --timeframe {timeframe!r}; currently only 1d, 1h and 1m are implemented")
     if asset == "DXY" and timeframe != "1d":
         raise SystemExit("DXY is only supported as daily candles; do not backfill fabricated intraday DXY data")
+    if asset == "GC" and timeframe not in {"1d", "1h"}:
+        raise SystemExit("GC is supported as 1d or 1h GC=F candles")
+    if asset == "XAUUSD" and timeframe != "1m":
+        raise SystemExit("XAUUSD backfill only supports Jin10 1m staging; use --asset GC for GC=F")
 
     storage_root = Path(args.storage_root).resolve()
     database_url = args.database_url or DATABASE_URL
@@ -130,8 +134,12 @@ def main() -> None:
             start_date=start_date,
             end_date=end_date,
         )
-        source = "openbb_yfinance_60m" if asset == "XAUUSD" else "jin10_mcp_kline"
-        source_ref = {"symbol": asset, "source": "openbb_yfinance" if asset == "XAUUSD" else "jin10_mcp"}
+        source = "openbb_yfinance_gc_f_60m"
+        source_ref = {
+            "provider_symbol": "GC=F",
+            "source": "openbb_yfinance",
+            "instrument_type": "futures_continuous_proxy",
+        }
     else:
         jin10_batches = _target_minutes_to_batches(args.target_minutes) if args.target_minutes else max(args.jin10_batches, 1)
         candles, raw_path = collect_intraday_minute_candles(
@@ -215,15 +223,21 @@ def collect_daily_candles(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> tuple[list[dict[str, Any]], str, str, dict[str, Any]]:
-    if asset == "XAUUSD":
-        candles, raw_path = collect_xauusd_daily_candles(
+    if asset == "GC":
+        candles, raw_path = collect_gc_daily_candles(
             storage_root=storage_root,
             input_json=input_json,
             range_=range_,
             start_date=start_date,
             end_date=end_date,
         )
-        return candles, raw_path, "yahoo_finance_gc_f", {"ticker": "GC=F", "url": YAHOO_GC_CHART_URL}
+        return candles, raw_path, "yahoo_finance_gc_f", {
+            "provider_symbol": "GC=F",
+            "instrument_type": "futures_continuous_proxy",
+            "url": YAHOO_GC_CHART_URL,
+        }
+    if asset != "DXY":
+        raise ValueError(f"daily candles are not available for {asset}; use GC for GC=F")
     candles, raw_path = collect_dxy_daily_candles(
         storage_root=storage_root,
         input_json=input_json,
@@ -234,7 +248,7 @@ def collect_daily_candles(
     return candles, raw_path, "yahoo_finance_dx_y_nyb", {"ticker": "DX-Y.NYB", "url": YAHOO_DXY_CHART_URL}
 
 
-def collect_xauusd_daily_candles(
+def collect_gc_daily_candles(
     *,
     storage_root: Path,
     input_json: str | None = None,
@@ -269,7 +283,7 @@ def collect_xauusd_daily_candles(
                 payload = json.loads(payload_path.read_text(encoding="utf-8"))
                 raw_path = payload_path.relative_to(storage_root).as_posix()
                 return _parse_yahoo_daily_candles(payload), raw_path
-            raise ValueError(f"unable to fetch XAUUSD daily candles and no local raw fallback found: {exc}") from exc
+            raise ValueError(f"unable to fetch GC daily candles and no local raw fallback found: {exc}") from exc
 
     today = datetime.now(UTC).date().isoformat()
     raw_path = archive_raw_payload(
@@ -471,9 +485,9 @@ def collect_intraday_hourly_candles(
         raw_path = payload_path.relative_to(storage_root).as_posix() if payload_path.is_relative_to(storage_root) else str(payload_path)
         return _parse_intraday_payload(payload, asset=asset), raw_path
 
-    if asset == "XAUUSD":
+    if asset == "GC":
         try:
-            return collect_xauusd_hourly_candles_via_openbb(
+            return collect_gc_hourly_candles_via_openbb(
                 storage_root=storage_root,
                 start_date=start_date,
                 end_date=end_date,
@@ -510,7 +524,7 @@ def collect_intraday_minute_candles(
     return _parse_jin10_minute_candles_from_payloads(payloads), raw_paths[-1]
 
 
-def collect_xauusd_hourly_candles_via_openbb(
+def collect_gc_hourly_candles_via_openbb(
     *,
     storage_root: Path,
     start_date: date | None = None,

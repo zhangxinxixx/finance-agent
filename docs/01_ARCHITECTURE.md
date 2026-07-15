@@ -1,109 +1,80 @@
 # 总体架构
 
+> 代码基线：2026-07-21。
+
 ## 架构原则
 
-- 后端负责采集、解析、特征计算、分析、报告生成和结构化 read model。
-- 前端只消费 API 和展示状态，不计算策略结论。
-- LLM / Agent 不替代确定性计算；确定性指标先由 collectors / parsers / features 生成。
-- 每个结论尽量绑定 `run_id`、`snapshot_id`、`source_refs`、`artifact_refs`。
-- 缺失数据必须显式暴露为 unavailable / fallback / mock / manual_required，不伪装成 live。
+- Core / control plane 只有一套：API 负责受控触发，Dagster 负责编排，既有 pipeline 实现负责领域执行。
+- 前端只消费 API，不重复计算策略、期权墙或宏观特征。
+- `raw -> parsed -> features -> outputs` 是稳定 lineage；Agent 只消费快照或上游产物。
+- 缺失、过期、降级、mock 和人工补录必须显式标记。
+- LLM 输出不能覆盖确定性事实；事实、外部意见和系统推断必须可区分。
 
-## 逻辑分层
+## 运行拓扑
 
-```text
-apps/frontend-web
-  -> apps/api
-    -> apps/scheduler
-      -> apps/worker
-        -> apps/collectors
-        -> apps/parsers
-        -> apps/features
-        -> apps/analysis
-        -> apps/renderer
-        -> apps/output
-    -> database
-    -> storage
+```mermaid
+flowchart LR
+    Frontend[apps/frontend-web] --> API[FastAPI routes]
+    API --> Services[Services / repositories]
+    Services --> DB[(PostgreSQL / SQLite-compatible models)]
+    Services --> Storage[Storage artifacts]
+    API --> Launch[Dagster GraphQL launch]
+    Schedule[Dagster schedules] --> Job[Premarket job]
+    Launch --> Job
+    Job --> Macro[Macro pipeline]
+    Job --> CME[CME pipeline]
+    Job --> News[News pipeline]
+    Macro --> Snapshot[Analysis snapshot]
+    CME --> Snapshot
+    News --> Snapshot
+    Snapshot --> Readiness[Readiness gate]
+    Readiness --> Analysis[Composite analysis]
+    Analysis --> DB
+    Analysis --> Storage
 ```
 
-## 后端运行链路
+`premarket_job` 为当前盘前主链：三个领域子图可并行执行，之后合并快照，通过 fail-closed 的 source readiness gate，再进入 canonical composite analysis。
 
-API 层：
+{% hint style="warning" %}
+`apps/scheduler/runner.py` 和 `apps/worker/runner.py` 是兼容路径，不是新的调度权威。新增生产能力应进入 Dagster Definitions。
+{% endhint %}
 
-- `apps/api/main.py` 定义 FastAPI app、生命周期、路由。
-- `apps/api/schemas/` 定义 API Pydantic contracts。
-- `apps/api/services/` 承载业务 read model 和写请求处理。
-- `apps/api/data_service.py` 是兼容层，转发到 services。
+## 控制面与兼容面
 
-Scheduler：
+- `apps/api/routes/`：模块化 HTTP 路由。
+- `apps/api/services/`：read model、触发与状态汇总。
+- `dagster_finance/definitions.py`：注册 jobs、schedules 和资源。
+- `apps/worker/pipelines/`：被 Dagster ops 包装复用的领域 pipeline。
+- `apps/scheduler/runner.py`、`apps/worker/runner.py`：仍存在的 legacy/compat 路径，不应与 Dagster 同时成为调度主脑。
 
-- `apps/scheduler/runner.py` 使用后台线程触发 worker。
-- `apps/api/main.py` lifespan 中使用 APScheduler 刷新 Jin10 quotes/kline/calendar/flash，并配置每日 premarket。
+## 数据与持久化
 
-Worker：
+数据库按多个 SQLAlchemy Base 组织：
 
-- `apps/worker/runner.py` 是 premarket 主执行器。
-- `apps/worker/pipelines/macro.py` 执行宏观链路。
-- `apps/worker/pipelines/cme.py` 执行 CME 链路。
+- 运行：`task_runs`、`task_steps`
+- 执行可观测性：`execution_events`、`run_artifacts`
+- 分析：`analysis_snapshots`、`agent_outputs`、`final_analysis_results`
+- 数据状态与治理：`data_source_status`、`daily_source_health_*`、`prompt_versions`、`review_items`、`llm_call_audits`
+- 报告：`report_items`、`report_artifacts`
+- 领域：CME、市场 K 线、Jin10、Playbook 等表
 
-数据/分析：
+启动时调用 Alembic runtime migration。当前已有基线 migration：`20260704_0001_unify_runtime_schema.py`；部分 `ensure_*_tables()` / additive DDL 仍保留用于兼容旧数据库。
 
-- collectors 写 raw 或返回 collector results。
-- parsers 把 raw 转成 structured rows / points。
-- features 生成 macro snapshot、options snapshot 等 deterministic features。
-- analysis 生成 analysis snapshot、agent outputs、final analysis result、strategy card。
-- renderer/output 写 Markdown、HTML、JSON artifact。
+## 前端架构
 
-## 前端运行链路
+- `main.tsx` 是唯一正式路由入口。
+- `AppShell` 和 `AppSidebar` 提供研究工作台框架。
+- adapters 将 API contract 转换成页面 view model。
+- `src/mocks` 和 fallback 仍存在；所有非 live 数据都必须在 UI 中显式标注。
 
-- `apps/frontend-web/src/main.tsx` 定义路由。
-- `AppShell`、`AppSidebar`、`AppHeader` 构成中台框架。
-- `adapters/apiClient.ts` 统一 fetch JSON。
-- 页面 adapters 负责把后端 API 变成 view model。
-- `src/mocks/` 仍存在，用于 fallback 或空状态演示；页面必须显式标注 mock/fallback。
+## 安全边界
 
-## 数据库
+- 设置和密钥写 API 必须使用结构化参数，不把 secret 返回给前端。
+- 手工上传是兜底，不是默认采集主流程。
+- 本地文件路径只能作为内部 artifact reference，公开文档和外部输出不得泄露工作站绝对路径或凭据。
 
-模型入口：
+## 相关内容
 
-- `database/models/task.py`
-- `database/models/analysis.py`
-- `database/models/report.py`
-- `database/models/cme.py`
-- `database/models/playbook.py`
-
-当前迁移特点：
-
-- `database/migrations/versions/` 当前没有实际 migration 文件。
-- `apps/api/main.py` startup 调用 `ensure_task_tables()`、`ensure_analysis_tables()`、`ensure_report_tables()`。
-- 这适合 MVP additive table/column，但长期需要 Alembic migration 策略。
-
-## 存储
-
-存储目录：
-
-- `storage/raw`
-- `storage/parsed`
-- `storage/features`
-- `storage/outputs`
-- `storage/logs`
-
-新 run artifact 逐步使用 `<layer>/<domain>/<date>/<run_id>/...`。历史产物仍存在非 run-partitioned 路径，例如 `storage/outputs/macro/<date>/macro_snapshot.md`。
-
-## 已实现与待统一
-
-已实现：
-
-- FastAPI 只读和少量写操作 API。
-- Run / TaskStep 基础状态机。
-- SourceTrace API。
-- ReportItem / ReportArtifact 标准表。
-- Reports detail 前端。
-- Agent registry / prompt governance / feedback。
-- Settings / Review / DataSourceStatus。
-
-待统一：
-
-- domain agents/final report/strategy card 尚未完全拆成 TaskStep。
-- 报告四类标准 artifact 需要按 report family 完整校准。
-- Alembic migrations 缺失。
-- 前端 mock/fallback 状态需要更严格展示。
+- [后端主链](02_BACKEND_PIPELINE.md)
+- [数据模型与存储](04_DATA_MODEL_AND_STORAGE.md)
+- [Run、Snapshot 与 SourceTrace](07_SOURCE_TRACE_AND_RUN.md)

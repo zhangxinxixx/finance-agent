@@ -196,24 +196,31 @@ def test_write_final_report_creates_parent_dirs(tmp_path: Path) -> None:
     assert written_path.is_file()
 
 
-def test_write_final_report_default_no_overwrite(tmp_path: Path) -> None:
-    """Default overwrite=False should raise FileExistsError on second write."""
+def test_write_final_report_default_is_idempotent_but_rejects_conflicts(tmp_path: Path) -> None:
     markdown = _render_final_report_md()
     run_id = "run-overwrite-test"
 
     # first write — ok
-    write_final_report(
+    first = write_final_report(
         storage_root=tmp_path,
         markdown=markdown,
         trade_date=_TRADE_DATE,
         run_id=run_id,
     )
 
-    # second write — should fail
-    with pytest.raises(FileExistsError, match="already exists"):
+    second = write_final_report(
+        storage_root=tmp_path,
+        markdown=markdown,
+        trade_date=_TRADE_DATE,
+        run_id=run_id,
+    )
+
+    assert first["skipped"] is False
+    assert second["skipped"] is True
+    with pytest.raises(FileExistsError, match="different content"):
         write_final_report(
             storage_root=tmp_path,
-            markdown=markdown,
+            markdown=f"{markdown}\nchanged\n",
             trade_date=_TRADE_DATE,
             run_id=run_id,
         )
@@ -392,15 +399,21 @@ def test_write_strategy_card_md_is_valid_markdown(tmp_path: Path) -> None:
     assert "Put support near 2350" in content
 
 
-def test_write_strategy_card_default_no_overwrite(tmp_path: Path) -> None:
+def test_write_strategy_card_default_is_idempotent_but_rejects_conflicts(tmp_path: Path) -> None:
     card = _strategy_card(run_id="run-card-no-overwrite")
 
     # first write
-    write_strategy_card(storage_root=tmp_path, card=card)
+    first = write_strategy_card(storage_root=tmp_path, card=card)
 
-    # second write — should fail
-    with pytest.raises(FileExistsError, match="already exist"):
-        write_strategy_card(storage_root=tmp_path, card=card)
+    second = write_strategy_card(storage_root=tmp_path, card=card)
+
+    assert first["skipped"] is False
+    assert second["skipped"] is True
+    with pytest.raises(FileExistsError, match="different content"):
+        write_strategy_card(
+            storage_root=tmp_path,
+            card=card.model_copy(update={"scenario_summary": "changed"}),
+        )
 
 
 def test_write_strategy_card_overwrite_true_replaces_both_files(tmp_path: Path) -> None:

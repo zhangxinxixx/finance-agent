@@ -38,7 +38,7 @@ def _discover_jin10_events(*, storage_root: Path, trade_date: str, observed_at: 
         source_key = "jin10_research_master_review" if report_type == "research" and series == "master_review" else "jin10_report"
         title = str(payload.get("title") or payload.get("document_title") or f"Jin10 report {article_id}")
         event_hash = file_sha256(report_path)
-        event_id = safe_event_id(source_key, article_id, event_hash[:10])
+        event_id = safe_event_id(source_key, article_id)
         raw_index_path = storage_root / "raw" / "jin10" / trade_date / "index.json"
         parsed_index_path = storage_root / "parsed" / "jin10" / trade_date / "index.json"
         events.append(
@@ -50,6 +50,8 @@ def _discover_jin10_events(*, storage_root: Path, trade_date: str, observed_at: 
                 event_hash=event_hash,
                 title=title,
                 trade_date=trade_date,
+                published_at=str(payload.get("published_at") or "") or _file_timestamp(report_path),
+                first_seen_at=observed_at.isoformat(),
                 source_url=f"https://xnews.jin10.com/details/{article_id}",
                 article_id=article_id,
                 raw_refs=[{"artifact_type": "raw_index", "path": rel(raw_index_path, storage_root)}]
@@ -73,7 +75,7 @@ def _discover_cme_events(*, storage_root: Path, trade_date: str, observed_at: da
     events: list[EventSnapshot] = []
     for pdf_path in sorted(raw_root.glob("Section64_Metals_Option_Products*.pdf")):
         digest = file_sha256(pdf_path)
-        event_id = safe_event_id("cme_gold_options_bulletin", trade_date, digest[:10])
+        event_id = safe_event_id("cme_gold_options_bulletin", trade_date, "OG")
         payload = read_json(parsed[-1]) if parsed else {}
         events.append(
             EventSnapshot(
@@ -84,6 +86,8 @@ def _discover_cme_events(*, storage_root: Path, trade_date: str, observed_at: da
                 event_hash=digest,
                 title=f"CME Metals Option Products {trade_date}",
                 trade_date=trade_date,
+                published_at=_file_timestamp(pdf_path),
+                first_seen_at=observed_at.isoformat(),
                 file_date=trade_date,
                 file_name=pdf_path.name,
                 raw_refs=[{"artifact_type": "cme_daily_bulletin_pdf", "path": rel(pdf_path, storage_root), "sha256": digest}],
@@ -100,3 +104,10 @@ def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _file_timestamp(path: Path) -> str | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+    except OSError:
+        return None

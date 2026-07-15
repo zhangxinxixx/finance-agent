@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from apps.analysis.jin10.agent_analysis import (
     MISSING,
     _parse_llm_output_to_fields,
+    _validate_llm_output_to_report_fields,
     agent_analysis_prompt_version,
     build_agent_analysis_prompt,
     build_jin10_agent_analysis_report,
@@ -67,6 +69,44 @@ def _agent_report():
     return raw_report, daily_report, build_jin10_agent_analysis_report(raw_report, daily_report)
 
 
+def _llm_payload(report) -> dict:
+    payload = report.to_dict()
+    payload.update(
+        title="测试报告",
+        one_line_conclusion="黄金更接近弱修复观察期，4500仍是核心分界位。",
+        market_stage={
+            "label": "弱修复观察期",
+            "reason": "价格尚未完成趋势确认。",
+            "confirmation_matrix": {
+                "阶段": "弱修复观察期",
+                "底部证据": "中等",
+                "趋势反转证据": "偏弱",
+                "价格确认": "未完成",
+                "宏观确认": "部分完成",
+                "资金确认": "未完成",
+            },
+        },
+        key_levels=[{"value": "4500", "asset": "黄金", "source_category": "图表事实", "meaning": "核心分界位"}],
+        scenario_paths=[
+            {"name": "主路径", "trigger": "守住4500", "path": "区间修复", "invalid": "跌破4500"},
+            {"name": "上行路径", "trigger": "收复4600", "path": "修复延续", "invalid": "回落4500"},
+            {"name": "下行路径", "trigger": "跌破4500", "path": "重新承压", "invalid": "收复4600"},
+        ],
+        trading_implications=[
+            {"role": "空仓", "wait_for": "等待确认", "invalid": "跌破4500"},
+            {"role": "已有多单", "wait_for": "观察4600", "invalid": "跌破4500"},
+            {"role": "已有空单", "wait_for": "观察4500", "invalid": "收复4600"},
+        ],
+    )
+    fields = {
+        "title", "one_line_conclusion", "market_stage", "logic_chain", "key_variables",
+        "gold_analysis", "silver_analysis", "cross_asset_analysis", "key_levels",
+        "scenario_paths", "trading_implications", "risk_points", "final_summary",
+        "unresolved_items", "evidence_basis",
+    }
+    return {key: payload[key] for key in fields}
+
+
 def test_build_agent_analysis_prompt_includes_required_framework_terms() -> None:
     raw_report, daily_report, _ = _agent_report()
 
@@ -74,7 +114,8 @@ def test_build_agent_analysis_prompt_includes_required_framework_terms() -> None
 
     assert "报告明确事实" in prompt
     assert "相对前序判断" in prompt
-    assert "不输出 YAML、JSON 或 Agent 入库字段" in prompt
+    assert "最终响应必须遵守末尾 JSON schema" in prompt
+    assert "只返回一个 JSON object" in prompt
     assert "# 1. 最新判断发生了什么变化？" in prompt
     assert "# 7. 三条路径推演" in prompt
     assert "# 8. 操作层面怎么理解？" in prompt
@@ -119,6 +160,45 @@ def test_build_agent_analysis_prompt_embeds_previous_daily_analysis() -> None:
     assert "upside_trigger_primary" not in prompt
     assert "valid_until_event" not in prompt
     assert "evidence_refs" not in prompt
+
+
+def test_build_agent_analysis_prompt_uses_weekly_anchor_and_fresh_context() -> None:
+    raw_report, daily_report, _ = _agent_report()
+    context = {
+        "status": "ready",
+        "weekly_anchor": {
+            "source_kind": "weekly_context_revision",
+            "trade_date": "2026-07-12",
+            "article_id": "weekly-1",
+            "quality_status": "needs_review",
+            "publication_status": "observe",
+            "publish_allowed": False,
+            "executive_summary": "周报偏修复，但仍待利率确认。",
+            "claim_revisions": [{"claim_id": "overall", "action": "weaken", "reason": "实际利率仍高"}],
+        },
+        "latest_market": {"technical": {"price": 4557.55}, "macro": {"indicators": {"US10Y": {"value": 4.5}}}},
+        "latest_news": {"market_mainline": {"summary": "油价冲击", "verification_status": "candidate"}},
+        "gold_mainline": {"dominant_mainline": "fed_policy_path"},
+        "oil_context": {},
+        "freshness": {
+                "weekly_anchor": {"status": "current", "as_of": "2026-07-12"},
+                "market": {"status": "current", "as_of": "2026-07-13"},
+                "news": {"status": "current", "as_of": "2026-07-13"},
+            "oil": {"status": "missing", "as_of": None},
+        },
+        "input_snapshot_ids": {"weekly_anchor": "outputs/weekly.json", "premarket_snapshot": "features/premarket.json"},
+    }
+
+    prompt = build_agent_analysis_prompt(raw_report.to_dict(), daily_report.to_dict(), analysis_context=context)
+
+    assert "=== analysis_baseline（周一周报 / 后续前一日最终综合分析报告） ===" in prompt
+    assert "=== latest_market_context（最新价格 / 利率 / CME / COT） ===" in prompt
+    assert "=== latest_news_context（最新消息 / 黄金主线 / 油价链） ===" in prompt
+    assert "周报偏修复，但仍待利率确认" in prompt
+    assert '"publish_allowed": false' in prompt
+    assert '"price": 4557.55' in prompt
+    assert "强化 / 维持 / 削弱 / 失效 / 待确认" in prompt
+    assert "Brent/WTI 数值尚未确认" in prompt
 
 
 def test_build_agent_analysis_prompt_marks_compacted_fallback_chart_mode() -> None:
@@ -180,6 +260,7 @@ def test_build_agent_analysis_prompt_uses_market_observation_framework() -> None
     assert "市场观察 / 市场赔率专用分析" in prompt
     assert "不要套用每日金银报告" in prompt
     assert "# 3. 赔率和观察信号怎么读？" in prompt
+    assert agent_analysis_prompt_version(raw_report, daily_report) == "jin10_agent_analysis_market_odds_v1"
     assert "# 5. 作为辅助决策依据怎么用？" in prompt
     assert "黄金7月触及4200美元的概率升至94%" in prompt
     assert "# 3. 黄金为什么涨 / 为什么跌？" not in prompt
@@ -439,10 +520,12 @@ def test_render_jin10_agent_analysis_markdown_contains_fixed_sections() -> None:
     markdown = render_jin10_agent_analysis_markdown(report)
 
     assert "Agent 二次分析报告" in markdown
-    assert "# 分析溯源 / 数据来源" in markdown
-    assert "# 3. 报告核心逻辑" in markdown
-    assert "# 5. 关键位与触发条件" in markdown
-    assert "# 7. 风险与仍待确认项" in markdown
+    assert "分析溯源 / 数据来源" not in markdown
+    assert report.provenance
+    assert "# 5. 当前阶段判断与确认矩阵" in markdown
+    assert "# 6. 关键位更新" in markdown
+    assert "# 7. 三条路径推演" in markdown
+    assert "# 8. 操作层面怎么理解？" in markdown
     assert "## Agent 入库字段" not in markdown
 
 
@@ -467,7 +550,7 @@ def test_llm_agent_analysis_submits_real_images_and_records_visual_trace(monkeyp
     captured = {}
 
     class Response:
-        content = "# 测试｜Agent 二次分析报告\n\n## 一句话结论\n\n图表显示4500，来源 [figure_id=fig_p2_001 page_no=2]。"
+        content = json.dumps(_llm_payload(_agent_report()[2]), ensure_ascii=False)
         model = "gpt-5.5"
         provider = "cockpit"
         latency_ms = 42
@@ -498,13 +581,15 @@ def test_llm_agent_analysis_submits_real_images_and_records_visual_trace(monkeyp
     assert captured["model"] == "gpt-5.6-sol"
     assert captured["reasoning_effort"] == "high"
     assert captured["request_timeout"] == 300.0
+    assert captured["json_mode"] is True
     assert result.generated_from["max_images"] == 25
     assert result.generated_from["vision_model"] == "gpt-5.5"
     assert result.generated_from["submitted_image_count"] == 1
     assert result.generated_from["image_processing_status"] == "success"
     assert result.generated_from["degraded"] is False
     assert result.generated_from["figure_results"][0]["figure_id"] == "fig_p2_001"
-    assert result.generated_from["figure_results"][0]["referenced_in_output"] is True
+    assert result.generated_from["structured_output_validated"] is True
+    assert "narrative_markdown" not in result.generated_from
 
 
 def test_llm_agent_analysis_accepts_formal_runtime_overrides(monkeypatch) -> None:
@@ -512,7 +597,7 @@ def test_llm_agent_analysis_accepts_formal_runtime_overrides(monkeypatch) -> Non
     captured = {}
 
     class Response:
-        content = "# 测试｜Agent 二次分析报告\n\n## 一句话结论\n\n保持观察。"
+        content = json.dumps(_llm_payload(_agent_report()[2]), ensure_ascii=False)
         model = "custom-sol"
         provider = "cockpit"
         latency_ms = 10
@@ -632,6 +717,35 @@ def test_parse_llm_output_to_fields_strips_markdown_separator_from_one_line_conc
     fields = _parse_llm_output_to_fields(markdown, daily={}, raw={})
 
     assert fields["one_line_conclusion"] == "黄金当前更接近弱修复观察期。"
+
+
+def test_validate_llm_structured_output_rejects_incomplete_daily_coverage() -> None:
+    payload = _llm_payload(_agent_report()[2])
+    payload["scenario_paths"] = payload["scenario_paths"][:1]
+
+    try:
+        _validate_llm_output_to_report_fields(json.dumps(payload, ensure_ascii=False), prompt_profile="default_daily")
+    except ValueError as exc:
+        assert "scenario_paths:daily_coverage" in str(exc)
+    else:
+        raise AssertionError("incomplete daily coverage must be rejected")
+
+
+def test_validated_json_and_rendered_markdown_share_conclusion_stage_and_levels() -> None:
+    _, _, fallback = _agent_report()
+    fields = _validate_llm_output_to_report_fields(
+        json.dumps(_llm_payload(fallback), ensure_ascii=False),
+        prompt_profile="default_daily",
+    )
+    for key, value in fields.items():
+        if hasattr(fallback, key):
+            setattr(fallback, key, value)
+
+    markdown = render_jin10_agent_analysis_markdown(fallback)
+
+    assert fields["one_line_conclusion"] in markdown
+    assert fields["market_stage"]["label"] in markdown
+    assert fields["key_levels"][0]["value"] in markdown
 
 
 def test_write_jin10_outputs_writes_agent_analysis_artifacts(tmp_path: Path) -> None:

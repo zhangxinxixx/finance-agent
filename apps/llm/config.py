@@ -16,6 +16,7 @@ class ProviderConfig:
     default_model: str
     max_tokens: int = 4096
     timeout: float = 120.0
+    default_reasoning_effort: str | None = None
 
 
 @dataclass
@@ -41,12 +42,14 @@ class LLMConfig:
             # Try reading from an optional local provider config.
             try:
                 import yaml
-                provider_config_path = os.path.expanduser("~/.finance-agent/config.yaml")
+                provider_config_path = os.path.expanduser(
+                    os.getenv("FINANCE_AGENT_PROVIDER_CONFIG", "~/.finance-agent/config.yaml")
+                )
                 if os.path.exists(provider_config_path):
                     with open(provider_config_path) as f:
                         provider_config = yaml.safe_load(f)
                     for provider in provider_config.get("custom_providers", []):
-                        if provider.get("name") == "cockpit-codex":
+                        if provider.get("name") == "cockpit":
                             cockpit_key = cockpit_key or provider.get("api_key", "")
                             cockpit_url = cockpit_url or provider.get("base_url", "")
                             break
@@ -57,21 +60,24 @@ class LLMConfig:
                 name="cockpit",
                 api_key=cockpit_key,
                 base_url=cockpit_url,
-                default_model=os.getenv("LLM_COCKPIT_MODEL", "gpt-5.5"),
+                default_model=os.getenv("LLM_COCKPIT_MODEL", "gpt-5.6-sol"),
                 max_tokens=int(os.getenv("LLM_COCKPIT_MAX_TOKENS", "4096")),
                 timeout=float(os.getenv("LLM_COCKPIT_TIMEOUT", "180")),
+                default_reasoning_effort=os.getenv("LLM_COCKPIT_REASONING_EFFORT", "high"),
             )
 
-        # DashScope (Alibaba Qwen)
-        ds_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
-        if ds_key:
-            providers["dashscope"] = ProviderConfig(
-                name="dashscope",
-                api_key=ds_key,
-                base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-                default_model=os.getenv("LLM_DASHSCOPE_MODEL", "qwen-plus"),
-                max_tokens=int(os.getenv("LLM_DASHSCOPE_MAX_TOKENS", "4096")),
-                timeout=float(os.getenv("LLM_DASHSCOPE_TIMEOUT", "120")),
+        # JojoCode — Responses-compatible provider with hosted web_search.
+        jojocode_key = os.getenv("JOJOCODE_API_KEY", "").strip()
+        jojocode_url = os.getenv("JOJOCODE_BASE_URL", "").strip()
+        if jojocode_key:
+            providers["jojocode"] = ProviderConfig(
+                name="jojocode",
+                api_key=jojocode_key,
+                base_url=jojocode_url or "https://max.jojocode.com/v1",
+                default_model=os.getenv("LLM_JOJOCODE_MODEL", "gpt-5.6-sol"),
+                max_tokens=int(os.getenv("LLM_JOJOCODE_MAX_TOKENS", "4096")),
+                timeout=float(os.getenv("LLM_JOJOCODE_TIMEOUT", "180")),
+                default_reasoning_effort=os.getenv("LLM_JOJOCODE_REASONING_EFFORT", "high"),
             )
 
         # Xiaomi MiMo

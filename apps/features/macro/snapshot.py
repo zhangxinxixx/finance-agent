@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, timedelta
 
 
@@ -53,6 +53,7 @@ MACRO_INDICATOR_SPECS: tuple[_MacroIndicatorSpec, ...] = (
     _MacroIndicatorSpec("SOFR", "SOFR", ("SOFR",), "rate", "%"),
     _MacroIndicatorSpec("EFFR", "EFFR", ("EFFR",), "rate", "%"),
     _MacroIndicatorSpec("IORB", "IORB", ("IORB",), "rate", "%"),
+    _MacroIndicatorSpec("US03M", "US03M", ("DGS3MO",), "rate", "%"),
     _MacroIndicatorSpec("US02Y", "US02Y", ("DGS2",), "rate", "%"),
     _MacroIndicatorSpec("US10Y", "US10Y", ("DGS10",), "rate", "%"),
     _MacroIndicatorSpec("BREAKEVEN_10Y", "10Y Breakeven", ("T10YIE",), "rate", "%"),
@@ -120,6 +121,8 @@ def build_macro_snapshot(
             unit=spec.unit,
             direction_note=_direction_note(spec=spec, current=current, weekly=weekly, monthly=monthly),
         )
+
+    _apply_short_curve_direction_note(indicators)
 
     return MacroSnapshot(
         as_of=as_of,
@@ -203,6 +206,16 @@ def _direction_note(
     negative = any(change < 0 for change in observed_changes)
 
     if spec.kind in {"rate", "spread"}:
+        if spec.symbol == "US03M":
+            if weekly_change is not None and weekly_change < 0:
+                return "3M 周度下行，当前政策价格出现转松信号"
+            if weekly_change is not None and weekly_change > 0:
+                return "3M 周度上行，当前短端价格进一步收紧"
+            if monthly_change is not None and monthly_change < 0:
+                return "3M 周度持平、月度下行，当前政策价格仅缓慢转松"
+            if monthly_change is not None and monthly_change > 0:
+                return "3M 周度持平、月度上行，当前政策价格未松"
+            return "3M 基本持平，当前政策价格没有新增宽松信号"
         if positive and not negative:
             return "收益率或利差抬升，边际压力略增"
         if negative and not positive:
@@ -238,6 +251,49 @@ def _direction_note(
         return "美元方向混杂，仍需后续数据确认"
 
     return "暂无可用方向解读"
+
+
+def _apply_short_curve_direction_note(indicators: dict[str, MacroIndicator]) -> None:
+    spread = indicators.get("YIELD_SPREAD_2Y_3M")
+    us02y = indicators.get("US02Y")
+    us03m = indicators.get("US03M")
+    if spread is None or us02y is None or us03m is None:
+        return
+
+    curve_state = "正斜率" if spread.value > 0 else "倒挂" if spread.value < 0 else "持平"
+    if spread.weekly_change is None or spread.weekly_change == 0:
+        curve_change = "周度基本不变"
+    elif spread.value >= 0:
+        curve_change = "周度走阔" if spread.weekly_change > 0 else "周度收窄"
+    else:
+        curve_change = "倒挂收窄" if spread.weekly_change > 0 else "倒挂加深"
+
+    indicators[spread.symbol] = replace(
+        spread,
+        direction_note=f"{curve_state}、{curve_change}；{_short_curve_leg_note(us02y.weekly_change, us03m.weekly_change)}",
+    )
+
+
+def _short_curve_leg_note(two_change: float | None, three_change: float | None) -> str:
+    if two_change is None or three_change is None:
+        return "2Y 或 3M 周变化缺失，不能单独解释曲线信号"
+    if two_change > 0 and three_change < 0:
+        return "2Y 上行、3M 下行，鹰派预期与近期价格转松并存"
+    if two_change < 0 and three_change > 0:
+        return "2Y 下行、3M 上行，未来预期缓和但当前短端更紧"
+    if two_change >= 0 and three_change >= 0:
+        if two_change > three_change:
+            return "2Y 升幅更大，未来利率溢价偏鹰"
+        if three_change > two_change:
+            return "3M 升幅更大，当前短端收紧更明显"
+        return "2Y 与 3M 同步，曲线未提供新增方向确认"
+    if abs(three_change) > abs(two_change):
+        return "3M 降幅更大，近期政策价格转松信号较强"
+    if abs(two_change) > abs(three_change):
+        if three_change == 0:
+            return "2Y 下行、3M 未降，未来紧缩溢价缓和但当前短端未松"
+        return "2Y 降幅更大，未来紧缩溢价缓和更明显"
+    return "2Y 与 3M 同步，曲线未提供新增方向确认"
 
 
 def _diff_from(current: dict[str, object], previous: dict[str, object] | None) -> float | None:

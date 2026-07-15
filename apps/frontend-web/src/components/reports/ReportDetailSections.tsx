@@ -120,6 +120,9 @@ function ReportDetailCompactTabs({
 }
 
 export function ReportGoldMacroOverviewCard({ data }: { data: ReportDetailView }) {
+  const reportType = typeof data.structured_payload?.report_type === "string" ? data.structured_payload.report_type : "";
+  const isMarketObservation = data.meta.family === "jin10_market_observation_report" || reportType === "market_observation";
+  if (isMarketObservation) return null;
   const overview = data.gold_macro_overview;
   if (!overview) return null;
   const topRankings = [...(overview.theme_rankings ?? [])]
@@ -187,7 +190,7 @@ export function ReportMarketObservationCard({ data }: { data: ReportDetailView }
   const isMarketObservation = data.meta.family === "jin10_market_observation_report" || reportType === "market_observation";
   if (!isMarketObservation) return null;
 
-  const sourceCount = data.source_refs.length || data.generation_trace?.source_counts?.source_refs || 0;
+  const sourceCount = data.source_refs.length;
   const contentText = `${data.meta.title ?? ""} ${payloadString(data.structured_payload)}`;
   const hasOddsTable = /市场赔率|赔率表|odds/i.test(contentText);
   const hasVipObservation = /VIP每日市场观察|每日市场观察|market observation/i.test(contentText);
@@ -215,9 +218,11 @@ export function ReportMarketObservationCard({ data }: { data: ReportDetailView }
             市场赔率表
           </span>
         ) : null}
-        <span className="rounded-[var(--radius-pill)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">
-          来源 {sourceCount}
-        </span>
+        {sourceCount > 0 ? (
+          <span className="rounded-[var(--radius-pill)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">
+            来源 {sourceCount}
+          </span>
+        ) : null}
         <span className="fa-num rounded-[var(--radius-pill)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">
           {data.meta.trade_date ?? "日期未知"}
         </span>
@@ -276,9 +281,11 @@ export function ReportGenerationTraceCard({
             vision_layout {formatAuditStatus(trace.vlm.vision_layout_status === "present" ? "pass" : "needs_review")}
           </FAStatusPill>
         ) : null}
-        <span className="rounded-[var(--radius-pill)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">
-          来源 {data.source_refs.length || trace.source_counts?.source_refs || 0}
-        </span>
+        {data.source_refs.length > 0 ? (
+          <span className="rounded-[var(--radius-pill)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">
+            来源 {data.source_refs.length}
+          </span>
+        ) : null}
         <span className="rounded-[var(--radius-pill)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">
           原图 {trace.source_counts?.original_images ?? "-"}
         </span>

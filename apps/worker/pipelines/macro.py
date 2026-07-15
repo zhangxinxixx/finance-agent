@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import queue
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,7 +31,7 @@ from apps.analysis.macro.conclusion import build_macro_conclusion
 from apps.analysis.macro.full_report import render_macro_full_report_markdown
 from apps.analysis.macro.summary import render_macro_snapshot_markdown
 from apps.data_layer.models import DualSourceResult
-from apps.data_layer.service import MacroDataService
+from apps.data_layer.service import DEFAULT_FRED_RATE_SYMBOLS, MacroDataService
 from apps.features.macro.snapshot import MacroIndicator, MacroSnapshot, build_macro_snapshot
 from apps.output.artifacts import artifact_run_dir
 from apps.parsers.macro.models import MacroPoint
@@ -45,9 +48,6 @@ from database.queries.report import upsert_report_artifact, upsert_report_item
 
 MACRO_STEPS = {"macro_collect", "macro_feature", "report_render"}
 
-_MARKET_PROXY_SYMBOL_MAP = {
-    "DX-Y.NYB": "DXY",
-}
 logger = logging.getLogger(__name__)
 
 
@@ -132,6 +132,7 @@ def _step_collect(
     all_unavailable: list[str] = []
     all_refs: list[dict[str, str]] = []
     collector_statuses: list[dict[str, Any]] = []
+    fred_fallback_symbols: tuple[str, ...] = DEFAULT_FRED_RATE_SYMBOLS
 
     # --- FRED ---
     try:
@@ -144,6 +145,11 @@ def _step_collect(
         all_points.extend(fred_result.points)
         all_unavailable.extend(fred_result.unavailable_symbols)
         all_refs.extend(fred_result.source_refs)
+        fred_fallback_symbols = tuple(
+            symbol
+            for symbol in DEFAULT_FRED_RATE_SYMBOLS
+            if symbol in set(fred_result.unavailable_symbols)
+        )
         collector_statuses.append({
             "collector": "fred",
             "status": "success",
@@ -336,11 +342,21 @@ def _step_collect(
         all_points.extend(kline_result.points)
         all_unavailable.extend(kline_result.unavailable_symbols)
         all_refs.extend(kline_result.source_refs)
+        dxy_kline_fallback = None
+        if not any(point.symbol == "DXY" for point in all_points):
+            dxy_kline_fallback = _promote_latest_kline_close(
+                kline_result.points,
+                code="DXY",
+            )
+            if dxy_kline_fallback is not None:
+                all_points.append(dxy_kline_fallback)
+                all_unavailable = [symbol for symbol in all_unavailable if symbol != "DXY"]
         collector_statuses.append({
             "collector": "jin10_kline",
             "status": "success",
-            "points": len(kline_result.points),
+            "points": len(kline_result.points) + int(dxy_kline_fallback is not None),
             "unavailable": len(kline_result.unavailable_symbols),
+            "dxy_fallback_promoted": dxy_kline_fallback is not None,
         })
     except Exception as exc:
         collector_statuses.append({
@@ -373,44 +389,44 @@ def _step_collect(
             "error": str(exc),
         })
 
-    data_service = MacroDataService(storage_root=storage_root)
-
-    try:
-        fred_fallback = data_service.collect_fred_rates(retrieved_date=today)
-        collector_statuses.append(
-            _merge_data_layer_result(
+    if not fred_fallback_symbols:
+        collector_statuses.append({
+            "collector": "data_layer_fred_rates",
+            "status": "skipped",
+            "reason": "official_fred_coverage_complete",
+            "requested_symbols": [],
+        })
+    else:
+        data_service = MacroDataService(storage_root=storage_root)
+        try:
+            fred_fallback = _collect_fred_fallback_with_timeout(
+                data_service,
+                retrieved_date=today,
+                symbols=fred_fallback_symbols,
+            )
+            fallback_status = _merge_data_layer_result(
                 result=fred_fallback,
                 collector_name="data_layer_fred_rates",
                 all_points=all_points,
                 all_unavailable=all_unavailable,
                 all_refs=all_refs,
             )
-        )
-    except Exception as exc:
-        collector_statuses.append({
-            "collector": "data_layer_fred_rates",
-            "status": "failed",
-            "error": str(exc),
-        })
+            fallback_status["requested_symbols"] = list(fred_fallback_symbols)
+            collector_statuses.append(fallback_status)
+        except Exception as exc:
+            collector_statuses.append({
+                "collector": "data_layer_fred_rates",
+                "status": "failed",
+                "error": str(exc),
+                "requested_symbols": list(fred_fallback_symbols),
+            })
 
-    try:
-        market_fallback = data_service.collect_market_prices(retrieved_date=today)
-        collector_statuses.append(
-            _merge_data_layer_result(
-                result=market_fallback,
-                collector_name="data_layer_market_prices",
-                all_points=all_points,
-                all_unavailable=all_unavailable,
-                all_refs=all_refs,
-                symbol_aliases=_MARKET_PROXY_SYMBOL_MAP,
-            )
-        )
-    except Exception as exc:
-        collector_statuses.append({
-            "collector": "data_layer_market_prices",
-            "status": "failed",
-            "error": str(exc),
-        })
+    collector_statuses.append({
+        "collector": "data_layer_market_prices",
+        "status": "skipped",
+        "reason": "yahoo_market_collection_disabled",
+        "warnings": ["Yahoo market proxy collection is disabled"],
+    })
 
     state.all_points = all_points
     state.all_unavailable = list(dict.fromkeys(all_unavailable))
@@ -445,6 +461,60 @@ def _step_collect(
         "macro_observation_upserts": macro_observation_upserts,
         "raw_artifact_registry_upserts": raw_artifact_registry_upserts,
     }
+
+
+def _collect_fred_fallback_with_timeout(
+    data_service: MacroDataService,
+    *,
+    retrieved_date: str,
+    symbols: tuple[str, ...],
+) -> DualSourceResult:
+    """Run the optional OpenBB fallback without letting it stall a task run.
+
+    OpenBB performs its own provider calls synchronously and does not expose a
+    stable request timeout at this boundary.  A daemon worker keeps a stalled
+    fallback from blocking the canonical official-data pipeline.  The provider
+    call still owns its normal internal cleanup and cannot mutate database state.
+    """
+    raw_timeout = os.getenv("FINANCE_AGENT_OPENBB_FALLBACK_TIMEOUT_SECONDS", "30")
+    try:
+        timeout_seconds = max(0.1, min(float(raw_timeout), 120.0))
+    except ValueError:
+        timeout_seconds = 30.0
+
+    result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+    def _run() -> None:
+        try:
+            result_queue.put((
+                "result",
+                data_service.collect_fred_rates(
+                    retrieved_date=retrieved_date,
+                    symbols=symbols,
+                ),
+            ))
+        except BaseException as exc:  # propagated on the caller thread
+            result_queue.put(("error", exc))
+
+    worker = threading.Thread(
+        target=_run,
+        name="openbb-fred-fallback",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout_seconds)
+    if worker.is_alive():
+        raise TimeoutError(
+            f"OpenBB FRED fallback exceeded {timeout_seconds:g}s for "
+            f"{','.join(symbols)}"
+        )
+
+    kind, payload = result_queue.get_nowait()
+    if kind == "error":
+        assert isinstance(payload, BaseException)
+        raise payload
+    assert isinstance(payload, DualSourceResult)
+    return payload
 
 
 _MACRO_STATUS_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -511,16 +581,16 @@ _MACRO_STATUS_CONTRACTS: dict[str, dict[str, Any]] = {
         },
     },
     "technical_yahoo": {
-        "source_name": "Jin10 XAUUSD Quote / Yahoo Technical",
+        "source_name": "Jin10 XAUUSD Technical",
         "source_group": "technical",
         "source_type": "api",
-        "access_method": "jin10_mcp+yahoo_finance",
+        "access_method": "jin10_mcp",
         "metadata": {
             "provider_role": "supplemental",
             "fallback_for": ["openbb_macro"],
             "fallback_sources": ["jin10_news"],
             "frontend_label": "Jin10 黄金实时/技术补充源",
-            "notes": "黄金现货价格优先使用 Jin10 XAUUSD 实时报价；Yahoo Finance 仅作为技术指标兜底。",
+            "notes": "黄金现货价格与日内 OHLC 使用 Jin10 XAUUSD；历史技术指标不足时显式降级。",
         },
     },
     "positioning_cot": {
@@ -645,6 +715,29 @@ def _upsert_macro_point_observations(
     return len(rows), len(set(raw_artifact_ids.values()))
 
 
+def persist_macro_points(
+    db_session: Session,
+    *,
+    storage_root: Path,
+    all_points: list[MacroPoint],
+    all_refs: list[dict[str, str]],
+    run_id: str | None,
+) -> tuple[int, int]:
+    """Persist normalized macro points and their raw-file lineage.
+
+    This narrow public seam is shared by the worker pipeline and the legacy
+    backfill script.  It stores observations and artifact references only;
+    collector response bodies remain in the file-backed raw layer.
+    """
+    return _upsert_macro_point_observations(
+        db_session,
+        storage_root=storage_root,
+        all_points=all_points,
+        all_refs=all_refs,
+        run_id=run_id,
+    )
+
+
 def _register_macro_raw_artifacts(
     db_session: Session,
     *,
@@ -653,7 +746,10 @@ def _register_macro_raw_artifacts(
     all_refs: list[dict[str, str]],
     run_id: str | None,
 ) -> dict[tuple[str, str, str, str], str]:
-    if not run_id:
+    # RunArtifact lineage is keyed to a persisted TaskRun UUID. Backfill
+    # scripts may use human-readable run labels; observations can still keep
+    # those labels, but artifact registration must quietly remain disabled.
+    if not _is_uuid_string(run_id):
         return {}
 
     storage = LocalFileSystemArtifactStorage(root=storage_root)
@@ -933,6 +1029,36 @@ def _canonicalize_macro_point(
     )
 
 
+def _promote_latest_kline_close(
+    points: list[MacroPoint],
+    *,
+    code: str,
+) -> MacroPoint | None:
+    """Promote a collected intraday close into a canonical macro fallback."""
+
+    prefix = f"KLINE:{code}:"
+    candidates = [point for point in points if point.symbol.startswith(prefix)]
+    if not candidates:
+        return None
+
+    def candle_timestamp(point: MacroPoint) -> int:
+        try:
+            return int(point.symbol.rsplit(":", 1)[-1])
+        except ValueError:
+            return -1
+
+    latest = max(candidates, key=candle_timestamp)
+    return MacroPoint(
+        symbol=code,
+        date=latest.date,
+        value=latest.value,
+        source=latest.source,
+        source_url=latest.source_url,
+        retrieved_at=latest.retrieved_at,
+        raw_path=latest.raw_path,
+    )
+
+
 def _step_feature(
     state: MacroPipelineState,
     *,
@@ -1147,6 +1273,32 @@ def _upsert_macro_feature_snapshots(
         ],
     )
     return len(rows)
+
+
+def persist_macro_feature_snapshots(
+    db_session: Session,
+    *,
+    snapshot_payload: dict[str, Any],
+    conclusion_payload: dict[str, Any],
+    snapshot_artifact_path: Path,
+    conclusion_artifact_path: Path,
+    trade_date: str,
+    run_id: str | None,
+    source_refs: list[dict[str, Any]],
+    unavailable_symbols: list[str],
+) -> int:
+    """Persist the computed macro snapshot and conclusion payloads."""
+    return _upsert_macro_feature_snapshots(
+        db_session,
+        snapshot_payload=snapshot_payload,
+        conclusion_payload=conclusion_payload,
+        snapshot_artifact_path=snapshot_artifact_path,
+        conclusion_artifact_path=conclusion_artifact_path,
+        trade_date=trade_date,
+        run_id=run_id,
+        source_refs=source_refs,
+        unavailable_symbols=unavailable_symbols,
+    )
 
 
 def _register_macro_render_artifacts(

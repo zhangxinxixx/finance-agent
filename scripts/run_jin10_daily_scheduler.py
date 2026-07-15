@@ -5,9 +5,8 @@ import json
 import os
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
-from datetime import date, datetime, time as dt_time, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +14,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apps.collectors.jin10.adapter import collect_raw_index
 from apps.data_layer.jin10_image_assets import DEFAULT_JIN10_IMAGE_RETENTION_DAYS
+from scripts.run_daily_report_pipeline import (
+    COMPLETION_MARKER_NAME,
+    DailyAnalysisCompletion,
+    validate_daily_analysis_completion,
+)
 
 
-DEFAULT_EXTERNAL_ROOT = Path(os.getenv("JIN10_REPORT_ROOT", "~/jin10-reports")).expanduser()
+DEFAULT_EXTERNAL_ROOT = Path(
+    os.getenv("FINANCE_AGENT_EXTERNAL_REPORT_ROOT", "~/finance-agent-data/jin10-reports")
+).expanduser()
 DEFAULT_STORAGE_ROOT = Path("storage")
 DEFAULT_CATEGORY = "270"
 DEFAULT_REPORT_TYPE = "daily"
@@ -47,17 +53,18 @@ def _artifact_paths(*, storage_root: Path, trade_date: str, article_id: str) -> 
         "raw_article_report_json": base / "raw_article_report.json",
         "daily_analysis_json": base / "daily_analysis.json",
         "agent_analysis_report_json": base / "agent_analysis_report.json",
+        "completion_marker": base / COMPLETION_MARKER_NAME,
     }
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Schedule Jin10 daily report fetch/analysis with half-hour retries until success."
+        description="Run one Jin10 daily report fetch/analysis attempt; Dagster owns scheduling and retries."
     )
     parser.add_argument("--date", help="Target trade date, default today in local timezone.")
-    parser.add_argument("--start-time", default=DEFAULT_START_TIME, help="First eligible local time, format HH:MM.")
-    parser.add_argument("--deadline", default=DEFAULT_DEADLINE_TIME, help="Stop retrying after this local time, format HH:MM.")
-    parser.add_argument("--retry-minutes", type=int, default=DEFAULT_RETRY_MINUTES, help="Retry interval in minutes.")
+    parser.add_argument("--start-time", default=DEFAULT_START_TIME, help="Deprecated compatibility option; no in-process waiting.")
+    parser.add_argument("--deadline", default=DEFAULT_DEADLINE_TIME, help="Deprecated compatibility option; no in-process retry loop.")
+    parser.add_argument("--retry-minutes", type=int, default=DEFAULT_RETRY_MINUTES, help="Deprecated compatibility option; Dagster owns retries.")
     parser.add_argument("--category", default=DEFAULT_CATEGORY, help="Jin10 category code, default 270 for daily.")
     parser.add_argument("--report-type", default=DEFAULT_REPORT_TYPE, choices=("daily", "weekly"))
     parser.add_argument("--external-root", default=str(DEFAULT_EXTERNAL_ROOT), help="External Jin10 root.")
@@ -66,10 +73,15 @@ def _parse_args() -> argparse.Namespace:
         "--image-retention-days",
         type=int,
         default=DEFAULT_JIN10_IMAGE_RETENTION_DAYS,
-        help="Keep canonical page JPEGs and parsed figures for this many days.",
+        help="Keep disposable VLM cache entries for this many days; canonical evidence is never pruned.",
     )
     parser.add_argument("--browser-profile", default=str(DEFAULT_BROWSER_PROFILE) if DEFAULT_BROWSER_PROFILE.exists() else None)
     parser.add_argument("--model", default=DEFAULT_MODEL, help="LLM model for agent analysis.")
+    parser.add_argument("--analysis-provider", default="cockpit")
+    parser.add_argument("--analysis-model", default=None, help="Agent analysis model; defaults to --model.")
+    parser.add_argument("--analysis-reasoning-effort", default="high", choices=("low", "medium", "high"))
+    parser.add_argument("--analysis-timeout", type=float, default=300.0)
+    parser.add_argument("--analysis-max-images", type=int, default=25)
     parser.add_argument(
         "--vision-provider",
         default="cockpit",
@@ -83,36 +95,17 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_VISION_MODEL,
         help="Vision model. --mimo-model remains as a compatibility alias.",
     )
-    parser.add_argument("--max-attempts", type=int, default=0, help="Optional max attempts. 0 means until deadline.")
-    parser.add_argument("--sleep-before-start", action="store_true", help="Sleep until start-time if invoked early.")
+    parser.add_argument("--max-attempts", type=int, default=1, help="Deprecated compatibility option; exactly one attempt is made.")
+    parser.add_argument("--sleep-before-start", action="store_true", help="Deprecated compatibility option; no sleeping occurs.")
     parser.add_argument("--dry-run", action="store_true", help="Resolve plan and existing state without executing fetch/pipeline.")
     parser.add_argument("--force-rerun", action="store_true", help="Run pipeline even when the final agent analysis already exists.")
     return parser.parse_args()
-
-
-def _parse_hhmm(value: str) -> dt_time:
-    return datetime.strptime(value, "%H:%M").time()
 
 
 def _target_date(raw: str | None) -> date:
     if raw:
         return datetime.strptime(raw, "%Y-%m-%d").date()
     return datetime.now().date()
-
-
-def _local_window(target: date, start: str, deadline: str) -> tuple[datetime, datetime]:
-    start_dt = datetime.combine(target, _parse_hhmm(start))
-    deadline_dt = datetime.combine(target, _parse_hhmm(deadline))
-    if deadline_dt <= start_dt:
-        deadline_dt += timedelta(days=1)
-    return start_dt, deadline_dt
-
-
-def _sleep_until(start_dt: datetime) -> None:
-    now = datetime.now()
-    if now >= start_dt:
-        return
-    time.sleep(max((start_dt - now).total_seconds(), 0))
 
 
 def _has_local_report(*, external_root: Path, trade_date: str, category: str) -> dict[str, Any] | None:
@@ -184,6 +177,11 @@ def _run_pipeline(
     external_root: Path,
     storage_root: Path,
     image_retention_days: int,
+    analysis_provider: str,
+    analysis_model: str,
+    analysis_reasoning_effort: str,
+    analysis_timeout: float,
+    analysis_max_images: int,
 ) -> dict[str, Any]:
     cmd = [
         sys.executable,
@@ -204,8 +202,53 @@ def _run_pipeline(
         vision_provider,
         "--vision-model",
         vision_model,
+        "--analysis-provider",
+        analysis_provider,
+        "--analysis-model",
+        analysis_model,
+        "--analysis-reasoning-effort",
+        analysis_reasoning_effort,
+        "--analysis-timeout",
+        str(analysis_timeout),
+        "--analysis-max-images",
+        str(analysis_max_images),
     ]
     return _run_json_command(cmd, env=env)
+
+
+def _load_completion_marker(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _attempt_from_completion(
+    completion: DailyAnalysisCompletion,
+    *,
+    trade_date: str,
+    article_id: str,
+    report_dir: str | None,
+    pipeline_summary: dict[str, Any],
+    skipped: bool = False,
+) -> AttemptResult:
+    summary = dict(pipeline_summary)
+    if skipped:
+        summary.update({"skipped": True, "reason": "validated_existing_analysis"})
+    if completion.status == "success":
+        message = f"{trade_date} 抓取与分析完成"
+    elif completion.status == "limited_success":
+        message = f"{trade_date} 分析完成但需要复核"
+    else:
+        message = f"{trade_date} 分析完成验证失败: {', '.join(completion.reasons)}"
+    return AttemptResult(
+        status=completion.status if completion.completed else "retry",
+        message=message,
+        article_id=article_id,
+        report_dir=report_dir,
+        pipeline_summary=summary,
+    )
 
 
 def _attempt_once(
@@ -248,19 +291,22 @@ def _attempt_once(
 
     artifacts = _artifact_paths(storage_root=storage_root, trade_date=trade_date, article_id=article_id)
     if artifacts["agent_analysis_report_json"].exists() and not args.force_rerun:
-        return AttemptResult(
-            status="success",
-            message=f"{trade_date} 已存在完整 agent_analysis_report，跳过重复 pipeline",
+        marker = _load_completion_marker(artifacts["completion_marker"])
+        completion = validate_daily_analysis_completion(
+            storage_root=storage_root,
+            trade_date=trade_date,
             article_id=article_id,
-            report_dir=report_dir,
-            pipeline_summary={
-                "date": trade_date,
-                "article_id": article_id,
-                "skipped": True,
-                "reason": "existing_agent_analysis_report",
-                "artifact": str(artifacts["agent_analysis_report_json"]),
-            },
+            pipeline_summary=marker,
         )
+        if completion.completed and marker is not None:
+            return _attempt_from_completion(
+                completion,
+                trade_date=trade_date,
+                article_id=article_id,
+                report_dir=report_dir,
+                pipeline_summary=marker,
+                skipped=True,
+            )
 
     pipeline_summary = _run_pipeline(
         env=env,
@@ -272,10 +318,21 @@ def _attempt_once(
         external_root=external_root,
         storage_root=storage_root,
         image_retention_days=args.image_retention_days,
+        analysis_provider=getattr(args, "analysis_provider", "cockpit"),
+        analysis_model=getattr(args, "analysis_model", None) or getattr(args, "model", DEFAULT_MODEL),
+        analysis_reasoning_effort=getattr(args, "analysis_reasoning_effort", "high"),
+        analysis_timeout=getattr(args, "analysis_timeout", 300.0),
+        analysis_max_images=getattr(args, "analysis_max_images", 25),
     )
-    return AttemptResult(
-        status="success",
-        message=f"{trade_date} 抓取与分析完成",
+    completion = validate_daily_analysis_completion(
+        storage_root=storage_root,
+        trade_date=trade_date,
+        article_id=article_id,
+        pipeline_summary=pipeline_summary,
+    )
+    return _attempt_from_completion(
+        completion,
+        trade_date=trade_date,
         article_id=article_id,
         report_dir=report_dir,
         pipeline_summary=pipeline_summary,
@@ -286,20 +343,17 @@ def main() -> int:
     args = _parse_args()
     trade_date_obj = _target_date(args.date)
     trade_date = trade_date_obj.isoformat()
-    start_dt, deadline_dt = _local_window(trade_date_obj, args.start_time, args.deadline)
-    if args.sleep_before_start:
-        _sleep_until(start_dt)
-
     env = os.environ.copy()
     env.setdefault("no_proxy", "127.0.0.1,localhost,::1")
     env.setdefault("UV_CACHE_DIR", "/tmp/uv-cache")
     env["FINANCE_AGENT_FORCE_LIVE_LLM"] = "1"
-    env["OPENAI_DEFAULT_MODEL"] = args.model
-    env["JIN10_AGENT_PROVIDER"] = "cockpit"
-    env["JIN10_AGENT_MODEL"] = args.model
-    env["JIN10_AGENT_REASONING_EFFORT"] = "high"
-    env["JIN10_AGENT_REQUEST_TIMEOUT"] = "300"
-    env["JIN10_AGENT_MAX_IMAGES"] = "25"
+    analysis_model = args.analysis_model or args.model
+    env["OPENAI_DEFAULT_MODEL"] = analysis_model
+    env["JIN10_AGENT_PROVIDER"] = args.analysis_provider
+    env["JIN10_AGENT_MODEL"] = analysis_model
+    env["JIN10_AGENT_REASONING_EFFORT"] = args.analysis_reasoning_effort
+    env["JIN10_AGENT_REQUEST_TIMEOUT"] = str(args.analysis_timeout)
+    env["JIN10_AGENT_MAX_IMAGES"] = str(args.analysis_max_images)
     env["JIN10_VISION_PROVIDER"] = args.vision_provider
     env["JIN10_VISION_MODEL"] = args.vision_model
     env["JIN10_VISION_REASONING_EFFORT"] = "high"
@@ -307,95 +361,23 @@ def main() -> int:
     env["JIN10_VISION_MAX_RETRIES"] = "0"
     env["JIN10_IMAGE_RECOGNITION"] = "vlm"
 
-    attempts = 0
-    history: list[dict[str, Any]] = []
-    while True:
-        now = datetime.now()
-        if now < start_dt:
-            if not args.sleep_before_start:
-                print(
-                    json.dumps(
-                        {
-                            "status": "waiting",
-                            "trade_date": trade_date,
-                            "message": f"当前时间早于开始时间 {start_dt.isoformat()}",
-                            "next_run_after": start_dt.isoformat(),
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                )
-                return 0
-            _sleep_until(start_dt)
-            now = datetime.now()
-
-        if now > deadline_dt:
-            print(
-                json.dumps(
-                    {
-                        "status": "deadline_exceeded",
-                        "trade_date": trade_date,
-                        "attempts": attempts,
-                        "history": history,
-                        "deadline": deadline_dt.isoformat(),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 2
-
-        attempts += 1
-        try:
-            result = _attempt_once(trade_date=trade_date, args=args, env=env)
-        except subprocess.CalledProcessError as exc:
-            result = AttemptResult(
-                status="retry",
-                message=f"命令失败: {' '.join(exc.cmd)}",
-            )
-        history.append(
-            {
-                "attempt": attempts,
-                "at": now.isoformat(),
-                "status": result.status,
-                "message": result.message,
-                "article_id": result.article_id,
-            }
-        )
-        if result.status in {"success", "ready"}:
-            print(
-                json.dumps(
-                    {
-                        "status": result.status,
-                        "trade_date": trade_date,
-                        "attempts": attempts,
-                        "article_id": result.article_id,
-                        "report_dir": result.report_dir,
-                        "pipeline_summary": result.pipeline_summary,
-                        "history": history,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 0
-
-        if args.max_attempts and attempts >= args.max_attempts:
-            print(
-                json.dumps(
-                    {
-                        "status": "max_attempts_exceeded",
-                        "trade_date": trade_date,
-                        "attempts": attempts,
-                        "history": history,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 3
-
-        time.sleep(max(args.retry_minutes, 1) * 60)
+    now = datetime.now()
+    try:
+        result = _attempt_once(trade_date=trade_date, args=args, env=env)
+    except subprocess.CalledProcessError as exc:
+        result = AttemptResult(status="retry", message=f"命令失败: {' '.join(exc.cmd)}")
+    payload = {
+        "status": result.status,
+        "trade_date": trade_date,
+        "attempts": 1,
+        "article_id": result.article_id,
+        "report_dir": result.report_dir,
+        "pipeline_summary": result.pipeline_summary,
+        "history": [{"attempt": 1, "at": now.isoformat(), "status": result.status, "message": result.message}],
+        "scheduler_authority": "dagster",
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if result.status in {"success", "limited_success", "ready"} else 3
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -350,6 +351,29 @@ def test_get_gold_mainlines_latest_loads_overview_and_event_mainlines(tmp_path: 
     assert mainline["related_event_ids"] == ["event:fed"]
     assert payload["gold_mainlines"]["event_links"][0]["primary_mainline"] == "real_rates_usd"
     assert payload["source_refs"] == [{"source": "fed_rss", "source_ref": "fed:test"}]
+
+
+def test_get_gold_mainlines_latest_uses_artifact_time_not_run_id_order(tmp_path: Path) -> None:
+    older_path, _ = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-11",
+        run_id="z-lexically-latest",
+        dominant_mainline="fed_policy_path",
+    )
+    newer_path, _ = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-11",
+        run_id="a-actually-latest",
+        dominant_mainline="real_rates_usd",
+    )
+    os.utime(older_path, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(newer_path, ns=(2_000_000_000, 2_000_000_000))
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        payload = get_gold_mainlines_latest()
+
+    assert payload["run_id"] == "a-actually-latest"
+    assert payload["artifact_path"] == newer_path.relative_to(tmp_path).as_posix()
 
 
 def test_get_gold_mainlines_returns_read_time_source_health_without_overriding_artifact(tmp_path: Path) -> None:

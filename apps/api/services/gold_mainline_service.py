@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Any
 
 from apps.analysis.agents.source_health import build_gold_v3_source_health
@@ -20,17 +21,13 @@ _MAINLINES_FILENAME = "gold_event_mainlines.json"
 def get_gold_mainlines_latest(*, project_root: Path | None = None) -> dict[str, Any]:
     root = project_root or _PROJECT_ROOT
     base = root / "storage" / "analysis" / "gold_mainlines"
-    if base.exists():
-        for date_dir in sorted((path for path in base.iterdir() if path.is_dir()), reverse=True):
-            for run_dir in sorted((path for path in date_dir.iterdir() if path.is_dir()), reverse=True):
-                overview_path = run_dir / _OVERVIEW_FILENAME
-                if overview_path.exists():
-                    return _load_gold_mainlines(
-                        date=date_dir.name,
-                        run_id=run_dir.name,
-                        overview_path=overview_path,
-                        project_root=root,
-                    )
+    for date, run_id, overview_path in _latest_artifact_paths(base=base, filename=_OVERVIEW_FILENAME):
+        return _load_gold_mainlines(
+            date=date,
+            run_id=run_id,
+            overview_path=overview_path,
+            project_root=root,
+        )
     inferred = _load_latest_inferred_gold_mainlines(project_root=root)
     if inferred is not None:
         return inferred
@@ -90,18 +87,32 @@ def _load_linked_event_mainlines(*, overview: dict[str, Any], project_root: Path
 
 def _load_latest_inferred_gold_mainlines(*, project_root: Path) -> dict[str, Any] | None:
     base = project_root / "storage" / "features" / "news"
-    if not base.exists():
-        return None
-    for date_dir in sorted((path for path in base.iterdir() if path.is_dir()), reverse=True):
-        for run_dir in sorted((path for path in date_dir.iterdir() if path.is_dir()), reverse=True):
-            event_path = run_dir / _MAINLINES_FILENAME
-            if event_path.exists():
-                return _load_inferred_gold_mainlines(
-                    date=date_dir.name,
-                    run_id=run_dir.name,
-                    project_root=project_root,
-                )
+    for date, run_id, _event_path in _latest_artifact_paths(base=base, filename=_MAINLINES_FILENAME):
+        return _load_inferred_gold_mainlines(
+            date=date,
+            run_id=run_id,
+            project_root=project_root,
+        )
     return None
+
+
+def _latest_artifact_paths(*, base: Path, filename: str) -> Iterator[tuple[str, str, Path]]:
+    """Yield newest run artifacts, using artifact time instead of UUID order."""
+
+    if not base.exists():
+        return
+    date_dirs = sorted((path for path in base.iterdir() if path.is_dir()), reverse=True)
+    for date_dir in date_dirs:
+        candidates: list[tuple[int, str, Path]] = []
+        for run_dir in (path for path in date_dir.iterdir() if path.is_dir()):
+            artifact_path = run_dir / filename
+            try:
+                modified_ns = artifact_path.stat().st_mtime_ns
+            except OSError:
+                continue
+            candidates.append((modified_ns, run_dir.name, artifact_path))
+        for _modified_ns, run_id, artifact_path in sorted(candidates, reverse=True):
+            yield date_dir.name, run_id, artifact_path
 
 
 def _load_inferred_gold_mainlines(*, date: str, run_id: str, project_root: Path) -> dict[str, Any] | None:
@@ -130,6 +141,15 @@ def _load_inferred_gold_mainlines(*, date: str, run_id: str, project_root: Path)
         policy_context=_latest_policy_context_for_overview(overview=seed_overview, project_root=project_root),
         geopolitical_context=_latest_geopolitical_context_for_overview(overview=seed_overview, project_root=project_root),
     ).to_dict()
+    if str(overview.get("status") or "unavailable") == "unavailable":
+        overview["status"] = "partial"
+        overview.setdefault("warnings", []).append(
+            "GoldMacroOverview inferred from event mainlines without complete analysis context"
+        )
+    if not overview.get("dominant_mainline"):
+        ranked_mainlines = [item for item in mainlines.get("mainlines") or [] if isinstance(item, dict)]
+        if ranked_mainlines:
+            overview["dominant_mainline"] = _ranking_mainline_id(ranked_mainlines[0])
     overview["retrieved_date"] = str(overview.get("retrieved_date") or date)
     overview["run_id"] = str(overview.get("run_id") or run_id)
     overview["input_snapshot_ids"] = {"gold_event_mainlines": event_ref}

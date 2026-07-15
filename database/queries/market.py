@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from database.models.analysis import MarketCandle
+from database.market_identity import normalize_market_candle_identity
 
 
 def upsert_market_candle(
@@ -25,9 +26,10 @@ def upsert_market_candle(
     source_ref: dict | None = None,
     raw_path: str | None = None,
 ) -> MarketCandle:
+    identity = normalize_market_candle_identity(asset=asset, source=source, source_ref=source_ref)
     existing = session.scalar(
         select(MarketCandle).where(
-            MarketCandle.asset == asset,
+            MarketCandle.asset == identity.asset,
             MarketCandle.timeframe == timeframe,
             MarketCandle.open_time == open_time,
             MarketCandle.source == source,
@@ -40,13 +42,13 @@ def upsert_market_candle(
         existing.low = float(low)
         existing.close = float(close)
         existing.volume = float(volume) if volume is not None else None
-        existing.source_ref = dict(source_ref) if isinstance(source_ref, dict) else None
+        existing.source_ref = identity.source_ref or None
         existing.raw_path = raw_path
         session.flush()
         return existing
 
     row = MarketCandle(
-        asset=asset,
+        asset=identity.asset,
         timeframe=timeframe,
         open_time=open_time,
         open=float(open),
@@ -55,7 +57,7 @@ def upsert_market_candle(
         close=float(close),
         volume=float(volume) if volume is not None else None,
         source=source,
-        source_ref=dict(source_ref) if isinstance(source_ref, dict) else None,
+        source_ref=identity.source_ref or None,
         raw_path=raw_path,
     )
     session.add(row)
@@ -103,3 +105,25 @@ def list_market_candles_by_assets(
         .limit(limit * max(len(assets), 1))
     )
     return list(reversed(list(session.scalars(stmt).all())))
+
+
+def delete_market_candles_before(
+    session: Session,
+    *,
+    asset: str,
+    timeframe: str,
+    source: str,
+    before: datetime,
+) -> int:
+    stmt = (
+        delete(MarketCandle)
+        .where(
+            MarketCandle.asset == asset,
+            MarketCandle.timeframe == timeframe,
+            MarketCandle.source == source,
+            MarketCandle.open_time < before,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    result = session.execute(stmt)
+    return int(result.rowcount or 0)

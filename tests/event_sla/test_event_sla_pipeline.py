@@ -108,11 +108,36 @@ def test_event_sla_pipeline_writes_jin10_analysis_strategy_trace_and_notificatio
     assert (storage_root / artifacts["trading_strategy"]).is_file()
     assert (storage_root / artifacts["sla_trace"]).is_file()
     assert (storage_root / artifacts["notification_request"]).is_file()
+    assert (storage_root / artifacts["live_strategy_recompute_request"]).is_file()
+
+    snapshot = json.loads((storage_root / artifacts["event_snapshot"]).read_text(encoding="utf-8"))
+    assert snapshot["observation_hash"] == event["observation_hash"]
+    request = json.loads(
+        (storage_root / artifacts["live_strategy_recompute_request"]).read_text(encoding="utf-8")
+    )
+    assert request["schema_name"] == "live_strategy_recompute_request"
+    assert request["schema_version"] == "live_strategy_recompute_request.v1"
+    assert request["requested_action"] == "recompute_live_strategy"
+    assert request["event_id"] == event["event_id"]
+    assert request["observation_hash"] == event["observation_hash"]
+    assert request["dispatch_status"] == "pending"
+    assert request["reason_codes"] == []
+    assert request["source_refs"] == []
 
     trace = json.loads((storage_root / artifacts["sla_trace"]).read_text(encoding="utf-8"))
     assert trace["task_type"] == "event_sla_analysis"
+    assert event["event_id"] == "jin10_research_master_review_223556"
     assert trace["sla_minutes"] == 30
     assert trace["status"] == "success"
+    assert trace["published_at"] == "2026-07-08T09:55:00+00:00"
+    assert trace["first_seen_at"] == OBSERVED_AT.isoformat()
+    assert trace["detected_at"] == OBSERVED_AT.isoformat()
+    assert trace["analysis_started_at"] == OBSERVED_AT.isoformat()
+    assert trace["completed_at"] >= trace["analysis_started_at"]
+    assert trace["detection_lag_minutes"] == 25.0
+    assert trace["processing_duration_minutes"] >= 0.0
+    assert trace["end_to_end_sla_minutes"] >= 25.0
+    assert trace["elapsed_minutes"] == trace["end_to_end_sla_minutes"]
     assert [step["name"] for step in trace["steps"]][-1] == "record_sla_result"
     assert next(step for step in trace["steps"] if step["name"] == "detect_update") == {
         "name": "detect_update",
@@ -129,8 +154,14 @@ def test_event_sla_pipeline_writes_jin10_analysis_strategy_trace_and_notificatio
         "status": "skipped",
         "execution_mode": "reused_existing_artifact",
     }
+    recompute_step = next(
+        step for step in trace["steps"] if step["name"] == "write_live_strategy_recompute_request"
+    )
+    assert recompute_step["output_refs"][0]["path"] == artifacts["live_strategy_recompute_request"]
 
     strategy = json.loads((storage_root / artifacts["trading_strategy_json"]).read_text(encoding="utf-8"))
+    assert strategy["authority"] == "none"
+    assert strategy["output_mode"] == "observation_only"
     assert strategy["evidence_level"] == "full"
     assert strategy["strategy_mode"] == "wait_breakout"
     assert strategy["entry_conditions"]
@@ -166,6 +197,14 @@ def test_event_sla_pipeline_does_not_claim_missing_jin10_indexes_were_reused(tmp
 
     assert snapshot["raw_refs"] == []
     assert snapshot["parsed_refs"] == []
+    request = json.loads(
+        (storage_root / event["artifacts"]["live_strategy_recompute_request"]).read_text(encoding="utf-8")
+    )
+    assert request["raw_refs"] == []
+    assert request["parsed_refs"] == []
+    assert request["source_refs"] == []
+    assert request["dispatch_status"] == "blocked"
+    assert request["reason_codes"] == ["missing_parsed_refs"]
     assert collect_raw == {
         "name": "collect_raw",
         "status": "skipped",
@@ -198,7 +237,12 @@ def test_event_sla_pipeline_degrades_preview_jin10_to_observation_only(tmp_path)
     assert strategy["evidence_level"] == "preview"
     assert strategy["strategy_mode"] == "observe"
     assert not strategy["entry_conditions"]
-    assert "actionable strategy is blocked" in strategy["risk_notes"][0]
+    assert "legacy observation output is blocked" in strategy["risk_notes"][0]
+    request = json.loads(
+        (storage_root / event["artifacts"]["live_strategy_recompute_request"]).read_text(encoding="utf-8")
+    )
+    assert request["dispatch_status"] == "blocked"
+    assert request["reason_codes"] == ["evidence_preview", "event_status_partial_success"]
     trace = json.loads((storage_root / event["artifacts"]["sla_trace"]).read_text(encoding="utf-8"))
     assert next(step for step in trace["steps"] if step["name"] == "build_trading_strategy")["status"] == "blocked"
 
@@ -240,8 +284,43 @@ def test_event_sla_pipeline_marks_unparsed_cme_notification_as_blocked(tmp_path)
     assert event["status"] == "blocked"
     assert notification["kind"] == "event_sla_blocked"
     assert notification["severity"] == "critical"
+    request = json.loads(
+        (storage_root / event["artifacts"]["live_strategy_recompute_request"]).read_text(encoding="utf-8")
+    )
+    assert request["dispatch_status"] == "blocked"
+    assert request["reason_codes"] == [
+        "evidence_partial",
+        "missing_parsed_refs",
+        "event_status_blocked",
+    ]
     trace = json.loads((storage_root / event["artifacts"]["sla_trace"]).read_text(encoding="utf-8"))
     assert next(step for step in trace["steps"] if step["name"] == "parse_content")["status"] == "blocked"
+
+
+def test_event_sla_pipeline_blocks_recompute_request_when_quality_gate_is_blocked(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_cme_event(storage_root)
+    _write_json(
+        storage_root / "monitoring" / "2026-07-08" / "downstream_readiness.json",
+        {"readiness": "blocked", "can_run_full_analysis": False},
+    )
+
+    result = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        source_types=("cme",),
+        record_task_run=False,
+    )
+
+    event = result["events"][0]
+    request = json.loads(
+        (storage_root / event["artifacts"]["live_strategy_recompute_request"]).read_text(encoding="utf-8")
+    )
+    assert event["status"] == "blocked"
+    assert request["quality_status"] == "blocked"
+    assert request["dispatch_status"] == "blocked"
+    assert request["reason_codes"] == ["quality_gate_blocked", "event_status_blocked"]
 
 
 def test_event_sla_pipeline_records_task_run_when_enabled(tmp_path, monkeypatch) -> None:
@@ -282,10 +361,14 @@ def test_event_sla_pipeline_records_task_run_when_enabled(tmp_path, monkeypatch)
     assert calls[1]["source_refs"][0]["source_ref"].startswith("event:")
     collect_raw = next(call for call in calls if call.get("step_name") == "collect_raw")
     parse_content = next(call for call in calls if call.get("step_name") == "parse_content")
+    recompute_request = next(
+        call for call in calls if call.get("step_name") == "write_live_strategy_recompute_request"
+    )
     assert collect_raw["status"] == "skipped"
     assert collect_raw["output_refs"][0]["execution_mode"] == "reused_existing_artifact"
     assert parse_content["status"] == "skipped"
     assert parse_content["output_refs"][0]["execution_mode"] == "reused_existing_artifact"
+    assert recompute_request["output_refs"][0]["path"] == result["events"][0]["artifacts"]["live_strategy_recompute_request"]
 
 
 def test_event_sla_pipeline_reuses_identical_event_without_rewriting_outputs(tmp_path) -> None:
@@ -301,7 +384,9 @@ def test_event_sla_pipeline_reuses_identical_event_without_rewriting_outputs(tmp
     )
     first_event = first["events"][0]
     trace_path = storage_root / first_event["artifacts"]["sla_trace"]
+    request_path = storage_root / first_event["artifacts"]["live_strategy_recompute_request"]
     original_trace = trace_path.read_text(encoding="utf-8")
+    original_request = request_path.read_text(encoding="utf-8")
 
     second = run_event_sla_pipeline(
         storage_root=storage_root,
@@ -318,13 +403,50 @@ def test_event_sla_pipeline_reuses_identical_event_without_rewriting_outputs(tmp
     assert second["events"][0]["execution_mode"] == "reused"
     assert second["events"][0]["task_run_id"] is None
     assert trace_path.read_text(encoding="utf-8") == original_trace
+    assert request_path.read_text(encoding="utf-8") == original_request
+    assert json.loads(request_path.read_text(encoding="utf-8"))["request_id"] == json.loads(
+        original_request
+    )["request_id"]
     ledger = json.loads(
         (storage_root / "event_sla" / "2026-07-08" / "event_execution_ledger.json").read_text(encoding="utf-8")
     )
     assert ledger["events"][first_event["event_id"]]["event_hash"] == first_event["event_hash"]
 
 
-def test_event_sla_pipeline_treats_changed_report_content_as_new_event(tmp_path) -> None:
+def test_event_sla_pipeline_migrates_legacy_hash_suffixed_ledger_key_on_reuse(tmp_path) -> None:
+    storage_root = tmp_path / "storage"
+    _seed_jin10_event(storage_root)
+    first = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        source_types=("jin10",),
+        record_task_run=False,
+    )
+    stable_event_id = first["events"][0]["event_id"]
+    ledger_path = storage_root / "event_sla" / "2026-07-08" / "event_execution_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    legacy_event_id = f"{stable_event_id}_deadbeef00"
+    ledger["events"][legacy_event_id] = ledger["events"].pop(stable_event_id)
+    ledger["events"][legacy_event_id]["event_id"] = legacy_event_id
+    _write_json(ledger_path, ledger)
+
+    second = run_event_sla_pipeline(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=datetime(2026, 7, 8, 10, 25, tzinfo=timezone.utc),
+        source_types=("jin10",),
+        record_task_run=False,
+    )
+
+    migrated = json.loads(ledger_path.read_text(encoding="utf-8"))["events"]
+    assert second["reused_count"] == 1
+    assert stable_event_id in migrated
+    assert legacy_event_id not in migrated
+    assert migrated[stable_event_id]["event_id"] == stable_event_id
+
+
+def test_event_sla_pipeline_tracks_changed_report_as_new_observation_of_same_event(tmp_path) -> None:
     storage_root = tmp_path / "storage"
     _seed_jin10_event(storage_root)
     first = run_event_sla_pipeline(
@@ -349,7 +471,17 @@ def test_event_sla_pipeline_treats_changed_report_content_as_new_event(tmp_path)
 
     assert second["created_count"] == 1
     assert second["reused_count"] == 0
-    assert second["events"][0]["event_id"] != first["events"][0]["event_id"]
+    assert second["events"][0]["event_id"] == first["events"][0]["event_id"]
+    assert second["events"][0]["observation_hash"] != first["events"][0]["observation_hash"]
+    assert second["events"][0]["artifacts"]["sla_trace"] != first["events"][0]["artifacts"]["sla_trace"]
+    ledger = json.loads(
+        (storage_root / "event_sla" / "2026-07-08" / "event_execution_ledger.json").read_text(encoding="utf-8")
+    )
+    entry = ledger["events"][first["events"][0]["event_id"]]
+    assert entry["execution_count"] == 2
+    assert entry["first_seen_at"] == OBSERVED_AT.isoformat()
+    assert entry["history"][0]["observation_hash"] == first["events"][0]["observation_hash"]
+    assert entry["history"][0]["artifacts"] == first["events"][0]["artifacts"]
 
 
 def test_event_sla_pipeline_reexecutes_when_parsed_input_arrives(tmp_path) -> None:
@@ -449,9 +581,17 @@ def test_preview_and_reused_event_artifacts_are_registered_with_usage_metadata(t
         for artifact in artifacts
         if artifact.file_path == result["events"][0]["artifacts"]["trading_strategy_json"]
     )
+    recompute_request = next(
+        artifact
+        for artifact in artifacts
+        if artifact.file_path == result["events"][0]["artifacts"]["live_strategy_recompute_request"]
+    )
     parsed = next(artifact for artifact in artifacts if artifact.artifact_metadata.get("execution_mode") == "reused_existing_artifact" and "parsed" in artifact.file_path)
-    assert strategy_json.artifact_metadata["quality_status"] == "preview"
+    assert strategy_json.artifact_metadata["quality_status"] == "observation_only"
     assert strategy_json.artifact_metadata["usable_for"] == ["observation"]
-    assert strategy_json.artifact_metadata["blocked_for"] == ["actionable_strategy"]
+    assert strategy_json.artifact_metadata["blocked_for"] == ["recompute_authority", "direct_execution"]
+    assert recompute_request.artifact_metadata["quality_status"] == "request_only"
+    assert recompute_request.artifact_metadata["usable_for"] == ["recompute_resolution"]
+    assert recompute_request.artifact_metadata["blocked_for"] == ["direct_execution", "strategy_freeze"]
     assert parsed.artifact_metadata["quality_status"] == "reused"
     assert parsed.artifact_metadata["usable_for"] == ["source_evidence"]

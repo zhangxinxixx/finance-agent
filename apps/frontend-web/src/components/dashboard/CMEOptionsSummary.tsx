@@ -125,6 +125,28 @@ export function CMEOptionsSummary({ options, summary }: CMEOptionsSummaryProps) 
           ) : null}
         </div>
 
+        {evidence.analysisSummary ? (
+          <section className="dashboard-options-analysis" aria-label="期权结构总结性分析">
+            <div className="dashboard-options-analysis-title">结构结论</div>
+            <p>{evidence.analysisSummary}</p>
+            {evidence.upgradeCondition ? (
+              <div className="dashboard-options-condition dashboard-options-condition--upgrade">
+                <span>升级条件</span>
+                <strong>{evidence.upgradeCondition}</strong>
+              </div>
+            ) : null}
+            {evidence.failureCondition ? (
+              <div className="dashboard-options-condition dashboard-options-condition--failure">
+                <span>失效条件</span>
+                <strong>{evidence.failureCondition}</strong>
+              </div>
+            ) : null}
+            {evidence.revisionNote ? (
+              <div className="dashboard-options-revision-note">{evidence.revisionNote}</div>
+            ) : null}
+          </section>
+        ) : null}
+
         <div className="dashboard-options-usage-note">{evidence.usageNote}</div>
 
         {evidence.sourceRefs.length ? (

@@ -10,12 +10,14 @@ import type {
   MarketRegime,
   MarketRegimeKey,
 } from "@/types/market-monitor";
+import type { MarketOddsEvidenceViewModel } from "@/types/reports";
 
 const MARKET_MONITOR_MOCK_URL = new URL("../mocks/market-monitor.json", import.meta.url);
 const MARKET_MONITOR_OVERVIEW_PATH = "/api/market/monitor";
 const MARKET_MONITOR_HISTORY_PATH = "/api/market/monitor/history";
 const MARKET_TICKERS_PATH = "/api/market/tickers";
 const MACRO_LATEST_PATH = "/api/macro/latest";
+export const EXTERNAL_MARKET_ODDS_LATEST_PATH = "/api/market-odds/external/latest";
 
 type RawTickerEntry = {
   price?: unknown;
@@ -584,6 +586,10 @@ export async function fetchMarketMonitorData(): Promise<MarketMonitorResponse> {
       return createUnavailableResponse(`${apiError}; ${mockError}`);
     }
   }
+}
+
+export async function fetchLatestExternalMarketOdds(): Promise<MarketOddsEvidenceViewModel> {
+  return await fetchJson<MarketOddsEvidenceViewModel>(EXTERNAL_MARKET_ODDS_LATEST_PATH);
 }
 
 export interface MarketMonitorHistoryPoint {

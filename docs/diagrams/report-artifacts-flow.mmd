@@ -1,13 +1,15 @@
 flowchart LR
-  RawAssets["原始材料<br/>图片 / PDF / HTML / JSON"] --> Parse["内容提取<br/>OCR / VLM / parser / 结构化解析"]
-  Parse --> SourceMd["原文产物<br/>source.md 或 source artifact"]
-  Parse --> Features["特征快照<br/>feature snapshot"]
-  Features --> AnalysisMd["分析正文<br/>analysis.md<br/>LLM 或确定性分析"]
-  Features --> Structured["结构化报告<br/>report_structured.json"]
-  AnalysisMd --> Visual["可视化报告<br/>visual.html"]
-  Structured --> Visual
-  SourceMd --> ReportItem["报告记录<br/>ReportItem"]
-  AnalysisMd --> ReportArtifact["报告产物<br/>ReportArtifact"]
-  Structured --> ReportArtifact
-  Visual --> ReportArtifact
-  ReportArtifact --> Detail["报告详情页<br/>/reports/:reportId"]
+  Inputs["snapshots + Agent outputs + source refs"] --> Gate["Quality Gate"]
+  Gate -->|accepted| Accepted["accepted report identity"]
+  Gate -->|not accepted| Observe["observation identity"]
+  Accepted --> Source["source_md when available"]
+  Accepted --> Analysis["analysis_md"]
+  Accepted --> Structured["structured_json"]
+  Accepted --> Visual["visual_html when available"]
+  Observe --> ObservationArtifacts["observation report/card"]
+  Source --> Registry["ReportItem + ReportArtifact"]
+  Analysis --> Registry
+  Structured --> Registry
+  Visual --> Registry
+  Registry --> Detail["/reports/:reportId"]
+  ObservationArtifacts --> Review["diagnostics / review only"]

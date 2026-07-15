@@ -52,11 +52,11 @@ export function IVSkewTable({ snapshot }: { snapshot: CMEOptionsResponse }) {
             <tr style={{ borderBottom: "1px solid var(--border)", color: CME_META_TEXT, fontSize: "var(--text-10)" }}>
               <th style={{ padding: "5px 8px", textAlign: "left" }}>到期月</th>
               <th style={{ padding: "5px 8px", textAlign: "right" }}>反推远期价</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>剩余T</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>剩余期限</th>
               <th style={{ padding: "5px 8px", textAlign: "right" }}>伽马零点</th>
               <th style={{ padding: "5px 8px", textAlign: "right" }}>平值波动率</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>25D偏度</th>
-              <th style={{ padding: "5px 8px", textAlign: "right" }}>10D偏度</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>25Δ 偏度</th>
+              <th style={{ padding: "5px 8px", textAlign: "right" }}>10Δ 偏度</th>
             </tr>
           </thead>
           <tbody>

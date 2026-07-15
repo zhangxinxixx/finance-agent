@@ -1,206 +1,78 @@
 # 后端主链
 
-## 固定主链
+> 代码基线：2026-07-21。
 
-```text
-api -> scheduler -> worker -> collectors -> parsers -> features -> analysis -> renderer -> output
+## 触发与调度
+
+| 入口 | 当前行为 |
+| --- | --- |
+| `POST /api/tasks/premarket` | preflight 后通过 Dagster GraphQL 启动 `premarket_job` |
+| `GET /api/tasks/premarket/preflight` | 只读返回 legacy active task、Dagster active run、源就绪状态和阻塞原因 |
+| `premarket_daily` | 工作日 08:30（Asia/Shanghai）触发；readiness blocked 时 Skip |
+
+`force=true` 只影响受支持的 preflight 条件，不能绕过所有安全边界。API 会检查仍活跃的 legacy TaskRun、Dagster run 和数据源 readiness。
+
+## Dagster 盘前图
+
+```mermaid
+flowchart TD
+    Init[Premarket TaskRun init] --> Macro[Macro: collect → feature → render]
+    Init --> CME[CME: download → parse → ingest → option wall]
+    Init --> News[News: collect → feature → brief]
+    Macro --> Merge[Merge analysis snapshot]
+    CME --> Merge
+    News --> Merge
+    Merge --> Readiness{Source readiness}
+    Readiness -->|ready| Composite[Canonical composite analysis]
+    Readiness -->|blocked| Stop[Skip / blocked]
+    Composite --> Complete[Premarket TaskRun complete]
+    Init -. failure hook .-> Failed[Premarket TaskRun failed]
 ```
 
-这是项目边界，不应新增第二套任务主脑。
+失败 hook 负责把失败状态回写 TaskRun。当前工作区中的 `task_run_lifecycle.py` 仍是未提交文件，因此该能力应在合并前继续接受测试和 review。
 
-## API
+## Canonical composite analysis
 
-文件：
+`apps/worker/composite_analysis_pipeline.py` 是当前综合分析权威实现：
 
-- `apps/api/main.py`
-- `apps/api/schemas/*.py`
-- `apps/api/services/*.py`
+1. 运行 macro、CME options、risk、technical、positioning、news、market odds 等 domain agents。
+2. Coordinator 汇总领域输出。
+3. Fact Review 检查 claims 和证据。
+4. Synthesis / Quality Gate 形成候选决策。
+5. 必要时执行 fallback，再次过门。
+6. 只有被接受的 candidate 能生成 accepted final report / strategy card；其他结果写为 observe-only。
 
-职责：
+{% hint style="success" %}
+正式消费者只读取 Quality Gate 接受的 candidate。生成了文件但 `publish_allowed=false`，仍然不是正式分析结论。
+{% endhint %}
 
-- 暴露只读 API、少量受控写 API。
-- 创建 `TaskRun` / `TaskStep`。
-- 派发 premarket worker。
-- 返回 dashboard、reports、source trace、settings、review、strategy、agent 等 read model。
+## 数据层职责
 
-重要 API：
+- Collectors：获取外部数据并保存 raw payload 或原始文件。
+- Parsers：把 raw 转成结构化记录，保留 warning，不补造缺失字段。
+- Features：计算可重复指标、事件候选、市场绑定和领域快照。
+- Analysis：消费快照，不直接改写 raw/parsed。
+- Renderer：把结构化结果渲染为 Markdown/HTML/JSON，不承担数据采集。
+- Output：写入稳定路径并登记 artifact / report metadata。
 
-- `POST /api/tasks/premarket`
-- `GET /api/runs`
-- `GET /api/runs/{run_id}`
-- `GET /api/source-trace/{snapshot_id}`
-- `GET /api/reports/{report_id}`
-- `GET /api/dashboard/summary`
-- `GET /api/data-sources/status`
-- `GET /api/reviews`
-- `GET /api/strategy-cards/latest`
+## 兼容与边界
 
-## Scheduler
+- `apps/worker/runner.py` 可继续服务兼容测试或手工路径，但新调度能力应挂到 Dagster。
+- API 后台刷新默认关闭；启用时仅运行 Jin10 cache refresh，盘前 schedule 仍归 Dagster。
+- 任务“启动成功”不等于分析“发布成功”；最终必须同时检查 run status、readiness、quality gate 和 artifact。
 
-文件：
+## 最小验收
 
-- `apps/scheduler/runner.py`
-- `apps/scheduler/jin10_refresh.py`
-
-当前实现：
-
-- `dispatch_premarket_task()` 通过后台线程调用 `apps.worker.runner.run_premarket()`。
-- FastAPI lifespan 中用 APScheduler 运行 Jin10 cache refresh 和每日 premarket。
-
-风险：
-
-- 当前是 MVP 单实例调度，尚未引入独立队列或分布式 worker。
-- 任务派发成功不等于 pipeline 成功，验收必须看 TaskRun/TaskStep 和 artifact。
-
-## Worker
-
-文件：
-
-- `apps/worker/runner.py`
-- `apps/worker/pipelines/macro.py`
-- `apps/worker/pipelines/cme.py`
-
-当前 canonical step：
-
-```text
-macro_collect
-macro_feature
-cme_download
-cme_parse
-cme_ingest
-option_wall
-report_render
-strategy_card
+```bash
+UV_CACHE_DIR=/tmp/uv-cache rtk uv run pytest \
+  tests/api/test_premarket_trigger_api.py \
+  tests/worker/test_dagster_task_run_lifecycle.py \
+  tests/worker/test_dagster_agent_ops.py -q
 ```
 
-状态：
+真实验收还需检查 Dagster run、`task_runs` / `task_steps`、analysis snapshot 和 accepted/observe artifact 是否一致。
 
-- CME 和 macro step 已接入真实 pipeline。
-- 非 CME/macro step 在 loop 内仍会先按 stub success 处理。
-- analysis snapshot、domain agents、final report、strategy card 在 step loop 后统一执行。
+## 相关内容
 
-后续建议：
-
-- 将 `analysis_snapshot`、`domain_agents`、`final_report`、`strategy_card`、`report_index` 等拆成显式 `TaskStep`。
-- 每一步写入 `input_refs`、`output_refs`、`source_refs`、`artifact_refs`。
-
-## Collectors
-
-目录：
-
-- `apps/collectors/`
-
-已发现领域：
-
-- CME Daily Bulletin
-- FRED
-- Fed
-- Treasury
-- DXY
-- technical / XAUUSD price
-- positioning
-- Jin10
-
-职责：
-
-- 拉取官方或市场源数据。
-- 保存 raw 或返回 collector result。
-- 输出 source refs。
-
-## Parsers
-
-目录：
-
-- `apps/parsers/`
-
-示例：
-
-- `apps/parsers/cme/pdf_parser.py`
-- `apps/parsers/macro/models.py`
-- Jin10 parsed artifacts under `storage/parsed/jin10`
-
-职责：
-
-- 把 raw PDF/JSON/API response 转成结构化 rows / points。
-- 不补造缺失数据。
-
-## Features
-
-目录：
-
-- `apps/features/`
-
-示例：
-
-- `apps/features/macro/snapshot.py`
-- `apps/features/options/calibration.py`
-
-职责：
-
-- 生成 deterministic feature snapshots。
-- 期权墙、宏观指标等在这里计算，不能放到前端。
-
-## Analysis
-
-目录：
-
-- `apps/analysis/`
-
-已实现：
-
-- `apps/analysis/snapshots/builder.py`
-- `apps/analysis/agents/*.py`
-- `apps/analysis/strategy/card.py`
-- `apps/analysis/macro/*`
-- `apps/analysis/options/*`
-- `apps/analysis/jin10/*`
-
-职责：
-
-- 生成统一 analysis snapshot。
-- 运行 domain agents 和 coordinator。
-- 生成 final analysis result 和 strategy card。
-
-## Renderer
-
-目录：
-
-- `apps/renderer/`
-
-示例：
-
-- `apps/renderer/markdown/final_report.py`
-- `apps/renderer/html/options_visual.py`
-
-职责：
-
-- 把结构化模型渲染为 Markdown / HTML。
-- 不做数据采集和策略计算。
-
-## Output
-
-目录：
-
-- `apps/output/`
-
-示例：
-
-- `apps/output/artifacts.py`
-- `apps/output/final_report.py`
-- `apps/output/feishu.py`
-
-职责：
-
-- 统一 artifact 路径。
-- 写入 final report / strategy card。
-- 提供可复用外部输出工具。
-
-## 验收建议
-
-后端主链修改后至少验证：
-
-- `rtk uv run pytest tests/api -q`
-- `rtk uv run pytest tests/features -q`
-- 相关 parser/collector regression
-- `GET /api/health`
-- `POST /api/tasks/premarket` 后检查 TaskRun、TaskStep、storage artifact
+- [Agent 架构](05_AGENT_ARCHITECTURE.md)
+- [报告系统](06_REPORT_SYSTEM.md)

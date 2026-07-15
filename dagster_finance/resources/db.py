@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 
 from dagster import ConfigurableResource
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 
@@ -15,7 +16,10 @@ class DbSessionResource(ConfigurableResource):
     database_url: str = ""
 
     def get_session(self) -> Session:
+        if self.database_url:
+            return Session(bind=create_engine(self.database_url, echo=False, pool_pre_ping=True))
         from database.models.engine import SessionLocal
+
         return SessionLocal()
 
     @contextmanager

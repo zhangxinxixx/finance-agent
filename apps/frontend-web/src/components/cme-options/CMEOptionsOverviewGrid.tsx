@@ -1,12 +1,13 @@
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { getStatusLabel, getStatusTone } from "@/components/shared/statusMeta";
-import type { CMEOptionsResponse } from "@/types/cme-options";
-import { formatNumber, resolveDirectionalWall, toneStyle, translateEvidence } from "./cmeOptionsFormat";
+import type { CMEOptionsDecisionResponse, CMEOptionsResponse } from "@/types/cme-options";
+import { formatCompactNumber, formatNumber, resolveDirectionalWall, summarizeDecision, toneStyle, translateDecisionText } from "./cmeOptionsFormat";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
 
 interface CMEOptionsOverviewGridProps {
   snapshot: CMEOptionsResponse;
   wallScores: CMEOptionsResponse["wall_scores"];
+  decision?: CMEOptionsDecisionResponse | null;
 }
 
 interface LevelCard {
@@ -105,7 +106,14 @@ function directionalWallDetail(wall: ReturnType<typeof resolveDirectionalWall>, 
 
 function formatRange(min: number | null | undefined, max: number | null | undefined) {
   if (min === null || min === undefined || max === null || max === undefined) return "—";
-  return `${formatNumber(min)} - ${formatNumber(max)}`;
+  return `${formatNumber(min)}–${formatNumber(max)} 点`;
+}
+
+function formatHoldingEvidence(value: string) {
+  return translateDecisionText(value).replace(
+    /(看涨持仓|看跌持仓|看涨变化|看跌变化)\s*(-?[0-9]+)/g,
+    (_, label: string, raw: string) => `${label} ${formatNumber(Number(raw))} 张`,
+  );
 }
 
 function formatModelName(model: string | null | undefined) {
@@ -119,7 +127,7 @@ function reportAnchorSourceLabel(source: string | null | undefined) {
   if (source === "not_provided") return "报告未直接提供，使用模型锚点";
   if (source === "parity_inferred") return "平价反推";
   if (source === "jin10_close") return "金十收盘价";
-  return translateEvidence(source);
+  return translateDecisionText(source);
 }
 
 function sourceRangeLabel(source: string | null | undefined) {
@@ -197,7 +205,7 @@ function buildExpiryInsight(snapshot: CMEOptionsResponse, expiry: string | undef
       .sort((a, b) => b.total_gex - a.total_gex)
       .slice(0, 4)
       .map((item) => ({ strike: item.strike, value: item.total_gex })),
-    skewNote: data.iv_skew?.interpretation ?? null,
+    skewNote: data.iv_skew?.interpretation ? translateDecisionText(data.iv_skew.interpretation) : null,
     dominance,
     direction,
   };
@@ -228,38 +236,38 @@ function buildLevelCards(snapshot: CMEOptionsResponse, wallScores: CMEOptionsRes
   return [
     {
       label: "上方看涨压制",
-      value: formatNumber(callWall?.strike),
+      value: `${formatNumber(callWall?.strike)} 点`,
       detail: directionalWallDetail(callWall, "上方压制"),
       tone: "down",
     },
     {
       label: "下方看跌支撑",
-      value: formatNumber(putWall?.strike),
+      value: `${formatNumber(putWall?.strike)} 点`,
       detail: directionalWallDetail(putWall, "下方支撑"),
       tone: "up",
     },
     {
-      label: "Pin 位",
-      value: formatNumber(pinWall?.strike),
+      label: "吸附位",
+      value: `${formatNumber(pinWall?.strike)} 点`,
       detail: `吸附值 ${formatNumber(pinWall?.pnt, 2)} / 持仓变化 ${formatSignedNumber(pinWall?.delta_oi)}`,
       tone: "violet",
     },
     {
       label: "突破门槛",
-      value: formatNumber(nearestResistance?.strike),
+      value: `${formatNumber(nearestResistance?.strike)} 点`,
       detail: `距远期价 ${formatPercent(nearestResistance?.distance_pct)} / 评分 ${formatNumber(nearestResistance?.wall_score, 2)}`,
       tone: "important",
     },
     {
       label: "防守底线",
-      value: formatNumber(nearestSupport?.strike),
+      value: `${formatNumber(nearestSupport?.strike)} 点`,
       detail: `距远期价 ${formatPercent(nearestSupport?.distance_pct)} / 评分 ${formatNumber(nearestSupport?.wall_score, 2)}`,
       tone: "important",
     },
     {
       label: "伽马零点",
-      value: formatNumber(gex?.gamma_zero?.price, 1),
-      detail: `${translateEvidence(gex?.gamma_zero?.method ?? "推导值")} / 净伽马 ${formatNumber(gex?.net_gex)}`,
+      value: `${formatNumber(gex?.gamma_zero?.price, 1)} 点`,
+      detail: `${translateDecisionText(gex?.gamma_zero?.method ?? "推导值")} / 聚合净伽马 ${formatCompactNumber(gex?.net_gex)}`,
       tone: "important",
     },
   ];
@@ -285,20 +293,20 @@ function buildValueRows(snapshot: CMEOptionsResponse, wallScores: CMEOptionsResp
     {
       label: "墙位稳定性",
       value: hasWallDelta ? `看涨 ${formatSignedNumber(callDelta, 2)} / 看跌 ${formatSignedNumber(putDelta, 2)}` : "缺历史校准",
-      detail: hasWallDelta ? "一日墙位评分变化，判断压制/支撑是否迁移" : "当前快照没有 wall_score_delta_1d，需要连续 CME 日报校准后才能判断稳定性",
+      detail: hasWallDelta ? "单日墙位评分变化，用于判断压制或支撑是否迁移" : "当前快照缺少墙位单日评分变化，需要连续 CME 日报校准后才能判断稳定性",
     },
     {
       label: "近远月结构",
-      value: hasNearNextOi ? `持仓比 ${formatNumber(nearNext?.oi_ratio, 2)}x` : `${nearInsight?.expiry ?? "近月"} / ${farInsight?.expiry ?? "次月"}`,
+      value: hasNearNextOi ? `持仓比 ${formatNumber(nearNext?.oi_ratio, 2)} 倍` : `${nearInsight?.expiry ?? "近月"} / ${farInsight?.expiry ?? "次月"}`,
       detail: hasNearNextOi
-        ? `近月持仓 ${formatNumber(nearNext?.near_total_oi)} / 次月持仓 ${formatNumber(nearNext?.next_total_oi)}`
-        : `未返回近/次月总 OI；改用 GEX 结构：${nearInsight?.dominance ?? "近月缺失"} / ${farInsight?.dominance ?? "远月缺失"}`,
+        ? `近月持仓 ${formatCompactNumber(nearNext?.near_total_oi, "张")} / 次月持仓 ${formatCompactNumber(nearNext?.next_total_oi, "张")}`
+        : `未返回近月与次月总持仓；改用 GEX 结构：${nearInsight?.dominance ?? "近月缺失"} / ${farInsight?.dominance ?? "远月缺失"}`,
     },
     {
       label: "换月信号",
       value: rollSignal ? formatConfidence(rollSignal.confidence) : "无明显换月",
       detail: rollSignal
-        ? `${translateEvidence(rollSignal.evidence?.[0])}；${translateEvidence(rollSignal.evidence?.[1])}`
+        ? `${translateDecisionText(rollSignal.evidence?.[0])}；${translateDecisionText(rollSignal.evidence?.[1])}`
         : "未检测到高置信换月证据",
     },
     {
@@ -318,20 +326,20 @@ function buildCMEReportHighlights(
   const proxyStrikes = dataQualityCount(snapshot, "proxy_strikes");
   const filteredRows = dataQualityCount(snapshot, "rows_filtered_by_strike");
   const zeroOi = dataQualityCount(snapshot, "zero_oi");
-  const intentEvidence = snapshot.intent?.evidence?.map((item) => translateEvidence(item)) ?? [];
+  const intentEvidence = snapshot.intent?.evidence?.map((item) => formatHoldingEvidence(item)) ?? [];
   const warnings = snapshot.data_quality?.warnings ?? [];
 
   return [
     {
-      label: "报告 OI 信号",
-      value: translateEvidence(snapshot.intent?.type ?? "—"),
-      detail: intentEvidence.length ? intentEvidence.join(" / ") : "未返回 OI 意图证据",
+      label: "报告持仓信号",
+      value: translateDecisionText(snapshot.intent?.type ?? "—"),
+      detail: intentEvidence.length ? intentEvidence.join(" / ") : "未返回持仓意图证据",
       tone: "down",
     },
     {
       label: "降权点",
       value: `Delta缺口 ${formatNumber(missingDelta)} / 代理 ${formatNumber(proxyStrikes)}`,
-      detail: `过滤 ${formatNumber(filteredRows)} 行，零持仓 ${formatNumber(zeroOi)}；${warnings.map((item) => translateEvidence(item)).slice(0, 2).join("；") || "暂无额外质量提示"}`,
+      detail: `过滤 ${formatNumber(filteredRows)} 行，零持仓 ${formatNumber(zeroOi)}；${warnings.map((item) => translateDecisionText(item)).slice(0, 2).join("；") || "暂无额外质量提示"}`,
       tone: "warn",
     },
     {
@@ -361,14 +369,26 @@ function buildAnalystReadout(
   wallScores: CMEOptionsResponse["wall_scores"],
   nearInsight: ExpiryInsight | null,
   farInsight: ExpiryInsight | null,
+  decision?: CMEOptionsDecisionResponse | null,
 ): InterpretationRow[] {
   const gex = snapshot.gex?.netgex_aggregate;
   const currentPrice = snapshot.parameters?.f_value ?? snapshot.parameters?.report_p0 ?? snapshot.parameters?.p0 ?? null;
-  const gammaZero = gex?.gamma_zero?.price ?? null;
+  const gammaZero = gex?.gamma_zero?.price ?? decision?.gamma_summary.gamma_zero ?? null;
   const callWall = resolveDirectionalWall(snapshot, wallScores, "CALL");
   const putWall = resolveDirectionalWall(snapshot, wallScores, "PUT");
   const pinWall = findPinWall(wallScores);
-  const riskSignals = snapshot.roll_signals?.map((signal) => translateEvidence(signal.evidence?.[0] ?? signal.roll_type)).slice(0, 2) ?? [];
+  const riskSignals = snapshot.roll_signals?.map((signal) => translateDecisionText(signal.evidence?.[0] ?? signal.roll_type)).slice(0, 2) ?? [];
+  const snapshotDirection = gex?.net_gex_direction === "negative" || gex?.net_gex_direction === "positive" || gex?.net_gex_direction === "neutral"
+    ? gex.net_gex_direction
+    : null;
+  const decisionDirection = decision?.gamma_summary.regime === "negative_gamma"
+    ? "negative"
+    : decision?.gamma_summary.regime === "positive_gamma"
+      ? "positive"
+      : decision?.gamma_summary.regime === "flip_zone"
+        ? "neutral"
+        : null;
+  const aggregateDirection = snapshotDirection ?? decisionDirection;
   const priceVsGamma = currentPrice !== null && gammaZero !== null
     ? currentPrice < gammaZero
       ? "价格低于伽马零点，向下波动更容易被放大"
@@ -380,7 +400,7 @@ function buildAnalystReadout(
   return [
     {
       label: "当前环境",
-      value: gex?.net_gex_direction === "negative" ? "负伽马风险" : gex?.net_gex_direction === "positive" ? "正伽马缓冲" : "中性吸附",
+      value: aggregateDirection === "negative" ? "负伽马风险" : aggregateDirection === "positive" ? "正伽马缓冲" : aggregateDirection === "neutral" ? "中性吸附" : "聚合方向未提供",
       detail: priceVsGamma,
       tone: "important",
     },
@@ -392,7 +412,7 @@ function buildAnalystReadout(
     },
     {
       label: "吸附与突破",
-      value: `Pin ${formatNumber(pinWall?.strike)} / GZ ${formatNumber(gammaZero, 1)}`,
+      value: `吸附位 ${formatNumber(pinWall?.strike)} / 伽马零点 ${formatNumber(gammaZero, 1)}`,
       detail: `若价格围绕 ${formatNumber(pinWall?.strike)} 震荡，优先看区间；偏离 ${formatNumber(gammaZero, 1)} 后波动结构会改变`,
       tone: "violet",
     },
@@ -413,12 +433,16 @@ function buildAnalystReadout(
   ];
 }
 
-export function CMEOptionsOverviewGrid({ snapshot, wallScores }: CMEOptionsOverviewGridProps) {
+export function CMEOptionsOverviewGrid({ snapshot, wallScores, decision }: CMEOptionsOverviewGridProps) {
   const analysis = snapshot.analysis;
-  const primarySummary = analysis?.synthesis?.summary || analysis?.cme_options_agent?.summary || "当前未返回后端解释摘要。";
-  const nextRisk = translateEvidence(analysis?.pending_reviews[0]?.reason
+  const agentSummary = analysis?.synthesis?.summary || analysis?.cme_options_agent?.summary;
+  const decisionSummary = summarizeDecision(decision);
+  const primarySummary = translateDecisionText(agentSummary || decisionSummary || "综合分析暂不可用，请以当前结构数据和风险提示为准。");
+  const primarySummaryLabel = agentSummary ? "Agent 综合判断" : decisionSummary ? "决策数据摘要" : "结构数据说明";
+  const nextRisk = translateDecisionText(analysis?.pending_reviews[0]?.reason
     || analysis?.synthesis?.risk_points[0]
     || analysis?.cme_options_agent?.risk_points[0]
+    || decision?.data_quality.warnings[0]
     || "暂无额外风险提示。");
   const levelCards = buildLevelCards(snapshot, wallScores);
   const valueRows = buildValueRows(snapshot, wallScores);
@@ -428,7 +452,7 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores }: CMEOptionsOverv
   const analysisRange = buildRange(snapshot);
   const reportHighlights = buildCMEReportHighlights(snapshot, nearInsight, farInsight);
   const reportBasis = buildCMEReportBasis(snapshot);
-  const analystReadout = buildAnalystReadout(snapshot, wallScores, nearInsight, farInsight);
+  const analystReadout = buildAnalystReadout(snapshot, wallScores, nearInsight, farInsight, decision);
 
   return (
     <div className="cme-options-overview-layout">
@@ -444,13 +468,13 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores }: CMEOptionsOverv
             </div>
 
             <div className="cme-options-decision-cell">
-              <span className="cme-options-mini-label cme-options-mini-label--down">看涨压力</span>
+              <span className="cme-options-mini-label cme-options-mini-label--down">看涨压力（GEX）</span>
               <strong className="cme-options-decision-value fa-num">{formatGex(nearInsight?.callGex)}</strong>
               <span className="cme-options-cell-detail cme-options-cell-detail--important">核心点位 {formatNumber(nearInsight?.callTop?.strike)}</span>
             </div>
 
             <div className="cme-options-decision-cell">
-              <span className="cme-options-mini-label cme-options-mini-label--up">看跌支撑</span>
+              <span className="cme-options-mini-label cme-options-mini-label--up">看跌支撑（GEX）</span>
               <strong className="cme-options-decision-value fa-num">{formatGex(nearInsight?.putGex)}</strong>
               <span className="cme-options-cell-detail cme-options-cell-detail--important">核心点位 {formatNumber(nearInsight?.putTop?.strike)}</span>
             </div>
@@ -464,7 +488,7 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores }: CMEOptionsOverv
 
           <section className="cme-options-thesis-panel">
             <div className="cme-options-thesis-copy">
-              <span className="cme-options-mini-label">后端综合判断</span>
+              <span className="cme-options-mini-label">{primarySummaryLabel}</span>
               <p>{primarySummary}</p>
             </div>
 
@@ -592,11 +616,11 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores }: CMEOptionsOverv
           <div className="cme-options-count-grid">
             <div>
               <span>来源引用</span>
-              <strong className="fa-num">{snapshot.source_trace.length}</strong>
+              <strong className="fa-num">{snapshot.source_trace.length} 条</strong>
             </div>
             <div>
               <span>待复核</span>
-              <strong className="fa-num">{analysis?.pending_review_count ?? 0}</strong>
+              <strong className="fa-num">{analysis?.pending_review_count ?? 0} 项</strong>
             </div>
           </div>
         </CMEOptionsSurface>

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from apps.analysis.agents import AgentBias, AgentStatus
+from apps.analysis.agents.fact_review import build_runtime_fact_review_agent_output
 from apps.analysis.agents.news import analyze_news
 
 _CREATED_AT = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
@@ -52,6 +53,63 @@ def test_analyze_news_unavailable_when_snapshot_section_missing():
     assert output.bias is AgentBias.NEUTRAL
     assert output.confidence == 0.0
     assert "news status" in output.invalid_conditions[0]
+
+
+def test_analyze_news_emits_reviewable_gold_and_silver_etf_claims():
+    etf_context = {
+        "artifact_path": "features/market/2026-07-21/run/etf_holdings.json",
+        "gold_etf_holdings_tonnes": 1003.59,
+        "gold_etf_change_tonnes": 4.566,
+        "gold_etf_reported_on": "2026-07-20",
+        "silver_etf_holdings_tonnes": 15052.89,
+        "silver_etf_change_tonnes": -8.43,
+        "silver_etf_reported_on": "2026-07-20",
+        "source_refs": [
+            {
+                "source": "jin10_minipro",
+                "source_key": "jin10_minipro_etf_reports",
+                "asset": "gold",
+                "parsed_path": "parsed/news/jin10_minipro_etf_reports/2026-07-21/gold.json",
+            },
+            {
+                "source": "jin10_minipro",
+                "source_key": "jin10_minipro_etf_reports",
+                "asset": "silver",
+                "parsed_path": "parsed/news/jin10_minipro_etf_reports/2026-07-21/silver.json",
+            },
+        ],
+    }
+    output = analyze_news(
+        _snapshot({
+            "status": "available",
+            "data": {
+                "daily_market_brief": {
+                    "market_mainline": {},
+                    "confirmed_events": [],
+                    "candidate_events": [],
+                    "unconfirmed_risks": [],
+                    "next_7d_calendar": [],
+                    "report_inputs": {"etf_holdings": [etf_context]},
+                }
+            },
+        }),
+        created_at=_CREATED_AT,
+    )
+
+    claims = output.input_payload["claims"]
+    assert len(claims) == 2
+    assert claims[0]["subject"] == "gold_etf"
+    assert claims[1]["subject"] == "silver_etf"
+    assert all(claim["source_refs"] for claim in claims)
+    assert all(claim["evidence_refs"] for claim in claims)
+    assert any("白银 iShares ETF持仓 15,052.89 吨" in finding for finding in output.key_findings)
+    review = build_runtime_fact_review_agent_output(
+        [output],
+        snapshot_id="XAUUSD:2026-05-16:test-run",
+        created_at=_CREATED_AT,
+    )
+    assert review.input_payload["fact_review_status"] == "passed"
+    assert review.input_payload["verdict_counts"]["supported"] == 2
 
 
 def test_analyze_news_consumes_daily_market_brief_without_upgrading_unconfirmed_events():
@@ -110,6 +168,21 @@ def test_analyze_news_consumes_daily_market_brief_without_upgrading_unconfirmed_
                         "news_highlights": [],
                         "watchlist": [],
                         "risk_points": [],
+                        "market_observations": [
+                            {
+                                "observation_type": "external_market_odds",
+                                "source_kind": "jin10_external_market_odds",
+                                "provider_role": "supplemental_source",
+                                "article_id": "223555",
+                                "extraction_status": "needs_review",
+                                "influence_policy": {
+                                    "can_change_macro_regime": False,
+                                    "can_set_strategy_direction": False,
+                                    "can_block_readiness": False,
+                                },
+                                "items": [{"item_id": "odds-1", "asset": "XAUUSD", "probability": 0.94}],
+                            }
+                        ],
                     },
                     "source_refs": [{"source": "daily_market_brief", "source_ref": "brief:run-001"}],
                 }
@@ -126,3 +199,8 @@ def test_analyze_news_consumes_daily_market_brief_without_upgrading_unconfirmed_
     assert any("gold ETF money" in item for item in output.watchlist)
     assert not any("gold ETF money" in finding for finding in output.key_findings)
     assert any(ref.get("source") == "daily_market_brief" for ref in output.source_refs)
+    assert output.bias is AgentBias.NEUTRAL
+    assert any("外部赔率观察" in item for item in output.watchlist)
+    assert any("不得升级为方向结论" in item for item in output.risk_points)
+    assert output.input_payload["external_market_odds_count"] == 1
+    assert output.evidence_items[0]["provider_role"] == "supplemental_source"

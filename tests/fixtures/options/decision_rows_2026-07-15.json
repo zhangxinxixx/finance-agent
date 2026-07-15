@@ -1,0 +1,20 @@
+{
+  "2026-07-15": [
+    {"trade_date": "2026-07-15", "product_code": "OG", "expiry": "AUG26", "strike": 4100, "option_type": "CALL", "open_interest": 110000, "version_type": "FINAL"},
+    {"trade_date": "2026-07-15", "product_code": "OG", "expiry": "AUG26", "strike": 4100, "option_type": "PUT", "open_interest": 105236, "version_type": "FINAL"},
+    {"trade_date": "2026-07-15", "product_code": "OG", "expiry": "SEP26", "strike": 4150, "option_type": "CALL", "open_interest": 55000, "version_type": "FINAL"},
+    {"trade_date": "2026-07-15", "product_code": "OG", "expiry": "SEP26", "strike": 4150, "option_type": "PUT", "open_interest": 58263, "version_type": "FINAL"}
+  ],
+  "2026-07-14": [
+    {"trade_date": "2026-07-14", "product_code": "OG", "expiry": "AUG26", "strike": 4100, "option_type": "CALL", "open_interest": 110100, "version_type": "FINAL"},
+    {"trade_date": "2026-07-14", "product_code": "OG", "expiry": "AUG26", "strike": 4100, "option_type": "PUT", "open_interest": 105390, "version_type": "FINAL"},
+    {"trade_date": "2026-07-14", "product_code": "OG", "expiry": "SEP26", "strike": 4150, "option_type": "CALL", "open_interest": 54537, "version_type": "FINAL"},
+    {"trade_date": "2026-07-14", "product_code": "OG", "expiry": "SEP26", "strike": 4150, "option_type": "PUT", "open_interest": 57429, "version_type": "FINAL"}
+  ],
+  "2026-07-13": [
+    {"trade_date": "2026-07-13", "product_code": "OG", "expiry": "AUG26", "strike": 4100, "option_type": "CALL", "open_interest": 110050, "version_type": "FINAL"},
+    {"trade_date": "2026-07-13", "product_code": "OG", "expiry": "AUG26", "strike": 4100, "option_type": "PUT", "open_interest": 105300, "version_type": "FINAL"},
+    {"trade_date": "2026-07-13", "product_code": "OG", "expiry": "SEP26", "strike": 4150, "option_type": "CALL", "open_interest": 54000, "version_type": "FINAL"},
+    {"trade_date": "2026-07-13", "product_code": "OG", "expiry": "SEP26", "strike": 4150, "option_type": "PUT", "open_interest": 57000, "version_type": "FINAL"}
+  ]
+}

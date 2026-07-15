@@ -79,6 +79,8 @@ def test_macro_options_conflict_records_risk_note_and_mixed_bias():
     assert output.bias in {AgentBias.MIXED, AgentBias.NEUTRAL}
     assert any("conflict" in note.lower() or "diverge" in note.lower() for note in output.risk_points)
     assert 0.0 <= output.confidence <= 1.0
+    assert output.input_payload["bullish_drivers"] == ["macro_liquidity_agent: macro finding"]
+    assert output.input_payload["bearish_drivers"] == ["cme_options_agent: options finding"]
 
 
 def test_unavailable_snapshot_modules_affect_confidence_and_invalid_conditions():

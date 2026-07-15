@@ -18,6 +18,7 @@ export interface ReportIndexItem {
   source_title?: string | null;
   format: string;
   available: boolean;
+  status?: string | null;
 }
 
 export interface ReportsIndexResponse {
@@ -222,7 +223,20 @@ export interface ReportAnalysisAgentOutputResponse {
   prompt_version?: string | null;
   generated_by?: string | null;
   llm_model?: string | null;
+  llm_audit?: ReportLLMAuditResponse | null;
   created_at?: string | null;
+}
+
+export interface ReportLLMAuditResponse {
+  available: boolean;
+  audit_id?: string | null;
+  status: string;
+  note?: string | null;
+  config: Record<string, unknown>;
+  prompt_messages: Array<Record<string, unknown>>;
+  input_payload?: unknown;
+  output_payload?: unknown;
+  raw_output?: unknown;
 }
 
 export interface ReportAnalysisInputsResponse {
@@ -258,11 +272,85 @@ export interface ReportDetailResponse {
   lifecycle_status: string;
   review_status?: string;
   generated_at?: string | null;
+  llm_audits?: ReportLLMAuditSummary[];
   artifacts: ReportArtifactResponse[];
   input_snapshot_ids: string[];
   review_items: Array<Record<string, unknown>>;
   structured_payload?: Record<string, unknown> | null;
   gold_macro_overview?: GoldMacroOverview | null;
+  market_odds_evidence?: MarketOddsEvidenceViewModel | null;
+}
+
+export interface ReportLLMAuditSummary {
+  audit_id: string;
+  call_id: string;
+  status: string;
+  caller: string;
+  provider_resolved?: string | null;
+  model_resolved?: string | null;
+  reasoning_effort_resolved?: string | null;
+  prompt_message_count: number;
+  prompt_char_count: number;
+  response_char_count: number;
+  run_id?: string | null;
+  report_id?: string | null;
+  created_at?: string | null;
+}
+
+export interface MarketOddsEvidenceItemView {
+  item_id: string;
+  panel_id: string;
+  asset: string;
+  outcome_label: string;
+  predicate: string;
+  probability: number;
+  probability_raw: string;
+  probability_semantics: string;
+  horizon_end: string;
+  extraction_status: string;
+  page_no?: number | null;
+  figure_id?: string | null;
+  bbox?: number[] | null;
+  ocr_text: string;
+  observed_at?: string | null;
+  image_url?: string | null;
+  image_kind?: "figure_crop" | "original_page" | null;
+  source_refs: Array<Record<string, unknown>>;
+  evidence_refs: Array<Record<string, unknown>>;
+}
+
+export interface MarketOddsEvidenceViewModel {
+  article_id?: string | null;
+  report_id?: string | null;
+  trade_date?: string | null;
+  as_of: string;
+  source_role: "supplemental_source";
+  source_verification_status: string;
+  extraction_status: string;
+  panel_count: number;
+  groups: Array<{ group_key: string; label: string; items: MarketOddsEvidenceItemView[] }>;
+  interpretation: Record<string, unknown>;
+  analysis_context?: {
+    source: "accepted_agent_analysis" | "deterministic_fallback";
+    quality_status: "accepted" | "unavailable";
+    structure_summary: string;
+    gold_implication: string;
+    confirmation_variables: string[];
+  };
+  internal_comparisons: Array<{
+    comparison_status: "supports" | "conflicts";
+    reason_codes: string[];
+    external_probability: number;
+    internal_probability: number;
+    probability_gap: number;
+    observation_gap_hours?: number;
+    aggregation_allowed: false;
+    external_item_id?: string | null;
+    internal_event_id?: string | null;
+  }>;
+  evidence_items: MarketOddsEvidenceItemView[];
+  parser_version: string;
+  feature_schema_version: string;
 }
 
 export interface ReportGenerationTrace {
@@ -401,8 +489,11 @@ export interface ReportAnalysisAgentOutputView {
   prompt_version?: string | null;
   generated_by?: string | null;
   llm_model?: string | null;
+  llm_audit?: ReportLLMAuditView | null;
   created_at?: string | null;
 }
+
+export interface ReportLLMAuditView extends ReportLLMAuditResponse {}
 
 export interface ReportAnalysisInputsView {
   report_id: string;
@@ -437,4 +528,6 @@ export interface ReportDetailView {
   structured_payload?: Record<string, unknown> | null;
   generation_trace?: ReportGenerationTrace | null;
   gold_macro_overview?: GoldMacroOverview | null;
+  market_odds_evidence?: MarketOddsEvidenceViewModel | null;
+  llm_audits: ReportLLMAuditSummary[];
 }

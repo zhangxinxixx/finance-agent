@@ -9,9 +9,16 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apps.analysis.agents.source_health import build_gold_v3_source_health
-from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, evaluate_quality_gate
-from apps.analysis.gold_mainline_engine import archive_gold_macro_overview, build_gold_macro_overview
+from apps.analysis.agents.gold_artifacts import GoldArtifactConflictError, write_canonical_gold_json
+from apps.analysis.agents.gold_runtime_agents import (
+    build_gold_review_gate,
+    build_gold_runtime_gate,
+    materialize_gold_runtime_agent_artifacts,
+)
+from apps.analysis.gold_mainline_engine import (
+    build_gold_macro_overview,
+    gold_macro_overview_payload,
+)
 from apps.api.services.source_service import get_data_source_statuses
 from apps.collectors.positioning.collector import CFTC_COT_URL
 from apps.features.news.gold_event_mainlines import archive_gold_event_mainlines, build_gold_event_mainlines
@@ -245,8 +252,14 @@ def main(argv: list[str] | None = None) -> int:
             input_snapshot_ids["policy_context"] = policy_context_path
         if geopolitical_context_path:
             input_snapshot_ids["geopolitical_context"] = geopolitical_context_path
-        gold_macro_overview_path = archive_gold_macro_overview(
-            storage_root=storage_root,
+        gold_macro_overview_path = (
+            Path("analysis")
+            / "gold_mainlines"
+            / source_date
+            / output_run_id
+            / "gold_macro_overview.json"
+        ).as_posix()
+        overview_payload = gold_macro_overview_payload(
             retrieved_date=source_date,
             run_id=output_run_id,
             overview=gold_macro_overview,
@@ -255,8 +268,48 @@ def main(argv: list[str] | None = None) -> int:
         runtime_gate = _attach_source_health_runtime_gate(
             storage_root=storage_root,
             gold_macro_overview_path=gold_macro_overview_path,
+            overview=overview_payload,
         )
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+        run_base = Path("analysis") / "gold_mainlines" / source_date / output_run_id
+        source_health_result = write_canonical_gold_json(
+            storage_root / run_base / "source_health.json",
+            runtime_gate["source_health"],
+            storage_root=storage_root,
+        )
+        quality_gate_result = write_canonical_gold_json(
+            storage_root / run_base / "quality_gate_result.json",
+            runtime_gate["review_gate"],
+            storage_root=storage_root,
+        )
+        overview_payload = _read_json(storage_root / gold_macro_overview_path)
+        lineage_input_snapshot_ids = {
+            "event_candidates": f"features/news/{source_date}/{source_run_id}/event_candidates.json",
+            "impact_assessments": f"features/news/{source_date}/{source_run_id}/impact_assessments.json",
+            **input_snapshot_ids,
+        }
+        agent_execution = materialize_gold_runtime_agent_artifacts(
+            storage_root=storage_root,
+            retrieved_date=source_date,
+            run_id=output_run_id,
+            as_of=as_of,
+            input_snapshot_ids=lineage_input_snapshot_ids,
+            source_refs=[
+                dict(item)
+                for item in overview_payload.get("source_refs") or []
+                if isinstance(item, dict)
+            ],
+            canonical_paths={
+                "source_health": str(source_health_result.storage_relative_path),
+                "gold_event_mainlines": gold_event_mainlines_path,
+                "gold_macro_overview": gold_macro_overview_path,
+                "quality_gate_result": str(quality_gate_result.storage_relative_path),
+            },
+            source_health=runtime_gate["source_health"],
+            gold_event_mainlines=gold_event_mainlines_payload,
+            gold_macro_overview=overview_payload,
+            review_gate=runtime_gate["review_gate"],
+        )
+    except (FileNotFoundError, ValueError, json.JSONDecodeError, GoldArtifactConflictError) as exc:
         print(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False), file=sys.stderr)
         return 1
 
@@ -269,6 +322,14 @@ def main(argv: list[str] | None = None) -> int:
             "gold_macro_overview_path": gold_macro_overview_path,
         },
         warnings=[str(item) for item in runtime_gate["review_gate"].get("warnings") or []],
+        executed_agents=agent_execution["executed_agents"],
+        declared_agents=agent_execution["declared_agents"],
+        materialized_stage_envelopes=agent_execution[
+            "materialized_stage_envelopes"
+        ],
+        failed_agents=[],
+        skipped_agents=["report_render_agent"],
+        agent_artifact_refs=agent_execution["artifact_paths"],
     )
     summary = {
         "status": "success",
@@ -281,7 +342,13 @@ def main(argv: list[str] | None = None) -> int:
         "runtime_contract_only": runtime_summary["runtime_contract_only"],
         "artifact_execution_enabled": runtime_summary["artifact_execution_enabled"],
         "pipeline_materialized_outputs": runtime_summary["pipeline_materialized_outputs"],
+        "declared_agents": runtime_summary["declared_agents"],
+        "materialized_stage_envelopes": runtime_summary[
+            "materialized_stage_envelopes"
+        ],
         "executed_agents": runtime_summary["executed_agents"],
+        "failed_agents": runtime_summary["failed_agents"],
+        "skipped_agents": runtime_summary["skipped_agents"],
         "gold_macro_overview_updated": runtime_summary["gold_macro_overview_updated"],
         "quality_gate_status": runtime_summary["quality_gate_status"],
         "quality_gate_action": runtime_summary["quality_gate_action"],
@@ -295,6 +362,10 @@ def main(argv: list[str] | None = None) -> int:
         "output_run_id": output_run_id,
         "gold_event_mainlines_path": gold_event_mainlines_path,
         "gold_macro_overview_path": gold_macro_overview_path,
+        "source_health_path": source_health_result.storage_relative_path,
+        "quality_gate_result_path": quality_gate_result.storage_relative_path,
+        "agent_artifact_refs": agent_execution["artifact_paths"],
+        "snapshot_id": agent_execution["snapshot_id"],
         "gold_mainline_count": len(gold_event_mainlines.mainlines),
         "gold_event_link_count": len(gold_event_mainlines.event_links),
         "gold_macro_theme_count": len(gold_macro_overview.theme_rankings),
@@ -313,15 +384,26 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _attach_source_health_runtime_gate(*, storage_root: Path, gold_macro_overview_path: str) -> dict[str, Any]:
+def _attach_source_health_runtime_gate(
+    *,
+    storage_root: Path,
+    gold_macro_overview_path: str,
+    overview: dict[str, Any],
+) -> dict[str, Any]:
     overview_path = storage_root / gold_macro_overview_path
-    overview = _read_json(overview_path)
     try:
-        source_health = build_gold_v3_source_health(
-            get_data_source_statuses(),
-            as_of=str(overview.get("as_of") or "") or None,
-            gold_macro_overview=overview,
-        ).to_dict()
+        persisted_source_health_path = overview_path.with_name("source_health.json")
+        if persisted_source_health_path.is_file():
+            source_health = _read_json(persisted_source_health_path)
+            review_gate = build_gold_review_gate(source_health=source_health, overview=overview)
+        else:
+            runtime_gate = build_gold_runtime_gate(
+                source_statuses=get_data_source_statuses(),
+                overview=overview,
+                as_of=str(overview.get("as_of") or "") or None,
+            )
+            source_health = runtime_gate["source_health"]
+            review_gate = runtime_gate["review_gate"]
     except Exception as exc:
         source_health = {
             "overall_status": "degraded",
@@ -334,20 +416,24 @@ def _attach_source_health_runtime_gate(*, storage_root: Path, gold_macro_overvie
             "source_freshness": {},
             "mainline_impact": {},
             "can_build_gold_macro_overview": True,
-            "can_emit_strong_conclusion": True,
+            "can_emit_strong_conclusion": False,
             "blocked_mainlines": [],
             "degraded_mainlines": [],
-            "blocking_reasons": [],
+            "blocking_reasons": ["source health unavailable: no strong conclusion"],
             "warnings": [f"source_health_unavailable: {exc.__class__.__name__}"],
         }
-    review_gate = _review_gate_from_source_health(source_health=source_health, overview=overview)
+        review_gate = build_gold_review_gate(source_health=source_health, overview=overview)
     overview["source_health"] = source_health
     overview["review_gate"] = review_gate
     overview["review_status"] = review_gate["review_status"]
     overview["review_blocking_reasons"] = review_gate["blocking_reasons"]
     if review_gate["review_status"] == "blocked":
         overview["status"] = "blocked"
-    overview_path.write_text(json.dumps(overview, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_canonical_gold_json(
+        overview_path,
+        overview,
+        storage_root=storage_root,
+    )
     return {
         "source_health_check": {
             "node_id": "source_health_check",
@@ -359,50 +445,8 @@ def _attach_source_health_runtime_gate(*, storage_root: Path, gold_macro_overvie
             "can_build_gold_macro_overview": source_health["can_build_gold_macro_overview"],
         },
         "review_gate": review_gate,
+        "source_health": source_health,
     }
-
-
-def _review_gate_from_source_health(*, source_health: dict[str, Any], overview: dict[str, Any]) -> dict[str, Any]:
-    blocking_reasons = [str(item) for item in source_health.get("blocking_reasons") or []]
-    warnings = [str(item) for item in source_health.get("warnings") or []]
-    quality_decision = evaluate_quality_gate(
-        agent_outputs=[],
-        gold_macro_overview=overview,
-        source_health=source_health,
-    )
-    for finding in quality_decision.findings:
-        if finding.severity == "blocker":
-            if finding.message not in blocking_reasons:
-                blocking_reasons.append(finding.message)
-        elif finding.message not in warnings:
-            warnings.append(finding.message)
-    strong_conflict = any("strong GoldMacroOverview conclusion" in reason for reason in blocking_reasons)
-    if quality_decision.action is QualityGateAction.BLOCK_PUBLISH or strong_conflict:
-        review_status = "blocked"
-        reason = "QualityGate blocked publication for this GoldMacroOverview."
-    elif blocking_reasons or warnings:
-        review_status = "needs_review"
-        reason = "QualityGate found missing, stale, fallback, or review-required evidence."
-    else:
-        review_status = "pass"
-        reason = "QualityGate passed with no blocking reasons or warnings."
-    return {
-        "agent_id": "review_gate_agent",
-        "dag_node_id": "review_gate",
-        "review_status": review_status,
-        "quality_gate_action": quality_decision.action.value,
-        "publish_allowed": quality_decision.publish_allowed,
-        "manual_review_required": quality_decision.manual_review_required,
-        "fallback_recommended": quality_decision.fallback_recommended,
-        "retry_recommended": quality_decision.retry_recommended,
-        "quality_gate_decision": quality_decision.model_dump(mode="json"),
-        "source_health_status": source_health.get("overall_status"),
-        "blocking_reasons": blocking_reasons,
-        "warnings": warnings,
-        "reason": reason,
-    }
-
-
 def _resolve_source_run(*, storage_root: Path, date: str | None, run_id: str | None) -> tuple[str, str]:
     if bool(date) != bool(run_id):
         raise ValueError("--date and --run-id must be provided together.")

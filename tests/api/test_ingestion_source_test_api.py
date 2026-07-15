@@ -51,6 +51,25 @@ class _FakeMCPClient:
         }
 
 
+class _FakeMarketMCPClient(_FakeMCPClient):
+    quote_payload = {"status": 200, "data": {"code": "XAUUSD", "price": "4072.10"}}
+    kline_payload = {
+        "status": 200,
+        "data": {
+            "klines": [
+                {"time": 1784044200, "close": "4071.24"},
+                {"time": 1784044140, "close": "4071.58"},
+            ]
+        },
+    }
+
+    def get_quote(self, code):
+        return self.quote_payload
+
+    def get_kline(self, code, count):
+        return self.kline_payload
+
+
 def _write_web_flash_briefs_artifact(
     project_root: Path,
     *,
@@ -174,6 +193,109 @@ def test_ingestion_source_test_runs_jin10_flash_probe_and_archives_preview(monke
         response.artifacts["raw_path"],
         response.artifacts["parsed_path"],
     }
+
+
+def test_ingestion_source_test_runs_gold_and_silver_etf_probe(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+
+    def fake_fetch(*, client, retrieved_date, asset, config, fetched_at=None):
+        del client, fetched_at
+        return {
+            "source_key": "jin10_minipro_etf_reports",
+            "asset": asset,
+            "attr_id": config["attr_id"],
+            "fund_name": config["fund_name"],
+            "fetched_at": f"{retrieved_date}T00:00:00+00:00",
+            "request_params": {"attr_id": config["attr_id"]},
+            "payload": {
+                "status": 200,
+                "data": [
+                    {
+                        "trust": 1003.59 if asset == "gold" else 15052.89,
+                        "change": 4.566 if asset == "gold" else -8.43,
+                        "value": 110_000_000_000 if asset == "gold" else 27_486_155_500,
+                        "reported_on": "2026-07-20",
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "apps.api.services.ingestion_source_test_service.fetch_jin10_etf_report",
+        fake_fetch,
+    )
+
+    response = main.api_ingestion_source_test(
+        "jin10_minipro_etf_reports",
+        body=DataSourceTestRequest(limit=2),
+        db=session,
+    )
+
+    assert response.status == "ok"
+    assert response.data_status.value == "live"
+    assert response.summary["report_count"] == 2
+    assert [item["asset"] for item in response.preview] == ["gold", "silver"]
+    assert response.preview[1]["holdings_tonnes"] == 15052.89
+    assert response.preview[1]["change_tonnes"] == -8.43
+    assert (tmp_path / response.artifacts["raw_path"]).exists()
+    assert (tmp_path / response.artifacts["parsed_path"]).exists()
+
+
+def test_ingestion_source_test_market_probe_is_live_when_quote_and_kline_exist(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service.Jin10MCPClient", _FakeMarketMCPClient)
+
+    response = main.api_ingestion_source_test("jin10_mcp_market", body=DataSourceTestRequest(limit=2), db=session)
+
+    assert response.status == "ok"
+    assert response.data_status.value == "live"
+    assert response.summary["quote_available"] is True
+    assert response.summary["kline_available"] is True
+    assert response.summary["missing_components"] == []
+
+
+def test_ingestion_source_test_market_probe_is_partial_when_quote_is_missing(monkeypatch, tmp_path: Path) -> None:
+    session = _make_session()
+
+    class PartialMarketClient(_FakeMarketMCPClient):
+        quote_payload = {}
+
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service.Jin10MCPClient", PartialMarketClient)
+
+    response = main.api_ingestion_source_test("jin10_mcp_market", body=DataSourceTestRequest(limit=2), db=session)
+
+    assert response.status == "partial"
+    assert response.data_status.value == "partial"
+    assert response.summary["reason_code"] == "market_probe_partial"
+    assert response.summary["missing_components"] == ["quote"]
+    assert response.preview[0]["price"] is None
+    run = main.api_run_detail(response.run_id, db=session).model_dump(mode="json")
+    assert run["status"] == "partial_success"
+
+
+def test_ingestion_source_test_market_probe_is_unavailable_when_all_components_are_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    session = _make_session()
+
+    class EmptyMarketClient(_FakeMarketMCPClient):
+        quote_payload = {}
+        kline_payload = {}
+
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("apps.api.services.ingestion_source_test_service.Jin10MCPClient", EmptyMarketClient)
+
+    response = main.api_ingestion_source_test("jin10_mcp_market", body=DataSourceTestRequest(limit=2), db=session)
+
+    assert response.status == "unavailable"
+    assert response.data_status.value == "unavailable"
+    assert response.summary["reason_code"] == "market_probe_unavailable"
+    assert response.summary["missing_components"] == ["quote", "kline"]
+    run = main.api_run_detail(response.run_id, db=session).model_dump(mode="json")
+    assert run["status"] == "failed"
 
 
 def test_ingestion_source_test_reads_web_important_flash_latest_artifact(monkeypatch, tmp_path: Path) -> None:

@@ -157,6 +157,7 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
     score += _structure_score(expiry_structures)
     confidence += _structure_confidence_bonus(expiry_structures)
     bias = _bias_from_score(score)
+    bullish_drivers, bearish_drivers = _directional_drivers(options)
     confidence = _clamp(confidence + min(abs(score) * 0.05, 0.12), 0.0, 0.78 if status is AgentStatus.PARTIAL else 0.90)
 
     return AgentOutput(
@@ -177,6 +178,10 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
         evidence_items=_options_evidence_items(options=options, bias=bias, confidence=confidence, source_refs=source_refs),
+        input_payload={
+            "bullish_drivers": bullish_drivers,
+            "bearish_drivers": bearish_drivers,
+        },
     )
 
 
@@ -441,6 +446,13 @@ def _bias_from_score(score: float) -> AgentBias:
     if score != 0:
         return AgentBias.MIXED
     return AgentBias.NEUTRAL
+
+
+def _directional_drivers(options: dict[str, Any]) -> tuple[list[str], list[str]]:
+    support, resistance = _support_resistance_levels(options)
+    bullish = [f"put/support wall at {support:g}"] if support is not None else []
+    bearish = [f"call/resistance wall at {resistance:g}"] if resistance is not None else []
+    return bullish, bearish
 
 
 def _summary(

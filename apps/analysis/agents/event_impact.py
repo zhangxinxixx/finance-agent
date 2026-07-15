@@ -181,6 +181,12 @@ def run_event_impact_agent(
             messages=prompt_messages,
             temperature=0.2,
             max_tokens=4096,
+            audit_context={
+                "caller": "event_impact.run_event_impact_agent",
+                "run_id": run_id,
+                "snapshot_id": snapshot_id,
+                "input_payload": input_payload,
+            },
         )
         parsed = parse_event_impact_response(response.content)
         if not parsed:
@@ -258,6 +264,7 @@ def run_event_impact_agent(
             llm_provider=response.provider,
             llm_usage=response.usage,
             llm_latency_ms=response.latency_ms,
+            llm_audit_id=getattr(response, "audit_id", None),
             prompt_messages=prompt_messages,
             input_payload=input_payload,
             llm_raw_output=response.content,

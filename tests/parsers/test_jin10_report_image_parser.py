@@ -7,8 +7,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from apps.parsers.jin10.report import _parser_report_type
 from apps.parsers.jin10.report_image_parser import (
     PARSER_VERSION,
+    _aggregate_parse_status,
     _detect_white_chart_panels,
     _normalize_vision_markdown_payload,
     figure_analysis_image_data_url,
@@ -28,6 +30,41 @@ from apps.parsers.jin10.vision_recognition_agent.agent import (
     recognize_pages_layout,
     recognize_pages_unified,
 )
+
+
+def test_aggregate_parse_status_does_not_treat_page_presence_as_success() -> None:
+    result = _aggregate_parse_status(
+        page_payloads=[{"page_no": 1}, {"page_no": 2}],
+        report_type="positioning",
+        vision_markdown={"pages": [{"page_no": 1, "status": "failed", "markdown": ""}]},
+        vision_markdown_status="failed",
+        vision_layout_status="failed",
+        body_markdown="",
+    )
+
+    assert result["status"] == "failed"
+    assert result["valid_recognized_page_count"] == 0
+    assert result["empty_page_ratio"] == 1.0
+
+
+def test_aggregate_parse_status_reports_partial_when_only_some_pages_are_substantive() -> None:
+    result = _aggregate_parse_status(
+        page_payloads=[{"page_no": 1}, {"page_no": 2}],
+        report_type="positioning",
+        vision_markdown={
+            "pages": [
+                {"page_no": 1, "status": "success", "markdown": "# 黄金\n\n实际利率仍是主要变量。"},
+                {"page_no": 2, "status": "empty", "markdown": ""},
+            ]
+        },
+        vision_markdown_status="partial",
+        vision_layout_status="partial",
+        body_markdown="# 黄金\n\n实际利率仍是主要变量。",
+    )
+
+    assert result["status"] == "partial"
+    assert result["valid_recognized_page_count"] == 1
+    assert result["empty_page_ratio"] == 0.5
 
 
 def test_figure_image_data_url_crops_from_in_memory_page_artifacts(tmp_path: Path) -> None:
@@ -106,6 +143,86 @@ def test_unified_prompt_only_requests_recognition_and_complete_crop_regions() ->
     assert "不需要解释图中曲线" in prompt
     assert "只写面板标题" in prompt
     assert "不得进入 markdown 或 blocks" in prompt
+
+
+def test_market_odds_unified_prompt_treats_whole_page_as_primary_evidence() -> None:
+    prompt = _build_page_unified_prompt(
+        page_no=1,
+        page_width=1200,
+        page_height=1800,
+        original_page_width=1200,
+        original_page_height=1800,
+        prompt_profile="market_odds",
+    )
+
+    assert "市场赔率数据表" in prompt
+    assert "整页" in prompt
+    assert "触及概率" in prompt
+
+
+def test_market_observation_metadata_routes_odds_table_to_internal_parser_profile() -> None:
+    assert (
+        _parser_report_type(
+            {
+                "report_type": "market_observation",
+                "series": "market_odds",
+                "subcategory": "market_odds",
+                "title": "加息跌破半数，黄金赔率变脸｜市场赔率数据表",
+            }
+        )
+        == "market_odds"
+    )
+    assert (
+        _parser_report_type(
+            {
+                "report_type": "market_observation",
+                "title": "VIP每日市场观察：黄金等待确认",
+            }
+        )
+        == "market_observation"
+    )
+
+
+def test_parse_market_odds_single_page_as_anchored_primary_figure(tmp_path: Path) -> None:
+    image_path = tmp_path / "market-odds.png"
+    _write_page_image(image_path, include_chart=True)
+
+    artifacts = parse_report_images(
+        article_id="223555",
+        title="加息跌破半数，黄金赔率变脸｜市场赔率数据表",
+        published_at=None,
+        image_entries=[{"seq": 1, "file": image_path.name, "path": str(image_path)}],
+        report_type="market_odds",
+        vision_layout_runner=lambda pages: {
+            "pages": [
+                {
+                    "page_no": 1,
+                    "status": "success",
+                    "image_size": {"width": 1000, "height": 1600},
+                    "blocks": [
+                        {
+                            "id": "table_001",
+                            "type": "table",
+                            "text": "市场赔率数据表",
+                            "bbox": [0, 0, 1000, 1600],
+                        },
+                        {
+                            "id": "text_001",
+                            "type": "text",
+                            "text": "黄金触及4200美元概率94%，4300美元概率65%。",
+                            "bbox": [80, 200, 920, 360],
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert artifacts["parse_status"]["status"] == "success"
+    assert artifacts["parse_status"]["figures_total"] == 1
+    assert artifacts["figures"]["figures"][0]["page_no"] == 1
+    assert artifacts["figures"]["figures"][0]["bbox"] == [0, 0, 1000, 1600]
+    assert "黄金触及4200美元概率94%" in artifacts["body_markdown"]
 
 
 def test_vision_client_preserves_explicit_cockpit_luna_provider() -> None:

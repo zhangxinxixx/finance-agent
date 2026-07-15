@@ -1,5 +1,5 @@
 import type { CMEOptionsResponse } from "@/types/cme-options";
-import { CME_META_TEXT, formatNumber, toneStyle } from "./cmeOptionsFormat";
+import { CME_META_TEXT, formatNumber, toneStyle, translateDecisionText } from "./cmeOptionsFormat";
 import { formatBillions } from "./cmeOptionsGammaFormat";
 import { GEXBreakdown, IVSkewTable } from "./CMEOptionsGammaTables";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
@@ -30,7 +30,7 @@ export function PriceLadder({
 export function ChangeTable({ snapshot }: { snapshot: CMEOptionsResponse }) {
   const gex = snapshot.gex?.netgex_aggregate;
   const rows = [
-    { label: "净伽马", value: formatNumber(gex?.net_gex), tone: "down" },
+    { label: "聚合净伽马", value: formatNumber(gex?.net_gex), tone: gex?.net_gex == null ? "slate" : gex.net_gex < 0 ? "down" : "up" },
     { label: "伽马零点", value: formatNumber(gex?.gamma_zero?.price, 1), tone: "up" },
     { label: "看涨持仓", value: formatNumber(snapshot.wall_scores?.reduce((sum, wall) => sum + (wall.side === "CALL" ? wall.oi : 0), 0)), tone: "down" },
     { label: "看跌持仓", value: formatNumber(snapshot.wall_scores?.reduce((sum, wall) => sum + (wall.side === "PUT" ? wall.oi : 0), 0)), tone: "up" },
@@ -63,14 +63,14 @@ export function SkewPanel({ snapshot }: { snapshot: CMEOptionsResponse }) {
   const findings = snapshot.calibration?.calibration_warnings ?? [];
   const skewFindings = findings.filter((finding) => /skew|tail|iv/i.test(finding));
   const gex = snapshot.gex?.netgex_aggregate;
-  const direction = gex?.net_gex_direction ?? "neutral";
-  const directionLabel = direction === "negative" ? "负伽马" : direction === "positive" ? "正伽马" : "中性";
+  const direction = gex?.net_gex_direction ?? null;
+  const directionLabel = direction === "negative" ? "负伽马" : direction === "positive" ? "正伽马" : direction === "neutral" ? "中性" : "未提供";
 
   const rows = [
-    { label: "净伽马方向", value: directionLabel, color: direction === "negative" ? "var(--down)" : direction === "positive" ? "var(--up)" : "var(--fg-1)" },
+    { label: "净伽马方向", value: directionLabel, color: direction === "negative" ? "var(--down)" : direction === "positive" ? "var(--up)" : direction === "neutral" ? "var(--fg-1)" : "var(--fg-4)" },
     { label: "伽马零点", value: formatNumber(gex?.gamma_zero?.price, 1), color: "var(--brand-hover)" },
     ...skewFindings.slice(0, 3).map((finding) => ({
-      label: finding.length > 20 ? `${finding.slice(0, 20)}…` : finding,
+      label: translateDecisionText(finding.length > 20 ? `${finding.slice(0, 20)}…` : finding),
       value: "",
       color: "var(--fg-3)",
     })),
@@ -89,7 +89,7 @@ export function SkewPanel({ snapshot }: { snapshot: CMEOptionsResponse }) {
             )}
           </div>
         ))}
-        {skewFindings.length === 0 ? <div style={{ fontSize: "var(--text-10)", color: "var(--fg-5)" }}>暂无 skew 数据</div> : null}
+        {skewFindings.length === 0 ? <div style={{ fontSize: "var(--type-body-sm)", color: "var(--fg-5)" }}>暂无波动率偏斜数据</div> : null}
       </div>
     </CMEOptionsSurface>
   );

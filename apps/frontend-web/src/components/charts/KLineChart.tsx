@@ -83,7 +83,7 @@ export function KLineChart({
   height = 500,
   loading = false,
   emptyText = "暂无 K 线数据",
-  timeframe = "1m",
+  timeframe = "5m",
   onTimeframeChange,
   timeframeAvailability,
 }: KLineChartProps) {

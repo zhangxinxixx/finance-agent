@@ -136,6 +136,31 @@ def test_dashboard_summary_latest_reports_are_globally_sorted_by_trade_date(monk
     ]
 
 
+def test_dashboard_summary_composite_status_exposes_latest_run_ids(monkeypatch):
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_options_snapshot", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_market_tickers", lambda: {"sources": [], "tickers": {}, "generated_at": None})
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_macro_latest", lambda: None)
+    monkeypatch.setattr("apps.api.services.dashboard_service.list_recent_tasks", lambda _limit=5: [])
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.list_reports_index",
+        lambda: {
+            "reports": [
+                {"type": "strategy_card", "trade_date": "2026-07-14", "run_id": "run-new", "available": True},
+                {"type": "final_report", "trade_date": "2026-07-14", "run_id": "run-new", "available": True},
+                {"type": "strategy_card", "trade_date": "2026-07-13", "run_id": "run-old", "available": True},
+            ]
+        },
+    )
+    monkeypatch.setattr("apps.api.services.dashboard_service.get_data_source_statuses", lambda: {"sources": []})
+    monkeypatch.setattr("apps.api.services.dashboard_service.build_dashboard_agent_summary", lambda: {"coordinator": None, "synthesis": None})
+
+    data = get_dashboard_summary()
+
+    assert data["composite_analysis"]["run_id"] == "run-new"
+    assert data["composite_analysis"]["strategy_run_id"] == "run-new"
+    assert data["composite_analysis"]["final_report_run_id"] == "run-new"
+
+
 def test_dashboard_summary_marks_composite_partial_when_newer_jin10_is_degraded(monkeypatch):
     monkeypatch.setattr(
         "apps.api.services.dashboard_service.get_options_snapshot",

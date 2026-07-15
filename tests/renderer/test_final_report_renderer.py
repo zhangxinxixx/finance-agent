@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from apps.analysis.agents import AgentBias, AgentOutput, AgentStatus
-from apps.renderer.markdown.final_report import _table_text, render_final_report_markdown
+from apps.renderer.markdown.final_report import (
+    _gold_silver_etf_holdings_line,
+    _table_text,
+    build_structured_report,
+    render_final_report_markdown,
+)
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
 _REQUIRED_SECTIONS = [
@@ -31,7 +36,6 @@ _REQUIRED_SECTIONS = [
     "### 数据质量与限制",
     "### 观察列表",
     "## 数据口径与血缘",
-    "## 数据来源",
     "## 免责声明",
 ]
 
@@ -223,12 +227,7 @@ def test_render_final_report_markdown_contains_required_sections_lineage_and_sou
     assert "analysis_snapshot: XAUUSD:2026-05-14:analysis" in markdown
     assert "macro: macro:2026-05-14" in markdown
     assert "options: cme-options:2026-05-14" in markdown
-    assert "来源分组摘要" in markdown
-    assert "analysis_snapshot: 1 条血缘明细" in markdown
-    assert "macro: 1 条血缘明细" in markdown
-    assert "options: 1 条血缘明细" in markdown
-    assert "risk: 1 条血缘明细" in markdown
-    assert "coordinator: 1 条血缘明细" in markdown
+    assert "## 数据来源" not in markdown
     assert "XAUUSD 的核心主题" in markdown
     assert "数据刷新时间: 2026-05-14T11:55:00+00:00" in markdown
     assert "| 指标 | 最新值 | 日期 | 日变 | 周变 | 月变 | 解读 |" in markdown
@@ -277,6 +276,31 @@ def test_table_text_escapes_markdown_table_breakers():
 def test_render_final_report_markdown_includes_gold_macro_overview_context():
     snapshot = {
         **_snapshot(),
+        "gold_analysis_context": {
+            "status": "ready",
+            "data": {
+                "baseline_kind": "previous_analysis_report",
+                "analysis_baseline": {
+                    "source_kind": "final_analysis_report",
+                        "trade_date": "2026-07-13",
+                        "run_id": "composite-20260713",
+                    "quality_status": "accepted",
+                    "publish_allowed": None,
+                },
+                "freshness": {
+                    "market": {"status": "current", "as_of": "2026-05-14"},
+                    "news": {"status": "current", "as_of": "2026-05-14"},
+                    "oil": {"status": "missing", "as_of": None},
+                },
+                "oil_report_summary": {
+                    "source_kind": "jin10_oil_analysis",
+                    "trade_date": "2026-07-13",
+                    "article_id": "224998",
+                    "status": "accepted",
+                    "one_line_conclusion": "供应冲击支撑近月油价，但高油价的需求反噬仍待确认。",
+                },
+            },
+        },
         "gold_macro_overview": {
             "dominant_mainline": "fed_policy_path",
             "priority_regime": "policy_event_cycle",
@@ -328,6 +352,11 @@ def test_render_final_report_markdown_includes_gold_macro_overview_context():
     assert "### 黄金九主线总览" in markdown
     assert "主导主线: fed_policy_path" in markdown
     assert "优先环境: policy_event_cycle" in markdown
+    assert "分析基准与当日增量" in markdown
+    assert "前一日最新综合分析报告 / 2026-07-13 / ref=composite-20260713" in markdown
+    assert "油价 freshness：missing" in markdown
+    assert "原油报告：2026-07-13 / ref=224998 / quality=accepted" in markdown
+    assert "原油报告摘要：供应冲击支撑近月油价" in markdown
     assert "FOMC window prioritizes Fed path." in markdown
     assert "ready 4/9" in markdown
     assert "战争-石油-利率链: C / 两者抵消，黄金震荡" in markdown
@@ -335,7 +364,7 @@ def test_render_final_report_markdown_includes_gold_macro_overview_context():
     assert "ETF资金流: regional_etf_flows" in markdown
 
 
-def test_render_final_report_markdown_summarizes_large_source_refs_without_dumping_all():
+def test_render_final_report_does_not_display_collection_ledger_sources():
     snapshot = _snapshot()
     snapshot["source_refs"] = [
         {"source": "jin10_mcp", "method": f"news_search_{idx}", "raw_path": f"raw/{idx}.json"}
@@ -354,12 +383,88 @@ def test_render_final_report_markdown_summarizes_large_source_refs_without_dumpi
         created_at=_CREATED_AT,
     )
 
-    assert "## 数据来源" in markdown
-    assert "来源分组摘要" in markdown
-    assert "jin10_mcp: 30 条血缘明细" in markdown
-    assert "fed_rss: 10 条血缘明细" in markdown
-    assert "共 40 条来源引用" not in markdown
-    assert "news_search_29" not in markdown
+    assert "## 数据来源" not in markdown
+    assert "jin10_mcp" not in markdown
+    assert "fed_rss" not in markdown
+
+    structured = build_structured_report(
+        snapshot=snapshot,
+        macro_output=_macro(),
+        options_output=_options(),
+        risk_output=_risk(),
+        coordinator_output=_coordinator(),
+        created_at=_CREATED_AT,
+    )
+    sources = {ref.get("source") for ref in structured.source_refs}
+    assert "jin10_mcp" not in sources
+    assert "fed_rss" not in sources
+    assert {"macro", "options", "risk", "coordinator"}.issubset(sources)
+
+
+def test_structured_report_keeps_used_sources_and_removes_placeholders_assets_and_duplicates():
+    snapshot = _snapshot()
+    snapshot.update(
+        {
+            "macro": {
+                "status": "available",
+                "data": {
+                    "indicators": {"US10Y": {"symbol": "US10Y", "value": 4.2}},
+                    "source_refs": {
+                        "DGS10": {"source": "fred", "symbol": "DGS10", "source_url": "https://fred.example/DGS10"},
+                        "UNUSED": {"source": "unused_macro", "symbol": "UNUSED"},
+                    },
+                },
+            },
+            "market_odds": {
+                "status": "partial",
+                "data": {
+                    "source_refs": [
+                        {"source": "cme_options_delta_grid", "method": "probability_from_delta"},
+                        {"source": "polymarket", "method": "placeholder"},
+                    ]
+                },
+            },
+            "gold_analysis_context": {
+                "status": "available",
+                "data": {
+                    "analysis_baseline": {
+                        "source_refs": [
+                            {"source": "jin10_external", "article_id": "224965", "asset_type": "image", "path": "/private/page-1.jpg"},
+                            {"source": "jin10_external", "article_id": "224965", "asset_type": "report_md", "source_url": "https://svip.jin10.com/news/224965"},
+                        ]
+                    }
+                },
+            },
+            "positioning": {
+                "status": "available",
+                "data": {
+                    "source_refs": [
+                        {"source": "cftc", "raw_path": "raw/cot.json"},
+                        {"source": "cftc", "raw_path": "raw/cot.json"},
+                    ]
+                },
+            },
+        }
+    )
+
+    structured = build_structured_report(
+        snapshot=snapshot,
+        macro_output=None,
+        options_output=None,
+        risk_output=None,
+        coordinator_output=None,
+        created_at=_CREATED_AT,
+    )
+
+    assert [ref.get("source") for ref in structured.source_refs] == [
+        "fred",
+        "cftc",
+        "cme_options_delta_grid",
+        "jin10_external",
+    ]
+    assert all(ref.get("source") != "unused_macro" for ref in structured.source_refs)
+    assert all(ref.get("source") != "polymarket" for ref in structured.source_refs)
+    assert all("path" not in ref for ref in structured.source_refs if ref.get("source") == "jin10_external")
 
 
 def test_render_final_report_markdown_warns_on_partial_or_unavailable_outputs_without_fake_completeness():
@@ -443,3 +548,24 @@ def test_render_final_report_markdown_does_not_emit_trade_execution_instructions
     assert all(term not in markdown for term in forbidden)
     assert "本报告仅为研究分析输出" in markdown
     assert "不构成投资建议" in markdown
+
+
+def test_gold_silver_etf_holdings_line_renders_both_metals() -> None:
+    line = _gold_silver_etf_holdings_line([
+        {
+            "mainline_id": "etf_flows",
+            "feature_fields": {
+                "gold_etf_holdings_tonnes": 1003.59,
+                "gold_etf_change_tonnes": 4.566,
+                "gold_etf_reported_on": "2026-07-20",
+                "silver_etf_holdings_tonnes": 15052.89,
+                "silver_etf_change_tonnes": -8.43,
+                "silver_etf_reported_on": "2026-07-20",
+                "cross_metal_confirmation": "divergent",
+            },
+        }
+    ])
+
+    assert "黄金 SPDR 1,003.59 吨（日变动 +4.57 吨" in line
+    assert "白银 iShares 15,052.89 吨（日变动 -8.43 吨" in line
+    assert "跨金属确认: divergent" in line

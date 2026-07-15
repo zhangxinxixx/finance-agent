@@ -1,185 +1,64 @@
 # 数据模型与存储
 
-## 数据库模型分层
+> 代码基线：2026-07-21。
 
-当前模型文件：
+## 运行与可观测性
 
-- `database/models/task.py`
-- `database/models/analysis.py`
-- `database/models/report.py`
-- `database/models/cme.py`
-- `database/models/playbook.py`
+| 表 | 用途 |
+| --- | --- |
+| `task_runs` | canonical run；状态、进度、成本、snapshot、final result |
+| `task_steps` | step 状态、输入输出、source/artifact refs、错误与重试 |
+| `execution_events` | append-only 运行事件流 |
+| `run_artifacts` | run / step 级标准 artifact registry |
 
-## TaskRun / TaskStep
+数据库 `TaskStatus` 包括 `pending`、`running`、`success`、`failed`、`partial_success`、`degraded`、`blocked`、`cancelled`、`stale`。公共 API 还有自己的展示枚举，service 层负责兼容映射；两者不能直接假定一一同名。
 
-文件：`database/models/task.py`
+## 分析与治理
 
-表：
-
-- `task_runs`
-- `task_steps`
-
-关键字段：
-
-- `TaskRun.id`
-- `TaskRun.name`
-- `TaskRun.task_type`
-- `TaskRun.status`
-- `TaskRun.current_stage`
-- `TaskRun.progress`
-- `TaskRun.snapshot_id`
-- `TaskRun.final_result_id`
-- `TaskRun.trade_date`
-- `TaskStep.task_run_id`
-- `TaskStep.name`
-- `TaskStep.status`
-- `TaskStep.input_refs`
-- `TaskStep.output_refs`
-- `TaskStep.artifact_refs`
-- `TaskStep.source_refs`
-- `TaskStep.input_json`
-- `TaskStep.output_json`
-- `TaskStep.error_json`
-- `TaskStep.input_hash`
-- `TaskStep.output_ref`
-- `TaskStep.error_type`
-- `TaskStep.retry_count`
-
-状态：
-
-- Task：`pending`、`running`、`success`、`failed`、`partial_success`、`degraded`、`blocked`、`cancelled`、`stale`
-- Step：`pending`、`running`、`success`、`failed`、`skipped`、`blocked`
-
-## Analysis
-
-文件：`database/models/analysis.py`
-
-表：
+`database/models/analysis.py` 当前定义：
 
 - `analysis_snapshots`
 - `agent_outputs`
+- `llm_call_audits`
 - `final_analysis_results`
 - `data_source_status`
+- `macro_observations`
+- `feature_snapshots`
+- `daily_source_health_snapshots` / `daily_source_health_items`
 - `market_candles`
-- `app_settings`
-- `app_secrets`
-- `app_setting_events`
-- `prompt_versions`
+- `jin10_flash_messages` / `flash_cursor_state`
+- `app_settings` / `app_secrets` / `app_setting_events`
+- `prompt_versions` / `prompt_feedback`
 - `review_items`
-- `prompt_feedback`
 
-用途：
+## 报告与领域表
 
-- 保存统一 analysis snapshot。
-- 保存 Agent 输出和最终分析结果。
-- 保存数据源状态、市场 K 线、配置、密钥、审计事件、Prompt 版本、人工复核和反馈。
+- `report_items` / `report_artifacts`：标准报告索引与文件登记。
+- `cme_raw_files` / `cme_option_rows` / `cme_parse_runs`：CME 原始文件、解析行与解析 run。
+- `playbook_templates`：带版本、schema、来源引用的 playbook。
 
-## Report
+## JSON 兼容
 
-文件：`database/models/report.py`
+分析和报告模型使用 `JSONB_COMPAT`：PostgreSQL 使用 JSONB，SQLite 测试使用 JSON。TaskStep 的若干历史兼容字段仍以 JSON 字符串保存在 Text 列中，读取时必须经过 service/schema 归一化。
 
-表：
+## Migration 策略
 
-- `report_items`
-- `report_artifacts`
+- Alembic 配置位于 `database/migrations/`。
+- 当前已有 revision `20260704_0001`，用于统一 runtime schema。
+- FastAPI startup 调用 `run_database_migrations()`。
+- `ensure_*_tables()` 与 additive DDL 仍存在，主要兼容旧数据库；新 schema 变化应优先通过可审计 migration 管理。
 
-关键字段：
-
-- `report_id`
-- `family`
-- `report_type`
-- `title`
-- `asset`
-- `trade_date`
-- `run_id`
-- `snapshot_id`
-- `data_status`
-- `lifecycle_status`
-- `source_refs`
-- `artifact_type`
-- `file_path`
-- `is_primary`
-- `sha256`
-
-用途：
-
-- 为 Report Detail 提供统一报告索引和 artifact 入口。
-- 支持 source / analysis / visual / evidence / structured 等 artifact 类型。
-
-## CME
-
-文件：`database/models/cme.py`
-
-表：
-
-- `cme_raw_files`
-- `cme_option_rows`
-- `cme_parse_runs`
-
-用途：
-
-- 归档 CME Daily Bulletin PDF。
-- 保存期权解析行。
-- 记录 parse run。
-
-## Playbook
-
-文件：`database/models/playbook.py`
-
-表：
-
-- `playbook_templates`
-
-用途：
-
-- 保存 playbook 模板版本、条件、动作、失效条件和 source refs。
-
-## Migrations
-
-当前状态：
-
-- `database/migrations/versions/` 仅有 `__init__.py`。
-- API startup 调用 `ensure_task_tables()`、`ensure_analysis_tables()`、`ensure_report_tables()`。
-- 这些 helper 会 `create_all()` 并追加缺失列。
-
-风险：
-
-- 长期数据库演进不能只依赖 runtime additive DDL。
-- 后续 schema 稳定后应补 Alembic migrations。
-
-## Storage
-
-当前目录：
+## 文件存储
 
 ```text
 storage/
-  raw/
-  parsed/
-  features/
-  outputs/
-  logs/
+  raw/        外部原始响应、PDF、HTML、上传文件
+  parsed/     结构化解析结果
+  features/   可重复计算的快照和事件模型
+  outputs/    报告、策略卡片、可视化和结构化输出
+  logs/       运行日志
+  evaluation/ shadow evaluation 产物
+  strategy_history/ 策略历史与差异
 ```
 
-实际样例：
-
-- `storage/raw/jin10/<date>/index.json`
-- `storage/parsed/jin10/<date>/index.json`
-- `storage/features/macro/<date>/macro_snapshot.json`
-- `storage/outputs/macro/<date>/macro_snapshot.md`
-- `storage/outputs/cme_options/<date>/options_analysis.json`
-- `storage/outputs/cme_options/<date>/options_analysis.md`
-- `storage/outputs/jin10/<date>/analysis.json`
-- `storage/outputs/jin10/calendar_cache.json`
-- `storage/outputs/jin10/quotes_cache.json`
-
-Run-partitioned artifact helper：
-
-- `apps/output/artifacts.py`
-
-推荐规范：
-
-```text
-storage/<layer>/<domain>/<trade_date>/<run_id>/<artifact>
-```
-
-其中 `<layer>` 是 `raw`、`parsed`、`features`、`outputs` 中之一。
+推荐路径为 `<layer>/<domain>/<date>/<run_id>/...`。历史路径可能不含 `run_id`；兼容读取可以保留，但新 artifact 应登记 sha256、类型、生成时间、run/snapshot/source refs。
