@@ -7,16 +7,28 @@ flowchart TD
   Snapshot --> News["新闻 Agent<br/>news_agent"]
   Snapshot --> Odds["市场赔率 Agent<br/>market_odds_agent"]
 
-  Macro --> Coordinator["协调器 Agent<br/>coordinator_agent"]
-  Options --> Coordinator
-  Risk --> Coordinator
-  Technical --> Coordinator
-  Positioning --> Coordinator
-  News --> Coordinator
-  Odds --> Coordinator
+  Macro --> FactReview["事实审查 Agent<br/>fact_review_agent"]
+  Options --> FactReview
+  Risk --> FactReview
+  Technical --> FactReview
+  Positioning --> FactReview
+  News --> FactReview
+  Odds --> FactReview
 
-  Coordinator --> FinalReport["最终报告"]
-  Coordinator --> StrategyCard["策略卡片"]
-  Coordinator --> Review["人工复核项 / 事实复核<br/>NEED_VERIFY 主链覆盖率"]
-  Review --> Synthesis["综合分析 Agent<br/>NEED_VERIFY 主链覆盖率"]
-  Synthesis --> Dashboard["前端消费<br/>Dashboard / Reports / Strategy"]
+  FactReview --> QualityGate{"AgentLoop Quality Gate<br/>证据 / 置信度 / 冲突 / 解析质量"}
+
+  QualityGate -->|passed| Coordinator["协调器 Agent<br/>coordinator_agent"]
+  QualityGate -->|fallback_required| Fallback["Fallback 分析任务<br/>reparse / reanalyze / cross-check"]
+  QualityGate -->|blocked / needs_review| Review["人工复核项 / 降级展示<br/>ReviewItem"]
+
+  Fallback --> FallbackGate{"Fallback Quality Gate"}
+  FallbackGate -->|passed| Coordinator
+  FallbackGate -->|failed| Review
+
+  Coordinator --> Synthesis["综合分析 Agent<br/>synthesis_agent"]
+  Synthesis --> FinalReport["最终报告"]
+  Synthesis --> StrategyCard["策略卡片"]
+  Review --> Conservative["保守综合 / no strong conclusion"]
+  Conservative --> Dashboard["前端消费<br/>Dashboard / Reports / Strategy"]
+  FinalReport --> Dashboard
+  StrategyCard --> Dashboard
