@@ -50,6 +50,11 @@ class DominantDriver(_StrictFrozenModel):
     direction: Literal["tailwind", "headwind", "neutral", "mixed", "unknown"]
     coverage_status: Literal["covered", "partial", "missing", "unknown"] = "unknown"
 
+    @field_validator("driver_id", "label")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        return _required_text(value)
+
 
 class KeyLevel(_StrictFrozenModel):
     """One explicit level without inventing a second level taxonomy."""
@@ -59,6 +64,21 @@ class KeyLevel(_StrictFrozenModel):
     source: str = Field(min_length=1, max_length=128)
     meaning: str | None = Field(default=None, min_length=1, max_length=500)
 
+    @field_validator("value")
+    @classmethod
+    def validate_value(cls, value: float | str) -> float | str:
+        return _required_text(value) if isinstance(value, str) else value
+
+    @field_validator("role", "source")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        return _required_text(value)
+
+    @field_validator("meaning")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        return _required_text(value) if value is not None else None
+
 
 class ScenarioState(_StrictFrozenModel):
     """One existing scenario/condition and its current status."""
@@ -66,6 +86,11 @@ class ScenarioState(_StrictFrozenModel):
     scenario_id: str = Field(min_length=1, max_length=128)
     condition: str = Field(min_length=1, max_length=500)
     status: Literal["active", "pending", "confirmed", "invalidated"]
+
+    @field_validator("scenario_id", "condition")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        return _required_text(value)
 
 
 class AnalysisStateDocumentV1(_StrictFrozenModel):
@@ -202,6 +227,13 @@ def parse_analysis_transition_document(value: Any) -> VersionedAnalysisTransitio
     """Parse a transition without rewriting its declared contract version."""
 
     return _TRANSITION_DOCUMENT_ADAPTER.validate_python(value)
+
+
+def _required_text(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("value must not be blank")
+    return normalized
 
 
 class StateMaterializationAuthority(_StrictFrozenModel):

@@ -226,6 +226,12 @@ def advance_canonical_head_scoped(
         raise StateLineageError("new state belongs to a different asset")
     if state.state_scope != normalized_scope:
         raise StateLineageError("new state belongs to a different state scope")
+    _validate_expected_state(
+        session,
+        asset=normalized_asset,
+        state_scope=normalized_scope,
+        expected_state_id=expected_state_id,
+    )
     if state.previous_state_id != expected_state_id:
         raise StateLineageError("new state previous_state_id does not match expected canonical state")
     _require_canonical_authority(state, authority)
@@ -369,6 +375,8 @@ def get_state_history(session: Session, state_id: str, *, max_depth: int = 100) 
     history: list[AnalysisState] = []
     seen: set[str] = set()
     current_id: str | None = state_id
+    expected_asset: str | None = None
+    expected_scope: str | None = None
     while current_id is not None:
         if current_id in seen:
             raise StateLineageError("analysis state lineage contains a cycle")
@@ -378,6 +386,11 @@ def get_state_history(session: Session, state_id: str, *, max_depth: int = 100) 
         current = session.get(AnalysisState, current_id)
         if current is None:
             raise StateLineageError(f"analysis state not found: {current_id}")
+        if expected_asset is None:
+            expected_asset = current.asset
+            expected_scope = current.state_scope
+        elif current.asset != expected_asset or current.state_scope != expected_scope:
+            raise StateLineageError("analysis state history crosses asset or state scope")
         history.append(current)
         current_id = current.previous_state_id
     return history
@@ -400,6 +413,24 @@ def _validate_previous_state(
     if previous.state_scope != state_scope:
         raise StateLineageError("previous analysis state belongs to a different state scope")
     return previous
+
+
+def _validate_expected_state(
+    session: Session,
+    *,
+    asset: str,
+    state_scope: StateScope,
+    expected_state_id: str | None,
+) -> None:
+    if expected_state_id is None:
+        return
+    expected = session.get(AnalysisState, expected_state_id)
+    if expected is None:
+        raise StateLineageError(f"expected canonical state not found: {expected_state_id}")
+    if expected.asset != asset:
+        raise StateLineageError("expected canonical state belongs to a different asset")
+    if expected.state_scope != state_scope:
+        raise StateLineageError("expected canonical state belongs to a different state scope")
 
 
 def _require_idempotent_append(

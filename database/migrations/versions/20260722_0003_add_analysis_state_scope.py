@@ -132,9 +132,16 @@ def downgrade() -> None:
         )
         or 0
     )
-    if non_daily or duplicate_assets:
+    incompatible_versions = int(
+        bind.scalar(
+            sa.text("SELECT COUNT(*) FROM analysis_states WHERE schema_version <> '1.0'")
+        )
+        or 0
+    )
+    if non_daily or duplicate_assets or incompatible_versions:
         raise RuntimeError(
-            "cannot downgrade scoped analysis state: non-daily scope or multiple heads per asset"
+            "cannot downgrade scoped analysis state: non-daily scope, multiple heads per asset, "
+            "or v1.1 rows"
         )
 
     op.drop_index(

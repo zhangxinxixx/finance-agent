@@ -24,6 +24,7 @@ from apps.analysis.state import (
     CanonicalHeadConflictError,
     StateChange,
     StateIdempotencyConflictError,
+    StateLineageError,
     StateMaterializationAuthority,
     TransitionAction,
     advance_canonical_head,
@@ -167,6 +168,18 @@ def test_v11_requires_explicit_scope_metadata_and_strong_submodels() -> None:
     invalid["dominant_drivers"] = [{"name": "legacy-shape", "direction": "headwind"}]
     with pytest.raises(ValidationError):
         AnalysisStateDocumentV11.model_validate(invalid)
+    for field, invalid_value in (
+        ("dominant_drivers", [{"driver_id": " ", "label": "driver", "direction": "neutral"}]),
+        ("key_levels", [{"value": " ", "role": "support", "source": "market"}]),
+        (
+            "scenario_states",
+            [{"scenario_id": "base", "condition": " ", "status": "pending"}],
+        ),
+    ):
+        invalid = dict(payload)
+        invalid[field] = invalid_value
+        with pytest.raises(ValidationError, match="must not be blank"):
+            AnalysisStateDocumentV11.model_validate(invalid)
 
 
 def test_v1_payload_hash_and_stable_id_remain_unchanged(session: Session) -> None:
@@ -249,6 +262,53 @@ def test_three_scoped_heads_coexist_and_cross_scope_lineage_is_rejected(session:
             previous_state_id=states["intraday"].id,
             task_run_id="run-cross-scope",
         )
+
+
+def test_cas_and_history_reject_cross_scope_expected_state(session: Session) -> None:
+    authority = _accepted_authority()
+    intraday = append_analysis_state_scoped(
+        session,
+        state_scope="intraday",
+        document=_scoped_document(scope="intraday", thesis="intraday"),
+        transition=_scoped_transition("intraday"),
+        authority=authority,
+        previous_state_id=None,
+        task_run_id="run-intraday",
+    )
+    daily = AnalysisState(
+        id="daily-cross-scope",
+        schema_version="1.1",
+        asset="XAUUSD",
+        state_scope="daily_close",
+        as_of=datetime(2026, 7, 22, 9, tzinfo=UTC),
+        previous_state_id=intraday.id,
+        task_run_id="run-daily-cross",
+        quality_gate_action="pass",
+        publish_allowed=True,
+        accepted_output_source="primary",
+        accepted_output_agent_name="coordinator_agent",
+        accepted_output_snapshot_id="market-20260722",
+        input_snapshot_ids={"market": "market-20260722"},
+        source_refs=[{"snapshot_id": "market-20260722"}],
+        evidence_cursors={},
+        payload={"schema_version": "1.1", "state_scope": "daily_close"},
+        content_hash="6" * 64,
+    )
+    session.add(daily)
+    session.flush()
+
+    with pytest.raises(StateLineageError, match="expected canonical state.*different state scope"):
+        advance_canonical_head_scoped(
+            session,
+            asset="XAUUSD",
+            state_scope="daily_close",
+            new_state_id=daily.id,
+            expected_state_id=intraday.id,
+            expected_version=1,
+            authority=authority,
+        )
+    with pytest.raises(StateLineageError, match="history crosses"):
+        get_state_history(session, daily.id)
 
 
 def test_content_hash_ignores_only_top_level_identity_metadata() -> None:

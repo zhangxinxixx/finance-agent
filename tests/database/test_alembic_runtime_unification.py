@@ -207,11 +207,11 @@ def test_analysis_memory_upgrade_preserves_precreated_tables_and_data(tmp_path: 
     state_id = "00000000-0000-0000-0000-000000000080"
     with engine.begin() as connection:
         connection.execute(
-                AnalysisState.__table__.insert().values(
+            AnalysisState.__table__.insert().values(
                 id=state_id,
                 schema_version="1.0",
-                    asset="XAUUSD",
-                    state_scope="daily_close",
+                asset="XAUUSD",
+                state_scope="daily_close",
                 as_of=datetime(2026, 7, 22, 8, tzinfo=UTC),
                 task_run_id="issue-74-precreated",
                 quality_gate_action="manual_review",
@@ -251,6 +251,30 @@ def test_analysis_state_scope_downgrade_fails_closed(tmp_path: Path) -> None:
         )
 
     with pytest.raises(RuntimeError, match="cannot downgrade scoped analysis state"):
+        command.downgrade(config, "20260722_0002")
+
+
+def test_analysis_state_scope_downgrade_rejects_daily_close_v11_rows(tmp_path: Path) -> None:
+    from database.migrations.runtime import build_alembic_config
+
+    database_url = f"sqlite:///{tmp_path / 'v11-downgrade.sqlite'}"
+    config = build_alembic_config(database_url)
+    engine = create_engine(database_url)
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO analysis_states "
+                "(id, schema_version, asset, state_scope, as_of, task_run_id, "
+                "quality_gate_action, publish_allowed, accepted_output_source, "
+                "input_snapshot_ids, source_refs, evidence_cursors, payload, content_hash) "
+                "VALUES ('daily-v11', '1.1', 'XAUUSD', 'daily_close', :as_of, "
+                "'run-v11', 'manual_review', 0, 'none', '{}', '[]', '{}', '{}', :hash)"
+            ),
+            {"as_of": datetime(2026, 7, 22, 8, tzinfo=UTC), "hash": "5" * 64},
+        )
+
+    with pytest.raises(RuntimeError, match="v1.1 rows"):
         command.downgrade(config, "20260722_0002")
 
 
