@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from pathlib import Path
+
 import pytest
-from sqlalchemy import UniqueConstraint, create_engine, inspect
+from alembic import command
+from sqlalchemy import UniqueConstraint, create_engine, inspect, select
 
 
 def _metadata_table_names(target_metadata) -> set[str]:
@@ -78,6 +82,127 @@ def test_runtime_alembic_upgrade_creates_current_schema(tmp_path, monkeypatch: p
     assert "execution_events" in table_names
     assert "report_items" in table_names
     assert "cme_option_rows" in table_names
+
+
+def test_analysis_memory_revision_boundary_is_explicit_and_replay_safe(tmp_path: Path) -> None:
+    from database.migrations.runtime import build_alembic_config
+    from database.models.analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition
+
+    database_url = f"sqlite:///{tmp_path / 'revision-boundary.sqlite'}"
+    config = build_alembic_config(database_url)
+    engine = create_engine(database_url)
+    state_tables = {"analysis_states", "analysis_state_heads", "analysis_transitions"}
+
+    command.upgrade(config, "20260704_0001")
+    assert state_tables.isdisjoint(inspect(engine).get_table_names())
+
+    command.upgrade(config, "20260722_0002")
+    inspector = inspect(engine)
+    assert state_tables <= set(inspector.get_table_names())
+    expected_indexes = {
+        table.name: {index.name for index in table.indexes}
+        for table in (
+            AnalysisState.__table__,
+            AnalysisStateHead.__table__,
+            AnalysisTransition.__table__,
+        )
+    }
+    for table_name, index_names in expected_indexes.items():
+        assert {index["name"] for index in inspector.get_indexes(table_name)} == index_names
+    assert {"uq_analysis_state_heads_asset", "uq_analysis_state_heads_state"} == {
+        constraint["name"] for constraint in inspector.get_unique_constraints("analysis_state_heads")
+    }
+    assert {"uq_analysis_transitions_to_state"} == {
+        constraint["name"] for constraint in inspector.get_unique_constraints("analysis_transitions")
+    }
+    assert {
+        (tuple(foreign_key["constrained_columns"]), foreign_key["referred_table"])
+        for foreign_key in inspector.get_foreign_keys("analysis_states")
+    } == {
+        (("previous_state_id",), "analysis_states"),
+        (("analysis_snapshot_db_id",), "analysis_snapshots"),
+        (("final_analysis_result_id",), "final_analysis_results"),
+    }
+
+    state_id = "00000000-0000-0000-0000-000000000074"
+    with engine.begin() as connection:
+        connection.execute(
+            AnalysisState.__table__.insert().values(
+                id=state_id,
+                schema_version="1.0",
+                asset="XAUUSD",
+                as_of=datetime(2026, 7, 22, 8, tzinfo=UTC),
+                task_run_id="issue-74-replay",
+                quality_gate_action="manual_review",
+                publish_allowed=False,
+                accepted_output_source="none",
+                input_snapshot_ids={},
+                source_refs=[],
+                evidence_cursors={},
+                payload={"asset": "XAUUSD"},
+                content_hash="0" * 64,
+            )
+        )
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.scalar(select(AnalysisState.id).where(AnalysisState.id == state_id)) == state_id
+
+    command.downgrade(config, "20260704_0001")
+    assert state_tables.isdisjoint(inspect(engine).get_table_names())
+    command.upgrade(config, "head")
+    assert state_tables <= set(inspect(engine).get_table_names())
+
+
+def test_analysis_memory_revision_does_not_import_live_orm() -> None:
+    revision_path = (
+        Path(__file__).resolve().parents[2]
+        / "database/migrations/versions/20260722_0002_add_analysis_state_core.py"
+    )
+    source = revision_path.read_text(encoding="utf-8")
+
+    assert "database.models.analysis_state" not in source
+    assert source.count("\n    _create_table_if_missing(") == 3
+    assert source.count("\n        op.create_table(") == 1
+    assert '"analysis_states"' in source
+    assert '"analysis_state_heads"' in source
+    assert '"analysis_transitions"' in source
+
+
+def test_analysis_memory_upgrade_preserves_precreated_tables_and_data(tmp_path: Path) -> None:
+    from database.migrations.runtime import build_alembic_config
+    from database.models.analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition
+
+    database_url = f"sqlite:///{tmp_path / 'precreated-state.sqlite'}"
+    config = build_alembic_config(database_url)
+    engine = create_engine(database_url)
+    command.upgrade(config, "20260704_0001")
+    for table in (AnalysisState.__table__, AnalysisStateHead.__table__, AnalysisTransition.__table__):
+        table.create(bind=engine, checkfirst=True)
+
+    state_id = "00000000-0000-0000-0000-000000000080"
+    with engine.begin() as connection:
+        connection.execute(
+            AnalysisState.__table__.insert().values(
+                id=state_id,
+                schema_version="1.0",
+                asset="XAUUSD",
+                as_of=datetime(2026, 7, 22, 8, tzinfo=UTC),
+                task_run_id="issue-74-precreated",
+                quality_gate_action="manual_review",
+                publish_allowed=False,
+                accepted_output_source="none",
+                input_snapshot_ids={},
+                source_refs=[],
+                evidence_cursors={},
+                payload={"asset": "XAUUSD"},
+                content_hash="2" * 64,
+            )
+        )
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.scalar(select(AnalysisState.id).where(AnalysisState.id == state_id)) == state_id
 
 
 @pytest.mark.anyio

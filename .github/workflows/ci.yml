@@ -65,6 +65,102 @@ jobs:
           tests/scripts/test_run_automation_orchestrator.py
           tests/worker/test_premarket_composite_output_integration.py
           tests/architecture/test_contract_review_guards.py
+      - name: Lint Analysis Memory boundaries
+        run: >-
+          uv run ruff check
+          apps/analysis/state
+          apps/analysis/context_bundle
+          apps/analysis/figure_facts.py
+          apps/output/context_bundle.py
+          apps/output/figure_facts.py
+          apps/worker/composite_state_shadow.py
+          database/migrations
+          database/models/analysis_state.py
+          scripts/bootstrap_analysis_state.py
+          tests/analysis/test_context_bundle.py
+          tests/analysis/test_figure_facts.py
+          tests/analysis/test_state_bootstrap.py
+          tests/analysis/test_state_materializer.py
+          tests/api/test_analysis_memory_api.py
+          tests/architecture/test_analysis_memory_ci_guards.py
+          tests/architecture/test_analysis_memory_observability_guards.py
+          tests/database/test_alembic_runtime_unification.py
+          tests/database/test_analysis_memory_postgres.py
+          tests/database/test_analysis_state_core.py
+          tests/output/test_context_bundle_artifacts.py
+          tests/output/test_figure_fact_artifacts.py
+          tests/scripts/test_bootstrap_analysis_state.py
+          tests/worker/test_composite_state_shadow.py
+      - name: Run Analysis Memory regression tests
+        shell: bash
+        run: >-
+          mkdir -p test-results &&
+          uv run pytest -q --tb=short
+          --junitxml=test-results/analysis-memory.xml
+          tests/database/test_alembic_runtime_unification.py
+          tests/database/test_analysis_state_core.py
+          tests/analysis/test_context_bundle.py
+          tests/analysis/test_state_materializer.py
+          tests/analysis/test_figure_facts.py
+          tests/output/test_context_bundle_artifacts.py
+          tests/output/test_figure_fact_artifacts.py
+          tests/worker/test_composite_state_shadow.py
+          tests/analysis/test_state_bootstrap.py
+          tests/scripts/test_bootstrap_analysis_state.py
+          tests/api/test_analysis_memory_api.py
+          tests/architecture/test_analysis_memory_ci_guards.py
+          tests/architecture/test_analysis_memory_observability_guards.py
+      - name: Upload Analysis Memory test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-memory-test-results
+          path: test-results/analysis-memory.xml
+          if-no-files-found: warn
+
+  analysis-memory-postgres:
+    name: Analysis Memory PostgreSQL
+    runs-on: ubuntu-latest
+    env:
+      ANALYSIS_MEMORY_POSTGRES_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/finance_agent_test
+      UV_CACHE_DIR: /tmp/uv-cache
+      no_proxy: 127.0.0.1,localhost,::1
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: finance_agent_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d finance_agent_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: uv sync --locked --extra dev
+      - name: Run PostgreSQL migration and CAS checks
+        shell: bash
+        run: >-
+          mkdir -p test-results &&
+          uv run pytest -q --tb=short
+          --junitxml=test-results/analysis-memory-postgres.xml
+          tests/database/test_analysis_memory_postgres.py
+      - name: Upload PostgreSQL test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-memory-postgres-test-results
+          path: test-results/analysis-memory-postgres.xml
+          if-no-files-found: warn
 
   frontend:
     name: Frontend contracts
