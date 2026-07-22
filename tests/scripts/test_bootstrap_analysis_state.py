@@ -99,9 +99,32 @@ def test_cli_defaults_to_dry_run_and_writes_nothing(tmp_path: Path, capsys) -> N
     output = json.loads(capsys.readouterr().out)
     after = sorted(path.relative_to(storage) for path in storage.rglob("*"))
     assert output["dry_run"] is True
+    assert output["state_scope"] == "daily_close"
+    assert "/daily_close/" in output["planned_candidate_path"]
     assert output["writes"] == []
     assert before == after
     assert not (storage / output["planned_candidate_path"]).exists()
+
+
+def test_cli_accepts_explicit_state_scope(tmp_path: Path, capsys) -> None:
+    storage = tmp_path / "storage"
+    _fixtures(storage)
+
+    assert main(
+        [
+            "--asset", "XAUUSD",
+            "--state-scope", "intraday",
+            "--trade-date", "2026-07-22",
+            "--run-id", "run-1",
+            "--storage-root", str(storage),
+            "--final-result-json", "input/final.json",
+            "--gold-overview-json", "input/overview.json",
+            "--database-url", "sqlite+pysqlite:///:memory:",
+        ]
+    ) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["state_scope"] == "intraday"
+    assert "/intraday/" in output["planned_candidate_path"]
 
 
 def test_cli_rejects_input_outside_storage_root(tmp_path: Path) -> None:

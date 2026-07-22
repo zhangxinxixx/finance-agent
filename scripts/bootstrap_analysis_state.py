@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from apps.analysis.state.bootstrap import (  # noqa: E402
     BootstrapApproval,
     build_bootstrap_candidate,
-    build_recovery_artifact,
+    build_recovery_artifact_scoped,
     materialize_bootstrap_candidate,
     validate_artifact_path,
     write_json_artifact,
@@ -67,6 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             final_result=final_result,
             gold_macro_overview=overview,
             strategy_card=strategy_card,
+            state_scope=args.state_scope,
         )
         if args.commit:
             _validate_db_bound_overview(
@@ -75,8 +76,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 overview=overview,
             )
         logger.info(
-            "resolved bootstrap candidate asset=%s run_id=%s hash=%s",
+            "resolved bootstrap candidate asset=%s state_scope=%s run_id=%s hash=%s",
             candidate.document.asset,
+            args.state_scope,
             candidate.source_run_id,
             candidate.candidate_hash,
         )
@@ -87,6 +89,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             / "analysis_state"
             / "bootstrap"
             / _safe_segment(args.asset)
+            / _safe_segment(args.state_scope)
             / _safe_segment(args.trade_date)
             / _safe_segment(args.run_id)
             / "candidate.json",
@@ -101,6 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "dry_run": True,
                         "candidate_hash": candidate.candidate_hash,
                         "asset": candidate.document.asset,
+                        "state_scope": args.state_scope,
                         "run_id": candidate.source_run_id,
                         "planned_candidate_path": _relative(candidate_path, storage_root),
                         "database_url": _display_database_url(database_url),
@@ -115,7 +119,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         approval = _approval(args, candidate_hash=candidate.candidate_hash, parser=parser)
         try:
             result = materialize_bootstrap_candidate(session, candidate=candidate, approval=approval)
-            recovery = build_recovery_artifact(session, asset=candidate.document.asset)
+            recovery = build_recovery_artifact_scoped(
+                session,
+                asset=candidate.document.asset,
+                state_scope=args.state_scope,
+            )
             recovery_path = _output_path(
                 args.recovery_output_json,
                 storage_root=storage_root,
@@ -148,6 +156,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status": "canonical_ready",
                 "dry_run": False,
                 **result.model_dump(mode="json"),
+                "state_scope": args.state_scope,
                 "candidate_path": _relative(candidate_path, storage_root),
                 "candidate_written": candidate_written,
                 "recovery_path": _relative(recovery_path, storage_root),
@@ -166,6 +175,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Deterministically bootstrap the first canonical AnalysisState."
     )
     parser.add_argument("--asset", required=True, help="Exact asset identifier, for example XAUUSD.")
+    parser.add_argument(
+        "--state-scope",
+        choices=("intraday", "daily_close", "weekly_fundamental"),
+        default="daily_close",
+        help="Canonical state scope; legacy CLI calls default to daily_close.",
+    )
     parser.add_argument("--trade-date", required=True, help="Exact FinalAnalysisResult date (YYYY-MM-DD).")
     parser.add_argument("--run-id", required=True, help="Exact TaskRun/FinalAnalysisResult run ID.")
     parser.add_argument(

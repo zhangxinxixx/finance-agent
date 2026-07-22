@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -10,13 +11,23 @@ from sqlalchemy.orm import Session
 from apps.analysis.agents.quality_gate import AgentLoopDecision
 from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
 from apps.analysis.state.hashing import content_hash
-from apps.analysis.state.repository import advance_canonical_head, append_analysis_state
+from apps.analysis.state.repository import (
+    advance_canonical_head_scoped,
+    append_analysis_state_scoped,
+)
 from apps.analysis.state.schemas import (
-    AnalysisStateDocument,
+    AnalysisStateDocumentV1,
+    AnalysisStateDocumentV11,
     AnalysisTransitionDocument,
+    AnalysisTransitionDocumentV11,
     StateChange,
     StateMaterializationAuthority,
+    StateScope,
+    ANALYSIS_STATE_MACHINE_VERSION,
     TransitionAction,
+    VersionedAnalysisStateDocument,
+    VersionedAnalysisTransitionDocument,
+    parse_analysis_state_document,
 )
 from database.models.analysis_state import AnalysisState
 
@@ -103,8 +114,8 @@ class TransitionReviewResult(BaseModel):
     previous_state_content_hash: str
     next_state_content_hash: str
     transition_content_hash: str
-    transition: AnalysisTransitionDocument
-    next_state: AnalysisStateDocument
+    transition: VersionedAnalysisTransitionDocument
+    next_state: VersionedAnalysisStateDocument
     reviewed_evidence_refs: list[dict[str, Any]]
 
     @model_validator(mode="after")
@@ -137,7 +148,7 @@ def review_transition_candidate(
     *,
     candidate: TransitionCandidate | dict[str, Any],
     previous_state_id: str,
-    previous_state: AnalysisStateDocument | dict[str, Any],
+    previous_state: VersionedAnalysisStateDocument | dict[str, Any],
     available_evidence_refs: list[dict[str, Any]],
 ) -> TransitionReviewResult:
     """FactReview a candidate and deterministically apply its explicit patch."""
@@ -150,10 +161,10 @@ def review_transition_candidate(
     validated = TransitionCandidate.model_validate(candidate_payload)
     previous_payload = (
         previous_state.model_dump(mode="json")
-        if isinstance(previous_state, AnalysisStateDocument)
+        if isinstance(previous_state, BaseModel)
         else previous_state
     )
-    previous = AnalysisStateDocument.model_validate(previous_payload)
+    previous = parse_analysis_state_document(previous_payload)
     if validated.previous_state_id != previous_state_id:
         raise TransitionReviewError("candidate previous_state_id does not match canonical state")
 
@@ -170,12 +181,87 @@ def review_transition_candidate(
 
     next_payload = previous.model_dump(mode="python")
     next_payload.update(validated.state_patch)
-    next_state = AnalysisStateDocument.model_validate(next_payload)
+    next_state = parse_analysis_state_document(next_payload)
     if next_state.asset != previous.asset:
         raise TransitionReviewError("materializer cannot change the state asset")
+    if _document_scope(next_state) != _document_scope(previous):
+        raise TransitionReviewError("materializer cannot change state_scope")
     if next_state.as_of <= previous.as_of:
         raise TransitionReviewError("next state as_of must advance beyond previous state")
-    transition = AnalysisTransitionDocument(
+    transition: VersionedAnalysisTransitionDocument
+    if isinstance(previous, AnalysisStateDocumentV11):
+        transition = AnalysisTransitionDocumentV11(
+            state_scope=previous.state_scope,
+            summary=validated.summary,
+            changes=validated.changes,
+            evidence_refs=validated.evidence_refs,
+        )
+    else:
+        transition = AnalysisTransitionDocument(
+            summary=validated.summary,
+            changes=validated.changes,
+            evidence_refs=validated.evidence_refs,
+        )
+    return TransitionReviewResult(
+        previous_state_id=previous_state_id,
+        previous_state_content_hash=content_hash(previous),
+        next_state_content_hash=content_hash(next_state),
+        transition_content_hash=content_hash(transition),
+        transition=transition,
+        next_state=next_state,
+        reviewed_evidence_refs=list(validated.evidence_refs),
+    )
+
+
+def review_transition_candidate_scoped(
+    *,
+    candidate: TransitionCandidate | dict[str, Any],
+    previous_state_id: str,
+    previous_state: VersionedAnalysisStateDocument | dict[str, Any],
+    available_evidence_refs: list[dict[str, Any]],
+    state_scope: StateScope,
+    state_machine_version: str,
+    session: str,
+    trade_date: date,
+) -> TransitionReviewResult:
+    """Review into v1.1, explicitly upgrading a legacy v1 predecessor if needed."""
+
+    validated = TransitionCandidate.model_validate(
+        candidate.model_dump(mode="json")
+        if isinstance(candidate, TransitionCandidate)
+        else candidate
+    )
+    previous = parse_analysis_state_document(
+        previous_state.model_dump(mode="json")
+        if isinstance(previous_state, BaseModel)
+        else previous_state
+    )
+    if validated.previous_state_id != previous_state_id:
+        raise TransitionReviewError("candidate previous_state_id does not match canonical state")
+    _validate_candidate_evidence(
+        validated=validated,
+        available_evidence_refs=available_evidence_refs,
+    )
+    if isinstance(previous, AnalysisStateDocumentV11):
+        if previous.state_scope != state_scope:
+            raise TransitionReviewError("previous state belongs to a different state scope")
+        base_payload = previous.model_dump(mode="python")
+    else:
+        base_payload = _upgrade_v1_state_payload(
+            previous,
+            state_scope=state_scope,
+            state_machine_version=state_machine_version,
+            session=session,
+            trade_date=trade_date,
+        )
+    base_payload.update(validated.state_patch)
+    next_state = AnalysisStateDocumentV11.model_validate(base_payload)
+    if next_state.state_scope != state_scope:
+        raise TransitionReviewError("materializer cannot change state_scope")
+    if next_state.as_of <= previous.as_of:
+        raise TransitionReviewError("next state as_of must advance beyond previous state")
+    transition = AnalysisTransitionDocumentV11(
+        state_scope=state_scope,
         summary=validated.summary,
         changes=validated.changes,
         evidence_refs=validated.evidence_refs,
@@ -191,9 +277,10 @@ def review_transition_candidate(
     )
 
 
-def materialize_reviewed_transition(
+def materialize_reviewed_transition_scoped(
     session: Session,
     *,
+    state_scope: StateScope,
     review: TransitionReviewResult,
     quality_gate: QualityGateDecision | dict[str, Any],
     agent_loop: AgentLoopDecision | dict[str, Any],
@@ -223,6 +310,10 @@ def materialize_reviewed_transition(
         return _observe_only_result("fallback", gate=gate, loop=loop)
     if gate.action is QualityGateAction.BLOCK_PUBLISH:
         return _observe_only_result("blocked", gate=gate, loop=loop)
+    if not isinstance(review.next_state, AnalysisStateDocumentV11) or not isinstance(
+        review.transition, AnalysisTransitionDocumentV11
+    ):
+        raise TransitionReviewError("scoped materialization requires a v1.1 review")
 
     if gate.action is QualityGateAction.MANUAL_REVIEW:
         _require_review_lineage(session, review)
@@ -230,8 +321,11 @@ def materialize_reviewed_transition(
             quality_gate_action=gate.action.value,
             publish_allowed=False,
         )
-        state = append_analysis_state(
+        if _document_scope(review.next_state) != state_scope:
+            raise TransitionReviewError("review state_scope does not match materialization scope")
+        state = append_analysis_state_scoped(
             session,
+            state_scope=state_scope,
             document=review.next_state,
             transition=review.transition,
             authority=authority,
@@ -260,8 +354,11 @@ def materialize_reviewed_transition(
         accepted_output_agent_name=accepted.agent_name,
         accepted_output_snapshot_id=accepted.snapshot_id,
     )
-    state = append_analysis_state(
+    if _document_scope(review.next_state) != state_scope:
+        raise TransitionReviewError("review state_scope does not match materialization scope")
+    state = append_analysis_state_scoped(
         session,
+        state_scope=state_scope,
         document=review.next_state,
         transition=review.transition,
         authority=authority,
@@ -270,9 +367,10 @@ def materialize_reviewed_transition(
         analysis_snapshot_db_id=analysis_snapshot_db_id,
         final_analysis_result_id=final_analysis_result_id,
     )
-    head = advance_canonical_head(
+    head = advance_canonical_head_scoped(
         session,
         asset=review.next_state.asset,
+        state_scope=state_scope,
         new_state_id=state.id,
         expected_state_id=review.previous_state_id,
         expected_version=expected_head_version,
@@ -285,6 +383,73 @@ def materialize_reviewed_transition(
         canonical_version=head.version,
         canonical_advanced=True,
         review_evidence=_review_evidence(gate=gate, loop=loop),
+    )
+
+
+def materialize_reviewed_transition(
+    session: Session,
+    *,
+    review: TransitionReviewResult,
+    quality_gate: QualityGateDecision | dict[str, Any],
+    agent_loop: AgentLoopDecision | dict[str, Any],
+    task_run_id: str,
+    expected_head_version: int,
+    analysis_snapshot_db_id: str | None = None,
+    final_analysis_result_id: str | None = None,
+) -> StateMaterializationResult:
+    """Legacy boundary upgrading v1 review output before scoped persistence."""
+
+    gate = QualityGateDecision.model_validate(
+        quality_gate.model_dump(mode="json")
+        if isinstance(quality_gate, QualityGateDecision)
+        else quality_gate
+    )
+    scoped_review = (
+        review
+        if gate.action
+        in {QualityGateAction.RETRY, QualityGateAction.FALLBACK, QualityGateAction.BLOCK_PUBLISH}
+        else _upgrade_legacy_review(review)
+    )
+    return materialize_reviewed_transition_scoped(
+        session,
+        state_scope=_document_scope(scoped_review.next_state),
+        review=scoped_review,
+        quality_gate=quality_gate,
+        agent_loop=agent_loop,
+        task_run_id=task_run_id,
+        expected_head_version=expected_head_version,
+        analysis_snapshot_db_id=analysis_snapshot_db_id,
+        final_analysis_result_id=final_analysis_result_id,
+    )
+
+
+def _upgrade_legacy_review(review: TransitionReviewResult) -> TransitionReviewResult:
+    validated = TransitionReviewResult.model_validate(review.model_dump(mode="json"))
+    if isinstance(validated.next_state, AnalysisStateDocumentV11):
+        return validated
+    next_state = AnalysisStateDocumentV11.model_validate(
+        _upgrade_v1_state_payload(
+            validated.next_state,
+            state_scope="daily_close",
+            state_machine_version=ANALYSIS_STATE_MACHINE_VERSION,
+            session="daily_close",
+            trade_date=validated.next_state.as_of.date(),
+        )
+    )
+    transition = AnalysisTransitionDocumentV11(
+        state_scope="daily_close",
+        summary=validated.transition.summary,
+        changes=validated.transition.changes,
+        evidence_refs=validated.transition.evidence_refs,
+    )
+    return TransitionReviewResult(
+        previous_state_id=validated.previous_state_id,
+        previous_state_content_hash=validated.previous_state_content_hash,
+        next_state_content_hash=content_hash(next_state),
+        transition_content_hash=content_hash(transition),
+        transition=transition,
+        next_state=next_state,
+        reviewed_evidence_refs=validated.reviewed_evidence_refs,
     )
 
 
@@ -315,9 +480,109 @@ def _reference_key(value: dict[str, Any]) -> str:
     return content_hash(value, exclude_keys=frozenset())
 
 
+def _validate_candidate_evidence(
+    *,
+    validated: TransitionCandidate,
+    available_evidence_refs: list[dict[str, Any]],
+) -> None:
+    available = {_reference_key(item) for item in available_evidence_refs}
+    candidate_refs = [
+        *validated.evidence_refs,
+        *(ref for change in validated.changes for ref in change.evidence_refs),
+    ]
+    if any(not change.evidence_refs for change in validated.changes):
+        raise TransitionReviewError("every state change requires evidence_refs")
+    if any(_reference_key(ref) not in available for ref in candidate_refs):
+        raise TransitionReviewError("transition references evidence outside the reviewed bundle")
+
+
+def _upgrade_v1_state_payload(
+    previous: AnalysisStateDocumentV1,
+    *,
+    state_scope: StateScope,
+    state_machine_version: str,
+    session: str,
+    trade_date: date,
+) -> dict[str, Any]:
+    """Map v1 state fields to canonical v1.1 shapes without mutating the v1 object."""
+
+    drivers = []
+    for index, row in enumerate(previous.dominant_drivers, start=1):
+        driver_id = str(row.get("mainline_id") or row.get("name") or row.get("theme") or "").strip()
+        if not driver_id:
+            raise TransitionReviewError(f"legacy dominant driver {index} has no identity")
+        direction = str(row.get("direction") or "unknown").lower()
+        if direction not in {"tailwind", "headwind", "neutral", "mixed"}:
+            direction = "unknown"
+        coverage = str(row.get("coverage_status") or "unknown").lower()
+        if coverage not in {"covered", "partial", "missing"}:
+            coverage = "unknown"
+        drivers.append(
+            {
+                "driver_id": driver_id,
+                "label": str(row.get("theme") or row.get("name") or driver_id),
+                "rank": row.get("rank") or index,
+                "score": row.get("score"),
+                "direction": direction,
+                "coverage_status": coverage,
+            }
+        )
+    levels = []
+    for index, row in enumerate(previous.key_levels, start=1):
+        value = row.get("value", row.get("price", row.get("level")))
+        if value is None:
+            raise TransitionReviewError(f"legacy key level {index} has no value")
+        levels.append(
+            {
+                "value": value,
+                "role": str(row.get("role") or row.get("type") or "legacy_reference"),
+                "source": str(row.get("source") or "legacy_v1"),
+                "meaning": row.get("meaning"),
+            }
+        )
+    scenarios = []
+    for index, row in enumerate(previous.scenario_states, start=1):
+        scenario_id = str(row.get("name") or row.get("type") or f"legacy-{index}")
+        condition = str(row.get("condition") or row.get("name") or row.get("type") or "").strip()
+        if not condition:
+            raise TransitionReviewError(f"legacy scenario {index} has no condition")
+        status = str(row.get("status") or "pending").lower()
+        if status not in {"active", "pending", "confirmed", "invalidated"}:
+            status = "pending"
+        scenarios.append(
+            {"scenario_id": scenario_id, "condition": condition, "status": status}
+        )
+    return {
+        "schema_version": "1.1",
+        "state_scope": state_scope,
+        "state_machine_version": state_machine_version,
+        "session": session,
+        "trade_date": trade_date,
+        "asset": previous.asset,
+        "as_of": previous.as_of,
+        "market_stage": previous.market_stage,
+        "core_thesis": previous.core_thesis,
+        "net_bias": previous.net_bias,
+        "dominant_drivers": drivers,
+        "key_levels": levels,
+        "scenario_states": scenarios,
+        "unresolved_items": previous.unresolved_items,
+        "invalidation_conditions": previous.invalidation_conditions,
+        "evidence_cursors": previous.evidence_cursors,
+        "input_snapshot_ids": previous.input_snapshot_ids,
+        "source_refs": previous.source_refs,
+    }
+
+
 def _require_review_lineage(session: Session, review: TransitionReviewResult) -> None:
     previous = session.get(AnalysisState, review.previous_state_id)
     if previous is None:
         raise TransitionReviewError("review previous state does not exist")
     if previous.content_hash != review.previous_state_content_hash:
         raise TransitionReviewError("review previous state content does not match persisted state")
+    if previous.state_scope != _document_scope(review.next_state):
+        raise TransitionReviewError("review previous state belongs to a different state scope")
+
+
+def _document_scope(document: VersionedAnalysisStateDocument) -> StateScope:
+    return getattr(document, "state_scope", "daily_close")

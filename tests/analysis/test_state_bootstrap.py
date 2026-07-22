@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
+from apps.analysis.state import AnalysisStateDocument
 from apps.analysis.state.bootstrap import (
     BootstrapApproval,
     BootstrapContractError,
@@ -16,6 +17,7 @@ from apps.analysis.state.bootstrap import (
     LegacyRetirementThresholds,
     build_bootstrap_candidate,
     build_recovery_artifact,
+    build_recovery_artifact_scoped,
     evaluate_legacy_retirement,
     materialize_bootstrap_candidate,
     recover_canonical_cache_payload,
@@ -140,11 +142,12 @@ def _final(*, action: str = "pass") -> dict:
     }
 
 
-def _candidate(*, action: str = "pass"):
+def _candidate(*, action: str = "pass", state_scope: str = "daily_close"):
     return build_bootstrap_candidate(
         final_result=_final(action=action),
         gold_macro_overview=_overview(),
         strategy_card=_card(),
+        state_scope=state_scope,
     )
 
 
@@ -154,6 +157,12 @@ def test_bootstrap_is_deterministic_compact_and_binds_accepted_output() -> None:
 
     assert first == replay
     assert first.document.core_thesis == "实际利率缓和，但突破仍待确认"
+    assert first.document.schema_version == "1.1"
+    assert first.document.state_scope == "daily_close"
+    assert first.document.state_machine_version == "analysis_state.v1.1"
+    assert first.document.dominant_drivers[0].driver_id == "real-yield"
+    assert first.document.key_levels[0].role == "reference"
+    assert first.document.scenario_states[0].scenario_id == "trigger-1"
     assert first.document.input_snapshot_ids["analysis_snapshot"] == "snap-accepted"
     assert first.agent_loop.accepted_output.snapshot_id == "snap-accepted"
     assert "must-not-enter-state" not in json.dumps(
@@ -173,13 +182,15 @@ def test_bootstrap_rejects_unaccepted_or_cross_asset_artifacts() -> None:
             final_result=blocked,
             gold_macro_overview=_overview(),
             strategy_card=_card(),
+            state_scope="daily_close",
         )
 
     overview = _overview()
     overview["asset"] = "GC"
     with pytest.raises(BootstrapContractError, match="asset"):
         build_bootstrap_candidate(
-            final_result=_final(), gold_macro_overview=overview, strategy_card=_card()
+            final_result=_final(), gold_macro_overview=overview, strategy_card=_card(),
+            state_scope="daily_close",
         )
 
 
@@ -188,28 +199,32 @@ def test_bootstrap_rejects_snapshot_card_and_overview_lineage_mismatch() -> None
     final["snapshot_id"] = "different-snapshot"
     with pytest.raises(BootstrapContractError, match="snapshot_id conflicts"):
         build_bootstrap_candidate(
-            final_result=final, gold_macro_overview=_overview(), strategy_card=_card()
+            final_result=final, gold_macro_overview=_overview(), strategy_card=_card(),
+            state_scope="daily_close",
         )
 
     card = _card()
     card["scenario_summary"] = "tampered card"
     with pytest.raises(BootstrapContractError, match="StrategyCard content"):
         build_bootstrap_candidate(
-            final_result=_final(), gold_macro_overview=_overview(), strategy_card=card
+            final_result=_final(), gold_macro_overview=_overview(), strategy_card=card,
+            state_scope="daily_close",
         )
 
     overview = _overview()
     overview["input_snapshot_ids"]["unaccepted"] = "foreign-snapshot"
     with pytest.raises(BootstrapContractError, match="exceeds accepted lineage"):
         build_bootstrap_candidate(
-            final_result=_final(), gold_macro_overview=overview, strategy_card=_card()
+            final_result=_final(), gold_macro_overview=overview, strategy_card=_card(),
+            state_scope="daily_close",
         )
 
     overview = _overview()
     overview["source_refs"] = [{"source": "unaccepted", "snapshot_id": "foreign"}]
     with pytest.raises(BootstrapContractError, match="source_refs exceed"):
         build_bootstrap_candidate(
-            final_result=_final(), gold_macro_overview=overview, strategy_card=_card()
+            final_result=_final(), gold_macro_overview=overview, strategy_card=_card(),
+            state_scope="daily_close",
         )
 
 
@@ -232,6 +247,28 @@ def test_pass_bootstrap_establishes_one_head_and_replays_idempotently(session: S
     assert session.scalar(select(func.count()).select_from(AnalysisState)) == 1
     assert session.scalar(select(func.count()).select_from(AnalysisTransition)) == 1
     assert session.scalar(select(func.count()).select_from(AnalysisStateHead)) == 1
+
+
+def test_bootstrap_scopes_create_independent_heads_and_recovery(session: Session) -> None:
+    daily = materialize_bootstrap_candidate(session, candidate=_candidate())
+    intraday = materialize_bootstrap_candidate(
+        session, candidate=_candidate(state_scope="intraday")
+    )
+
+    assert daily.state_id != intraday.state_id
+    heads = {
+        row.state_scope: (row.canonical_state_id, row.version)
+        for row in session.scalars(select(AnalysisStateHead).where(AnalysisStateHead.asset == "XAUUSD"))
+    }
+    assert heads == {
+        "daily_close": (daily.state_id, 1),
+        "intraday": (intraday.state_id, 1),
+    }
+    artifact = build_recovery_artifact_scoped(
+        session, asset="XAUUSD", state_scope="intraday"
+    )
+    assert artifact.canonical_state_id == intraday.state_id
+    assert artifact.document.state_scope == "intraday"
 
 
 def test_manual_review_requires_bound_approval_and_persists_audit_evidence(session: Session) -> None:
@@ -298,6 +335,7 @@ def test_existing_different_head_blocks_bootstrap(session: Session) -> None:
             "one_line_conclusion": "另一个结论",
         },
         strategy_card=payload["strategy_card"],
+        state_scope="daily_close",
     )
     with pytest.raises(Exception, match="canonical head already exists"):
         materialize_bootstrap_candidate(session, candidate=other)
@@ -345,6 +383,29 @@ def test_recovery_rejects_tamper_and_path_escape(tmp_path: Path) -> None:
     }
     with pytest.raises(ValidationError, match="content hash mismatch"):
         CanonicalRecoveryArtifact.model_validate(payload)
+
+
+def test_legacy_v1_recovery_artifact_round_trips_without_added_scope_fields() -> None:
+    document = AnalysisStateDocument(
+        asset="XAUUSD",
+        as_of=NOW,
+        market_stage="premarket",
+        core_thesis="legacy",
+        net_bias="neutral",
+    )
+    base = {
+        "schema_version": "analysis_state_recovery.v1",
+        "asset": "XAUUSD",
+        "canonical_state_id": "legacy-state",
+        "canonical_version": 1,
+        "state_content_hash": content_hash(document),
+        "document": document.model_dump(mode="json"),
+    }
+    payload = {**base, "artifact_hash": content_hash(base)}
+    artifact = CanonicalRecoveryArtifact.model_validate(payload)
+
+    assert artifact.model_dump(mode="json") == payload
+    assert "state_scope" not in artifact.model_dump(mode="json")["document"]
 
 
 def test_artifact_write_replays_and_refuses_conflicting_overwrite(tmp_path: Path) -> None:
