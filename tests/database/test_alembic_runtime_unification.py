@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from alembic import command
-from sqlalchemy import UniqueConstraint, create_engine, inspect, select
+from sqlalchemy import UniqueConstraint, create_engine, inspect, select, text
 
 
 def _metadata_table_names(target_metadata) -> set[str]:
@@ -86,7 +86,7 @@ def test_runtime_alembic_upgrade_creates_current_schema(tmp_path, monkeypatch: p
 
 def test_analysis_memory_revision_boundary_is_explicit_and_replay_safe(tmp_path: Path) -> None:
     from database.migrations.runtime import build_alembic_config
-    from database.models.analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition
+    from database.models.analysis_state import AnalysisState
 
     database_url = f"sqlite:///{tmp_path / 'revision-boundary.sqlite'}"
     config = build_alembic_config(database_url)
@@ -100,12 +100,18 @@ def test_analysis_memory_revision_boundary_is_explicit_and_replay_safe(tmp_path:
     inspector = inspect(engine)
     assert state_tables <= set(inspector.get_table_names())
     expected_indexes = {
-        table.name: {index.name for index in table.indexes}
-        for table in (
-            AnalysisState.__table__,
-            AnalysisStateHead.__table__,
-            AnalysisTransition.__table__,
-        )
+        "analysis_states": {
+            "ix_analysis_states_asset_as_of", "ix_analysis_states_previous_state_id",
+            "ix_analysis_states_task_run_id", "ix_analysis_states_quality",
+            "ix_analysis_states_content_hash", "ix_analysis_states_payload_gin",
+            "ix_analysis_states_source_refs_gin",
+        },
+        "analysis_state_heads": {"ix_analysis_state_heads_asset_version"},
+        "analysis_transitions": {
+            "ix_analysis_transitions_asset_created", "ix_analysis_transitions_from_state_id",
+            "ix_analysis_transitions_task_run_id", "ix_analysis_transitions_content_hash",
+            "ix_analysis_transitions_actions_gin",
+        },
     }
     for table_name, index_names in expected_indexes.items():
         assert {index["name"] for index in inspector.get_indexes(table_name)} == index_names
@@ -127,26 +133,44 @@ def test_analysis_memory_revision_boundary_is_explicit_and_replay_safe(tmp_path:
     state_id = "00000000-0000-0000-0000-000000000074"
     with engine.begin() as connection:
         connection.execute(
-            AnalysisState.__table__.insert().values(
-                id=state_id,
-                schema_version="1.0",
-                asset="XAUUSD",
-                as_of=datetime(2026, 7, 22, 8, tzinfo=UTC),
-                task_run_id="issue-74-replay",
-                quality_gate_action="manual_review",
-                publish_allowed=False,
-                accepted_output_source="none",
-                input_snapshot_ids={},
-                source_refs=[],
-                evidence_cursors={},
-                payload={"asset": "XAUUSD"},
-                content_hash="0" * 64,
-            )
+            text(
+                "INSERT INTO analysis_states "
+                "(id, schema_version, asset, as_of, task_run_id, quality_gate_action, "
+                "publish_allowed, accepted_output_source, input_snapshot_ids, source_refs, "
+                "evidence_cursors, payload, content_hash) VALUES "
+                "(:id, '1.0', 'XAUUSD', :as_of, 'issue-74-replay', 'manual_review', "
+                "0, 'none', '{}', '[]', '{}', :payload, :content_hash)"
+            ),
+            {
+                "id": state_id,
+                "as_of": datetime(2026, 7, 22, 8, tzinfo=UTC),
+                "payload": '{"asset":"XAUUSD","schema_version":"1.0"}',
+                "content_hash": "0" * 64,
+            },
         )
+        before = connection.execute(
+            text("SELECT id, payload, content_hash FROM analysis_states WHERE id = :id"),
+            {"id": state_id},
+        ).one()
 
     command.upgrade(config, "head")
     with engine.connect() as connection:
         assert connection.scalar(select(AnalysisState.id).where(AnalysisState.id == state_id)) == state_id
+        after = connection.execute(
+            text("SELECT id, payload, content_hash FROM analysis_states WHERE id = :id"),
+            {"id": state_id},
+        ).one()
+        assert tuple(after) == tuple(before)
+        assert connection.scalar(
+            text("SELECT state_scope FROM analysis_states WHERE id = :id"), {"id": state_id}
+        ) == "daily_close"
+    inspector = inspect(engine)
+    assert {column["name"] for column in inspector.get_columns("analysis_states")} >= {
+        "state_scope"
+    }
+    assert {item["name"] for item in inspector.get_unique_constraints("analysis_state_heads")} == {
+        "uq_analysis_state_heads_asset_scope", "uq_analysis_state_heads_state"
+    }
 
     command.downgrade(config, "20260704_0001")
     assert state_tables.isdisjoint(inspect(engine).get_table_names())
@@ -183,10 +207,11 @@ def test_analysis_memory_upgrade_preserves_precreated_tables_and_data(tmp_path: 
     state_id = "00000000-0000-0000-0000-000000000080"
     with engine.begin() as connection:
         connection.execute(
-            AnalysisState.__table__.insert().values(
+                AnalysisState.__table__.insert().values(
                 id=state_id,
                 schema_version="1.0",
-                asset="XAUUSD",
+                    asset="XAUUSD",
+                    state_scope="daily_close",
                 as_of=datetime(2026, 7, 22, 8, tzinfo=UTC),
                 task_run_id="issue-74-precreated",
                 quality_gate_action="manual_review",
@@ -203,6 +228,30 @@ def test_analysis_memory_upgrade_preserves_precreated_tables_and_data(tmp_path: 
     command.upgrade(config, "head")
     with engine.connect() as connection:
         assert connection.scalar(select(AnalysisState.id).where(AnalysisState.id == state_id)) == state_id
+
+
+def test_analysis_state_scope_downgrade_fails_closed(tmp_path: Path) -> None:
+    from database.migrations.runtime import build_alembic_config
+
+    database_url = f"sqlite:///{tmp_path / 'scoped-downgrade.sqlite'}"
+    config = build_alembic_config(database_url)
+    engine = create_engine(database_url)
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO analysis_states "
+                "(id, schema_version, asset, state_scope, as_of, task_run_id, "
+                "quality_gate_action, publish_allowed, accepted_output_source, "
+                "input_snapshot_ids, source_refs, evidence_cursors, payload, content_hash) "
+                "VALUES ('scoped-state', '1.1', 'XAUUSD', 'intraday', :as_of, "
+                "'run-scoped', 'manual_review', 0, 'none', '{}', '[]', '{}', '{}', :hash)"
+            ),
+            {"as_of": datetime(2026, 7, 22, 8, tzinfo=UTC), "hash": "4" * 64},
+        )
+
+    with pytest.raises(RuntimeError, match="cannot downgrade scoped analysis state"):
+        command.downgrade(config, "20260722_0002")
 
 
 @pytest.mark.anyio
