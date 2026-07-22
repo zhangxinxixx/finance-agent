@@ -1,6 +1,7 @@
 import { fetchJson } from "@/adapters/apiClient";
 import type {
   AnalysisMemorySnapshot,
+  AnalysisStateScope,
   AnalysisStateLineage,
   AnalysisStateView,
   AnalysisTransitionView,
@@ -37,10 +38,21 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function transition(value: unknown): AnalysisTransitionView | null {
+function stateScope(value: unknown): AnalysisStateScope | null {
+  return value === "intraday" || value === "daily_close" || value === "weekly_fundamental" ? value : null;
+}
+
+function requireScope(value: unknown, expected: AnalysisStateScope, context: string): AnalysisStateScope {
+  const parsed = stateScope(value);
+  if (parsed !== expected) throw new Error(`${context} state_scope 不匹配`);
+  return parsed;
+}
+
+function transition(value: unknown, expectedScope: AnalysisStateScope): AnalysisTransitionView | null {
   const item = record(value);
   if (!text(item.transition_id)) return null;
   return {
+    state_scope: requireScope(item.state_scope, expectedScope, "transition"),
     transition_id: text(item.transition_id),
     from_state_id: optionalText(item.from_state_id),
     to_state_id: text(item.to_state_id),
@@ -67,7 +79,7 @@ function lineage(value: unknown): AnalysisStateLineage {
   };
 }
 
-function state(value: unknown): AnalysisStateView {
+function state(value: unknown, expectedScope: AnalysisStateScope): AnalysisStateView {
   const item = record(value);
   const rawKind = text(item.state_kind);
   const stateKind = rawKind === "accepted_canonical" || rawKind === "candidate" || rawKind === "blocked" ? rawKind : "blocked";
@@ -75,6 +87,7 @@ function state(value: unknown): AnalysisStateView {
     state_id: text(item.state_id),
     state_kind: stateKind,
     asset: text(item.asset),
+    state_scope: requireScope(item.state_scope, expectedScope, "state"),
     as_of: text(item.as_of),
     previous_state_id: optionalText(item.previous_state_id),
     quality_gate_action: text(item.quality_gate_action),
@@ -84,7 +97,7 @@ function state(value: unknown): AnalysisStateView {
     content_hash: text(item.content_hash),
     payload: record(item.payload),
     lineage: lineage(item.lineage),
-    transition: transition(item.transition),
+    transition: transition(item.transition, expectedScope),
     created_at: optionalText(item.created_at),
   };
 }
@@ -99,23 +112,35 @@ function pagination(value: unknown) {
   };
 }
 
-function canonical(value: unknown): CanonicalStateResponse {
+function canonical(value: unknown, expectedScope: AnalysisStateScope): CanonicalStateResponse {
   const item = record(value);
-  const canonicalState = state(item.state);
+  if (item.schema_version !== "analysis_memory_read.v2") throw new Error("analysis-memory canonical schema 不兼容");
+  requireScope(item.state_scope, expectedScope, "canonical response");
+  const canonicalState = state(item.state, expectedScope);
   if (canonicalState.state_kind !== "accepted_canonical" || !canonicalState.publish_allowed) {
     throw new Error("analysis-memory canonical contract rejected non-accepted state");
   }
   return {
+    schema_version: "analysis_memory_read.v2",
     asset: text(item.asset),
+    state_scope: expectedScope,
     head_version: numberValue(item.head_version),
     state: canonicalState,
-    canonical_chain: records(item.canonical_chain).map(state),
+    canonical_chain: records(item.canonical_chain).map((entry) => state(entry, expectedScope)),
   };
 }
 
-function candidates(value: unknown): CandidateStatePage {
+function candidates(value: unknown, expectedScope: AnalysisStateScope): CandidateStatePage {
   const item = record(value);
-  return { asset: text(item.asset), data: records(item.data).map(state), pagination: pagination(item.pagination) };
+  if (item.schema_version !== "analysis_memory_read.v2") throw new Error("analysis-memory candidates schema 不兼容");
+  requireScope(item.state_scope, expectedScope, "candidate response");
+  return {
+    schema_version: "analysis_memory_read.v2",
+    asset: text(item.asset),
+    state_scope: expectedScope,
+    data: records(item.data).map((entry) => state(entry, expectedScope)),
+    pagination: pagination(item.pagination),
+  };
 }
 
 function block(value: unknown): ContextBlockMetadata {
@@ -129,12 +154,14 @@ function block(value: unknown): ContextBlockMetadata {
   };
 }
 
-function bundle(value: unknown): ContextBundleMetadata {
+function bundle(value: unknown, expectedScope: AnalysisStateScope): ContextBundleMetadata {
   const item = record(value);
   return {
+    schema_version: text(item.schema_version),
     bundle_id: text(item.bundle_id),
     content_hash: text(item.content_hash),
     asset: text(item.asset),
+    state_scope: requireScope(item.state_scope, expectedScope, "ContextBundle"),
     run_id: text(item.run_id),
     canonical_state_id: text(item.canonical_state_id),
     cutoff_at: text(item.cutoff_at),
@@ -149,23 +176,32 @@ function bundle(value: unknown): ContextBundleMetadata {
   };
 }
 
-function bundles(value: unknown): ContextBundleMetadataPage {
+function bundles(value: unknown, expectedScope: AnalysisStateScope): ContextBundleMetadataPage {
   const item = record(value);
-  return { asset: text(item.asset), data: records(item.data).map(bundle), pagination: pagination(item.pagination) };
+  if (item.schema_version !== "analysis_memory_read.v2") throw new Error("analysis-memory bundles schema 不兼容");
+  requireScope(item.state_scope, expectedScope, "ContextBundle response");
+  return {
+    schema_version: "analysis_memory_read.v2",
+    asset: text(item.asset),
+    state_scope: expectedScope,
+    data: records(item.data).map((entry) => bundle(entry, expectedScope)),
+    pagination: pagination(item.pagination),
+  };
 }
 
-export async function fetchAnalysisMemory(asset = "XAUUSD"): Promise<AnalysisMemorySnapshot> {
+export async function fetchAnalysisMemory(stateScopeValue: AnalysisStateScope, asset = "XAUUSD"): Promise<AnalysisMemorySnapshot> {
   const encoded = encodeURIComponent(asset);
+  const scopeQuery = `stateScope=${encodeURIComponent(stateScopeValue)}`;
   const [canonicalResult, candidateResult, bundleResult] = await Promise.allSettled([
-    fetchJson<unknown>(`/api/analysis-memory/assets/${encoded}/canonical?maxDepth=20`),
-    fetchJson<unknown>(`/api/analysis-memory/assets/${encoded}/candidates?page=1&pageSize=20`),
-    fetchJson<unknown>(`/api/analysis-memory/assets/${encoded}/context-bundles?page=1&pageSize=20`),
+    fetchJson<unknown>(`/api/analysis-memory/assets/${encoded}/canonical?${scopeQuery}&maxDepth=20`),
+    fetchJson<unknown>(`/api/analysis-memory/assets/${encoded}/candidates?${scopeQuery}&page=1&pageSize=20`),
+    fetchJson<unknown>(`/api/analysis-memory/assets/${encoded}/context-bundles?${scopeQuery}&page=1&pageSize=20`),
   ]);
   const warnings: string[] = [];
   let canonicalValue: CanonicalStateResponse | null = null;
   if (canonicalResult.status === "fulfilled") {
     try {
-      canonicalValue = canonical(canonicalResult.value);
+      canonicalValue = canonical(canonicalResult.value, stateScopeValue);
     } catch (cause) {
       warnings.push(cause instanceof Error ? cause.message : "canonical contract invalid");
     }
@@ -173,11 +209,11 @@ export async function fetchAnalysisMemory(asset = "XAUUSD"): Promise<AnalysisMem
     warnings.push("accepted canonical 尚不可用");
   }
   const candidateValue = candidateResult.status === "fulfilled"
-    ? candidates(candidateResult.value)
-    : { asset, data: [], pagination: { page: 1, page_size: 20, total_items: 0, total_pages: 0 } };
+    ? candidates(candidateResult.value, stateScopeValue)
+    : { schema_version: "analysis_memory_read.v2" as const, asset, state_scope: stateScopeValue, data: [], pagination: { page: 1, page_size: 20, total_items: 0, total_pages: 0 } };
   const bundleValue = bundleResult.status === "fulfilled"
-    ? bundles(bundleResult.value)
-    : { asset, data: [], pagination: { page: 1, page_size: 20, total_items: 0, total_pages: 0 } };
+    ? bundles(bundleResult.value, stateScopeValue)
+    : { schema_version: "analysis_memory_read.v2" as const, asset, state_scope: stateScopeValue, data: [], pagination: { page: 1, page_size: 20, total_items: 0, total_pages: 0 } };
   if (candidateResult.status === "rejected") warnings.push("candidate list 加载失败");
   if (bundleResult.status === "rejected") warnings.push("ContextBundle metadata 加载失败");
   if (!canonicalValue && candidateResult.status === "rejected" && bundleResult.status === "rejected") {
@@ -194,6 +230,7 @@ export async function acceptAnalysisMemoryCandidate(params: {
   requestId: string;
   canonicalStateId: string;
   headVersion: number;
+  stateScope: AnalysisStateScope;
 }): Promise<void> {
   await fetchJson(`/api/analysis-memory/candidates/${encodeURIComponent(params.candidateId)}/reviews`, {
     method: "POST",
@@ -205,6 +242,7 @@ export async function acceptAnalysisMemoryCandidate(params: {
       request_id: params.requestId,
       expected_canonical_state_id: params.canonicalStateId,
       expected_head_version: params.headVersion,
+      state_scope: params.stateScope,
     }),
   });
 }

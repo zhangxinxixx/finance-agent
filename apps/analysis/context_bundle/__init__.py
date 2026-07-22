@@ -7,6 +7,7 @@ from .assembler import (
 )
 from .schemas import (
     CONTEXT_BUNDLE_SCHEMA_VERSION,
+    LEGACY_CONTEXT_BUNDLE_SCHEMA_VERSION,
     AnalysisContextBundle,
     ContextBlock,
     EvidenceCursor,
@@ -15,6 +16,7 @@ from .schemas import (
 
 __all__ = [
     "CONTEXT_BUNDLE_SCHEMA_VERSION",
+    "LEGACY_CONTEXT_BUNDLE_SCHEMA_VERSION",
     "AnalysisContextBundle",
     "ContextBlock",
     "ContextBundleBudgetExceeded",

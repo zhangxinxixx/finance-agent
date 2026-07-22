@@ -9,10 +9,15 @@ const reviewPage = readFileSync(new URL("../src/pages/ReviewCenterPage.tsx", imp
 assert.match(adapter, /Promise\.allSettled/, "independent reads must keep candidates visible without canonical");
 assert.match(adapter, /state_kind !== "accepted_canonical" \|\| !canonicalState\.publish_allowed/, "canonical projection must fail closed");
 assert.match(adapter, /X-Finance-Analysis-Memory-Token/, "review action must carry the dedicated write token");
+assert.match(adapter, /stateScope=/, "all asset reads must send an explicit state scope");
+assert.match(adapter, /state_scope: params\.stateScope/, "candidate acceptance must bind the selected scope");
+assert.match(adapter, /state_scope 不匹配/, "frontend adapter must fail closed on cross-scope payloads");
 assert.match(panel, /正式 accepted canonical/, "panel must label the only official state");
 assert.match(panel, /candidate \/ 待复核/, "panel must isolate candidate state");
 assert.match(panel, /blocked \/ 不可采用/, "panel must isolate blocked state");
 assert.match(panel, /ContextBundle token composition/, "panel must expose bundle token composition");
+assert.match(panel, /Analysis Memory state scope/, "panel must expose a scope selector");
+assert.match(panel, /weekly_fundamental/, "panel must expose all persisted state scopes");
 assert.match(processingPage, /<AnalysisMemoryPanel \/>/, "Processing Monitor must render state observability");
 assert.match(reviewPage, /<AnalysisMemoryPanel allowReview \/>/, "Review Center must render permission-gated review controls");
 

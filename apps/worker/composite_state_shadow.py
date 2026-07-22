@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Literal
@@ -14,9 +14,13 @@ from pydantic import BaseModel
 from apps.analysis.context_bundle import AnalysisContextBundle, assemble_context_bundle
 from apps.analysis.figure_facts import project_confirmed_evidence
 from apps.analysis.state import (
-    AnalysisStateDocument,
+    ANALYSIS_STATE_MACHINE_VERSION,
+    AnalysisStateDocumentV1,
+    AnalysisStateDocumentV11,
+    StateScope,
     TransitionCandidate,
-    review_transition_candidate,
+    parse_analysis_state_document,
+    review_transition_candidate_scoped,
 )
 from apps.output.context_bundle import ContextBundleWriteResult, write_context_bundle
 
@@ -32,7 +36,11 @@ StateDeltaAnalyzer = Callable[[AnalysisContextBundle], TransitionCandidate | dic
 class CompositeStateShadowRuntime:
     bundle: AnalysisContextBundle
     artifact: ContextBundleWriteResult
-    previous_state: AnalysisStateDocument
+    previous_state: AnalysisStateDocumentV1 | AnalysisStateDocumentV11
+    state_scope: StateScope
+    state_machine_version: str
+    session: str
+    trade_date: date
     available_evidence_refs: list[dict[str, Any]]
     no_material_delta: bool
     assembly_latency_ms: int
@@ -55,7 +63,24 @@ def prepare_composite_state_shadow(
     """Build and persist exactly one bundle for one shadow composite run."""
 
     started = perf_counter()
-    previous_state = AnalysisStateDocument.model_validate(shadow_input["canonical_state"])
+    state_scope = _state_scope(shadow_input.get("state_scope"))
+    canonical_payload = shadow_input["canonical_state"]
+    if isinstance(canonical_payload, dict) and "schema_version" not in canonical_payload:
+        canonical_payload = {**canonical_payload, "schema_version": "1.0"}
+    previous_state = parse_analysis_state_document(canonical_payload)
+    if isinstance(previous_state, AnalysisStateDocumentV11):
+        if previous_state.state_scope != state_scope:
+            raise ValueError("shadow canonical state belongs to a different state_scope")
+        state_machine_version = previous_state.state_machine_version
+        session = previous_state.session
+        trade_date = previous_state.trade_date
+    else:
+        if state_scope != "daily_close":
+            raise ValueError("legacy v1 canonical state is only valid for daily_close shadow")
+        state_machine_version = ANALYSIS_STATE_MACHINE_VERSION
+        session = str(shadow_input.get("expected_session") or "daily_close").strip()
+        if not session:
+            raise ValueError("shadow session must not be blank")
     confirmed_facts = []
     for raw_fact in shadow_input.get("figure_facts") or []:
         confirmed = project_confirmed_evidence(raw_fact)
@@ -63,9 +88,12 @@ def prepare_composite_state_shadow(
             confirmed_facts.append(confirmed.model_dump(mode="json"))
     cutoff_at = _datetime_value(shadow_input.get("cutoff_at") or created_at)
     assembled_at = _datetime_value(shadow_input.get("assembled_at") or created_at)
+    if isinstance(previous_state, AnalysisStateDocumentV1):
+        trade_date = cutoff_at.date()
     bundle = assemble_context_bundle(
         run_id=run_id,
         asset=previous_state.asset,
+        state_scope=state_scope,
         canonical_state_id=str(shadow_input["canonical_state_id"]),
         canonical_state=previous_state.model_dump(mode="json"),
         evidence=list(shadow_input.get("evidence") or []),
@@ -95,6 +123,10 @@ def prepare_composite_state_shadow(
         bundle=bundle,
         artifact=artifact,
         previous_state=previous_state,
+        state_scope=state_scope,
+        state_machine_version=state_machine_version,
+        session=session,
+        trade_date=trade_date,
         available_evidence_refs=available_refs,
         no_material_delta=no_material_delta,
         assembly_latency_ms=max(0, round((perf_counter() - started) * 1000)),
@@ -135,11 +167,15 @@ def execute_composite_state_shadow(
             else raw_candidate
         )
         candidate = TransitionCandidate.model_validate(candidate_payload)
-        review = review_transition_candidate(
+        review = review_transition_candidate_scoped(
             candidate=candidate,
             previous_state_id=runtime.bundle.canonical_state_id,
             previous_state=runtime.previous_state,
             available_evidence_refs=runtime.available_evidence_refs,
+            state_scope=runtime.state_scope,
+            state_machine_version=runtime.state_machine_version,
+            session=runtime.session,
+            trade_date=runtime.trade_date,
         )
     except Exception as exc:
         return {
@@ -196,8 +232,11 @@ def finalize_composite_state_shadow(
 
 def _base_trace(runtime: CompositeStateShadowRuntime) -> dict[str, Any]:
     return {
-        "schema_version": "composite_state_shadow.v1",
+        "schema_version": "composite_state_shadow.v2",
         "mode": STATE_DELTA_CONTEXT_MODE,
+        "asset": runtime.bundle.asset,
+        "state_scope": runtime.state_scope,
+        "canonical_state_id": runtime.bundle.canonical_state_id,
         "bundle_id": runtime.bundle.bundle_id,
         "bundle_content_hash": runtime.bundle.content_hash,
         "bundle_path": runtime.artifact.storage_relative_path,
@@ -215,3 +254,10 @@ def _datetime_value(value: Any) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("shadow timestamps must be timezone-aware")
     return parsed.astimezone(UTC)
+
+
+def _state_scope(value: Any) -> StateScope:
+    normalized = str(value or "").strip()
+    if normalized not in {"intraday", "daily_close", "weekly_fundamental"}:
+        raise ValueError("shadow state_scope is required and must be valid")
+    return normalized  # type: ignore[return-value]

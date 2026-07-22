@@ -3,7 +3,13 @@ import { useState } from "react";
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { useAnalysisMemory } from "@/hooks/useAnalysisMemory";
-import type { AnalysisStateView } from "@/types/analysis-memory";
+import type { AnalysisStateScope, AnalysisStateView } from "@/types/analysis-memory";
+
+const SCOPE_LABELS: Record<AnalysisStateScope, string> = {
+  intraday: "日内",
+  daily_close: "日收盘",
+  weekly_fundamental: "周度基本面",
+};
 
 function shortId(value: string | null | undefined): string {
   return value ? (value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value) : "—";
@@ -29,7 +35,8 @@ function TransitionDiff({ state }: { state: AnalysisStateView }) {
 }
 
 export function AnalysisMemoryPanel({ allowReview = false }: { allowReview?: boolean }) {
-  const memory = useAnalysisMemory();
+  const [stateScope, setStateScope] = useState<AnalysisStateScope>("daily_close");
+  const memory = useAnalysisMemory(stateScope);
   const [token, setToken] = useState("");
   const [actor, setActor] = useState("review-center");
   const [reason, setReason] = useState("");
@@ -53,9 +60,26 @@ export function AnalysisMemoryPanel({ allowReview = false }: { allowReview?: boo
     >
       {memory.error || memory.data.warnings.length ? <div className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[length:var(--type-body-sm)] text-[var(--warn)]">{memory.error?.message ?? memory.data.warnings.join("；")}</div> : null}
 
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
+        <div>
+          <div className="fa-label">State scope</div>
+          <div className="text-[length:var(--type-caption)] text-[var(--fg-4)]">当前仅观察 {SCOPE_LABELS[stateScope]}（{stateScope}）状态链。</div>
+        </div>
+        <select
+          value={stateScope}
+          onChange={(event) => setStateScope(event.target.value as AnalysisStateScope)}
+          className="h-8 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card)] px-2 text-[length:var(--type-label)] text-[var(--fg-2)]"
+          aria-label="Analysis Memory state scope"
+        >
+          {(Object.entries(SCOPE_LABELS) as Array<[AnalysisStateScope, string]>).map(([value, label]) => (
+            <option key={value} value={value}>{label} · {value}</option>
+          ))}
+        </select>
+      </div>
+
       {canonical ? <div className="rounded-[var(--radius-md)] border border-[var(--up-border)] bg-[var(--up-soft)] p-3">
         <div className="flex flex-wrap items-center gap-2">
-          <FAStatusPill tone="up">正式 accepted canonical</FAStatusPill>
+          <FAStatusPill tone="up">正式 accepted canonical · {canonical.state_scope}</FAStatusPill>
           <span className="fa-num text-[length:var(--type-caption)] text-[var(--fg-4)]">head v{canonical.head_version} · {shortId(canonical.state.state_id)}</span>
         </div>
         <div className="mt-2 fa-card-title text-[var(--fg-1)]">{thesis(canonical.state)}</div>
@@ -87,7 +111,7 @@ export function AnalysisMemoryPanel({ allowReview = false }: { allowReview?: boo
           {candidates.data.length ? candidates.data.map((candidate) => (
             <div key={candidate.state_id} className={`rounded-[var(--radius-md)] border p-3 ${candidate.state_kind === "blocked" ? "border-[var(--down-border)] bg-[var(--down-soft)]" : "border-[var(--warn-border)] bg-[var(--warn-soft)]"}`}>
               <div className="flex flex-wrap items-center gap-2">
-                <FAStatusPill tone={candidate.state_kind === "blocked" ? "down" : "warn"}>{candidate.state_kind === "blocked" ? "blocked / 不可采用" : "candidate / 待复核"}</FAStatusPill>
+                <FAStatusPill tone={candidate.state_kind === "blocked" ? "down" : "warn"}>{candidate.state_kind === "blocked" ? "blocked / 不可采用" : "candidate / 待复核"} · {candidate.state_scope}</FAStatusPill>
                 <span className="fa-num text-[length:var(--type-caption)] text-[var(--fg-4)]">{shortId(candidate.state_id)} · run {shortId(candidate.lineage.run_id)}</span>
               </div>
               <div className="mt-2 text-[length:var(--type-body)] text-[var(--fg-2)]">{thesis(candidate)}</div>
@@ -129,7 +153,7 @@ export function AnalysisMemoryPanel({ allowReview = false }: { allowReview?: boo
               ))}
             </div>
             <div className="mt-2 break-all text-[length:var(--type-caption)] text-[var(--fg-4)]">
-              run {shortId(latestBundle.run_id)} · canonical {shortId(latestBundle.canonical_state_id)} · sources {latestBundle.source_refs.length} · artifact {latestBundle.artifact_path}
+              scope {latestBundle.state_scope} · run {shortId(latestBundle.run_id)} · canonical {shortId(latestBundle.canonical_state_id)} · sources {latestBundle.source_refs.length} · artifact {latestBundle.artifact_path}
             </div>
           </div>
         ) : <div className="fa-faint-text">暂无 ContextBundle metadata；不会从 GET 触发重新生成。</div>}

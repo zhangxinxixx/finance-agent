@@ -15,14 +15,22 @@ from apps.analysis.agents.quality_gate_evaluator import (
     QualityGateDecision,
     QualityGateFinding,
 )
-from apps.analysis.state import AnalysisStateDocument, TransitionReviewResult, materialize_reviewed_transition
+from apps.analysis.state import (
+    AnalysisStateDocumentV11,
+    AnalysisTransitionDocument,
+    AnalysisTransitionDocumentV11,
+    StateScope,
+    TransitionReviewResult,
+    materialize_reviewed_transition,
+    materialize_reviewed_transition_scoped,
+    parse_analysis_state_document,
+)
 from apps.analysis.state.hashing import content_hash
 from apps.analysis.state.repository import (
     CanonicalHeadConflictError,
     StateLineageError,
     get_state_history,
 )
-from apps.analysis.state.schemas import AnalysisTransitionDocument
 from apps.api.schemas.analysis_memory import (
     AnalysisStateLineage,
     AnalysisStateView,
@@ -42,12 +50,12 @@ from apps.output.context_bundle import ContextBundleLoadError, load_context_bund
 from apps.output.analysis_state_review import review_artifact_id, write_analysis_state_review
 from database.models.analysis_state import AnalysisState, AnalysisTransition
 from database.queries.analysis_state_observability import (
-    get_head,
+    get_head_scoped,
     get_candidate_acceptance_lineage,
     get_state,
     get_transition,
     get_transition_to_state,
-    list_candidate_states_page,
+    list_candidate_states_page_scoped,
 )
 
 
@@ -70,21 +78,25 @@ def get_latest_canonical(
     db: Session,
     *,
     asset: str,
+    state_scope: StateScope,
     max_depth: int = 20,
 ) -> CanonicalStateResponse:
     normalized_asset = _asset(asset)
-    head = get_head(db, normalized_asset)
+    head = get_head_scoped(db, asset=normalized_asset, state_scope=state_scope)
     if head is None:
         raise AnalysisMemoryNotFoundError("canonical state not found")
     canonical = get_state(db, head.canonical_state_id)
     if canonical is None or not _is_accepted(canonical):
         raise AnalysisMemoryConflictError("canonical head does not reference an accepted state")
+    if canonical.state_scope != state_scope:
+        raise AnalysisMemoryConflictError("canonical head references a different state scope")
     try:
         history = get_state_history(db, canonical.id, max_depth=max_depth)
     except StateLineageError as exc:
         raise AnalysisMemoryConflictError("canonical state lineage is invalid") from exc
     return CanonicalStateResponse(
         asset=normalized_asset,
+        state_scope=state_scope,
         head_version=head.version,
         state=_state_view(db, canonical, state_kind="accepted_canonical"),
         canonical_chain=[
@@ -95,11 +107,18 @@ def get_latest_canonical(
     )
 
 
-def get_state_response(db: Session, *, state_id: str) -> AnalysisStateView:
+def get_state_response(
+    db: Session,
+    *,
+    state_id: str,
+    state_scope: StateScope,
+) -> AnalysisStateView:
     state = get_state(db, _required(state_id, "state_id"))
     if state is None:
         raise AnalysisMemoryNotFoundError("analysis state not found")
-    head = get_head(db, state.asset)
+    if state.state_scope != state_scope:
+        raise AnalysisMemoryNotFoundError("analysis state not found in requested scope")
+    head = get_head_scoped(db, asset=state.asset, state_scope=state_scope)
     is_canonical = head is not None and head.canonical_state_id == state.id
     if is_canonical and not _is_accepted(state):
         raise AnalysisMemoryConflictError("canonical head does not reference an accepted state")
@@ -114,26 +133,34 @@ def list_candidates(
     db: Session,
     *,
     asset: str,
+    state_scope: StateScope,
     page: int,
     page_size: int,
 ) -> CandidateStatePage:
     normalized_asset = _asset(asset)
-    rows, total = list_candidate_states_page(
+    rows, total = list_candidate_states_page_scoped(
         db,
         asset=normalized_asset,
+        state_scope=state_scope,
         page=page,
         page_size=page_size,
     )
     return CandidateStatePage(
         asset=normalized_asset,
+        state_scope=state_scope,
         data=[_state_view(db, row, state_kind=_candidate_kind(row)) for row in rows],
         pagination=_pagination(page=page, page_size=page_size, total=total),
     )
 
 
-def get_transition_response(db: Session, *, transition_id: str) -> AnalysisTransitionView:
+def get_transition_response(
+    db: Session,
+    *,
+    transition_id: str,
+    state_scope: StateScope,
+) -> AnalysisTransitionView:
     row = get_transition(db, _required(transition_id, "transition_id"))
-    if row is None:
+    if row is None or row.state_scope != state_scope:
         raise AnalysisMemoryNotFoundError("analysis transition not found")
     return _transition_view(row)
 
@@ -141,15 +168,21 @@ def get_transition_response(db: Session, *, transition_id: str) -> AnalysisTrans
 def list_context_bundle_metadata(
     *,
     asset: str,
+    state_scope: StateScope,
     page: int,
     page_size: int,
     storage_root: Path | None = None,
 ) -> ContextBundleMetadataPage:
     normalized_asset = _asset(asset)
-    rows = _context_bundle_rows(asset=normalized_asset, storage_root=storage_root)
+    rows = _context_bundle_rows(
+        asset=normalized_asset,
+        state_scope=state_scope,
+        storage_root=storage_root,
+    )
     start = (page - 1) * page_size
     return ContextBundleMetadataPage(
         asset=normalized_asset,
+        state_scope=state_scope,
         data=rows[start : start + page_size],
         pagination=_pagination(page=page, page_size=page_size, total=len(rows)),
     )
@@ -158,6 +191,7 @@ def list_context_bundle_metadata(
 def get_context_bundle_metadata(
     *,
     bundle_id: str,
+    state_scope: StateScope,
     storage_root: Path | None = None,
 ) -> ContextBundleMetadata:
     normalized_id = _required(bundle_id, "bundle_id")
@@ -169,10 +203,18 @@ def get_context_bundle_metadata(
     base = root / "outputs" / "context_bundles"
     if not base.is_dir():
         raise AnalysisMemoryNotFoundError("context bundle not found")
-    for path in base.glob(f"*/*/{normalized_id}.json"):
-        metadata = _load_bundle_metadata(root=root, path=path)
-        if metadata is not None and metadata.bundle_id == normalized_id:
-            return metadata
+    patterns = [f"*/{state_scope}/*/{normalized_id}.json"]
+    if state_scope == "daily_close":
+        patterns.append(f"*/*/{normalized_id}.json")
+    for pattern in patterns:
+        for path in base.glob(pattern):
+            metadata = _load_bundle_metadata(
+                root=root,
+                path=path,
+                requested_scope=state_scope,
+            )
+            if metadata is not None and metadata.bundle_id == normalized_id:
+                return metadata
     raise AnalysisMemoryNotFoundError("context bundle not found")
 
 
@@ -187,7 +229,13 @@ def accept_candidate(
         raise AnalysisMemoryNotFoundError("analysis candidate not found")
     if candidate.publish_allowed or candidate.quality_gate_action != "manual_review":
         raise AnalysisMemoryReviewError("candidate is not eligible for manual acceptance")
-    head = get_head(db, candidate.asset)
+    if candidate.state_scope != request.state_scope:
+        raise AnalysisMemoryReviewError("candidate belongs to a different state scope")
+    head = get_head_scoped(
+        db,
+        asset=candidate.asset,
+        state_scope=request.state_scope,
+    )
     if head is None:
         raise AnalysisMemoryConflictError("canonical head not found")
     if (
@@ -199,9 +247,13 @@ def accept_candidate(
     previous = get_state(db, head.canonical_state_id)
     if previous is None or not _is_accepted(previous):
         raise AnalysisMemoryConflictError("canonical head does not reference an accepted state")
+    if previous.state_scope != request.state_scope:
+        raise AnalysisMemoryConflictError("canonical head belongs to a different state scope")
     candidate_transition = get_transition_to_state(db, candidate.id)
     if candidate_transition is None:
         raise AnalysisMemoryConflictError("candidate transition is missing")
+    if candidate_transition.state_scope != request.state_scope:
+        raise AnalysisMemoryConflictError("candidate transition belongs to a different state scope")
 
     acceptance_lineage = get_candidate_acceptance_lineage(db, state=candidate)
     if acceptance_lineage is None:
@@ -221,13 +273,22 @@ def accept_candidate(
         "actor": request.actor,
         "reason": request.reason,
         "request_id": request.request_id,
+        "state_scope": request.state_scope,
     }
-    transition = AnalysisTransitionDocument(
-        summary=f"Manual review accepted candidate: {candidate_transition.summary}",
-        changes=candidate_transition.actions,
-        evidence_refs=[*candidate_transition.evidence_refs, review_ref],
+    document = parse_analysis_state_document(candidate.payload)
+    transition_payload = {
+        "summary": f"Manual review accepted candidate: {candidate_transition.summary}",
+        "changes": candidate_transition.actions,
+        "evidence_refs": [*candidate_transition.evidence_refs, review_ref],
+    }
+    transition = (
+        AnalysisTransitionDocumentV11(
+            state_scope=request.state_scope,
+            **transition_payload,
+        )
+        if isinstance(document, AnalysisStateDocumentV11)
+        else AnalysisTransitionDocument(**transition_payload)
     )
-    document = AnalysisStateDocument.model_validate(candidate.payload)
     review = TransitionReviewResult(
         previous_state_id=head.canonical_state_id,
         previous_state_content_hash=previous.content_hash,
@@ -251,6 +312,7 @@ def accept_candidate(
                     "candidate_state_id": candidate.id,
                     "review_artifact_id": artifact_id,
                     "request_id": request.request_id,
+                    "state_scope": request.state_scope,
                 },
             )
         ],
@@ -268,8 +330,7 @@ def accept_candidate(
         ),
     )
     try:
-        materialization = materialize_reviewed_transition(
-            db,
+        materializer_kwargs = dict(
             review=review,
             quality_gate=quality_gate,
             agent_loop=agent_loop,
@@ -278,6 +339,16 @@ def accept_candidate(
             analysis_snapshot_db_id=candidate.analysis_snapshot_db_id,
             final_analysis_result_id=candidate.final_analysis_result_id,
         )
+        if isinstance(document, AnalysisStateDocumentV11):
+            materialization = materialize_reviewed_transition_scoped(
+                db,
+                state_scope=request.state_scope,
+                **materializer_kwargs,
+            )
+        else:
+            if request.state_scope != "daily_close":  # pragma: no cover - row contract
+                raise AnalysisMemoryReviewError("legacy candidate is only valid for daily_close")
+            materialization = materialize_reviewed_transition(db, **materializer_kwargs)
         if (
             materialization.disposition != "canonical_accepted"
             or not materialization.state_id
@@ -291,16 +362,22 @@ def accept_candidate(
         accepted_transition = get_transition_to_state(db, accepted.id)
         if accepted_transition is None:  # pragma: no cover - append contract
             raise AnalysisMemoryConflictError("accepted transition was not persisted")
+        if (
+            accepted.state_scope != request.state_scope
+            or accepted_transition.state_scope != request.state_scope
+        ):
+            raise AnalysisMemoryConflictError("accepted review scope binding is invalid")
         reviewed_at = accepted_transition.created_at or candidate.created_at or candidate.as_of
         artifact = write_analysis_state_review(
             storage_root=_PROJECT_ROOT / "storage",
             payload={
-                "schema_version": "analysis_state_review.v1",
+                "schema_version": "analysis_state_review.v2",
                 "artifact_id": artifact_id,
                 "candidate_state_id": candidate.id,
                 "accepted_state_id": accepted.id,
                 "transition_id": accepted_transition.id,
                 "asset": candidate.asset,
+                "state_scope": request.state_scope,
                 "run_id": candidate.task_run_id,
                 "analysis_snapshot_db_id": snapshot.id,
                 "snapshot_id": snapshot.snapshot_id,
@@ -332,6 +409,7 @@ def accept_candidate(
 
     return CandidateReviewResponse(
         disposition="canonical_accepted",
+        state_scope=request.state_scope,
         canonical_state=_state_view(db, accepted, state_kind="accepted_canonical"),
         head_version=materialization.canonical_version,
         review_artifact=ReviewArtifactView(
@@ -339,6 +417,7 @@ def accept_candidate(
             candidate_state_id=candidate.id,
             accepted_state_id=accepted.id,
             transition_id=accepted_transition.id,
+            state_scope=request.state_scope,
             actor=request.actor,
             reason=request.reason,
             request_id=request.request_id,
@@ -357,6 +436,10 @@ def _state_view(
     state_kind: str,
 ) -> AnalysisStateView:
     transition = get_transition_to_state(db, state.id)
+    if transition is not None and (
+        transition.asset != state.asset or transition.state_scope != state.state_scope
+    ):
+        raise AnalysisMemoryConflictError("state transition scope binding is invalid")
     artifact_ids = [f"analysis-state:{state.id}"]
     if transition is not None:
         artifact_ids.append(f"analysis-transition:{transition.id}")
@@ -365,6 +448,7 @@ def _state_view(
         state_kind=state_kind,
         schema_version=state.schema_version,
         asset=state.asset,
+        state_scope=state.state_scope,
         as_of=state.as_of,
         previous_state_id=state.previous_state_id,
         quality_gate_action=state.quality_gate_action,
@@ -392,6 +476,7 @@ def _transition_view(row: AnalysisTransition) -> AnalysisTransitionView:
         transition_id=row.id,
         schema_version=row.schema_version,
         asset=row.asset,
+        state_scope=row.state_scope,
         from_state_id=row.from_state_id,
         to_state_id=row.to_state_id,
         run_id=row.task_run_id,
@@ -403,28 +488,49 @@ def _transition_view(row: AnalysisTransition) -> AnalysisTransitionView:
     )
 
 
-def _context_bundle_rows(*, asset: str, storage_root: Path | None) -> list[ContextBundleMetadata]:
+def _context_bundle_rows(
+    *,
+    asset: str,
+    state_scope: StateScope,
+    storage_root: Path | None,
+) -> list[ContextBundleMetadata]:
     root = (storage_root or (_PROJECT_ROOT / "storage")).resolve()
-    base = root / "outputs" / "context_bundles" / asset
-    rows = [
-        metadata
-        for path in base.glob("*/*.json") if base.is_dir()
-        if (metadata := _load_bundle_metadata(root=root, path=path)) is not None
-    ]
+    asset_base = root / "outputs" / "context_bundles" / asset
+    paths = list((asset_base / state_scope).glob("*/*.json"))
+    if state_scope == "daily_close" and asset_base.is_dir():
+        paths.extend(asset_base.glob("*/*.json"))
+    rows = []
+    for path in paths:
+        metadata = _load_bundle_metadata(
+            root=root,
+            path=path,
+            requested_scope=state_scope,
+        )
+        if metadata is not None:
+            rows.append(metadata)
     return sorted(rows, key=lambda item: (item.assembled_at, item.bundle_id), reverse=True)
 
 
-def _load_bundle_metadata(*, root: Path, path: Path) -> ContextBundleMetadata | None:
+def _load_bundle_metadata(
+    *,
+    root: Path,
+    path: Path,
+    requested_scope: StateScope,
+) -> ContextBundleMetadata | None:
     try:
         relative = path.resolve().relative_to(root).as_posix()
         bundle = load_context_bundle(storage_root=root, storage_relative_path=relative)
     except (OSError, ValueError, ContextBundleLoadError):
+        return None
+    bundle_scope: StateScope = bundle.state_scope or "daily_close"
+    if bundle_scope != requested_scope:
         return None
     return ContextBundleMetadata(
         schema_version=bundle.schema_version,
         bundle_id=bundle.bundle_id,
         content_hash=bundle.content_hash,
         asset=bundle.asset,
+        state_scope=bundle_scope,
         run_id=bundle.run_id,
         canonical_state_id=bundle.canonical_state_id,
         cutoff_at=bundle.cutoff_at,

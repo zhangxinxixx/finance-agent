@@ -39,8 +39,14 @@ def _bundle(**overrides):
     values = {
         "run_id": "run-67",
         "asset": "XAUUSD",
+        "state_scope": "daily_close",
         "canonical_state_id": "state-66",
-        "canonical_state": {"core_thesis": "等待突破", "key_levels": [4000, 4126]},
+        "canonical_state": {
+            "asset": "XAUUSD",
+            "state_scope": "daily_close",
+            "core_thesis": "等待突破",
+            "key_levels": [4000, 4126],
+        },
         "evidence": [
             _evidence(
                 "market",
@@ -128,6 +134,8 @@ def test_per_source_cursor_keeps_late_business_evidence() -> None:
 def test_history_bodies_are_omitted_but_lineage_and_summary_remain() -> None:
     bundle = _bundle(
         canonical_state={
+            "asset": "XAUUSD",
+            "state_scope": "daily_close",
             "one_line_conclusion": "维持等待",
             "previous_report": "不应进入 bundle" * 100,
             "previous_analysis_report": {"body": "过期日报正文" * 100},
@@ -184,7 +192,11 @@ def test_budget_defers_newest_evidence_without_skipping_its_cursor() -> None:
 def test_budget_fails_closed_when_canonical_state_alone_is_too_large() -> None:
     with pytest.raises(ContextBundleBudgetExceeded) as exc_info:
         _bundle(
-            canonical_state={"thesis": "x" * 2_000},
+            canonical_state={
+                "asset": "XAUUSD",
+                "state_scope": "daily_close",
+                "thesis": "x" * 2_000,
+            },
             evidence=[],
             facts=[],
             budget_tokens=10,
@@ -252,3 +264,27 @@ def test_bundle_rejects_forged_budget_metrics() -> None:
 
     with pytest.raises(ValidationError, match="estimated_tokens"):
         type(bundle).model_validate(payload)
+
+
+def test_scope_is_part_of_bundle_hash_and_identity() -> None:
+    daily = _bundle()
+    intraday = _bundle(
+        state_scope="intraday",
+        canonical_state={
+            "asset": "XAUUSD",
+            "state_scope": "intraday",
+            "core_thesis": "等待突破",
+            "key_levels": [4000, 4126],
+        },
+    )
+
+    assert daily.schema_version == "analysis_context_bundle.v2"
+    assert daily.state_scope == "daily_close"
+    assert intraday.state_scope == "intraday"
+    assert intraday.content_hash != daily.content_hash
+    assert intraday.bundle_id != daily.bundle_id
+
+
+def test_bundle_rejects_cross_scope_canonical_state() -> None:
+    with pytest.raises(ValueError, match="different state_scope"):
+        _bundle(state_scope="intraday")

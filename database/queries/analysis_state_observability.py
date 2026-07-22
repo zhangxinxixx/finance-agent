@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
 from database.models.analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition
+
+if TYPE_CHECKING:
+    from apps.analysis.state.schemas import StateScope
 
 
 def get_state(session: Session, state_id: str) -> AnalysisState | None:
@@ -14,7 +19,23 @@ def get_state(session: Session, state_id: str) -> AnalysisState | None:
 
 
 def get_head(session: Session, asset: str) -> AnalysisStateHead | None:
-    return session.scalar(select(AnalysisStateHead).where(AnalysisStateHead.asset == asset))
+    """Legacy daily-close lookup; scoped callers must use get_head_scoped."""
+
+    return get_head_scoped(session, asset=asset, state_scope="daily_close")
+
+
+def get_head_scoped(
+    session: Session,
+    *,
+    asset: str,
+    state_scope: StateScope,
+) -> AnalysisStateHead | None:
+    return session.scalar(
+        select(AnalysisStateHead).where(
+            AnalysisStateHead.asset == asset,
+            AnalysisStateHead.state_scope == state_scope,
+        )
+    )
 
 
 def get_transition(session: Session, transition_id: str) -> AnalysisTransition | None:
@@ -70,11 +91,31 @@ def list_candidate_states_page(
     page: int,
     page_size: int,
 ) -> tuple[list[AnalysisState], int]:
-    """List non-canonical, non-publishable states without mutating read state."""
+    """Legacy daily-close candidate lookup."""
+
+    return list_candidate_states_page_scoped(
+        session,
+        asset=asset,
+        state_scope="daily_close",
+        page=page,
+        page_size=page_size,
+    )
+
+
+def list_candidate_states_page_scoped(
+    session: Session,
+    *,
+    asset: str,
+    state_scope: StateScope,
+    page: int,
+    page_size: int,
+) -> tuple[list[AnalysisState], int]:
+    """List one scope's non-canonical, non-publishable states."""
 
     canonical_ids = select(AnalysisStateHead.canonical_state_id)
     predicate = (
         AnalysisState.asset == asset,
+        AnalysisState.state_scope == state_scope,
         AnalysisState.publish_allowed.is_(False),
         AnalysisState.id.not_in(canonical_ids),
     )

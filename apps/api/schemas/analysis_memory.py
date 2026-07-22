@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from apps.api.schemas.common import SchemaModel
+from apps.analysis.state.schemas import StateScope
 
 
 class PaginationMeta(SchemaModel):
@@ -21,6 +22,7 @@ class AnalysisTransitionView(SchemaModel):
     transition_id: str
     schema_version: str
     asset: str
+    state_scope: StateScope
     from_state_id: str | None
     to_state_id: str
     run_id: str
@@ -46,6 +48,7 @@ class AnalysisStateView(SchemaModel):
     state_kind: Literal["accepted_canonical", "candidate", "blocked"]
     schema_version: str
     asset: str
+    state_scope: StateScope
     as_of: datetime
     previous_state_id: str | None
     quality_gate_action: str
@@ -60,16 +63,18 @@ class AnalysisStateView(SchemaModel):
 
 
 class CanonicalStateResponse(SchemaModel):
-    schema_version: Literal["analysis_memory_read.v1"] = "analysis_memory_read.v1"
+    schema_version: Literal["analysis_memory_read.v2"] = "analysis_memory_read.v2"
     asset: str
+    state_scope: StateScope
     head_version: int = Field(ge=1)
     state: AnalysisStateView
     canonical_chain: list[AnalysisStateView] = Field(default_factory=list)
 
 
 class CandidateStatePage(SchemaModel):
-    schema_version: Literal["analysis_memory_read.v1"] = "analysis_memory_read.v1"
+    schema_version: Literal["analysis_memory_read.v2"] = "analysis_memory_read.v2"
     asset: str
+    state_scope: StateScope
     data: list[AnalysisStateView]
     pagination: PaginationMeta
 
@@ -87,6 +92,7 @@ class ContextBundleMetadata(SchemaModel):
     bundle_id: str
     content_hash: str
     asset: str
+    state_scope: StateScope
     run_id: str
     canonical_state_id: str
     cutoff_at: datetime
@@ -106,14 +112,16 @@ class ContextBundleMetadata(SchemaModel):
 
 
 class ContextBundleMetadataPage(SchemaModel):
-    schema_version: Literal["analysis_memory_read.v1"] = "analysis_memory_read.v1"
+    schema_version: Literal["analysis_memory_read.v2"] = "analysis_memory_read.v2"
     asset: str
+    state_scope: StateScope
     data: list[ContextBundleMetadata]
     pagination: PaginationMeta
 
 
 class CandidateReviewRequest(SchemaModel):
     action: Literal["accept"]
+    state_scope: StateScope
     actor: str = Field(min_length=1, max_length=128)
     reason: str = Field(min_length=1, max_length=2000)
     request_id: str = Field(min_length=1, max_length=255)
@@ -140,6 +148,7 @@ class ReviewArtifactView(SchemaModel):
     candidate_state_id: str
     accepted_state_id: str
     transition_id: str
+    state_scope: StateScope
     actor: str
     reason: str
     request_id: str
@@ -150,8 +159,9 @@ class ReviewArtifactView(SchemaModel):
 
 
 class CandidateReviewResponse(SchemaModel):
-    schema_version: Literal["analysis_memory_review.v1"] = "analysis_memory_review.v1"
+    schema_version: Literal["analysis_memory_review.v2"] = "analysis_memory_review.v2"
     disposition: Literal["canonical_accepted"]
+    state_scope: StateScope
     canonical_state: AnalysisStateView
     head_version: int = Field(ge=1)
     review_artifact: ReviewArtifactView
@@ -162,4 +172,10 @@ class CandidateReviewResponse(SchemaModel):
             raise ValueError("review response must contain accepted canonical state")
         if self.review_artifact.accepted_state_id != self.canonical_state.state_id:
             raise ValueError("review artifact must bind the accepted canonical state")
+        if not (
+            self.state_scope
+            == self.canonical_state.state_scope
+            == self.review_artifact.state_scope
+        ):
+            raise ValueError("review response scope binding is inconsistent")
         return self
