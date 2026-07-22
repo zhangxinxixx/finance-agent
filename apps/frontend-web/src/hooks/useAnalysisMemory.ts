@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { acceptAnalysisMemoryCandidate, fetchAnalysisMemory } from "@/adapters/analysisMemory";
 import type { AnalysisMemorySnapshot, AnalysisStateScope } from "@/types/analysis-memory";
@@ -8,22 +8,43 @@ export function useAnalysisMemory(stateScope: AnalysisStateScope, asset = "XAUUS
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [actionCandidateId, setActionCandidateId] = useState<string | null>(null);
+  const requestGenerationRef = useRef(0);
+  const currentScopeRef = useRef(stateScope);
+  const currentAssetRef = useRef(asset);
+  currentScopeRef.current = stateScope;
+  currentAssetRef.current = asset;
 
   const refetch = useCallback(async () => {
+    const requestedScope = stateScope;
+    const requestedAsset = asset;
+    if (currentScopeRef.current !== requestedScope || currentAssetRef.current !== requestedAsset) return;
+    const requestGeneration = ++requestGenerationRef.current;
+    const isCurrentRequest = () => (
+      requestGenerationRef.current === requestGeneration
+      && currentScopeRef.current === requestedScope
+      && currentAssetRef.current === requestedAsset
+    );
     setIsLoading(true);
     setError(null);
     try {
-      setData(await fetchAnalysisMemory(stateScope, asset));
+      const nextData = await fetchAnalysisMemory(requestedScope, requestedAsset);
+      if (!isCurrentRequest()) return;
+      setData(nextData);
     } catch (cause) {
+      if (!isCurrentRequest()) return;
       setError(cause instanceof Error ? cause : new Error("Analysis Memory 加载失败"));
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) setIsLoading(false);
     }
   }, [asset, stateScope]);
 
   useEffect(() => {
     setData(null);
+    setActionCandidateId(null);
     void refetch();
+    return () => {
+      requestGenerationRef.current += 1;
+    };
   }, [refetch]);
 
   const scopedData = data
@@ -40,8 +61,11 @@ export function useAnalysisMemory(stateScope: AnalysisStateScope, asset = "XAUUS
     actionCandidateId,
     refetch,
     acceptCandidate: async (params: { candidateId: string; token: string; actor: string; reason: string }) => {
+      if (currentScopeRef.current !== stateScope || currentAssetRef.current !== asset) return;
       if (!scopedData) return;
       if (!scopedData.canonical) throw new Error("accepted canonical 不可用，不能推进候选");
+      const acceptScope = stateScope;
+      const acceptAsset = asset;
       setActionCandidateId(params.candidateId);
       setError(null);
       try {
@@ -50,13 +74,19 @@ export function useAnalysisMemory(stateScope: AnalysisStateScope, asset = "XAUUS
           requestId: crypto.randomUUID(),
           canonicalStateId: scopedData.canonical.state.state_id,
           headVersion: scopedData.canonical.head_version,
-          stateScope,
+          stateScope: acceptScope,
         });
-        await refetch();
+        if (currentScopeRef.current === acceptScope && currentAssetRef.current === acceptAsset) {
+          await refetch();
+        }
       } catch (cause) {
-        setError(cause instanceof Error ? cause : new Error("候选复核失败"));
+        if (currentScopeRef.current === acceptScope && currentAssetRef.current === acceptAsset) {
+          setError(cause instanceof Error ? cause : new Error("候选复核失败"));
+        }
       } finally {
-        setActionCandidateId(null);
+        if (currentScopeRef.current === acceptScope && currentAssetRef.current === acceptAsset) {
+          setActionCandidateId(null);
+        }
       }
     },
   };
