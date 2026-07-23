@@ -17,16 +17,21 @@ from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, Quali
 from apps.analysis.state.hashing import canonical_json, content_hash
 from apps.analysis.state.repository import (
     CanonicalHeadConflictError,
-    advance_canonical_head,
-    append_analysis_state,
-    get_canonical_state,
+    advance_canonical_head_scoped,
+    append_analysis_state_scoped,
+    get_canonical_state_scoped,
 )
 from apps.analysis.state.schemas import (
-    AnalysisStateDocument,
-    AnalysisTransitionDocument,
+    ANALYSIS_STATE_MACHINE_VERSION,
+    AnalysisStateDocumentV11,
+    AnalysisTransitionDocumentV11,
+    StateScope,
     StateChange,
     StateMaterializationAuthority,
     TransitionAction,
+    VersionedAnalysisStateDocument,
+    VersionedAnalysisTransitionDocument,
+    parse_analysis_state_document,
 )
 from database.models.analysis import FinalAnalysisResult
 from database.models.analysis_state import AnalysisStateHead
@@ -83,8 +88,8 @@ class BootstrapCandidate(BaseModel):
     final_analysis_result_id: str | None = None
     analysis_snapshot_db_id: str | None = None
     source_artifact_hashes: dict[str, str] = Field(default_factory=dict)
-    document: AnalysisStateDocument
-    transition: AnalysisTransitionDocument
+    document: VersionedAnalysisStateDocument
+    transition: VersionedAnalysisTransitionDocument
     quality_gate: QualityGateDecision
     agent_loop: AgentLoopDecision
 
@@ -120,6 +125,8 @@ class BootstrapCandidate(BaseModel):
             raise ValueError("bootstrap requires authoritative accepted_output")
         if accepted.snapshot_id not in set(self.document.input_snapshot_ids.values()):
             raise ValueError("accepted_output snapshot_id is absent from bootstrap lineage")
+        if _document_scope(self.document) != _transition_scope(self.transition):
+            raise ValueError("bootstrap state and transition scope mismatch")
         return self
 
 
@@ -144,7 +151,7 @@ class CanonicalRecoveryArtifact(BaseModel):
     canonical_state_id: str
     canonical_version: int = Field(ge=1)
     state_content_hash: str
-    document: AnalysisStateDocument
+    document: VersionedAnalysisStateDocument
     artifact_hash: str
 
     @model_validator(mode="after")
@@ -259,6 +266,7 @@ def build_bootstrap_candidate(
     *,
     final_result: FinalAnalysisResult | dict[str, Any],
     gold_macro_overview: BaseModel | dict[str, Any],
+    state_scope: StateScope,
     strategy_card: BaseModel | dict[str, Any] | None = None,
 ) -> BootstrapCandidate:
     """Project one accepted result family into a compact provider-neutral state."""
@@ -318,7 +326,14 @@ def build_bootstrap_candidate(
     if not source_refs:
         raise BootstrapContractError("accepted bootstrap artifacts must retain source_refs")
 
-    document = AnalysisStateDocument(
+    document = AnalysisStateDocumentV11(
+        state_scope=state_scope,
+        state_machine_version=ANALYSIS_STATE_MACHINE_VERSION,
+        session=_bounded_text(
+            final.get("market_state") or card.get("session") or state_scope,
+            64,
+        ),
+        trade_date=final.get("trade_date"),
         asset=asset,
         as_of=_bootstrap_as_of(overview=overview, card=card, final=final),
         market_stage=_bounded_text(
@@ -349,7 +364,8 @@ def build_bootstrap_candidate(
         input_snapshot_ids=input_snapshot_ids,
         source_refs=source_refs,
     )
-    transition = AnalysisTransitionDocument(
+    transition = AnalysisTransitionDocumentV11(
+        state_scope=state_scope,
         summary="Initial canonical bootstrap from accepted analysis artifacts",
         changes=[
             StateChange(
@@ -401,13 +417,19 @@ def materialize_bootstrap_candidate(
 
     authority = _candidate_authority(validated)
     transition = _authorized_transition(validated, checked_approval)
-    current = get_canonical_state(session, validated.document.asset)
+    state_scope = _document_scope(validated.document)
+    current = get_canonical_state_scoped(
+        session, validated.document.asset, state_scope=state_scope
+    )
     if current is not None:
         expected_id = _bootstrap_state_id(validated, authority, transition=transition)
         if current.id != expected_id:
             raise CanonicalHeadConflictError("canonical head already exists for asset")
         head = session.scalar(
-            select(AnalysisStateHead).where(AnalysisStateHead.asset == validated.document.asset)
+            select(AnalysisStateHead).where(
+                AnalysisStateHead.asset == validated.document.asset,
+                AnalysisStateHead.state_scope == state_scope,
+            )
         )
         if head is None:  # pragma: no cover - get_canonical_state already joined it
             raise CanonicalHeadConflictError("canonical head disappeared")
@@ -421,8 +443,9 @@ def materialize_bootstrap_candidate(
         )
 
     state_id = _bootstrap_state_id(validated, authority, transition=transition)
-    state = append_analysis_state(
+    state = append_analysis_state_scoped(
         session,
+        state_scope=state_scope,
         document=validated.document,
         transition=transition,
         authority=authority,
@@ -432,9 +455,10 @@ def materialize_bootstrap_candidate(
         final_analysis_result_id=validated.final_analysis_result_id,
         state_id=state_id,
     )
-    head = advance_canonical_head(
+    head = advance_canonical_head_scoped(
         session,
         asset=validated.document.asset,
+        state_scope=state_scope,
         new_state_id=state.id,
         expected_state_id=None,
         expected_version=0,
@@ -450,16 +474,27 @@ def materialize_bootstrap_candidate(
     )
 
 
-def build_recovery_artifact(session: Session, *, asset: str) -> CanonicalRecoveryArtifact:
+def build_recovery_artifact_scoped(
+    session: Session, *, asset: str, state_scope: StateScope
+) -> CanonicalRecoveryArtifact:
     """Build a cache recovery payload from the PostgreSQL canonical head."""
 
-    state = get_canonical_state(session, _required_text(asset, field="asset"))
+    state = get_canonical_state_scoped(
+        session,
+        _required_text(asset, field="asset"),
+        state_scope=state_scope,
+    )
     if state is None:
         raise BootstrapContractError("canonical state not found")
-    head = session.scalar(select(AnalysisStateHead).where(AnalysisStateHead.asset == state.asset))
+    head = session.scalar(
+        select(AnalysisStateHead).where(
+            AnalysisStateHead.asset == state.asset,
+            AnalysisStateHead.state_scope == state_scope,
+        )
+    )
     if head is None:  # pragma: no cover - protected by joined lookup
         raise BootstrapContractError("canonical head not found")
-    document = AnalysisStateDocument.model_validate(state.payload)
+    document = parse_analysis_state_document(state.payload)
     payload = {
         "schema_version": RECOVERY_SCHEMA_VERSION,
         "asset": state.asset,
@@ -471,23 +506,39 @@ def build_recovery_artifact(session: Session, *, asset: str) -> CanonicalRecover
     return CanonicalRecoveryArtifact(artifact_hash=content_hash(payload), **payload)
 
 
+def build_recovery_artifact(session: Session, *, asset: str) -> CanonicalRecoveryArtifact:
+    """Legacy compatibility recovery for ``daily_close``."""
+
+    return build_recovery_artifact_scoped(session, asset=asset, state_scope="daily_close")
+
+
 def recover_canonical_cache_payload(
     *,
     asset: str,
     session: Session | None = None,
     artifact_path: Path | None = None,
     allowed_root: Path | None = None,
+    state_scope: StateScope = "daily_close",
 ) -> RecoveryResult:
     """Recover a Redis-ready value from DB first, or a sealed artifact fallback."""
 
-    if session is not None and get_canonical_state(session, asset) is not None:
-        return RecoveryResult(source="postgresql", artifact=build_recovery_artifact(session, asset=asset))
+    if session is not None and get_canonical_state_scoped(
+        session, asset, state_scope=state_scope
+    ) is not None:
+        return RecoveryResult(
+            source="postgresql",
+            artifact=build_recovery_artifact_scoped(
+                session, asset=asset, state_scope=state_scope
+            ),
+        )
     if artifact_path is None or allowed_root is None:
         raise BootstrapContractError("no PostgreSQL head or recovery artifact available")
     path = validate_artifact_path(artifact_path, allowed_root=allowed_root, must_exist=True)
     artifact = CanonicalRecoveryArtifact.model_validate(json.loads(path.read_text(encoding="utf-8")))
     if artifact.asset != asset:
         raise BootstrapContractError("recovery artifact belongs to a different asset")
+    if _document_scope(artifact.document) != state_scope:
+        raise BootstrapContractError("recovery artifact belongs to a different state scope")
     return RecoveryResult(source="artifact", artifact=artifact)
 
 
@@ -602,7 +653,7 @@ def _candidate_authority(candidate: BootstrapCandidate) -> StateMaterializationA
 def _authorized_transition(
     candidate: BootstrapCandidate,
     approval: BootstrapApproval | None,
-) -> AnalysisTransitionDocument:
+) -> VersionedAnalysisTransitionDocument:
     if approval is None:
         return candidate.transition
     approval_ref = {
@@ -621,7 +672,7 @@ def _bootstrap_state_id(
     candidate: BootstrapCandidate,
     authority: StateMaterializationAuthority,
     *,
-    transition: AnalysisTransitionDocument,
+    transition: VersionedAnalysisTransitionDocument,
 ) -> str:
     import uuid
 
@@ -635,6 +686,14 @@ def _bootstrap_state_id(
         "final_analysis_result_id": candidate.final_analysis_result_id,
     }
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"finance-agent:analysis-state:{content_hash(operation)}"))
+
+
+def _document_scope(document: VersionedAnalysisStateDocument) -> StateScope:
+    return getattr(document, "state_scope", "daily_close")
+
+
+def _transition_scope(transition: VersionedAnalysisTransitionDocument) -> StateScope:
+    return getattr(transition, "state_scope", "daily_close")
 
 
 def _candidate_hash(payload: dict[str, Any]) -> str:
@@ -734,8 +793,28 @@ def _mapping_is_subset(candidate: dict[str, Any], accepted: dict[str, Any]) -> b
 
 def _dominant_drivers(overview: dict[str, Any]) -> list[dict[str, Any]]:
     rows = _dict_items(overview.get("theme_rankings"))[:10]
-    allowed = ("mainline_id", "theme", "name", "rank", "score", "direction", "coverage_status")
-    return [{key: row[key] for key in allowed if key in row} for row in rows]
+    result: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        driver_id = str(row.get("mainline_id") or row.get("name") or row.get("theme") or "").strip()
+        if not driver_id:
+            raise BootstrapContractError("dominant driver has no stable identity")
+        direction = str(row.get("direction") or "unknown").strip().lower()
+        if direction not in {"tailwind", "headwind", "neutral", "mixed"}:
+            direction = "unknown"
+        coverage = str(row.get("coverage_status") or "unknown").strip().lower()
+        if coverage not in {"covered", "partial", "missing"}:
+            coverage = "unknown"
+        result.append(
+            {
+                "driver_id": driver_id,
+                "label": _bounded_text(row.get("theme") or row.get("name") or driver_id, 256),
+                "rank": row.get("rank") or index,
+                "score": row.get("score"),
+                "direction": direction,
+                "coverage_status": coverage,
+            }
+        )
+    return result
 
 
 def _key_levels(card: dict[str, Any]) -> list[dict[str, Any]]:
@@ -743,9 +822,25 @@ def _key_levels(card: dict[str, Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for item in list(values)[:20] if isinstance(values, list) else []:
         if isinstance(item, dict):
-            result.append(dict(item))
+            value = item.get("value", item.get("price", item.get("level")))
+            if value is None:
+                raise BootstrapContractError("strategy key level has no value")
+            result.append(
+                {
+                    "value": value,
+                    "role": str(item.get("role") or item.get("type") or "reference"),
+                    "source": str(item.get("source") or "strategy_card"),
+                    "meaning": item.get("meaning"),
+                }
+            )
         elif str(item).strip():
-            result.append({"level": _bounded_text(item, 500), "source": "strategy_card"})
+            result.append(
+                {
+                    "value": _bounded_text(item, 500),
+                    "role": "reference",
+                    "source": "strategy_card",
+                }
+            )
     return result
 
 
@@ -753,8 +848,12 @@ def _scenario_states(card: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for kind, key in (("trigger", "trigger_conditions"), ("confirmation", "confirmation_conditions")):
         rows.extend(
-            {"type": kind, "condition": _bounded_text(item, 500), "status": "pending"}
-            for item in _text_items(card.get(key), limit=10)
+            {
+                "scenario_id": f"{kind}-{index}",
+                "condition": _bounded_text(item, 500),
+                "status": "pending",
+            }
+            for index, item in enumerate(_text_items(card.get(key), limit=10), start=1)
         )
     return rows
 

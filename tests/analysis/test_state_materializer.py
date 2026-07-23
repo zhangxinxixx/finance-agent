@@ -17,6 +17,8 @@ from apps.analysis.agents.quality_gate_evaluator import (
 )
 from apps.analysis.state import (
     AnalysisStateDocument,
+    AnalysisStateDocumentV11,
+    AnalysisTransitionDocumentV11,
     AnalysisTransitionDocument,
     StateChange,
     StateMaterializationAuthority,
@@ -27,10 +29,14 @@ from apps.analysis.state import (
     append_analysis_state,
     get_canonical_state,
     materialize_reviewed_transition,
+    materialize_reviewed_transition_scoped,
     review_transition_candidate,
+    review_transition_candidate_scoped,
+    parse_analysis_state_document,
 )
+from apps.analysis.state.hashing import content_hash
 from database.models.analysis import AnalysisBase
-from database.models.analysis_state import AnalysisState, AnalysisStateHead
+from database.models.analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition
 
 
 NOW = datetime(2026, 7, 22, 8, tzinfo=UTC)
@@ -165,6 +171,69 @@ def _review(root: AnalysisState, document: AnalysisStateDocument):
         previous_state=document,
         available_evidence_refs=[REF],
     )
+
+
+def test_scoped_review_upgrades_v1_predecessor_without_rehashing_it(session: Session) -> None:
+    root, legacy = _seed_canonical(session)
+    root_payload = dict(root.payload)
+    root_hash = root.content_hash
+    review = review_transition_candidate_scoped(
+        candidate=_candidate(root.id),
+        previous_state_id=root.id,
+        previous_state=legacy,
+        available_evidence_refs=[REF],
+        state_scope="daily_close",
+        state_machine_version="analysis_state.v1.1",
+        session="daily_close",
+        trade_date=NOW.date(),
+    )
+
+    assert isinstance(review.next_state, AnalysisStateDocumentV11)
+    assert isinstance(review.transition, AnalysisTransitionDocumentV11)
+    assert review.next_state.state_scope == "daily_close"
+    assert review.previous_state_content_hash == root_hash
+    other_scope = review.transition.model_copy(update={"state_scope": "intraday"})
+    assert content_hash(other_scope) != review.transition_content_hash
+
+    with pytest.raises(TypeError, match="state_scope"):
+        materialize_reviewed_transition_scoped(  # type: ignore[call-arg]
+            session,
+            review=review,
+            quality_gate=_gate(QualityGateAction.PASS),
+            agent_loop=_loop(accepted=True),
+            task_run_id="run-missing-scope",
+            expected_head_version=1,
+        )
+    with pytest.raises(TransitionReviewError, match="materialization scope"):
+        materialize_reviewed_transition_scoped(
+            session,
+            state_scope="intraday",
+            review=review,
+            quality_gate=_gate(QualityGateAction.PASS),
+            agent_loop=_loop(accepted=True),
+            task_run_id="run-cross-scope",
+            expected_head_version=1,
+        )
+
+    result = materialize_reviewed_transition_scoped(
+        session,
+        state_scope="daily_close",
+        review=review,
+        quality_gate=_gate(QualityGateAction.PASS),
+        agent_loop=_loop(accepted=True),
+        task_run_id="run-v11-upgrade",
+        expected_head_version=1,
+    )
+    child = session.get(AnalysisState, result.state_id)
+    transition = session.scalar(
+        select(AnalysisTransition).where(AnalysisTransition.to_state_id == child.id)
+    )
+    assert root.payload == root_payload
+    assert root.content_hash == root_hash
+    assert child.schema_version == "1.1"
+    assert child.state_scope == "daily_close"
+    assert transition.schema_version == "1.1"
+    assert transition.state_scope == "daily_close"
 
 
 def test_candidate_rejects_unknown_action_and_unreviewed_patch() -> None:
@@ -393,7 +462,7 @@ def test_rollback_creates_new_state_without_mutating_history(session: Session) -
         expected_head_version=1,
     )
     forward_state = session.get(AnalysisState, forward.state_id)
-    forward_document = AnalysisStateDocument.model_validate(forward_state.payload)
+    forward_document = parse_analysis_state_document(forward_state.payload)
     rollback = review_transition_candidate(
         candidate=_candidate(
             forward.state_id,
