@@ -11,6 +11,7 @@ def test_ci_runs_analysis_memory_focused_and_postgres_suites() -> None:
     focused_suites = {
         "tests/database/test_analysis_state_core.py",
         "tests/analysis/test_context_bundle.py",
+        "tests/analysis/test_evidence_delta_evaluator.py",
         "tests/analysis/test_state_materializer.py",
         "tests/analysis/test_figure_facts.py",
         "tests/output/test_context_bundle_artifacts.py",
@@ -23,6 +24,7 @@ def test_ci_runs_analysis_memory_focused_and_postgres_suites() -> None:
     for suite in focused_suites:
         assert suite in workflow
 
+    assert "apps/analysis/evidence_delta" in workflow
     assert "analysis-memory-postgres:" in workflow
     assert "services:" in workflow
     assert "postgres:" in workflow
