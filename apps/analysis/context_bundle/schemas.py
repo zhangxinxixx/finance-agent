@@ -8,9 +8,11 @@ from typing import Any, Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from apps.analysis.state.hashing import content_hash
+from apps.analysis.state.schemas import StateScope
 
 
-CONTEXT_BUNDLE_SCHEMA_VERSION = "analysis_context_bundle.v1"
+LEGACY_CONTEXT_BUNDLE_SCHEMA_VERSION = "analysis_context_bundle.v1"
+CONTEXT_BUNDLE_SCHEMA_VERSION = "analysis_context_bundle.v2"
 _TRANSPORT_KEYS = frozenset(
     {
         "provider",
@@ -101,7 +103,11 @@ class ContextBudgetTrace(_StrictFrozenModel):
 
 
 class AnalysisContextBundle(_StrictFrozenModel):
-    schema_version: Literal["analysis_context_bundle.v1"] = CONTEXT_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal[
+        "analysis_context_bundle.v1",
+        "analysis_context_bundle.v2",
+    ] = CONTEXT_BUNDLE_SCHEMA_VERSION
+    state_scope: StateScope | None = None
     bundle_id: str
     content_hash: str
     run_id: str
@@ -135,6 +141,11 @@ class AnalysisContextBundle(_StrictFrozenModel):
     def _validate_bundle(self) -> "AnalysisContextBundle":
         payload = self.model_dump(mode="json")
         _reject_transport_keys(payload)
+        if self.schema_version == LEGACY_CONTEXT_BUNDLE_SCHEMA_VERSION:
+            if self.state_scope is not None:
+                raise ValueError("legacy context bundle must not declare state_scope")
+        elif self.state_scope is None:
+            raise ValueError("context bundle v2 requires state_scope")
         if any(not source.strip() for source in self.evidence_cursors):
             raise ValueError("evidence cursor source must not be blank")
         if any(not source.strip() for source in self.next_evidence_cursors):
@@ -176,6 +187,8 @@ def compute_bundle_content_hash(value: AnalysisContextBundle | dict[str, Any]) -
     payload.pop("bundle_id", None)
     payload.pop("content_hash", None)
     payload.pop("assembled_at", None)
+    if payload.get("schema_version") == LEGACY_CONTEXT_BUNDLE_SCHEMA_VERSION:
+        payload.pop("state_scope", None)
     return content_hash(payload, exclude_keys=frozenset())
 
 

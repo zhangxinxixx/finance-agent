@@ -1,6 +1,8 @@
 export type AnalysisStateKind = "accepted_canonical" | "candidate" | "blocked";
+export type AnalysisStateScope = "intraday" | "daily_close" | "weekly_fundamental";
 
 export interface AnalysisTransitionView {
+  state_scope: AnalysisStateScope;
   transition_id: string;
   from_state_id: string | null;
   to_state_id: string;
@@ -26,6 +28,7 @@ export interface AnalysisStateView {
   state_id: string;
   state_kind: AnalysisStateKind;
   asset: string;
+  state_scope: AnalysisStateScope;
   as_of: string;
   previous_state_id: string | null;
   quality_gate_action: string;
@@ -40,14 +43,18 @@ export interface AnalysisStateView {
 }
 
 export interface CanonicalStateResponse {
+  schema_version: "analysis_memory_read.v2";
   asset: string;
+  state_scope: AnalysisStateScope;
   head_version: number;
   state: AnalysisStateView;
   canonical_chain: AnalysisStateView[];
 }
 
 export interface CandidateStatePage {
+  schema_version: "analysis_memory_read.v2";
   asset: string;
+  state_scope: AnalysisStateScope;
   data: AnalysisStateView[];
   pagination: { page: number; page_size: number; total_items: number; total_pages: number };
 }
@@ -61,9 +68,11 @@ export interface ContextBlockMetadata {
 }
 
 export interface ContextBundleMetadata {
+  schema_version: string;
   bundle_id: string;
   content_hash: string;
   asset: string;
+  state_scope: AnalysisStateScope;
   run_id: string;
   canonical_state_id: string;
   cutoff_at: string;
@@ -78,7 +87,9 @@ export interface ContextBundleMetadata {
 }
 
 export interface ContextBundleMetadataPage {
+  schema_version: "analysis_memory_read.v2";
   asset: string;
+  state_scope: AnalysisStateScope;
   data: ContextBundleMetadata[];
   pagination: { page: number; page_size: number; total_items: number; total_pages: number };
 }

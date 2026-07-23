@@ -158,6 +158,7 @@ def test_composite_state_delta_shadow_shares_one_bundle_without_canonical_write(
     snapshot = _make_rich_snapshot(run_id=run_id)
     evidence_ref = {"snapshot_id": "market-shadow-2"}
     shadow_input = {
+        "state_scope": "daily_close",
         "canonical_state_id": "state-shadow-root",
         "canonical_state": {
             "asset": "XAUUSD",
@@ -257,12 +258,14 @@ def test_composite_shadow_setup_failure_does_not_break_legacy_outputs(tmp_path: 
         run_id="run-shadow-setup-failure",
         created_at=_CREATED_AT,
         analysis_context_mode="state_delta_context",
-        state_shadow_input=None,
+        state_shadow_input={"state_scope": {"untrusted": "must-not-enter-trace"}},
     )
 
     assert summaries["final_report"]["status"] == "success"
     assert outputs["report_result"]["paths"]
     assert outputs["state_delta_shadow"]["status"] == "shadow_setup_failed"
+    assert outputs["state_delta_shadow"]["requested_state_scope"] is None
+    assert "must-not-enter-trace" not in str(outputs["state_delta_shadow"])
     assert outputs["state_delta_shadow"]["production_canonical_write_allowed"] is False
 
 

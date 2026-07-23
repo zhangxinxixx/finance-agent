@@ -48,6 +48,17 @@ from apps.worker.composite_state_shadow import (
 logger = logging.getLogger(__name__)
 
 
+def _safe_requested_state_scope(shadow_input: dict[str, Any] | None) -> str | None:
+    value = shadow_input.get("state_scope") if isinstance(shadow_input, dict) else None
+    if isinstance(value, str) and value in {
+        "intraday",
+        "daily_close",
+        "weekly_fundamental",
+    }:
+        return value
+    return None
+
+
 def evaluate_quality_gate(**kwargs: Any) -> Any:
     from apps.worker import runner
 
@@ -101,8 +112,9 @@ def run_composite_analysis_pipeline(
             logger.exception("State-delta shadow setup failed; continuing legacy output")
             shadow_runtime = None
             shadow_trace = {
-                "schema_version": "composite_state_shadow.v1",
+                "schema_version": "composite_state_shadow.v2",
                 "mode": STATE_DELTA_CONTEXT_MODE,
+                "requested_state_scope": _safe_requested_state_scope(state_shadow_input),
                 "status": "shadow_setup_failed",
                 "model_invocation": "skipped",
                 "shadow_review_status": "needs_review",

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from apps.analysis.context_bundle.schemas import (
+    CONTEXT_BUNDLE_SCHEMA_VERSION,
     AnalysisContextBundle,
     ContextBlock,
     ContextBudgetTrace,
@@ -16,6 +17,7 @@ from apps.analysis.context_bundle.schemas import (
     EvidenceItem,
     compute_bundle_content_hash,
 )
+from apps.analysis.state.schemas import StateScope
 
 
 DEFAULT_CONTEXT_TOKEN_BUDGET = 15_000
@@ -91,6 +93,7 @@ def assemble_context_bundle(
     *,
     run_id: str,
     asset: str,
+    state_scope: StateScope,
     canonical_state_id: str,
     canonical_state: dict[str, Any],
     evidence: list[EvidenceItem | dict[str, Any]],
@@ -110,6 +113,14 @@ def assemble_context_bundle(
         raise ValueError("max_alignment_seconds must be non-negative")
     _require_aware_datetime(cutoff_at, field="cutoff_at")
     _require_aware_datetime(assembled_at, field="assembled_at")
+    normalized_asset = str(asset).strip()
+    if not normalized_asset:
+        raise ValueError("asset must not be blank")
+    _validate_canonical_state_identity(
+        canonical_state,
+        asset=normalized_asset,
+        state_scope=state_scope,
+    )
 
     trim_reasons: dict[str, list[str]] = defaultdict(list)
     state_payload = _compact_value(
@@ -184,9 +195,10 @@ def assemble_context_bundle(
     alignment = _alignment_status(retained, max_alignment_seconds=max_alignment_seconds)
     source_refs = [dict(item.source_ref) for item in retained if item.source_ref]
     base_payload = {
-        "schema_version": "analysis_context_bundle.v1",
+        "schema_version": CONTEXT_BUNDLE_SCHEMA_VERSION,
         "run_id": str(run_id).strip(),
-        "asset": str(asset).strip(),
+        "asset": normalized_asset,
+        "state_scope": state_scope,
         "canonical_state_id": str(canonical_state_id).strip(),
         "cutoff_at": _json_datetime(cutoff_at),
         "evidence_cursors": {
@@ -420,3 +432,21 @@ def _json_datetime(value: datetime) -> str:
 def _require_aware_datetime(value: datetime, *, field: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field} must be timezone-aware")
+
+
+def _validate_canonical_state_identity(
+    canonical_state: dict[str, Any],
+    *,
+    asset: str,
+    state_scope: StateScope,
+) -> None:
+    state_asset = str(canonical_state.get("asset") or "").strip()
+    if state_asset != asset:
+        raise ValueError("canonical state asset does not match bundle asset")
+    declared_scope = canonical_state.get("state_scope")
+    if declared_scope is None:
+        if canonical_state.get("schema_version") != "1.0" or state_scope != "daily_close":
+            raise ValueError("canonical state must explicitly match bundle state_scope")
+        return
+    if declared_scope != state_scope:
+        raise ValueError("canonical state belongs to a different state_scope")

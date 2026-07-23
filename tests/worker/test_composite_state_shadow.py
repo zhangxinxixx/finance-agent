@@ -53,6 +53,7 @@ def _evidence(*, provider_metadata: bool = False) -> dict:
 
 def _shadow_input(*, evidence: list[dict] | None = None) -> dict:
     return {
+        "state_scope": "daily_close",
         "canonical_state_id": "state-66",
         "canonical_state": _state(),
         "evidence": list(evidence or []),
@@ -150,6 +151,9 @@ def test_shadow_candidate_is_reviewed_and_all_consumers_share_bundle(tmp_path) -
 
     assert trace["status"] == "candidate_accepted_shadow_only"
     assert trace["shadow_review_status"] == "accepted"
+    assert trace["schema_version"] == "composite_state_shadow.v2"
+    assert trace["state_scope"] == "daily_close"
+    assert "/daily_close/" in trace["bundle_path"]
     assert trace["transition_diff"][0]["action"] == "strengthen"
     assert set(final["bundle_consumers"].values()) == {runtime.bundle.bundle_id}
     assert final["quality_distribution"] == {
@@ -214,3 +218,25 @@ def test_context_mode_validation(monkeypatch) -> None:
     assert resolve_analysis_context_mode() == "legacy_full_context"
     with pytest.raises(ValueError, match="unsupported"):
         resolve_analysis_context_mode("invalid")
+
+
+def test_shadow_requires_explicit_scope_and_rejects_legacy_cross_scope(tmp_path) -> None:
+    missing = _shadow_input()
+    missing.pop("state_scope")
+    with pytest.raises(ValueError, match="state_scope is required"):
+        prepare_composite_state_shadow(
+            storage_root=tmp_path,
+            run_id="run-missing-scope",
+            created_at=NOW,
+            shadow_input=missing,
+        )
+
+    cross_scope = _shadow_input()
+    cross_scope["state_scope"] = "intraday"
+    with pytest.raises(ValueError, match="only valid for daily_close"):
+        prepare_composite_state_shadow(
+            storage_root=tmp_path,
+            run_id="run-cross-scope",
+            created_at=NOW,
+            shadow_input=cross_scope,
+        )

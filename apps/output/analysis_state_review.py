@@ -47,6 +47,7 @@ def write_analysis_state_review(
         "outputs",
         "analysis_state_reviews",
         _validate_path_component("asset", str(payload["asset"])),
+        _validate_path_component("state_scope", str(payload["state_scope"])),
         _validate_path_component("run_id", str(payload["run_id"])),
         f"{_validate_path_component('artifact_id', artifact_id)}.json",
     )

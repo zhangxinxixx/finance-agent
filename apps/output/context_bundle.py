@@ -9,7 +9,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from apps.analysis.context_bundle.schemas import AnalysisContextBundle
+from apps.analysis.context_bundle.schemas import (
+    CONTEXT_BUNDLE_SCHEMA_VERSION,
+    LEGACY_CONTEXT_BUNDLE_SCHEMA_VERSION,
+    AnalysisContextBundle,
+)
 from apps.output.artifacts import _validate_path_component
 from apps.runtime.immutable_artifact import (
     ImmutableArtifactConflictError,
@@ -41,11 +45,14 @@ def write_context_bundle(
     bundle: AnalysisContextBundle | dict[str, Any],
 ) -> ContextBundleWriteResult:
     validated = _validate_bundle(bundle)
+    if validated.schema_version != CONTEXT_BUNDLE_SCHEMA_VERSION or validated.state_scope is None:
+        raise ValueError("context bundle writer only persists scoped v2 bundles")
     storage_dir = Path(storage_root).resolve()
     relative = Path(
         "outputs",
         "context_bundles",
         _validate_path_component("asset", validated.asset),
+        _validate_path_component("state_scope", validated.state_scope),
         _validate_path_component("run_id", validated.run_id),
         f"{_validate_path_component('bundle_id', validated.bundle_id)}.json",
     )
@@ -74,6 +81,7 @@ def write_context_bundle(
             "bundle_id": validated.bundle_id,
             "content_hash": validated.content_hash,
             "asset": validated.asset,
+            "state_scope": validated.state_scope,
             "run_id": validated.run_id,
             "canonical_state_id": validated.canonical_state_id,
             "estimated_tokens": validated.budget_trace.estimated_tokens,
@@ -103,13 +111,25 @@ def load_context_bundle(
         bundle = AnalysisContextBundle.model_validate(payload)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValidationError) as exc:
         raise ContextBundleLoadError("context bundle failed JSON/schema/hash validation") from exc
-    expected = (
-        "outputs",
-        "context_bundles",
-        bundle.asset,
-        bundle.run_id,
-        f"{bundle.bundle_id}.json",
-    )
+    if bundle.schema_version == LEGACY_CONTEXT_BUNDLE_SCHEMA_VERSION:
+        expected = (
+            "outputs",
+            "context_bundles",
+            bundle.asset,
+            bundle.run_id,
+            f"{bundle.bundle_id}.json",
+        )
+    else:
+        if bundle.state_scope is None:  # pragma: no cover - schema contract
+            raise ContextBundleLoadError("scoped context bundle is missing state_scope")
+        expected = (
+            "outputs",
+            "context_bundles",
+            bundle.asset,
+            bundle.state_scope,
+            bundle.run_id,
+            f"{bundle.bundle_id}.json",
+        )
     if relative.parts != expected:
         raise ContextBundleLoadError("context bundle payload identity does not match path")
     return bundle
@@ -128,7 +148,7 @@ def _validate_relative_path(value: str) -> Path:
         raise ContextBundleLoadError("context bundle path must be storage-relative")
     if any(part in {"", ".", ".."} for part in path.parts):
         raise ContextBundleLoadError("context bundle path contains unsafe segments")
-    if len(path.parts) != 5 or path.parts[:2] != ("outputs", "context_bundles"):
+    if len(path.parts) not in {5, 6} or path.parts[:2] != ("outputs", "context_bundles"):
         raise ContextBundleLoadError("context bundle path has an invalid shape")
     if path.suffix != ".json":
         raise ContextBundleLoadError("context bundle artifact must be JSON")
