@@ -20,6 +20,15 @@ from apps.output.context_bundle import (
 
 
 NOW = datetime(2026, 7, 22, 8, tzinfo=UTC)
+V3_FIELDS = {
+    "evidence_delta_decision",
+    "deferred_queue",
+    "processed_above_frontier",
+    "selection_decisions",
+    "selection_trace",
+    "freshness_sla_seconds",
+    "default_freshness_sla_seconds",
+}
 
 
 def _bundle(state_scope="daily_close"):
@@ -39,7 +48,15 @@ def _bundle(state_scope="daily_close"):
                 "evidence_id": "market-2",
                 "business_time": NOW,
                 "ingested_at": NOW + timedelta(minutes=1),
-                "payload": {"price": 4050},
+                "payload": {
+                    "evidence_type": "macro_metric",
+                    "asset": "XAUUSD",
+                    "source_quality": "official",
+                    "metric": "dxy",
+                    "current_value": 99.8,
+                    "previous_value": 100.0,
+                    "unit": "index",
+                },
                 "source_ref": {"snapshot_id": "market-2"},
             }
         ],
@@ -102,6 +119,8 @@ def test_loader_reads_legacy_v1_as_daily_close_but_writer_rejects_it(tmp_path) -
     payload = _bundle().model_dump(mode="json")
     payload["schema_version"] = "analysis_context_bundle.v1"
     payload.pop("state_scope")
+    for field in V3_FIELDS:
+        payload.pop(field)
     payload["content_hash"] = compute_bundle_content_hash(payload)
     payload["bundle_id"] = str(
         uuid.uuid5(
@@ -128,8 +147,59 @@ def test_loader_reads_legacy_v1_as_daily_close_but_writer_rejects_it(tmp_path) -
 
     assert loaded.schema_version == "analysis_context_bundle.v1"
     assert loaded.state_scope is None
-    with pytest.raises(ValueError, match="only persists scoped v2"):
+    with pytest.raises(ValueError, match="only persists scoped v3"):
         write_context_bundle(storage_root=tmp_path, bundle=loaded)
+
+
+def test_loader_preserves_scoped_v2_identity_but_writer_rejects_it(tmp_path) -> None:
+    payload = _bundle().model_dump(mode="json")
+    payload["schema_version"] = "analysis_context_bundle.v2"
+    for field in V3_FIELDS:
+        payload.pop(field)
+    payload["content_hash"] = compute_bundle_content_hash(payload)
+    payload["bundle_id"] = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"finance-agent:context-bundle:{payload['content_hash']}",
+        )
+    )
+    path = (
+        tmp_path
+        / "outputs"
+        / "context_bundles"
+        / "XAUUSD"
+        / "daily_close"
+        / "run-67"
+        / f"{payload['bundle_id']}.json"
+    )
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_context_bundle(
+        storage_root=tmp_path,
+        storage_relative_path=path.relative_to(tmp_path).as_posix(),
+    )
+
+    assert loaded.schema_version == "analysis_context_bundle.v2"
+    assert loaded.content_hash == payload["content_hash"]
+    assert loaded.bundle_id == payload["bundle_id"]
+    with pytest.raises(ValueError, match="only persists scoped v3"):
+        write_context_bundle(storage_root=tmp_path, bundle=loaded)
+
+
+def test_v2_rejects_unhashed_v3_selection_payload() -> None:
+    payload = _bundle().model_dump(mode="json")
+    payload["schema_version"] = "analysis_context_bundle.v2"
+    payload["content_hash"] = compute_bundle_content_hash(payload)
+    payload["bundle_id"] = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"finance-agent:context-bundle:{payload['content_hash']}",
+        )
+    )
+
+    with pytest.raises(ValidationError, match="must not carry v3 selection fields"):
+        AnalysisContextBundle.model_validate(payload)
 
 
 def test_writer_path_isolated_by_scope_for_same_asset_and_run(tmp_path) -> None:
