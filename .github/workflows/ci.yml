@@ -79,6 +79,7 @@ jobs:
           database/models/analysis_state.py
           scripts/bootstrap_analysis_state.py
           tests/analysis/test_context_bundle.py
+          tests/analysis/test_context_bundle_selection.py
           tests/analysis/test_evidence_delta_evaluator.py
           tests/analysis/test_figure_facts.py
           tests/analysis/test_state_bootstrap.py
@@ -102,6 +103,7 @@ jobs:
           tests/database/test_alembic_runtime_unification.py
           tests/database/test_analysis_state_core.py
           tests/analysis/test_context_bundle.py
+          tests/analysis/test_context_bundle_selection.py
           tests/analysis/test_evidence_delta_evaluator.py
           tests/analysis/test_state_materializer.py
           tests/analysis/test_figure_facts.py
