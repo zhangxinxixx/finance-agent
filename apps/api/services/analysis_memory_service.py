@@ -229,12 +229,13 @@ def accept_candidate(
         raise AnalysisMemoryNotFoundError("analysis candidate not found")
     if candidate.publish_allowed or candidate.quality_gate_action != "manual_review":
         raise AnalysisMemoryReviewError("candidate is not eligible for manual acceptance")
-    if candidate.state_scope != request.state_scope:
+    candidate_scope = candidate.state_scope
+    if candidate_scope != request.state_scope:
         raise AnalysisMemoryReviewError("candidate belongs to a different state scope")
     head = get_head_scoped(
         db,
         asset=candidate.asset,
-        state_scope=request.state_scope,
+        state_scope=candidate_scope,
     )
     if head is None:
         raise AnalysisMemoryConflictError("canonical head not found")
@@ -247,12 +248,12 @@ def accept_candidate(
     previous = get_state(db, head.canonical_state_id)
     if previous is None or not _is_accepted(previous):
         raise AnalysisMemoryConflictError("canonical head does not reference an accepted state")
-    if previous.state_scope != request.state_scope:
+    if previous.state_scope != candidate_scope:
         raise AnalysisMemoryConflictError("canonical head belongs to a different state scope")
     candidate_transition = get_transition_to_state(db, candidate.id)
     if candidate_transition is None:
         raise AnalysisMemoryConflictError("candidate transition is missing")
-    if candidate_transition.state_scope != request.state_scope:
+    if candidate_transition.state_scope != candidate_scope:
         raise AnalysisMemoryConflictError("candidate transition belongs to a different state scope")
 
     acceptance_lineage = get_candidate_acceptance_lineage(db, state=candidate)
@@ -273,7 +274,7 @@ def accept_candidate(
         "actor": request.actor,
         "reason": request.reason,
         "request_id": request.request_id,
-        "state_scope": request.state_scope,
+        "state_scope": candidate_scope,
     }
     document = parse_analysis_state_document(candidate.payload)
     transition_payload = {
@@ -283,7 +284,7 @@ def accept_candidate(
     }
     transition = (
         AnalysisTransitionDocumentV11(
-            state_scope=request.state_scope,
+            state_scope=candidate_scope,
             **transition_payload,
         )
         if isinstance(document, AnalysisStateDocumentV11)
@@ -312,7 +313,7 @@ def accept_candidate(
                     "candidate_state_id": candidate.id,
                     "review_artifact_id": artifact_id,
                     "request_id": request.request_id,
-                    "state_scope": request.state_scope,
+                    "state_scope": candidate_scope,
                 },
             )
         ],
@@ -342,11 +343,11 @@ def accept_candidate(
         if isinstance(document, AnalysisStateDocumentV11):
             materialization = materialize_reviewed_transition_scoped(
                 db,
-                state_scope=request.state_scope,
+                state_scope=candidate_scope,
                 **materializer_kwargs,
             )
         else:
-            if request.state_scope != "daily_close":  # pragma: no cover - row contract
+            if candidate_scope != "daily_close":  # pragma: no cover - row contract
                 raise AnalysisMemoryReviewError("legacy candidate is only valid for daily_close")
             materialization = materialize_reviewed_transition(db, **materializer_kwargs)
         if (
@@ -363,8 +364,8 @@ def accept_candidate(
         if accepted_transition is None:  # pragma: no cover - append contract
             raise AnalysisMemoryConflictError("accepted transition was not persisted")
         if (
-            accepted.state_scope != request.state_scope
-            or accepted_transition.state_scope != request.state_scope
+            accepted.state_scope != candidate_scope
+            or accepted_transition.state_scope != candidate_scope
         ):
             raise AnalysisMemoryConflictError("accepted review scope binding is invalid")
         reviewed_at = accepted_transition.created_at or candidate.created_at or candidate.as_of
@@ -377,7 +378,7 @@ def accept_candidate(
                 "accepted_state_id": accepted.id,
                 "transition_id": accepted_transition.id,
                 "asset": candidate.asset,
-                "state_scope": request.state_scope,
+                "state_scope": candidate_scope,
                 "run_id": candidate.task_run_id,
                 "analysis_snapshot_db_id": snapshot.id,
                 "snapshot_id": snapshot.snapshot_id,
@@ -409,7 +410,7 @@ def accept_candidate(
 
     return CandidateReviewResponse(
         disposition="canonical_accepted",
-        state_scope=request.state_scope,
+        state_scope=candidate_scope,
         canonical_state=_state_view(db, accepted, state_kind="accepted_canonical"),
         head_version=materialization.canonical_version,
         review_artifact=ReviewArtifactView(
@@ -417,7 +418,7 @@ def accept_candidate(
             candidate_state_id=candidate.id,
             accepted_state_id=accepted.id,
             transition_id=accepted_transition.id,
-            state_scope=request.state_scope,
+            state_scope=candidate_scope,
             actor=request.actor,
             reason=request.reason,
             request_id=request.request_id,

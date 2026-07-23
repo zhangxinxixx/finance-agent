@@ -649,7 +649,9 @@ def test_api_requires_valid_scope_and_isolates_all_three_heads(db: Session) -> N
     finally:
         api_main.app.dependency_overrides.pop(get_db, None)
 
-    assert missing.status_code == 422
+    assert missing.status_code == 200
+    assert missing.json()["state_scope"] == "daily_close"
+    assert missing.json()["state"]["state_id"] == daily_root.id
     assert invalid.status_code == 422
     assert cross_scope_detail.status_code == 404
     for state_scope, (canonical, candidate_page) in responses.items():

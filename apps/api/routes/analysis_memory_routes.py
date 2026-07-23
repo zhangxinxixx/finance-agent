@@ -54,7 +54,7 @@ def require_analysis_memory_writer(
 @router.get("/assets/{asset}/canonical", response_model=CanonicalStateResponse)
 def api_analysis_memory_canonical(
     asset: str,
-    state_scope: StateScope = Query(alias="stateScope"),
+    state_scope: StateScope = Query(default="daily_close", alias="stateScope"),
     max_depth: int = Query(default=20, alias="maxDepth", ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> CanonicalStateResponse:
@@ -71,7 +71,7 @@ def api_analysis_memory_canonical(
 @router.get("/assets/{asset}/candidates", response_model=CandidateStatePage)
 def api_analysis_memory_candidates(
     asset: str,
-    state_scope: StateScope = Query(alias="stateScope"),
+    state_scope: StateScope = Query(default="daily_close", alias="stateScope"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, alias="pageSize", ge=1, le=100),
     db: Session = Depends(get_db),
@@ -89,7 +89,7 @@ def api_analysis_memory_candidates(
 @router.get("/assets/{asset}/context-bundles", response_model=ContextBundleMetadataPage)
 def api_analysis_memory_context_bundles(
     asset: str,
-    state_scope: StateScope = Query(alias="stateScope"),
+    state_scope: StateScope = Query(default="daily_close", alias="stateScope"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, alias="pageSize", ge=1, le=100),
 ) -> ContextBundleMetadataPage:
@@ -105,7 +105,7 @@ def api_analysis_memory_context_bundles(
 @router.get("/states/{state_id}", response_model=AnalysisStateView)
 def api_analysis_memory_state(
     state_id: str,
-    state_scope: StateScope = Query(alias="stateScope"),
+    state_scope: StateScope = Query(default="daily_close", alias="stateScope"),
     db: Session = Depends(get_db),
 ) -> AnalysisStateView:
     return _call_read(
@@ -119,7 +119,7 @@ def api_analysis_memory_state(
 @router.get("/transitions/{transition_id}", response_model=AnalysisTransitionView)
 def api_analysis_memory_transition(
     transition_id: str,
-    state_scope: StateScope = Query(alias="stateScope"),
+    state_scope: StateScope = Query(default="daily_close", alias="stateScope"),
     db: Session = Depends(get_db),
 ) -> AnalysisTransitionView:
     return _call_read(
@@ -133,7 +133,7 @@ def api_analysis_memory_transition(
 @router.get("/context-bundles/{bundle_id}", response_model=ContextBundleMetadata)
 def api_analysis_memory_context_bundle(
     bundle_id: str,
-    state_scope: StateScope = Query(alias="stateScope"),
+    state_scope: StateScope = Query(default="daily_close", alias="stateScope"),
 ) -> ContextBundleMetadata:
     return _call_read(
         analysis_memory_service.get_context_bundle_metadata,

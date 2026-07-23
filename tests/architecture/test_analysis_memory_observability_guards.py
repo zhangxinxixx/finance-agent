@@ -18,7 +18,9 @@ def test_review_service_uses_the_existing_materializer_gate_only() -> None:
 
     assert "materialize_reviewed_transition_scoped(" in source
     assert "materialize_reviewed_transition(" in source
-    assert "state_scope=request.state_scope" in source
+    assert "candidate_scope = candidate.state_scope" in source
+    assert "candidate_scope != request.state_scope" in source
+    assert "state_scope=candidate_scope" in source
     assert "append_analysis_state" not in source
     assert "advance_canonical_head" not in source
 
