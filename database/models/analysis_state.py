@@ -11,7 +11,19 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.models.analysis import AnalysisBase, JSONB_COMPAT
@@ -22,7 +34,11 @@ class AnalysisState(AnalysisBase):
 
     __tablename__ = "analysis_states"
     __table_args__ = (
-        Index("ix_analysis_states_asset_as_of", "asset", "as_of"),
+        CheckConstraint(
+            "state_scope IN ('intraday', 'daily_close', 'weekly_fundamental')",
+            name="ck_analysis_states_state_scope",
+        ),
+        Index("ix_analysis_states_asset_scope_as_of", "asset", "state_scope", "as_of"),
         Index("ix_analysis_states_previous_state_id", "previous_state_id"),
         Index("ix_analysis_states_task_run_id", "task_run_id"),
         Index("ix_analysis_states_quality", "quality_gate_action", "publish_allowed"),
@@ -34,6 +50,7 @@ class AnalysisState(AnalysisBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     schema_version: Mapped[str] = mapped_column(String(16), nullable=False, doc="Stable state contract version")
     asset: Mapped[str] = mapped_column(String(32), nullable=False)
+    state_scope: Mapped[str] = mapped_column(String(32), nullable=False)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     previous_state_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("analysis_states.id", ondelete="RESTRICT"), nullable=True
@@ -67,13 +84,18 @@ class AnalysisStateHead(AnalysisBase):
 
     __tablename__ = "analysis_state_heads"
     __table_args__ = (
-        UniqueConstraint("asset", name="uq_analysis_state_heads_asset"),
+        CheckConstraint(
+            "state_scope IN ('intraday', 'daily_close', 'weekly_fundamental')",
+            name="ck_analysis_state_heads_state_scope",
+        ),
+        UniqueConstraint("asset", "state_scope", name="uq_analysis_state_heads_asset_scope"),
         UniqueConstraint("canonical_state_id", name="uq_analysis_state_heads_state"),
-        Index("ix_analysis_state_heads_asset_version", "asset", "version"),
+        Index("ix_analysis_state_heads_asset_scope_version", "asset", "state_scope", "version"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     asset: Mapped[str] = mapped_column(String(32), nullable=False)
+    state_scope: Mapped[str] = mapped_column(String(32), nullable=False)
     canonical_state_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("analysis_states.id", ondelete="RESTRICT"), nullable=False
     )
@@ -91,8 +113,17 @@ class AnalysisTransition(AnalysisBase):
 
     __tablename__ = "analysis_transitions"
     __table_args__ = (
+        CheckConstraint(
+            "state_scope IN ('intraday', 'daily_close', 'weekly_fundamental')",
+            name="ck_analysis_transitions_state_scope",
+        ),
         UniqueConstraint("to_state_id", name="uq_analysis_transitions_to_state"),
-        Index("ix_analysis_transitions_asset_created", "asset", "created_at"),
+        Index(
+            "ix_analysis_transitions_asset_scope_created",
+            "asset",
+            "state_scope",
+            "created_at",
+        ),
         Index("ix_analysis_transitions_from_state_id", "from_state_id"),
         Index("ix_analysis_transitions_task_run_id", "task_run_id"),
         Index("ix_analysis_transitions_content_hash", "content_hash"),
@@ -102,6 +133,7 @@ class AnalysisTransition(AnalysisBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
     asset: Mapped[str] = mapped_column(String(32), nullable=False)
+    state_scope: Mapped[str] = mapped_column(String(32), nullable=False)
     from_state_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("analysis_states.id", ondelete="RESTRICT"), nullable=True
     )

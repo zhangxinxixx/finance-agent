@@ -12,9 +12,14 @@ from sqlalchemy.orm import Session
 
 from apps.analysis.state.hashing import content_hash
 from apps.analysis.state.schemas import (
-    AnalysisStateDocument,
-    AnalysisTransitionDocument,
+    AnalysisStateDocumentV1,
+    AnalysisStateDocumentV11,
+    AnalysisTransitionDocumentV1,
+    AnalysisTransitionDocumentV11,
+    StateScope,
     StateMaterializationAuthority,
+    VersionedAnalysisStateDocument,
+    VersionedAnalysisTransitionDocument,
 )
 from database.models.analysis import AnalysisSnapshot, FinalAnalysisResult
 from database.models.analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition
@@ -32,11 +37,12 @@ class StateIdempotencyConflictError(RuntimeError):
     """A stable state identity was reused with different immutable content."""
 
 
-def append_analysis_state(
+def append_analysis_state_scoped(
     session: Session,
     *,
-    document: AnalysisStateDocument,
-    transition: AnalysisTransitionDocument,
+    state_scope: StateScope,
+    document: VersionedAnalysisStateDocument,
+    transition: VersionedAnalysisTransitionDocument,
     authority: StateMaterializationAuthority,
     previous_state_id: str | None,
     task_run_id: str,
@@ -51,7 +57,14 @@ def append_analysis_state(
     reusing an explicit identity for different content is rejected.
     """
 
-    previous = _validate_previous_state(session, asset=document.asset, previous_state_id=previous_state_id)
+    normalized_scope = _state_scope(state_scope)
+    _validate_document_scope(document, transition=transition, state_scope=normalized_scope)
+    previous = _validate_previous_state(
+        session,
+        asset=document.asset,
+        state_scope=normalized_scope,
+        previous_state_id=previous_state_id,
+    )
     normalized_task_run_id = _required_text(task_run_id, field="task_run_id")
     _validate_output_lineage(
         session,
@@ -83,6 +96,7 @@ def append_analysis_state(
         _require_idempotent_append(
             session,
             existing=existing,
+            state_scope=normalized_scope,
             document=document,
             transition_payload=transition_payload,
             authority=authority,
@@ -97,6 +111,7 @@ def append_analysis_state(
         "id": resolved_state_id,
         "schema_version": document.schema_version,
         "asset": document.asset,
+        "state_scope": normalized_scope,
         "as_of": document.as_of,
         "previous_state_id": previous.id if previous is not None else None,
         "task_run_id": normalized_task_run_id,
@@ -117,6 +132,7 @@ def append_analysis_state(
     transition_row = AnalysisTransition(
         schema_version=transition.schema_version,
         asset=document.asset,
+        state_scope=normalized_scope,
         from_state_id=previous.id if previous is not None else None,
         to_state_id=state.id,
         task_run_id=state.task_run_id,
@@ -143,6 +159,7 @@ def append_analysis_state(
             _require_idempotent_append(
                 session,
                 existing=existing,
+                state_scope=normalized_scope,
                 document=document,
                 transition_payload=transition_payload,
                 authority=authority,
@@ -157,10 +174,39 @@ def append_analysis_state(
     return state
 
 
-def advance_canonical_head(
+def append_analysis_state(
+    session: Session,
+    *,
+    document: VersionedAnalysisStateDocument,
+    transition: VersionedAnalysisTransitionDocument,
+    authority: StateMaterializationAuthority,
+    previous_state_id: str | None,
+    task_run_id: str,
+    analysis_snapshot_db_id: str | None = None,
+    final_analysis_result_id: str | None = None,
+    state_id: str | None = None,
+) -> AnalysisState:
+    """Legacy compatibility boundary; unscoped callers map to ``daily_close``."""
+
+    return append_analysis_state_scoped(
+        session,
+        state_scope="daily_close",
+        document=document,
+        transition=transition,
+        authority=authority,
+        previous_state_id=previous_state_id,
+        task_run_id=task_run_id,
+        analysis_snapshot_db_id=analysis_snapshot_db_id,
+        final_analysis_result_id=final_analysis_result_id,
+        state_id=state_id,
+    )
+
+
+def advance_canonical_head_scoped(
     session: Session,
     *,
     asset: str,
+    state_scope: StateScope,
     new_state_id: str,
     expected_state_id: str | None,
     expected_version: int,
@@ -169,6 +215,7 @@ def advance_canonical_head(
     """Atomically advance the canonical head when state, version and authority match."""
 
     normalized_asset = _required_text(asset, field="asset")
+    normalized_scope = _state_scope(state_scope)
     if expected_version < 0:
         raise ValueError("expected_version must be non-negative")
 
@@ -177,11 +224,19 @@ def advance_canonical_head(
         raise StateLineageError(f"analysis state not found: {new_state_id}")
     if state.asset != normalized_asset:
         raise StateLineageError("new state belongs to a different asset")
+    if state.state_scope != normalized_scope:
+        raise StateLineageError("new state belongs to a different state scope")
+    _validate_expected_state(
+        session,
+        asset=normalized_asset,
+        state_scope=normalized_scope,
+        expected_state_id=expected_state_id,
+    )
     if state.previous_state_id != expected_state_id:
         raise StateLineageError("new state previous_state_id does not match expected canonical state")
     _require_canonical_authority(state, authority)
 
-    current_head = _get_head(session, normalized_asset)
+    current_head = _get_head(session, normalized_asset, normalized_scope)
     if current_head is not None and _is_idempotent_head_retry(
         current_head,
         new_state_id=state.id,
@@ -194,13 +249,20 @@ def advance_canonical_head(
             raise CanonicalHeadConflictError("initial canonical head requires expected_version=0")
         if current_head is not None:
             raise CanonicalHeadConflictError("canonical head already exists")
-        head = AnalysisStateHead(asset=normalized_asset, canonical_state_id=state.id, version=1)
+        head = AnalysisStateHead(
+            asset=normalized_asset,
+            state_scope=normalized_scope,
+            canonical_state_id=state.id,
+            version=1,
+        )
         try:
             with session.begin_nested():
                 session.add(head)
                 session.flush()
         except IntegrityError as exc:
-            current_head = _get_head(session, normalized_asset, populate_existing=True)
+            current_head = _get_head(
+                session, normalized_asset, normalized_scope, populate_existing=True
+            )
             if current_head is not None and _is_idempotent_head_retry(
                 current_head,
                 new_state_id=state.id,
@@ -214,13 +276,16 @@ def advance_canonical_head(
         update(AnalysisStateHead)
         .where(
             AnalysisStateHead.asset == normalized_asset,
+            AnalysisStateHead.state_scope == normalized_scope,
             AnalysisStateHead.canonical_state_id == expected_state_id,
             AnalysisStateHead.version == expected_version,
         )
         .values(canonical_state_id=state.id, version=expected_version + 1)
     )
     if result.rowcount != 1:
-        current_head = _get_head(session, normalized_asset, populate_existing=True)
+        current_head = _get_head(
+            session, normalized_asset, normalized_scope, populate_existing=True
+        )
         if current_head is not None and _is_idempotent_head_retry(
             current_head,
             new_state_id=state.id,
@@ -229,32 +294,77 @@ def advance_canonical_head(
             return current_head
         raise CanonicalHeadConflictError("canonical head compare-and-swap conflict")
     session.flush()
-    head = _get_head(session, normalized_asset, populate_existing=True)
+    head = _get_head(session, normalized_asset, normalized_scope, populate_existing=True)
     if head is None:  # pragma: no cover - protected by rowcount and the transaction
         raise CanonicalHeadConflictError("canonical head disappeared after compare-and-swap")
     return head
 
 
-def get_canonical_state(session: Session, asset: str) -> AnalysisState | None:
-    """Return the state referenced by the asset's canonical head."""
+def advance_canonical_head(
+    session: Session,
+    *,
+    asset: str,
+    new_state_id: str,
+    expected_state_id: str | None,
+    expected_version: int,
+    authority: StateMaterializationAuthority,
+) -> AnalysisStateHead:
+    """Legacy compatibility boundary; unscoped callers map to ``daily_close``."""
+
+    return advance_canonical_head_scoped(
+        session,
+        asset=asset,
+        state_scope="daily_close",
+        new_state_id=new_state_id,
+        expected_state_id=expected_state_id,
+        expected_version=expected_version,
+        authority=authority,
+    )
+
+
+def get_canonical_state_scoped(
+    session: Session, asset: str, *, state_scope: StateScope
+) -> AnalysisState | None:
+    """Return the state referenced by one asset/scope canonical head."""
 
     return session.scalar(
         select(AnalysisState)
         .join(AnalysisStateHead, AnalysisStateHead.canonical_state_id == AnalysisState.id)
-        .where(AnalysisStateHead.asset == asset)
+        .where(
+            AnalysisStateHead.asset == asset,
+            AnalysisStateHead.state_scope == _state_scope(state_scope),
+        )
     )
 
 
-def list_candidate_states(session: Session, asset: str) -> list[AnalysisState]:
+def get_canonical_state(session: Session, asset: str) -> AnalysisState | None:
+    """Legacy compatibility read for the daily-close head."""
+
+    return get_canonical_state_scoped(session, asset, state_scope="daily_close")
+
+
+def list_candidate_states_scoped(
+    session: Session, asset: str, *, state_scope: StateScope
+) -> list[AnalysisState]:
     """Return immutable observe/review candidates without inventing a candidate head."""
 
     return list(
         session.scalars(
             select(AnalysisState)
-            .where(AnalysisState.asset == asset, AnalysisState.publish_allowed.is_(False))
+            .where(
+                AnalysisState.asset == asset,
+                AnalysisState.state_scope == _state_scope(state_scope),
+                AnalysisState.publish_allowed.is_(False),
+            )
             .order_by(AnalysisState.as_of.desc(), AnalysisState.created_at.desc(), AnalysisState.id.desc())
         )
     )
+
+
+def list_candidate_states(session: Session, asset: str) -> list[AnalysisState]:
+    """Legacy compatibility candidate read for ``daily_close``."""
+
+    return list_candidate_states_scoped(session, asset, state_scope="daily_close")
 
 
 def get_state_history(session: Session, state_id: str, *, max_depth: int = 100) -> list[AnalysisState]:
@@ -265,6 +375,8 @@ def get_state_history(session: Session, state_id: str, *, max_depth: int = 100) 
     history: list[AnalysisState] = []
     seen: set[str] = set()
     current_id: str | None = state_id
+    expected_asset: str | None = None
+    expected_scope: str | None = None
     while current_id is not None:
         if current_id in seen:
             raise StateLineageError("analysis state lineage contains a cycle")
@@ -274,6 +386,11 @@ def get_state_history(session: Session, state_id: str, *, max_depth: int = 100) 
         current = session.get(AnalysisState, current_id)
         if current is None:
             raise StateLineageError(f"analysis state not found: {current_id}")
+        if expected_asset is None:
+            expected_asset = current.asset
+            expected_scope = current.state_scope
+        elif current.asset != expected_asset or current.state_scope != expected_scope:
+            raise StateLineageError("analysis state history crosses asset or state scope")
         history.append(current)
         current_id = current.previous_state_id
     return history
@@ -283,6 +400,7 @@ def _validate_previous_state(
     session: Session,
     *,
     asset: str,
+    state_scope: StateScope,
     previous_state_id: str | None,
 ) -> AnalysisState | None:
     if previous_state_id is None:
@@ -292,14 +410,35 @@ def _validate_previous_state(
         raise StateLineageError(f"previous analysis state not found: {previous_state_id}")
     if previous.asset != asset:
         raise StateLineageError("previous analysis state belongs to a different asset")
+    if previous.state_scope != state_scope:
+        raise StateLineageError("previous analysis state belongs to a different state scope")
     return previous
+
+
+def _validate_expected_state(
+    session: Session,
+    *,
+    asset: str,
+    state_scope: StateScope,
+    expected_state_id: str | None,
+) -> None:
+    if expected_state_id is None:
+        return
+    expected = session.get(AnalysisState, expected_state_id)
+    if expected is None:
+        raise StateLineageError(f"expected canonical state not found: {expected_state_id}")
+    if expected.asset != asset:
+        raise StateLineageError("expected canonical state belongs to a different asset")
+    if expected.state_scope != state_scope:
+        raise StateLineageError("expected canonical state belongs to a different state scope")
 
 
 def _require_idempotent_append(
     session: Session,
     *,
     existing: AnalysisState,
-    document: AnalysisStateDocument,
+    state_scope: StateScope,
+    document: VersionedAnalysisStateDocument,
     transition_payload: dict[str, Any],
     authority: StateMaterializationAuthority,
     previous_state_id: str | None,
@@ -311,6 +450,7 @@ def _require_idempotent_append(
     expected_state = {
         "schema_version": document.schema_version,
         "asset": document.asset,
+        "state_scope": state_scope,
         "previous_state_id": previous_state_id,
         "task_run_id": task_run_id,
         "analysis_snapshot_db_id": analysis_snapshot_db_id,
@@ -341,6 +481,7 @@ def _require_idempotent_append(
     if transition is None or {
         "schema_version": transition.schema_version,
         "asset": transition.asset,
+        "state_scope": transition.state_scope,
         "from_state_id": transition.from_state_id,
         "task_run_id": transition.task_run_id,
         "summary": transition.summary,
@@ -350,6 +491,7 @@ def _require_idempotent_append(
     } != {
         "schema_version": transition_payload["schema_version"],
         "asset": document.asset,
+        "state_scope": state_scope,
         "from_state_id": previous_state_id,
         "task_run_id": task_run_id,
         "summary": transition_payload["summary"],
@@ -369,8 +511,17 @@ def _same_instant(left: datetime, right: datetime) -> bool:
     return normalized(left) == normalized(right)
 
 
-def _get_head(session: Session, asset: str, *, populate_existing: bool = False) -> AnalysisStateHead | None:
-    statement = select(AnalysisStateHead).where(AnalysisStateHead.asset == asset)
+def _get_head(
+    session: Session,
+    asset: str,
+    state_scope: StateScope,
+    *,
+    populate_existing: bool = False,
+) -> AnalysisStateHead | None:
+    statement = select(AnalysisStateHead).where(
+        AnalysisStateHead.asset == asset,
+        AnalysisStateHead.state_scope == state_scope,
+    )
     if populate_existing:
         statement = statement.execution_options(populate_existing=True)
     return session.scalar(statement)
@@ -388,7 +539,7 @@ def _is_idempotent_head_retry(
 def _validate_output_lineage(
     session: Session,
     *,
-    document: AnalysisStateDocument,
+    document: VersionedAnalysisStateDocument,
     authority: StateMaterializationAuthority,
     analysis_snapshot_db_id: str | None,
     final_analysis_result_id: str | None,
@@ -439,3 +590,30 @@ def _required_text(value: str, *, field: str) -> str:
     if not normalized:
         raise ValueError(f"{field} must not be blank")
     return normalized
+
+
+def _state_scope(value: str) -> StateScope:
+    normalized = _required_text(value, field="state_scope")
+    if normalized not in {"intraday", "daily_close", "weekly_fundamental"}:
+        raise ValueError(f"invalid state_scope: {normalized}")
+    return normalized  # type: ignore[return-value]
+
+
+def _validate_document_scope(
+    document: VersionedAnalysisStateDocument,
+    *,
+    transition: VersionedAnalysisTransitionDocument,
+    state_scope: StateScope,
+) -> None:
+    if document.schema_version != transition.schema_version:
+        raise StateLineageError("state and transition schema versions must match")
+    if isinstance(document, AnalysisStateDocumentV1):
+        if state_scope != "daily_close" or not isinstance(transition, AnalysisTransitionDocumentV1):
+            raise StateLineageError("legacy v1 state is restricted to daily_close")
+        return
+    if not isinstance(document, AnalysisStateDocumentV11) or not isinstance(
+        transition, AnalysisTransitionDocumentV11
+    ):
+        raise StateLineageError("unsupported state/transition contract pair")
+    if document.state_scope != state_scope or transition.state_scope != state_scope:
+        raise StateLineageError("state, transition, and write scope must match")

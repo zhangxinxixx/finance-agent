@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+from datetime import date
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 
-ANALYSIS_STATE_SCHEMA_VERSION = "1.0"
-AnalysisStateSchemaVersion = Literal["1.0"]
+ANALYSIS_STATE_V1_SCHEMA_VERSION = "1.0"
+ANALYSIS_STATE_SCHEMA_VERSION = "1.1"
+ANALYSIS_STATE_MACHINE_VERSION = "analysis_state.v1.1"
+AnalysisStateSchemaVersion = Literal["1.0", "1.1"]
+StateScope = Literal["intraday", "daily_close", "weekly_fundamental"]
 QualityGateActionValue = Literal["pass", "retry", "fallback", "manual_review", "block_publish"]
 AcceptedOutputSource = Literal["primary", "corrective_fallback", "none"]
 
@@ -24,12 +36,67 @@ class TransitionAction(StrEnum):
     PENDING = "pending"
 
 
-class AnalysisStateDocument(BaseModel):
-    """Provider-independent snapshot of the currently asserted analysis state."""
-
+class _StrictFrozenModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: AnalysisStateSchemaVersion = ANALYSIS_STATE_SCHEMA_VERSION
+
+class DominantDriver(_StrictFrozenModel):
+    """One ranked driver using the existing direction vocabulary."""
+
+    driver_id: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=256)
+    rank: int | None = Field(default=None, ge=1)
+    score: float | None = None
+    direction: Literal["tailwind", "headwind", "neutral", "mixed", "unknown"]
+    coverage_status: Literal["covered", "partial", "missing", "unknown"] = "unknown"
+
+    @field_validator("driver_id", "label")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        return _required_text(value)
+
+
+class KeyLevel(_StrictFrozenModel):
+    """One explicit level without inventing a second level taxonomy."""
+
+    value: float | str
+    role: str = Field(min_length=1, max_length=128)
+    source: str = Field(min_length=1, max_length=128)
+    meaning: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @field_validator("value")
+    @classmethod
+    def validate_value(cls, value: float | str) -> float | str:
+        return _required_text(value) if isinstance(value, str) else value
+
+    @field_validator("role", "source")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        return _required_text(value)
+
+    @field_validator("meaning")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        return _required_text(value) if value is not None else None
+
+
+class ScenarioState(_StrictFrozenModel):
+    """One existing scenario/condition and its current status."""
+
+    scenario_id: str = Field(min_length=1, max_length=128)
+    condition: str = Field(min_length=1, max_length=500)
+    status: Literal["active", "pending", "confirmed", "invalidated"]
+
+    @field_validator("scenario_id", "condition")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        return _required_text(value)
+
+
+class AnalysisStateDocumentV1(_StrictFrozenModel):
+    """Frozen legacy payload. Parsing it must never add v1.1 fields."""
+
+    schema_version: Literal["1.0"] = ANALYSIS_STATE_V1_SCHEMA_VERSION
     asset: str = Field(min_length=1, max_length=32)
     as_of: AwareDatetime
     market_stage: str = Field(min_length=1, max_length=64)
@@ -53,10 +120,49 @@ class AnalysisStateDocument(BaseModel):
         return normalized
 
 
-class StateChange(BaseModel):
-    """One reviewable change from the previous state to the next state."""
+class AnalysisStateDocumentV11(_StrictFrozenModel):
+    """Scoped provider-independent state written by the v1.1 core."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.1"] = ANALYSIS_STATE_SCHEMA_VERSION
+    state_scope: StateScope
+    state_machine_version: str = Field(min_length=1, max_length=64)
+    session: str = Field(min_length=1, max_length=64)
+    trade_date: date
+    asset: str = Field(min_length=1, max_length=32)
+    as_of: AwareDatetime
+    market_stage: str = Field(min_length=1, max_length=64)
+    core_thesis: str = Field(min_length=1)
+    net_bias: str = Field(min_length=1, max_length=32)
+    dominant_drivers: list[DominantDriver] = Field(default_factory=list)
+    key_levels: list[KeyLevel] = Field(default_factory=list)
+    scenario_states: list[ScenarioState] = Field(default_factory=list)
+    unresolved_items: list[dict[str, Any]] = Field(default_factory=list)
+    invalidation_conditions: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_cursors: dict[str, Any] = Field(default_factory=dict)
+    input_snapshot_ids: dict[str, str] = Field(default_factory=dict)
+    source_refs: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator(
+        "state_machine_version", "session", "asset", "market_stage", "core_thesis", "net_bias"
+    )
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+# The old name remains a compatibility constructor. New scoped code names V11 explicitly.
+AnalysisStateDocument = AnalysisStateDocumentV1
+VersionedAnalysisStateDocument = Annotated[
+    AnalysisStateDocumentV1 | AnalysisStateDocumentV11,
+    Field(discriminator="schema_version"),
+]
+_STATE_DOCUMENT_ADAPTER = TypeAdapter(VersionedAnalysisStateDocument)
+
+
+class StateChange(_StrictFrozenModel):
+    """One reviewable change from the previous state to the next state."""
 
     target: str = Field(min_length=1, max_length=128)
     action: TransitionAction
@@ -72,12 +178,8 @@ class StateChange(BaseModel):
         return normalized
 
 
-class AnalysisTransitionDocument(BaseModel):
-    """Append-only explanation of how one analysis state follows another."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_version: AnalysisStateSchemaVersion = ANALYSIS_STATE_SCHEMA_VERSION
+class AnalysisTransitionDocumentV1(_StrictFrozenModel):
+    schema_version: Literal["1.0"] = ANALYSIS_STATE_V1_SCHEMA_VERSION
     summary: str = Field(min_length=1)
     changes: list[StateChange] = Field(min_length=1)
     evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
@@ -91,14 +193,51 @@ class AnalysisTransitionDocument(BaseModel):
         return normalized
 
 
-class StateMaterializationAuthority(BaseModel):
-    """Quality-gate and AgentLoop authority attached to one immutable state.
+class AnalysisTransitionDocumentV11(_StrictFrozenModel):
+    schema_version: Literal["1.1"] = ANALYSIS_STATE_SCHEMA_VERSION
+    state_scope: StateScope
+    summary: str = Field(min_length=1)
+    changes: list[StateChange] = Field(min_length=1)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
 
-    ``PASS`` by itself is insufficient. A canonical candidate must also be the
-    authoritative ``accepted_output`` selected by AgentLoop.
-    """
+    @field_validator("summary")
+    @classmethod
+    def strip_summary(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+
+AnalysisTransitionDocument = AnalysisTransitionDocumentV1
+VersionedAnalysisTransitionDocument = Annotated[
+    AnalysisTransitionDocumentV1 | AnalysisTransitionDocumentV11,
+    Field(discriminator="schema_version"),
+]
+_TRANSITION_DOCUMENT_ADAPTER = TypeAdapter(VersionedAnalysisTransitionDocument)
+
+
+def parse_analysis_state_document(value: Any) -> VersionedAnalysisStateDocument:
+    """Parse by declared version without upgrading or reserializing v1 payloads."""
+
+    return _STATE_DOCUMENT_ADAPTER.validate_python(value)
+
+
+def parse_analysis_transition_document(value: Any) -> VersionedAnalysisTransitionDocument:
+    """Parse a transition without rewriting its declared contract version."""
+
+    return _TRANSITION_DOCUMENT_ADAPTER.validate_python(value)
+
+
+def _required_text(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("value must not be blank")
+    return normalized
+
+
+class StateMaterializationAuthority(_StrictFrozenModel):
+    """Quality-gate and AgentLoop authority attached to one immutable state."""
 
     quality_gate_action: QualityGateActionValue
     publish_allowed: bool

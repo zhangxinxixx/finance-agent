@@ -9,21 +9,30 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from apps.analysis.state import (
     ANALYSIS_STATE_SCHEMA_VERSION,
+    ANALYSIS_STATE_V1_SCHEMA_VERSION,
+    ANALYSIS_STATE_MACHINE_VERSION,
     AnalysisStateDocument,
+    AnalysisStateDocumentV11,
     AnalysisTransitionDocument,
+    AnalysisTransitionDocumentV11,
     CanonicalHeadConflictError,
     StateChange,
     StateIdempotencyConflictError,
+    StateLineageError,
     StateMaterializationAuthority,
     TransitionAction,
     advance_canonical_head,
+    advance_canonical_head_scoped,
     append_analysis_state,
+    append_analysis_state_scoped,
     get_canonical_state,
+    get_canonical_state_scoped,
     get_state_history,
     list_candidate_states,
 )
@@ -91,7 +100,8 @@ def session() -> Session:
 
 
 def test_contract_has_stable_schema_version_actions_and_aware_time() -> None:
-    assert ANALYSIS_STATE_SCHEMA_VERSION == "1.0"
+    assert ANALYSIS_STATE_V1_SCHEMA_VERSION == "1.0"
+    assert ANALYSIS_STATE_SCHEMA_VERSION == "1.1"
     assert {action.value for action in TransitionAction} == {
         "strengthen",
         "maintain",
@@ -101,6 +111,204 @@ def test_contract_has_stable_schema_version_actions_and_aware_time() -> None:
     }
     with pytest.raises(ValidationError, match="timezone"):
         _state_document(thesis="invalid", as_of=datetime(2026, 7, 22, 8))
+
+
+def _scoped_document(*, scope: str, thesis: str, as_of: datetime | None = None):
+    return AnalysisStateDocumentV11(
+        state_scope=scope,
+        state_machine_version=ANALYSIS_STATE_MACHINE_VERSION,
+        session="regular" if scope == "intraday" else scope,
+        trade_date="2026-07-22",
+        asset="XAUUSD",
+        as_of=as_of or datetime(2026, 7, 22, 8, tzinfo=UTC),
+        market_stage="direction_decision",
+        core_thesis=thesis,
+        net_bias="mixed_bullish",
+        dominant_drivers=[
+            {
+                "driver_id": "real-yield",
+                "label": "Real yield",
+                "direction": "headwind",
+                "coverage_status": "covered",
+            }
+        ],
+        key_levels=[{"value": 4126.63, "role": "gamma_zero", "source": "options"}],
+        scenario_states=[
+            {"scenario_id": "base", "condition": "hold support", "status": "active"}
+        ],
+        input_snapshot_ids={"market": "market-20260722"},
+        source_refs=[{"snapshot_id": "market-20260722"}],
+    )
+
+
+def _scoped_transition(scope: str):
+    return AnalysisTransitionDocumentV11(
+        state_scope=scope,
+        summary="Scoped transition",
+        changes=[
+            StateChange(
+                target="core_thesis",
+                action=TransitionAction.MAINTAIN,
+                reason="Scoped evidence",
+                evidence_refs=[{"snapshot_id": "market-20260722"}],
+            )
+        ],
+        evidence_refs=[{"snapshot_id": "market-20260722"}],
+    )
+
+
+def test_v11_requires_explicit_scope_metadata_and_strong_submodels() -> None:
+    payload = _scoped_document(scope="daily_close", thesis="Scoped").model_dump(mode="json")
+    for field in ("state_scope", "state_machine_version", "session", "trade_date"):
+        invalid = dict(payload)
+        invalid.pop(field)
+        with pytest.raises(ValidationError, match=field):
+            AnalysisStateDocumentV11.model_validate(invalid)
+    invalid = dict(payload)
+    invalid["dominant_drivers"] = [{"name": "legacy-shape", "direction": "headwind"}]
+    with pytest.raises(ValidationError):
+        AnalysisStateDocumentV11.model_validate(invalid)
+    for field, invalid_value in (
+        ("dominant_drivers", [{"driver_id": " ", "label": "driver", "direction": "neutral"}]),
+        ("key_levels", [{"value": " ", "role": "support", "source": "market"}]),
+        (
+            "scenario_states",
+            [{"scenario_id": "base", "condition": " ", "status": "pending"}],
+        ),
+    ):
+        invalid = dict(payload)
+        invalid[field] = invalid_value
+        with pytest.raises(ValidationError, match="must not be blank"):
+            AnalysisStateDocumentV11.model_validate(invalid)
+
+
+def test_v1_payload_hash_and_stable_id_remain_unchanged(session: Session) -> None:
+    document = _state_document(thesis="Hold above 4000 while awaiting breakout")
+    state = append_analysis_state(
+        session,
+        document=document,
+        transition=_transition(),
+        authority=_candidate_authority(),
+        previous_state_id=None,
+        task_run_id="run-1",
+    )
+    assert document.model_dump(mode="json").keys().isdisjoint(
+        {"state_scope", "session", "trade_date", "state_machine_version"}
+    )
+    assert state.content_hash == "ba0cb74afe31f71820a222058666d086a68d4391cf667575418bcd939473bbf6"
+    assert state.id == "6c223010-158b-55ab-b1a9-b689dde6aec0"
+
+
+def test_scoped_core_write_requires_scope_and_scope_changes_identity(session: Session) -> None:
+    with pytest.raises(TypeError, match="state_scope"):
+        append_analysis_state_scoped(  # type: ignore[call-arg]
+            session,
+            document=_scoped_document(scope="intraday", thesis="Intraday"),
+            transition=_scoped_transition("intraday"),
+            authority=_candidate_authority(),
+            previous_state_id=None,
+            task_run_id="run-scope",
+        )
+    states = []
+    for scope in ("intraday", "daily_close", "weekly_fundamental"):
+        states.append(
+            append_analysis_state_scoped(
+                session,
+                state_scope=scope,
+                document=_scoped_document(scope=scope, thesis="Same thesis"),
+                transition=_scoped_transition(scope),
+                authority=_accepted_authority(),
+                previous_state_id=None,
+                task_run_id="run-scope",
+            )
+        )
+    assert len({state.id for state in states}) == 3
+    assert len({state.content_hash for state in states}) == 3
+
+
+def test_three_scoped_heads_coexist_and_cross_scope_lineage_is_rejected(session: Session) -> None:
+    states = {}
+    for scope in ("intraday", "daily_close", "weekly_fundamental"):
+        state = append_analysis_state_scoped(
+            session,
+            state_scope=scope,
+            document=_scoped_document(scope=scope, thesis=scope),
+            transition=_scoped_transition(scope),
+            authority=_accepted_authority(),
+            previous_state_id=None,
+            task_run_id=f"run-{scope}",
+        )
+        advance_canonical_head_scoped(
+            session,
+            asset="XAUUSD",
+            state_scope=scope,
+            new_state_id=state.id,
+            expected_state_id=None,
+            expected_version=0,
+            authority=_accepted_authority(),
+        )
+        states[scope] = state
+    assert session.scalar(select(func.count()).select_from(AnalysisStateHead)) == 3
+    for scope, state in states.items():
+        assert get_canonical_state_scoped(session, "XAUUSD", state_scope=scope).id == state.id
+
+    with pytest.raises(ValueError, match="different state scope"):
+        append_analysis_state_scoped(
+            session,
+            state_scope="daily_close",
+            document=_scoped_document(scope="daily_close", thesis="cross scope"),
+            transition=_scoped_transition("daily_close"),
+            authority=_candidate_authority(),
+            previous_state_id=states["intraday"].id,
+            task_run_id="run-cross-scope",
+        )
+
+
+def test_cas_and_history_reject_cross_scope_expected_state(session: Session) -> None:
+    authority = _accepted_authority()
+    intraday = append_analysis_state_scoped(
+        session,
+        state_scope="intraday",
+        document=_scoped_document(scope="intraday", thesis="intraday"),
+        transition=_scoped_transition("intraday"),
+        authority=authority,
+        previous_state_id=None,
+        task_run_id="run-intraday",
+    )
+    daily = AnalysisState(
+        id="daily-cross-scope",
+        schema_version="1.1",
+        asset="XAUUSD",
+        state_scope="daily_close",
+        as_of=datetime(2026, 7, 22, 9, tzinfo=UTC),
+        previous_state_id=intraday.id,
+        task_run_id="run-daily-cross",
+        quality_gate_action="pass",
+        publish_allowed=True,
+        accepted_output_source="primary",
+        accepted_output_agent_name="coordinator_agent",
+        accepted_output_snapshot_id="market-20260722",
+        input_snapshot_ids={"market": "market-20260722"},
+        source_refs=[{"snapshot_id": "market-20260722"}],
+        evidence_cursors={},
+        payload={"schema_version": "1.1", "state_scope": "daily_close"},
+        content_hash="6" * 64,
+    )
+    session.add(daily)
+    session.flush()
+
+    with pytest.raises(StateLineageError, match="expected canonical state.*different state scope"):
+        advance_canonical_head_scoped(
+            session,
+            asset="XAUUSD",
+            state_scope="daily_close",
+            new_state_id=daily.id,
+            expected_state_id=intraday.id,
+            expected_version=1,
+            authority=authority,
+        )
+    with pytest.raises(StateLineageError, match="history crosses"):
+        get_state_history(session, daily.id)
 
 
 def test_content_hash_ignores_only_top_level_identity_metadata() -> None:
@@ -385,6 +593,28 @@ def test_models_compile_for_postgresql_with_jsonb() -> None:
         for index in model.__table__.indexes
     )
     assert "USING gin" in index_ddl
+
+
+def test_database_rejects_invalid_state_scope(session: Session) -> None:
+    invalid = AnalysisState(
+        id="invalid-scope-state",
+        schema_version="1.1",
+        asset="XAUUSD",
+        state_scope="monthly",
+        as_of=datetime(2026, 7, 22, 8, tzinfo=UTC),
+        task_run_id="run-invalid-scope",
+        quality_gate_action="manual_review",
+        publish_allowed=False,
+        accepted_output_source="none",
+        input_snapshot_ids={},
+        source_refs=[],
+        evidence_cursors={},
+        payload={"schema_version": "1.1"},
+        content_hash="0" * 64,
+    )
+    session.add(invalid)
+    with pytest.raises(IntegrityError):
+        session.flush()
 
 
 def test_alembic_upgrade_creates_analysis_state_core_tables(tmp_path: Path) -> None:

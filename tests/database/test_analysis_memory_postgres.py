@@ -18,6 +18,7 @@ from apps.analysis.state import (
     CanonicalHeadConflictError,
     StateMaterializationAuthority,
     advance_canonical_head,
+    advance_canonical_head_scoped,
 )
 from database.migrations.runtime import build_alembic_config
 from database.models.analysis import AnalysisSnapshot
@@ -84,6 +85,7 @@ def test_postgres_fresh_and_incremental_migration_lifecycle() -> None:
                         id=state_id,
                         schema_version="1.0",
                         asset="XAUUSD",
+                        state_scope="daily_close",
                         as_of=datetime(2026, 7, 22, 8, tzinfo=UTC),
                         task_run_id="issue-74-repeat",
                         quality_gate_action="manual_review",
@@ -132,6 +134,33 @@ def test_postgres_fresh_and_incremental_migration_lifecycle() -> None:
                         artifact_path="outputs/issue-74.json",
                     )
                 )
+            command.upgrade(config, "20260722_0002")
+            legacy_state_id = "00000000-0000-0000-0000-000000000082"
+            legacy_payload = '{"asset":"XAUUSD","schema_version":"1.0"}'
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO analysis_states "
+                        "(id, schema_version, asset, as_of, task_run_id, quality_gate_action, "
+                        "publish_allowed, accepted_output_source, input_snapshot_ids, source_refs, "
+                        "evidence_cursors, payload, content_hash) VALUES "
+                        "(:id, '1.0', 'XAUUSD', :as_of, 'issue-75-v1', 'manual_review', "
+                        "false, 'none', '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, "
+                        "CAST(:payload AS jsonb), :content_hash)"
+                    ),
+                    {
+                        "id": legacy_state_id,
+                        "as_of": datetime(2026, 7, 22, 8, tzinfo=UTC),
+                        "payload": legacy_payload,
+                        "content_hash": "3" * 64,
+                    },
+                )
+                before = connection.execute(
+                    text(
+                        "SELECT id, payload::text, content_hash FROM analysis_states WHERE id = :id"
+                    ),
+                    {"id": legacy_state_id},
+                ).one()
             command.upgrade(config, "head")
             assert STATE_TABLES <= _table_names(incremental_url)
             with engine.connect() as connection:
@@ -141,6 +170,17 @@ def test_postgres_fresh_and_incremental_migration_lifecycle() -> None:
                     )
                     == snapshot_id
                 )
+                after = connection.execute(
+                    text(
+                        "SELECT id, payload::text, content_hash FROM analysis_states WHERE id = :id"
+                    ),
+                    {"id": legacy_state_id},
+                ).one()
+                assert tuple(after) == tuple(before)
+                assert connection.scalar(
+                    text("SELECT state_scope FROM analysis_states WHERE id = :id"),
+                    {"id": legacy_state_id},
+                ) == "daily_close"
             command.upgrade(config, "head")
             command.check(config)
         finally:
@@ -163,11 +203,14 @@ def test_canonical_head_cas_uses_real_postgresql() -> None:
         winner_id = "00000000-0000-0000-0000-000000000077"
         stale_id = "00000000-0000-0000-0000-000000000078"
 
-        def state_values(state_id: str, previous_state_id: str | None) -> dict:
+        def state_values(
+            state_id: str, previous_state_id: str | None, *, state_scope: str = "daily_close"
+        ) -> dict:
             return {
                 "id": state_id,
                 "schema_version": "1.0",
                 "asset": "XAUUSD",
+                "state_scope": state_scope,
                 "as_of": datetime(2026, 7, 22, 8, tzinfo=UTC),
                 "previous_state_id": previous_state_id,
                 "task_run_id": f"issue-74-{state_id[-2:]}",
@@ -197,6 +240,7 @@ def test_canonical_head_cas_uses_real_postgresql() -> None:
                     AnalysisStateHead.__table__.insert().values(
                         id="00000000-0000-0000-0000-000000000079",
                         asset="XAUUSD",
+                        state_scope="daily_close",
                         canonical_state_id=root_id,
                         version=1,
                     )
@@ -235,5 +279,47 @@ def test_canonical_head_cas_uses_real_postgresql() -> None:
                 head = verify.scalar(select(AnalysisStateHead).where(AnalysisStateHead.asset == "XAUUSD"))
                 assert head is not None
                 assert (head.canonical_state_id, head.version) == (winner_id, 2)
+
+            intraday_root = "00000000-0000-0000-0000-000000000083"
+            intraday_next = "00000000-0000-0000-0000-000000000084"
+            with engine.begin() as connection:
+                connection.execute(
+                    AnalysisState.__table__.insert(),
+                    [
+                        state_values(intraday_root, None, state_scope="intraday"),
+                        state_values(intraday_next, intraday_root, state_scope="intraday"),
+                    ],
+                )
+                connection.execute(
+                    AnalysisStateHead.__table__.insert().values(
+                        id="00000000-0000-0000-0000-000000000085",
+                        asset="XAUUSD",
+                        state_scope="intraday",
+                        canonical_state_id=intraday_root,
+                        version=1,
+                    )
+                )
+            with Session(engine) as scoped:
+                advance_canonical_head_scoped(
+                    scoped,
+                    asset="XAUUSD",
+                    state_scope="intraday",
+                    new_state_id=intraday_next,
+                    expected_state_id=intraday_root,
+                    expected_version=1,
+                    authority=authority,
+                )
+                scoped.commit()
+            with Session(engine) as verify:
+                heads = {
+                    row.state_scope: (row.canonical_state_id, row.version)
+                    for row in verify.scalars(
+                        select(AnalysisStateHead).where(AnalysisStateHead.asset == "XAUUSD")
+                    )
+                }
+                assert heads == {
+                    "daily_close": (winner_id, 2),
+                    "intraday": (intraday_next, 2),
+                }
         finally:
             engine.dispose()
