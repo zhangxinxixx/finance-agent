@@ -151,6 +151,12 @@ function decisionSummaryFor(direction: SignalDirection): string {
   return "当前以观察为主，宏观方向未形成强共振；先看美元、实际利率和关键价位反应。";
 }
 
+function firstSentence(value: string | null): string | null {
+  if (!value) return null;
+  const match = value.match(/^.*?[。！？.!?]/);
+  return (match?.[0] ?? value).trim() || null;
+}
+
 export function buildIntegratedMacroSummary(
   summary: DashboardSummary,
   viewModel?: DashboardViewModel | null,
@@ -219,6 +225,11 @@ export function buildIntegratedMacroSummary(
     readModelOptionsAlignment ??
     `CME 期权结构显示${translateIntent(summary.cme_options.intent)}、${wallBias.label}，更适合作为短线价格吸附、墙位反应和结构约束证据，不应单独推导宏观方向。`;
   const riskNote = invalidation[0];
+  const decisionSummary =
+    firstSentence(cleanText(readModel?.trade_implication)) ??
+    firstSentence(cleanText(readModel?.reasoning)) ??
+    agentSummary ??
+    decisionSummaryFor(direction);
 
   return {
     overallBias,
@@ -236,7 +247,7 @@ export function buildIntegratedMacroSummary(
     liquidityExplanation: `${liquidityState}。当前流动性变量用于判断宏观背景强弱，不单独给出趋势方向。`,
     optionsExplanation: `${optionsAlignment}。Gamma/Pin/墙位不直接替代综合宏观方向。`,
     optionsMemo,
-    decisionSummary: decisionSummaryFor(direction),
+    decisionSummary,
     riskNote,
     tradeImplication: cleanText(readModel?.trade_implication) ?? tradeImplicationFor(direction),
     quickSupports: readModel?.quick_supports ?? [],

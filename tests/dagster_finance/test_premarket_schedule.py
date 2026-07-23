@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import pytest
-from dagster import SkipReason, build_schedule_context
+from dagster import DefaultScheduleStatus, SkipReason, build_schedule_context
 
 from dagster_finance.schedules.premarket_schedule import premarket_daily_schedule
+
+
+def test_premarket_daily_schedule_is_enabled_by_default() -> None:
+    assert premarket_daily_schedule.default_status == DefaultScheduleStatus.RUNNING
 
 
 def test_premarket_daily_schedule_skips_when_source_readiness_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:

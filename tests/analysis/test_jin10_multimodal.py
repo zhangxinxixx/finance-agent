@@ -91,3 +91,34 @@ def test_multimodal_content_marks_input_limit_degraded_without_reordering() -> N
     assert plan.degraded_reasons == ["image_limit_exceeded:fig_p13_001"]
     assert [item["figure_id"] for item in plan.figure_results] == ["fig_p12_001", "fig_p13_001"]
     assert [item["status"] for item in plan.figure_results] == ["submitted", "omitted_limit"]
+
+
+def test_multimodal_content_submits_supplemental_chart_without_markdown_anchor() -> None:
+    raw = _raw_report()
+    supplemental = dict(raw["charts"][0])
+    supplemental.update(
+        {
+            "figure_id": "fig_p17_001",
+            "page_no": 17,
+            "image_path": "figures/fig_p17_001.png",
+            "title": "技术指标",
+        }
+    )
+    raw["charts"].append(supplemental)
+    prompt = f"规则开始\n{raw['article_markdown']}\n规则结束"
+
+    plan = build_multimodal_user_content(
+        prompt,
+        raw,
+        image_loader=lambda chart: f"data:image/png;base64,{chart['figure_id']}",
+    )
+
+    assert plan.status == "success"
+    assert plan.submitted_image_count == 2
+    assert plan.degraded_reasons == []
+    assert [item["figure_id"] for item in plan.figure_results] == ["fig_p12_001", "fig_p17_001"]
+    assert [item["status"] for item in plan.figure_results] == ["submitted", "submitted"]
+    text_blocks = [block["text"] for block in plan.content if block["type"] == "text"]
+    assert any("supplemental figure evidence" in text for text in text_blocks)
+    assert any("figure_id=fig_p17_001" in text for text in text_blocks)
+    assert plan.content[-1]["text"] == "\n规则结束"

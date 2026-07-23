@@ -49,6 +49,7 @@ def build_dashboard_integrated_analysis(
     composite_analysis: dict[str, Any],
     source_trace: list[dict[str, Any]],
     jin10_analysis: dict[str, Any] | None = None,
+    strategy_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Build a deterministic, read-only integrated analysis for Dashboard consumers."""
 
@@ -66,7 +67,7 @@ def build_dashboard_integrated_analysis(
     direction = _direction(overall_bias)
     macro_regime = _macro_regime(macro_conclusion, gold_macro_overview)
     dominant_drivers = _dominant_drivers(gold_macro_overview, macro_conclusion)
-    confidence = _analysis_confidence(agent_summary)
+    confidence = _analysis_confidence(agent_summary, strategy_summary)
 
     liquidity_state = _liquidity_state(indicators, macro_conclusion)
     rates_state = _rates_state(indicators, macro_conclusion)
@@ -502,7 +503,13 @@ def _dominant_drivers(overview: dict[str, Any] | None, conclusion: MacroConclusi
     return list(dict.fromkeys(result))[:4]
 
 
-def _analysis_confidence(agent_summary: dict[str, Any]) -> float | None:
+def _analysis_confidence(
+    agent_summary: dict[str, Any],
+    strategy_summary: dict[str, Any] | None = None,
+) -> float | None:
+    strategy_confidence = _optional_float((strategy_summary or {}).get("confidence"))
+    if strategy_confidence is not None:
+        return max(0.0, min(strategy_confidence, 1.0))
     for key in ("synthesis", "coordinator"):
         item = agent_summary.get(key)
         if not isinstance(item, dict):

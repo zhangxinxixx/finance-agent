@@ -494,6 +494,10 @@ def _claims_from_row(row: PersistedAgentOutput | RuntimeAgentOutput) -> list[dic
     explicit_claims = [item for item in claims if isinstance(item, dict)] if isinstance(claims, list) else []
     if explicit_claims:
         return explicit_claims
+    if row.status in _UNAVAILABLE_SOURCE_STATUSES:
+        # An unavailable agent's generated summary describes data availability;
+        # it is not a market claim.  Explicit claims remain reviewable above.
+        return []
     return [
         {
             "claim_id": f"{row.agent_name}:summary",

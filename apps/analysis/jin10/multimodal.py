@@ -70,15 +70,39 @@ def build_multimodal_user_content(
         results.append(_figure_result(chart, raw_report=raw_report, status=status))
         cursor = match.end()
 
-    _append_text(content, f"{before_prompt if cursor == 0 else ''}{article_text[cursor:]}{after_prompt}")
+    supplemental_charts = [
+        chart
+        for chart in charts
+        if (path := _normalize_path(str(chart.get("image_path") or ""))) and path not in seen
+    ]
+    prompt_tail = "" if supplemental_charts else after_prompt
+    _append_text(content, f"{before_prompt if cursor == 0 else ''}{article_text[cursor:]}{prompt_tail}")
 
-    for chart in charts:
+    supplemental_started = False
+    for chart in supplemental_charts:
         path = _normalize_path(str(chart.get("image_path") or ""))
-        if not path or path in seen:
-            continue
-        figure_id = _figure_id(chart)
-        reasons.append(f"unanchored_figure:{figure_id}")
-        results.append(_figure_result(chart, raw_report=raw_report, status="unanchored"))
+        if not supplemental_started:
+            _append_text(
+                content,
+                "\n[Jin10 supplemental figure evidence omitted from article Markdown]\n",
+            )
+            supplemental_started = True
+        _append_text(content, _figure_metadata(chart, raw_report))
+        status, image_url, reason = _load_image(
+            chart,
+            image_loader=image_loader,
+            submitted=submitted,
+            max_images=max_images,
+        )
+        if image_url:
+            content.append({"type": "image_url", "image_url": {"url": image_url, "detail": "original"}})
+            submitted += 1
+        if reason:
+            reasons.append(reason)
+        results.append(_figure_result(chart, raw_report=raw_report, status=status))
+
+    if supplemental_charts:
+        _append_text(content, after_prompt)
 
     if not charts:
         status = "not_applicable"

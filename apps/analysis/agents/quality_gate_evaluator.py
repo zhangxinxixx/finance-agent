@@ -488,15 +488,11 @@ def _has_independent_market_confirmation(*, outputs: list[AgentOutput], overview
 
 
 def _mixed_without_driver_decomposition(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> bool:
-    if _overview_mixed_without_decomposition(overview):
-        return True
-    for output in outputs:
-        if output.bias is not AgentBias.MIXED:
-            continue
-        payload = output.input_payload if isinstance(output.input_payload, dict) else {}
-        if not _has_driver_lists(payload):
-            return True
-    return False
+    # This gate protects the publishable artifact.  Intermediate agents can be
+    # mixed while the final overview resolves that conflict into a directional
+    # conclusion with its own driver decomposition.
+    _ = outputs
+    return _overview_mixed_without_decomposition(overview)
 
 
 def _overview_mixed_without_decomposition(overview: dict[str, Any]) -> bool:

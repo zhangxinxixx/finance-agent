@@ -136,6 +136,40 @@ def test_quality_gate_requires_manual_review_for_mixed_without_driver_decomposit
     assert any(finding.code == "mixed_without_driver_decomposition" for finding in decision.findings)
 
 
+def test_quality_gate_accepts_final_mixed_overview_driver_decomposition() -> None:
+    decision = evaluate_quality_gate(
+        agent_outputs=[_agent_output(confidence=0.62, bias="mixed")],
+        gold_macro_overview={
+            "net_bias": "mixed",
+            "driver_conflict": {
+                "bullish_drivers": ["safe_haven_bid"],
+                "bearish_drivers": ["oil_inflation_rate_pressure"],
+            },
+        },
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+    )
+
+    assert decision.action is QualityGateAction.PASS
+    assert not any(finding.code == "mixed_without_driver_decomposition" for finding in decision.findings)
+
+
+def test_quality_gate_accepts_directional_overview_when_intermediate_agent_is_mixed() -> None:
+    decision = evaluate_quality_gate(
+        agent_outputs=[_agent_output(confidence=0.62, bias="mixed")],
+        gold_macro_overview={
+            "net_bias": "neutral_bearish",
+            "driver_conflict": {
+                "bullish_drivers": ["safe_haven_bid"],
+                "bearish_drivers": ["higher_for_longer_rate_pressure"],
+            },
+        },
+        source_health={"overall_status": "ready", "p0_missing": [], "can_build_gold_macro_overview": True},
+    )
+
+    assert decision.action is QualityGateAction.PASS
+    assert not any(finding.code == "mixed_without_driver_decomposition" for finding in decision.findings)
+
+
 def test_quality_gate_recommends_fallback_for_single_source_important_conclusion() -> None:
     decision = evaluate_quality_gate(
         agent_outputs=[

@@ -39,6 +39,18 @@ def test_local_stack_manages_dagster_daemon_with_shared_runtime_environment() ->
     assert ".venv/bin/dagster instance info" in script
 
 
+def test_local_stack_manages_dagster_webserver_and_graphql_with_shared_runtime_environment() -> None:
+    script = (PROJECT_ROOT / "scripts" / "local_stack_ctl.sh").read_text(encoding="utf-8")
+
+    assert 'DAGSTER_WEB_PORT="${FINANCE_AGENT_DAGSTER_WEB_PORT:-3333}"' in script
+    assert 'DAGSTER_GRAPHQL_URL_DEFAULT="${DAGSTER_WEB_URL}/graphql"' in script
+    assert 'export DAGSTER_GRAPHQL_URL="${DAGSTER_GRAPHQL_URL:-$DAGSTER_GRAPHQL_URL_DEFAULT}"' in script
+    assert "setsid .venv/bin/dagster-webserver -w workspace.yaml -h 127.0.0.1" in script
+    assert "start_dagster_webserver" in script
+    assert "stop_dagster_webserver" in script
+    assert "dagster_graphql_check" in script
+
+
 def test_local_stack_initializes_dagster_instance_before_starting_daemon() -> None:
     script = (PROJECT_ROOT / "scripts" / "local_stack_ctl.sh").read_text(encoding="utf-8")
     function_start = script.index("start_dagster_daemon()")
@@ -68,6 +80,7 @@ def test_local_stack_start_dry_run_plans_daemon_without_launching(tmp_path: Path
         "FINANCE_AGENT_STATE_DIR": str(tmp_path / "state"),
         "FINANCE_AGENT_API_PORT": "49801",
         "FINANCE_AGENT_FRONTEND_PORT": "49802",
+        "FINANCE_AGENT_DAGSTER_WEB_PORT": "49803",
     }
 
     result = subprocess.run(
@@ -87,10 +100,14 @@ def test_local_stack_start_dry_run_plans_daemon_without_launching(tmp_path: Path
 
     init_plan = "[dry-run] initialize .venv/bin/dagster instance info"
     start_plan = "[dry-run] start .venv/bin/dagster-daemon run -w workspace.yaml"
+    webserver_plan = "[dry-run] start .venv/bin/dagster-webserver -w workspace.yaml"
     assert init_plan in result.stdout
     assert start_plan in result.stdout
+    assert webserver_plan in result.stdout
     assert result.stdout.index(init_plan) < result.stdout.index(start_plan)
+    assert result.stdout.index(start_plan) < result.stdout.index(webserver_plan)
     assert not (tmp_path / "state" / "dagster-daemon.pid").exists()
+    assert not (tmp_path / "state" / "dagster-webserver.pid").exists()
     assert not (tmp_path / "state" / "dagster-home").exists()
 
 

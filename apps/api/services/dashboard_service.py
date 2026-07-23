@@ -10,7 +10,7 @@ from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
 from apps.api.services.macro_service import get_macro_latest
 from apps.api.services.market_service import get_market_tickers
 from apps.api.services.options_service import get_options_snapshot
-from apps.api.services.report_service import get_jin10_agent_analysis_latest, list_reports_index
+from apps.api.services.report_service import get_jin10_agent_analysis_latest, get_strategy_card_latest, list_reports_index
 from apps.api.services.source_service import get_data_source_statuses
 from apps.api.services.task_service import list_recent_tasks
 
@@ -224,27 +224,76 @@ def _latest_report_ref(reports: list[dict[str, Any]], *, report_type: str) -> di
 
 
 def _gate_agent_summary(agent_summary: dict[str, Any], composite_analysis: dict[str, Any]) -> dict[str, Any]:
-    synthesis = agent_summary.get("synthesis")
-    if not isinstance(synthesis, dict):
-        return agent_summary
-
+    accepted_run_id = str(composite_analysis.get("run_id") or "")
     degraded_run_ids = {
         str(report.get("run_id"))
         for report in composite_analysis.get("degraded_newer_reports", [])
         if report.get("run_id")
     }
-    if str(synthesis.get("run_id") or "") not in degraded_run_ids:
-        return agent_summary
-
     gated = dict(agent_summary)
-    gated["synthesis"] = None
-    gated["synthesis_gate"] = {
-        "status": "degraded",
-        "reason": "latest synthesis_agent output is tied to a degraded Jin10 report",
-        "run_id": synthesis.get("run_id"),
-        "snapshot_id": synthesis.get("snapshot_id"),
-    }
+    for key in ("synthesis", "coordinator"):
+        item = agent_summary.get(key)
+        if not isinstance(item, dict):
+            continue
+        item_run_id = str(item.get("run_id") or "")
+        if item_run_id in degraded_run_ids:
+            status = "degraded"
+            reason = f"latest {key} output is tied to a degraded report"
+        elif accepted_run_id and item_run_id and item_run_id != accepted_run_id:
+            status = "stale"
+            reason = f"latest {key} output does not belong to the accepted composite run"
+        else:
+            continue
+        gated[key] = None
+        gated[f"{key}_gate"] = {
+            "status": status,
+            "reason": reason,
+            "run_id": item.get("run_id"),
+            "snapshot_id": item.get("snapshot_id"),
+            "accepted_run_id": accepted_run_id or None,
+        }
     return gated
+
+
+def _load_dashboard_strategy(composite_analysis: dict[str, Any]) -> dict[str, Any]:
+    accepted_run_id = str(composite_analysis.get("run_id") or "")
+    accepted_trade_date = str(composite_analysis.get("trade_date") or "")
+    if not accepted_run_id:
+        return {}
+    try:
+        payload = get_strategy_card_latest()
+    except Exception as exc:
+        logger.warning(
+            "Failed to load accepted strategy card for dashboard summary",
+            exc_info=exc,
+            extra={"service": "dashboard_summary", "stage": "strategy_card", "degraded": True},
+        )
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    card = payload.get("json")
+    if not isinstance(card, dict):
+        return {}
+    if str(card.get("run_id") or payload.get("run_id") or "") != accepted_run_id:
+        return {}
+    if accepted_trade_date and str(card.get("trade_date") or payload.get("trade_date") or "") != accepted_trade_date:
+        return {}
+    return {
+        "bias": card.get("bias"),
+        "direction": card.get("bias"),
+        "confidence": card.get("confidence"),
+        "macro_phase": card.get("market_regime"),
+        "scenario_summary": card.get("scenario_summary"),
+        "key_levels": {"resistance": [], "support": []},
+        "triggers": card.get("trigger_conditions") or [],
+        "invalid_conditions": card.get("invalid_conditions") or [],
+        "risk_points": card.get("risk_points") or [],
+        "run_id": accepted_run_id,
+        "snapshot_id": (card.get("input_snapshot_ids") or {}).get("analysis_snapshot"),
+        "evidence_refs": (card.get("evidence_refs") or [])[:8],
+        "data_quality": card.get("data_quality") or [],
+        "data_category_summary": card.get("data_category_summary"),
+    }
 
 
 def _load_gold_macro_overview() -> dict[str, Any] | None:
@@ -311,6 +360,7 @@ def get_dashboard_summary() -> dict[str, Any]:
         all_reports=all_reports,
         options_trade_date=options_snapshot.get("trade_date") if options_snapshot else None,
     )
+    strategy = _load_dashboard_strategy(composite_analysis)
 
     def step_state(is_done: bool, has_data: bool) -> str:
         if is_done:
@@ -380,6 +430,7 @@ def get_dashboard_summary() -> dict[str, Any]:
         composite_analysis=composite_analysis,
         source_trace=source_trace,
         jin10_analysis=latest_jin10_analysis,
+        strategy_summary=strategy,
     )
 
     return {
@@ -412,6 +463,7 @@ def get_dashboard_summary() -> dict[str, Any]:
             "unavailable_count": len(macro.get("unavailable_symbols", [])),
             "indicators": macro.get("indicators", {}),
         },
+        "strategy": strategy,
         "pipeline": {
             "raw": step_state(has_raw, has_raw),
             "parsed": step_state(has_options, has_macro),

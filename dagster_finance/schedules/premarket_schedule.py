@@ -3,7 +3,7 @@
 Runs at 08:30 Beijing time (00:30 UTC) every weekday.
 """
 
-from dagster import SkipReason, schedule
+from dagster import DefaultScheduleStatus, SkipReason, schedule
 
 from dagster_finance.jobs.premarket_job import premarket_job
 from apps.api.services import pipeline_contract_service
@@ -15,6 +15,7 @@ from apps.api.services import pipeline_contract_service
     execution_timezone="UTC",
     name="premarket_daily",
     description="Run premarket pipeline at 08:30 Beijing time on weekdays",
+    default_status=DefaultScheduleStatus.RUNNING,
 )
 def premarket_daily_schedule(context):
     source_readiness = pipeline_contract_service.build_premarket_pipeline_source_readiness()

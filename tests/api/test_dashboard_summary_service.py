@@ -1,6 +1,81 @@
 from __future__ import annotations
 
-from apps.api.services.dashboard_service import get_dashboard_summary
+from apps.api.services.dashboard_service import _gate_agent_summary, _load_dashboard_strategy, get_dashboard_summary
+
+
+def test_dashboard_agent_summary_is_bound_to_accepted_composite_run():
+    result = _gate_agent_summary(
+        {
+            "synthesis": {"run_id": "jin10-225471", "snapshot_id": "jin10:snapshot"},
+            "coordinator": {"run_id": "old-composite", "snapshot_id": "old:snapshot"},
+        },
+        {"run_id": "current-composite", "degraded_newer_reports": []},
+    )
+
+    assert result["synthesis"] is None
+    assert result["synthesis_gate"]["status"] == "stale"
+    assert result["synthesis_gate"]["accepted_run_id"] == "current-composite"
+    assert result["coordinator"] is None
+    assert result["coordinator_gate"]["status"] == "stale"
+
+
+def test_dashboard_agent_summary_keeps_output_from_accepted_composite_run():
+    result = _gate_agent_summary(
+        {
+            "synthesis": None,
+            "coordinator": {"run_id": "current-composite", "summary": "current"},
+        },
+        {"run_id": "current-composite", "degraded_newer_reports": []},
+    )
+
+    assert result["coordinator"]["summary"] == "current"
+    assert "coordinator_gate" not in result
+
+
+def test_dashboard_strategy_is_bound_to_accepted_composite_run(monkeypatch):
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.get_strategy_card_latest",
+        lambda: {
+            "trade_date": "2026-07-23",
+            "run_id": "current-composite",
+            "json": {
+                "trade_date": "2026-07-23",
+                "run_id": "current-composite",
+                "bias": "mixed",
+                "confidence": 0.19,
+                "market_regime": "rate_pressure",
+                "scenario_summary": "Current formal composite summary.",
+                "trigger_conditions": ["trigger"],
+                "invalid_conditions": ["invalid"],
+                "risk_points": ["risk"],
+                "input_snapshot_ids": {"analysis_snapshot": "snapshot-current"},
+            },
+        },
+    )
+
+    result = _load_dashboard_strategy(
+        {"trade_date": "2026-07-23", "run_id": "current-composite"},
+    )
+
+    assert result["scenario_summary"] == "Current formal composite summary."
+    assert result["confidence"] == 0.19
+    assert result["run_id"] == "current-composite"
+    assert result["snapshot_id"] == "snapshot-current"
+
+
+def test_dashboard_strategy_rejects_mismatched_run(monkeypatch):
+    monkeypatch.setattr(
+        "apps.api.services.dashboard_service.get_strategy_card_latest",
+        lambda: {
+            "trade_date": "2026-07-23",
+            "run_id": "other-run",
+            "json": {"trade_date": "2026-07-23", "run_id": "other-run"},
+        },
+    )
+
+    assert _load_dashboard_strategy(
+        {"trade_date": "2026-07-23", "run_id": "current-composite"},
+    ) == {}
 
 
 def test_dashboard_summary_options_confidence_degrades_for_prelim_and_stale(monkeypatch):

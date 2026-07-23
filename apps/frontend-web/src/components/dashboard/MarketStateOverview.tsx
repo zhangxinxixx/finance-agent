@@ -90,7 +90,9 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
     ? integrated.dataCompleteness.label
     : `${dataPct}% · ${integrated.dataCompleteness.label}`;
   const primaryReport = summary.latest_reports.find(
-    (report) => report.status === "ready" && (report.type === "final_report" || report.type === "macro_report") && report.generated_at,
+    (report) => report.status === "ready" && report.type === "final_report" && report.generated_at,
+  ) ?? summary.latest_reports.find(
+    (report) => report.status === "ready" && report.type === "macro_report" && report.generated_at,
   );
   const reportUpdatedAt = primaryReport?.generated_at ?? summary.latest_reports.find(
     (report) => report.status === "ready" && report.generated_at,

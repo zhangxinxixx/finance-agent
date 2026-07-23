@@ -228,6 +228,34 @@ def test_fact_review_marks_claim_insufficient_when_all_sources_are_unavailable()
     assert payload["payload"]["claim_reviews"][0]["verdict"] == "insufficient_evidence"
 
 
+def test_fact_review_ignores_unavailable_status_summary_without_explicit_claims() -> None:
+    supported = _agent_output(
+        agent_name="macro_liquidity_agent",
+        bias="neutral",
+        source_refs=[{"source_id": "macro:daily", "status": "available"}],
+        claims=[
+            {
+                "claim_id": "macro-supported",
+                "text": "宏观输入保持中性。",
+                "source_refs": [{"source_id": "macro:daily", "status": "available"}],
+                "evidence_refs": [{"artifact_path": "storage/features/macro/daily.json"}],
+            }
+        ],
+    )
+    unavailable = _agent_output(
+        agent_name="positioning_agent",
+        status="unavailable",
+        bias="unavailable",
+        source_refs=[{"source_id": "positioning:daily", "status": "unavailable"}],
+        claims=[],
+    )
+
+    payload = build_fact_review_agent_output_payload([supported, unavailable])
+
+    assert payload["payload"]["fact_review_status"] == "passed"
+    assert [item["claim_id"] for item in payload["payload"]["claim_reviews"]] == ["macro-supported"]
+
+
 def test_build_fact_review_agent_output_payload_keeps_cross_variable_biases_supported() -> None:
     bullish = _agent_output(
         agent_name="macro_liquidity_agent",

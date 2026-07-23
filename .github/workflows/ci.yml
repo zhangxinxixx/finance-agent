@@ -70,6 +70,7 @@ jobs:
           uv run ruff check
           apps/analysis/state
           apps/analysis/context_bundle
+          apps/analysis/evidence_delta
           apps/analysis/figure_facts.py
           apps/output/context_bundle.py
           apps/output/figure_facts.py
@@ -78,6 +79,7 @@ jobs:
           database/models/analysis_state.py
           scripts/bootstrap_analysis_state.py
           tests/analysis/test_context_bundle.py
+          tests/analysis/test_evidence_delta_evaluator.py
           tests/analysis/test_figure_facts.py
           tests/analysis/test_state_bootstrap.py
           tests/analysis/test_state_materializer.py
@@ -100,6 +102,7 @@ jobs:
           tests/database/test_alembic_runtime_unification.py
           tests/database/test_analysis_state_core.py
           tests/analysis/test_context_bundle.py
+          tests/analysis/test_evidence_delta_evaluator.py
           tests/analysis/test_state_materializer.py
           tests/analysis/test_figure_facts.py
           tests/output/test_context_bundle_artifacts.py

@@ -16,9 +16,14 @@ FRONTEND_LOG="$STATE_DIR/frontend.log"
 FRONTEND_BUILD_LOG="$STATE_DIR/frontend-build.log"
 DAGSTER_DAEMON_PID_FILE="$STATE_DIR/dagster-daemon.pid"
 DAGSTER_DAEMON_LOG="$STATE_DIR/dagster-daemon.log"
+DAGSTER_WEB_PORT="${FINANCE_AGENT_DAGSTER_WEB_PORT:-3333}"
+DAGSTER_WEB_PID_FILE="$STATE_DIR/dagster-webserver.pid"
+DAGSTER_WEB_LOG="$STATE_DIR/dagster-webserver.log"
 DAGSTER_HOME_PATH="${DAGSTER_HOME:-$STATE_DIR/dagster-home}"
 BACKEND_URL="http://127.0.0.1:${API_PORT}"
 FRONTEND_URL="http://127.0.0.1:${FRONTEND_PORT}"
+DAGSTER_WEB_URL="http://127.0.0.1:${DAGSTER_WEB_PORT}"
+DAGSTER_GRAPHQL_URL_DEFAULT="${DAGSTER_WEB_URL}/graphql"
 DASHBOARD_API_URL="${BACKEND_URL}/dashboard"
 DASHBOARD_FRONTEND_URL="${FRONTEND_URL}/dashboard"
 HEALTH_URL="${BACKEND_URL}/health"
@@ -31,8 +36,8 @@ usage() {
 Usage: scripts/local_stack_ctl.sh <start|stop|restart|status|logs> [--with-deps] [--frontend=dev|build|none] [--dry-run]
 
 Commands:
-  start       Start local dependencies, API, Dagster daemon, and optionally the frontend.
-  stop        Stop managed frontend, Dagster daemon, and API. Use --with-deps to stop PostgreSQL/Redis.
+  start       Start local dependencies, API, Dagster daemon/webserver, and optionally the frontend.
+  stop        Stop managed frontend, Dagster daemon/webserver, and API. Use --with-deps to stop PostgreSQL/Redis.
   restart     Restart the managed stack. Use --with-deps to also restart PostgreSQL/Redis.
   status      Show managed PIDs, health, and entry URLs.
   logs        Tail API / Dagster daemon / frontend / build logs.
@@ -46,9 +51,10 @@ Event Flow translation:
   Set FINANCE_AGENT_EVENT_FLOW_TRANSLATION_PROVIDER=mimo to enable the Event Flow translation hub.
   Optionally set FINANCE_AGENT_EVENT_FLOW_TRANSLATION_MODEL=mimo-v2.5 to override the model.
 
-Dagster daemon:
+Dagster runtime:
   DAGSTER_HOME defaults to FINANCE_AGENT_STATE_DIR/dagster-home.
-  The daemon uses workspace.yaml and the same DATABASE_URL, no_proxy, and UV_CACHE_DIR as the API.
+  The daemon and GraphQL webserver use workspace.yaml and the same DATABASE_URL,
+  no_proxy, and UV_CACHE_DIR as the API. The webserver defaults to port 3333.
 EOF
 }
 
@@ -152,6 +158,78 @@ managed_daemon_pid() {
   printf '%s\n' "$pid"
 }
 
+dagster_web_pid_matches() {
+  local pid="$1"
+  local proc_dir="/proc/$pid"
+  local cwd
+  local args
+  local environment
+  [[ -r "$proc_dir/cmdline" ]] || return 1
+  [[ -r "$proc_dir/environ" ]] || return 1
+  cwd="$(readlink -f "$proc_dir/cwd" 2>/dev/null || true)"
+  [[ "$cwd" == "$PROJECT_ROOT" ]] || return 1
+  args="$(tr '\0' '\n' <"$proc_dir/cmdline")"
+  environment="$(tr '\0' '\n' <"$proc_dir/environ")"
+  if ! grep -Fxq "$PROJECT_ROOT/.venv/bin/dagster-webserver" <<<"$args" \
+    && ! grep -Fxq ".venv/bin/dagster-webserver" <<<"$args"; then
+    return 1
+  fi
+  if ! grep -Fxq "workspace.yaml" <<<"$args" \
+    && ! grep -Fxq "$PROJECT_ROOT/workspace.yaml" <<<"$args"; then
+    return 1
+  fi
+  grep -Fxq "DAGSTER_HOME=$DAGSTER_HOME_PATH" <<<"$environment" || return 1
+}
+
+cleanup_dagster_web_pid_file() {
+  local pid
+  [[ -f "$DAGSTER_WEB_PID_FILE" ]] || return 0
+  if ! pid="$(pid_from_file "$DAGSTER_WEB_PID_FILE" 2>/dev/null)"; then
+    if [[ "$dry_run" != "1" ]]; then
+      rm -f "$DAGSTER_WEB_PID_FILE"
+    fi
+    return 0
+  fi
+  if ! pid_running "$pid" || ! dagster_web_pid_matches "$pid"; then
+    if pid_running "$pid"; then
+      echo "Ignoring stale Dagster webserver pidfile for non-managed pid=$pid." >&2
+    fi
+    if [[ "$dry_run" != "1" ]]; then
+      rm -f "$DAGSTER_WEB_PID_FILE"
+    fi
+  fi
+}
+
+find_existing_dagster_webserver() {
+  local proc_dir
+  local pid
+  for proc_dir in /proc/[0-9]*; do
+    pid="${proc_dir##*/}"
+    if pid_running "$pid" && dagster_web_pid_matches "$pid"; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  done
+  return 1
+}
+
+managed_dagster_web_pid() {
+  local pid
+  cleanup_dagster_web_pid_file
+  if pid="$(pid_from_file "$DAGSTER_WEB_PID_FILE" 2>/dev/null)"; then
+    if pid_running "$pid" && dagster_web_pid_matches "$pid"; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  fi
+  pid="$(find_existing_dagster_webserver 2>/dev/null || true)"
+  [[ -n "$pid" ]] || return 1
+  if [[ "$dry_run" != "1" ]]; then
+    printf '%s\n' "$pid" >"$DAGSTER_WEB_PID_FILE"
+  fi
+  printf '%s\n' "$pid"
+}
+
 run_or_echo() {
   if [[ "$dry_run" == "1" ]]; then
     printf '[dry-run] '
@@ -216,6 +294,13 @@ dagster_liveness_check() {
   )
 }
 
+dagster_graphql_check() {
+  curl --noproxy '*' -fsS \
+    -H 'Content-Type: application/json' \
+    --data '{"query":"query { __typename }"}' \
+    "$DAGSTER_GRAPHQL_URL_DEFAULT" >/dev/null 2>&1
+}
+
 initialize_dagster_instance() {
   (
     cd "$PROJECT_ROOT"
@@ -237,6 +322,23 @@ wait_for_dagster_daemon() {
       return 1
     fi
     if dagster_liveness_check; then
+      return 0
+    fi
+    sleep "$sleep_seconds"
+  done
+  return 1
+}
+
+wait_for_dagster_webserver() {
+  local pid="$1"
+  local attempts="${2:-45}"
+  local sleep_seconds="${3:-1}"
+  local i
+  for ((i=1; i<=attempts; i++)); do
+    if ! pid_running "$pid" || ! dagster_web_pid_matches "$pid"; then
+      return 1
+    fi
+    if dagster_graphql_check; then
       return 0
     fi
     sleep "$sleep_seconds"
@@ -307,6 +409,7 @@ start_api() {
     export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
     export FINANCE_AGENT_FRONTEND_DIST_DIR="$FRONTEND_DIR/dist"
     export FRONTEND_WEB_URL="${FRONTEND_WEB_URL:-$FRONTEND_URL}"
+    export DAGSTER_GRAPHQL_URL="${DAGSTER_GRAPHQL_URL:-$DAGSTER_GRAPHQL_URL_DEFAULT}"
     export FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH="${FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH:-1}"
     export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS:-jin10_kline,twelvedata_xauusd_dispatch}"
     local -a api_env
@@ -373,6 +476,51 @@ start_dagster_daemon() {
   echo "Dagster daemon ready (pid=$existing_pid)."
 }
 
+start_dagster_webserver() {
+  local existing_pid
+  local port_pid
+  existing_pid="$(managed_dagster_web_pid 2>/dev/null || true)"
+  if [[ -n "$existing_pid" ]]; then
+    if wait_for_dagster_webserver "$existing_pid" 10 1; then
+      echo "Dagster webserver already running (pid=$existing_pid)."
+      return 0
+    fi
+    echo "Managed Dagster webserver is not healthy; restarting it (pid=$existing_pid)." >&2
+    stop_dagster_webserver
+  fi
+
+  port_pid="$(listening_pid_for_port "$DAGSTER_WEB_PORT" || true)"
+  if [[ -n "$port_pid" ]]; then
+    echo "Refusing to start Dagster webserver: port $DAGSTER_WEB_PORT is owned by non-managed pid=$port_pid." >&2
+    return 1
+  fi
+
+  echo "Starting Dagster webserver on ${DAGSTER_WEB_URL}..."
+  if [[ "$dry_run" == "1" ]]; then
+    echo "[dry-run] start .venv/bin/dagster-webserver -w workspace.yaml -h 127.0.0.1 -p $DAGSTER_WEB_PORT -> $DAGSTER_WEB_LOG"
+    return 0
+  fi
+  : >"$DAGSTER_WEB_LOG"
+  (
+    cd "$PROJECT_ROOT"
+    export no_proxy=127.0.0.1,localhost,::1
+    export DATABASE_URL="${DATABASE_URL:-$DATABASE_URL_DEFAULT}"
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
+    export DAGSTER_HOME="$DAGSTER_HOME_PATH"
+    setsid .venv/bin/dagster-webserver -w workspace.yaml -h 127.0.0.1 -p "$DAGSTER_WEB_PORT" >>"$DAGSTER_WEB_LOG" 2>&1 < /dev/null &
+    echo $! >"$DAGSTER_WEB_PID_FILE"
+  )
+
+  existing_pid="$(pid_from_file "$DAGSTER_WEB_PID_FILE")"
+  if ! wait_for_dagster_webserver "$existing_pid" 45 1; then
+    echo "Dagster webserver failed to become ready. Log: $DAGSTER_WEB_LOG" >&2
+    tail -n 120 "$DAGSTER_WEB_LOG" >&2 || true
+    stop_dagster_webserver
+    exit 1
+  fi
+  echo "Dagster GraphQL ready (pid=$existing_pid)."
+}
+
 start_frontend_dev() {
   adopt_existing_frontend
 
@@ -393,6 +541,7 @@ start_frontend_dev() {
     cd "$FRONTEND_DIR"
     export no_proxy=127.0.0.1,localhost,::1
     export VITE_PROXY_TARGET="${VITE_PROXY_TARGET:-$BACKEND_URL}"
+    export VITE_DAGSTER_TARGET="${VITE_DAGSTER_TARGET:-$DAGSTER_WEB_URL}"
     setsid npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" >"$FRONTEND_LOG" 2>&1 < /dev/null &
     echo $! >"$FRONTEND_PID_FILE"
   )
@@ -459,6 +608,39 @@ stop_dagster_daemon() {
   echo "Dagster daemon force stopped."
 }
 
+stop_dagster_webserver() {
+  local pid
+  pid="$(managed_dagster_web_pid 2>/dev/null || true)"
+  if [[ -z "$pid" ]]; then
+    echo "Dagster webserver is not running."
+    return 0
+  fi
+  if ! dagster_web_pid_matches "$pid"; then
+    echo "Refusing to stop non-managed pid=$pid from Dagster webserver pidfile." >&2
+    return 1
+  fi
+
+  echo "Stopping Dagster webserver (pid=$pid)..."
+  if [[ "$dry_run" == "1" ]]; then
+    echo "[dry-run] kill $pid"
+    return 0
+  fi
+  kill "$pid" 2>/dev/null || true
+  for _ in {1..20}; do
+    if ! pid_running "$pid"; then
+      rm -f "$DAGSTER_WEB_PID_FILE"
+      echo "Dagster webserver stopped."
+      return 0
+    fi
+    sleep 1
+  done
+  if dagster_web_pid_matches "$pid"; then
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$DAGSTER_WEB_PID_FILE"
+  echo "Dagster webserver force stopped."
+}
+
 stop_frontend() {
   cleanup_pid_file "$FRONTEND_PID_FILE"
   if ! pid="$(pid_from_file "$FRONTEND_PID_FILE" 2>/dev/null)"; then
@@ -494,6 +676,8 @@ show_status() {
   local frontend_pid=""
   local dagster_status="stopped"
   local dagster_pid=""
+  local dagster_web_status="stopped"
+  local dagster_web_pid=""
   if api_pid="$(pid_from_file "$API_PID_FILE" 2>/dev/null)"; then
     if pid_running "$api_pid"; then
       api_status="running"
@@ -516,10 +700,19 @@ show_status() {
       dagster_status="running, heartbeat unavailable"
     fi
   fi
+  dagster_web_pid="$(managed_dagster_web_pid 2>/dev/null || true)"
+  if [[ -n "$dagster_web_pid" ]]; then
+    if dagster_graphql_check; then
+      dagster_web_status="running, GraphQL ok"
+    else
+      dagster_web_status="running, GraphQL unavailable"
+    fi
+  fi
 
   echo "finance-agent local stack"
   echo "  API status:        $api_status${api_pid:+ (pid=$api_pid)}"
   echo "  Dagster daemon:    $dagster_status${dagster_pid:+ (pid=$dagster_pid)}"
+  echo "  Dagster webserver: $dagster_web_status${dagster_web_pid:+ (pid=$dagster_web_pid)}"
   echo "  Frontend status:   $frontend_status${frontend_pid:+ (pid=$frontend_pid)}"
   if wait_for_http "$HEALTH_URL" 1 1; then
     echo "  Health:            ok ($HEALTH_URL)"
@@ -534,6 +727,8 @@ show_status() {
   fi
   echo "  API log:           $API_LOG"
   echo "  Dagster log:       $DAGSTER_DAEMON_LOG"
+  echo "  Dagster GraphQL:   $DAGSTER_GRAPHQL_URL_DEFAULT"
+  echo "  Dagster web log:   $DAGSTER_WEB_LOG"
   echo "  DAGSTER_HOME:      $DAGSTER_HOME_PATH"
   echo "  Frontend log:      $FRONTEND_LOG"
   echo "  Build log:         $FRONTEND_BUILD_LOG"
@@ -546,6 +741,9 @@ tail_logs() {
   echo ""
   echo "== Dagster daemon log =="
   tail -n 80 "$DAGSTER_DAEMON_LOG" 2>/dev/null || echo "(missing)"
+  echo ""
+  echo "== Dagster webserver log =="
+  tail -n 80 "$DAGSTER_WEB_LOG" 2>/dev/null || echo "(missing)"
   echo ""
   echo "== Frontend log =="
   tail -n 80 "$FRONTEND_LOG" 2>/dev/null || echo "(missing)"
@@ -590,6 +788,7 @@ case "$command" in
     ensure_local_services
     start_api
     start_dagster_daemon
+    start_dagster_webserver
     case "$frontend_mode" in
       dev)
         start_frontend_dev
@@ -611,6 +810,7 @@ case "$command" in
     ;;
   stop)
     stop_frontend
+    stop_dagster_webserver
     stop_dagster_daemon
     stop_api
     if [[ "$with_deps" == "1" ]]; then
@@ -623,6 +823,7 @@ case "$command" in
     ;;
   restart)
     stop_frontend
+    stop_dagster_webserver
     stop_dagster_daemon
     stop_api
     if [[ "$with_deps" == "1" ]]; then
@@ -635,6 +836,7 @@ case "$command" in
     ensure_local_services
     start_api
     start_dagster_daemon
+    start_dagster_webserver
     case "$frontend_mode" in
       dev)
         start_frontend_dev
