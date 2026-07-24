@@ -37,8 +37,22 @@ def _state() -> dict:
 
 
 def _evidence(*, provider_metadata: bool = False) -> dict:
-    payload = {"price": 4050}
+    # Minimal typed payload conforming to the published #76 EvidenceDelta contract
+    # (validated key_level_event) so the v3 bundle can evaluate and retain it.
+    payload = {
+        "evidence_type": "key_level_event",
+        "asset": "XAUUSD",
+        "source_quality": "validated",
+        "level_id": "support-4000",
+        "level_role": "support",
+        "level_value": 4000,
+        "observed_value": 4050,
+        "event": "confirmed_break",
+        "confirmation_status": "confirmed",
+    }
     if provider_metadata:
+        # Transport metadata must be stripped by the assembler so it never
+        # influences bundle identity or content hash.
         payload.update({"provider": "jojocode", "conversation_id": "thread-1"})
     return {
         "source": "market",

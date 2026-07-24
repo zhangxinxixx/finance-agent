@@ -46,7 +46,7 @@ def write_context_bundle(
 ) -> ContextBundleWriteResult:
     validated = _validate_bundle(bundle)
     if validated.schema_version != CONTEXT_BUNDLE_SCHEMA_VERSION or validated.state_scope is None:
-        raise ValueError("context bundle writer only persists scoped v2 bundles")
+        raise ValueError("context bundle writer only persists scoped v3 bundles")
     storage_dir = Path(storage_root).resolve()
     relative = Path(
         "outputs",
@@ -84,6 +84,8 @@ def write_context_bundle(
             "state_scope": validated.state_scope,
             "run_id": validated.run_id,
             "canonical_state_id": validated.canonical_state_id,
+            "evidence_delta_decision_id": validated.evidence_delta_decision["decision_id"],
+            "evidence_delta_action": validated.evidence_delta_decision["recommended_action"],
             "estimated_tokens": validated.budget_trace.estimated_tokens,
         },
     }

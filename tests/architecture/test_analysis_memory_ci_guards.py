@@ -11,6 +11,7 @@ def test_ci_runs_analysis_memory_focused_and_postgres_suites() -> None:
     focused_suites = {
         "tests/database/test_analysis_state_core.py",
         "tests/analysis/test_context_bundle.py",
+        "tests/analysis/test_context_bundle_selection.py",
         "tests/analysis/test_evidence_delta_evaluator.py",
         "tests/analysis/test_state_materializer.py",
         "tests/analysis/test_figure_facts.py",

@@ -181,7 +181,20 @@ def test_composite_state_delta_shadow_shares_one_bundle_without_canonical_write(
                 "evidence_id": "market-shadow-2",
                 "business_time": (_CREATED_AT - timedelta(minutes=2)).isoformat(),
                 "ingested_at": (_CREATED_AT - timedelta(minutes=1)).isoformat(),
-                "payload": {"price": 3350},
+                # Minimal typed payload conforming to the published #76 EvidenceDelta
+                # contract (validated key_level_event) so the v3 bundle can evaluate
+                # and retain it for the shadow analyzer.
+                "payload": {
+                    "evidence_type": "key_level_event",
+                    "asset": "XAUUSD",
+                    "source_quality": "validated",
+                    "level_id": "support-3300",
+                    "level_role": "support",
+                    "level_value": 3300,
+                    "observed_value": 3350,
+                    "event": "confirmed_break",
+                    "confirmation_status": "confirmed",
+                },
                 "source_ref": evidence_ref,
             }
         ],
