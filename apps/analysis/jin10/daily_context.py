@@ -5,6 +5,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from apps.analysis.context_bundle.schemas import (
+    CONTEXT_BUNDLE_SCHEMA_VERSION,
+    AnalysisContextBundle,
+)
+
 
 KEY_MACRO_SYMBOLS = (
     "US10Y",
@@ -17,6 +22,114 @@ KEY_MACRO_SYMBOLS = (
     "RESERVES",
     "SOFR",
 )
+
+LEGACY_FULL_CONTEXT = "legacy_full_context"
+STATE_DELTA_CONTEXT = "state_delta_context"
+SUPPORTED_ANALYSIS_CONTEXT_MODES = frozenset(
+    {LEGACY_FULL_CONTEXT, STATE_DELTA_CONTEXT}
+)
+
+
+class StateDeltaContextError(ValueError):
+    """Raised when the explicit state-delta prompt input is absent or invalid."""
+
+
+def normalize_analysis_context_mode(value: str | None) -> str:
+    mode = str(value or LEGACY_FULL_CONTEXT).strip()
+    if mode not in SUPPORTED_ANALYSIS_CONTEXT_MODES:
+        raise StateDeltaContextError(f"unsupported analysis context mode: {mode}")
+    return mode
+
+
+def project_context_bundle_for_prompt(
+    bundle: AnalysisContextBundle | dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project one validated v3 Bundle into provider-independent prompt memory.
+
+    The projection keeps Bundle lineage and decision/selection state intact but
+    intentionally contains no legacy report body or implicit latest lookup.
+    """
+
+    if bundle is None:
+        raise StateDeltaContextError(
+            "state_delta_context requires an explicit AnalysisContextBundle v3"
+        )
+    try:
+        # Revalidate a JSON dump even for typed inputs: Pydantic model_copy and
+        # nested mutable payloads must not bypass the persisted hash contract.
+        payload = bundle.model_dump(mode="json") if isinstance(bundle, AnalysisContextBundle) else bundle
+        validated = AnalysisContextBundle.model_validate(payload)
+    except Exception as exc:
+        raise StateDeltaContextError(
+            f"invalid AnalysisContextBundle: {type(exc).__name__}"
+        ) from exc
+    if validated.schema_version != CONTEXT_BUNDLE_SCHEMA_VERSION:
+        raise StateDeltaContextError(
+            "state_delta_context only accepts AnalysisContextBundle v3"
+        )
+
+    blocks = {block.name: block for block in validated.blocks}
+    if len(validated.blocks) != 3 or set(blocks) != {
+        "canonical_state",
+        "delta_evidence",
+        "facts",
+    }:
+        raise StateDeltaContextError(
+            "AnalysisContextBundle v3 must contain canonical_state, delta_evidence and facts"
+        )
+    delta_block = blocks["delta_evidence"]
+    canonical_state = blocks["canonical_state"].payload
+    if not isinstance(canonical_state, dict):
+        raise StateDeltaContextError("canonical_state block payload must be an object")
+    if (
+        canonical_state.get("asset") != validated.asset
+        or canonical_state.get("state_scope") != validated.state_scope
+    ):
+        raise StateDeltaContextError(
+            "canonical_state block identity does not match AnalysisContextBundle"
+        )
+    retained_refs = [
+        {
+            "source": str(item.get("source") or ""),
+            "evidence_id": str(item.get("evidence_id") or ""),
+        }
+        for item in delta_block.payload
+        if isinstance(item, dict)
+    ]
+    accepted_facts = [
+        dict(item)
+        for item in blocks["facts"].payload
+        if isinstance(item, dict) and item.get("quality_status") == "accepted"
+    ]
+    return {
+        "schema_version": "jin10-state-delta-prompt-context.v1",
+        "context_mode": STATE_DELTA_CONTEXT,
+        "bundle": {
+            "bundle_id": validated.bundle_id,
+            "content_hash": validated.content_hash,
+            "canonical_state_id": validated.canonical_state_id,
+            "state_scope": validated.state_scope,
+            "asset": validated.asset,
+            "run_id": validated.run_id,
+            "cutoff_at": validated.cutoff_at.isoformat(),
+        },
+        "canonical_state": canonical_state,
+        "retained_delta_evidence": delta_block.payload,
+        "retained_evidence_ids": list(delta_block.retained_evidence_ids),
+        "retained_evidence_refs": retained_refs,
+        "accepted_facts": accepted_facts,
+        "evidence_delta_decision": validated.evidence_delta_decision,
+        "selection_trace": validated.selection_trace,
+        "selection_decisions": validated.selection_decisions,
+        "deferred_queue": validated.deferred_queue,
+        "processed_above_frontier": validated.processed_above_frontier,
+        "freshness": validated.freshness,
+        "freshness_sla_seconds": validated.freshness_sla_seconds,
+        "default_freshness_sla_seconds": validated.default_freshness_sla_seconds,
+        "session": validated.session,
+        "alignment": validated.alignment,
+        "bundle_budget_trace": validated.budget_trace.model_dump(mode="json"),
+    }
 
 
 def build_daily_analysis_context(

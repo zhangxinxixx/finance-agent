@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 import json
+import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from apps.analysis.context_bundle import assemble_context_bundle
+from apps.analysis.context_bundle.schemas import (
+    _canonical_bytes,
+    _estimate_tokens,
+    compute_bundle_content_hash,
+)
+from apps.analysis.evidence_delta import FigureFactEvidence
 from apps.analysis.jin10.agent_analysis import (
     MISSING,
     _parse_llm_output_to_fields,
@@ -14,6 +25,10 @@ from apps.analysis.jin10.agent_analysis import (
     build_jin10_agent_analysis_report_with_llm,
     parse_agent_analysis_markdown,
     sanitize_agent_analysis_markdown,
+)
+from apps.analysis.jin10.daily_context import (
+    StateDeltaContextError,
+    project_context_bundle_for_prompt,
 )
 from apps.analysis.jin10.daily_report import build_daily_report_analysis_snapshot
 from apps.analysis.jin10.raw_article import build_jin10_raw_article_report, build_raw_article_context
@@ -69,6 +84,75 @@ def _agent_report():
     raw_report = build_jin10_raw_article_report(document)
     daily_report = build_jin10_daily_analysis_report(snapshot)
     return raw_report, daily_report, build_jin10_agent_analysis_report(raw_report, daily_report)
+
+
+def _state_delta_bundle(
+    *,
+    canonical_state: dict | None = None,
+    materiality_score: float = 75,
+    risk_level: str = "high",
+    recompute_eligible: bool = False,
+    include_accepted_fact: bool = True,
+):
+    now = datetime(2026, 7, 22, 8, tzinfo=UTC)
+    fact = FigureFactEvidence(
+        source="figure_fact",
+        evidence_id="figure-fact-1",
+        asset="XAUUSD",
+        observed_at=now,
+        source_quality="validated",
+        source_ref={"artifact_id": "figure-fact-1"},
+        figure_fact_id="figure-fact-1",
+        figure_id="figure-1",
+        report_id="jin10-225144",
+        figure_content_hash="a" * 64,
+        quality_status="accepted",
+        has_direct_evidence=True,
+    )
+    return assemble_context_bundle(
+        run_id="run-state-delta-1",
+        asset="XAUUSD",
+        state_scope="daily_close",
+        canonical_state_id="state-daily-close-1",
+        canonical_state=canonical_state
+        or {
+            "asset": "XAUUSD",
+            "state_scope": "daily_close",
+            "core_thesis": "黄金处于等待实际利率确认的弱修复阶段",
+            "key_levels": [4000, 4126],
+        },
+        evidence=[
+            {
+                "source": "market",
+                "evidence_id": "market-delta-1",
+                "business_time": now,
+                "ingested_at": now + timedelta(minutes=1),
+                "session": "asia",
+                "payload": {
+                    "evidence_type": "material_event",
+                    "asset": "XAUUSD",
+                    "source_quality": "official",
+                    "event_id": "market-delta-1",
+                    "cluster_key": "market-delta-1",
+                    "event_type": "macro_release",
+                    "claim": "实际利率回落但尚未突破确认阈值",
+                    "materiality_score": materiality_score,
+                    "risk_level": risk_level,
+                    "recompute_eligible": recompute_eligible,
+                    "confirmation_status": "confirmed",
+                },
+                "source_ref": {"snapshot_id": "market-delta-1"},
+            }
+        ],
+        evidence_cursors={},
+        cutoff_at=now + timedelta(minutes=2),
+        assembled_at=now + timedelta(minutes=3),
+        facts=[fact.model_dump(mode="json")] if include_accepted_fact else [],
+        delta_facts=[fact] if include_accepted_fact else [],
+        freshness_sla_seconds={"market": 60},
+        default_freshness_sla_seconds=120,
+        expected_session="asia",
+    )
 
 
 def _llm_payload(report) -> dict:
@@ -288,6 +372,117 @@ def test_build_agent_analysis_prompt_marks_compacted_fallback_chart_mode() -> No
 
     assert "chart_render_mode: fallback_compact" in prompt
     assert "当前图表为页图 fallback：仅代表归档页面截图" in prompt
+
+
+def test_state_delta_prompt_uses_only_validated_bundle_memory() -> None:
+    raw_report, daily_report, _ = _agent_report()
+    bundle = _state_delta_bundle(recompute_eligible=True)
+    legacy_context = {
+        "analysis_baseline": {"one_line_conclusion": "不得进入 state delta prompt 的历史日报"},
+        "weekly_anchor": {"one_line_conclusion": "不得进入 state delta prompt 的完整周报"},
+    }
+
+    prompt, trace = build_agent_analysis_prompt_with_trace(
+        raw_report.to_dict(),
+        daily_report.to_dict(),
+        previous_daily_analysis={"final_summary": "不得静默回退的前日报告"},
+        analysis_context=legacy_context,
+        context_mode="state_delta_context",
+        analysis_context_bundle=bundle,
+    )
+
+    assert "=== analysis_memory_bundle_v3 ===" in prompt
+    assert bundle.bundle_id in prompt
+    assert bundle.content_hash in prompt
+    assert bundle.canonical_state_id in prompt
+    assert '"state_scope":"daily_close"' in prompt
+    assert '"retained_evidence_ids":["market-delta-1"]' in prompt
+    assert '"recommended_action":"run_transition_analysis"' in prompt
+    assert '"figure_fact_id":"figure-fact-1"' in prompt
+    assert '"deferred_queue"' in prompt
+    assert '"processed_above_frontier"' in prompt
+    assert '"freshness_sla_seconds":{"market":60}' in prompt
+    assert raw_report.title not in prompt
+    assert raw_report.article_markdown not in prompt
+    assert "不得进入 state delta prompt 的历史日报" not in prompt
+    assert "不得进入 state delta prompt 的完整周报" not in prompt
+    assert "不得静默回退的前日报告" not in prompt
+    assert "=== analysis_baseline ===" not in prompt
+    assert trace["within_budget"] is True
+    assert trace["total"]["estimated_tokens"] <= 15_000
+
+
+def test_state_delta_projection_requires_valid_v3_bundle_and_retains_recovery_state() -> None:
+    bundle = _state_delta_bundle()
+    projection = project_context_bundle_for_prompt(bundle.model_dump(mode="json"))
+
+    assert projection["evidence_delta_decision"] == bundle.evidence_delta_decision
+    assert projection["deferred_queue"] == []
+    assert projection["processed_above_frontier"] == {}
+    assert projection["freshness_sla_seconds"] == bundle.freshness_sla_seconds
+    assert projection["default_freshness_sla_seconds"] == bundle.default_freshness_sla_seconds
+
+    invalid = bundle.model_dump(mode="json")
+    invalid["content_hash"] = "0" * 64
+    with pytest.raises(StateDeltaContextError, match="invalid AnalysisContextBundle"):
+        project_context_bundle_for_prompt(invalid)
+
+    wrong_id = bundle.model_copy(update={"bundle_id": "00000000-0000-0000-0000-000000000000"})
+    with pytest.raises(StateDeltaContextError, match="invalid AnalysisContextBundle"):
+        project_context_bundle_for_prompt(wrong_id)
+
+    typed_tamper = bundle.model_copy(deep=True)
+    typed_tamper.blocks[0].payload["asset"] = "XAGUSD"
+    with pytest.raises(StateDeltaContextError, match="invalid AnalysisContextBundle"):
+        project_context_bundle_for_prompt(typed_tamper)
+
+    for field, value in (("asset", "XAGUSD"), ("state_scope", "weekly_fundamental")):
+        payload = bundle.model_dump(mode="json")
+        canonical = next(item for item in payload["blocks"] if item["name"] == "canonical_state")
+        canonical["payload"][field] = value
+        encoded = _canonical_bytes(canonical["payload"])
+        canonical["utf8_bytes"] = len(encoded)
+        canonical["estimated_tokens"] = _estimate_tokens(encoded)
+        trace_block = next(item for item in payload["budget_trace"]["blocks"] if item["name"] == "canonical_state")
+        trace_block["utf8_bytes"] = canonical["utf8_bytes"]
+        trace_block["estimated_tokens"] = canonical["estimated_tokens"]
+        payload["budget_trace"]["total_utf8_bytes"] = sum(
+            item["utf8_bytes"] for item in payload["blocks"]
+        )
+        payload["budget_trace"]["estimated_tokens"] = sum(
+            item["estimated_tokens"] for item in payload["blocks"]
+        )
+        payload["content_hash"] = compute_bundle_content_hash(payload)
+        payload["bundle_id"] = str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"finance-agent:context-bundle:{payload['content_hash']}")
+        )
+        with pytest.raises(StateDeltaContextError, match="canonical_state block identity"):
+            project_context_bundle_for_prompt(payload)
+
+
+def test_state_delta_rejects_non_default_profile_before_profile_early_return() -> None:
+    raw_report = {"title": "市场赔率数据表", "article_markdown": "Bundle 外正文"}
+    daily_report = {"report_type": "market_observation"}
+
+    with pytest.raises(StateDeltaContextError, match="only supported"):
+        build_agent_analysis_prompt(
+            raw_report,
+            daily_report,
+            context_mode="state_delta_context",
+            analysis_context_bundle=_state_delta_bundle(),
+        )
+
+
+def test_state_delta_prompt_rejects_non_transition_decision() -> None:
+    raw_report, daily_report, _ = _agent_report()
+
+    with pytest.raises(StateDeltaContextError, match="manual_review"):
+        build_agent_analysis_prompt(
+            raw_report.to_dict(),
+            daily_report.to_dict(),
+            context_mode="state_delta_context",
+            analysis_context_bundle=_state_delta_bundle(),
+        )
 
 
 def test_build_agent_analysis_prompt_uses_market_observation_framework() -> None:
@@ -762,6 +957,186 @@ def test_llm_agent_analysis_prompt_budget_failure_skips_external_call(monkeypatc
     assert result.generated_from["degraded"] is True
     assert result.generated_from["degraded_reason"] == "prompt_budget_exceeded"
     assert result.generated_from["prompt_budget"] == trace
+
+
+def test_llm_state_delta_budget_and_model_failures_raise_without_raw_fallback(monkeypatch) -> None:
+    raw_report, daily_report, _ = _agent_report()
+    bundle = _state_delta_bundle(recompute_eligible=True)
+    trace = build_prompt_budget_trace("超限", budget_tokens=0)
+
+    def fail_prompt(*args, **kwargs):
+        raise PromptBudgetExceeded(trace)
+
+    monkeypatch.setattr(
+        "apps.analysis.jin10.agent_analysis.build_agent_analysis_prompt_with_trace",
+        fail_prompt,
+    )
+    with pytest.raises(PromptBudgetExceeded):
+        build_jin10_agent_analysis_report_with_llm(
+            raw_report,
+            daily_report,
+            context_mode="state_delta_context",
+            analysis_context_bundle=bundle,
+        )
+
+    monkeypatch.undo()
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", lambda **kwargs: (_ for _ in ()).throw(RuntimeError()))
+    with pytest.raises(StateDeltaContextError, match="model failure: RuntimeError"):
+        build_jin10_agent_analysis_report_with_llm(
+            raw_report,
+            daily_report,
+            context_mode="state_delta_context",
+            analysis_context_bundle=bundle,
+        )
+
+
+def test_llm_state_delta_missing_bundle_fails_before_images_and_external_call(monkeypatch) -> None:
+    raw_report, daily_report, _ = _agent_report()
+    calls = {"image": 0, "chat": 0}
+
+    def image_loader(chart):
+        calls["image"] += 1
+        raise AssertionError("invalid state delta context must stop before image loading")
+
+    def fake_chat_sync(**kwargs):
+        calls["chat"] += 1
+        raise AssertionError("invalid state delta context must stop before external call")
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+
+    with pytest.raises(StateDeltaContextError, match="requires an explicit"):
+        build_jin10_agent_analysis_report_with_llm(
+            raw_report,
+            daily_report,
+            figure_image_loader=image_loader,
+            context_mode="state_delta_context",
+        )
+    assert calls == {"image": 0, "chat": 0}
+
+
+def test_llm_state_delta_audit_binds_bundle_lineage(monkeypatch) -> None:
+    raw_report, daily_report, deterministic = _agent_report()
+    bundle = _state_delta_bundle(recompute_eligible=True)
+    captured = {}
+
+    class Response:
+        content = json.dumps(_llm_payload(deterministic), ensure_ascii=False)
+        model = "state-delta-model"
+        provider = "cockpit"
+        latency_ms = 8
+        usage = {}
+        audit_id = "audit-state-delta"
+
+    def fake_chat_sync(**kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+
+    result = build_jin10_agent_analysis_report_with_llm(
+        raw_report,
+        daily_report,
+        context_mode="state_delta_context",
+        analysis_context_bundle=bundle,
+    )
+
+    audit = captured["audit_context"]
+    assert audit["context_mode"] == "state_delta_context"
+    assert audit["context_bundle_id"] == bundle.bundle_id
+    assert audit["context_bundle_hash"] == bundle.content_hash
+    assert audit["canonical_state_id"] == bundle.canonical_state_id
+    assert audit["state_scope"] == "daily_close"
+    assert audit["retained_evidence_ids"] == ["market-delta-1"]
+    assert audit["retained_evidence_refs"] == [
+        {"source": "market", "evidence_id": "market-delta-1"}
+    ]
+    assert audit["evidence_delta_decision_id"] == bundle.evidence_delta_decision["decision_id"]
+    assert audit["input_snapshot_ids"] == {
+        "analysis_context_bundle": {
+            "bundle_id": bundle.bundle_id,
+            "content_hash": bundle.content_hash,
+            "canonical_state_id": bundle.canonical_state_id,
+        }
+    }
+    assert result.generated_from["analysis_context_bundle"]["bundle_id"] == bundle.bundle_id
+    assert len(result.generated_from["prompt_payload_hash"]) == 64
+    assert result.source_artifact_refs == [f"analysis_context_bundle:{bundle.bundle_id}"]
+    assert result.source_refs[0]["artifact_id"] == bundle.bundle_id
+    assert all("jin10" not in str(item) for item in result.source_artifact_refs)
+    assert all(item.get("source") != "jin10_external" for item in result.source_refs)
+    assert set(result.evidence_basis) == {"analysis_memory"}
+
+
+@pytest.mark.parametrize(
+    ("bundle_kwargs", "expected_action", "expected_calls"),
+    [
+        (
+            {"materiality_score": 10, "risk_level": "low", "include_accepted_fact": False},
+            "no_op",
+            {"image": 0, "chat": 0},
+        ),
+        ({"materiality_score": 50, "risk_level": "low"}, "update_context_only", {"image": 0, "chat": 0}),
+        ({}, "manual_review", {"image": 0, "chat": 0}),
+        ({"recompute_eligible": True}, "run_transition_analysis", {"image": 0, "chat": 1}),
+    ],
+)
+def test_llm_state_delta_routes_every_decision_before_images_and_provider(
+    monkeypatch,
+    bundle_kwargs,
+    expected_action,
+    expected_calls,
+) -> None:
+    raw_report, daily_report, deterministic = _agent_report()
+    calls = {"image": 0, "chat": 0}
+
+    class Response:
+        content = json.dumps(_llm_payload(deterministic), ensure_ascii=False)
+        model = "state-delta-model"
+        provider = "cockpit"
+        latency_ms = 8
+        usage = {}
+        audit_id = "audit-state-delta"
+
+    def image_loader(chart):
+        calls["image"] += 1
+        raise AssertionError("state_delta_context must not load raw-report images")
+
+    def fake_chat_sync(**kwargs):
+        calls["chat"] += 1
+        return Response()
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+    bundle = _state_delta_bundle(**bundle_kwargs)
+
+    if expected_action == "run_transition_analysis":
+        result = build_jin10_agent_analysis_report_with_llm(
+            raw_report,
+            daily_report,
+            figure_image_loader=image_loader,
+            context_mode="state_delta_context",
+            analysis_context_bundle=bundle,
+        )
+        assert calls == expected_calls
+        assert result.generated_from["evidence_delta_action"] == expected_action
+        assert result.generated_from["evidence_delta_decision_id"] == bundle.evidence_delta_decision["decision_id"]
+        assert result.generated_from["retained_evidence_refs"] == [
+            {"source": "market", "evidence_id": "market-delta-1"}
+        ]
+        assert result.generated_from["submitted_image_count"] == 0
+    else:
+        with pytest.raises(StateDeltaContextError, match=expected_action):
+            build_jin10_agent_analysis_report_with_llm(
+                raw_report,
+                daily_report,
+                figure_image_loader=image_loader,
+                context_mode="state_delta_context",
+                analysis_context_bundle=bundle,
+            )
+        assert calls == expected_calls
 
 
 def test_sanitize_agent_analysis_markdown_removes_agent_storage_section_and_yaml_block() -> None:
