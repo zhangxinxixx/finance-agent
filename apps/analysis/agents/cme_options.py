@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+
+if TYPE_CHECKING:
+    from apps.analysis.context_bundle import ConsumerProjection
 
 _AGENT_NAME = "cme_options_agent"
 _MODULE = "options"
@@ -21,7 +25,19 @@ _WATCHLIST = [
 ]
 
 
-def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
+def analyze_cme_options(
+    snapshot: dict[str, Any],
+    *,
+    created_at: datetime | None = None,
+    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
+) -> AgentOutput:
+    from apps.analysis.context_bundle import validate_consumer_projection
+
+    projection = validate_consumer_projection(context_projection, "options") if context_projection is not None else None
+    return _bind_context_projection(_analyze_cme_options(snapshot, created_at=created_at), projection)
+
+
+def _analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
     """Analyze already-computed CME options snapshot data without mutating inputs or reading files."""
 
     created_at = created_at or datetime.now(timezone.utc)
@@ -51,7 +67,11 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
     options = snapshot.get("options")
 
     if not isinstance(options, dict) or options.get("status") != "available":
-        reason = "options section is missing" if not isinstance(options, dict) else f"options status is {options.get('status')!r}"
+        reason = (
+            "options section is missing"
+            if not isinstance(options, dict)
+            else f"options status is {options.get('status')!r}"
+        )
         return AgentOutput(
             version=_VERSION,
             agent_name=_AGENT_NAME,
@@ -102,7 +122,9 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
         if strike is not None:
             finding += f" near {strike:g}"
         else:
-            invalid_conditions.append("Top wall score has no numeric strike/level; precise wall price was not invented.")
+            invalid_conditions.append(
+                "Top wall score has no numeric strike/level; precise wall price was not invented."
+            )
         if wall_score is not None:
             finding += f" with score {wall_score:.2f}"
             confidence += min(wall_score * 0.10, 0.10)
@@ -177,7 +199,9 @@ def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None
         status=status,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
-        evidence_items=_options_evidence_items(options=options, bias=bias, confidence=confidence, source_refs=source_refs),
+        evidence_items=_options_evidence_items(
+            options=options, bias=bias, confidence=confidence, source_refs=source_refs
+        ),
         input_payload={
             "bullish_drivers": bullish_drivers,
             "bearish_drivers": bearish_drivers,
@@ -359,7 +383,9 @@ def _add_block_pnt(options: dict[str, Any], key_findings: list[str]) -> None:
     if strike is not None:
         key_findings.append(f"Block/PNT activity appears near {strike:g} with block {block:g} and PNT {pnt:g}.")
     else:
-        key_findings.append(f"Block/PNT activity is present with block {block:g} and PNT {pnt:g}, but no exact level is available.")
+        key_findings.append(
+            f"Block/PNT activity is present with block {block:g} and PNT {pnt:g}, but no exact level is available."
+        )
 
 
 def _add_expiration_summary(options: dict[str, Any], key_findings: list[str]) -> None:
@@ -473,9 +499,14 @@ def _summary(
             first = expiry_structures[0]
             second = expiry_structures[1]
             same_structure = first["structure_label"] == second["structure_label"]
-            same_side = first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"] and first["position_vs_gamma_zero"] != "unknown"
+            same_side = (
+                first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"]
+                and first["position_vs_gamma_zero"] != "unknown"
+            )
             if same_structure and same_side:
-                relation = {"below": "均低于", "above": "均高于", "near": "均贴近"}.get(first["position_vs_gamma_zero"], "均围绕")
+                relation = {"below": "均低于", "above": "均高于", "near": "均贴近"}.get(
+                    first["position_vs_gamma_zero"], "均围绕"
+                )
                 phrases.append(
                     f"{first['expiry']} / {second['expiry']} {relation}各自零轴，且{first['structure_label']}"
                 )
@@ -572,9 +603,7 @@ def _add_calibration_findings(
                 near = _text(sig_dict.get("near_month", ""))
                 next_m = _text(sig_dict.get("next_month", ""))
                 conf = sig_dict.get("roll_confidence", 0)
-                key_findings.append(
-                    f"Expiry roll {activity} ({near} → {next_m}, confidence {conf:.2f})."
-                )
+                key_findings.append(f"Expiry roll {activity} ({near} → {next_m}, confidence {conf:.2f}).")
 
     # Calibration warnings
     warnings = cal.get("calibration_warnings")
@@ -683,7 +712,10 @@ def _structure_confidence_bonus(expiry_structures: list[dict[str, Any]]) -> floa
         first, second = expiry_structures[0], expiry_structures[1]
         if first["structure_label"] == second["structure_label"]:
             bonus += 0.04
-        if first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"] and first["position_vs_gamma_zero"] != "unknown":
+        if (
+            first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"]
+            and first["position_vs_gamma_zero"] != "unknown"
+        ):
             bonus += 0.03
     if all(item["gamma_zero"] is not None for item in expiry_structures[:2]):
         bonus += 0.03
@@ -709,3 +741,13 @@ def _support_resistance_levels(options: dict[str, Any]) -> tuple[float | None, f
     support = _first_with_number(sr.get("support"), ("strike", "price", "level"))
     resistance = _first_with_number(sr.get("resistance"), ("strike", "price", "level"))
     return support, resistance
+
+
+def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
+    if projection is None:
+        return output
+    from apps.analysis.context_bundle import consume_projection_for_agent_output
+
+    return AgentOutput.model_validate(
+        consume_projection_for_agent_output(projection, output, expected_consumer="options")
+    )

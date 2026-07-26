@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
 from apps.analysis.agents.macro_liquidity_prompt import build_macro_liquidity_prompt_template
@@ -35,19 +36,33 @@ _LIQUIDITY_GROUPS = {
     "IORB": ("IORB",),
 }
 
+if TYPE_CHECKING:
+    from apps.analysis.context_bundle import ConsumerProjection
 
-def analyze_macro_liquidity(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
+
+def analyze_macro_liquidity(
+    snapshot: dict[str, Any],
+    *,
+    created_at: datetime | None = None,
+    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
+) -> AgentOutput:
     """Analyze already-loaded macro liquidity snapshot data without mutating inputs."""
 
+    from apps.analysis.context_bundle import validate_consumer_projection
+
+    projection = validate_consumer_projection(context_projection, "macro") if context_projection is not None else None
     created_at = created_at or datetime.now(timezone.utc)
     if not isinstance(snapshot, dict):
-        return _build_unavailable_output(
-            snapshot_id="unknown",
-            input_snapshot_ids={},
-            source_refs=[],
-            created_at=created_at,
-            invalid_reason="非字典输入被拒绝；文件/路径读取不在范围内。",
-            risk_point="宏观流动性输入必须是已加载的快照字典。",
+        return _bind_context_projection(
+            _build_unavailable_output(
+                snapshot_id="unknown",
+                input_snapshot_ids={},
+                source_refs=[],
+                created_at=created_at,
+                invalid_reason="非字典输入被拒绝；文件/路径读取不在范围内。",
+                risk_point="宏观流动性输入必须是已加载的快照字典。",
+            ),
+            projection,
         )
 
     snapshot_id = str(snapshot.get("snapshot_id") or "unknown")
@@ -56,14 +71,19 @@ def analyze_macro_liquidity(snapshot: dict[str, Any], *, created_at: datetime | 
     macro = snapshot.get("macro")
 
     if not isinstance(macro, dict) or macro.get("status") != "available":
-        reason = "macro section is missing" if not isinstance(macro, dict) else f"macro status is {macro.get('status')!r}"
-        return _build_unavailable_output(
-            snapshot_id=snapshot_id,
-            input_snapshot_ids=input_snapshot_ids,
-            source_refs=source_refs,
-            created_at=created_at,
-            invalid_reason=reason,
-            risk_point="宏观流动性输入不可用。",
+        reason = (
+            "macro section is missing" if not isinstance(macro, dict) else f"macro status is {macro.get('status')!r}"
+        )
+        return _bind_context_projection(
+            _build_unavailable_output(
+                snapshot_id=snapshot_id,
+                input_snapshot_ids=input_snapshot_ids,
+                source_refs=source_refs,
+                created_at=created_at,
+                invalid_reason=reason,
+                risk_point="宏观流动性输入不可用。",
+            ),
+            projection,
         )
 
     data = _macro_data(snapshot)
@@ -78,14 +98,19 @@ def analyze_macro_liquidity(snapshot: dict[str, Any], *, created_at: datetime | 
         indicators=indicators,
         data=data,
     )
-    llm_result = invoke_macro_liquidity_llm(snapshot, deterministic_output=deterministic)
-    return _merge_macro_liquidity_output(snapshot, deterministic, llm_result)
+    llm_result = invoke_macro_liquidity_llm(
+        snapshot,
+        deterministic_output=deterministic,
+        context_projection=projection,
+    )
+    return _bind_context_projection(_merge_macro_liquidity_output(snapshot, deterministic, llm_result), projection)
 
 
 def invoke_macro_liquidity_llm(
     snapshot: dict[str, Any],
     *,
     deterministic_output: AgentOutput | None = None,
+    context_projection: "ConsumerProjection | None" = None,
 ) -> dict[str, Any]:
     from apps.llm.gateway import chat_sync
 
@@ -100,7 +125,11 @@ def invoke_macro_liquidity_llm(
             "skipped": True,
         }
 
-    prompt = build_macro_liquidity_prompt(snapshot, deterministic_output=deterministic_output)
+    prompt = build_macro_liquidity_prompt(
+        snapshot,
+        deterministic_output=deterministic_output,
+        context_projection=context_projection,
+    )
     provider = os.getenv("MACRO_LIQUIDITY_LLM_PROVIDER", _DEFAULT_LLM_PROVIDER)
     model = os.getenv("MACRO_LIQUIDITY_LLM_MODEL", os.getenv("LLM_COCKPIT_MODEL", _DEFAULT_LLM_MODEL))
     reasoning_effort = os.getenv(
@@ -123,7 +152,11 @@ def invoke_macro_liquidity_llm(
             "run_id": snapshot.get("run_id"),
             "snapshot_id": snapshot.get("snapshot_id"),
             "trade_date": snapshot.get("trade_date"),
-            "input_payload": build_macro_liquidity_structured_payload(snapshot, deterministic_output=deterministic_output),
+            "input_payload": build_macro_liquidity_structured_payload(
+                snapshot,
+                deterministic_output=deterministic_output,
+                context_projection=context_projection,
+            ),
         },
     )
     return {
@@ -143,8 +176,13 @@ def build_macro_liquidity_prompt(
     snapshot: dict[str, Any],
     *,
     deterministic_output: AgentOutput | None = None,
+    context_projection: "ConsumerProjection | None" = None,
 ) -> str:
-    payload = build_macro_liquidity_structured_payload(snapshot, deterministic_output=deterministic_output)
+    payload = build_macro_liquidity_structured_payload(
+        snapshot,
+        deterministic_output=deterministic_output,
+        context_projection=context_projection,
+    )
     return (
         f"{build_macro_liquidity_prompt_template()}\n\n"
         "=== 结构化输入 ===\n"
@@ -156,6 +194,7 @@ def build_macro_liquidity_structured_payload(
     snapshot: dict[str, Any],
     *,
     deterministic_output: AgentOutput | None = None,
+    context_projection: "ConsumerProjection | None" = None,
 ) -> dict[str, Any]:
     deterministic_output = deterministic_output or _build_deterministic_output(
         snapshot_id=str(snapshot.get("snapshot_id") or "unknown"),
@@ -169,7 +208,7 @@ def build_macro_liquidity_structured_payload(
     macro = snapshot.get("macro") if isinstance(snapshot.get("macro"), dict) else {}
     data = macro.get("data") if isinstance(macro.get("data"), dict) else {}
     indicators = data.get("indicators") if isinstance(data.get("indicators"), dict) else {}
-    return {
+    payload = {
         "report_type": "macro_liquidity",
         "snapshot_id": str(snapshot.get("snapshot_id") or "unknown"),
         "trade_date": _trade_date(snapshot),
@@ -218,11 +257,18 @@ def build_macro_liquidity_structured_payload(
         "existing_frame": {
             "real_yield": _indicator_snapshot(indicators, _REAL_YIELD_KEYS),
             "dxy": _indicator_snapshot(indicators, _DXY_KEYS),
-            "liquidity": {
-                name: _indicator_snapshot(indicators, keys) for name, keys in _LIQUIDITY_GROUPS.items()
-            },
+            "liquidity": {name: _indicator_snapshot(indicators, keys) for name, keys in _LIQUIDITY_GROUPS.items()},
         },
     }
+    if context_projection is not None:
+        payload["context_bundle_summary"] = _context_projection_summary(context_projection)
+        from apps.analysis.context_bundle import consumer_projection_payload
+
+        payload["context_bundle_projection"] = consumer_projection_payload(
+            context_projection,
+            expected_consumer="macro",
+        )
+    return payload
 
 
 def _system_data_gaps(indicators: dict[str, Any], source_refs: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -235,17 +281,21 @@ def _system_data_gaps(indicators: dict[str, Any], source_refs: list[dict[str, An
 
     dxy = _indicator_snapshot(indicators, _DXY_KEYS)
     if dxy is None:
-        gaps.append({
-            "item": "DXY",
-            "current_status": "missing_from_system_snapshot",
-            "optimization": "接入 TradingView DXY 最新值、1周变化、1月变化，CNBC 仅作兜底。",
-        })
+        gaps.append(
+            {
+                "item": "DXY",
+                "current_status": "missing_from_system_snapshot",
+                "optimization": "接入 TradingView DXY 最新值、1周变化、1月变化，CNBC 仅作兜底。",
+            }
+        )
     elif "tradingview" not in refs_text:
-        gaps.append({
-            "item": "DXY TradingView weekly/monthly",
-            "current_status": "system_snapshot_has_dxy_but_not_confirmed_tradingview_source",
-            "optimization": "修复 TradingView source_ref 与周/月变化映射。",
-        })
+        gaps.append(
+            {
+                "item": "DXY TradingView weekly/monthly",
+                "current_status": "system_snapshot_has_dxy_but_not_confirmed_tradingview_source",
+                "optimization": "修复 TradingView source_ref 与周/月变化映射。",
+            }
+        )
 
     required = [
         ("ETF / GLD flows", ("etf", "gld"), "接入 WGC / GLD 持仓或可信 ETF flow 数据源。"),
@@ -256,11 +306,13 @@ def _system_data_gaps(indicators: dict[str, Any], source_refs: list[dict[str, An
     ]
     for item, needles, optimization in required:
         if not any(needle in refs_text for needle in needles):
-            gaps.append({
-                "item": item,
-                "current_status": "not_in_system_source_refs",
-                "optimization": optimization,
-            })
+            gaps.append(
+                {
+                    "item": item,
+                    "current_status": "not_in_system_source_refs",
+                    "optimization": optimization,
+                }
+            )
     return gaps
 
 
@@ -331,6 +383,41 @@ def _build_unavailable_output(
         regime_drivers=None,
         data_category=DataCategory.CONFIRMED_DATA,
     )
+
+
+def _bind_context_projection(
+    output: AgentOutput,
+    projection: "ConsumerProjection | None",
+) -> AgentOutput:
+    if projection is None:
+        return output
+    from apps.analysis.context_bundle import consume_projection_for_agent_output
+
+    return AgentOutput.model_validate(
+        consume_projection_for_agent_output(
+            projection,
+            output,
+            expected_consumer="macro",
+        )
+    )
+
+
+def _context_projection_summary(projection: "ConsumerProjection") -> dict[str, Any]:
+    return {
+        "decision_id": projection.decision_id,
+        "decision_action": projection.decision.recommended_action.value,
+        "state_scope": projection.identity_payload.state_scope,
+        "retained_evidence_count": len(projection.retained_evidence),
+        "retained_refs": list(projection.retained_source_refs),
+        "accepted_fact_count": len(projection.accepted_facts),
+        "accepted_fact_refs": [
+            {
+                "source": item.get("source"),
+                "figure_fact_id": item.get("figure_fact_id"),
+            }
+            for item in projection.accepted_facts
+        ],
+    }
 
 
 def _input_snapshot_ids(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -498,13 +585,19 @@ def _build_deterministic_output(
         real_change = _first_change(indicators, _REAL_YIELD_KEYS)
         real_value = real_value if real_value is not None else _first_value(indicators, _REAL_YIELD_KEYS)
         if real_change is not None:
-            key_findings.append("10Y real-yield change is using supplementary TIPS/direct field because US10Y-T10YIE change is incomplete.")
+            key_findings.append(
+                "10Y real-yield change is using supplementary TIPS/direct field because US10Y-T10YIE change is incomplete."
+            )
         else:
             status = AgentStatus.PARTIAL
             confidence -= 0.12
-            invalid_conditions.append("10Y real-yield signal is missing; checked real-yield fields, nominal yield and T10YIE.")
+            invalid_conditions.append(
+                "10Y real-yield signal is missing; checked real-yield fields, nominal yield and T10YIE."
+            )
     else:
-        key_findings.append(f"10Y real-yield main口径 uses US10Y - T10YIE; weekly/directional change is {real_change:.2f}.")
+        key_findings.append(
+            f"10Y real-yield main口径 uses US10Y - T10YIE; weekly/directional change is {real_change:.2f}."
+        )
     if real_change is not None:
         if real_change < 0:
             score += 1
@@ -534,7 +627,9 @@ def _build_deterministic_output(
         elif dxy_value is not None:
             key_findings.append(f"DXY level is available ({dxy_value:.2f}) but directional change is missing.")
 
-    present_liquidity = [name for name, keys in _LIQUIDITY_GROUPS.items() if _first_indicator(indicators, keys) is not None]
+    present_liquidity = [
+        name for name, keys in _LIQUIDITY_GROUPS.items() if _first_indicator(indicators, keys) is not None
+    ]
     if len(present_liquidity) < len(_LIQUIDITY_GROUPS):
         missing = [name for name in _LIQUIDITY_GROUPS if name not in present_liquidity]
         status = AgentStatus.PARTIAL

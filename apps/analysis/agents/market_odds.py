@@ -14,8 +14,12 @@ as unavailable but do not block output generation.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from apps.analysis.context_bundle import ConsumerProjection
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
 
@@ -25,8 +29,20 @@ _VERSION = "1.0"
 
 
 def analyze_market_odds(
-    snapshot: dict[str, Any], *, created_at: datetime | None = None
+    snapshot: dict[str, Any],
+    *,
+    created_at: datetime | None = None,
+    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
 ) -> AgentOutput:
+    from apps.analysis.context_bundle import validate_consumer_projection
+
+    projection = (
+        validate_consumer_projection(context_projection, "market_odds") if context_projection is not None else None
+    )
+    return _bind_context_projection(_analyze_market_odds(snapshot, created_at=created_at), projection)
+
+
+def _analyze_market_odds(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
     """Analyze the market_odds section of an already-loaded analysis snapshot.
 
     The agent is purely deterministic and read-only:
@@ -103,7 +119,9 @@ def analyze_market_odds(
                 f"signal={signal}, reliability={reliability:.2f}, divergence={divergence:.2f}."
             )
             if prob > 0.6 and signal == "bullish":
-                key_findings.append(f"Elevated bullish market probability for {event_name} — potential upside catalyst.")
+                key_findings.append(
+                    f"Elevated bullish market probability for {event_name} — potential upside catalyst."
+                )
             elif prob > 0.6 and signal == "bearish":
                 risk_points.append(f"Elevated bearish market probability for {event_name} — potential downside risk.")
         else:
@@ -112,7 +130,9 @@ def analyze_market_odds(
         if reliability < 0.3:
             risk_points.append(f"Low reliability ({reliability:.2f}) for event '{event_name}' — treat with caution.")
         if divergence > 0.5:
-            risk_points.append(f"High source divergence ({divergence:.2f}) for event '{event_name}' — conflicting signals.")
+            risk_points.append(
+                f"High source divergence ({divergence:.2f}) for event '{event_name}' — conflicting signals."
+            )
 
         if interpretation:
             key_findings.append(interpretation[:200])
@@ -120,9 +140,7 @@ def analyze_market_odds(
     # ── Missing sources ─────────────────────────────────────────────
     missing_sources = _detect_missing_sources(events)
     if missing_sources:
-        invalid_conditions.append(
-            f"Unavailable probability sources: {', '.join(missing_sources)}."
-        )
+        invalid_conditions.append(f"Unavailable probability sources: {', '.join(missing_sources)}.")
         risk_points.append(
             f"Market odds are based on CME only — {', '.join(missing_sources)} data missing, reducing reliability."
         )
@@ -130,9 +148,7 @@ def analyze_market_odds(
     # ── Placeholder events noted ────────────────────────────────────
     for event in unavailable_events:
         event_name = event.get("event_name", event.get("event_id", "unknown"))
-        invalid_conditions.append(
-            f"Market odds event '{event_name}' is unavailable — source data not yet integrated."
-        )
+        invalid_conditions.append(f"Market odds event '{event_name}' is unavailable — source data not yet integrated.")
 
     # ── Aggregate bias determination ────────────────────────────────
     if not available_events:
@@ -237,9 +253,7 @@ def _detect_missing_sources(events: list[dict[str, Any]]) -> list[str]:
     return sorted(missing)
 
 
-def _calculate_confidence(
-    events: list[dict[str, Any]], mo_status: str, bias: AgentBias
-) -> float:
+def _calculate_confidence(events: list[dict[str, Any]], mo_status: str, bias: AgentBias) -> float:
     """Calculate agent confidence from market odds data quality."""
     if not events:
         return 0.0
@@ -252,8 +266,7 @@ def _calculate_confidence(
 
     # Base: average reliability of available events
     reliabilities = [
-        e.get("reliability_score", 0.0) for e in available
-        if isinstance(e.get("reliability_score"), (int, float))
+        e.get("reliability_score", 0.0) for e in available if isinstance(e.get("reliability_score"), (int, float))
     ]
     confidence = sum(reliabilities) / len(reliabilities) if reliabilities else 0.3
 
@@ -267,7 +280,8 @@ def _calculate_confidence(
 
     # Penalty for high divergence
     high_div_count = sum(
-        1 for e in available
+        1
+        for e in available
         if isinstance(e.get("divergence_score"), (int, float)) and float(e["divergence_score"]) > 0.5
     )
     confidence -= 0.05 * high_div_count
@@ -307,3 +321,13 @@ def _summary(bias: AgentBias, mo_status: str, confidence: float) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
+
+
+def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
+    if projection is None:
+        return output
+    from apps.analysis.context_bundle import consume_projection_for_agent_output
+
+    return AgentOutput.model_validate(
+        consume_projection_for_agent_output(projection, output, expected_consumer="market_odds")
+    )

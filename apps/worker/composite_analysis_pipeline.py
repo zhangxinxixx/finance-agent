@@ -31,6 +31,7 @@ from apps.analysis.agents.source_health import (
 )
 from apps.analysis.agents.risk import analyze_risk
 from apps.analysis.agents.technical import analyze_technical
+from apps.analysis.context_bundle import ConsumerProjection, project_context_bundle
 from apps.analysis.strategy.card import build_strategy_card
 from apps.gold_runtime_orchestration import build_gold_runtime_execution_summary
 from apps.output.final_report import write_final_report, write_strategy_card
@@ -47,6 +48,18 @@ from apps.worker.composite_state_shadow import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CONTEXT_BUNDLE_CONSUMERS = {
+    "macro_liquidity_agent": "macro",
+    "cme_options_agent": "options",
+    "risk_agent": "risk",
+    "technical_agent": "technical",
+    "positioning_agent": "positioning",
+    "news_agent": "news",
+    "market_odds_agent": "market_odds",
+    "fact_review_agent": "fact_review",
+    "coordinator_agent": "coordinator",
+}
 
 
 def _safe_requested_state_scope(shadow_input: dict[str, Any] | None) -> str | None:
@@ -95,6 +108,7 @@ def run_composite_analysis_pipeline(
     context_mode = resolve_analysis_context_mode(analysis_context_mode)
     shadow_runtime = None
     shadow_trace = None
+    consumer_projections: dict[str, ConsumerProjection] = {}
     if context_mode == STATE_DELTA_CONTEXT_MODE:
         try:
             if state_shadow_input is None:
@@ -105,6 +119,13 @@ def run_composite_analysis_pipeline(
                 created_at=created_at,
                 shadow_input=state_shadow_input,
             )
+            consumer_projections = {
+                agent_name: project_context_bundle(
+                    shadow_runtime.bundle,
+                    consumer=consumer_name,  # type: ignore[arg-type]
+                )
+                for agent_name, consumer_name in _CONTEXT_BUNDLE_CONSUMERS.items()
+            }
             shadow_trace = execute_composite_state_shadow(
                 runtime=shadow_runtime,
                 analyzer=state_delta_analyzer,
@@ -112,6 +133,7 @@ def run_composite_analysis_pipeline(
         except Exception as exc:
             logger.exception("State-delta shadow setup failed; continuing legacy output")
             shadow_runtime = None
+            consumer_projections = {}
             failure_kind = type(exc).__name__
             review_item = build_state_delta_setup_failure_review_item(
                 run_id=run_id,
@@ -131,6 +153,16 @@ def run_composite_analysis_pipeline(
             }
     elif context_mode != LEGACY_CONTEXT_MODE:  # pragma: no cover - resolver exhaustiveness
         raise ValueError(f"unsupported context mode: {context_mode}")
+    if consumer_projections:
+        _reject_state_delta_prebuilt_outputs(
+            macro_output_prebuilt=macro_output_prebuilt,
+            options_output_prebuilt=options_output_prebuilt,
+            risk_output_prebuilt=risk_output_prebuilt,
+            technical_output_prebuilt=technical_output_prebuilt,
+            positioning_output_prebuilt=positioning_output_prebuilt,
+            news_output_prebuilt=news_output_prebuilt,
+            coordinator_output_prebuilt=coordinator_output_prebuilt,
+        )
     gold_macro_overview = gold_macro_overview_from_snapshot(snapshot)
     source_health = source_health_from_snapshot(snapshot, gold_macro_overview=gold_macro_overview)
     canonical_run_dir = storage_root / "analysis" / "gold_mainlines" / str(trade_date) / run_id
@@ -144,12 +176,20 @@ def run_composite_analysis_pipeline(
     macro_output = (
         macro_output_prebuilt
         if macro_output_prebuilt is not None
-        else analyze_macro_liquidity(snapshot, created_at=created_at)
+        else analyze_macro_liquidity(
+            snapshot,
+            created_at=created_at,
+            context_projection=consumer_projections.get("macro_liquidity_agent"),
+        )
     )
     options_output = (
         options_output_prebuilt
         if options_output_prebuilt is not None
-        else analyze_cme_options(snapshot, created_at=created_at)
+        else analyze_cme_options(
+            snapshot,
+            created_at=created_at,
+            context_projection=consumer_projections.get("cme_options_agent"),
+        )
     )
     risk_output = (
         risk_output_prebuilt
@@ -159,22 +199,41 @@ def run_composite_analysis_pipeline(
             macro_output=macro_output,
             options_output=options_output,
             created_at=created_at,
+            context_projection=consumer_projections.get("risk_agent"),
         )
     )
     technical_output = (
         technical_output_prebuilt
         if technical_output_prebuilt is not None
-        else analyze_technical(snapshot, created_at=created_at)
+        else analyze_technical(
+            snapshot,
+            created_at=created_at,
+            context_projection=consumer_projections.get("technical_agent"),
+        )
     )
     positioning_output = (
         positioning_output_prebuilt
         if positioning_output_prebuilt is not None
-        else analyze_positioning(snapshot, created_at=created_at)
+        else analyze_positioning(
+            snapshot,
+            created_at=created_at,
+            context_projection=consumer_projections.get("positioning_agent"),
+        )
     )
     news_output = (
-        news_output_prebuilt if news_output_prebuilt is not None else analyze_news(snapshot, created_at=created_at)
+        news_output_prebuilt
+        if news_output_prebuilt is not None
+        else analyze_news(
+            snapshot,
+            created_at=created_at,
+            context_projection=consumer_projections.get("news_agent"),
+        )
     )
-    market_odds_output = analyze_market_odds(snapshot, created_at=created_at)
+    market_odds_output = analyze_market_odds(
+        snapshot,
+        created_at=created_at,
+        context_projection=consumer_projections.get("market_odds_agent"),
+    )
     domain_outputs = [
         macro_output,
         options_output,
@@ -188,6 +247,7 @@ def run_composite_analysis_pipeline(
         domain_outputs,
         snapshot_id=str(snapshot_id),
         created_at=created_at,
+        context_projection=consumer_projections.get("fact_review_agent"),
     )
     reviewed_outputs = [*domain_outputs, fact_review_output]
     pre_coordinator_quality_gate_decision = evaluate_quality_gate(
@@ -218,7 +278,22 @@ def run_composite_analysis_pipeline(
             news_output=news_output,
             market_odds_output=market_odds_output,
             created_at=created_at,
+            context_projection=consumer_projections.get("coordinator_agent"),
         )
+    )
+    verified_bundle_consumers = _verified_bundle_consumers(
+        outputs={
+            "macro_liquidity_agent": macro_output,
+            "cme_options_agent": options_output,
+            "risk_agent": risk_output,
+            "technical_agent": technical_output,
+            "positioning_agent": positioning_output,
+            "news_agent": news_output,
+            "market_odds_agent": market_odds_output,
+            "fact_review_agent": fact_review_output,
+            "coordinator_agent": coordinator_output,
+        },
+        projections=consumer_projections,
     )
     post_coordinator_gate_inputs = [*reviewed_outputs, coordinator_output]
     raw_post_coordinator_quality_gate_decision = evaluate_quality_gate(
@@ -313,9 +388,7 @@ def run_composite_analysis_pipeline(
 
     output_mode = "accepted" if agent_loop_decision.publish_allowed else "observe"
     report_artifact_type = "final_report" if agent_loop_decision.publish_allowed else "observation_report"
-    strategy_artifact_type = (
-        "strategy_card" if agent_loop_decision.publish_allowed else "observation_strategy_card"
-    )
+    strategy_artifact_type = "strategy_card" if agent_loop_decision.publish_allowed else "observation_strategy_card"
     report_result = write_final_report(
         storage_root=storage_root,
         markdown=markdown,
@@ -430,17 +503,7 @@ def run_composite_analysis_pipeline(
             shadow_trace,
             legacy_coordinator=selected_coordinator,
             agent_loop_decision=agent_loop_decision,
-            consumer_names=[
-                "macro_liquidity_agent",
-                "cme_options_agent",
-                "risk_agent",
-                "technical_agent",
-                "positioning_agent",
-                "news_agent",
-                "market_odds_agent",
-                "fact_review_agent",
-                "coordinator_agent",
-            ],
+            consumer_names=verified_bundle_consumers,
         )
         summaries["state_delta_shadow"] = {
             "step": "state_delta_shadow",
@@ -478,13 +541,60 @@ def run_composite_analysis_pipeline(
     }
     if finalized_shadow is not None:
         composite_outputs["state_delta_shadow"] = finalized_shadow
+    if shadow_runtime is not None:
+        composite_outputs["context_bundle_registry_artifact"] = shadow_runtime.artifact.registry_artifact
 
     return summaries, composite_outputs
 
 
-def report_coordinator_output(
-    *, primary: Any, fallback_execution: Any, agent_loop_decision: Any
-) -> Any:
+def _reject_state_delta_prebuilt_outputs(**outputs: Any) -> None:
+    bypassed = sorted(name for name, output in outputs.items() if output is not None)
+    if bypassed:
+        raise ValueError("state_delta_context forbids unverified prebuilt Agent outputs: " + ", ".join(bypassed))
+
+
+def _verified_bundle_consumers(
+    *,
+    outputs: dict[str, Any],
+    projections: dict[str, ConsumerProjection],
+) -> list[str]:
+    if not projections:
+        return []
+    verified: list[str] = []
+    for agent_name, projection in projections.items():
+        output = outputs.get(agent_name)
+        input_ids = getattr(output, "input_snapshot_ids", None)
+        input_payload = getattr(output, "input_payload", None)
+        if not isinstance(input_ids, dict) or not isinstance(input_payload, dict):
+            raise ValueError(f"{agent_name} did not return auditable ContextBundle lineage")
+        identity = projection.identity_payload
+        expected = {
+            "context_bundle_id": identity.bundle_id,
+            "context_bundle_hash": identity.content_hash,
+            "context_bundle_run_id": identity.run_id,
+            "context_bundle_projection_hash": projection.projection_hash,
+            "canonical_state_id": identity.canonical_state_id,
+            "state_scope": identity.state_scope,
+            "retained_evidence_ids": [
+                {"source": item["source"], "evidence_id": item["evidence_id"]}
+                for item in sorted(
+                    projection.retained_evidence,
+                    key=lambda item: (item["source"], item["evidence_id"]),
+                )
+            ],
+            "evidence_delta_decision_id": projection.decision_id,
+        }
+        if any(input_ids.get(key) != value for key, value in expected.items()):
+            raise ValueError(f"{agent_name} ContextBundle lineage does not match its projection")
+        if input_payload.get("context_bundle_consumer") != projection.consumer:
+            raise ValueError(f"{agent_name} did not acknowledge its typed projection")
+        if input_payload.get("context_bundle_projection") != projection.model_dump(mode="json"):
+            raise ValueError(f"{agent_name} did not consume its exact typed projection")
+        verified.append(agent_name)
+    return verified
+
+
+def report_coordinator_output(*, primary: Any, fallback_execution: Any, agent_loop_decision: Any) -> Any:
     accepted = agent_loop_decision.accepted_output
     if accepted.source == "primary":
         if primary.agent_name != accepted.agent_name or primary.snapshot_id != accepted.snapshot_id:
@@ -541,24 +651,16 @@ def validated_rendered_outputs(
     root = storage_root.resolve()
     for artifact_type, result, paths in expected:
         if result.get("artifact_type") != artifact_type:
-            raise RuntimeError(
-                f"accepted output materialization requires artifact_type={artifact_type}"
-            )
+            raise RuntimeError(f"accepted output materialization requires artifact_type={artifact_type}")
         if not paths:
-            raise RuntimeError(
-                f"accepted output materialization produced no {artifact_type} paths"
-            )
+            raise RuntimeError(f"accepted output materialization produced no {artifact_type} paths")
         canonical_root = (root / "outputs" / artifact_type).resolve()
         for raw_path in paths:
             path = Path(raw_path).resolve()
             if not path.is_relative_to(canonical_root):
-                raise RuntimeError(
-                    f"accepted {artifact_type} path is outside canonical storage: {raw_path}"
-                )
+                raise RuntimeError(f"accepted {artifact_type} path is outside canonical storage: {raw_path}")
             if not path.is_file() or path.stat().st_size <= 0:
-                raise RuntimeError(
-                    f"accepted {artifact_type} artifact is not materialized: {raw_path}"
-                )
+                raise RuntimeError(f"accepted {artifact_type} artifact is not materialized: {raw_path}")
     return rendered
 
 
@@ -605,11 +707,7 @@ def validated_gold_agent_execution(
     news = snapshot.get("news") if isinstance(snapshot.get("news"), dict) else {}
     data = news.get("data") if isinstance(news.get("data"), dict) else {}
     execution = data.get("gold_agent_execution") if isinstance(data.get("gold_agent_execution"), dict) else {}
-    raw_declared = (
-        execution.get("declared_agents")
-        if isinstance(execution.get("declared_agents"), list)
-        else []
-    )
+    raw_declared = execution.get("declared_agents") if isinstance(execution.get("declared_agents"), list) else []
     raw_materialized = (
         execution.get("materialized_stage_envelopes")
         if isinstance(execution.get("materialized_stage_envelopes"), list)
@@ -648,7 +746,11 @@ def validated_gold_agent_execution(
 def gold_macro_overview_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     news_data = snapshot.get("news", {}).get("data") if isinstance(snapshot.get("news"), dict) else None
     context_section = snapshot.get("gold_analysis_context")
-    context_data = context_section.get("data") if isinstance(context_section, dict) and isinstance(context_section.get("data"), dict) else {}
+    context_data = (
+        context_section.get("data")
+        if isinstance(context_section, dict) and isinstance(context_section.get("data"), dict)
+        else {}
+    )
     context_metadata = {
         "status": context_data.get("status") or (context_section or {}).get("status"),
         "baseline_kind": context_data.get("baseline_kind"),

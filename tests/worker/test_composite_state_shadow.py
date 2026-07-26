@@ -174,6 +174,65 @@ def test_provider_metadata_removal_rebuilds_same_bundle_and_recovers_artifact(tm
     assert replay.artifact.written is False
 
 
+def test_same_run_restart_recovers_exact_registered_bundle_descriptor(tmp_path) -> None:
+    first = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-registry-restart",
+        created_at=NOW,
+        shadow_input=_shadow_input(evidence=[_evidence()]),
+    )
+    restart_input = _shadow_input(evidence=[_macro_evidence(current=101.0)])
+    restart_input["context_bundle_artifact"] = first.artifact.registry_artifact
+
+    recovered = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-registry-restart",
+        created_at=NOW + timedelta(hours=1),
+        shadow_input=restart_input,
+    )
+
+    assert recovered.bundle.bundle_id == first.bundle.bundle_id
+    assert recovered.bundle.content_hash == first.bundle.content_hash
+    assert recovered.evidence_delta_decision == first.evidence_delta_decision
+    assert recovered.artifact.written is False
+    assert recovered.artifact.registry_artifact == first.artifact.registry_artifact
+
+
+def test_same_run_restart_rejects_wrong_run_and_tampered_descriptor(tmp_path) -> None:
+    first = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-registry-source",
+        created_at=NOW,
+        shadow_input=_shadow_input(),
+    )
+    wrong_run_input = _shadow_input()
+    wrong_run_input["context_bundle_artifact"] = first.artifact.registry_artifact
+    with pytest.raises(ValueError, match="run_id does not match runtime"):
+        prepare_composite_state_shadow(
+            storage_root=tmp_path,
+            run_id="run-registry-other",
+            created_at=NOW,
+            shadow_input=wrong_run_input,
+        )
+
+    tampered = {
+        **first.artifact.registry_artifact,
+        "metadata": {
+            **first.artifact.registry_artifact["metadata"],
+            "content_hash": "0" * 64,
+        },
+    }
+    tampered_input = _shadow_input()
+    tampered_input["context_bundle_artifact"] = tampered
+    with pytest.raises(ValueError, match="identity mismatch: content_hash"):
+        prepare_composite_state_shadow(
+            storage_root=tmp_path,
+            run_id="run-registry-source",
+            created_at=NOW,
+            shadow_input=tampered_input,
+        )
+
+
 def test_shadow_candidate_is_reviewed_and_all_consumers_share_bundle(tmp_path) -> None:
     runtime = prepare_composite_state_shadow(
         storage_root=tmp_path,
@@ -229,9 +288,7 @@ def test_shadow_analyzer_failure_is_contained_as_needs_review(tmp_path) -> None:
         ([_macro_evidence(current=101.0, source_quality="unverified")], "manual_review", 0),
     ],
 )
-def test_evidence_delta_action_is_the_only_analyzer_gate(
-    tmp_path, evidence, expected_action, expected_calls
-) -> None:
+def test_evidence_delta_action_is_the_only_analyzer_gate(tmp_path, evidence, expected_action, expected_calls) -> None:
     runtime = prepare_composite_state_shadow(
         storage_root=tmp_path,
         run_id="run-decision-gate",
@@ -268,9 +325,7 @@ def test_duplicate_evidence_skips_analyzer_from_recovered_semantic_hash(tmp_path
         shadow_input=_shadow_input(evidence=[evidence]),
     )
     replay_input = _shadow_input(evidence=[evidence])
-    replay_input["previous_semantic_hashes"] = dict(
-        first.evidence_delta_decision.semantic_hashes
-    )
+    replay_input["previous_semantic_hashes"] = dict(first.evidence_delta_decision.semantic_hashes)
     replay = prepare_composite_state_shadow(
         storage_root=tmp_path,
         run_id="run-duplicate",
@@ -324,9 +379,7 @@ def test_accepted_figure_fact_enters_facts_and_evidence_delta_decision(tmp_path)
 
     facts_block = next(block for block in runtime.bundle.blocks if block.name == "facts")
     assert facts_block.payload[0]["figure_fact_id"] == fact.figure_fact_id
-    assert [item.evidence_type for item in runtime.evidence_delta_decision.evaluated_items] == [
-        "figure_fact"
-    ]
+    assert [item.evidence_type for item in runtime.evidence_delta_decision.evaluated_items] == ["figure_fact"]
     assert runtime.evidence_delta_decision.recommended_action.value == "update_context_only"
 
 
@@ -350,6 +403,37 @@ def test_explicit_prior_bundle_recovers_delta_and_selection_state(tmp_path) -> N
     replay = prepare_composite_state_shadow(
         storage_root=tmp_path,
         run_id="run-replay",
+        created_at=NOW + timedelta(hours=1),
+        shadow_input=next_input,
+    )
+
+    assert replay.bundle.freshness_sla_seconds == {"macro": 123}
+    assert replay.bundle.default_freshness_sla_seconds == 456
+    assert replay.evidence_delta_decision.recommended_action.value == "no_op"
+    assert replay.bundle.deferred_queue == first.bundle.deferred_queue
+    assert replay.bundle.processed_above_frontier == first.bundle.processed_above_frontier
+
+
+def test_registered_prior_bundle_recovers_delta_and_selection_state(tmp_path) -> None:
+    first_input = _shadow_input(evidence=[_macro_evidence(current=100.3)])
+    first_input.update(
+        {
+            "freshness_sla_seconds": {"macro": 123},
+            "default_freshness_sla_seconds": 456,
+        }
+    )
+    first = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-registered-prior",
+        created_at=NOW,
+        shadow_input=first_input,
+    )
+    next_input = _shadow_input(evidence=[_macro_evidence(current=100.3)])
+    next_input["previous_context_bundle_artifact"] = first.artifact.registry_artifact
+
+    replay = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-registered-replay",
         created_at=NOW + timedelta(hours=1),
         shadow_input=next_input,
     )
@@ -421,9 +505,7 @@ def test_manual_review_trace_persists_through_worker_boundary(tmp_path) -> None:
         storage_root=tmp_path,
         run_id="run-review-persistence",
         created_at=NOW,
-        shadow_input=_shadow_input(
-            evidence=[_macro_evidence(current=101.0, source_quality="unverified")]
-        ),
+        shadow_input=_shadow_input(evidence=[_macro_evidence(current=101.0, source_quality="unverified")]),
     )
     review = execute_composite_state_shadow(runtime=runtime, analyzer=None)["review_items"][0]
     engine = create_engine(f"sqlite:///{tmp_path / 'review-items.db'}")

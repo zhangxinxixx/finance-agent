@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+
+if TYPE_CHECKING:
+    from apps.analysis.context_bundle import ConsumerProjection
 
 _AGENT_NAME = "technical_agent"
 _MODULE = "technical"
@@ -11,8 +15,20 @@ _VERSION = "1.0"
 
 
 def analyze_technical(
-    snapshot: dict[str, Any], *, created_at: datetime | None = None
+    snapshot: dict[str, Any],
+    *,
+    created_at: datetime | None = None,
+    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
 ) -> AgentOutput:
+    from apps.analysis.context_bundle import validate_consumer_projection
+
+    projection = (
+        validate_consumer_projection(context_projection, "technical") if context_projection is not None else None
+    )
+    return _bind_context_projection(_analyze_technical(snapshot, created_at=created_at), projection)
+
+
+def _analyze_technical(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
     """Analyze the technical snapshot section of an already-loaded analysis snapshot.
 
     Works on ``snapshot["technical"]`` — a dict with ``status`` and
@@ -128,13 +144,7 @@ def analyze_technical(
         confidence -= 0.08
 
     # Gold cross: price above both MAs is extra bullish
-    if (
-        ma20 is not None
-        and ma50 is not None
-        and price is not None
-        and price > ma20
-        and price > ma50
-    ):
+    if ma20 is not None and ma50 is not None and price is not None and price > ma20 and price > ma50:
         score += 1
         key_findings.append("Gold cross pattern: price above both MA20 and MA50 — bullish reinforcement.")
 
@@ -181,9 +191,7 @@ def analyze_technical(
 
     # ── Data quality: approximations reduce confidence ────────────────────
     if ma20 is not None or ma50 is not None:
-        key_findings.append(
-            "Note: MAs are approximated from Perf.1M/Perf.3M; precise levels require historical data."
-        )
+        key_findings.append("Note: MAs are approximated from Perf.1M/Perf.3M; precise levels require historical data.")
         confidence -= 0.03
 
     # ── Final bias and confidence ──────────────────────────────────────────
@@ -260,12 +268,19 @@ def _bias_from_score(score: int) -> AgentBias:
 
 def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
     if status is AgentStatus.PARTIAL:
-        return (
-            f"技术面只读视图 {bias.value}（输入不完整）；"
-            f"confidence {confidence:.2f}."
-        )
+        return f"技术面只读视图 {bias.value}（输入不完整）；confidence {confidence:.2f}."
     return f"技术面只读视图 {bias.value}；确信度 {confidence:.2f}。"
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
+
+
+def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
+    if projection is None:
+        return output
+    from apps.analysis.context_bundle import consume_projection_for_agent_output
+
+    return AgentOutput.model_validate(
+        consume_projection_for_agent_output(projection, output, expected_consumer="technical")
+    )

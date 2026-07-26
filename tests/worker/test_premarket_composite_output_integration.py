@@ -149,6 +149,32 @@ def _make_rich_snapshot(
     }
 
 
+def _make_noop_state_shadow_input() -> dict:
+    return {
+        "state_scope": "daily_close",
+        "canonical_state_id": "state-shadow-root",
+        "canonical_state": {
+            "asset": "XAUUSD",
+            "as_of": (_CREATED_AT - timedelta(hours=1)).isoformat(),
+            "market_stage": "direction_decision",
+            "core_thesis": "等待突破",
+            "net_bias": "mixed_bullish",
+            "dominant_drivers": [],
+            "key_levels": [{"price": 3300, "role": "support"}],
+            "scenario_states": [],
+            "unresolved_items": [],
+            "invalidation_conditions": [],
+            "evidence_cursors": {},
+            "input_snapshot_ids": {"market": "market-shadow-1"},
+            "source_refs": [{"snapshot_id": "market-shadow-1"}],
+        },
+        "evidence": [],
+        "evidence_cursors": {},
+        "cutoff_at": _CREATED_AT.isoformat(),
+        "assembled_at": _CREATED_AT.isoformat(),
+    }
+
+
 def test_composite_state_delta_shadow_shares_one_bundle_without_canonical_write(
     tmp_path: Path,
 ) -> None:
@@ -240,9 +266,7 @@ def test_composite_state_delta_shadow_shares_one_bundle_without_canonical_write(
 
     shadow = outputs["state_delta_shadow"]
     assert summaries["state_delta_shadow"]["status"] == "success"
-    assert summaries["state_delta_shadow"]["shadow_status"] == (
-        "candidate_accepted_shadow_only"
-    )
+    assert summaries["state_delta_shadow"]["shadow_status"] == ("candidate_accepted_shadow_only")
     assert shadow["production_canonical_write_allowed"] is False
     assert shadow["shadow_review_status"] == "accepted"
     bundle_ids = set(shadow["bundle_consumers"].values())
@@ -258,8 +282,74 @@ def test_composite_state_delta_shadow_shares_one_bundle_without_canonical_write(
         "fact_review_agent",
         "coordinator_agent",
     ):
-        assert "analysis_context_bundle" not in outputs["agents"][name].input_snapshot_ids
+        agent_output = outputs["agents"][name]
+        lineage = agent_output.input_snapshot_ids
+        assert lineage["context_bundle_id"] == shadow["bundle_id"]
+        assert lineage["context_bundle_hash"] == shadow["bundle_content_hash"]
+        assert lineage["canonical_state_id"] == shadow["canonical_state_id"]
+        assert lineage["state_scope"] == "daily_close"
+        assert "retained_evidence_ids" in lineage
+        assert lineage["evidence_delta_decision_id"] == shadow["evidence_delta_decision_id"]
+        assert (
+            agent_output.input_payload["context_bundle_summary"]["decision_id"] == shadow["evidence_delta_decision_id"]
+        )
+    assert outputs["context_bundle_registry_artifact"]["metadata"]["bundle_id"] == shadow["bundle_id"]
     assert (tmp_path / shadow["bundle_path"]).is_file()
+
+
+def test_state_delta_pipeline_rejects_consumer_bypass_and_prebuilt_outputs(tmp_path: Path, monkeypatch) -> None:
+    from apps.worker import composite_analysis_pipeline as pipeline
+
+    original = pipeline.analyze_market_odds
+
+    def bypass_projection(snapshot, *, created_at=None, context_projection=None):
+        assert context_projection is not None
+        return original(snapshot, created_at=created_at)
+
+    monkeypatch.setattr(pipeline, "analyze_market_odds", bypass_projection)
+    with pytest.raises(ValueError, match="market_odds_agent did not return auditable"):
+        pipeline.run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=_make_rich_snapshot(run_id="run-consumer-bypass"),
+            run_id="run-consumer-bypass",
+            created_at=_CREATED_AT,
+            analysis_context_mode="state_delta_context",
+            state_shadow_input=_make_noop_state_shadow_input(),
+        )
+
+    def forge_projection_content(snapshot, *, created_at=None, context_projection=None):
+        assert context_projection is not None
+        output = original(
+            snapshot,
+            created_at=created_at,
+            context_projection=context_projection,
+        )
+        input_payload = dict(output.input_payload)
+        input_payload["context_bundle_projection"] = {"forged": True}
+        return output.model_copy(update={"input_payload": input_payload})
+
+    monkeypatch.setattr(pipeline, "analyze_market_odds", forge_projection_content)
+    with pytest.raises(ValueError, match="did not consume its exact typed projection"):
+        pipeline.run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=_make_rich_snapshot(run_id="run-consumer-forgery"),
+            run_id="run-consumer-forgery",
+            created_at=_CREATED_AT,
+            analysis_context_mode="state_delta_context",
+            state_shadow_input=_make_noop_state_shadow_input(),
+        )
+
+    monkeypatch.setattr(pipeline, "analyze_market_odds", original)
+    with pytest.raises(ValueError, match="forbids unverified prebuilt Agent outputs"):
+        pipeline.run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=_make_rich_snapshot(run_id="run-prebuilt-bypass"),
+            run_id="run-prebuilt-bypass",
+            created_at=_CREATED_AT,
+            macro_output_prebuilt=object(),
+            analysis_context_mode="state_delta_context",
+            state_shadow_input=_make_noop_state_shadow_input(),
+        )
 
 
 def test_composite_manual_review_keeps_review_item_and_skips_transition_analyzer(
@@ -355,8 +445,7 @@ def test_composite_shadow_setup_failure_does_not_break_legacy_outputs(tmp_path: 
     assert outputs["state_delta_shadow"]["production_canonical_write_allowed"] is False
     review = outputs["state_delta_shadow"]["review_items"][0]
     assert review == {
-        "review_id": "state_delta_setup:run-shadow-setup-failure:"
-        "78a572444077af19",
+        "review_id": "state_delta_setup:run-shadow-setup-failure:78a572444077af19",
         "run_id": "run-shadow-setup-failure",
         "source_module": "state_delta_shadow",
         "source_step_id": "state_delta_shadow_setup",
@@ -452,9 +541,9 @@ def test_composite_analysis_pipeline_writes_final_report_and_strategy_card(tmp_p
     assert json.loads(source_health_path.read_text(encoding="utf-8")) == outputs["source_health"]
     persisted_gate = json.loads(quality_gate_result_path.read_text(encoding="utf-8"))
     assert persisted_gate["publish_allowed"] is outputs["agent_loop_decision"].publish_allowed
-    assert persisted_gate["quality_gate_decision"] == outputs[
-        "post_coordinator_quality_gate_decision"
-    ].model_dump(mode="json")
+    assert persisted_gate["quality_gate_decision"] == outputs["post_coordinator_quality_gate_decision"].model_dump(
+        mode="json"
+    )
 
     assert "strategy_card" in summaries
     assert summaries["strategy_card"]["status"] == "success"
@@ -564,9 +653,7 @@ def test_composite_runtime_summary_merges_seven_gold_agents_with_report_render(
             "gold_agent_execution": {
                 "snapshot_id": execution["snapshot_id"],
                 "declared_agents": execution["declared_agents"],
-                "materialized_stage_envelopes": execution[
-                    "materialized_stage_envelopes"
-                ],
+                "materialized_stage_envelopes": execution["materialized_stage_envelopes"],
                 "executed_agents": execution["executed_agents"],
                 "artifact_paths": execution["artifact_paths"],
             }
@@ -593,9 +680,7 @@ def test_composite_runtime_summary_merges_seven_gold_agents_with_report_render(
         "report_render_agent",
     ]
     assert runtime["materialized_stage_envelopes"] == runtime["declared_agents"]
-    assert set(runtime["agent_artifact_refs"]) == set(
-        runtime["materialized_stage_envelopes"]
-    )
+    assert set(runtime["agent_artifact_refs"]) == set(runtime["materialized_stage_envelopes"])
 
 
 def test_composite_analysis_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) -> None:
@@ -823,10 +908,7 @@ def test_composite_analysis_pipeline_synthesizes_from_coordinator_after_post_gat
     assert summaries["final_report"]["publish_allowed"] is False
     assert composite_outputs["strategy_card"].bias.value == "neutral"
     assert "No strong conclusion" in composite_outputs["strategy_card"].scenario_summary
-    assert (
-        composite_outputs["observe_outputs"]["final_report_paths"]
-        == summaries["final_report"]["paths"]
-    )
+    assert composite_outputs["observe_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
     assert composite_outputs["gold_runtime_summary"]["accepted_outputs"] == {}
 
 
@@ -885,9 +967,10 @@ def test_composite_analysis_pipeline_post_gate_can_reject_coordinator_after_pre_
     assert summaries["final_report"]["quality_gate_decision"]["action"] == "block_publish"
     assert summaries["final_report"]["publish_allowed"] is False
     assert composite_outputs["agent_loop_decision"].accepted_output.source == "none"
-    assert composite_outputs["agents"]["fallback_synthesis_agent"].input_payload["fallback_of"][
-        "agent_name"
-    ] == "coordinator_agent"
+    assert (
+        composite_outputs["agents"]["fallback_synthesis_agent"].input_payload["fallback_of"]["agent_name"]
+        == "coordinator_agent"
+    )
 
 
 def test_composite_analysis_pipeline_executes_cme_options_reparse_when_gate_requires_reparse(

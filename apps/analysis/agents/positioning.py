@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+
+if TYPE_CHECKING:
+    from apps.analysis.context_bundle import ConsumerProjection
 
 _AGENT_NAME = "positioning_agent"
 _MODULE = "positioning"
@@ -23,7 +27,21 @@ _WATCHLIST = [
 ]
 
 
-def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
+def analyze_positioning(
+    snapshot: dict[str, Any],
+    *,
+    created_at: datetime | None = None,
+    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
+) -> AgentOutput:
+    from apps.analysis.context_bundle import validate_consumer_projection
+
+    projection = (
+        validate_consumer_projection(context_projection, "positioning") if context_projection is not None else None
+    )
+    return _bind_context_projection(_analyze_positioning(snapshot, created_at=created_at), projection)
+
+
+def _analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
     """Analyze already-loaded positioning (CFTC COT) snapshot data without mutating inputs."""
 
     created_at = created_at or datetime.now(timezone.utc)
@@ -127,9 +145,7 @@ def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None
 
     if producer_net is not None and swap_net is not None:
         data_points_available += 2
-        key_findings.append(
-            f"Producer/Merchant net position: {producer_net:,.0f} contracts."
-        )
+        key_findings.append(f"Producer/Merchant net position: {producer_net:,.0f} contracts.")
         key_findings.append(f"Swap Dealer net position: {swap_net:,.0f} contracts.")
     else:
         data_points_missing += 1
@@ -172,30 +188,23 @@ def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None
             )
             if noncomm_net > 200000:
                 risk_points.append(
-                    f"Speculative net long is extreme ({noncomm_net:,.0f}); "
-                    f"crowded longs increase reversal risk."
+                    f"Speculative net long is extreme ({noncomm_net:,.0f}); crowded longs increase reversal risk."
                 )
                 confidence -= 0.04
         else:
-            key_findings.append(
-                f"Speculators (Managed Money) are net short {abs(noncomm_net):,.0f} contracts."
-            )
+            key_findings.append(f"Speculators (Managed Money) are net short {abs(noncomm_net):,.0f} contracts.")
     else:
         data_points_missing += 1
 
     # Direction context
     if commercial_direction == "increasing_short":
-        key_findings.append(
-            "Commercial aggregate proxy is becoming more net short week-over-week — bearish momentum."
-        )
+        key_findings.append("Commercial aggregate proxy is becoming more net short week-over-week — bearish momentum.")
         if bias is AgentBias.BEARISH:
             confidence += 0.05
         elif bias is not AgentBias.UNAVAILABLE:
             risk_points.append("Commercial shorts increasing despite non-bearish bias; monitor closely.")
     elif commercial_direction == "increasing_long":
-        key_findings.append(
-            "Commercial aggregate proxy is becoming more net long week-over-week — bullish momentum."
-        )
+        key_findings.append("Commercial aggregate proxy is becoming more net long week-over-week — bullish momentum.")
         if bias is AgentBias.BULLISH:
             confidence += 0.05
         elif bias is not AgentBias.UNAVAILABLE:
@@ -215,9 +224,7 @@ def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None
             "elevated reversal risk."
         )
         confidence -= 0.06
-        key_findings.append(
-            "Commercial aggregate proxy is at a 52-week extreme — contrarian signal."
-        )
+        key_findings.append("Commercial aggregate proxy is at a 52-week extreme — contrarian signal.")
 
     # Open interest
     if total_oi is not None and total_oi > 0:
@@ -233,8 +240,7 @@ def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None
         status = AgentStatus.PARTIAL
         confidence -= 0.10 * data_points_missing
         invalid_conditions.append(
-            f"Partial positioning data: {data_points_missing} fields missing "
-            f"({data_points_available} available)."
+            f"Partial positioning data: {data_points_missing} fields missing ({data_points_available} available)."
         )
 
     if not key_findings:
@@ -305,3 +311,13 @@ def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
+
+
+def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
+    if projection is None:
+        return output
+    from apps.analysis.context_bundle import consume_projection_for_agent_output
+
+    return AgentOutput.model_validate(
+        consume_projection_for_agent_output(projection, output, expected_consumer="positioning")
+    )
