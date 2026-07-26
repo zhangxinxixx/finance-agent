@@ -116,6 +116,37 @@ def semantic_identity(item: DeltaEvidence) -> str:
 def semantic_hash(item: DeltaEvidence) -> str:
     """Hash business meaning, excluding delivery/provenance-only metadata."""
 
+    payload = _semantic_payload(item)
+    if isinstance(item, MaterialEventEvidence):
+        # Keep the clustered claim identity stable while making an authority
+        # progression observable across runs. Collector-specific source labels
+        # remain excluded so equivalent authority stages can be aggregated.
+        payload["authority_progression"] = _material_event_authority_progression(item)
+    return content_hash(payload, exclude_keys=frozenset())
+
+
+def semantic_conflict_hash(item: DeltaEvidence) -> str:
+    """Hash business content used to distinguish genuine same-identity conflicts."""
+
+    return content_hash(_semantic_payload(item), exclude_keys=frozenset())
+
+
+def material_event_authority_rank(item: DeltaEvidence) -> int:
+    """Order equivalent material-event authority stages for deterministic selection."""
+
+    if not isinstance(item, MaterialEventEvidence):
+        return 0
+    return {
+        SourceQuality.UNVERIFIED: 0,
+        SourceQuality.SUPPLEMENTAL: 1,
+        SourceQuality.VALIDATED: 2,
+        SourceQuality.OFFICIAL: 3,
+        SourceQuality.PRIMARY: 3,
+        SourceQuality.EXCHANGE: 3,
+    }[item.source_quality]
+
+
+def _semantic_payload(item: DeltaEvidence) -> dict[str, Any]:
     payload = item.model_dump(
         mode="json",
         exclude={"source", "evidence_id", "observed_at", "source_ref", "metadata"},
@@ -126,7 +157,7 @@ def semantic_hash(item: DeltaEvidence) -> str:
         payload.pop("source_quality", None)
         payload["claim"] = " ".join(item.claim.casefold().split())
         payload["cluster_key"] = item.cluster_key.casefold()
-    return content_hash(payload, exclude_keys=frozenset())
+    return payload
 
 
 def evaluate_rule(item: DeltaEvidence) -> RuleResult:
@@ -198,10 +229,18 @@ def _material_event_rule(item: MaterialEventEvidence) -> RuleResult:
     high_risk = item.risk_level in {"high", "critical"} or item.materiality_score >= 70.0
     if item.confirmation_status is ConfirmationStatus.CONFLICTING:
         return _manual("material_event:conflicting_claims", affected)
+    if item.source_quality is SourceQuality.UNVERIFIED:
+        if high_risk:
+            return _manual("material_event:unverified_high_risk", affected)
+        return _no_op("material_event:unverified_source")
     if high_risk and (
         item.confirmation_status is not ConfirmationStatus.CONFIRMED or not item.recompute_eligible
     ):
         return _manual("material_event:high_risk_unconfirmed", affected)
+    if item.source_quality is SourceQuality.SUPPLEMENTAL:
+        if item.materiality_score >= 40.0:
+            return _context("material_event:supplemental_context_only", affected)
+        return _no_op("material_event:below_materiality_threshold")
     if item.recompute_eligible and item.materiality_score >= 70.0:
         return _transition("material_event:confirmed_material_event", affected, critical=item.risk_level == "critical")
     if item.materiality_score >= 40.0:
@@ -257,3 +296,17 @@ def _manual(reason: str, affected: tuple[str, ...]) -> RuleResult:
 
 def _semantic_key(kind: str, *parts: object) -> str:
     return f"{kind}:{json.dumps(parts, ensure_ascii=False, separators=(',', ':'))}"
+
+
+def _material_event_authority_progression(item: MaterialEventEvidence) -> str:
+    if item.source_quality in {
+        SourceQuality.OFFICIAL,
+        SourceQuality.PRIMARY,
+        SourceQuality.EXCHANGE,
+    }:
+        return "officially_confirmed"
+    if item.source_quality is SourceQuality.SUPPLEMENTAL:
+        return "supplemental"
+    if item.source_quality is SourceQuality.VALIDATED:
+        return "corroborated"
+    return "unverified"

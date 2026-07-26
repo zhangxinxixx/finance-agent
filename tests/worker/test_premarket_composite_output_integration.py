@@ -262,6 +262,77 @@ def test_composite_state_delta_shadow_shares_one_bundle_without_canonical_write(
     assert (tmp_path / shadow["bundle_path"]).is_file()
 
 
+def test_composite_manual_review_keeps_review_item_and_skips_transition_analyzer(
+    tmp_path: Path,
+) -> None:
+    from apps.worker.runner import _run_composite_analysis_pipeline
+
+    run_id = "run-state-delta-manual-review"
+    calls = 0
+    shadow_input = {
+        "state_scope": "daily_close",
+        "canonical_state_id": "state-shadow-root",
+        "canonical_state": {
+            "asset": "XAUUSD",
+            "as_of": (_CREATED_AT - timedelta(hours=1)).isoformat(),
+            "market_stage": "direction_decision",
+            "core_thesis": "等待宏观确认",
+            "net_bias": "mixed_bullish",
+            "dominant_drivers": [],
+            "key_levels": [{"price": 3300, "role": "support"}],
+            "scenario_states": [],
+            "unresolved_items": [],
+            "invalidation_conditions": [],
+            "evidence_cursors": {},
+            "input_snapshot_ids": {"market": "market-shadow-1"},
+            "source_refs": [{"snapshot_id": "market-shadow-1"}],
+        },
+        "evidence": [
+            {
+                "source": "unverified_macro",
+                "evidence_id": "dxy-unverified-material",
+                "business_time": (_CREATED_AT - timedelta(minutes=2)).isoformat(),
+                "ingested_at": (_CREATED_AT - timedelta(minutes=1)).isoformat(),
+                "payload": {
+                    "evidence_type": "macro_metric",
+                    "asset": "XAUUSD",
+                    "source_quality": "unverified",
+                    "metric": "dxy",
+                    "current_value": 101.0,
+                    "previous_value": 100.0,
+                    "unit": "index",
+                },
+                "source_ref": {"snapshot_id": "macro-shadow-unverified"},
+            }
+        ],
+        "evidence_cursors": {},
+        "cutoff_at": _CREATED_AT.isoformat(),
+        "assembled_at": _CREATED_AT.isoformat(),
+    }
+
+    def analyzer(_bundle):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("manual review must skip transition analyzer")
+
+    _summaries, outputs = _run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id=run_id),
+        run_id=run_id,
+        created_at=_CREATED_AT,
+        analysis_context_mode="state_delta_context",
+        state_shadow_input=shadow_input,
+        state_delta_analyzer=analyzer,
+    )
+
+    shadow = outputs["state_delta_shadow"]
+    assert calls == 0
+    assert shadow["schema_version"] == "composite_state_shadow.v3"
+    assert shadow["status"] == "manual_review_required"
+    assert shadow["evidence_delta_action"] == "manual_review"
+    assert shadow["review_items"][0]["run_id"] == run_id
+
+
 def test_composite_shadow_setup_failure_does_not_break_legacy_outputs(tmp_path: Path) -> None:
     from apps.worker.runner import _run_composite_analysis_pipeline
 
@@ -277,9 +348,36 @@ def test_composite_shadow_setup_failure_does_not_break_legacy_outputs(tmp_path: 
     assert summaries["final_report"]["status"] == "success"
     assert outputs["report_result"]["paths"]
     assert outputs["state_delta_shadow"]["status"] == "shadow_setup_failed"
+    assert outputs["state_delta_shadow"]["schema_version"] == "composite_state_shadow.v3"
+    assert outputs["state_delta_shadow"]["evidence_delta_action"] == "manual_review"
     assert outputs["state_delta_shadow"]["requested_state_scope"] is None
     assert "must-not-enter-trace" not in str(outputs["state_delta_shadow"])
     assert outputs["state_delta_shadow"]["production_canonical_write_allowed"] is False
+    review = outputs["state_delta_shadow"]["review_items"][0]
+    assert review == {
+        "review_id": "state_delta_setup:run-shadow-setup-failure:"
+        "78a572444077af19",
+        "run_id": "run-shadow-setup-failure",
+        "source_module": "state_delta_shadow",
+        "source_step_id": "state_delta_shadow_setup",
+        "severity": "error",
+        "reason": "State-delta shadow setup failed: ValueError",
+        "impact_modules": ["analysis_state", "state_delta_shadow"],
+        "suggested_action": "Review the trusted state-delta setup inputs before retrying shadow analysis.",
+        "status": "pending",
+        "evidence_refs": [],
+    }
+    assert "must-not-enter-trace" not in str(review)
+
+    _, replay_outputs = _run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-shadow-setup-failure"),
+        run_id="run-shadow-setup-failure",
+        created_at=_CREATED_AT,
+        analysis_context_mode="state_delta_context",
+        state_shadow_input={"state_scope": {"untrusted": "must-not-enter-trace"}},
+    )
+    assert replay_outputs["state_delta_shadow"]["review_items"][0]["review_id"] == review["review_id"]
 
 
 def test_composite_source_health_uses_completed_snapshot_over_preliminary_news_health() -> None:

@@ -102,19 +102,21 @@ def _event(
     score: float = 85.0,
     eligible: bool = True,
     confirmation: ConfirmationStatus = ConfirmationStatus.CONFIRMED,
+    source_quality: SourceQuality = SourceQuality.OFFICIAL,
+    risk_level: str = "high",
 ) -> MaterialEventEvidence:
     return MaterialEventEvidence(
         source=source,
         evidence_id=evidence_id,
         asset="XAUUSD",
         observed_at=NOW,
-        source_quality=SourceQuality.OFFICIAL,
+        source_quality=source_quality,
         event_id=evidence_id,
         cluster_key="fomc-policy-change",
         event_type="fomc_statement",
         claim=claim,
         materiality_score=score,
-        risk_level="high",
+        risk_level=risk_level,
         recompute_eligible=eligible,
         confirmation_status=confirmation,
     )
@@ -175,7 +177,7 @@ def test_input_order_does_not_change_decision_identity() -> None:
 def test_duplicate_news_from_different_sources_is_clustered_with_source_aware_refs() -> None:
     first = _event(source="federal_reserve", evidence_id="official-1")
     second = _event(source="reuters", evidence_id="wire-9")
-    second = second.model_copy(update={"source_quality": SourceQuality.VALIDATED})
+    second = second.model_copy(update={"source_quality": SourceQuality.PRIMARY})
 
     decision = _evaluate(second, first)
 
@@ -190,7 +192,7 @@ def test_duplicate_news_from_different_sources_is_clustered_with_source_aware_re
 def test_same_evidence_id_from_different_sources_is_not_collapsed() -> None:
     first = _event(source="federal_reserve", evidence_id="shared-id")
     second = _event(source="reuters", evidence_id="shared-id")
-    second = second.model_copy(update={"source_quality": SourceQuality.VALIDATED})
+    second = second.model_copy(update={"source_quality": SourceQuality.PRIMARY})
 
     item = _evaluate(first, second).evaluated_items[0]
 
@@ -284,6 +286,145 @@ def test_confirmed_material_event_triggers_and_unconfirmed_high_risk_stays_manua
         _evaluate(_event(eligible=False, confirmation=ConfirmationStatus.UNCONFIRMED)).recommended_action
         is RecommendedAction.MANUAL_REVIEW
     )
+
+
+@pytest.mark.parametrize(
+    "source_quality",
+    [
+        SourceQuality.OFFICIAL,
+        SourceQuality.PRIMARY,
+        SourceQuality.VALIDATED,
+        SourceQuality.EXCHANGE,
+    ],
+)
+def test_confirmed_material_event_requires_trusted_source_for_transition(
+    source_quality: SourceQuality,
+) -> None:
+    assert _evaluate(_event(source_quality=source_quality)).recommended_action is (
+        RecommendedAction.RUN_TRANSITION_ANALYSIS
+    )
+
+
+def test_confirmed_supplemental_material_event_is_context_only() -> None:
+    decision = _evaluate(_event(source_quality=SourceQuality.SUPPLEMENTAL))
+
+    assert decision.recommended_action is RecommendedAction.UPDATE_CONTEXT_ONLY
+    assert decision.trigger_reasons == ["material_event:supplemental_context_only"]
+
+
+@pytest.mark.parametrize(
+    ("score", "risk_level", "expected"),
+    [
+        (85.0, "low", RecommendedAction.MANUAL_REVIEW),
+        (30.0, "high", RecommendedAction.MANUAL_REVIEW),
+        (30.0, "low", RecommendedAction.NO_OP),
+    ],
+)
+def test_unverified_material_event_fails_closed_only_when_high_risk(
+    score: float, risk_level: str, expected: RecommendedAction
+) -> None:
+    assert _evaluate(
+        _event(
+            score=score,
+            risk_level=risk_level,
+            source_quality=SourceQuality.UNVERIFIED,
+        )
+    ).recommended_action is expected
+
+
+def test_material_event_authority_progression_changes_hash_without_changing_identity() -> None:
+    unverified = _event(source_quality=SourceQuality.UNVERIFIED)
+    official = _event(source_quality=SourceQuality.OFFICIAL, evidence_id="event-2")
+    official_other_collector = _event(
+        source="white_house",
+        evidence_id="event-3",
+        source_quality=SourceQuality.PRIMARY,
+    )
+
+    assert semantic_identity(unverified) == semantic_identity(official)
+    assert semantic_hash(unverified) != semantic_hash(official)
+    assert semantic_hash(official) == semantic_hash(official_other_collector)
+
+    decision = _evaluate(
+        official,
+        previous_semantic_hashes={semantic_identity(unverified): semantic_hash(unverified)},
+    )
+
+    assert decision.recommended_action is RecommendedAction.RUN_TRANSITION_ANALYSIS
+    assert decision.evaluated_items[0].outcome == "transition_trigger"
+
+
+def test_material_event_supplemental_to_validated_progression_is_not_duplicate() -> None:
+    supplemental = _event(source_quality=SourceQuality.SUPPLEMENTAL)
+    validated = _event(
+        evidence_id="event-2",
+        source_quality=SourceQuality.VALIDATED,
+    )
+
+    assert semantic_identity(supplemental) == semantic_identity(validated)
+    assert semantic_hash(supplemental) != semantic_hash(validated)
+
+    decision = _evaluate(
+        validated,
+        previous_semantic_hashes={
+            semantic_identity(supplemental): semantic_hash(supplemental),
+        },
+    )
+
+    assert decision.recommended_action is RecommendedAction.RUN_TRANSITION_ANALYSIS
+    assert decision.evaluated_items[0].outcome == "transition_trigger"
+
+
+def test_same_batch_supplemental_and_validated_event_aggregates_at_validated_stage() -> None:
+    supplemental = _event(
+        source="wire",
+        evidence_id="supplemental-1",
+        source_quality=SourceQuality.SUPPLEMENTAL,
+    )
+    validated = _event(
+        source="validated_feed",
+        evidence_id="validated-1",
+        source_quality=SourceQuality.VALIDATED,
+    )
+
+    decision = _evaluate(supplemental, validated)
+
+    assert len(decision.evaluated_items) == 1
+    assert decision.recommended_action is RecommendedAction.RUN_TRANSITION_ANALYSIS
+    assert [(ref.source, ref.evidence_id) for ref in decision.evaluated_items[0].evidence_refs] == [
+        ("validated_feed", "validated-1"),
+        ("wire", "supplemental-1"),
+    ]
+    assert decision.evaluated_items[0].semantic_hash == semantic_hash(validated)
+
+
+def test_same_batch_validated_and_official_event_aggregates_at_official_stage() -> None:
+    validated = _event(
+        source="validated_feed",
+        evidence_id="validated-1",
+        source_quality=SourceQuality.VALIDATED,
+    )
+    official = _event(
+        source="federal_reserve",
+        evidence_id="official-1",
+        source_quality=SourceQuality.OFFICIAL,
+    )
+
+    decision = _evaluate(validated, official)
+
+    assert len(decision.evaluated_items) == 1
+    assert decision.recommended_action is RecommendedAction.RUN_TRANSITION_ANALYSIS
+    assert decision.evaluated_items[0].semantic_hash == semantic_hash(official)
+
+
+def test_same_material_event_cluster_with_different_claims_requires_manual_review() -> None:
+    decision = _evaluate(
+        _event(claim="Federal Reserve changes its policy stance"),
+        _event(evidence_id="event-2", claim="Federal Reserve holds its policy stance"),
+    )
+
+    assert decision.recommended_action is RecommendedAction.MANUAL_REVIEW
+    assert all(item.reasons == ["semantic_identity:conflicting_payload"] for item in decision.evaluated_items)
 
 
 def test_same_semantic_identity_with_conflicting_payloads_fails_closed() -> None:

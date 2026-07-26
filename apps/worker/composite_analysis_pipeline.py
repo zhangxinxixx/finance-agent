@@ -39,6 +39,7 @@ from apps.worker.composite_state_shadow import (
     LEGACY_CONTEXT_MODE,
     STATE_DELTA_CONTEXT_MODE,
     StateDeltaAnalyzer,
+    build_state_delta_setup_failure_review_item,
     execute_composite_state_shadow,
     finalize_composite_state_shadow,
     prepare_composite_state_shadow,
@@ -111,15 +112,22 @@ def run_composite_analysis_pipeline(
         except Exception as exc:
             logger.exception("State-delta shadow setup failed; continuing legacy output")
             shadow_runtime = None
+            failure_kind = type(exc).__name__
+            review_item = build_state_delta_setup_failure_review_item(
+                run_id=run_id,
+                failure_kind=failure_kind,
+            )
             shadow_trace = {
-                "schema_version": "composite_state_shadow.v2",
+                "schema_version": "composite_state_shadow.v3",
                 "mode": STATE_DELTA_CONTEXT_MODE,
                 "requested_state_scope": _safe_requested_state_scope(state_shadow_input),
                 "status": "shadow_setup_failed",
+                "evidence_delta_action": "manual_review",
                 "model_invocation": "skipped",
                 "shadow_review_status": "needs_review",
                 "transition_diff": [],
-                "reason": f"{type(exc).__name__}:{str(exc)[:200]}",
+                "reason": review_item["reason"],
+                "review_items": [review_item],
             }
     elif context_mode != LEGACY_CONTEXT_MODE:  # pragma: no cover - resolver exhaustiveness
         raise ValueError(f"unsupported context mode: {context_mode}")
