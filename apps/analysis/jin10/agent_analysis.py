@@ -3,11 +3,21 @@ from __future__ import annotations
 import json
 import os
 import re
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from apps.analysis.jin10.agent_prompt_profiles import typed_report_prompt_spec
-from apps.analysis.jin10.daily_context import compact_context_for_prompt, compact_context_metadata
+from apps.analysis.context_bundle.schemas import AnalysisContextBundle
+from apps.analysis.jin10.daily_context import (
+    LEGACY_FULL_CONTEXT,
+    STATE_DELTA_CONTEXT,
+    StateDeltaContextError,
+    compact_context_for_prompt,
+    compact_context_metadata,
+    normalize_analysis_context_mode,
+    project_context_bundle_for_prompt,
+)
 from apps.analysis.jin10.multimodal import ImageLoader, build_multimodal_user_content
 from apps.analysis.jin10.prompt_budget import (
     PromptBudgetExceeded,
@@ -46,6 +56,8 @@ def build_agent_analysis_prompt(
     *,
     previous_daily_analysis: dict[str, Any] | None = None,
     analysis_context: dict[str, Any] | None = None,
+    context_mode: str = LEGACY_FULL_CONTEXT,
+    analysis_context_bundle: AnalysisContextBundle | dict[str, Any] | None = None,
     market_odds_evidence: dict[str, Any] | None = None,
 ) -> str:
     """Build the report-specific prompt plus the canonical JSON contract."""
@@ -55,6 +67,8 @@ def build_agent_analysis_prompt(
         daily_report,
         previous_daily_analysis=previous_daily_analysis,
         analysis_context=analysis_context,
+        context_mode=context_mode,
+        analysis_context_bundle=analysis_context_bundle,
         market_odds_evidence=market_odds_evidence,
     )
     return prompt
@@ -66,6 +80,8 @@ def build_agent_analysis_prompt_with_trace(
     *,
     previous_daily_analysis: dict[str, Any] | None = None,
     analysis_context: dict[str, Any] | None = None,
+    context_mode: str = LEGACY_FULL_CONTEXT,
+    analysis_context_bundle: AnalysisContextBundle | dict[str, Any] | None = None,
     market_odds_evidence: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Build a bounded prompt and its deterministic per-block budget trace."""
@@ -76,6 +92,8 @@ def build_agent_analysis_prompt_with_trace(
         daily_report,
         previous_daily_analysis=previous_daily_analysis,
         analysis_context=analysis_context,
+        context_mode=context_mode,
+        analysis_context_bundle=analysis_context_bundle,
         market_odds_evidence=market_odds_evidence,
         _trim_reasons=trim_reasons,
     )
@@ -91,12 +109,32 @@ def _build_agent_analysis_prompt_body(
     *,
     previous_daily_analysis: dict[str, Any] | None = None,
     analysis_context: dict[str, Any] | None = None,
+    context_mode: str = LEGACY_FULL_CONTEXT,
+    analysis_context_bundle: AnalysisContextBundle | dict[str, Any] | None = None,
     market_odds_evidence: dict[str, Any] | None = None,
     _trim_reasons: dict[str, list[str]] | None = None,
 ) -> str:
     """Build the future LLM prompt for Jin10 raw-report post analysis."""
 
     trim_reasons = _trim_reasons if _trim_reasons is not None else {}
+    resolved_context_mode = normalize_analysis_context_mode(context_mode)
+    prompt_profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
+    if resolved_context_mode == STATE_DELTA_CONTEXT:
+        if prompt_profile != "default_daily":
+            raise StateDeltaContextError(
+                "state_delta_context is only supported by the default_daily prompt profile"
+            )
+        state_delta_context = project_context_bundle_for_prompt(analysis_context_bundle)
+        action = (state_delta_context["evidence_delta_decision"] or {}).get("recommended_action")
+        if action != "run_transition_analysis":
+            raise StateDeltaContextError(
+                "state_delta_context requires run_transition_analysis action: " + str(action or "invalid")
+            )
+        return _build_state_delta_daily_prompt(
+            state_delta_context=state_delta_context,
+            trim_reasons=trim_reasons,
+        )
+
     daily_block = (
         _compact_daily_summary(daily_report, trim_reasons=trim_reasons)
         if daily_report
@@ -201,7 +239,6 @@ def _build_agent_analysis_prompt_body(
             chart_mode_note=chart_mode_note,
             market_odds_evidence=market_odds_evidence,
         )
-    prompt_profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
     if prompt_profile != "default_daily":
         return _build_typed_report_analysis_prompt(
             prompt_profile=prompt_profile,
@@ -359,6 +396,53 @@ chart_render_mode: {chart_render_mode}
 - 如果提供了 `analysis_baseline`，开头必须先概括该基准来自周报还是前一日最终综合分析报告，再说明当日证据对它执行了哪种变化动作；前序与当日价位冲突时优先解释时间尺度和数据日期，不得静默覆盖。
 - 传导链、黄金路径、白银路径可以由模型自行组织，不必机械套模板。
 - 不要出现“当前会话形成的核心判断脉络”“当前会话形成的关键位体系”这类会话内元表述。
+
+请按下方结构化输出契约返回分析结果。"""
+
+
+def _build_state_delta_daily_prompt(
+    *,
+    state_delta_context: dict[str, Any],
+    trim_reasons: dict[str, list[str]],
+) -> str:
+    """Build the explicit Bundle-backed daily prompt without legacy memory."""
+
+    trim_reasons.setdefault("analysis_memory_bundle_v3", []).append(
+        "projected_from_validated_context_bundle_v3"
+    )
+    trim_reasons.setdefault("instructions", []).append(
+        "state_delta_context_excludes_legacy_report_memory"
+    )
+    context_block = _prompt_json(state_delta_context)
+    bundle_meta = state_delta_context["bundle"]
+    return f"""你是一名专业的宏观市场与贵金属分析 Agent，默认使用简体中文。
+
+任务：基于唯一的 AnalysisContextBundle v3，对 canonical AnalysisState 执行当日增量分析。只消费 Bundle 已保留的 delta evidence 和 accepted facts；不得寻找、消费或假设任何 Bundle 之外的报告正文、图表、历史分析或当前运行材料。
+
+本次分析身份：
+- canonical_state_id: {bundle_meta["canonical_state_id"]}
+- state_scope: {bundle_meta["state_scope"]}
+- bundle_id: {bundle_meta["bundle_id"]}
+- content_hash: {bundle_meta["content_hash"]}
+
+硬性规则：
+1. 不主动联网，不引入输入材料之外的实时行情或历史数据。
+2. canonical_state 是唯一分析记忆；只允许用 retained_delta_evidence 和 accepted_facts 强化、维持、削弱、失效或待确认其中的判断。
+3. `evidence_delta_decision.recommended_action` 是本次更新动作权限；若为 no_op 或 update_context_only，不得虚构状态变化；若为 manual_review，只能输出待人工确认结论。
+4. selection trace 中 deferred/rejected 的 Evidence 不在本次可用证据集内，不得引用或推断其内容。
+5. accepted_facts 之外的图表事实不得进入确认层；Bundle 未保留的图表或报告内容不得引用。
+6. 必须区分 retained evidence、accepted fact、Agent 推论和尚未确认部分；不得把 Bundle 外观点或事实包装成已确认信息。
+7. 关键位只能来自 canonical_state、retained delta evidence 或 accepted facts，并明确来源与时效。
+8. 不给确定性预测；每条路径必须包含触发、失效和风险。
+9. 期权成交量不能替代 OI，COT 不能确认日内突破；实际利率、名义利率、美元与期限利差缺失时必须逐项标记未确认。
+10. 最大痛点只能作为动态参考锚；远期模型目标不得直接进入短线交易路径。
+11. 一句话结论先说明 canonical 判断、本次 material delta 和 EvidenceDelta action，再说明仍缺哪些确认。
+12. 最终响应只返回末尾 JSON schema 对象，不输出 Markdown、YAML 或额外说明。
+
+推荐分析结构语义：一句话结论；最新判断变化；行情回顾；黄金传导链；短中长期判断；确认矩阵；关键位；三条路径；分角色等待/失效条件；最终综合判断。
+
+=== analysis_memory_bundle_v3 ===
+{context_block}
 
 请按下方结构化输出契约返回分析结果。"""
 
@@ -1753,12 +1837,60 @@ def load_previous_jin10_agent_analysis(
 # ── LLM-powered analysis ──────────────────────────────────────────
 
 
+def _state_delta_lineage(projection: dict[str, Any]) -> dict[str, Any]:
+    """Return the stable Bundle lineage carried by state-delta audit records."""
+
+    bundle = projection["bundle"]
+    decision = projection["evidence_delta_decision"] or {}
+    return {
+        "context_bundle_id": bundle["bundle_id"],
+        "context_bundle_hash": bundle["content_hash"],
+        "canonical_state_id": bundle["canonical_state_id"],
+        "state_scope": bundle["state_scope"],
+        "retained_evidence_ids": projection["retained_evidence_ids"],
+        "retained_evidence_refs": projection["retained_evidence_refs"],
+        "evidence_delta_decision_id": decision.get("decision_id"),
+        "evidence_delta_action": decision.get("recommended_action"),
+    }
+
+
+def _state_delta_scaffold(raw: dict[str, Any], projection: dict[str, Any]) -> dict[str, Any]:
+    """Minimal deterministic envelope permitted before a state-delta model call."""
+
+    bundle = projection["bundle"]
+    return {
+        "document_id": str(raw.get("document_id") or ""),
+        "trade_date": str(raw.get("trade_date") or ""),
+        "run_id": str(raw.get("run_id") or raw.get("article_id") or bundle["run_id"]),
+        "article_id": str(raw.get("article_id") or ""),
+        "asset": bundle["asset"],
+        "family": "analysis_context_bundle",
+    }
+
+
+def _state_delta_source_refs(projection: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
+    bundle = projection["bundle"]
+    descriptor = {
+        "artifact_id": bundle["bundle_id"],
+        "artifact_type": "analysis_context_bundle",
+        "content_hash": bundle["content_hash"],
+        "canonical_state_id": bundle["canonical_state_id"],
+        "state_scope": bundle["state_scope"],
+    }
+    return (
+        [f"analysis_context_bundle:{bundle['bundle_id']}"],
+        [descriptor, *[dict(item) for item in projection["retained_evidence_refs"]]],
+    )
+
+
 def build_jin10_agent_analysis_report_with_llm(
     raw_report: Jin10RawArticleReport | dict[str, Any],
     daily_report: Jin10DailyAnalysisReport | dict[str, Any] | None = None,
     *,
     figure_image_loader: ImageLoader | None = None,
     analysis_context: dict[str, Any] | None = None,
+    context_mode: str = LEGACY_FULL_CONTEXT,
+    analysis_context_bundle: AnalysisContextBundle | dict[str, Any] | None = None,
     market_odds_evidence: dict[str, Any] | None = None,
 ) -> Jin10AgentAnalysisReport:
     """Build Jin10 analysis from a validated JSON response, with explicit fallback."""
@@ -1766,11 +1898,51 @@ def build_jin10_agent_analysis_report_with_llm(
 
     raw = _to_dict(raw_report)
     daily = _to_dict(daily_report) if daily_report is not None else {}
-    fallback = build_jin10_agent_analysis_report(raw_report, daily_report)
     prompt_version = agent_analysis_prompt_version(raw, daily)
     llm_config = _agent_llm_config()
     prompt_profile = _agent_analysis_prompt_profile(raw_report=raw, daily_report=daily)
-    effective_context = analysis_context if prompt_profile == "default_daily" else None
+    resolved_context_mode = normalize_analysis_context_mode(context_mode)
+    state_delta_projection = None
+    if resolved_context_mode == STATE_DELTA_CONTEXT:
+        if prompt_profile != "default_daily":
+            raise StateDeltaContextError(
+                "state_delta_context is only supported by the default_daily prompt profile"
+            )
+        state_delta_projection = project_context_bundle_for_prompt(analysis_context_bundle)
+        state_delta_lineage = _state_delta_lineage(state_delta_projection)
+        if state_delta_lineage["evidence_delta_action"] != "run_transition_analysis":
+            raise StateDeltaContextError(
+                "state_delta_context requires run_transition_analysis action: "
+                + str(state_delta_lineage["evidence_delta_action"] or "invalid")
+            )
+        fallback = build_jin10_agent_analysis_report(
+            _state_delta_scaffold(raw, state_delta_projection),
+            {},
+        )
+        bundle_artifacts, bundle_refs = _state_delta_source_refs(state_delta_projection)
+        fallback.source_artifact_refs = bundle_artifacts
+        fallback.source_refs = bundle_refs
+        fallback.provenance = ["分析记忆来自单一、不可变的 AnalysisContextBundle v3。"]
+        fallback.evidence_basis = {
+            "analysis_memory": {
+                **state_delta_lineage,
+                "accepted_fact_ids": [
+                    str(item.get("figure_fact_id"))
+                    for item in state_delta_projection["accepted_facts"]
+                    if item.get("figure_fact_id")
+                ],
+            }
+        }
+        fallback.generated_from = {
+            "source": "jin10_agent_analysis_state_delta_scaffold",
+            "context_mode": STATE_DELTA_CONTEXT,
+            "analysis_context_bundle": dict(state_delta_projection["bundle"]),
+            **state_delta_lineage,
+        }
+        effective_context = None
+    else:
+        fallback = build_jin10_agent_analysis_report(raw_report, daily_report)
+        effective_context = analysis_context if prompt_profile == "default_daily" else None
     if effective_context:
         context_metadata = compact_context_metadata(effective_context)
         prompt_context = compact_context_for_prompt(effective_context)
@@ -1810,23 +1982,29 @@ def build_jin10_agent_analysis_report_with_llm(
             raw,
             daily,
             analysis_context=effective_context,
+            context_mode=resolved_context_mode,
+            analysis_context_bundle=analysis_context_bundle,
             market_odds_evidence=market_odds_evidence,
         )
     except PromptBudgetExceeded as exc:
+        if state_delta_projection is not None:
+            raise
         fallback.generated_from["source"] = "jin10_agent_analysis_fallback_prompt_budget_exceeded"
         fallback.generated_from["prompt_version"] = prompt_version
         fallback.generated_from["prompt_profile"] = prompt_profile
         fallback.generated_from["model"] = llm_config["model"]
         fallback.generated_from["provider"] = llm_config["provider"]
         fallback.generated_from["prompt_budget"] = exc.trace
+        fallback.generated_from["context_mode"] = resolved_context_mode
         fallback.generated_from["degraded"] = True
         fallback.generated_from["degraded_reason"] = "prompt_budget_exceeded"
         fallback.generated_from["structured_output_validated"] = False
         return fallback
+    prompt_payload_hash = sha256(prompt.encode("utf-8")).hexdigest()
     multimodal_plan = build_multimodal_user_content(
         prompt,
-        raw,
-        image_loader=figure_image_loader,
+        {} if state_delta_projection is not None else raw,
+        image_loader=None if state_delta_projection is not None else figure_image_loader,
         max_images=llm_config["max_images"],
     )
 
@@ -1853,9 +2031,32 @@ def build_jin10_agent_analysis_report_with_llm(
                 "snapshot_id": f"jin10:{fallback.trade_date}:{fallback.run_id}:agent_analysis",
                 "trade_date": fallback.trade_date,
                 "report_id": str(fallback.run_id or fallback.article_id),
+                "context_mode": resolved_context_mode,
+                **(_state_delta_lineage(state_delta_projection) if state_delta_projection else {}),
                 "input_snapshot_ids": {
-                    "raw_report": fallback.source_artifact_refs,
-                    "daily_context": (effective_context or {}).get("input_snapshot_ids") if effective_context else {},
+                    **(
+                        {}
+                        if state_delta_projection
+                        else {"raw_report": fallback.source_artifact_refs}
+                    ),
+                    **(
+                        {"daily_context": (effective_context or {}).get("input_snapshot_ids") or {}}
+                        if effective_context
+                        else {}
+                    ),
+                    **(
+                        {
+                            "analysis_context_bundle": {
+                                "bundle_id": state_delta_projection["bundle"]["bundle_id"],
+                                "content_hash": state_delta_projection["bundle"]["content_hash"],
+                                "canonical_state_id": state_delta_projection["bundle"][
+                                    "canonical_state_id"
+                                ],
+                            }
+                        }
+                        if state_delta_projection
+                        else {}
+                    ),
                 },
             },
         )
@@ -1875,10 +2076,11 @@ def build_jin10_agent_analysis_report_with_llm(
             source_artifact_refs=fallback.source_artifact_refs,
             one_line_conclusion=llm_fields["one_line_conclusion"],
             provenance=fallback.provenance,
-            evidence_basis={
-                **fallback.evidence_basis,
-                **llm_fields["evidence_basis"],
-            },
+            evidence_basis=(
+                fallback.evidence_basis
+                if state_delta_projection is not None
+                else {**fallback.evidence_basis, **llm_fields["evidence_basis"]}
+            ),
             market_stage=llm_fields["market_stage"],
             logic_chain=llm_fields["logic_chain"],
             key_variables=llm_fields["key_variables"],
@@ -1908,12 +2110,30 @@ def build_jin10_agent_analysis_report_with_llm(
                 "degraded": degraded,
                 "degraded_reason": ";".join(multimodal_plan.degraded_reasons) if degraded else None,
                 "figure_results": figure_results,
-                "raw_report_family": fallback.generated_from.get("raw_report_family") or raw.get("family"),
-                "daily_report_family": fallback.generated_from.get("daily_report_family") or daily.get("family"),
+                "raw_report_family": (
+                    fallback.generated_from.get("raw_report_family") or raw.get("family")
+                    if state_delta_projection is None
+                    else None
+                ),
+                "daily_report_family": (
+                    fallback.generated_from.get("daily_report_family") or daily.get("family")
+                    if state_delta_projection is None
+                    else None
+                ),
                 "prompt_version": prompt_version,
                 "prompt_profile": prompt_profile,
+                "context_mode": resolved_context_mode,
+                **(_state_delta_lineage(state_delta_projection) if state_delta_projection else {}),
+                "analysis_context_bundle": (
+                    state_delta_projection["bundle"] if state_delta_projection else None
+                ),
+                "prompt_payload_hash": prompt_payload_hash,
                 "prompt_budget": prompt_budget,
-                "daily_context": compact_context_metadata(effective_context),
+                **(
+                    {"daily_context": compact_context_metadata(effective_context)}
+                    if effective_context
+                    else {}
+                ),
                 "prompt_ready": True,
                 "structured_output_validated": True,
                 "llm_structured_output": llm_fields,
@@ -1921,10 +2141,19 @@ def build_jin10_agent_analysis_report_with_llm(
             },
         )
     except Exception as exc:
+        if state_delta_projection is not None:
+            raise StateDeltaContextError(
+                "state_delta_context model failure: " + type(exc).__name__
+            ) from exc
         # Fallback to deterministic analysis
         fallback.generated_from["source"] = "jin10_agent_analysis_fallback_after_llm_error"
         fallback.generated_from["prompt_version"] = prompt_version
         fallback.generated_from["prompt_profile"] = _agent_analysis_prompt_profile(raw_report=raw, daily_report=daily)
+        fallback.generated_from["context_mode"] = resolved_context_mode
+        fallback.generated_from["analysis_context_bundle"] = (
+            state_delta_projection["bundle"] if state_delta_projection else None
+        )
+        fallback.generated_from["prompt_payload_hash"] = prompt_payload_hash
         fallback.generated_from["prompt_budget"] = prompt_budget
         fallback.generated_from["model"] = llm_config["model"]
         fallback.generated_from["provider"] = llm_config["provider"]
