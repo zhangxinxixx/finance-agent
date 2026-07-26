@@ -8,10 +8,14 @@ BIAS IS ALWAYS NEUTRAL — news provides risk signals, not price direction.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+
+if TYPE_CHECKING:
+    from apps.analysis.context_bundle import ConsumerProjection
 
 _AGENT_NAME = "news_agent"
 _MODULE = "news"
@@ -19,8 +23,18 @@ _VERSION = "1.0"
 
 
 def analyze_news(
-    snapshot: dict[str, Any], *, created_at: datetime | None = None
+    snapshot: dict[str, Any],
+    *,
+    created_at: datetime | None = None,
+    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
 ) -> AgentOutput:
+    from apps.analysis.context_bundle import validate_consumer_projection
+
+    projection = validate_consumer_projection(context_projection, "news") if context_projection is not None else None
+    return _bind_context_projection(_analyze_news(snapshot, created_at=created_at), projection)
+
+
+def _analyze_news(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
     """Analyze the news section of an already-loaded analysis snapshot."""
 
     created_at = created_at or datetime.now(timezone.utc)
@@ -33,11 +47,7 @@ def analyze_news(
     news = snapshot.get("news")
 
     if not isinstance(news, dict) or news.get("status") != "available":
-        reason = (
-            "news section is missing"
-            if not isinstance(news, dict)
-            else f"news status is {news.get('status')!r}"
-        )
+        reason = "news section is missing" if not isinstance(news, dict) else f"news status is {news.get('status')!r}"
         return AgentOutput(
             version=_VERSION,
             agent_name=_AGENT_NAME,
@@ -81,25 +91,15 @@ def analyze_news(
     high_star = int(data.get("high_star_count_7d", 0))
 
     if risk_level == "HIGH":
-        key_findings.append(
-            f"News risk level: HIGH ({high_star} high-impact events in recent 7d)."
-        )
-        risk_points.append(
-            "Recent macro events are high-impact; elevated headline-driven volatility risk."
-        )
+        key_findings.append(f"News risk level: HIGH ({high_star} high-impact events in recent 7d).")
+        risk_points.append("Recent macro events are high-impact; elevated headline-driven volatility risk.")
         confidence = 0.72
     elif risk_level == "MEDIUM":
-        key_findings.append(
-            f"News risk level: MEDIUM ({high_star} high-impact events in recent 7d)."
-        )
-        risk_points.append(
-            "Moderate macro event risk; some headline-driven volatility possible."
-        )
+        key_findings.append(f"News risk level: MEDIUM ({high_star} high-impact events in recent 7d).")
+        risk_points.append("Moderate macro event risk; some headline-driven volatility possible.")
         confidence = 0.62
     else:
-        key_findings.append(
-            "News risk level: LOW (no high-impact events in recent 7 days)."
-        )
+        key_findings.append("News risk level: LOW (no high-impact events in recent 7 days).")
         confidence = 0.55
 
     # ── Recent events ──────────────────────────────────────────────────
@@ -126,30 +126,22 @@ def analyze_news(
     flashes = data.get("recent_flashes")
     if isinstance(flashes, list) and flashes:
         flash_count = len(flashes)
-        key_findings.append(
-            f"{flash_count} flash headlines collected (deduplicated)."
-        )
+        key_findings.append(f"{flash_count} flash headlines collected (deduplicated).")
 
         # Detect keyword hits via URL (flash content is in raw payload)
         keywords = {"美联储", "FOMC", "利率", "CPI", "非农", "PCE"}
         hit_count = sum(
-            1 for f in flashes
-            if isinstance(f, dict)
-            and any(kw in str(f.get("url", "")) for kw in keywords)
+            1 for f in flashes if isinstance(f, dict) and any(kw in str(f.get("url", "")) for kw in keywords)
         )
         if hit_count >= 3:
-            risk_points.append(
-                f"{hit_count} flash headlines mention key macro topics — elevated news flow."
-            )
+            risk_points.append(f"{hit_count} flash headlines mention key macro topics — elevated news flow.")
         confidence = min(confidence + 0.02 * min(hit_count, 3), 0.80)
     else:
         invalid_conditions.append("No flash headlines available; news signal may be stale.")
         confidence -= 0.08
 
     # ── Data quality ───────────────────────────────────────────────────
-    if (not isinstance(events, list) or not events) and (
-        not isinstance(flashes, list) or not flashes
-    ):
+    if (not isinstance(events, list) or not events) and (not isinstance(flashes, list) or not flashes):
         status = AgentStatus.PARTIAL
         confidence -= 0.12
         invalid_conditions.append("Both calendar events and flash headlines are empty.")
@@ -299,9 +291,13 @@ def _analyze_daily_market_brief(
     if candidate_events or unconfirmed_risks:
         invalid_conditions.append("Single-source or unofficial events must remain watchlist until verified.")
     if external_market_odds:
-        invalid_conditions.append("External market odds cannot independently set direction, macro regime, confidence, or readiness.")
+        invalid_conditions.append(
+            "External market odds cannot independently set direction, macro regime, confidence, or readiness."
+        )
     if etf_claims:
-        invalid_conditions.append("Jin10 ETF holdings are single-source supplemental observations and require source-tier labeling.")
+        invalid_conditions.append(
+            "Jin10 ETF holdings are single-source supplemental observations and require source-tier labeling."
+        )
 
     confidence = 0.58
     if confirmed_events:
@@ -395,13 +391,10 @@ def _etf_holdings_claims(context: dict[str, Any]) -> list[dict[str, Any]]:
                 "observation_time": reported_on,
                 "value": float(holdings),
                 "change": change,
-                "source_refs": [
-                    ref for ref in source_refs
-                    if ref.get("asset") in {None, asset}
-                ],
-                "evidence_refs": [
-                    {"type": "etf_holdings_feature", "artifact_path": artifact_path}
-                ] if artifact_path else [],
+                "source_refs": [ref for ref in source_refs if ref.get("asset") in {None, asset}],
+                "evidence_refs": [{"type": "etf_holdings_feature", "artifact_path": artifact_path}]
+                if artifact_path
+                else [],
             }
         )
     return claims
@@ -444,3 +437,11 @@ def _summary(risk_level: str, status: AgentStatus, confidence: float) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
+
+
+def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
+    if projection is None:
+        return output
+    from apps.analysis.context_bundle import consume_projection_for_agent_output
+
+    return AgentOutput.model_validate(consume_projection_for_agent_output(projection, output, expected_consumer="news"))

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+
+if TYPE_CHECKING:
+    from apps.analysis.context_bundle import ConsumerProjection
 
 _AGENT_NAME = "risk_agent"
 _MODULE = "risk"
@@ -38,6 +42,28 @@ _BIAS_ALIASES = {
 
 
 def analyze_risk(
+    snapshot: dict[str, Any],
+    *,
+    macro_output: AgentOutput | dict[str, Any] | None,
+    options_output: AgentOutput | dict[str, Any] | None,
+    created_at: datetime | None = None,
+    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
+) -> AgentOutput:
+    from apps.analysis.context_bundle import validate_consumer_projection
+
+    projection = validate_consumer_projection(context_projection, "risk") if context_projection is not None else None
+    return _bind_context_projection(
+        _analyze_risk(
+            snapshot,
+            macro_output=macro_output,
+            options_output=options_output,
+            created_at=created_at,
+        ),
+        projection,
+    )
+
+
+def _analyze_risk(
     snapshot: dict[str, Any],
     *,
     macro_output: AgentOutput | dict[str, Any] | None,
@@ -196,7 +222,9 @@ def _input_snapshot_ids(
     return ids
 
 
-def _source_refs(snapshot: dict[str, Any], macro: AgentOutput | None, options: AgentOutput | None) -> list[dict[str, Any]]:
+def _source_refs(
+    snapshot: dict[str, Any], macro: AgentOutput | None, options: AgentOutput | None
+) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     snapshot_refs = snapshot.get("source_refs")
     if isinstance(snapshot_refs, list):
@@ -308,3 +336,11 @@ def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
+
+
+def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
+    if projection is None:
+        return output
+    from apps.analysis.context_bundle import consume_projection_for_agent_output
+
+    return AgentOutput.model_validate(consume_projection_for_agent_output(projection, output, expected_consumer="risk"))

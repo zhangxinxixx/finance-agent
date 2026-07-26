@@ -31,6 +31,10 @@ from apps.premarket import (
     sort_premarket_steps,
 )
 from apps.runtime.state_machine import derive_task_run_status, transition_task_run, transition_task_step
+from apps.runtime.artifact_registry import (
+    select_context_bundle_artifact_for_run,
+    select_previous_context_bundle_artifact,
+)
 from apps.worker.artifact_registration import (
     coerce_lineage_input_snapshot_ids as _coerce_lineage_input_snapshot_ids,
     coerce_lineage_source_refs as _coerce_lineage_source_refs,
@@ -44,6 +48,11 @@ from apps.worker.artifact_registration import (
 from apps.worker.composite_analysis_pipeline import (
     accepted_coordinator_output as _accepted_coordinator_output,
     run_composite_analysis_pipeline as _run_composite_analysis_pipeline,
+)
+from apps.worker.composite_state_shadow import (
+    STATE_DELTA_CONTEXT_MODE,
+    StateDeltaAnalyzer,
+    resolve_analysis_context_mode,
 )
 from apps.worker.db_persistence import (
     db_persist_agent_outputs as _db_persist_agent_outputs,
@@ -133,6 +142,9 @@ def run_premarket(
     *,
     storage_root: Path = Path("./storage"),
     product: str = "OG",
+    analysis_context_mode: str | None = None,
+    state_shadow_input: dict[str, Any] | None = None,
+    state_delta_analyzer: StateDeltaAnalyzer | None = None,
 ) -> TaskStatus:
     """Execute the premarket pipeline.
 
@@ -191,9 +203,7 @@ def run_premarket(
             default=str,
         )
         # ── T1.6: compute input_hash for idempotency ────────────────
-        step.input_hash = hashlib.sha256(
-            step.input_json.encode("utf-8")
-        ).hexdigest()
+        step.input_hash = hashlib.sha256(step.input_json.encode("utf-8")).hexdigest()
         step.retry_count = 0
 
         # ── T1.4: check upstream failure/blocking → block this step ──────
@@ -360,7 +370,11 @@ def run_premarket(
         pre_analysis_gate = _load_pre_analysis_gate(storage_root=storage_root, analysis_snapshot=analysis_snapshot)
         if _pre_analysis_gate_blocks(pre_analysis_gate):
             had_partial_summary = True
-            blocked_outputs = pre_analysis_gate.get("blocked_outputs") if isinstance(pre_analysis_gate.get("blocked_outputs"), list) else []
+            blocked_outputs = (
+                pre_analysis_gate.get("blocked_outputs")
+                if isinstance(pre_analysis_gate.get("blocked_outputs"), list)
+                else []
+            )
             macro_state.step_summaries["pre_analysis_gate"] = {
                 "step": "pre_analysis_gate",
                 "status": "blocked",
@@ -386,11 +400,22 @@ def run_premarket(
                 }
             try:
                 composite_created_at = datetime.now(timezone.utc)
+                resolved_shadow_input = state_shadow_input
+                if resolve_analysis_context_mode(analysis_context_mode) == STATE_DELTA_CONTEXT_MODE:
+                    resolved_shadow_input = _resolve_state_shadow_registry_inputs(
+                        db=db,
+                        run_id=run_id,
+                        storage_root=storage_root,
+                        state_shadow_input=state_shadow_input,
+                    )
                 composite_summaries, composite_outputs = _run_composite_analysis_pipeline(
                     storage_root=storage_root,
                     snapshot=analysis_snapshot,
                     run_id=run_id,
                     created_at=composite_created_at,
+                    analysis_context_mode=analysis_context_mode,
+                    state_shadow_input=resolved_shadow_input,
+                    state_delta_analyzer=state_delta_analyzer,
                 )
                 macro_state.step_summaries.update(composite_summaries)
 
@@ -408,9 +433,7 @@ def run_premarket(
                     agent_loop_decision = composite_outputs.get("agent_loop_decision")
                     publish_allowed = bool(getattr(agent_loop_decision, "publish_allowed", False))
                     if publish_allowed:
-                        _db_persist_final_result(
-                            db, analysis_snapshot, composite_outputs, snapshot_db_id
-                        )
+                        _db_persist_final_result(db, analysis_snapshot, composite_outputs, snapshot_db_id)
                     else:
                         _ensure_review_items(
                             db,
@@ -439,7 +462,14 @@ def run_premarket(
                     steps=ordered_steps,
                     composite_outputs=composite_outputs,
                     analysis_snapshot=analysis_snapshot,
+                    storage_root=storage_root,
                 )
+                bundle_registry_status = composite_outputs.get("context_bundle_registry_status")
+                if isinstance(bundle_registry_status, dict):
+                    macro_state.step_summaries["context_bundle_registry"] = {
+                        "step": "context_bundle_registry",
+                        **bundle_registry_status,
+                    }
                 if bool(getattr(composite_outputs.get("agent_loop_decision"), "publish_allowed", False)):
                     try:
                         _register_composite_report_registry_entries(
@@ -449,7 +479,9 @@ def run_premarket(
                             analysis_snapshot=analysis_snapshot,
                         )
                     except Exception as db_exc:
-                        logger.exception("Report registry persist of composite analysis outputs failed (file artifacts are safe)")
+                        logger.exception(
+                            "Report registry persist of composite analysis outputs failed (file artifacts are safe)"
+                        )
                         macro_state.step_summaries["db_persist_composite_report_registry"] = {
                             "step": "db_persist_composite_report_registry",
                             "status": "failed",
@@ -463,7 +495,7 @@ def run_premarket(
                     "status": "failed",
                     "error": str(exc),
                     "partial_summary": "Composite analysis pipeline failed after analysis snapshot was persisted; "
-                                      "no final report or strategy card was written.",
+                    "no final report or strategy card was written.",
                 }
 
     # Persist step summaries and run provenance as durable artifacts
@@ -538,6 +570,71 @@ def run_premarket(
     transition_task_run(db, task, final_status, source="worker", reason="step_rollup")
     db.commit()
     return final_status
+
+
+def _resolve_state_shadow_registry_inputs(
+    *,
+    db: DBSession,
+    run_id: str,
+    storage_root: Path,
+    state_shadow_input: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Resolve restart/prior Bundle authority from RunArtifact, never a path scan."""
+
+    if state_shadow_input is None:
+        return None
+    resolved = dict(state_shadow_input)
+    for field in (
+        "context_bundle_artifact",
+        "previous_context_bundle_artifact",
+        "previous_bundle_path",
+    ):
+        resolved.pop(field, None)
+
+    same_run = select_context_bundle_artifact_for_run(
+        db,
+        run_id=run_id,
+        storage_root=storage_root,
+    )
+    if same_run is not None:
+        resolved["context_bundle_artifact"] = same_run
+        return resolved
+
+    canonical_state = resolved.get("canonical_state")
+    asset = str(canonical_state.get("asset") or "").strip() if isinstance(canonical_state, dict) else ""
+    state_scope = str(resolved.get("state_scope") or "").strip()
+    canonical_state_id = str(resolved.get("canonical_state_id") or "").strip()
+    if not all((asset, state_scope, canonical_state_id)):
+        return resolved
+    previous = select_previous_context_bundle_artifact(
+        db,
+        current_run_id=run_id,
+        asset=asset,
+        state_scope=state_scope,
+        canonical_state_id=canonical_state_id,
+        cutoff_at=_optional_aware_datetime(resolved.get("cutoff_at")),
+        storage_root=storage_root,
+    )
+    if previous is not None:
+        for field in (
+            "previous_semantic_hashes",
+            "deferred_queue",
+            "processed_above_frontier",
+            "freshness_sla_seconds",
+            "default_freshness_sla_seconds",
+        ):
+            resolved.pop(field, None)
+        resolved["previous_context_bundle_artifact"] = previous
+    return resolved
+
+
+def _optional_aware_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("state shadow cutoff_at must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
 
 
 def _load_pre_analysis_gate(*, storage_root: Path, analysis_snapshot: dict[str, Any]) -> dict[str, Any]:

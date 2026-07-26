@@ -75,7 +75,26 @@ def prepare_composite_state_shadow(
     canonical_payload = shadow_input["canonical_state"]
     if isinstance(canonical_payload, dict) and "schema_version" not in canonical_payload:
         canonical_payload = {**canonical_payload, "schema_version": "1.0"}
-    previous_state = parse_analysis_state_document(canonical_payload)
+    requested_state = parse_analysis_state_document(canonical_payload)
+    canonical_state_id = str(shadow_input["canonical_state_id"])
+    recovery_descriptor = shadow_input.get("context_bundle_artifact")
+    if recovery_descriptor is not None:
+        bundle, artifact = _recover_context_bundle(
+            storage_root=storage_root,
+            descriptor=recovery_descriptor,
+            expected_run_id=run_id,
+            asset=requested_state.asset,
+            state_scope=state_scope,
+            canonical_state_id=canonical_state_id,
+        )
+        canonical_block = next(block for block in bundle.blocks if block.name == "canonical_state")
+        previous_state = parse_analysis_state_document(canonical_block.payload)
+        if previous_state.model_dump(mode="json") != requested_state.model_dump(mode="json"):
+            raise ValueError("recovered context bundle canonical state does not match shadow input")
+        cutoff_at = bundle.cutoff_at
+    else:
+        previous_state = requested_state
+        cutoff_at = _datetime_value(shadow_input.get("cutoff_at") or created_at)
     if isinstance(previous_state, AnalysisStateDocumentV11):
         if previous_state.state_scope != state_scope:
             raise ValueError("shadow canonical state belongs to a different state_scope")
@@ -89,47 +108,48 @@ def prepare_composite_state_shadow(
         session = str(shadow_input.get("expected_session") or "daily_close").strip()
         if not session:
             raise ValueError("shadow session must not be blank")
-    confirmed_facts = []
-    delta_facts = []
-    for raw_fact in shadow_input.get("figure_facts") or []:
-        confirmed = project_confirmed_evidence(raw_fact)
-        if confirmed is not None:
-            confirmed_facts.append(confirmed.model_dump(mode="json"))
-            delta_facts.append(
-                adapt_figure_fact(
-                    confirmed.model_dump(mode="json"),
-                    observed_at=_datetime_value(shadow_input.get("cutoff_at") or created_at),
+    if recovery_descriptor is None:
+        confirmed_facts = []
+        delta_facts = []
+        for raw_fact in shadow_input.get("figure_facts") or []:
+            confirmed = project_confirmed_evidence(raw_fact)
+            if confirmed is not None:
+                confirmed_facts.append(confirmed.model_dump(mode="json"))
+                delta_facts.append(
+                    adapt_figure_fact(
+                        confirmed.model_dump(mode="json"),
+                        observed_at=cutoff_at,
+                    )
                 )
-            )
-    cutoff_at = _datetime_value(shadow_input.get("cutoff_at") or created_at)
-    assembled_at = _datetime_value(shadow_input.get("assembled_at") or created_at)
+        assembled_at = _datetime_value(shadow_input.get("assembled_at") or created_at)
+        recovery = _recovery_inputs(
+            storage_root=storage_root,
+            shadow_input=shadow_input,
+            current_run_id=run_id,
+            asset=previous_state.asset,
+            state_scope=state_scope,
+            canonical_state_id=canonical_state_id,
+        )
+        bundle = assemble_context_bundle(
+            run_id=run_id,
+            asset=previous_state.asset,
+            state_scope=state_scope,
+            canonical_state_id=canonical_state_id,
+            canonical_state=previous_state.model_dump(mode="json"),
+            evidence=list(shadow_input.get("evidence") or []),
+            evidence_cursors=dict(shadow_input.get("evidence_cursors") or {}),
+            cutoff_at=cutoff_at,
+            assembled_at=assembled_at,
+            facts=confirmed_facts,
+            delta_facts=delta_facts,
+            **recovery,
+            expected_session=shadow_input.get("expected_session"),
+            max_alignment_seconds=int(shadow_input.get("max_alignment_seconds") or 86_400),
+            budget_tokens=int(shadow_input.get("budget_tokens") or 15_000),
+        )
+        artifact = write_context_bundle(storage_root=storage_root, bundle=bundle)
     if isinstance(previous_state, AnalysisStateDocumentV1):
         trade_date = cutoff_at.date()
-    recovery = _recovery_inputs(
-        storage_root=storage_root,
-        shadow_input=shadow_input,
-        asset=previous_state.asset,
-        state_scope=state_scope,
-        canonical_state_id=str(shadow_input["canonical_state_id"]),
-    )
-    bundle = assemble_context_bundle(
-        run_id=run_id,
-        asset=previous_state.asset,
-        state_scope=state_scope,
-        canonical_state_id=str(shadow_input["canonical_state_id"]),
-        canonical_state=previous_state.model_dump(mode="json"),
-        evidence=list(shadow_input.get("evidence") or []),
-        evidence_cursors=dict(shadow_input.get("evidence_cursors") or {}),
-        cutoff_at=cutoff_at,
-        assembled_at=assembled_at,
-        facts=confirmed_facts,
-        delta_facts=delta_facts,
-        **recovery,
-        expected_session=shadow_input.get("expected_session"),
-        max_alignment_seconds=int(shadow_input.get("max_alignment_seconds") or 86_400),
-        budget_tokens=int(shadow_input.get("budget_tokens") or 15_000),
-    )
-    artifact = write_context_bundle(storage_root=storage_root, bundle=bundle)
     delta_block = next(block for block in bundle.blocks if block.name == "delta_evidence")
     facts_block = next(block for block in bundle.blocks if block.name == "facts")
     available_refs = [
@@ -211,9 +231,7 @@ def execute_composite_state_shadow(
     try:
         raw_candidate = analyzer(runtime.bundle)
         candidate_payload = (
-            raw_candidate.model_dump(mode="json")
-            if isinstance(raw_candidate, BaseModel)
-            else raw_candidate
+            raw_candidate.model_dump(mode="json") if isinstance(raw_candidate, BaseModel) else raw_candidate
         )
         candidate = TransitionCandidate.model_validate(candidate_payload)
         review = review_transition_candidate_scoped(
@@ -241,9 +259,7 @@ def execute_composite_state_shadow(
         "status": "candidate_accepted_shadow_only",
         "model_invocation": "executed",
         "shadow_review_status": "accepted",
-        "transition_diff": [
-            change.model_dump(mode="json") for change in review.transition.changes
-        ],
+        "transition_diff": [change.model_dump(mode="json") for change in review.transition.changes],
         "shadow_core_thesis": review.next_state.core_thesis,
         "review_hash": review.next_state_content_hash,
         "analyzer_latency_ms": max(0, round((perf_counter() - started) * 1000)),
@@ -263,9 +279,7 @@ def finalize_composite_state_shadow(
     bundle_id = trace.get("bundle_id")
     return {
         **trace,
-        "bundle_consumers": {
-            name: bundle_id for name in consumer_names if bundle_id
-        },
+        "bundle_consumers": {name: bundle_id for name in consumer_names if bundle_id},
         "conclusion_diff": {
             "legacy": legacy_summary,
             "shadow": shadow_summary,
@@ -310,27 +324,40 @@ def _recovery_inputs(
     *,
     storage_root: Path,
     shadow_input: dict[str, Any],
+    current_run_id: str,
     asset: str,
     state_scope: StateScope,
     canonical_state_id: str,
 ) -> dict[str, Any]:
+    previous_descriptor = shadow_input.get("previous_context_bundle_artifact")
     previous_bundle_path = shadow_input.get("previous_bundle_path")
-    if previous_bundle_path is None:
-        return {
-            field: shadow_input[field]
-            for field in _RECOVERY_FIELDS
-            if field in shadow_input
-        }
+    if previous_descriptor is not None and previous_bundle_path is not None:
+        raise ValueError("previous_context_bundle_artifact cannot be combined with previous_bundle_path")
+    if previous_descriptor is None and previous_bundle_path is None:
+        return {field: shadow_input[field] for field in _RECOVERY_FIELDS if field in shadow_input}
     ambiguous = [field for field in _RECOVERY_FIELDS if field in shadow_input]
     if ambiguous:
         raise ValueError(
-            "previous_bundle_path cannot be combined with explicit recovery fields: "
-            + ", ".join(ambiguous)
+            "previous context bundle cannot be combined with explicit recovery fields: " + ", ".join(ambiguous)
         )
-    previous = load_context_bundle(
-        storage_root=storage_root,
-        storage_relative_path=str(previous_bundle_path),
-    )
+    if previous_descriptor is not None:
+        previous, _artifact = _recover_context_bundle(
+            storage_root=storage_root,
+            descriptor=previous_descriptor,
+            expected_run_id=None,
+            asset=asset,
+            state_scope=state_scope,
+            canonical_state_id=canonical_state_id,
+        )
+        if previous.run_id == current_run_id:
+            raise ValueError("previous context bundle must belong to a different run")
+    else:
+        # Backward-compatible explicit test/canary injection. Production runtime
+        # recovery uses the validated RunArtifact descriptor boundary above.
+        previous = load_context_bundle(
+            storage_root=storage_root,
+            storage_relative_path=str(previous_bundle_path),
+        )
     if previous.schema_version != "analysis_context_bundle.v3":
         raise ValueError("previous context bundle must use analysis_context_bundle.v3")
     if (
@@ -352,12 +379,67 @@ def _recovery_inputs(
         "previous_semantic_hashes": hashes,
         "deferred_queue": tuple(previous.deferred_queue),
         "processed_above_frontier": {
-            source: tuple(pointers)
-            for source, pointers in previous.processed_above_frontier.items()
+            source: tuple(pointers) for source, pointers in previous.processed_above_frontier.items()
         },
         "freshness_sla_seconds": dict(previous.freshness_sla_seconds),
         "default_freshness_sla_seconds": previous.default_freshness_sla_seconds,
     }
+
+
+def _recover_context_bundle(
+    *,
+    storage_root: Path,
+    descriptor: Any,
+    expected_run_id: str | None,
+    asset: str,
+    state_scope: StateScope,
+    canonical_state_id: str,
+) -> tuple[AnalysisContextBundle, ContextBundleWriteResult]:
+    if not isinstance(descriptor, dict):
+        raise ValueError("context bundle recovery requires an explicit registry descriptor")
+    file_path = str(descriptor.get("file_path") or "").strip()
+    metadata = descriptor.get("metadata")
+    if not file_path or not isinstance(metadata, dict):
+        raise ValueError("context bundle recovery descriptor is incomplete")
+    bundle = load_context_bundle(
+        storage_root=storage_root,
+        storage_relative_path=file_path,
+    )
+    expected = {
+        "artifact_family": "analysis_context_bundle",
+        "schema_version": "analysis_context_bundle.v3",
+        "bundle_id": bundle.bundle_id,
+        "content_hash": bundle.content_hash,
+        "run_id": bundle.run_id,
+        "asset": asset,
+        "state_scope": state_scope,
+        "canonical_state_id": canonical_state_id,
+    }
+    for key, value in expected.items():
+        if str(metadata.get(key) or "") != str(value):
+            raise ValueError(f"context bundle recovery identity mismatch: {key}")
+    if expected_run_id is not None and bundle.run_id != expected_run_id:
+        raise ValueError("context bundle payload run_id does not match runtime")
+    if bundle.asset != asset or bundle.state_scope != state_scope:
+        raise ValueError("context bundle payload scope identity does not match runtime")
+    if bundle.canonical_state_id != canonical_state_id:
+        raise ValueError("context bundle canonical identity does not match runtime")
+    if str(descriptor.get("artifact_id") or "") != bundle.bundle_id:
+        raise ValueError("context bundle artifact_id does not match bundle_id")
+    expected_file_hash = str(descriptor.get("sha256") or "").strip().lower()
+    absolute_path = (Path(storage_root).resolve() / file_path).resolve()
+    if not absolute_path.is_relative_to(Path(storage_root).resolve()):
+        raise ValueError("context bundle recovery path escapes storage root")
+    actual_file_hash = hashlib.sha256(absolute_path.read_bytes()).hexdigest()
+    if expected_file_hash != actual_file_hash:
+        raise ValueError("context bundle recovery file hash mismatch")
+    return bundle, ContextBundleWriteResult(
+        storage_relative_path=file_path,
+        content_hash=bundle.content_hash,
+        file_sha256=actual_file_hash,
+        written=False,
+        registry_artifact=dict(descriptor),
+    )
 
 
 def build_state_delta_review_item(
@@ -381,8 +463,7 @@ def build_state_delta_review_item(
         "severity": severity,
         "reason": reason,
         "impact_modules": impact_modules or ["analysis_state", "state_delta_shadow"],
-        "suggested_action": suggested_action
-        or "Review conflicting or unverified evidence before transition analysis.",
+        "suggested_action": suggested_action or "Review conflicting or unverified evidence before transition analysis.",
         "status": "pending",
         "evidence_refs": evidence_refs or [],
     }
@@ -408,11 +489,7 @@ def build_state_delta_setup_failure_review_item(
 
 def _manual_review_item(runtime: CompositeStateShadowRuntime) -> dict[str, Any]:
     decision = runtime.evidence_delta_decision
-    evidence_refs = [
-        ref.model_dump(mode="json")
-        for item in decision.evaluated_items
-        for ref in item.evidence_refs
-    ]
+    evidence_refs = [ref.model_dump(mode="json") for item in decision.evaluated_items for ref in item.evidence_refs]
     return build_state_delta_review_item(
         run_id=runtime.run_id,
         review_id=f"evidence_delta:{decision.decision_id}",

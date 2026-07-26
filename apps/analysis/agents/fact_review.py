@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from datetime import date, datetime
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError, ProgrammingError
@@ -23,6 +24,9 @@ _SKIP_AGENT_NAMES = {"fact_review_agent", "synthesis_agent", "coordinator", "coo
 _UNAVAILABLE_SOURCE_STATUSES = {"unavailable", "failed", "error"}
 _REVIEW_QUEUE_VERDICTS = {"unsupported", "contradicted"}
 _STRUCTURED_CONTRADICTION_FIELDS = ("subject", "metric", "predicate", "horizon", "scope", "observation_time")
+
+if TYPE_CHECKING:
+    from apps.analysis.context_bundle import ConsumerProjection
 
 
 def build_fact_review_prompt_template() -> str:
@@ -167,9 +171,15 @@ def build_runtime_fact_review_agent_output(
     *,
     snapshot_id: str,
     created_at: datetime,
+    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
 ) -> RuntimeAgentOutput:
     """Review in-memory domain outputs without fabricating persistence identifiers."""
 
+    from apps.analysis.context_bundle import validate_consumer_projection
+
+    projection = (
+        validate_consumer_projection(context_projection, "fact_review") if context_projection is not None else None
+    )
     review_targets = [row for row in agent_outputs if row.agent_name not in _SKIP_AGENT_NAMES]
     if not review_targets:
         raise ValueError("fact_review_agent requires at least one upstream agent output")
@@ -217,37 +227,48 @@ def build_runtime_fact_review_agent_output(
     source_refs = _dedupe_dicts(ref for row in review_targets for ref in row.source_refs)
     evidence_refs = _dedupe_dicts(ref for row in review_targets for ref in row.evidence_refs)
     input_snapshot_ids = {row.agent_name: row.snapshot_id for row in review_targets}
-    return RuntimeAgentOutput(
-        version="1.0",
-        agent_name="fact_review_agent",
-        module="fact_review",
-        snapshot_id=f"{snapshot_id}:fact_review",
-        input_snapshot_ids=input_snapshot_ids,
-        bias=AgentBias.MIXED if fact_review_status == "conflicted" else AgentBias.NEUTRAL,
-        confidence=_review_confidence(counts, len(claim_reviews)),
-        key_findings=_build_key_findings(counts, review_targets),
-        risk_points=_build_risk_points(claim_reviews),
-        watchlist=[row.agent_name for row in review_targets],
-        invalid_conditions=_build_invalid_conditions(counts),
-        summary=_build_summary_text(counts),
-        source_refs=source_refs,
-        evidence_refs=evidence_refs,
-        status=AgentStatus(_agent_status(fact_review_status)),
-        created_at=created_at,
-        data_quality=[f"fact_review:{fact_review_status}"],
-        input_payload={
-            "generated_by": "rule",
-            "prompt_version": _PROMPT_VERSION,
-            "fact_review_status": fact_review_status,
-            "claim_review_status": (
-                "contradicted" if counts["contradicted"] else "unsupported" if counts["unsupported"] else "supported"
-            ),
-            "reviewed_agent_outputs": reviewed_agent_outputs,
-            "verdict_counts": counts,
-            "claim_reviews": claim_reviews,
-            "unsupported_claim_ids": [item["claim_id"] for item in claim_reviews if item["verdict"] == "unsupported"],
-            "conflicted_claim_ids": [item["claim_id"] for item in claim_reviews if item["verdict"] == "contradicted"],
-        },
+    return _bind_context_projection(
+        RuntimeAgentOutput(
+            version="1.0",
+            agent_name="fact_review_agent",
+            module="fact_review",
+            snapshot_id=f"{snapshot_id}:fact_review",
+            input_snapshot_ids=input_snapshot_ids,
+            bias=AgentBias.MIXED if fact_review_status == "conflicted" else AgentBias.NEUTRAL,
+            confidence=_review_confidence(counts, len(claim_reviews)),
+            key_findings=_build_key_findings(counts, review_targets),
+            risk_points=_build_risk_points(claim_reviews),
+            watchlist=[row.agent_name for row in review_targets],
+            invalid_conditions=_build_invalid_conditions(counts),
+            summary=_build_summary_text(counts),
+            source_refs=source_refs,
+            evidence_refs=evidence_refs,
+            status=AgentStatus(_agent_status(fact_review_status)),
+            created_at=created_at,
+            data_quality=[f"fact_review:{fact_review_status}"],
+            input_payload={
+                "generated_by": "rule",
+                "prompt_version": _PROMPT_VERSION,
+                "fact_review_status": fact_review_status,
+                "claim_review_status": (
+                    "contradicted"
+                    if counts["contradicted"]
+                    else "unsupported"
+                    if counts["unsupported"]
+                    else "supported"
+                ),
+                "reviewed_agent_outputs": reviewed_agent_outputs,
+                "verdict_counts": counts,
+                "claim_reviews": claim_reviews,
+                "unsupported_claim_ids": [
+                    item["claim_id"] for item in claim_reviews if item["verdict"] == "unsupported"
+                ],
+                "conflicted_claim_ids": [
+                    item["claim_id"] for item in claim_reviews if item["verdict"] == "contradicted"
+                ],
+            },
+        ),
+        projection,
     )
 
 
@@ -424,7 +445,9 @@ def _review_claim(
     review_targets: list[PersistedAgentOutput] | list[RuntimeAgentOutput],
 ) -> tuple[str, str, list[dict[str, Any]]]:
     claim_id = str(claim.get("claim_id") or f"{row.agent_name}:claim")
-    source_refs = claim.get("source_refs") if isinstance(claim.get("source_refs"), list) else list(row.source_refs or [])
+    source_refs = (
+        claim.get("source_refs") if isinstance(claim.get("source_refs"), list) else list(row.source_refs or [])
+    )
     evidence_refs = claim.get("evidence_refs") if isinstance(claim.get("evidence_refs"), list) else []
 
     if row.status in _UNAVAILABLE_SOURCE_STATUSES or _all_sources_unavailable(source_refs):
@@ -517,11 +540,7 @@ def _all_sources_unavailable(source_refs: list[dict[str, Any]]) -> bool:
     otherwise usable evidence from the same claim.
     """
 
-    statuses = [
-        str(ref.get("status") or "").strip().lower()
-        for ref in source_refs
-        if isinstance(ref, dict)
-    ]
+    statuses = [str(ref.get("status") or "").strip().lower() for ref in source_refs if isinstance(ref, dict)]
     return bool(statuses) and all(status in _UNAVAILABLE_SOURCE_STATUSES for status in statuses)
 
 
@@ -560,9 +579,7 @@ def _build_key_findings(
     if counts["contradicted"]:
         findings.append(f"发现 {counts['contradicted']} 条结构化事实矛盾 claim。")
     if counts["unsupported"] or counts["insufficient_evidence"]:
-        findings.append(
-            f"发现 {counts['unsupported'] + counts['insufficient_evidence']} 条需人工补证的 claim。"
-        )
+        findings.append(f"发现 {counts['unsupported'] + counts['insufficient_evidence']} 条需人工补证的 claim。")
     return findings
 
 
@@ -629,3 +646,20 @@ def _iso_date(value: date | str) -> str:
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
+
+
+def _bind_context_projection(
+    output: RuntimeAgentOutput,
+    projection: "ConsumerProjection | None",
+) -> RuntimeAgentOutput:
+    if projection is None:
+        return output
+    from apps.analysis.context_bundle import consume_projection_for_agent_output
+
+    return RuntimeAgentOutput.model_validate(
+        consume_projection_for_agent_output(
+            projection,
+            output,
+            expected_consumer="fact_review",
+        )
+    )

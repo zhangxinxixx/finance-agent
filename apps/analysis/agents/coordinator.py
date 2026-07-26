@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+
+if TYPE_CHECKING:
+    from apps.analysis.context_bundle import ConsumerProjection
 from apps.analysis.confidence import compute_confidence_kernel
 
 _AGENT_NAME = "coordinator_agent"
@@ -52,6 +56,40 @@ def coordinate_agent_outputs(
     news_output: AgentOutput | dict[str, Any] | None = None,
     market_odds_output: AgentOutput | dict[str, Any] | None = None,
     created_at: datetime | None = None,
+    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
+) -> AgentOutput:
+    from apps.analysis.context_bundle import validate_consumer_projection
+
+    projection = (
+        validate_consumer_projection(context_projection, "coordinator") if context_projection is not None else None
+    )
+    return _bind_context_projection(
+        _coordinate_agent_outputs(
+            snapshot,
+            macro_output=macro_output,
+            options_output=options_output,
+            risk_output=risk_output,
+            technical_output=technical_output,
+            positioning_output=positioning_output,
+            news_output=news_output,
+            market_odds_output=market_odds_output,
+            created_at=created_at,
+        ),
+        projection,
+    )
+
+
+def _coordinate_agent_outputs(
+    snapshot: dict[str, Any],
+    *,
+    macro_output: AgentOutput | dict[str, Any] | None,
+    options_output: AgentOutput | dict[str, Any] | None,
+    risk_output: AgentOutput | dict[str, Any] | None,
+    technical_output: AgentOutput | dict[str, Any] | None = None,
+    positioning_output: AgentOutput | dict[str, Any] | None = None,
+    news_output: AgentOutput | dict[str, Any] | None = None,
+    market_odds_output: AgentOutput | dict[str, Any] | None = None,
+    created_at: datetime | None = None,
 ) -> AgentOutput:
     """Coordinate already-computed pseudo-agent outputs into one read-only AgentOutput."""
 
@@ -84,7 +122,9 @@ def coordinate_agent_outputs(
     positioning = _coerce_output(positioning_output)
     news = _coerce_output(news_output)
     market_odds = _coerce_output(market_odds_output)
-    prior_outputs = [output for output in (macro, options, risk, technical, positioning, news, market_odds) if output is not None]
+    prior_outputs = [
+        output for output in (macro, options, risk, technical, positioning, news, market_odds) if output is not None
+    ]
 
     input_snapshot_ids = _input_snapshot_ids(snapshot, prior_outputs)
     source_refs = _source_refs(snapshot, prior_outputs)
@@ -112,24 +152,18 @@ def coordinate_agent_outputs(
     # ── Market odds conflict check with macro/options direction ──────
     if market_odds is not None and market_odds.bias in _DIRECTIONAL_BIASES:
         if macro is not None and macro.bias in _DIRECTIONAL_BIASES and macro.bias != market_odds.bias:
-            risk_points.append(
-                f"宏观/市场赔率方向冲突：宏观 {macro.bias.value}，市场赔率 {market_odds.bias.value}。"
-            )
+            risk_points.append(f"宏观/市场赔率方向冲突：宏观 {macro.bias.value}，市场赔率 {market_odds.bias.value}。")
             invalid_conditions.append(
                 f"宏观/市场赔率偏向冲突 — {macro.bias.value} vs {market_odds.bias.value}；建议交叉验证。"
             )
         if options is not None and options.bias in _DIRECTIONAL_BIASES and options.bias != market_odds.bias:
-            risk_points.append(
-                f"期权/市场赔率方向冲突：期权 {options.bias.value}，市场赔率 {market_odds.bias.value}。"
-            )
+            risk_points.append(f"期权/市场赔率方向冲突：期权 {options.bias.value}，市场赔率 {market_odds.bias.value}。")
 
     bias = _combined_bias(macro, options, risk, risk_points)
     if macro is not None and options is not None:
         if macro.bias in _DIRECTIONAL_BIASES and options.bias in _DIRECTIONAL_BIASES and macro.bias != options.bias:
             status = AgentStatus.PARTIAL
-            invalid_conditions.append(
-                f"宏观/期权方向冲突：宏观 {macro.bias.value}，期权 {options.bias.value}。"
-            )
+            invalid_conditions.append(f"宏观/期权方向冲突：宏观 {macro.bias.value}，期权 {options.bias.value}。")
 
     if unavailable_modules:
         status = AgentStatus.PARTIAL
@@ -282,7 +316,14 @@ def _gold_analysis_context_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
         "baseline_kind": data.get("baseline_kind"),
         "baseline": {
             key: baseline.get(key)
-            for key in ("source_kind", "trade_date", "article_id", "quality_status", "publication_status", "publish_allowed")
+            for key in (
+                "source_kind",
+                "trade_date",
+                "article_id",
+                "quality_status",
+                "publication_status",
+                "publish_allowed",
+            )
             if baseline.get(key) is not None
         },
         "oil_report_summary": {
@@ -375,7 +416,9 @@ def _extend_prefixed(target: list[str], prefix: str, notes: list[str]) -> None:
             target.append(prefix + str(note))
 
 
-def _combined_bias(macro: AgentOutput | None, options: AgentOutput | None, risk: AgentOutput | None, risk_points: list[str]) -> AgentBias:
+def _combined_bias(
+    macro: AgentOutput | None, options: AgentOutput | None, risk: AgentOutput | None, risk_points: list[str]
+) -> AgentBias:
     if risk is not None and risk.bias in {AgentBias.MIXED, AgentBias.NEUTRAL, AgentBias.UNAVAILABLE}:
         return risk.bias
     if risk is not None and risk.bias in _DIRECTIONAL_BIASES:
@@ -466,3 +509,13 @@ def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
+
+
+def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
+    if projection is None:
+        return output
+    from apps.analysis.context_bundle import consume_projection_for_agent_output
+
+    return AgentOutput.model_validate(
+        consume_projection_for_agent_output(projection, output, expected_consumer="coordinator")
+    )
