@@ -245,16 +245,23 @@ def ensure_review_items(
                 }
             )
 
-    for review_item in review_batch:
+    persist_review_items(db, review_batch)
+
+
+def persist_review_items(db: Any, review_items: list[dict[str, Any]]) -> None:
+    """Persist externally assembled review items through the worker DB boundary."""
+    if not review_items:
+        return
+    for review_item in review_items:
         try:
             from database.queries import review as review_queries
 
             _runner_patchable("upsert_review_item", review_queries.upsert_review_item)(db, review_item)
         except Exception:
             logger.exception("Failed to upsert review item %s", review_item.get("review_id"))
-    if review_batch:
+    if review_items:
         db.commit()
-        logger.info("Auto-created %d review items for run %s", len(review_batch), run_id)
+        logger.info("Persisted %d review items", len(review_items))
 
 
 def _file_sha256(path: str | None) -> str | None:

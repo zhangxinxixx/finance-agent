@@ -50,6 +50,7 @@ from apps.worker.db_persistence import (
     db_persist_analysis_snapshot as _db_persist_analysis_snapshot,
     db_persist_final_result as _db_persist_final_result,
     ensure_review_items as _ensure_review_items,
+    persist_review_items as _persist_review_items,
 )
 from apps.worker.error_policy import (
     classify_error_type as _classify_error_type,
@@ -99,6 +100,7 @@ __all__ = [
     "_db_persist_analysis_snapshot",
     "_db_persist_final_result",
     "_ensure_review_items",
+    "_persist_review_items",
     "_register_composite_output_artifacts",
     "_register_composite_report_registry_entries",
     "_register_run_support_artifacts",
@@ -397,6 +399,12 @@ def run_premarket(
                     snapshot_db_id = _db_persist_agent_outputs(
                         db, analysis_snapshot, composite_outputs["agents"], run_id
                     )
+                    shadow_reviews = (
+                        composite_outputs.get("state_delta_shadow", {}).get("review_items", [])
+                        if isinstance(composite_outputs.get("state_delta_shadow"), dict)
+                        else []
+                    )
+                    _persist_review_items(db, shadow_reviews)
                     agent_loop_decision = composite_outputs.get("agent_loop_decision")
                     publish_allowed = bool(getattr(agent_loop_decision, "publish_allowed", False))
                     if publish_allowed:

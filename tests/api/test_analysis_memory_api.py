@@ -559,7 +559,20 @@ def test_context_bundle_metadata_is_validated_paginated_and_payload_free(
                 "evidence_id": "market-71",
                 "business_time": NOW,
                 "ingested_at": NOW,
-                "payload": {"price": 4100},
+                # Minimal typed payload conforming to the published #76 EvidenceDelta
+                # contract (validated key_level_event) so the v3 bundle can evaluate
+                # and retain it.
+                "payload": {
+                    "evidence_type": "key_level_event",
+                    "asset": "XAUUSD",
+                    "source_quality": "validated",
+                    "level_id": "support-4000",
+                    "level_role": "support",
+                    "level_value": 4000,
+                    "observed_value": 4100,
+                    "event": "confirmed_break",
+                    "confirmation_status": "confirmed",
+                },
                 "source_ref": {"source": "market", "snapshot_id": "market-71"},
             }
         ],
@@ -733,6 +746,18 @@ def test_legacy_bundle_is_only_observable_as_daily_close(
     payload = bundle.model_dump(mode="json")
     payload["schema_version"] = "analysis_context_bundle.v1"
     payload.pop("state_scope")
+    # v1 legacy bundles must not carry v3-only selection fields, so drop them
+    # before hashing/writing so the loader accepts the downcast payload.
+    for field in (
+        "evidence_delta_decision",
+        "deferred_queue",
+        "processed_above_frontier",
+        "selection_decisions",
+        "selection_trace",
+        "freshness_sla_seconds",
+        "default_freshness_sla_seconds",
+    ):
+        payload.pop(field, None)
     payload["content_hash"] = compute_bundle_content_hash(payload)
     payload["bundle_id"] = str(
         uuid.uuid5(
