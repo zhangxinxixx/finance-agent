@@ -114,6 +114,26 @@ def _register_valid_bundle(
     return run, step, descriptor, row
 
 
+def _recompute_descriptor(tmp_path, *, predecessor: dict, canonical_state_id: str = "state-80") -> dict:
+    descriptor = _valid_descriptor(
+        tmp_path,
+        run_id=predecessor["metadata"]["run_id"],
+        cutoff_at=NOW + timedelta(minutes=2),
+        canonical_state_id=canonical_state_id,
+    )
+    return {
+        **descriptor,
+        "metadata": {
+            **descriptor["metadata"],
+            "artifact_role": "canary_recompute",
+            "canary_recompute_attempt": 1,
+            "supersedes_bundle_id": predecessor["metadata"]["bundle_id"],
+            "supersedes_bundle_hash": predecessor["metadata"]["content_hash"],
+            "supersedes_canonical_state_id": predecessor["metadata"]["canonical_state_id"],
+        },
+    }
+
+
 def test_context_bundle_registry_is_exactly_once_and_idempotent(tmp_path) -> None:
     db = _session()
     run, step = _run_step(db)
@@ -179,6 +199,126 @@ def test_context_bundle_registry_rejects_generic_artifact_dedupe_collision(tmp_p
             step=step,
             descriptor=descriptor,
             storage_root=tmp_path,
+        )
+
+
+def test_context_bundle_registry_allows_one_validated_canary_supersession(tmp_path) -> None:
+    db = _session()
+    run, step = _run_step(db)
+    original = _valid_descriptor(tmp_path, run_id=str(run.id))
+    register_context_bundle_artifact(
+        db,
+        run_id=str(run.id),
+        step=step,
+        descriptor=original,
+        storage_root=tmp_path,
+    )
+    fresh = _recompute_descriptor(tmp_path, predecessor=original)
+
+    first = register_context_bundle_artifact(
+        db,
+        run_id=str(run.id),
+        step=step,
+        descriptor=fresh,
+        storage_root=tmp_path,
+        allow_canary_recompute=True,
+    )
+    replay = register_context_bundle_artifact(
+        db,
+        run_id=str(run.id),
+        step=step,
+        descriptor=fresh,
+        storage_root=tmp_path,
+        allow_canary_recompute=True,
+    )
+    db.commit()
+
+    assert first is not None and replay is not None
+    assert first.artifact_id == replay.artifact_id
+    assert first.artifact_id == uuid5(
+        NAMESPACE_URL,
+        f"finance-agent:run-context-bundle:{run.id}:canary-recompute:1",
+    )
+    assert db.query(RunArtifact).filter(RunArtifact.run_id == run.id).count() == 2
+    selected = select_context_bundle_artifact_for_run(
+        db,
+        run_id=str(run.id),
+        storage_root=tmp_path,
+    )
+    _assert_descriptor_identity(selected, fresh)
+    assert selected["metadata"]["supersedes_bundle_id"] == original["metadata"]["bundle_id"]
+
+
+def test_context_bundle_registry_rejects_unapproved_or_invalid_canary_supersession(tmp_path) -> None:
+    db = _session()
+    run, step = _run_step(db)
+    original = _valid_descriptor(tmp_path, run_id=str(run.id))
+    register_context_bundle_artifact(
+        db,
+        run_id=str(run.id),
+        step=step,
+        descriptor=original,
+        storage_root=tmp_path,
+    )
+    fresh = _recompute_descriptor(tmp_path, predecessor=original)
+
+    with pytest.raises(ValueError, match="explicit registry authority"):
+        register_context_bundle_artifact(
+            db,
+            run_id=str(run.id),
+            step=step,
+            descriptor=fresh,
+            storage_root=tmp_path,
+        )
+
+    wrong = {
+        **fresh,
+        "metadata": {**fresh["metadata"], "supersedes_bundle_id": "wrong-bundle"},
+    }
+    with pytest.raises(ValueError, match="supersedes_bundle_id"):
+        register_context_bundle_artifact(
+            db,
+            run_id=str(run.id),
+            step=step,
+            descriptor=wrong,
+            storage_root=tmp_path,
+            allow_canary_recompute=True,
+        )
+
+
+def test_context_bundle_registry_rejects_second_canary_supersession(tmp_path) -> None:
+    db = _session()
+    run, step = _run_step(db)
+    original = _valid_descriptor(tmp_path, run_id=str(run.id))
+    register_context_bundle_artifact(
+        db,
+        run_id=str(run.id),
+        step=step,
+        descriptor=original,
+        storage_root=tmp_path,
+    )
+    fresh = _recompute_descriptor(tmp_path, predecessor=original)
+    register_context_bundle_artifact(
+        db,
+        run_id=str(run.id),
+        step=step,
+        descriptor=fresh,
+        storage_root=tmp_path,
+        allow_canary_recompute=True,
+    )
+    second = _recompute_descriptor(
+        tmp_path,
+        predecessor=fresh,
+        canonical_state_id="state-80-second",
+    )
+    with pytest.raises(ValueError, match="exactly one superseded Bundle"):
+        register_context_bundle_artifact(
+            db,
+            run_id=str(run.id),
+            step=step,
+            descriptor=second,
+            storage_root=tmp_path,
+            allow_canary_recompute=True,
         )
 
 

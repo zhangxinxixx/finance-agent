@@ -175,6 +175,230 @@ def _make_noop_state_shadow_input() -> dict:
     }
 
 
+def _make_canary_input(*, run_id: str) -> tuple[dict, dict]:
+    evidence_ref = {"snapshot_id": "market-canary-2"}
+    return (
+        {
+            "asset": "XAUUSD",
+            "trade_date": _TRADE_DATE,
+            "state_scope": "daily_close",
+            "canonical_state_id": "state-canary-root",
+            "expected_head_version": 1,
+            "canary_run_ids": [run_id],
+            "canonical_state": {
+                "schema_version": "1.1",
+                "state_scope": "daily_close",
+                "state_machine_version": "analysis_state.v1.1",
+                "session": "daily_close",
+                "trade_date": _TRADE_DATE,
+                "asset": "XAUUSD",
+                "as_of": (_CREATED_AT - timedelta(hours=1)).isoformat(),
+                "market_stage": "direction_decision",
+                "core_thesis": "等待突破",
+                "net_bias": "mixed_bullish",
+                "dominant_drivers": [],
+                "key_levels": [{"value": 3300, "role": "support", "source": "market"}],
+                "scenario_states": [],
+                "unresolved_items": [],
+                "invalidation_conditions": [],
+                "evidence_cursors": {},
+                "input_snapshot_ids": {"market": "market-canary-1"},
+                "source_refs": [{"snapshot_id": "market-canary-1"}],
+            },
+            "evidence": [
+                {
+                    "source": "market",
+                    "evidence_id": "market-canary-2",
+                    "business_time": (_CREATED_AT - timedelta(minutes=2)).isoformat(),
+                    "ingested_at": (_CREATED_AT - timedelta(minutes=1)).isoformat(),
+                    "payload": {
+                        "evidence_type": "key_level_event",
+                        "asset": "XAUUSD",
+                        "source_quality": "validated",
+                        "level_id": "resistance-3350",
+                        "level_role": "resistance",
+                        "level_value": 3350,
+                        "observed_value": 3355,
+                        "event": "confirmed_break",
+                        "confirmation_status": "confirmed",
+                    },
+                    "source_ref": evidence_ref,
+                }
+            ],
+            "evidence_cursors": {},
+            "cutoff_at": _CREATED_AT.isoformat(),
+            "assembled_at": _CREATED_AT.isoformat(),
+        },
+        evidence_ref,
+    )
+
+
+def _canary_analyzer(evidence_ref: dict):
+    def analyzer(bundle):
+        from apps.analysis.state import TransitionCandidate
+        from apps.analysis.state.transition_generator import ScopedTransitionCandidate
+
+        candidate = TransitionCandidate.model_validate({
+            "previous_state_id": bundle.canonical_state_id,
+            "summary": "canary transition",
+            "changes": [
+                {
+                    "target": "core_thesis",
+                    "action": "strengthen",
+                    "reason": "canary price confirmation",
+                    "evidence_refs": [evidence_ref],
+                },
+                {
+                    "target": "as_of",
+                    "action": "strengthen",
+                    "reason": "canary evidence time",
+                    "evidence_refs": [evidence_ref],
+                },
+            ],
+            "state_patch": {
+                "core_thesis": "canary 突破确认",
+                "as_of": _CREATED_AT,
+            },
+            "evidence_refs": [evidence_ref],
+        })
+        return ScopedTransitionCandidate(
+            asset=bundle.asset,
+            state_scope=bundle.state_scope,
+            run_id=bundle.run_id,
+            canonical_state_id=bundle.canonical_state_id,
+            context_bundle_id=bundle.bundle_id,
+            context_bundle_hash=bundle.content_hash,
+            candidate=candidate,
+        )
+
+    return analyzer
+
+
+def test_canary_request_is_bound_to_all_fresh_bundle_consumers(tmp_path: Path) -> None:
+    from apps.worker.runner import _run_canary_sidecar_attempt
+
+    run_id = "run-canary-ready"
+    canary_input, evidence_ref = _make_canary_input(run_id=run_id)
+    _, outputs = _run_canary_sidecar_attempt(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id=run_id),
+        run_id=run_id,
+        created_at=_CREATED_AT,
+        state_shadow_input=canary_input,
+        state_delta_analyzer=_canary_analyzer(evidence_ref),
+        attempt=0,
+    )
+
+    trace = outputs["state_delta_shadow"]
+    request = outputs["canary_materialization_request"]
+    assert trace["status"] == "candidate_accepted_shadow_only"
+    assert "_review_result" not in trace
+    assert len(trace["bundle_consumers"]) == 9
+    assert request.context_bundle_id == trace["bundle_id"]
+    assert request.context_bundle_hash == trace["bundle_content_hash"]
+    assert request.run_id == run_id
+    assert request.activation_source == "exact_run_id"
+    assert set(request.consumer_projection_hashes) == {
+        "macro",
+        "options",
+        "risk",
+        "technical",
+        "positioning",
+        "news",
+        "market_odds",
+        "fact_review",
+        "coordinator",
+    }
+    for agent_name, agent_output in outputs["agents"].items():
+        if agent_name in trace["bundle_consumers"]:
+            consumer = agent_output.input_payload["context_bundle_consumer"]
+            assert (
+                request.consumer_projection_hashes[consumer]
+                == agent_output.input_snapshot_ids["context_bundle_projection_hash"]
+            )
+
+
+def test_state_delta_primary_remains_readiness_blocked(tmp_path: Path) -> None:
+    from apps.worker.runner import _run_composite_analysis_pipeline
+
+    def unexpected(_bundle):
+        raise AssertionError("state_delta_primary must remain disabled")
+
+    _, outputs = _run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-primary-blocked"),
+        run_id="run-primary-blocked",
+        created_at=_CREATED_AT,
+        analysis_context_mode="state_delta_primary",
+        state_delta_analyzer=unexpected,
+    )
+    trace = outputs["state_delta_shadow"]
+    assert trace["status"] == "readiness_blocked"
+    assert trace["reason"] == "state_delta_primary_not_ready"
+    assert trace["model_invocation"] == "skipped"
+    assert "canary_materialization_request" not in outputs
+
+
+def test_canary_sidecar_cannot_overwrite_legacy_report_or_card(tmp_path: Path) -> None:
+    from apps.worker import runner
+
+    run_id = "run-canary-isolated"
+    snapshot = _make_rich_snapshot(run_id=run_id)
+    canary_input, evidence_ref = _make_canary_input(run_id=run_id)
+    _, legacy_outputs = runner._run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=snapshot,
+        run_id=run_id,
+        created_at=_CREATED_AT,
+        analysis_context_mode="legacy",
+    )
+    official_paths = [
+        *legacy_outputs["report_result"]["paths"],
+        *legacy_outputs["card_result"]["paths"],
+    ]
+    before = {path: Path(path).read_bytes() for path in official_paths}
+
+    _, canary_outputs = runner._run_canary_sidecar_attempt(
+        storage_root=tmp_path,
+        snapshot=snapshot,
+        run_id=run_id,
+        created_at=_CREATED_AT,
+        state_shadow_input=canary_input,
+        state_delta_analyzer=_canary_analyzer(evidence_ref),
+        attempt=0,
+    )
+
+    assert {path: Path(path).read_bytes() for path in official_paths} == before
+    attempt_root = Path(canary_outputs["canary_attempt_root"]).resolve()
+    sidecar_paths = [
+        *canary_outputs["report_result"]["paths"],
+        *canary_outputs["card_result"]["paths"],
+    ]
+    assert sidecar_paths
+    assert all(Path(path).resolve().is_relative_to(attempt_root) for path in sidecar_paths)
+    descriptor = canary_outputs["context_bundle_registry_artifact"]
+    assert descriptor["file_path"].startswith("outputs/context_bundles/")
+    assert (tmp_path / descriptor["file_path"]).is_file()
+    assert canary_outputs["canary_materialization_request"].authority_hash
+
+
+def test_canary_composite_rejects_non_sidecar_storage(tmp_path: Path) -> None:
+    from apps.worker.runner import _run_composite_analysis_pipeline
+
+    run_id = "run-canary-unsafe-root"
+    canary_input, evidence_ref = _make_canary_input(run_id=run_id)
+    with pytest.raises(ValueError, match="requires sidecar attempt"):
+        _run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=_make_rich_snapshot(run_id=run_id),
+            run_id=run_id,
+            created_at=_CREATED_AT,
+            analysis_context_mode="canary",
+            state_shadow_input=canary_input,
+            state_delta_analyzer=_canary_analyzer(evidence_ref),
+        )
+
+
 def test_composite_state_delta_shadow_shares_one_bundle_without_canonical_write(
     tmp_path: Path,
 ) -> None:

@@ -181,8 +181,9 @@ def register_context_bundle_artifact(
     step: Any,
     descriptor: dict[str, Any],
     storage_root: Path | None = None,
+    allow_canary_recompute: bool = False,
 ) -> RunArtifact | None:
-    """Register one immutable ContextBundle identity for a TaskRun.
+    """Register one immutable Bundle plus one explicit canary supersession.
 
     This writer is deliberately run-scoped.  Cross-run recovery must use the
     read selectors in ``apps.runtime.artifact_registry`` instead of guessing a
@@ -247,10 +248,17 @@ def register_context_bundle_artifact(
     ):
         raise ValueError("context bundle registry descriptor payload identity conflicts")
 
-    registry_row_id = uuid.uuid5(
-        uuid.NAMESPACE_URL,
-        f"finance-agent:run-context-bundle:{run_id}",
+    is_recompute = metadata.get("artifact_role") == "canary_recompute"
+    if is_recompute and not allow_canary_recompute:
+        raise ValueError("canary recompute Bundle requires explicit registry authority")
+    if allow_canary_recompute and not is_recompute:
+        raise ValueError("explicit canary recompute registration requires canary_recompute role")
+    registry_identity = (
+        f"finance-agent:run-context-bundle:{run_id}:canary-recompute:1"
+        if is_recompute
+        else f"finance-agent:run-context-bundle:{run_id}"
     )
+    registry_row_id = uuid.uuid5(uuid.NAMESPACE_URL, registry_identity)
     existing_rows = db.query(RunArtifact).filter(RunArtifact.run_id == step.task_run_id).all()
     existing = [
         row
@@ -258,16 +266,25 @@ def register_context_bundle_artifact(
         if isinstance(row.artifact_metadata, dict)
         and row.artifact_metadata.get("artifact_family") == "analysis_context_bundle"
     ]
-    if len(existing) > 1:
-        raise ValueError("TaskRun already has multiple ContextBundle registry artifacts")
-    if existing:
+    matching = [
+        row
+        for row in existing
+        if str((row.artifact_metadata or {}).get("bundle_id") or "") == required["bundle_id"]
+    ]
+    if len(matching) > 1:
+        raise ValueError("TaskRun has duplicate ContextBundle registry identities")
+    if matching:
         return _validate_registered_context_bundle_row(
-            existing[0],
+            matching[0],
             registry_row_id=registry_row_id,
             file_path=file_path,
             file_sha256=file_sha256,
             required=required,
         )
+    if is_recompute:
+        _validate_canary_recompute_lineage(metadata=metadata, existing=existing)
+    elif existing:
+        raise ValueError("TaskRun ContextBundle identity conflicts with registered artifact")
     try:
         with db.begin_nested():
             row = register_artifact(
@@ -317,6 +334,31 @@ def register_context_bundle_artifact(
             file_sha256=file_sha256,
             required=required,
         )
+
+
+def _validate_canary_recompute_lineage(
+    *,
+    metadata: dict[str, Any],
+    existing: list[RunArtifact],
+) -> None:
+    if len(existing) != 1:
+        raise ValueError("canary recompute permits exactly one superseded Bundle")
+    attempt = metadata.get("canary_recompute_attempt")
+    if isinstance(attempt, bool) or attempt != 1:
+        raise ValueError("canary recompute is limited to attempt 1")
+    predecessor = existing[0].artifact_metadata
+    if not isinstance(predecessor, dict):
+        raise ValueError("canary recompute predecessor metadata is invalid")
+    expected = {
+        "supersedes_bundle_id": predecessor.get("bundle_id"),
+        "supersedes_bundle_hash": predecessor.get("content_hash"),
+        "supersedes_canonical_state_id": predecessor.get("canonical_state_id"),
+    }
+    for key, value in expected.items():
+        if not value or str(metadata.get(key) or "") != str(value):
+            raise ValueError(f"canary recompute {key} does not match registered predecessor")
+    if str(metadata.get("canonical_state_id") or "") == str(predecessor.get("canonical_state_id") or ""):
+        raise ValueError("canary recompute must use a fresh canonical state")
 
 
 def _validate_registered_context_bundle_row(

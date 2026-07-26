@@ -8,6 +8,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from apps.analysis.figure_facts import FigureFact
+from apps.analysis.state import TransitionCandidate
+from apps.analysis.state.transition_generator import ScopedTransitionCandidate
 from apps.worker.db_persistence import persist_review_items
 from apps.worker.composite_state_shadow import (
     build_state_delta_setup_failure_review_item,
@@ -587,7 +589,11 @@ def test_unaccepted_figure_fact_cannot_create_material_delta(tmp_path) -> None:
 
 def test_context_mode_validation(monkeypatch) -> None:
     monkeypatch.delenv("FINANCE_AGENT_ANALYSIS_CONTEXT_MODE", raising=False)
-    assert resolve_analysis_context_mode() == "legacy_full_context"
+    assert resolve_analysis_context_mode() == "legacy"
+    assert resolve_analysis_context_mode("legacy_full_context") == "legacy"
+    assert resolve_analysis_context_mode("state_delta_context") == "shadow"
+    assert resolve_analysis_context_mode("canary") == "canary"
+    assert resolve_analysis_context_mode("state_delta_primary") == "state_delta_primary"
     with pytest.raises(ValueError, match="unsupported"):
         resolve_analysis_context_mode("invalid")
 
@@ -612,3 +618,33 @@ def test_shadow_requires_explicit_scope_and_rejects_legacy_cross_scope(tmp_path)
             created_at=NOW,
             shadow_input=cross_scope,
         )
+
+
+def test_canary_rejects_bare_or_stale_scoped_candidate(tmp_path) -> None:
+    runtime = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-canary-bound",
+        created_at=NOW,
+        shadow_input=_shadow_input(evidence=[_evidence()]),
+    )
+    bare = execute_composite_state_shadow(
+        runtime=runtime,
+        analyzer=_candidate,
+        mode="canary",
+    )
+    assert bare["status"] == "candidate_rejected"
+
+    def stale(bundle):
+        return ScopedTransitionCandidate(
+            asset="XAUUSD",
+            state_scope="daily_close",
+            run_id=bundle.run_id,
+            canonical_state_id=bundle.canonical_state_id,
+            context_bundle_id="stale-bundle",
+            context_bundle_hash="a" * 64,
+            candidate=TransitionCandidate.model_validate(_candidate(bundle)),
+        )
+
+    rejected = execute_composite_state_shadow(runtime=runtime, analyzer=stale, mode="canary")
+    assert rejected["status"] == "candidate_rejected"
+    assert "Bundle identity" in rejected["reason"]

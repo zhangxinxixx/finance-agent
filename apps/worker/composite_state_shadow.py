@@ -24,6 +24,7 @@ from apps.analysis.state import (
     parse_analysis_state_document,
     review_transition_candidate_scoped,
 )
+from apps.analysis.state.transition_generator import ScopedTransitionCandidate
 from apps.output.context_bundle import (
     ContextBundleWriteResult,
     load_context_bundle,
@@ -31,11 +32,17 @@ from apps.output.context_bundle import (
 )
 
 
-LEGACY_CONTEXT_MODE = "legacy_full_context"
-STATE_DELTA_CONTEXT_MODE = "state_delta_context"
+LEGACY_CONTEXT_MODE = "legacy"
+STATE_DELTA_CONTEXT_MODE = "shadow"
+CANARY_CONTEXT_MODE = "canary"
+STATE_DELTA_PRIMARY_CONTEXT_MODE = "state_delta_primary"
+LEGACY_CONTEXT_MODE_ALIAS = "legacy_full_context"
+STATE_DELTA_CONTEXT_MODE_ALIAS = "state_delta_context"
 CONTEXT_MODE_ENV = "FINANCE_AGENT_ANALYSIS_CONTEXT_MODE"
-ContextMode = Literal["legacy_full_context", "state_delta_context"]
-StateDeltaAnalyzer = Callable[[AnalysisContextBundle], TransitionCandidate | dict[str, Any]]
+ContextMode = Literal["legacy", "shadow", "canary", "state_delta_primary"]
+StateDeltaAnalyzer = Callable[
+    [AnalysisContextBundle], ScopedTransitionCandidate | TransitionCandidate | dict[str, Any]
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +63,16 @@ class CompositeStateShadowRuntime:
 
 def resolve_analysis_context_mode(value: str | None = None) -> ContextMode:
     normalized = str(value or os.environ.get(CONTEXT_MODE_ENV) or LEGACY_CONTEXT_MODE).strip()
-    if normalized not in {LEGACY_CONTEXT_MODE, STATE_DELTA_CONTEXT_MODE}:
+    normalized = {
+        LEGACY_CONTEXT_MODE_ALIAS: LEGACY_CONTEXT_MODE,
+        STATE_DELTA_CONTEXT_MODE_ALIAS: STATE_DELTA_CONTEXT_MODE,
+    }.get(normalized, normalized)
+    if normalized not in {
+        LEGACY_CONTEXT_MODE,
+        STATE_DELTA_CONTEXT_MODE,
+        CANARY_CONTEXT_MODE,
+        STATE_DELTA_PRIMARY_CONTEXT_MODE,
+    }:
         raise ValueError(f"unsupported analysis context mode: {normalized}")
     return normalized  # type: ignore[return-value]
 
@@ -186,10 +202,12 @@ def execute_composite_state_shadow(
     *,
     runtime: CompositeStateShadowRuntime,
     analyzer: StateDeltaAnalyzer | None,
+    mode: Literal["shadow", "canary"] = STATE_DELTA_CONTEXT_MODE,
+    _return_review: bool = False,
 ) -> dict[str, Any]:
     """Run only the shadow candidate path; never materialize or advance canonical state."""
 
-    base = _base_trace(runtime)
+    base = _base_trace(runtime, mode=mode)
     action = runtime.evidence_delta_decision.recommended_action
     if action is RecommendedAction.NO_OP:
         return {
@@ -230,10 +248,19 @@ def execute_composite_state_shadow(
     started = perf_counter()
     try:
         raw_candidate = analyzer(runtime.bundle)
-        candidate_payload = (
-            raw_candidate.model_dump(mode="json") if isinstance(raw_candidate, BaseModel) else raw_candidate
-        )
-        candidate = TransitionCandidate.model_validate(candidate_payload)
+        if mode == CANARY_CONTEXT_MODE:
+            scoped = ScopedTransitionCandidate.model_validate(
+                raw_candidate.model_dump(mode="json")
+                if isinstance(raw_candidate, BaseModel)
+                else raw_candidate
+            )
+            _require_current_canary_candidate(scoped, runtime=runtime)
+            candidate = scoped.candidate
+        else:
+            candidate_payload = (
+                raw_candidate.model_dump(mode="json") if isinstance(raw_candidate, BaseModel) else raw_candidate
+            )
+            candidate = TransitionCandidate.model_validate(candidate_payload)
         review = review_transition_candidate_scoped(
             candidate=candidate,
             previous_state_id=runtime.bundle.canonical_state_id,
@@ -254,7 +281,7 @@ def execute_composite_state_shadow(
             "reason": f"{type(exc).__name__}:{str(exc)[:200]}",
             "analyzer_latency_ms": max(0, round((perf_counter() - started) * 1000)),
         }
-    return {
+    trace = {
         **base,
         "status": "candidate_accepted_shadow_only",
         "model_invocation": "executed",
@@ -264,6 +291,32 @@ def execute_composite_state_shadow(
         "review_hash": review.next_state_content_hash,
         "analyzer_latency_ms": max(0, round((perf_counter() - started) * 1000)),
     }
+    if _return_review:
+        # Internal-only hand-off. Durable traces must never serialize the
+        # scoped review object directly.
+        trace["_review_result"] = review
+    return trace
+
+
+def _require_current_canary_candidate(
+    candidate: ScopedTransitionCandidate,
+    *,
+    runtime: CompositeStateShadowRuntime,
+) -> None:
+    """Reject a candidate generated for any Bundle other than this exact run."""
+
+    bundle = runtime.bundle
+    expected = {
+        "asset": bundle.asset,
+        "state_scope": runtime.state_scope,
+        "run_id": runtime.run_id,
+        "canonical_state_id": bundle.canonical_state_id,
+        "context_bundle_id": bundle.bundle_id,
+        "context_bundle_hash": bundle.content_hash,
+    }
+    actual = candidate.model_dump(mode="json", exclude={"candidate"})
+    if any(actual.get(field) != value for field, value in expected.items()):
+        raise ValueError("canary candidate Bundle identity does not match current runtime")
 
 
 def finalize_composite_state_shadow(
@@ -293,10 +346,14 @@ def finalize_composite_state_shadow(
     }
 
 
-def _base_trace(runtime: CompositeStateShadowRuntime) -> dict[str, Any]:
+def _base_trace(
+    runtime: CompositeStateShadowRuntime,
+    *,
+    mode: Literal["shadow", "canary"],
+) -> dict[str, Any]:
     return {
         "schema_version": "composite_state_shadow.v3",
-        "mode": STATE_DELTA_CONTEXT_MODE,
+        "mode": mode,
         "asset": runtime.bundle.asset,
         "state_scope": runtime.state_scope,
         "canonical_state_id": runtime.bundle.canonical_state_id,

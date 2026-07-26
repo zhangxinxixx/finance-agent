@@ -72,9 +72,14 @@ jobs:
           apps/analysis/context_bundle
           apps/analysis/evidence_delta
           apps/analysis/figure_facts.py
+          apps/analysis/prompts/state_transition.py
           apps/output/context_bundle.py
           apps/output/figure_facts.py
+          apps/worker/artifact_registration.py
+          apps/worker/canary_materialization.py
+          apps/worker/composite_analysis_pipeline.py
           apps/worker/composite_state_shadow.py
+          apps/worker/runner.py
           database/migrations
           database/models/analysis_state.py
           scripts/bootstrap_analysis_state.py
@@ -94,6 +99,8 @@ jobs:
           tests/output/test_figure_fact_artifacts.py
           tests/scripts/test_bootstrap_analysis_state.py
           tests/worker/test_composite_state_shadow.py
+          tests/worker/test_canary_materialization.py
+          tests/worker/test_context_bundle_artifact_registration.py
       - name: Run Analysis Memory regression tests
         shell: bash
         run: >-
@@ -110,6 +117,8 @@ jobs:
           tests/output/test_context_bundle_artifacts.py
           tests/output/test_figure_fact_artifacts.py
           tests/worker/test_composite_state_shadow.py
+          tests/worker/test_canary_materialization.py
+          tests/worker/test_context_bundle_artifact_registration.py
           tests/analysis/test_state_bootstrap.py
           tests/scripts/test_bootstrap_analysis_state.py
           tests/api/test_analysis_memory_api.py

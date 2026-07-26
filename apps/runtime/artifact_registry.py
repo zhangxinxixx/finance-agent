@@ -403,13 +403,98 @@ def select_context_bundle_artifact_for_run(
     candidates = [row for row in rows if _is_context_bundle_row(row)]
     if not candidates:
         return None
-    if len(candidates) != 1:
+    if len(candidates) == 1:
+        return _validated_context_bundle_descriptor(
+            candidates[0],
+            storage_root=storage_root,
+            expected_run_id=run_id,
+        )
+    if len(candidates) != 2:
         raise ValueError("TaskRun has ambiguous ContextBundle registry artifacts")
-    return _validated_context_bundle_descriptor(
-        candidates[0],
+    recompute = [
+        row
+        for row in candidates
+        if isinstance(row.artifact_metadata, dict)
+        and row.artifact_metadata.get("artifact_role") == "canary_recompute"
+    ]
+    predecessor = [row for row in candidates if row not in recompute]
+    if len(recompute) != 1 or len(predecessor) != 1:
+        raise ValueError("TaskRun has ambiguous ContextBundle registry artifacts")
+    predecessor_descriptor = _validated_context_bundle_descriptor(
+        predecessor[0],
         storage_root=storage_root,
         expected_run_id=run_id,
     )
+    recompute_descriptor = _validated_context_bundle_descriptor(
+        recompute[0],
+        storage_root=storage_root,
+        expected_run_id=run_id,
+    )
+    _validate_canary_recompute_descriptor(
+        predecessor=predecessor_descriptor,
+        recompute=recompute_descriptor,
+    )
+    return recompute_descriptor
+
+
+def select_canary_terminal_result_for_run(
+    db: Session,
+    *,
+    run_id: str,
+    storage_root: str | Path,
+) -> Any | None:
+    """Recover the one terminal canary outcome for a TaskRun, if committed."""
+
+    run_uuid = _coerce_run_uuid(run_id)
+    rows = (
+        db.query(RunArtifact)
+        .filter(RunArtifact.run_id == run_uuid)
+        .order_by(RunArtifact.created_at.asc())
+        .all()
+    )
+    candidates = [
+        row
+        for row in rows
+        if isinstance(row.artifact_metadata, dict)
+        and row.artifact_metadata.get("artifact_family")
+        == "analysis_state_canary_terminal"
+    ]
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise ValueError("TaskRun has ambiguous terminal canary outcomes")
+    row = candidates[0]
+    expected_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"finance-agent:analysis-state-canary-terminal:{run_id}",
+    )
+    if row.artifact_id != expected_id or not row.sha256:
+        raise ValueError("terminal canary registry identity is invalid")
+    root = Path(storage_root).resolve()
+    path = Path(row.file_path).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ValueError("terminal canary artifact path is unavailable")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != row.sha256:
+        raise ValueError("terminal canary artifact hash is invalid")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("terminal canary artifact is invalid JSON") from exc
+    from apps.worker.canary_materialization import CanaryMaterializationResult
+
+    result = CanaryMaterializationResult.model_validate(payload)
+    expected_path = (
+        root
+        / "outputs"
+        / "analysis_memory_canary"
+        / result.trade_date.isoformat()
+        / run_id
+        / "terminal-results"
+        / f"{row.sha256}.json"
+    ).resolve()
+    if path != expected_path or result.run_id != run_id or result.status == "recompute_required":
+        raise ValueError("terminal canary artifact lineage is invalid")
+    return result
 
 
 def select_previous_context_bundle_artifact(
@@ -494,6 +579,27 @@ def select_previous_context_bundle_artifact(
 def _is_context_bundle_row(row: RunArtifact) -> bool:
     metadata = row.artifact_metadata
     return isinstance(metadata, dict) and metadata.get("artifact_family") == _CONTEXT_BUNDLE_ARTIFACT_FAMILY
+
+
+def _validate_canary_recompute_descriptor(
+    *,
+    predecessor: dict[str, Any],
+    recompute: dict[str, Any],
+) -> None:
+    predecessor_metadata = predecessor["metadata"]
+    recompute_metadata = recompute["metadata"]
+    if recompute_metadata.get("canary_recompute_attempt") != 1:
+        raise ValueError("ContextBundle canary recompute attempt is invalid")
+    expected = {
+        "supersedes_bundle_id": predecessor_metadata.get("bundle_id"),
+        "supersedes_bundle_hash": predecessor_metadata.get("content_hash"),
+        "supersedes_canonical_state_id": predecessor_metadata.get("canonical_state_id"),
+    }
+    for key, value in expected.items():
+        if not value or str(recompute_metadata.get(key) or "") != str(value):
+            raise ValueError(f"ContextBundle canary recompute {key} is invalid")
+    if recompute_metadata.get("canonical_state_id") == predecessor_metadata.get("canonical_state_id"):
+        raise ValueError("ContextBundle canary recompute canonical state is stale")
 
 
 def _validated_context_bundle_descriptor(
