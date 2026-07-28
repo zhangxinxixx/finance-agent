@@ -19,6 +19,7 @@ from apps.analysis.state import (
     AnalysisStateDocumentV11,
     AnalysisTransitionDocument,
     AnalysisTransitionDocumentV11,
+    ManualReviewMaterializationAuthority,
     StateScope,
     TransitionReviewResult,
     materialize_reviewed_transition,
@@ -330,6 +331,18 @@ def accept_candidate(
             snapshot_id=coordinator.snapshot_id,
         ),
     )
+    manual_review_authority = ManualReviewMaterializationAuthority.build(
+        candidate_state_id=candidate.id,
+        candidate_content_hash=candidate.content_hash,
+        previous_state_id=head.canonical_state_id,
+        state_scope=candidate_scope,
+        expected_head_version=head.version,
+        review_artifact_id=artifact_id,
+        request_id=request.request_id,
+        actor=request.actor,
+        reason=request.reason,
+        review=review,
+    )
     try:
         materializer_kwargs = dict(
             review=review,
@@ -337,6 +350,7 @@ def accept_candidate(
             agent_loop=agent_loop,
             task_run_id=candidate.task_run_id,
             expected_head_version=head.version,
+            manual_review_authority=manual_review_authority,
             analysis_snapshot_db_id=candidate.analysis_snapshot_db_id,
             final_analysis_result_id=candidate.final_analysis_result_id,
         )

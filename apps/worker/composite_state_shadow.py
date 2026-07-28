@@ -20,11 +20,13 @@ from apps.analysis.state import (
     AnalysisStateDocumentV1,
     AnalysisStateDocumentV11,
     StateScope,
+    SystemStateMetadataPatch,
     TransitionCandidate,
     parse_analysis_state_document,
     review_transition_candidate_scoped,
 )
 from apps.analysis.state.transition_generator import ScopedTransitionCandidate
+from apps.analysis.state.hashing import content_hash
 from apps.output.context_bundle import (
     ContextBundleWriteResult,
     load_context_bundle,
@@ -146,6 +148,7 @@ def prepare_composite_state_shadow(
             state_scope=state_scope,
             canonical_state_id=canonical_state_id,
         )
+        recovered_evidence_cursors = recovery.pop("recovered_evidence_cursors", None)
         bundle = assemble_context_bundle(
             run_id=run_id,
             asset=previous_state.asset,
@@ -153,7 +156,11 @@ def prepare_composite_state_shadow(
             canonical_state_id=canonical_state_id,
             canonical_state=previous_state.model_dump(mode="json"),
             evidence=list(shadow_input.get("evidence") or []),
-            evidence_cursors=dict(shadow_input.get("evidence_cursors") or {}),
+            evidence_cursors=(
+                recovered_evidence_cursors
+                if recovered_evidence_cursors is not None
+                else dict(shadow_input.get("evidence_cursors") or {})
+            ),
             cutoff_at=cutoff_at,
             assembled_at=assembled_at,
             facts=confirmed_facts,
@@ -270,6 +277,7 @@ def execute_composite_state_shadow(
             state_machine_version=runtime.state_machine_version,
             session=runtime.session,
             trade_date=runtime.trade_date,
+            system_metadata=_system_metadata_from_bundle(runtime),
         )
     except Exception as exc:
         return {
@@ -317,6 +325,49 @@ def _require_current_canary_candidate(
     actual = candidate.model_dump(mode="json", exclude={"candidate"})
     if any(actual.get(field) != value for field, value in expected.items()):
         raise ValueError("canary candidate Bundle identity does not match current runtime")
+
+
+def _system_metadata_from_bundle(
+    runtime: CompositeStateShadowRuntime,
+) -> SystemStateMetadataPatch:
+    """Project trusted state metadata from the exact immutable Bundle."""
+
+    bundle = runtime.bundle
+    if bundle.state_scope != runtime.state_scope:
+        raise ValueError("Bundle state_scope does not match shadow runtime")
+    if not runtime.available_evidence_refs:
+        raise ValueError("Bundle retained no reviewed evidence refs for state metadata")
+    decision = runtime.evidence_delta_decision
+    return SystemStateMetadataPatch(
+        as_of=bundle.cutoff_at,
+        evidence_cursors={
+            source: cursor.model_dump(mode="json")
+            for source, cursor in bundle.next_evidence_cursors.items()
+        },
+        input_snapshot_ids={
+            "context_bundle_id": bundle.bundle_id,
+            "context_bundle_hash": bundle.content_hash,
+            "context_bundle_run_id": bundle.run_id,
+            "canonical_state_id": bundle.canonical_state_id,
+            "evidence_delta_decision_id": decision.decision_id,
+        },
+        source_refs=_dedupe_source_refs(runtime.available_evidence_refs),
+        state_scope=runtime.state_scope,
+        state_machine_version=runtime.state_machine_version,
+        session=runtime.session,
+        trade_date=runtime.trade_date,
+    )
+
+
+def _dedupe_source_refs(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        key = content_hash(value, exclude_keys=frozenset())
+        if key not in seen:
+            seen.add(key)
+            deduped.append(dict(value))
+    return deduped
 
 
 def finalize_composite_state_shadow(
@@ -397,6 +448,14 @@ def _recovery_inputs(
         raise ValueError(
             "previous context bundle cannot be combined with explicit recovery fields: " + ", ".join(ambiguous)
         )
+    recovery_base_state_id = str(
+        shadow_input.get("previous_context_bundle_base_canonical_state_id")
+        or canonical_state_id
+    ).strip()
+    if not recovery_base_state_id:
+        raise ValueError("previous context bundle base canonical state is missing")
+    if previous_descriptor is None and "previous_context_bundle_base_canonical_state_id" in shadow_input:
+        raise ValueError("previous context bundle base state requires a registry descriptor")
     if previous_descriptor is not None:
         previous, _artifact = _recover_context_bundle(
             storage_root=storage_root,
@@ -404,7 +463,7 @@ def _recovery_inputs(
             expected_run_id=None,
             asset=asset,
             state_scope=state_scope,
-            canonical_state_id=canonical_state_id,
+            canonical_state_id=recovery_base_state_id,
         )
         if previous.run_id == current_run_id:
             raise ValueError("previous context bundle must belong to a different run")
@@ -420,7 +479,7 @@ def _recovery_inputs(
     if (
         previous.asset != asset
         or previous.state_scope != state_scope
-        or previous.canonical_state_id != canonical_state_id
+        or previous.canonical_state_id != recovery_base_state_id
     ):
         raise ValueError("previous context bundle identity does not match shadow input")
     if previous.evidence_delta_decision is None:  # pragma: no cover - v3 schema contract
@@ -433,6 +492,10 @@ def _recovery_inputs(
             raise ValueError("previous context bundle has ambiguous semantic hashes")
         hashes[item.evidence_key] = item.semantic_hash
     return {
+        "recovered_evidence_cursors": {
+            source: cursor.model_dump(mode="json")
+            for source, cursor in previous.next_evidence_cursors.items()
+        },
         "previous_semantic_hashes": hashes,
         "deferred_queue": tuple(previous.deferred_queue),
         "processed_above_frontier": {

@@ -576,6 +576,78 @@ def select_previous_context_bundle_artifact(
     return latest[2]
 
 
+def select_exact_context_bundle_artifact(
+    db: Session,
+    *,
+    bundle_id: str,
+    content_hash: str,
+    run_id: str,
+    asset: str,
+    state_scope: str,
+    base_canonical_state_id: str,
+    current_run_id: str,
+    storage_root: str | Path,
+) -> dict[str, Any] | None:
+    """Return one immutable Bundle by its complete persisted identity.
+
+    This selector is intentionally different from the historical/latest
+    selector above.  CAS recovery already knows which Bundle produced the
+    current scoped head, so any missing or ambiguous identity must fail closed
+    instead of choosing a nearby artifact.
+    """
+
+    if not _run_artifacts_available(db):
+        return None
+    source_run_uuid = _coerce_run_uuid(run_id)
+    current_run_uuid = _coerce_run_uuid(current_run_id)
+    if source_run_uuid == current_run_uuid:
+        raise ValueError("ContextBundle continuity source must belong to a different run")
+    expected = {
+        "bundle_id": str(bundle_id).strip(),
+        "content_hash": str(content_hash).strip(),
+        "asset": str(asset).strip(),
+        "state_scope": str(state_scope).strip(),
+        "canonical_state_id": str(base_canonical_state_id).strip(),
+    }
+    if any(not value for value in expected.values()) or not _is_lowercase_sha256(
+        expected["content_hash"]
+    ):
+        raise ValueError("ContextBundle exact selector identity is incomplete")
+
+    rows = (
+        db.query(RunArtifact)
+        .filter(
+            RunArtifact.run_id == source_run_uuid,
+            RunArtifact.artifact_type == ArtifactType.structured_json.value,
+            RunArtifact.artifact_metadata["artifact_family"].as_string()
+            == _CONTEXT_BUNDLE_ARTIFACT_FAMILY,
+            RunArtifact.artifact_metadata["bundle_id"].as_string() == expected["bundle_id"],
+            RunArtifact.artifact_metadata["content_hash"].as_string() == expected["content_hash"],
+            RunArtifact.artifact_metadata["asset"].as_string() == expected["asset"],
+            RunArtifact.artifact_metadata["state_scope"].as_string() == expected["state_scope"],
+            RunArtifact.artifact_metadata["canonical_state_id"].as_string()
+            == expected["canonical_state_id"],
+        )
+        .order_by(RunArtifact.created_at.asc(), RunArtifact.artifact_id.asc())
+        .limit(2)
+        .all()
+    )
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise ValueError("ContextBundle exact selector identity is ambiguous")
+    return _validated_context_bundle_descriptor(
+        rows[0],
+        storage_root=storage_root,
+        expected_run_id=run_id,
+        expected_asset=expected["asset"],
+        expected_state_scope=expected["state_scope"],
+        expected_canonical_state_id=expected["canonical_state_id"],
+        expected_bundle_id=expected["bundle_id"],
+        expected_content_hash=expected["content_hash"],
+    )
+
+
 def _is_context_bundle_row(row: RunArtifact) -> bool:
     metadata = row.artifact_metadata
     return isinstance(metadata, dict) and metadata.get("artifact_family") == _CONTEXT_BUNDLE_ARTIFACT_FAMILY
@@ -610,6 +682,8 @@ def _validated_context_bundle_descriptor(
     expected_asset: str | None = None,
     expected_state_scope: str | None = None,
     expected_canonical_state_id: str | None = None,
+    expected_bundle_id: str | None = None,
+    expected_content_hash: str | None = None,
 ) -> dict[str, Any]:
     """Revalidate one registry row and reconstruct its recovery descriptor."""
 
@@ -636,6 +710,8 @@ def _validated_context_bundle_descriptor(
     if expected_run_id is not None and required["run_id"] != str(expected_run_id):
         raise ValueError("ContextBundle registry run_id does not match selector")
     for key, expected in (
+        ("bundle_id", expected_bundle_id),
+        ("content_hash", expected_content_hash),
         ("asset", expected_asset),
         ("state_scope", expected_state_scope),
         ("canonical_state_id", expected_canonical_state_id),

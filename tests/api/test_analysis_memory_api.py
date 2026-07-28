@@ -36,6 +36,7 @@ from apps.analysis.state import (
 from apps.api import main as api_main
 from apps.api.services import analysis_memory_service
 from apps.output.context_bundle import write_context_bundle
+from apps.output.analysis_state_review import review_artifact_id
 from database.models.analysis import AgentOutput, AnalysisBase, AnalysisSnapshot, FinalAnalysisResult
 from database.models.analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition
 from database.models.engine import get_db
@@ -468,6 +469,18 @@ def test_candidate_review_appends_accepted_state_transition_and_real_artifact(
     assert response.status_code == 200, response.text
     assert len(materializer_calls) == 1
     assert materializer_calls[0]["quality_gate"].action.value == "pass"
+    assert materializer_calls[0].get("transition_consistency") is None
+    manual_authority = materializer_calls[0]["manual_review_authority"]
+    assert manual_authority.candidate_state_id == candidate.id
+    assert manual_authority.candidate_content_hash == candidate.content_hash
+    assert manual_authority.previous_state_id == root.id
+    assert manual_authority.review_artifact_id == review_artifact_id(
+        candidate_state_id=candidate.id,
+        request_id="review-71-001",
+    )
+    assert manual_authority.request_id == "review-71-001"
+    assert manual_authority.actor == "reviewer@example.com"
+    assert manual_authority.state_scope == "daily_close"
     assert materializer_calls[0]["agent_loop"].accepted_output.snapshot_id == "snapshot-71"
     payload = response.json()
     accepted_id = payload["canonical_state"]["state_id"]

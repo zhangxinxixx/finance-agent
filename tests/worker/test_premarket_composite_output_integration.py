@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.report import ReportArtifact, ReportItem, ensure_report_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
+from apps.worker.canary_materialization import CanaryActivation
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
 _TRADE_DATE = "2026-05-14"
@@ -184,7 +185,6 @@ def _make_canary_input(*, run_id: str) -> tuple[dict, dict]:
             "state_scope": "daily_close",
             "canonical_state_id": "state-canary-root",
             "expected_head_version": 1,
-            "canary_run_ids": [run_id],
             "canonical_state": {
                 "schema_version": "1.1",
                 "state_scope": "daily_close",
@@ -233,34 +233,43 @@ def _make_canary_input(*, run_id: str) -> tuple[dict, dict]:
     )
 
 
+def _persistent_canary_activation(*, run_id: str, canary_input: dict) -> CanaryActivation:
+    return CanaryActivation(
+        asset="XAUUSD",
+        trade_date=_TRADE_DATE,
+        run_id=run_id,
+        state_scope="daily_close",
+        canonical_state_id=canary_input["canonical_state_id"],
+        expected_head_version=canary_input["expected_head_version"],
+        approval_id=f"approval-{run_id}",
+        approval_hash="f" * 64,
+        activation_identity=f"approval-{run_id}",
+    )
+
+
 def _canary_analyzer(evidence_ref: dict):
     def analyzer(bundle):
         from apps.analysis.state import TransitionCandidate
         from apps.analysis.state.transition_generator import ScopedTransitionCandidate
 
-        candidate = TransitionCandidate.model_validate({
-            "previous_state_id": bundle.canonical_state_id,
-            "summary": "canary transition",
-            "changes": [
-                {
-                    "target": "core_thesis",
-                    "action": "strengthen",
-                    "reason": "canary price confirmation",
-                    "evidence_refs": [evidence_ref],
+        candidate = TransitionCandidate.model_validate(
+            {
+                "previous_state_id": bundle.canonical_state_id,
+                "summary": "canary transition",
+                "changes": [
+                    {
+                        "target": "core_thesis",
+                        "action": "strengthen",
+                        "reason": "canary price confirmation",
+                        "evidence_refs": [evidence_ref],
+                    },
+                ],
+                "state_patch": {
+                    "core_thesis": "canary 突破确认",
                 },
-                {
-                    "target": "as_of",
-                    "action": "strengthen",
-                    "reason": "canary evidence time",
-                    "evidence_refs": [evidence_ref],
-                },
-            ],
-            "state_patch": {
-                "core_thesis": "canary 突破确认",
-                "as_of": _CREATED_AT,
-            },
-            "evidence_refs": [evidence_ref],
-        })
+                "evidence_refs": [evidence_ref],
+            }
+        )
         return ScopedTransitionCandidate(
             asset=bundle.asset,
             state_scope=bundle.state_scope,
@@ -274,11 +283,21 @@ def _canary_analyzer(evidence_ref: dict):
     return analyzer
 
 
-def test_canary_request_is_bound_to_all_fresh_bundle_consumers(tmp_path: Path) -> None:
+def test_canary_request_is_bound_to_all_fresh_bundle_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from apps.analysis.state.hashing import content_hash
+    from apps.worker import runner
     from apps.worker.runner import _run_canary_sidecar_attempt
 
     run_id = "run-canary-ready"
     canary_input, evidence_ref = _make_canary_input(run_id=run_id)
+    actual_gate_inputs: list[list] = []
+    original_gate = runner.evaluate_quality_gate
+
+    def record_gate(**kwargs):
+        actual_gate_inputs.append(list(kwargs["agent_outputs"]))
+        return original_gate(**kwargs)
+
+    monkeypatch.setattr(runner, "evaluate_quality_gate", record_gate)
     _, outputs = _run_canary_sidecar_attempt(
         storage_root=tmp_path,
         snapshot=_make_rich_snapshot(run_id=run_id),
@@ -286,18 +305,39 @@ def test_canary_request_is_bound_to_all_fresh_bundle_consumers(tmp_path: Path) -
         created_at=_CREATED_AT,
         state_shadow_input=canary_input,
         state_delta_analyzer=_canary_analyzer(evidence_ref),
+        canary_activation=_persistent_canary_activation(run_id=run_id, canary_input=canary_input),
         attempt=0,
+        attempt_id="9e91da42-c596-5f09-a010-440e7250cc6d",
     )
 
     trace = outputs["state_delta_shadow"]
     request = outputs["canary_materialization_request"]
+    authority = outputs["canary_authority_payload"]
     assert trace["status"] == "candidate_accepted_shadow_only"
     assert "_review_result" not in trace
     assert len(trace["bundle_consumers"]) == 9
     assert request.context_bundle_id == trace["bundle_id"]
     assert request.context_bundle_hash == trace["bundle_content_hash"]
     assert request.run_id == run_id
-    assert request.activation_source == "exact_run_id"
+    assert request.activation_source == "persistent_approval"
+    assert request.approval_id == f"approval-{run_id}"
+    assert authority.transition_consistency.status == "unverifiable"
+    post_gate_inputs = actual_gate_inputs[-1]
+    assert [output.agent_name for output in post_gate_inputs] == list(authority.agent_outputs)
+    assert authority.quality_gate_input_hashes == [
+        content_hash(
+            output.model_dump(mode="json", exclude_computed_fields=True),
+            exclude_keys=frozenset(),
+        )
+        for output in post_gate_inputs
+    ]
+    assert authority.fact_review_output_hash == authority.agent_output_hashes["fact_review_agent"]
+    assert set(authority.transition_consistency.unverifiable_fields) == {
+        "net_bias",
+        "market_stage",
+        "core_thesis",
+        "dominant_drivers",
+    }
     assert set(request.consumer_projection_hashes) == {
         "macro",
         "options",
@@ -365,7 +405,9 @@ def test_canary_sidecar_cannot_overwrite_legacy_report_or_card(tmp_path: Path) -
         created_at=_CREATED_AT,
         state_shadow_input=canary_input,
         state_delta_analyzer=_canary_analyzer(evidence_ref),
+        canary_activation=_persistent_canary_activation(run_id=run_id, canary_input=canary_input),
         attempt=0,
+        attempt_id="60e89ac3-4cc0-59c7-8508-d825dddf487f",
     )
 
     assert {path: Path(path).read_bytes() for path in official_paths} == before
@@ -464,16 +506,9 @@ def test_composite_state_delta_shadow_shares_one_bundle_without_canonical_write(
                     "reason": "shadow price confirmation",
                     "evidence_refs": [evidence_ref],
                 },
-                {
-                    "target": "as_of",
-                    "action": "strengthen",
-                    "reason": "shadow evidence time",
-                    "evidence_refs": [evidence_ref],
-                },
             ],
             "state_patch": {
                 "core_thesis": "shadow 突破确认",
-                "as_of": _CREATED_AT,
             },
             "evidence_refs": [evidence_ref],
         }

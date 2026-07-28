@@ -16,20 +16,27 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from apps.analysis.agents.quality_gate import AgentLoopDecision
+from apps.analysis.agents.quality_gate import AcceptedOutputReference, AgentLoopDecision
 from apps.analysis.agents.quality_gate_evaluator import QualityGateDecision
 from apps.analysis.agents.schemas import AgentOutput
 from apps.analysis.context_bundle.projection import ConsumerProjection
-from apps.analysis.state import TransitionReviewResult, materialize_reviewed_transition_scoped
+from apps.analysis.state import (
+    StateTransitionConsistencyDecision,
+    TransitionReviewResult,
+    evaluate_state_transition_consistency,
+    materialize_reviewed_transition_scoped,
+)
 from apps.analysis.state.hashing import content_hash
 from apps.analysis.state.repository import CanonicalHeadConflictError
-from database.models.analysis_state import AnalysisState, AnalysisStateHead
+from apps.runtime.artifact_registry import select_exact_context_bundle_artifact
+from database.models.analysis_state import AnalysisState, AnalysisStateHead, CanaryApproval
 
 
 logger = logging.getLogger(__name__)
 
-CANARY_MATERIALIZATION_REQUEST_SCHEMA_VERSION = "analysis_state_canary_request.v2"
-CANARY_MATERIALIZATION_RESULT_SCHEMA_VERSION = "analysis_state_canary_result.v2"
+CANARY_AUTHORITY_SCHEMA_VERSION = "analysis_state_canary_authority.v2"
+CANARY_MATERIALIZATION_REQUEST_SCHEMA_VERSION = "analysis_state_canary_request.v4"
+CANARY_MATERIALIZATION_RESULT_SCHEMA_VERSION = "analysis_state_canary_result.v4"
 CANARY_ASSET = "XAUUSD"
 CANARY_STATE_SCOPE = "daily_close"
 CANARY_CONSUMERS = frozenset(
@@ -45,6 +52,18 @@ CANARY_CONSUMERS = frozenset(
         "coordinator",
     }
 )
+CANARY_AGENT_CONSUMERS = {
+    "macro_liquidity_agent": "macro",
+    "cme_options_agent": "options",
+    "risk_agent": "risk",
+    "technical_agent": "technical",
+    "positioning_agent": "positioning",
+    "news_agent": "news",
+    "market_odds_agent": "market_odds",
+    "fact_review_agent": "fact_review",
+    "coordinator_agent": "coordinator",
+}
+CANARY_QUALITY_GATE_AGENT_ORDER = tuple(CANARY_AGENT_CONSUMERS)
 
 
 class CanaryAuthorityPayload(BaseModel):
@@ -57,6 +76,7 @@ class CanaryAuthorityPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    schema_version: Literal["analysis_state_canary_authority.v2"] = CANARY_AUTHORITY_SCHEMA_VERSION
     context_bundle_id: str = Field(min_length=1)
     context_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(min_length=1)
@@ -64,7 +84,18 @@ class CanaryAuthorityPayload(BaseModel):
     state_scope: Literal["daily_close"]
     canonical_state_id: str = Field(min_length=1)
     consumer_projections: dict[str, ConsumerProjection]
+    agent_outputs: dict[str, AgentOutput]
+    agent_output_hashes: dict[str, str]
+    quality_gate_input_hashes: list[str]
     fact_review_output: AgentOutput
+    fact_review_output_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accepted_output_reference: AcceptedOutputReference
+    accepted_output: AgentOutput | None = None
+    accepted_output_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    accepted_artifact_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    transition_review_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    transition_consistency: StateTransitionConsistencyDecision
+    transition_consistency_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     authority_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -84,26 +115,77 @@ class CanaryAuthorityPayload(BaseModel):
                 or identity.canonical_state_id != self.canonical_state_id
             ):
                 raise ValueError("authority projection does not match Bundle identity")
+        if set(self.agent_outputs) != set(CANARY_AGENT_CONSUMERS):
+            raise ValueError("authority payload must contain exactly the nine canary AgentOutputs")
+        if set(self.agent_output_hashes) != set(CANARY_AGENT_CONSUMERS):
+            raise ValueError("agent_output_hashes must contain exactly the nine canary AgentOutputs")
+        for agent_name, consumer in CANARY_AGENT_CONSUMERS.items():
+            output = self.agent_outputs[agent_name]
+            if output.agent_name != agent_name:
+                raise ValueError("authority AgentOutput key must match agent_name")
+            projection = self.consumer_projections[consumer]
+            _validate_output_projection_lineage(
+                output=output,
+                projection=projection,
+                context_bundle_id=self.context_bundle_id,
+                context_bundle_hash=self.context_bundle_hash,
+                run_id=self.run_id,
+                canonical_state_id=self.canonical_state_id,
+                state_scope=self.state_scope,
+            )
+            if self.agent_output_hashes[agent_name] != _stable_hash(output):
+                raise ValueError(f"agent_output_hashes does not match {agent_name}")
+        expected_gate_hashes = [self.agent_output_hashes[agent_name] for agent_name in CANARY_QUALITY_GATE_AGENT_ORDER]
+        if self.quality_gate_input_hashes != expected_gate_hashes:
+            raise ValueError("quality_gate_input_hashes must match the exact ordered gate inputs")
         review = self.fact_review_output
-        if review.agent_name != "fact_review_agent":
-            raise ValueError("authority payload requires fact_review_agent output")
-        fact_projection = self.consumer_projections["fact_review"]
-        expected_input_ids = {
-            "context_bundle_id": self.context_bundle_id,
-            "context_bundle_hash": self.context_bundle_hash,
-            "context_bundle_run_id": self.run_id,
-            "context_bundle_projection_hash": fact_projection.projection_hash,
-            "canonical_state_id": self.canonical_state_id,
-            "state_scope": self.state_scope,
-        }
-        if any(review.input_snapshot_ids.get(key) != value for key, value in expected_input_ids.items()):
-            raise ValueError("FactReview output does not match authority Bundle/projection")
-        payload = review.input_payload or {}
+        bound_review = self.agent_outputs["fact_review_agent"]
+        if review != bound_review:
+            raise ValueError("fact_review_output must equal the bound fact_review_agent output")
+        if self.fact_review_output_hash != self.agent_output_hashes["fact_review_agent"]:
+            raise ValueError("fact_review_output_hash does not match bound FactReview output")
+        accepted = self.accepted_output_reference
+        if accepted.source == "none":
+            if any(
+                value is not None
+                for value in (
+                    self.accepted_output,
+                    self.accepted_output_hash,
+                    self.accepted_artifact_hash,
+                )
+            ):
+                raise ValueError("unaccepted authority cannot carry an accepted output")
+        else:
+            if self.accepted_output is None:
+                raise ValueError("accepted authority requires the actual immutable AgentOutput")
+            if accepted.artifact_ref is None or not _has_artifact_identity(accepted.artifact_ref):
+                raise ValueError("accepted authority requires immutable rendered artifact identity")
+            if (
+                self.accepted_output.agent_name != accepted.agent_name
+                or self.accepted_output.snapshot_id != accepted.snapshot_id
+            ):
+                raise ValueError("accepted AgentOutput does not match accepted output identity")
+            actual_accepted_hash = _stable_hash(self.accepted_output)
+            if self.accepted_output_hash != actual_accepted_hash:
+                raise ValueError("accepted_output_hash does not match accepted AgentOutput")
+            if self.accepted_artifact_hash != _stable_hash(accepted.artifact_ref):
+                raise ValueError("accepted_artifact_hash does not match accepted artifact identity")
+            if (
+                accepted.source == "primary"
+                and self.accepted_output_hash != self.agent_output_hashes["coordinator_agent"]
+            ):
+                raise ValueError("accepted primary output must equal the bound coordinator_agent output")
+        consistency = self.transition_consistency
         if (
-            payload.get("context_bundle_consumer") != "fact_review"
-            or payload.get("context_bundle_projection") != fact_projection.model_dump(mode="json")
+            consistency.accepted_output_source != accepted.source
+            or consistency.accepted_output_agent_name != accepted.agent_name
+            or consistency.accepted_output_snapshot_id != accepted.snapshot_id
+            or consistency.accepted_output_hash != self.accepted_output_hash
+            or consistency.transition_review_hash != self.transition_review_hash
         ):
-            raise ValueError("FactReview output did not consume the exact authority projection")
+            raise ValueError("transition consistency identity does not match authority payload")
+        if self.transition_consistency_hash != _stable_hash(consistency):
+            raise ValueError("transition_consistency_hash does not match consistency decision")
         expected_hash = compute_canary_authority_hash(self)
         if self.authority_hash != expected_hash:
             raise ValueError("authority_hash does not match authority payload")
@@ -118,9 +200,30 @@ class CanaryAuthorityPayload(BaseModel):
         run_id: str,
         canonical_state_id: str,
         consumer_projections: dict[str, ConsumerProjection],
-        fact_review_output: AgentOutput,
+        quality_gate_inputs: list[AgentOutput],
+        accepted_output_reference: AcceptedOutputReference,
+        accepted_output: AgentOutput | None,
+        transition_review: TransitionReviewResult,
     ) -> "CanaryAuthorityPayload":
+        consistency = evaluate_state_transition_consistency(
+            review=transition_review,
+            accepted_output_reference=accepted_output_reference,
+            accepted_output=accepted_output,
+        )
+        if [output.agent_name for output in quality_gate_inputs] != list(CANARY_QUALITY_GATE_AGENT_ORDER):
+            raise ValueError("QualityGate inputs must be the exact ordered nine canary AgentOutputs")
+        agent_outputs = {
+            output.agent_name: AgentOutput.model_validate(output.model_dump(mode="json", exclude_computed_fields=True))
+            for output in quality_gate_inputs
+        }
+        agent_output_hashes = {name: _stable_hash(output) for name, output in agent_outputs.items()}
+        accepted_artifact_hash = (
+            _stable_hash(accepted_output_reference.artifact_ref)
+            if accepted_output_reference.artifact_ref is not None
+            else None
+        )
         payload = {
+            "schema_version": CANARY_AUTHORITY_SCHEMA_VERSION,
             "context_bundle_id": context_bundle_id,
             "context_bundle_hash": context_bundle_hash,
             "run_id": run_id,
@@ -128,7 +231,18 @@ class CanaryAuthorityPayload(BaseModel):
             "state_scope": CANARY_STATE_SCOPE,
             "canonical_state_id": canonical_state_id,
             "consumer_projections": consumer_projections,
-            "fact_review_output": fact_review_output,
+            "agent_outputs": agent_outputs,
+            "agent_output_hashes": agent_output_hashes,
+            "quality_gate_input_hashes": [agent_output_hashes[output.agent_name] for output in quality_gate_inputs],
+            "fact_review_output": agent_outputs["fact_review_agent"],
+            "fact_review_output_hash": agent_output_hashes["fact_review_agent"],
+            "accepted_output_reference": accepted_output_reference,
+            "accepted_output": accepted_output,
+            "accepted_output_hash": consistency.accepted_output_hash,
+            "accepted_artifact_hash": accepted_artifact_hash,
+            "transition_review_hash": consistency.transition_review_hash,
+            "transition_consistency": consistency,
+            "transition_consistency_hash": _stable_hash(consistency),
         }
         return cls(authority_hash=_hash_payload(payload), **payload)
 
@@ -144,7 +258,9 @@ class CanaryActivation(BaseModel):
     state_scope: Literal["daily_close"]
     canonical_state_id: str = Field(min_length=1)
     expected_head_version: int = Field(ge=0)
-    activation_source: Literal["exact_trade_date", "exact_run_id", "manual_request"]
+    approval_id: str = Field(min_length=1)
+    approval_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    activation_source: Literal["persistent_approval"] = "persistent_approval"
     activation_identity: str = Field(min_length=1)
 
 
@@ -153,16 +269,16 @@ class CanaryMaterializationRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["analysis_state_canary_request.v2"] = (
-        CANARY_MATERIALIZATION_REQUEST_SCHEMA_VERSION
-    )
+    schema_version: Literal["analysis_state_canary_request.v4"] = CANARY_MATERIALIZATION_REQUEST_SCHEMA_VERSION
     asset: Literal["XAUUSD"]
     trade_date: date
     run_id: str = Field(min_length=1)
     state_scope: Literal["daily_close"]
     canonical_state_id: str = Field(min_length=1)
     expected_head_version: int = Field(ge=0)
-    activation_source: Literal["exact_trade_date", "exact_run_id", "manual_request"]
+    approval_id: str = Field(min_length=1)
+    approval_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    activation_source: Literal["persistent_approval"] = "persistent_approval"
     activation_identity: str = Field(min_length=1)
     context_bundle_id: str = Field(min_length=1)
     context_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -171,12 +287,12 @@ class CanaryMaterializationRequest(BaseModel):
     quality_gate_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     agent_loop_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     authority_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    manual_request: dict[str, Any] | None = None
     review: TransitionReviewResult
 
     @field_validator(
         "run_id",
         "canonical_state_id",
+        "approval_id",
         "activation_identity",
         "context_bundle_id",
         "fact_review_snapshot_id",
@@ -209,24 +325,8 @@ class CanaryMaterializationRequest(BaseModel):
             raise ValueError("review asset must match canary asset")
         if getattr(self.review.next_state, "state_scope", None) != self.state_scope:
             raise ValueError("review state_scope must match canary state_scope")
-        if self.activation_source == "exact_trade_date":
-            if self.activation_identity != self.trade_date.isoformat() or self.manual_request is not None:
-                raise ValueError("exact_trade_date activation must bind its request trade_date")
-        elif self.activation_source == "exact_run_id":
-            if self.activation_identity != self.run_id or self.manual_request is not None:
-                raise ValueError("exact_run_id activation must bind its request run_id")
-        else:
-            if not isinstance(self.manual_request, dict):
-                raise ValueError("manual_request activation requires its structured request")
-            if not self.activation_identity.startswith("manual:"):
-                raise ValueError("manual_request activation identity must be manual:<request_id>")
-            _validate_manual_request_binding(
-                self.manual_request,
-                asset=self.asset,
-                trade_date=self.trade_date,
-                run_id=self.run_id,
-                expected_identity=self.activation_identity,
-            )
+        if self.activation_identity != self.approval_id:
+            raise ValueError("persistent approval activation identity must match approval_id")
         return self
 
 
@@ -235,9 +335,7 @@ class CanaryMaterializationResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["analysis_state_canary_result.v2"] = (
-        CANARY_MATERIALIZATION_RESULT_SCHEMA_VERSION
-    )
+    schema_version: Literal["analysis_state_canary_result.v4"] = CANARY_MATERIALIZATION_RESULT_SCHEMA_VERSION
     status: Literal[
         "canonical_advanced",
         "candidate_recorded",
@@ -249,7 +347,9 @@ class CanaryMaterializationResult(BaseModel):
     trade_date: date
     run_id: str = Field(min_length=1)
     state_scope: Literal["daily_close"]
-    activation_source: Literal["exact_trade_date", "exact_run_id", "manual_request"]
+    approval_id: str = Field(min_length=1)
+    approval_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    activation_source: Literal["persistent_approval"]
     activation_identity: str = Field(min_length=1)
     context_bundle_id: str = Field(min_length=1)
     context_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -309,20 +409,18 @@ def resolve_canary_activation(
     snapshot_trade_date: Any,
     run_id: Any,
     shadow_input: dict[str, Any] | None,
-) -> CanaryActivation | None:
-    """Resolve only explicit exact-date, exact-run, or structured manual authority.
-
-    ``canary_enabled`` is intentionally rejected: a boolean cannot identify a
-    date/run or provide an auditable approval record.
-    """
+    approval: CanaryApproval | None,
+) -> CanaryActivation:
+    """Bind one server-validated persistent approval to exact runtime lineage."""
 
     if not isinstance(shadow_input, dict):
-        return None
+        raise ValueError("canary activation requires state_shadow_input")
     control_keys = {"canary_trade_dates", "canary_run_ids", "canary_manual_request", "canary_enabled"}
-    if not any(key in shadow_input for key in control_keys):
-        return None
-    if "canary_enabled" in shadow_input:
-        raise ValueError("canary_enabled is not a valid canary activation control")
+    forbidden = sorted(key for key in control_keys if key in shadow_input)
+    if forbidden:
+        raise ValueError("caller-owned canary activation controls are forbidden: " + ", ".join(forbidden))
+    if approval is None:
+        raise ValueError("persistent canary approval is required")
 
     asset = _required_text(snapshot_asset, field="snapshot_asset")
     trade_date = _date_value(snapshot_trade_date, field="snapshot_trade_date")
@@ -335,26 +433,23 @@ def resolve_canary_activation(
         raise ValueError("canary trade_date must match analysis snapshot trade_date")
     if shadow_input.get("state_scope") != CANARY_STATE_SCOPE:
         raise ValueError("canary activation is limited to state_scope=daily_close")
+    if approval.asset != asset or approval.state_scope != CANARY_STATE_SCOPE:
+        raise ValueError("persistent canary approval scope does not match analysis request")
+    if approval.trade_date is not None and approval.trade_date != trade_date:
+        raise ValueError("persistent canary approval trade_date does not match analysis request")
+    if approval.run_id is not None and approval.run_id != normalized_run_id:
+        raise ValueError("persistent canary approval run_id does not match analysis request")
+    if approval.status != "active":
+        raise ValueError("persistent canary approval is not active")
     canonical_state_id = _required_text(shadow_input.get("canonical_state_id"), field="canonical_state_id")
     expected_head_version = shadow_input.get("expected_head_version")
-    if isinstance(expected_head_version, bool) or not isinstance(expected_head_version, int) or expected_head_version < 0:
+    if (
+        isinstance(expected_head_version, bool)
+        or not isinstance(expected_head_version, int)
+        or expected_head_version < 0
+    ):
         raise ValueError("canary expected_head_version must be a non-negative integer")
 
-    matches: list[tuple[str, str]] = []
-    if trade_date in _date_allowlist(shadow_input.get("canary_trade_dates")):
-        matches.append(("exact_trade_date", trade_date.isoformat()))
-    if normalized_run_id in _run_allowlist(shadow_input.get("canary_run_ids")):
-        matches.append(("exact_run_id", normalized_run_id))
-    manual = shadow_input.get("canary_manual_request")
-    if manual is not None and _manual_request_matches(
-        manual, asset=asset, trade_date=trade_date, run_id=normalized_run_id
-    ):
-        matches.append(("manual_request", f"manual:{_required_text(manual.get('request_id'), field='manual request_id')}"))
-    if not matches:
-        return None
-    if len(matches) != 1:
-        raise ValueError("canary activation must use exactly one explicit control")
-    source, identity = matches[0]
     return CanaryActivation(
         asset=asset,
         trade_date=trade_date,
@@ -362,8 +457,9 @@ def resolve_canary_activation(
         state_scope=CANARY_STATE_SCOPE,
         canonical_state_id=canonical_state_id,
         expected_head_version=expected_head_version,
-        activation_source=source,
-        activation_identity=identity,
+        approval_id=approval.approval_id,
+        approval_hash=approval.approval_hash,
+        activation_identity=approval.approval_id,
     )
 
 
@@ -401,17 +497,22 @@ def materialize_canary_request(
         if isinstance(agent_loop, AgentLoopDecision)
         else agent_loop
     )
-    if validated.quality_gate_hash != compute_canary_quality_gate_hash(
-        gate, authority_hash=authority.authority_hash
-    ):
+    if validated.quality_gate_hash != compute_canary_quality_gate_hash(gate, authority_hash=authority.authority_hash):
         return CanaryMaterializationResult(
-            status="failed", **audit, reason="canary quality_gate_hash does not match supplied authority-bound QualityGate"
+            status="failed",
+            **audit,
+            reason="canary quality_gate_hash does not match supplied authority-bound QualityGate",
         )
-    if validated.agent_loop_hash != compute_canary_agent_loop_hash(
-        loop, authority_hash=authority.authority_hash
-    ):
+    if validated.agent_loop_hash != compute_canary_agent_loop_hash(loop, authority_hash=authority.authority_hash):
         return CanaryMaterializationResult(
             status="failed", **audit, reason="canary agent_loop_hash does not match supplied authority-bound AgentLoop"
+        )
+    if authority.transition_consistency.status != "consistent":
+        return CanaryMaterializationResult(
+            status="observe_only",
+            **audit,
+            materialization_disposition="manual_review_required",
+            reason=(f"transition_consistency:{authority.transition_consistency.status}"),
         )
     try:
         # Repository append and head CAS are one outer savepoint: a stale CAS
@@ -425,6 +526,7 @@ def materialize_canary_request(
                 agent_loop=loop,
                 task_run_id=validated.run_id,
                 expected_head_version=validated.expected_head_version,
+                transition_consistency=authority.transition_consistency,
                 analysis_snapshot_db_id=analysis_snapshot_db_id,
             )
     except CanonicalHeadConflictError:
@@ -463,9 +565,7 @@ def materialize_canary_request(
             candidate_state_id=result.state_id,
             materialization_disposition=result.disposition,
         )
-    return CanaryMaterializationResult(
-        status="observe_only", **audit, materialization_disposition=result.disposition
-    )
+    return CanaryMaterializationResult(status="observe_only", **audit, materialization_disposition=result.disposition)
 
 
 def mark_canary_recompute_result(
@@ -514,6 +614,8 @@ def prepare_canary_recompute_shadow_input(
     conflict_result: CanaryMaterializationResult | dict[str, Any],
     shadow_input: dict[str, Any],
     created_at: datetime,
+    current_run_id: str,
+    storage_root: str,
 ) -> dict[str, Any]:
     """Rebase one bounded retry input on the latest exact scoped head.
 
@@ -544,6 +646,44 @@ def prepare_canary_recompute_shadow_input(
     payload = dict(latest_state.payload or {})
     if _date_value(payload.get("trade_date"), field="latest_state.trade_date") != conflict.trade_date:
         raise ValueError("latest canonical trade_date changed; stale run cannot recompute")
+    base_state_id = str(latest_state.previous_state_id or "").strip()
+    if not base_state_id:
+        raise ValueError("latest scoped canonical state has no predecessor Bundle lineage")
+    identity = latest_state.input_snapshot_ids
+    if not isinstance(identity, dict):
+        raise ValueError("latest scoped canonical state Bundle identity is unavailable")
+    identity_keys = {
+        "bundle_id": "context_bundle_id",
+        "content_hash": "context_bundle_hash",
+        "run_id": "context_bundle_run_id",
+        "canonical_state_id": "canonical_state_id",
+    }
+    required_identity = {
+        field: str(identity.get(snapshot_key) or "").strip() for field, snapshot_key in identity_keys.items()
+    }
+    if any(not value for value in required_identity.values()):
+        raise ValueError("latest scoped canonical state Bundle identity is incomplete")
+    payload_identity = payload.get("input_snapshot_ids")
+    if not isinstance(payload_identity, dict) or any(
+        str(payload_identity.get(identity_keys[field]) or "").strip() != value
+        for field, value in required_identity.items()
+    ):
+        raise ValueError("latest scoped canonical state payload Bundle identity conflicts")
+    if required_identity["canonical_state_id"] != base_state_id:
+        raise ValueError("latest scoped canonical state predecessor Bundle lineage conflicts")
+    continuity_descriptor = select_exact_context_bundle_artifact(
+        session,
+        bundle_id=required_identity["bundle_id"],
+        content_hash=required_identity["content_hash"],
+        run_id=required_identity["run_id"],
+        asset=CANARY_ASSET,
+        state_scope=CANARY_STATE_SCOPE,
+        base_canonical_state_id=base_state_id,
+        current_run_id=current_run_id,
+        storage_root=storage_root,
+    )
+    if continuity_descriptor is None:
+        raise ValueError("latest scoped canonical state ContextBundle artifact is unavailable")
 
     refreshed = dict(shadow_input)
     for key in (
@@ -553,6 +693,9 @@ def prepare_canary_recompute_shadow_input(
         "previous_semantic_hashes",
         "deferred_queue",
         "processed_above_frontier",
+        "freshness_sla_seconds",
+        "default_freshness_sla_seconds",
+        "evidence_cursors",
     ):
         refreshed.pop(key, None)
     refreshed.update(
@@ -562,10 +705,8 @@ def prepare_canary_recompute_shadow_input(
             "canonical_state_id": latest_state.id,
             "canonical_state": payload,
             "expected_head_version": latest.version,
-            "evidence_cursors": dict(latest_state.evidence_cursors or payload.get("evidence_cursors") or {}),
-            "previous_semantic_hashes": {},
-            "deferred_queue": (),
-            "processed_above_frontier": {},
+            "previous_context_bundle_artifact": continuity_descriptor,
+            "previous_context_bundle_base_canonical_state_id": base_state_id,
             "assembled_at": created_at,
         }
     )
@@ -606,6 +747,8 @@ def _audit_fields(request: CanaryMaterializationRequest) -> dict[str, Any]:
         "trade_date": request.trade_date,
         "run_id": request.run_id,
         "state_scope": request.state_scope,
+        "approval_id": request.approval_id,
+        "approval_hash": request.approval_hash,
         "activation_source": request.activation_source,
         "activation_identity": request.activation_identity,
         "context_bundle_id": request.context_bundle_id,
@@ -637,9 +780,7 @@ def compute_canary_quality_gate_hash(
     """Return the stable QualityGate digest required in a canary request."""
 
     gate = QualityGateDecision.model_validate(
-        value.model_dump(mode="json", exclude_computed_fields=True)
-        if isinstance(value, QualityGateDecision)
-        else value
+        value.model_dump(mode="json", exclude_computed_fields=True) if isinstance(value, QualityGateDecision) else value
     )
     return _hash_payload(
         {"quality_gate": gate.model_dump(mode="json", exclude_computed_fields=True), "authority_hash": authority_hash}
@@ -654,9 +795,7 @@ def compute_canary_agent_loop_hash(
     """Return the stable AgentLoop digest required in a canary request."""
 
     loop = AgentLoopDecision.model_validate(
-        value.model_dump(mode="json", exclude_computed_fields=True)
-        if isinstance(value, AgentLoopDecision)
-        else value
+        value.model_dump(mode="json", exclude_computed_fields=True) if isinstance(value, AgentLoopDecision) else value
     )
     return _hash_payload(
         {"agent_loop": loop.model_dump(mode="json", exclude_computed_fields=True), "authority_hash": authority_hash}
@@ -665,6 +804,53 @@ def compute_canary_agent_loop_hash(
 
 def _stable_hash(value: BaseModel) -> str:
     return content_hash(value.model_dump(mode="json", exclude_computed_fields=True), exclude_keys=frozenset())
+
+
+def _has_artifact_identity(value: BaseModel) -> bool:
+    payload = value.model_dump(mode="json", exclude_none=True)
+    return any(
+        item
+        for item in (
+            payload.get("analysis_snapshot"),
+            payload.get("final_report_paths"),
+            payload.get("strategy_card_paths"),
+        )
+    )
+
+
+def _validate_output_projection_lineage(
+    *,
+    output: AgentOutput,
+    projection: ConsumerProjection,
+    context_bundle_id: str,
+    context_bundle_hash: str,
+    run_id: str,
+    canonical_state_id: str,
+    state_scope: str,
+) -> None:
+    expected_input_ids = {
+        "context_bundle_id": context_bundle_id,
+        "context_bundle_hash": context_bundle_hash,
+        "context_bundle_run_id": run_id,
+        "context_bundle_projection_hash": projection.projection_hash,
+        "canonical_state_id": canonical_state_id,
+        "state_scope": state_scope,
+        "retained_evidence_ids": [
+            {"source": item["source"], "evidence_id": item["evidence_id"]}
+            for item in sorted(
+                projection.retained_evidence,
+                key=lambda item: (item["source"], item["evidence_id"]),
+            )
+        ],
+        "evidence_delta_decision_id": projection.decision_id,
+    }
+    if any(output.input_snapshot_ids.get(key) != value for key, value in expected_input_ids.items()):
+        raise ValueError(f"{output.agent_name} output does not match authority Bundle/projection")
+    payload = output.input_payload or {}
+    if payload.get("context_bundle_consumer") != projection.consumer or payload.get(
+        "context_bundle_projection"
+    ) != projection.model_dump(mode="json"):
+        raise ValueError(f"{output.agent_name} output did not consume its exact authority projection")
 
 
 def compute_canary_authority_hash(
@@ -699,14 +885,20 @@ def _validate_authority_payload(
         or authority.canonical_state_id != request.canonical_state_id
     ):
         raise ValueError("authority payload does not match request Bundle lineage")
-    hashes = {
-        name: projection.projection_hash
-        for name, projection in authority.consumer_projections.items()
-    }
+    hashes = {name: projection.projection_hash for name, projection in authority.consumer_projections.items()}
     if hashes != request.consumer_projection_hashes:
         raise ValueError("request projection hashes do not match authority payload")
     if authority.fact_review_output.snapshot_id != request.fact_review_snapshot_id:
         raise ValueError("request FactReview snapshot does not match authority payload")
+    recomputed_consistency = evaluate_state_transition_consistency(
+        review=request.review,
+        accepted_output_reference=authority.accepted_output_reference,
+        accepted_output=authority.accepted_output,
+    )
+    if recomputed_consistency != authority.transition_consistency:
+        raise ValueError("authority transition consistency does not match accepted output/review")
+    if authority.transition_review_hash != recomputed_consistency.transition_review_hash:
+        raise ValueError("request transition review does not match authority payload")
     return authority
 
 
@@ -728,65 +920,3 @@ def _required_text(value: Any, *, field: str) -> str:
     if not normalized:
         raise ValueError(f"{field} is required")
     return normalized
-
-
-def _date_allowlist(value: Any) -> set[date]:
-    if value is None:
-        return set()
-    if not isinstance(value, list):
-        raise ValueError("canary_trade_dates must be a list of ISO dates")
-    return {_date_value(item, field="canary_trade_dates") for item in value}
-
-
-def _run_allowlist(value: Any) -> set[str]:
-    if value is None:
-        return set()
-    if not isinstance(value, list):
-        raise ValueError("canary_run_ids must be a list of run IDs")
-    return {_required_text(item, field="canary_run_ids") for item in value}
-
-
-def _manual_request_matches(
-    value: Any, *, asset: str, trade_date: date, run_id: str
-) -> bool:
-    if not isinstance(value, dict):
-        raise ValueError("canary_manual_request must be an object")
-    _validate_manual_request_binding(
-        value,
-        asset=asset,
-        trade_date=trade_date,
-        run_id=run_id,
-        expected_identity=None,
-    )
-    requested_date = value.get("trade_date")
-    requested_run = value.get("run_id")
-    if requested_date is not None and _date_value(requested_date, field="manual trade_date") != trade_date:
-        return False
-    if requested_run is not None and _required_text(requested_run, field="manual run_id") != run_id:
-        return False
-    return True
-
-
-def _validate_manual_request_binding(
-    value: dict[str, Any],
-    *,
-    asset: str,
-    trade_date: date,
-    run_id: str,
-    expected_identity: str | None,
-) -> None:
-    request_id = _required_text(value.get("request_id"), field="manual request_id")
-    if expected_identity is not None and expected_identity != f"manual:{request_id}":
-        raise ValueError("manual_request identity does not match request_id")
-    if _required_text(value.get("asset"), field="manual asset") != asset:
-        raise ValueError("manual request asset must match analysis snapshot asset")
-    if value.get("state_scope") != CANARY_STATE_SCOPE:
-        raise ValueError("manual request state_scope must be daily_close")
-    requested_date = value.get("trade_date")
-    requested_run = value.get("run_id")
-    if requested_date is None and requested_run is None:
-        raise ValueError("manual request must bind an exact trade_date or run_id")
-    if requested_date is not None and _date_value(requested_date, field="manual trade_date") != trade_date:
-        raise ValueError("manual request trade_date does not match request")
-    if requested_run is not None and _required_text(requested_run, field="manual run_id") != run_id:
-        raise ValueError("manual request run_id does not match request")
