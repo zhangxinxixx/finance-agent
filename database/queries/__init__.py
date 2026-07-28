@@ -19,6 +19,25 @@ from .app_settings import (
     upsert_app_setting,
 )
 from .app_secrets import get_app_secret, reset_app_secret, upsert_app_secret
+from .canary_approvals import (
+    CANARY_APPROVER_ROLES,
+    CanaryApprovalConsumptionError,
+    CanaryApprovalError,
+    compute_canary_approval_hash,
+    consume_canary_approval,
+    issue_canary_approval,
+    load_canary_approval,
+    revoke_canary_approval,
+)
+from .canary_attempts import (
+    CanaryAttemptError,
+    authorize_canary_recompute,
+    create_or_resume_canary_attempt,
+    load_canary_attempt,
+    mark_canary_attempt_audit_persisted,
+    mark_canary_attempt_failed,
+    mark_canary_attempt_terminal,
+)
 from .playbooks import (
     create_playbook_template,
     get_playbook_template,
@@ -47,6 +66,14 @@ from .review import get_review_item, list_review_items, update_review_status, up
 
 __all__ = [
     "CmeIngestResult",
+    "CANARY_APPROVER_ROLES",
+    "CanaryApprovalConsumptionError",
+    "CanaryApprovalError",
+    "CanaryAttemptError",
+    "authorize_canary_recompute",
+    "compute_canary_approval_hash",
+    "consume_canary_approval",
+    "create_or_resume_canary_attempt",
     "create_cme_tables",
     "ensure_cme_tables",
     "get_agent_output",
@@ -66,6 +93,7 @@ __all__ = [
     "get_llm_call_audit",
     "get_review_item",
     "ingest_cme_parse_result",
+    "issue_canary_approval",
     "list_agent_outputs",
     "list_app_setting_events",
     "list_app_settings",
@@ -78,9 +106,15 @@ __all__ = [
     "list_playbook_templates",
     "list_playbook_template_versions",
     "list_review_items",
+    "load_canary_approval",
+    "load_canary_attempt",
+    "mark_canary_attempt_audit_persisted",
+    "mark_canary_attempt_failed",
+    "mark_canary_attempt_terminal",
     "reset_app_setting",
     "reset_app_secret",
     "rollback_app_setting",
+    "revoke_canary_approval",
     "update_review_status",
     "upsert_agent_output",
     "upsert_app_setting",

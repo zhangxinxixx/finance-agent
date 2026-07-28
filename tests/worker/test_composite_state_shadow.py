@@ -117,16 +117,9 @@ def _candidate(bundle) -> dict:
                 "reason": "价格确认",
                 "evidence_refs": [REF],
             },
-            {
-                "target": "as_of",
-                "action": "strengthen",
-                "reason": "新证据时间",
-                "evidence_refs": [REF],
-            },
         ],
         "state_patch": {
             "core_thesis": "突破确认",
-            "as_of": NOW + timedelta(hours=1),
         },
         "evidence_refs": [REF],
     }
@@ -261,6 +254,35 @@ def test_shadow_candidate_is_reviewed_and_all_consumers_share_bundle(tmp_path) -
         "legacy": "needs_review",
         "shadow": "accepted",
     }
+
+
+def test_review_system_metadata_is_projected_only_from_bundle(tmp_path) -> None:
+    runtime = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-system-metadata",
+        created_at=NOW,
+        shadow_input=_shadow_input(evidence=[_evidence()]),
+    )
+    trace = execute_composite_state_shadow(
+        runtime=runtime,
+        analyzer=_candidate,
+        _return_review=True,
+    )
+    review = trace["_review_result"]
+
+    assert review.next_state.as_of == runtime.bundle.cutoff_at
+    assert review.next_state.evidence_cursors == {
+        source: cursor.model_dump(mode="json")
+        for source, cursor in runtime.bundle.next_evidence_cursors.items()
+    }
+    assert review.next_state.input_snapshot_ids == {
+        "context_bundle_id": runtime.bundle.bundle_id,
+        "context_bundle_hash": runtime.bundle.content_hash,
+        "context_bundle_run_id": runtime.bundle.run_id,
+        "canonical_state_id": runtime.bundle.canonical_state_id,
+        "evidence_delta_decision_id": runtime.evidence_delta_decision.decision_id,
+    }
+    assert review.next_state.source_refs == [REF]
 
 
 def test_shadow_analyzer_failure_is_contained_as_needs_review(tmp_path) -> None:
@@ -445,6 +467,138 @@ def test_registered_prior_bundle_recovers_delta_and_selection_state(tmp_path) ->
     assert replay.evidence_delta_decision.recommended_action.value == "no_op"
     assert replay.bundle.deferred_queue == first.bundle.deferred_queue
     assert replay.bundle.processed_above_frontier == first.bundle.processed_above_frontier
+
+
+def test_predecessor_bundle_recovery_restores_cursor_and_merges_current_evidence(tmp_path) -> None:
+    duplicate = _macro_evidence(current=100.3)
+    first_input = _shadow_input(evidence=[duplicate])
+    first_input.update(
+        {
+            "freshness_sla_seconds": {"macro": 123},
+            "default_freshness_sla_seconds": 456,
+        }
+    )
+    first = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-committed-source",
+        created_at=NOW,
+        shadow_input=first_input,
+    )
+    current = _macro_evidence(current=101.0)
+    retry_input = _shadow_input(evidence=[duplicate, current])
+    retry_input["canonical_state_id"] = "state-latest"
+    retry_input["previous_context_bundle_artifact"] = first.artifact.registry_artifact
+    retry_input["previous_context_bundle_base_canonical_state_id"] = "state-66"
+    retry_input.pop("evidence_cursors")
+
+    replay = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-cas-retry",
+        created_at=NOW + timedelta(hours=1),
+        shadow_input=retry_input,
+    )
+
+    assert replay.bundle.canonical_state_id == "state-latest"
+    assert replay.bundle.evidence_cursors == first.bundle.next_evidence_cursors
+    assert replay.bundle.freshness_sla_seconds == {"macro": 123}
+    assert replay.bundle.default_freshness_sla_seconds == 456
+    delta = next(block for block in replay.bundle.blocks if block.name == "delta_evidence")
+    assert [item["evidence_id"] for item in delta.payload] == [current["evidence_id"]]
+    assert replay.bundle.next_evidence_cursors["macro"].evidence_id == current["evidence_id"]
+
+
+def test_predecessor_bundle_recovery_rejects_wrong_base_lineage(tmp_path) -> None:
+    first = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-committed-source",
+        created_at=NOW,
+        shadow_input=_shadow_input(evidence=[_macro_evidence(current=100.3)]),
+    )
+    retry_input = _shadow_input(evidence=[_macro_evidence(current=101.0)])
+    retry_input["canonical_state_id"] = "state-latest"
+    retry_input["previous_context_bundle_artifact"] = first.artifact.registry_artifact
+    retry_input["previous_context_bundle_base_canonical_state_id"] = "wrong-predecessor"
+    retry_input.pop("evidence_cursors")
+
+    with pytest.raises(ValueError, match="canonical_state_id"):
+        prepare_composite_state_shadow(
+            storage_root=tmp_path,
+            run_id="run-cas-retry",
+            created_at=NOW + timedelta(hours=1),
+            shadow_input=retry_input,
+        )
+
+
+def test_registered_recovery_preserves_nonempty_deferred_and_processed_frontier(tmp_path) -> None:
+    evidence = [
+        {
+            "source": "news",
+            "evidence_id": f"news-{index}",
+            "business_time": NOW + timedelta(minutes=index),
+            "ingested_at": NOW + timedelta(minutes=index),
+            "session": "asia",
+            "payload": {
+                "evidence_type": "material_event",
+                "asset": "XAUUSD",
+                "source_quality": "official",
+                "event_id": f"news-{index}",
+                "cluster_key": f"cluster:news-{index}",
+                "event_type": "test_event",
+                "claim": "消息" * 500,
+                "materiality_score": 10,
+                "risk_level": "low",
+                "recompute_eligible": False,
+                "confirmation_status": "confirmed",
+            },
+            "source_ref": {"snapshot_id": f"news-{index}"},
+        }
+        for index in range(1, 9)
+    ]
+    first_input = _shadow_input(evidence=evidence)
+    first_input.update(
+        {
+            "cutoff_at": NOW + timedelta(minutes=10),
+            "budget_tokens": 1_600,
+            "freshness_sla_seconds": {"news": 321},
+            "default_freshness_sla_seconds": 654,
+        }
+    )
+    first = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-frontier-source",
+        created_at=NOW,
+        shadow_input=first_input,
+    )
+    assert first.bundle.deferred_queue
+    assert first.bundle.processed_above_frontier["news"]
+
+    retry_input = _shadow_input(evidence=evidence)
+    retry_input.update(
+        {
+            "cutoff_at": NOW + timedelta(minutes=10),
+            "budget_tokens": 1_600,
+            "previous_context_bundle_artifact": first.artifact.registry_artifact,
+        }
+    )
+    retry_input.pop("evidence_cursors")
+    replay = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-frontier-retry",
+        created_at=NOW + timedelta(hours=1),
+        shadow_input=retry_input,
+    )
+
+    first_deferred = {item["evidence_id"] for item in first.bundle.deferred_queue}
+    replay_accounted = {
+        item["evidence_id"] for item in replay.bundle.deferred_queue
+    } | set(next(block for block in replay.bundle.blocks if block.name == "delta_evidence").retained_evidence_ids)
+    assert first_deferred <= replay_accounted
+    assert replay.bundle.freshness_sla_seconds == {"news": 321}
+    assert replay.bundle.default_freshness_sla_seconds == 654
+    assert any(
+        "already_processed_above_frontier" in decision["reasons"]
+        for decision in replay.bundle.selection_decisions
+    )
 
 
 @pytest.mark.parametrize("field, value", [("asset", "EURUSD"), ("state_scope", "intraday")])

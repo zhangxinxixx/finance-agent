@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,11 +51,11 @@ from apps.worker.composite_state_shadow import (
     resolve_analysis_context_mode,
 )
 from apps.worker.canary_materialization import (
+    CanaryActivation,
     CanaryAuthorityPayload,
     CanaryMaterializationRequest,
     compute_canary_agent_loop_hash,
     compute_canary_quality_gate_hash,
-    resolve_canary_activation,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ def run_composite_analysis_pipeline(
     state_shadow_input: dict[str, Any] | None = None,
     state_delta_analyzer: StateDeltaAnalyzer | None = None,
     canary_sidecar_attempt: int | None = None,
+    canary_activation: CanaryActivation | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """Run the composite analysis pipeline on an already-persisted analysis snapshot."""
 
@@ -121,16 +123,25 @@ def run_composite_analysis_pipeline(
         if canary_sidecar_attempt not in {0, 1}:
             raise ValueError("canary composite execution requires sidecar attempt 0 or 1")
         resolved_storage = storage_root.resolve()
+        attempt_identity = resolved_storage.parent.name
+        try:
+            uuid.UUID(attempt_identity)
+        except ValueError as exc:
+            raise ValueError("canary composite attempt identity is invalid") from exc
         if (
             resolved_storage.name != "sandbox"
-            or resolved_storage.parent.name != f"attempt-{canary_sidecar_attempt}"
-            or len(resolved_storage.parents) < 4
-            or resolved_storage.parents[3].name != "analysis_memory_canary"
+            or not attempt_identity
+            or resolved_storage.parents[1].name != f"attempt-{canary_sidecar_attempt}"
+            or len(resolved_storage.parents) < 5
+            or resolved_storage.parents[4].name != "analysis_memory_canary"
         ):
             raise ValueError("canary composite execution requires isolated sidecar storage")
+        if canary_activation is None:
+            raise ValueError("canary composite execution requires validated persistent approval")
+    elif canary_activation is not None:
+        raise ValueError("validated canary activation is only valid in canary context")
     shadow_runtime = None
     shadow_trace = None
-    canary_activation = None
     canary_review = None
     consumer_projections: dict[str, ConsumerProjection] = {}
     if context_mode == STATE_DELTA_PRIMARY_CONTEXT_MODE:
@@ -149,26 +160,6 @@ def run_composite_analysis_pipeline(
         try:
             if state_shadow_input is None:
                 raise ValueError(f"{context_mode} requires state_shadow_input")
-            if context_mode == CANARY_CONTEXT_MODE:
-                canary_activation = resolve_canary_activation(
-                    snapshot_asset=snapshot.get("asset"),
-                    snapshot_trade_date=trade_date,
-                    run_id=run_id,
-                    shadow_input=state_shadow_input,
-                )
-                if canary_activation is None:
-                    shadow_trace = {
-                        "schema_version": "composite_state_shadow.v3",
-                        "mode": CANARY_CONTEXT_MODE,
-                        "requested_state_scope": _safe_requested_state_scope(state_shadow_input),
-                        "status": "canary_not_activated",
-                        "model_invocation": "skipped",
-                        "shadow_review_status": "not_required",
-                        "evidence_delta_action": "not_evaluated",
-                        "transition_diff": [],
-                        "reason": "explicit_canary_activation_required",
-                    }
-                    raise _CanaryNotActivated
             shadow_runtime = prepare_composite_state_shadow(
                 storage_root=storage_root,
                 run_id=run_id,
@@ -631,11 +622,11 @@ def run_composite_analysis_pipeline(
             context_bundle_hash=shadow_runtime.bundle.content_hash,
             run_id=canary_activation.run_id,
             canonical_state_id=canary_activation.canonical_state_id,
-            consumer_projections={
-                projection.consumer: projection
-                for projection in consumer_projections.values()
-            },
-            fact_review_output=fact_review_output,
+            consumer_projections={projection.consumer: projection for projection in consumer_projections.values()},
+            quality_gate_inputs=post_coordinator_gate_inputs,
+            accepted_output_reference=agent_loop_decision.accepted_output,
+            accepted_output=(selected_coordinator if agent_loop_decision.accepted_output.source != "none" else None),
+            transition_review=canary_review,
         )
         composite_outputs["canary_authority_payload"] = authority_payload
         composite_outputs["canary_materialization_request"] = CanaryMaterializationRequest(
@@ -645,13 +636,14 @@ def run_composite_analysis_pipeline(
             state_scope=canary_activation.state_scope,
             canonical_state_id=canary_activation.canonical_state_id,
             expected_head_version=canary_activation.expected_head_version,
+            approval_id=canary_activation.approval_id,
+            approval_hash=canary_activation.approval_hash,
             activation_source=canary_activation.activation_source,
             activation_identity=canary_activation.activation_identity,
             context_bundle_id=shadow_runtime.bundle.bundle_id,
             context_bundle_hash=shadow_runtime.bundle.content_hash,
             consumer_projection_hashes={
-                projection.consumer: projection.projection_hash
-                for projection in consumer_projections.values()
+                projection.consumer: projection.projection_hash for projection in consumer_projections.values()
             },
             fact_review_snapshot_id=fact_review_output.snapshot_id,
             quality_gate_hash=compute_canary_quality_gate_hash(
@@ -663,13 +655,6 @@ def run_composite_analysis_pipeline(
                 authority_hash=authority_payload.authority_hash,
             ),
             authority_hash=authority_payload.authority_hash,
-            manual_request=(
-                dict(state_shadow_input["canary_manual_request"])
-                if canary_activation.activation_source == "manual_request"
-                and isinstance(state_shadow_input, dict)
-                and isinstance(state_shadow_input.get("canary_manual_request"), dict)
-                else None
-            ),
             review=canary_review,
         )
 

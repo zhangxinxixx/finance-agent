@@ -13,7 +13,7 @@ from .analysis import (
     ReviewItem,
     ensure_analysis_tables,
 )
-from .analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition
+from .analysis_state import AnalysisState, AnalysisStateHead, AnalysisTransition, CanaryApproval, CanaryAttempt
 from .cme import CmeOptionRow, CmeParseRun, CmeRawFile
 from .execution import ExecutionBase, ExecutionEvent, RunArtifact, ensure_execution_tables
 from .playbook import PlaybookTemplate
@@ -42,6 +42,8 @@ __all__ = [
     "AnalysisState",
     "AnalysisStateHead",
     "AnalysisTransition",
+    "CanaryApproval",
+    "CanaryAttempt",
     "AgentOutput",
     "DailySourceHealthItem",
     "DailySourceHealthSnapshot",

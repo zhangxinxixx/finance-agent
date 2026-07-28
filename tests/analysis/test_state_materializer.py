@@ -15,6 +15,7 @@ from apps.analysis.agents.quality_gate_evaluator import (
     QualityGateAction,
     QualityGateDecision,
 )
+from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
 from apps.analysis.state import (
     AnalysisStateDocument,
     AnalysisStateDocumentV11,
@@ -22,11 +23,13 @@ from apps.analysis.state import (
     AnalysisTransitionDocument,
     StateChange,
     StateMaterializationAuthority,
+    SystemStateMetadataPatch,
     TransitionAction,
     TransitionCandidate,
     TransitionReviewError,
     advance_canonical_head,
     append_analysis_state,
+    evaluate_state_transition_consistency,
     get_canonical_state,
     materialize_reviewed_transition,
     materialize_reviewed_transition_scoped,
@@ -115,7 +118,6 @@ def _candidate(
     previous_state_id: str,
     *,
     thesis: str = "突破确认",
-    as_of: datetime = NOW + timedelta(hours=1),
 ) -> TransitionCandidate:
     return TransitionCandidate(
         previous_state_id=previous_state_id,
@@ -128,13 +130,13 @@ def _candidate(
                 evidence_refs=[REF],
             ),
             StateChange(
-                target="as_of",
-                action=TransitionAction.STRENGTHEN,
-                reason="新证据时间",
+                target="net_bias",
+                action=TransitionAction.MAINTAIN,
+                reason="typed accepted conclusion uses canonical bias vocabulary",
                 evidence_refs=[REF],
             ),
         ],
-        state_patch={"core_thesis": thesis, "as_of": as_of},
+        state_patch={"core_thesis": thesis, "net_bias": "mixed"},
         evidence_refs=[REF],
     )
 
@@ -170,6 +172,59 @@ def _review(root: AnalysisState, document: AnalysisStateDocument):
         previous_state_id=root.id,
         previous_state=document,
         available_evidence_refs=[REF],
+        system_metadata=_metadata(),
+    )
+
+
+def _metadata(*, as_of: datetime = NOW + timedelta(hours=1)) -> SystemStateMetadataPatch:
+    return SystemStateMetadataPatch(
+        as_of=as_of,
+        evidence_cursors={"market": {"ingested_at": as_of.isoformat()}},
+        input_snapshot_ids={"context_bundle_id": "bundle-test"},
+        source_refs=[REF],
+        state_scope="daily_close",
+        state_machine_version="analysis_state.v1.1",
+        session="daily_close",
+        trade_date=NOW.date(),
+    )
+
+
+def _consistency(review):
+    output = AgentOutput(
+        version="v1",
+        agent_name="coordinator_agent",
+        module="tests",
+        snapshot_id="market-20260722",
+        input_snapshot_ids={},
+        input_payload={
+            "accepted_state_conclusion": {
+                "net_bias": review.next_state.net_bias,
+                "market_stage": review.next_state.market_stage,
+                "core_thesis": review.next_state.core_thesis,
+                "dominant_drivers": [
+                    item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                    for item in review.next_state.dominant_drivers
+                ],
+            }
+        },
+        bias=AgentBias(review.next_state.net_bias),
+        confidence=0.8,
+        key_findings=[],
+        risk_points=[],
+        watchlist=[],
+        summary="typed conclusion fixture",
+        source_refs=[REF],
+        status=AgentStatus.SUCCESS,
+        created_at=NOW,
+    )
+    return evaluate_state_transition_consistency(
+        review=review,
+        accepted_output_reference=AcceptedOutputReference(
+            source="primary",
+            agent_name=output.agent_name,
+            snapshot_id=output.snapshot_id,
+        ),
+        accepted_output=output,
     )
 
 
@@ -186,6 +241,7 @@ def test_scoped_review_upgrades_v1_predecessor_without_rehashing_it(session: Ses
         state_machine_version="analysis_state.v1.1",
         session="daily_close",
         trade_date=NOW.date(),
+        system_metadata=_metadata(),
     )
 
     assert isinstance(review.next_state, AnalysisStateDocumentV11)
@@ -213,6 +269,7 @@ def test_scoped_review_upgrades_v1_predecessor_without_rehashing_it(session: Ses
             agent_loop=_loop(accepted=True),
             task_run_id="run-cross-scope",
             expected_head_version=1,
+            transition_consistency=_consistency(review),
         )
 
     result = materialize_reviewed_transition_scoped(
@@ -223,6 +280,7 @@ def test_scoped_review_upgrades_v1_predecessor_without_rehashing_it(session: Ses
         agent_loop=_loop(accepted=True),
         task_run_id="run-v11-upgrade",
         expected_head_version=1,
+        transition_consistency=_consistency(review),
     )
     child = session.get(AnalysisState, result.state_id)
     transition = session.scalar(
@@ -238,12 +296,18 @@ def test_scoped_review_upgrades_v1_predecessor_without_rehashing_it(session: Ses
 
 def test_candidate_rejects_unknown_action_and_unreviewed_patch() -> None:
     payload = _candidate("state-1").model_dump(mode="json")
+    assert payload["schema_version"] == "analysis_transition_candidate.v2"
+
+    legacy_payload = {**payload, "schema_version": "analysis_transition_candidate.v1"}
+    with pytest.raises(ValidationError, match="schema_version"):
+        TransitionCandidate.model_validate(legacy_payload)
+
     payload["changes"][0]["action"] = "invented"
     with pytest.raises(ValidationError, match="action"):
         TransitionCandidate.model_validate(payload)
 
     payload = _candidate("state-1").model_dump(mode="json")
-    payload["state_patch"]["net_bias"] = "bearish"
+    payload["state_patch"]["market_stage"] = "trend"
     with pytest.raises(ValidationError, match="lack matching changes"):
         TransitionCandidate.model_validate(payload)
 
@@ -267,45 +331,43 @@ def test_fact_review_checks_previous_state_and_evidence_refs() -> None:
             previous_state_id="canonical-state",
             previous_state=document,
             available_evidence_refs=[REF],
+            system_metadata=_metadata(),
         )
 
-    mutated = _candidate("canonical-state")
-    mutated.state_patch["net_bias"] = "bearish"
-    with pytest.raises(ValidationError, match="lack matching changes"):
-        review_transition_candidate(
-            candidate=mutated,
-            previous_state_id="canonical-state",
-            previous_state=document,
-            available_evidence_refs=[REF],
-        )
+    injected = _candidate("canonical-state").model_dump(mode="python")
+    injected["state_patch"]["as_of"] = datetime(2099, 1, 1, tzinfo=UTC)
+    with pytest.raises(ValidationError, match="as_of"):
+        TransitionCandidate.model_validate(injected)
     with pytest.raises(TransitionReviewError, match="outside the reviewed bundle"):
         review_transition_candidate(
             candidate=_candidate("canonical-state"),
             previous_state_id="canonical-state",
             previous_state=document,
             available_evidence_refs=[{"snapshot_id": "different"}],
+            system_metadata=_metadata(),
         )
 
-    stale_time = _candidate("canonical-state").model_dump(mode="python")
-    stale_time["state_patch"]["as_of"] = NOW
     with pytest.raises(TransitionReviewError, match="as_of"):
         review_transition_candidate(
-            candidate=stale_time,
+            candidate=_candidate("canonical-state"),
             previous_state_id="canonical-state",
             previous_state=document,
             available_evidence_refs=[REF],
+            system_metadata=_metadata(as_of=NOW),
         )
 
 
 def test_pass_and_authoritative_output_advance_canonical(session: Session) -> None:
     root, document = _seed_canonical(session)
+    review = _review(root, document)
     result = materialize_reviewed_transition(
         session,
-        review=_review(root, document),
+        review=review,
         quality_gate=_gate(QualityGateAction.PASS),
         agent_loop=_loop(accepted=True),
         task_run_id="run-pass",
         expected_head_version=1,
+        transition_consistency=_consistency(review),
     )
 
     assert result.disposition == "canonical_accepted"
@@ -375,6 +437,21 @@ def test_pass_without_agentloop_accepted_output_is_rejected(session: Session) ->
         )
 
 
+def test_pass_with_accepted_output_requires_explicit_materialization_authority(
+    session: Session,
+) -> None:
+    root, document = _seed_canonical(session)
+    with pytest.raises(PermissionError, match="explicit accepted-conclusion authority"):
+        materialize_reviewed_transition(
+            session,
+            review=_review(root, document),
+            quality_gate=_gate(QualityGateAction.PASS),
+            agent_loop=_loop(accepted=True),
+            task_run_id="run-authority-missing",
+            expected_head_version=1,
+        )
+
+
 def test_materializer_rejects_forged_previous_document(session: Session) -> None:
     root, document = _seed_canonical(session)
     forged = document.model_copy(update={"core_thesis": "伪造前态"})
@@ -383,6 +460,7 @@ def test_materializer_rejects_forged_previous_document(session: Session) -> None
         previous_state_id=root.id,
         previous_state=forged,
         available_evidence_refs=[REF],
+        system_metadata=_metadata(),
     )
 
     with pytest.raises(TransitionReviewError, match="persisted state"):
@@ -393,6 +471,7 @@ def test_materializer_rejects_forged_previous_document(session: Session) -> None
             agent_loop=_loop(accepted=True),
             task_run_id="run-forged",
             expected_head_version=1,
+            transition_consistency=_consistency(review),
         )
 
 
@@ -435,6 +514,7 @@ def test_materialization_replay_is_idempotent(session: Session) -> None:
         agent_loop=_loop(accepted=True),
         task_run_id="run-pass",
         expected_head_version=1,
+        transition_consistency=_consistency(review),
     )
     replay = materialize_reviewed_transition(
         session,
@@ -443,6 +523,7 @@ def test_materialization_replay_is_idempotent(session: Session) -> None:
         agent_loop=_loop(accepted=True),
         task_run_id="run-pass",
         expected_head_version=1,
+        transition_consistency=_consistency(review),
     )
 
     assert replay.state_id == first.state_id
@@ -460,6 +541,7 @@ def test_rollback_creates_new_state_without_mutating_history(session: Session) -
         agent_loop=_loop(accepted=True),
         task_run_id="run-forward",
         expected_head_version=1,
+        transition_consistency=_consistency(forward_review),
     )
     forward_state = session.get(AnalysisState, forward.state_id)
     forward_document = parse_analysis_state_document(forward_state.payload)
@@ -467,11 +549,11 @@ def test_rollback_creates_new_state_without_mutating_history(session: Session) -
         candidate=_candidate(
             forward.state_id,
             thesis=original.core_thesis,
-            as_of=NOW + timedelta(hours=2),
         ),
         previous_state_id=forward.state_id,
         previous_state=forward_document,
         available_evidence_refs=[REF],
+        system_metadata=_metadata(as_of=NOW + timedelta(hours=2)),
     )
     rolled_back = materialize_reviewed_transition(
         session,
@@ -480,6 +562,7 @@ def test_rollback_creates_new_state_without_mutating_history(session: Session) -
         agent_loop=_loop(accepted=True),
         task_run_id="run-rollback",
         expected_head_version=2,
+        transition_consistency=_consistency(rollback),
     )
 
     assert rolled_back.state_id not in {root.id, forward.state_id}
