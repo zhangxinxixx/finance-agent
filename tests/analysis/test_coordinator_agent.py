@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timezone
 
+import pytest
+
 from apps.analysis.agents import AgentBias, AgentOutput, AgentStatus
 from apps.analysis.agents.coordinator import coordinate_agent_outputs
 
@@ -102,6 +104,61 @@ def test_aligned_macro_options_outputs_schema_valid_final_view():
     assert any("macro" in finding.lower() for finding in output.key_findings)
     assert any("options" in finding.lower() for finding in output.key_findings)
     assert output.input_snapshot_ids["risk"] == "risk:2026-05-14"
+    assert output.accepted_state_conclusion is not None
+    assert "accepted_state_conclusion" not in output.input_payload
+
+
+@pytest.mark.parametrize(
+    ("overview_bias", "risk_bias", "expected_direction", "expected_tilt"),
+    [
+        ("mixed_bullish", AgentBias.MIXED, AgentBias.MIXED, "bullish"),
+        ("neutral_bearish", AgentBias.NEUTRAL, AgentBias.NEUTRAL, "bearish"),
+        ("strong_bullish", AgentBias.BULLISH, AgentBias.BULLISH, None),
+    ],
+)
+def test_coordinator_preserves_known_fine_state_bias_without_changing_coarse_agent_bias(
+    overview_bias: str,
+    risk_bias: AgentBias,
+    expected_direction: AgentBias,
+    expected_tilt: str | None,
+):
+    snapshot = _snapshot()
+    snapshot["news"] = {
+        "data": {
+            "gold_macro_overview": {
+                "phase": "macro_verification",
+                "net_bias": overview_bias,
+                "one_line_conclusion": "Real yields remain the dominant pricing input.",
+                "theme_rankings": [
+                    {
+                        "mainline_id": "real_rates_usd",
+                        "label": "Real rates and USD",
+                        "rank": 1,
+                        "score": 0.8,
+                        "direction": "headwind",
+                        "coverage_status": "covered",
+                    }
+                ],
+            }
+        }
+    }
+
+    output = coordinate_agent_outputs(
+        snapshot,
+        macro_output=_macro(AgentBias.BULLISH),
+        options_output=_options(AgentBias.BULLISH),
+        risk_output=_risk(risk_bias),
+        created_at=_CREATED_AT,
+    )
+
+    conclusion = output.accepted_state_conclusion
+    assert conclusion is not None
+    assert output.bias is expected_direction
+    assert conclusion.direction is expected_direction
+    assert conclusion.state_bias == overview_bias
+    assert conclusion.direction_tilt == expected_tilt
+    assert conclusion.market_stage == "macro_verification"
+    assert conclusion.dominant_drivers[0]["driver_id"] == "real_rates_usd"
 
 
 def test_coordinator_exposes_fixed_daily_baseline_and_degrades_stale_context():

@@ -7,7 +7,14 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
+from apps.analysis.agents.schemas import (
+    AcceptedStateConclusion,
+    AgentBias,
+    AgentOutput,
+    AgentStatus,
+    DataCategory,
+    state_bias_direction,
+)
 
 if TYPE_CHECKING:
     from apps.analysis.context_bundle import ConsumerProjection
@@ -221,6 +228,15 @@ def _coordinate_agent_outputs(
         key_findings.append("协调员收到前置输出但方向性发现不足。")
 
     bullish_drivers, bearish_drivers = _directional_drivers(prior_outputs)
+    summary = _summary(bias, status, _clamp(confidence, 0.0, 1.0))
+    accepted_state_conclusion = _accepted_state_conclusion(
+        snapshot=snapshot,
+        prior_outputs=prior_outputs,
+        bias=bias,
+        summary=summary,
+        bullish_drivers=bullish_drivers,
+        bearish_drivers=bearish_drivers,
+    )
     return AgentOutput(
         version=_VERSION,
         agent_name=_AGENT_NAME,
@@ -233,12 +249,13 @@ def _coordinate_agent_outputs(
         risk_points=risk_points,
         watchlist=list(_WATCHLIST),
         invalid_conditions=invalid_conditions,
-        summary=_summary(bias, status, _clamp(confidence, 0.0, 1.0)),
+        summary=summary,
         source_refs=source_refs,
         status=status,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
         evidence_items=evidence_items,
+        accepted_state_conclusion=accepted_state_conclusion,
         input_payload={
             "confidence_kernel": confidence_kernel.model_dump(mode="json"),
             "gold_analysis_context": _gold_analysis_context_payload(snapshot),
@@ -246,6 +263,126 @@ def _coordinate_agent_outputs(
             "bearish_drivers": bearish_drivers,
         },
     )
+
+
+def _accepted_state_conclusion(
+    *,
+    snapshot: dict[str, Any],
+    prior_outputs: list[AgentOutput],
+    bias: AgentBias,
+    summary: str,
+    bullish_drivers: list[str],
+    bearish_drivers: list[str],
+) -> AcceptedStateConclusion | None:
+    if bias is AgentBias.UNAVAILABLE:
+        return None
+    overview = _gold_macro_overview(snapshot)
+    state_bias, direction_tilt = _state_bias(
+        overview.get("net_bias"),
+        bias=bias,
+        bullish_drivers=bullish_drivers,
+        bearish_drivers=bearish_drivers,
+    )
+    market_stage = str(overview.get("phase") or overview.get("market_stage") or "direction_decision").strip()
+    core_thesis = str(
+        overview.get("one_line_conclusion")
+        or overview.get("core_thesis")
+        or summary
+    ).strip()
+    dominant_drivers = _state_dominant_drivers(overview)
+    if not dominant_drivers:
+        dominant_drivers = _fallback_state_drivers(prior_outputs)
+    return AcceptedStateConclusion(
+        direction=bias,
+        direction_tilt=direction_tilt,
+        state_bias=state_bias,
+        market_stage=market_stage,
+        core_thesis=core_thesis,
+        dominant_drivers=dominant_drivers,
+    )
+
+
+def _gold_macro_overview(snapshot: dict[str, Any]) -> dict[str, Any]:
+    news = snapshot.get("news")
+    news_data = news.get("data") if isinstance(news, dict) else None
+    overview = news_data.get("gold_macro_overview") if isinstance(news_data, dict) else None
+    if isinstance(overview, dict):
+        return dict(overview)
+    direct = snapshot.get("gold_macro_overview")
+    return dict(direct) if isinstance(direct, dict) else {}
+
+
+def _state_bias(
+    value: Any,
+    *,
+    bias: AgentBias,
+    bullish_drivers: list[str],
+    bearish_drivers: list[str],
+) -> tuple[str, str | None]:
+    candidate = str(value or "").strip().lower()
+    candidate_direction, candidate_tilt = state_bias_direction(candidate)
+    if candidate and candidate_direction is bias:
+        return candidate, candidate_tilt
+    if bias is AgentBias.MIXED:
+        if bullish_drivers and not bearish_drivers:
+            return "mixed_bullish", "bullish"
+        if bearish_drivers and not bullish_drivers:
+            return "mixed_bearish", "bearish"
+    return bias.value, None
+
+
+def _state_dominant_drivers(overview: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = overview.get("theme_rankings")
+    if not isinstance(rows, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for index, raw in enumerate(rows[:10], start=1):
+        if not isinstance(raw, dict):
+            continue
+        driver_id = str(raw.get("mainline_id") or raw.get("name") or raw.get("theme") or "").strip()
+        if not driver_id:
+            continue
+        direction = str(raw.get("direction") or "unknown").strip().lower()
+        if direction not in {"tailwind", "headwind", "neutral", "mixed"}:
+            direction = "unknown"
+        coverage = str(raw.get("coverage_status") or "unknown").strip().lower()
+        if coverage not in {"covered", "partial", "missing"}:
+            coverage = "unknown"
+        result.append(
+            {
+                "driver_id": driver_id,
+                "label": str(raw.get("theme") or raw.get("label") or raw.get("name") or driver_id).strip()[:256],
+                "rank": raw.get("rank") or index,
+                "score": raw.get("score"),
+                "direction": direction,
+                "coverage_status": coverage,
+            }
+        )
+    return result
+
+
+def _fallback_state_drivers(outputs: list[AgentOutput]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, output in enumerate(outputs[:10], start=1):
+        if output.bias is AgentBias.UNAVAILABLE:
+            continue
+        direction = {
+            AgentBias.BULLISH: "tailwind",
+            AgentBias.BEARISH: "headwind",
+            AgentBias.NEUTRAL: "neutral",
+            AgentBias.MIXED: "mixed",
+        }[output.bias]
+        result.append(
+            {
+                "driver_id": output.agent_name,
+                "label": output.agent_name,
+                "rank": index,
+                "score": output.confidence,
+                "direction": direction,
+                "coverage_status": "covered" if output.status is AgentStatus.SUCCESS else "partial",
+            }
+        )
+    return result
 
 
 def _coerce_output(value: AgentOutput | dict[str, Any] | None) -> AgentOutput | None:

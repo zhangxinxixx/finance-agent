@@ -13,6 +13,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel
 
 from apps.analysis.context_bundle import AnalysisContextBundle, assemble_context_bundle
+from apps.analysis.context_bundle.snapshot_evidence import SNAPSHOT_PASSPORT_METADATA_KEY
 from apps.analysis.evidence_delta import EvidenceDeltaDecision, RecommendedAction, adapt_figure_fact
 from apps.analysis.figure_facts import project_confirmed_evidence
 from apps.analysis.state import (
@@ -118,7 +119,7 @@ def prepare_composite_state_shadow(
             raise ValueError("shadow canonical state belongs to a different state_scope")
         state_machine_version = previous_state.state_machine_version
         session = previous_state.session
-        trade_date = previous_state.trade_date
+        trade_date = cutoff_at.date()
     else:
         if state_scope != "daily_close":
             raise ValueError("legacy v1 canonical state is only valid for daily_close shadow")
@@ -338,6 +339,7 @@ def _system_metadata_from_bundle(
     if not runtime.available_evidence_refs:
         raise ValueError("Bundle retained no reviewed evidence refs for state metadata")
     decision = runtime.evidence_delta_decision
+    snapshot_passport = _snapshot_passport_from_bundle(bundle)
     return SystemStateMetadataPatch(
         as_of=bundle.cutoff_at,
         evidence_cursors={
@@ -345,6 +347,7 @@ def _system_metadata_from_bundle(
             for source, cursor in bundle.next_evidence_cursors.items()
         },
         input_snapshot_ids={
+            **snapshot_passport,
             "context_bundle_id": bundle.bundle_id,
             "context_bundle_hash": bundle.content_hash,
             "context_bundle_run_id": bundle.run_id,
@@ -357,6 +360,77 @@ def _system_metadata_from_bundle(
         session=runtime.session,
         trade_date=runtime.trade_date,
     )
+
+
+def _snapshot_passport_from_bundle(bundle: AnalysisContextBundle) -> dict[str, str]:
+    """Retain direct snapshot identities already frozen into Bundle blocks."""
+
+    canonical_block = next(block for block in bundle.blocks if block.name == "canonical_state")
+    canonical_payload = canonical_block.payload
+    raw_snapshot_ids = (
+        canonical_payload.get("input_snapshot_ids")
+        if isinstance(canonical_payload, dict)
+        else None
+    )
+    passport = {
+        key.strip(): value.strip()
+        for key, value in sorted((raw_snapshot_ids or {}).items())
+        if isinstance(key, str)
+        and key.strip()
+        and isinstance(value, str)
+        and value.strip()
+    }
+
+    delta_block = next(block for block in bundle.blocks if block.name == "delta_evidence")
+    current_passports: list[dict[str, str]] = []
+    for item in delta_block.payload:
+        if not isinstance(item, dict):
+            continue
+        payload = item.get("payload")
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        candidate = (
+            metadata.get(SNAPSHOT_PASSPORT_METADATA_KEY)
+            if isinstance(metadata, dict)
+            else None
+        )
+        if candidate is None:
+            continue
+        if not isinstance(candidate, dict) or not candidate:
+            raise ValueError("Bundle AnalysisSnapshot passport must be a non-empty mapping")
+        normalized = {
+            key.strip(): value.strip()
+            for key, value in sorted(candidate.items())
+            if isinstance(key, str)
+            and key.strip()
+            and isinstance(value, str)
+            and value.strip()
+        }
+        if normalized != candidate:
+            raise ValueError("Bundle AnalysisSnapshot passport must contain non-blank string identities")
+        current_passports.append(normalized)
+    if current_passports:
+        current_passport = current_passports[0]
+        if any(candidate != current_passport for candidate in current_passports[1:]):
+            raise ValueError("Bundle retained conflicting AnalysisSnapshot passports")
+        passport.update(current_passport)
+
+    facts_block = next(block for block in bundle.blocks if block.name == "facts")
+    figure_fact_ids = sorted(
+        {
+            value.strip()
+            for item in facts_block.payload
+            if isinstance(item, dict)
+            and isinstance((value := item.get("figure_fact_id")), str)
+            and value.strip()
+        }
+    )
+    passport.update(
+        {
+            f"figure_fact_id_{index}": figure_fact_id
+            for index, figure_fact_id in enumerate(figure_fact_ids, start=1)
+        }
+    )
+    return passport
 
 
 def _dedupe_source_refs(values: list[dict[str, Any]]) -> list[dict[str, Any]]:

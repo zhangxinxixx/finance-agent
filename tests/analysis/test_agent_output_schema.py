@@ -6,7 +6,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from apps.analysis.agents import AgentBias, AgentOutput, AgentStatus
+from apps.analysis.agents import AcceptedStateConclusion, AgentBias, AgentOutput, AgentStatus
 
 
 def _valid_payload() -> dict:
@@ -56,6 +56,61 @@ def test_agent_output_accepts_required_schema_and_serializes_to_json():
     assert encoded["source_refs"] == []
     assert encoded["evidence_items"] == []
     json.dumps(encoded, ensure_ascii=False)
+
+
+def test_agent_output_keeps_legacy_payload_without_typed_conclusion_readable():
+    output = AgentOutput.model_validate(_valid_payload())
+
+    assert output.accepted_state_conclusion is None
+
+
+@pytest.mark.parametrize(
+    ("direction", "state_bias", "direction_tilt"),
+    [
+        (AgentBias.MIXED, "mixed_bullish", "bullish"),
+        (AgentBias.NEUTRAL, "neutral_bearish", "bearish"),
+        (AgentBias.BULLISH, "strong_bullish", None),
+    ],
+)
+def test_agent_output_accepts_coarse_direction_with_known_fine_state_bias(
+    direction: AgentBias,
+    state_bias: str,
+    direction_tilt: str | None,
+):
+    payload = _valid_payload()
+    payload["bias"] = direction.value
+    payload["accepted_state_conclusion"] = AcceptedStateConclusion(
+        direction=direction,
+        direction_tilt=direction_tilt,
+        state_bias=state_bias,
+        market_stage="direction_decision",
+        core_thesis="Typed state semantics.",
+        dominant_drivers=[],
+    ).model_dump(mode="json")
+
+    output = AgentOutput.model_validate(payload)
+
+    assert output.accepted_state_conclusion is not None
+    assert output.accepted_state_conclusion.state_bias == state_bias
+
+
+def test_accepted_state_conclusion_rejects_unknown_or_contradictory_bias():
+    with pytest.raises(ValidationError, match="outside the accepted state vocabulary"):
+        AcceptedStateConclusion(
+            direction=AgentBias.MIXED,
+            state_bias="future_unknown_bias",
+            market_stage="direction_decision",
+            core_thesis="Unknown semantics.",
+        )
+    payload = _valid_payload()
+    payload["accepted_state_conclusion"] = {
+        "direction": "bullish",
+        "state_bias": "strong_bullish",
+        "market_stage": "direction_decision",
+        "core_thesis": "Contradicts output bias.",
+    }
+    with pytest.raises(ValidationError, match="contradicts AgentOutput.bias"):
+        AgentOutput.model_validate(payload)
 
 
 def test_agent_output_projects_new_invalidation_contract_to_legacy_field():

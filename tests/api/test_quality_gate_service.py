@@ -125,6 +125,29 @@ def test_quality_gate_requires_manual_review_for_high_confidence_without_evidenc
     assert any(finding.code == "high_confidence_without_evidence_items" for finding in decision.findings)
 
 
+def test_fact_review_confidence_is_not_directional_conclusion_confidence() -> None:
+    decision = evaluate_quality_gate(
+        agent_outputs=[
+            _agent_output(agent_name="coordinator_agent", confidence=0.68),
+            _agent_output(
+                agent_name="fact_review_agent",
+                confidence=0.80,
+                bias="neutral",
+                evidence_items=[],
+            ),
+        ],
+        gold_macro_overview={"net_bias": "bearish"},
+        source_health={
+            "overall_status": "ready",
+            "p0_missing": [],
+            "can_build_gold_macro_overview": True,
+        },
+    )
+
+    assert decision.action is QualityGateAction.PASS
+    assert decision.max_confidence == 0.68
+
+
 def test_quality_gate_requires_manual_review_for_mixed_without_driver_decomposition() -> None:
     decision = evaluate_quality_gate(
         agent_outputs=[_agent_output(confidence=0.62, bias="mixed")],

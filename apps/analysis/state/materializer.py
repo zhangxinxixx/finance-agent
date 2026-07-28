@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from apps.analysis.agents.quality_gate import AcceptedOutputReference, AgentLoopDecision
 from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
-from apps.analysis.agents.schemas import AgentBias, AgentOutput
+from apps.analysis.agents.schemas import AcceptedStateConclusion, AgentBias, AgentOutput
 from apps.analysis.state.hashing import content_hash
 from apps.analysis.state.repository import (
     advance_canonical_head_scoped,
@@ -83,25 +83,6 @@ class SystemStateMetadataPatch(BaseModel):
     state_machine_version: str = Field(min_length=1)
     session: str = Field(min_length=1)
     trade_date: date
-
-
-class AcceptedStateConclusion(BaseModel):
-    """Explicit typed state semantics carried by an accepted AgentOutput."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    net_bias: str = Field(min_length=1)
-    market_stage: str = Field(min_length=1)
-    core_thesis: str = Field(min_length=1)
-    dominant_drivers: list[dict[str, Any]]
-
-    @field_validator("net_bias", "market_stage", "core_thesis")
-    @classmethod
-    def _strip_conclusion_text(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("accepted conclusion text must not be blank")
-        return normalized
 
 
 class StateTransitionConsistencyDecision(BaseModel):
@@ -737,8 +718,10 @@ def evaluate_state_transition_consistency(
         raise ValueError("accepted output does not match AgentLoop identity")
     conclusion = _accepted_state_conclusion(output)
     accepted_values: dict[str, Any | None] = {
-        field: getattr(conclusion, field) if conclusion is not None else None
-        for field in required
+        "net_bias": conclusion.state_bias if conclusion is not None else None,
+        "market_stage": conclusion.market_stage if conclusion is not None else None,
+        "core_thesis": conclusion.core_thesis if conclusion is not None else None,
+        "dominant_drivers": conclusion.dominant_drivers if conclusion is not None else None,
     }
     next_values = {
         "net_bias": review.next_state.net_bias,
@@ -787,12 +770,11 @@ def evaluate_state_transition_consistency(
 
 
 def _accepted_state_conclusion(output: AgentOutput) -> AcceptedStateConclusion | None:
-    payload = output.input_payload
-    if not isinstance(payload, dict) or payload.get("accepted_state_conclusion") is None:
+    conclusion = output.accepted_state_conclusion
+    if conclusion is None:
         return None
-    conclusion = AcceptedStateConclusion.model_validate(payload["accepted_state_conclusion"])
-    if output.bias is AgentBias.UNAVAILABLE or conclusion.net_bias != output.bias.value:
-        raise ValueError("typed accepted conclusion net_bias contradicts AgentOutput.bias")
+    if output.bias is AgentBias.UNAVAILABLE or conclusion.direction is not output.bias:
+        raise ValueError("typed accepted conclusion direction contradicts AgentOutput.bias")
     return conclusion
 
 

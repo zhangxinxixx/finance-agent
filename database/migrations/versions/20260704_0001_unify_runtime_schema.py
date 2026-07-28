@@ -32,6 +32,8 @@ _POST_BASELINE_TABLES = frozenset(
         "analysis_states",
         "analysis_state_heads",
         "analysis_transitions",
+        "canary_approvals",
+        "canary_attempts",
     }
 )
 

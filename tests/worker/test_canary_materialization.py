@@ -17,8 +17,9 @@ from apps.analysis.agents.quality_gate import (
     AgentLoopDecision,
 )
 from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision
+from apps.analysis.agents.coordinator import coordinate_agent_outputs
 from apps.analysis.context_bundle import assemble_context_bundle, project_context_bundle
-from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
+from apps.analysis.agents.schemas import AcceptedStateConclusion, AgentBias, AgentOutput, AgentStatus, state_bias_direction
 from apps.analysis.state import (
     ANALYSIS_STATE_MACHINE_VERSION,
     AnalysisStateDocumentV11,
@@ -183,20 +184,33 @@ def _loop() -> AgentLoopDecision:
 
 def _accepted_output(review, *, typed: bool = True, conclusion_update: dict | None = None) -> AgentOutput:
     conclusion = {
-        "net_bias": review.next_state.net_bias,
+        "state_bias": review.next_state.net_bias,
         "market_stage": review.next_state.market_stage,
         "core_thesis": review.next_state.core_thesis,
         "dominant_drivers": [item.model_dump(mode="json") for item in review.next_state.dominant_drivers],
     }
-    conclusion.update(conclusion_update or {})
+    updates = dict(conclusion_update or {})
+    if "net_bias" in updates:
+        updates["state_bias"] = updates.pop("net_bias")
+    conclusion.update(updates)
+    direction, direction_tilt = state_bias_direction(conclusion["state_bias"])
+    direction = direction or AgentBias.MIXED
     return AgentOutput(
         version="v1",
         agent_name="coordinator_agent",
         module="tests",
         snapshot_id="market-20260726",
         input_snapshot_ids={},
-        input_payload={"accepted_state_conclusion": conclusion} if typed else {},
-        bias=AgentBias(conclusion["net_bias"]),
+        accepted_state_conclusion=(
+            AcceptedStateConclusion(
+                direction=direction,
+                direction_tilt=direction_tilt,
+                **conclusion,
+            )
+            if typed
+            else None
+        ),
+        bias=direction,
         confidence=0.8,
         key_findings=[],
         risk_points=[],
@@ -216,6 +230,7 @@ def _authority_payload(
     bundle=None,
     accepted_typed: bool = True,
     conclusion_update: dict | None = None,
+    accepted_output_override: AgentOutput | None = None,
 ) -> CanaryAuthorityPayload:
     bundle = bundle or assemble_context_bundle(
         run_id=run_id,
@@ -286,7 +301,8 @@ def _authority_payload(
         )
 
     accepted = bind_projection(
-        _accepted_output(
+        accepted_output_override
+        or _accepted_output(
             review,
             typed=accepted_typed,
             conclusion_update=conclusion_update,
@@ -327,26 +343,24 @@ def _request(
     bundle=None,
     accepted_typed: bool = True,
     conclusion_update: dict | None = None,
+    candidate_patch: dict | None = None,
+    accepted_output_override: AgentOutput | None = None,
 ):
     previous = AnalysisStateDocumentV11.model_validate(root.payload)
+    patch = candidate_patch or {"core_thesis": thesis, "net_bias": "mixed"}
     candidate = TransitionCandidate(
         previous_state_id=root.id,
         summary="daily close breakout",
         changes=[
             StateChange(
-                target="core_thesis",
-                action=TransitionAction.STRENGTHEN,
+                target=target,
+                action=(TransitionAction.MAINTAIN if target == "net_bias" else TransitionAction.STRENGTHEN),
                 reason="confirmed market evidence",
                 evidence_refs=[REF],
-            ),
-            StateChange(
-                target="net_bias",
-                action=TransitionAction.MAINTAIN,
-                reason="typed accepted conclusion bias",
-                evidence_refs=[REF],
-            ),
+            )
+            for target in patch
         ],
-        state_patch={"core_thesis": thesis, "net_bias": "mixed"},
+        state_patch=patch,
         evidence_refs=[REF],
     )
     review = review_transition_candidate_scoped(
@@ -386,6 +400,7 @@ def _request(
         bundle=bundle,
         accepted_typed=accepted_typed,
         conclusion_update=conclusion_update,
+        accepted_output_override=accepted_output_override,
     )
     request = CanaryMaterializationRequest(
         asset="XAUUSD",
@@ -703,6 +718,93 @@ def test_non_consistent_transition_never_advances_canonical(
         )
     )
     assert head.canonical_state_id == root.id
+
+
+def test_real_coordinator_typed_conclusion_can_advance_canonical(session: Session) -> None:
+    root = _seed_head(session, scope="daily_close")
+    overview = {
+        "phase": "macro_verification",
+        "net_bias": "mixed_bullish",
+        "one_line_conclusion": "Safe-haven demand offsets real-rate pressure while upside evidence improves.",
+        "theme_rankings": [
+            {
+                "mainline_id": "safe_haven_bid",
+                "label": "Safe-haven demand",
+                "rank": 1,
+                "score": 0.82,
+                "direction": "tailwind",
+                "coverage_status": "covered",
+            }
+        ],
+    }
+    snapshot = {
+        "snapshot_id": "market-20260726",
+        "source_refs": [REF],
+        "news": {"data": {"gold_macro_overview": overview}},
+    }
+
+    def domain_output(agent_name: str, module: str, bias: AgentBias) -> AgentOutput:
+        return AgentOutput(
+            version="v1",
+            agent_name=agent_name,
+            module=module,
+            snapshot_id="market-20260726",
+            input_snapshot_ids={module: "market-20260726"},
+            bias=bias,
+            confidence=0.75,
+            key_findings=[f"{module} deterministic finding"],
+            risk_points=[],
+            watchlist=[],
+            summary=f"{module} deterministic summary",
+            source_refs=[REF],
+            status=AgentStatus.SUCCESS,
+            created_at=NOW,
+        )
+
+    coordinator = coordinate_agent_outputs(
+        snapshot,
+        macro_output=domain_output("macro_liquidity_agent", "macro", AgentBias.BULLISH),
+        options_output=domain_output("cme_options_agent", "options", AgentBias.BULLISH),
+        risk_output=domain_output("risk_agent", "risk", AgentBias.MIXED),
+        created_at=NOW,
+    )
+    expected_driver = {
+        "driver_id": "safe_haven_bid",
+        "label": "Safe-haven demand",
+        "rank": 1,
+        "score": 0.82,
+        "direction": "tailwind",
+        "coverage_status": "covered",
+    }
+    request, gate, loop, authority = _request(
+        root,
+        candidate_patch={
+            "market_stage": "macro_verification",
+            "core_thesis": overview["one_line_conclusion"],
+            "net_bias": "mixed_bullish",
+            "dominant_drivers": [expected_driver],
+        },
+        accepted_output_override=coordinator,
+    )
+
+    assert coordinator.accepted_state_conclusion is not None
+    assert "accepted_state_conclusion" not in coordinator.input_payload
+    assert coordinator.accepted_state_conclusion.direction is AgentBias.MIXED
+    assert coordinator.accepted_state_conclusion.state_bias == "mixed_bullish"
+    assert gate.action is QualityGateAction.PASS
+    assert authority.transition_consistency.status == "consistent"
+
+    result = materialize_canary_request(
+        session,
+        request=request,
+        quality_gate=gate,
+        agent_loop=loop,
+        task_run_id=RUN_ID,
+        authority_payload=authority,
+    )
+
+    assert result.status == "canonical_advanced"
+    assert result.canonical_advanced is True
 
 
 def test_authority_hash_detects_consistency_and_accepted_output_tampering(

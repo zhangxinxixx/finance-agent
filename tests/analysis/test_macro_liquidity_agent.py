@@ -229,6 +229,36 @@ def test_macro_liquidity_llm_is_pinned_to_sol_high(monkeypatch) -> None:
     assert result["reasoning_effort"] == "high"
 
 
+def test_legacy_macro_output_audit_matches_exact_gateway_payload(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_chat_sync(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            content="宏观流动性维持偏多观察。",
+            model=kwargs["model"],
+            provider=kwargs["provider"],
+            reasoning_effort=kwargs["reasoning_effort"],
+            latency_ms=10,
+            usage={"total_tokens": 12},
+            audit_id="legacy-macro-audit",
+        )
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+
+    output = analyze_macro_liquidity(
+        _available_snapshot(),
+        created_at=datetime(2026, 5, 14, tzinfo=timezone.utc),
+    )
+
+    assert output.prompt_messages == captured["messages"]
+    assert output.input_payload == captured["audit_context"]["input_payload"]
+    assert output.input_payload["report_type"] == "macro_liquidity"
+    assert "context_bundle_projection" not in output.input_payload
+    assert output.input_payload["indicators"]["DXY"]["value"] == 97.8
+
+
 def test_macro_prompt_allows_web_but_requires_external_gap_labeling() -> None:
     prompt = build_macro_liquidity_prompt_template()
 

@@ -358,6 +358,33 @@ def test_canary_request_is_bound_to_all_fresh_bundle_consumers(tmp_path: Path, m
             )
 
 
+def test_canary_advances_trade_date_from_current_bundle_cutoff(tmp_path: Path) -> None:
+    from apps.worker.runner import _run_canary_sidecar_attempt
+
+    run_id = "run-canary-next-trade-date"
+    canary_input, evidence_ref = _make_canary_input(run_id=run_id)
+    canary_input["canonical_state"]["trade_date"] = "2026-05-13"
+    canary_input["canonical_state"]["as_of"] = "2026-05-13T08:00:00+00:00"
+    canary_input["trade_date"] = _TRADE_DATE
+    canary_input["cutoff_at"] = _CREATED_AT.isoformat()
+    canary_input["assembled_at"] = _CREATED_AT.isoformat()
+
+    _, outputs = _run_canary_sidecar_attempt(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id=run_id),
+        run_id=run_id,
+        created_at=_CREATED_AT,
+        state_shadow_input=canary_input,
+        state_delta_analyzer=_canary_analyzer(evidence_ref),
+        canary_activation=_persistent_canary_activation(run_id=run_id, canary_input=canary_input),
+        attempt=0,
+        attempt_id="00000000-0000-0000-0000-000000000082",
+    )
+
+    request = outputs["canary_materialization_request"]
+    assert request.review.next_state.trade_date.isoformat() == _TRADE_DATE
+
+
 def test_state_delta_primary_remains_readiness_blocked(tmp_path: Path) -> None:
     from apps.worker.runner import _run_composite_analysis_pipeline
 

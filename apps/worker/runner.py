@@ -22,11 +22,13 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import sessionmaker
 
 from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
+from apps.analysis.context_bundle.snapshot_evidence import build_state_shadow_input
 from apps.output.context_bundle import load_context_bundle, write_context_bundle
 from apps.output.artifacts import artifact_run_dir
 from apps.premarket import (
@@ -105,7 +107,8 @@ from apps.analysis.agents.quality_gate_evaluator import evaluate_quality_gate
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
 # ── DB persistence imports ────────────────────────────────────────────────
-from database.models.analysis import ensure_analysis_tables
+from database.models.analysis import AnalysisSnapshot, ensure_analysis_tables
+from database.models.analysis_state import AnalysisState, AnalysisStateHead
 from database.models.report import ensure_report_tables
 from database.models.task import ensure_task_tables
 from database.queries.analysis import (
@@ -1368,11 +1371,16 @@ def run_premarket(
                     STATE_DELTA_CONTEXT_MODE,
                     CANARY_CONTEXT_MODE,
                 }:
+                    if resolved_shadow_input is None:
+                        resolved_shadow_input = _build_persisted_state_shadow_input(
+                            db=db,
+                            analysis_snapshot=analysis_snapshot,
+                        )
                     resolved_shadow_input = _resolve_state_shadow_registry_inputs(
                         db=db,
                         run_id=run_id,
                         storage_root=storage_root,
-                        state_shadow_input=state_shadow_input,
+                        state_shadow_input=resolved_shadow_input,
                     )
                 context_mode = resolve_analysis_context_mode(analysis_context_mode)
                 canary_summaries: dict[str, dict[str, Any]] = {}
@@ -1881,6 +1889,62 @@ def _resolve_state_shadow_registry_inputs(
             resolved.pop(field, None)
         resolved["previous_context_bundle_artifact"] = previous
     return resolved
+
+
+def _build_persisted_state_shadow_input(
+    *,
+    db: DBSession,
+    analysis_snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build trusted state+delta input from persisted canonical/snapshot history.
+
+    Missing history returns ``None`` so shadow mode remains readiness-blocked and
+    Canary fails closed without affecting the legacy authoritative pipeline.
+    """
+
+    asset = str(analysis_snapshot.get("asset") or "").strip()
+    run_id = str(analysis_snapshot.get("run_id") or "").strip()
+    if not asset or not run_id:
+        return None
+    current = db.scalar(
+        select(AnalysisSnapshot).where(
+            AnalysisSnapshot.asset == asset,
+            AnalysisSnapshot.run_id == run_id,
+        )
+    )
+    head = db.scalar(
+        select(AnalysisStateHead).where(
+            AnalysisStateHead.asset == asset,
+            AnalysisStateHead.state_scope == "daily_close",
+        )
+    )
+    if current is None or head is None:
+        return None
+    canonical = db.get(AnalysisState, head.canonical_state_id)
+    if canonical is None or canonical.quality_gate_action != "pass" or not canonical.publish_allowed:
+        return None
+    previous = db.scalar(
+        select(AnalysisSnapshot)
+        .where(
+            AnalysisSnapshot.asset == asset,
+            AnalysisSnapshot.run_id != run_id,
+            AnalysisSnapshot.trade_date <= current.trade_date,
+        )
+        .order_by(
+            AnalysisSnapshot.trade_date.desc(),
+            AnalysisSnapshot.snapshot_time.desc(),
+            AnalysisSnapshot.created_at.desc(),
+            AnalysisSnapshot.id.desc(),
+        )
+        .limit(1)
+    )
+    if previous is None:
+        return None
+    return build_state_shadow_input(
+        previous_snapshot=previous,
+        current_snapshot=current,
+        canonical_state=canonical,
+    )
 
 
 def _optional_aware_datetime(value: Any) -> datetime | None:

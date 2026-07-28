@@ -95,9 +95,13 @@ jobs:
           tests/database/test_alembic_runtime_unification.py
           tests/database/test_analysis_memory_postgres.py
           tests/database/test_analysis_state_core.py
+          tests/database/test_canary_approvals.py
+          tests/database/test_canary_attempts.py
+          tests/database/test_canary_migrations.py
           tests/output/test_context_bundle_artifacts.py
           tests/output/test_figure_fact_artifacts.py
           tests/scripts/test_bootstrap_analysis_state.py
+          tests/worker/test_composite_analysis_pipeline_helpers.py
           tests/worker/test_composite_state_shadow.py
           tests/worker/test_canary_materialization.py
           tests/worker/test_context_bundle_artifact_registration.py
@@ -109,6 +113,9 @@ jobs:
           --junitxml=test-results/analysis-memory.xml
           tests/database/test_alembic_runtime_unification.py
           tests/database/test_analysis_state_core.py
+          tests/database/test_canary_approvals.py
+          tests/database/test_canary_attempts.py
+          tests/database/test_canary_migrations.py
           tests/analysis/test_context_bundle.py
           tests/analysis/test_context_bundle_selection.py
           tests/analysis/test_evidence_delta_evaluator.py
@@ -116,6 +123,7 @@ jobs:
           tests/analysis/test_figure_facts.py
           tests/output/test_context_bundle_artifacts.py
           tests/output/test_figure_fact_artifacts.py
+          tests/worker/test_composite_analysis_pipeline_helpers.py
           tests/worker/test_composite_state_shadow.py
           tests/worker/test_canary_materialization.py
           tests/worker/test_context_bundle_artifact_registration.py

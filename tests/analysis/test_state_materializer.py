@@ -15,7 +15,7 @@ from apps.analysis.agents.quality_gate_evaluator import (
     QualityGateAction,
     QualityGateDecision,
 )
-from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
+from apps.analysis.agents.schemas import AcceptedStateConclusion, AgentBias, AgentOutput, AgentStatus
 from apps.analysis.state import (
     AnalysisStateDocument,
     AnalysisStateDocumentV11,
@@ -196,18 +196,17 @@ def _consistency(review):
         module="tests",
         snapshot_id="market-20260722",
         input_snapshot_ids={},
-        input_payload={
-            "accepted_state_conclusion": {
-                "net_bias": review.next_state.net_bias,
-                "market_stage": review.next_state.market_stage,
-                "core_thesis": review.next_state.core_thesis,
-                "dominant_drivers": [
-                    item.model_dump(mode="json") if hasattr(item, "model_dump") else item
-                    for item in review.next_state.dominant_drivers
-                ],
-            }
-        },
-        bias=AgentBias(review.next_state.net_bias),
+        accepted_state_conclusion=AcceptedStateConclusion(
+            direction=AgentBias.MIXED,
+            state_bias=review.next_state.net_bias,
+            market_stage=review.next_state.market_stage,
+            core_thesis=review.next_state.core_thesis,
+            dominant_drivers=[
+                item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                for item in review.next_state.dominant_drivers
+            ],
+        ),
+        bias=AgentBias.MIXED,
         confidence=0.8,
         key_findings=[],
         risk_points=[],

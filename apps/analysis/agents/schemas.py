@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AgentBias(StrEnum):
@@ -37,6 +37,66 @@ class AgentDataGap(BaseModel):
     code: str
     message: str
     severity: Literal["info", "warning", "p0", "blocker"] = "warning"
+
+
+class AcceptedStateConclusion(BaseModel):
+    """Typed state semantics owned by an accepted synthesis output."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    direction: AgentBias
+    direction_tilt: Literal["bullish", "bearish"] | None = None
+    state_bias: str = Field(min_length=1, max_length=32)
+    market_stage: str = Field(min_length=1, max_length=64)
+    core_thesis: str = Field(min_length=1)
+    dominant_drivers: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("state_bias", "market_stage", "core_thesis")
+    @classmethod
+    def _strip_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("accepted state conclusion text must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_direction_semantics(self) -> "AcceptedStateConclusion":
+        if self.direction is AgentBias.UNAVAILABLE:
+            raise ValueError("accepted state conclusion direction cannot be unavailable")
+        expected_direction, expected_tilt = state_bias_direction(self.state_bias)
+        if expected_direction is None:
+            raise ValueError("state_bias is outside the accepted state vocabulary")
+        if expected_direction is not self.direction:
+            raise ValueError("state_bias contradicts coarse direction")
+        if expected_tilt is not None and self.direction_tilt != expected_tilt:
+            raise ValueError("fine state_bias requires matching direction_tilt")
+        if expected_tilt is None and self.direction_tilt is not None:
+            raise ValueError("direction_tilt is not valid for this state_bias")
+        return self
+
+
+def state_bias_direction(value: str) -> tuple[AgentBias | None, Literal["bullish", "bearish"] | None]:
+    """Map the explicit project vocabulary; ``None`` means fail closed or fall back."""
+
+    normalized = str(value).strip().lower()
+    if normalized == "mixed_bullish":
+        return AgentBias.MIXED, "bullish"
+    if normalized == "mixed_bearish":
+        return AgentBias.MIXED, "bearish"
+    if normalized == "neutral_bullish":
+        return AgentBias.NEUTRAL, "bullish"
+    if normalized == "neutral_bearish":
+        return AgentBias.NEUTRAL, "bearish"
+    if normalized == "strong_bullish":
+        return AgentBias.BULLISH, None
+    if normalized == "strong_bearish":
+        return AgentBias.BEARISH, None
+    if normalized == "event_risk":
+        return AgentBias.MIXED, None
+    try:
+        return AgentBias(normalized), None
+    except ValueError:
+        return None, None
 
 
 class AgentOutput(BaseModel):
@@ -111,6 +171,10 @@ class AgentOutput(BaseModel):
         default_factory=list,
         description="Data quality tags: stale_data, proxy_gex, prelim_data, etc.",
     )
+    accepted_state_conclusion: AcceptedStateConclusion | None = Field(
+        default=None,
+        description="Authoritative typed state conclusion; debug input_payload is never authoritative.",
+    )
     # ── LLM metadata (optional, only for LLM-powered agents) ──
     llm_model: str | None = Field(default=None, description="LLM model used for this analysis")
     llm_provider: str | None = Field(default=None, description="LLM provider name")
@@ -136,6 +200,9 @@ class AgentOutput(BaseModel):
         combined = _dedupe_strings([*self.invalidation_conditions, *self.invalid_conditions])
         self.invalidation_conditions = combined
         self.invalid_conditions = list(combined)
+        if self.accepted_state_conclusion is not None:
+            if self.bias is AgentBias.UNAVAILABLE or self.accepted_state_conclusion.direction is not self.bias:
+                raise ValueError("accepted state conclusion direction contradicts AgentOutput.bias")
         return self
 
 

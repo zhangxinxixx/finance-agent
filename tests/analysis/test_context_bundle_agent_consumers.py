@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
@@ -140,6 +141,10 @@ def test_macro_projection_enters_structured_prompt_payload() -> None:
     assert payload["context_bundle_summary"]["decision_id"] == projection.decision_id
     assert payload["context_bundle_summary"]["retained_refs"] == projection.retained_source_refs
     assert payload["context_bundle_projection"] == projection.model_dump(mode="json")
+    assert payload["report_type"] == "macro_liquidity_state_delta"
+    assert "indicators" not in payload
+    assert "source_refs" not in payload
+    assert "existing_frame" not in payload
 
 
 def test_non_macro_consumer_uses_projection_content_and_manual_review_policy() -> None:
@@ -198,6 +203,45 @@ def test_macro_invocation_chain_carries_projection(monkeypatch: pytest.MonkeyPat
 
     assert received["projection"] == projection
     _assert_bound(output, projection)
+
+
+def test_macro_projection_output_audit_matches_exact_gateway_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    projection = _projection("macro")
+    captured: dict[str, Any] = {}
+
+    def fake_chat_sync(**kwargs: Any) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(
+            content="宏观状态保持观察。",
+            model=kwargs["model"],
+            provider=kwargs["provider"],
+            reasoning_effort=kwargs["reasoning_effort"],
+            latency_ms=8,
+            usage={"total_tokens": 12},
+            audit_id="macro-projection-audit",
+        )
+
+    monkeypatch.setenv("FINANCE_AGENT_FORCE_LIVE_LLM", "1")
+    monkeypatch.setattr("apps.llm.gateway.chat_sync", fake_chat_sync)
+    output = analyze_macro_liquidity(
+        {
+            "snapshot_id": "macro-projection-audit",
+            "trade_date": "2026-07-26",
+            "macro": {"status": "available", "data": {"indicators": {}}},
+        },
+        created_at=NOW,
+        context_projection=projection,
+    )
+
+    assert output.prompt_messages == captured["messages"]
+    assert output.input_payload == captured["audit_context"]["input_payload"]
+    assert output.input_payload["report_type"] == "macro_liquidity_state_delta"
+    assert output.input_payload["context_bundle_projection"] == projection.model_dump(mode="json")
+    assert "indicators" not in output.input_payload
+    assert "source_refs" not in output.input_payload
+    assert "existing_frame" not in output.input_payload
 
 
 def test_legacy_agent_call_does_not_add_context_bundle_lineage() -> None:

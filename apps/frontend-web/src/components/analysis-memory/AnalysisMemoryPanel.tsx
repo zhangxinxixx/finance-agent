@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
+import type { FAStatusTone } from "@/components/shared/FAStatusPill";
 import { useAnalysisMemory } from "@/hooks/useAnalysisMemory";
 import type { AnalysisStateScope, AnalysisStateView } from "@/types/analysis-memory";
 
@@ -17,6 +18,82 @@ function shortId(value: string | null | undefined): string {
 
 function thesis(state: AnalysisStateView): string {
   return typeof state.payload.core_thesis === "string" ? state.payload.core_thesis : "未提供 core thesis";
+}
+
+function payloadText(state: AnalysisStateView, field: string): string {
+  const value = state.payload[field];
+  return typeof value === "string" && value.trim() ? value : "—";
+}
+
+function payloadRecords(state: AnalysisStateView, field: string): Array<Record<string, unknown>> {
+  const value = state.payload[field];
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+}
+
+function recordLabel(item: Record<string, unknown>): string {
+  const preferredKeys = ["item", "condition", "description", "reason", "title", "label", "driver_id", "source", "ref", "snapshot_id", "artifact_id", "id"];
+  const preferred = preferredKeys
+    .filter((key) => typeof item[key] === "string" || typeof item[key] === "number" || typeof item[key] === "boolean")
+    .map((key) => `${key}: ${String(item[key])}`);
+  const scalarEntries = preferred.length
+    ? preferred
+    : Object.entries(item)
+      .filter(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean")
+      .slice(0, 4)
+      .map(([key, value]) => `${key}: ${String(value)}`);
+  return scalarEntries.join(" · ") || JSON.stringify(item);
+}
+
+function PayloadRecordList({ items, emptyLabel }: { items: Array<Record<string, unknown>>; emptyLabel: string }) {
+  return items.length ? (
+    <ul className="space-y-1.5">
+      {items.map((item, index) => (
+        <li key={`${recordLabel(item)}-${index}`} className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-1.5 text-[length:var(--type-body-sm)] text-[var(--fg-2)]">
+          {recordLabel(item)}
+        </li>
+      ))}
+    </ul>
+  ) : <div className="fa-faint-text">{emptyLabel}</div>;
+}
+
+function qualityTone(action: string, publishAllowed: boolean): FAStatusTone {
+  if (!publishAllowed) return action === "manual_review" ? "warn" : "down";
+  return action === "pass" ? "up" : "info";
+}
+
+function qualityLabel(action: string): string {
+  const labels: Record<string, string> = {
+    pass: "质量门禁通过",
+    manual_review: "需要人工复核",
+    reject: "质量门禁拒绝",
+    blocked: "质量门禁阻断",
+  };
+  return labels[action] ?? `质量状态 ${action || "未知"}`;
+}
+
+function StateSummary({ state, title }: { state: AnalysisStateView; title: string }) {
+  const drivers = payloadRecords(state, "dominant_drivers");
+  return (
+    <section className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="fa-label">{title}</div>
+        <span className="fa-num text-[length:var(--type-caption)] text-[var(--fg-4)]">{shortId(state.state_id)}</span>
+      </div>
+      <div className="mt-2 text-[length:var(--type-body)] font-semibold text-[var(--fg-1)]">{thesis(state)}</div>
+      <div className="mt-2 grid gap-1 text-[length:var(--type-caption)] text-[var(--fg-3)] sm:grid-cols-2">
+        <span>市场阶段：<b>{payloadText(state, "market_stage")}</b></span>
+        <span>方向状态：<b>{payloadText(state, "net_bias")}</b></span>
+        <span>as_of：<b className="fa-num">{state.as_of || "—"}</b></span>
+        <span>run：<b className="fa-num">{shortId(state.lineage.run_id)}</b></span>
+      </div>
+      <div className="mt-2">
+        <div className="fa-label mb-1">主导驱动</div>
+        <PayloadRecordList items={drivers} emptyLabel="该状态未提供 dominant_drivers。" />
+      </div>
+    </section>
+  );
 }
 
 function TransitionDiff({ state }: { state: AnalysisStateView }) {
@@ -50,6 +127,12 @@ export function AnalysisMemoryPanel({ allowReview = false }: { allowReview?: boo
 
   const { canonical, candidates, bundles } = memory.data;
   const latestBundle = bundles.data[0];
+  const previousState = canonical?.state.previous_state_id
+    ? canonical.canonical_chain.find((state) => state.state_id === canonical.state.previous_state_id) ?? null
+    : null;
+  const currentTransition = canonical?.state.transition ?? null;
+  const unresolvedItems = canonical ? payloadRecords(canonical.state, "unresolved_items") : [];
+  const invalidationConditions = canonical ? payloadRecords(canonical.state, "invalidation_conditions") : [];
   return (
     <FACard
       title="Analysis Memory 状态链"
@@ -90,6 +173,75 @@ export function AnalysisMemoryPanel({ allowReview = false }: { allowReview?: boo
           <span>artifacts: {canonical.state.lineage.artifact_ids.length}</span>
         </div>
       </div> : <div className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] p-3 text-[length:var(--type-body-sm)] text-[var(--warn)]">尚无 accepted canonical；candidate 仅供查看，不能升级为正式状态。</div>}
+
+      {canonical ? (
+        <div className="space-y-3">
+          <section className="rounded-[var(--radius-md)] border border-[var(--border-faint)] px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <FAStatusPill tone={qualityTone(canonical.state.quality_gate_action, canonical.state.publish_allowed)}>
+                {qualityLabel(canonical.state.quality_gate_action)}
+              </FAStatusPill>
+              <span className="text-[length:var(--type-caption)] text-[var(--fg-3)]">
+                {canonical.state.publish_allowed ? "publish_allowed" : "publish_blocked"} · accepted source {canonical.state.accepted_output_source || "—"} · agent {canonical.state.accepted_output_agent_name || "—"}
+              </span>
+            </div>
+          </section>
+
+          <div className="grid gap-3 xl:grid-cols-2">
+            <StateSummary state={canonical.state} title="Current state / 当前正式状态" />
+            {previousState ? (
+              <StateSummary state={previousState} title="Previous state / 上一正式状态" />
+            ) : (
+              <section className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
+                <div className="fa-label">Previous state / 上一正式状态</div>
+                <div className="mt-2 fa-faint-text">
+                  {canonical.state.previous_state_id
+                    ? `canonical chain 未返回上一状态 ${shortId(canonical.state.previous_state_id)}，不在浏览器补造。`
+                    : "当前状态没有 previous_state_id，这是该 scope 的首个正式状态。"}
+                </div>
+              </section>
+            )}
+          </div>
+
+          <div className="grid gap-3 xl:grid-cols-2">
+            <section className="rounded-[var(--radius-md)] border border-[var(--border-faint)] p-3">
+              <div className="fa-label">Today changes / 本次正式变更</div>
+              {currentTransition ? (
+                <>
+                  <div className="mt-2 text-[length:var(--type-body-sm)] text-[var(--fg-2)]">{currentTransition.summary || "Transition 未提供 summary。"}</div>
+                  <TransitionDiff state={canonical.state} />
+                  {!currentTransition.changes.length ? <div className="mt-2 fa-faint-text">Transition 没有结构化 changes。</div> : null}
+                </>
+              ) : <div className="mt-2 fa-faint-text">当前 canonical 没有关联 Transition，无法展示本次变更。</div>}
+            </section>
+
+            <section className="rounded-[var(--radius-md)] border border-[var(--border-faint)] p-3">
+              <div className="fa-label">Evidence / 权威证据引用</div>
+              <div className="mt-2 space-y-3">
+                <div>
+                  <div className="mb-1 text-[length:var(--type-caption)] text-[var(--fg-4)]">Transition evidence_refs</div>
+                  <PayloadRecordList items={currentTransition?.evidence_refs ?? []} emptyLabel="Transition 未绑定 evidence_refs。" />
+                </div>
+                <div>
+                  <div className="mb-1 text-[length:var(--type-caption)] text-[var(--fg-4)]">State source_refs</div>
+                  <PayloadRecordList items={canonical.state.lineage.source_refs} emptyLabel="Canonical state 未绑定 source_refs。" />
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div className="grid gap-3 xl:grid-cols-2">
+            <section className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] p-3">
+              <div className="fa-label text-[var(--warn)]">Unresolved items / 待确认事项</div>
+              <div className="mt-2"><PayloadRecordList items={unresolvedItems} emptyLabel="当前 canonical 没有 unresolved_items。" /></div>
+            </section>
+            <section className="rounded-[var(--radius-md)] border border-[var(--down-border)] bg-[var(--down-soft)] p-3">
+              <div className="fa-label text-[var(--down)]">Invalidation conditions / 失效条件</div>
+              <div className="mt-2"><PayloadRecordList items={invalidationConditions} emptyLabel="当前 canonical 没有 invalidation_conditions。" /></div>
+            </section>
+          </div>
+        </div>
+      ) : null}
 
       <div>
         <div className="fa-label mb-2">Canonical chain（新 → 旧）</div>

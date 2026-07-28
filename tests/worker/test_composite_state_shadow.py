@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from apps.analysis.figure_facts import FigureFact
+from apps.analysis.context_bundle.snapshot_evidence import SNAPSHOT_PASSPORT_METADATA_KEY
 from apps.analysis.state import TransitionCandidate
 from apps.analysis.state.transition_generator import ScopedTransitionCandidate
 from apps.worker.db_persistence import persist_review_items
@@ -123,6 +124,29 @@ def _candidate(bundle) -> dict:
         },
         "evidence_refs": [REF],
     }
+
+
+def _accepted_figure_fact() -> FigureFact:
+    return FigureFact.build(
+        figure_id="fig-accepted",
+        report_id="225145",
+        page_no=1,
+        bbox=[0, 0, 10, 10],
+        asset="XAUUSD",
+        observations=["关键支撑 4000"],
+        numeric_values=[],
+        derived_claims=[],
+        interpretation_limits=[],
+        source_ref={
+            "report_id": "225145",
+            "figure_id": "fig-accepted",
+            "page_no": 1,
+            "bbox": [0, 0, 10, 10],
+        },
+        quality_status="accepted",
+        image_content_hash="b" * 64,
+        created_by_run_id="run-figure",
+    )
 
 
 def test_no_delta_skips_shadow_analyzer_and_never_allows_canonical_write(tmp_path) -> None:
@@ -276,6 +300,7 @@ def test_review_system_metadata_is_projected_only_from_bundle(tmp_path) -> None:
         for source, cursor in runtime.bundle.next_evidence_cursors.items()
     }
     assert review.next_state.input_snapshot_ids == {
+        "market": "market-1",
         "context_bundle_id": runtime.bundle.bundle_id,
         "context_bundle_hash": runtime.bundle.content_hash,
         "context_bundle_run_id": runtime.bundle.run_id,
@@ -283,6 +308,125 @@ def test_review_system_metadata_is_projected_only_from_bundle(tmp_path) -> None:
         "evidence_delta_decision_id": runtime.evidence_delta_decision.decision_id,
     }
     assert review.next_state.source_refs == [REF]
+
+
+def test_review_metadata_retains_bundle_snapshot_passport_without_fabricating_missing_ids(
+    tmp_path,
+) -> None:
+    shadow_input = _shadow_input(evidence=[_evidence()])
+    shadow_input["canonical_state"]["input_snapshot_ids"] = {
+        "market": "market-snapshot-1",
+        "macro": "macro-snapshot-1",
+        "options": "options-snapshot-1",
+        "events": "events-snapshot-1",
+        "reports": "reports-snapshot-1",
+        "missing": " ",
+    }
+    fact = _accepted_figure_fact()
+    shadow_input["figure_facts"] = [fact]
+    runtime = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-snapshot-passport",
+        created_at=NOW,
+        shadow_input=shadow_input,
+    )
+
+    first = execute_composite_state_shadow(
+        runtime=runtime,
+        analyzer=_candidate,
+        _return_review=True,
+    )["_review_result"].next_state.input_snapshot_ids
+    replay = execute_composite_state_shadow(
+        runtime=runtime,
+        analyzer=_candidate,
+        _return_review=True,
+    )["_review_result"].next_state.input_snapshot_ids
+
+    assert {key: first[key] for key in ("market", "macro", "options", "events", "reports")} == {
+        "market": "market-snapshot-1",
+        "macro": "macro-snapshot-1",
+        "options": "options-snapshot-1",
+        "events": "events-snapshot-1",
+        "reports": "reports-snapshot-1",
+    }
+    assert first["figure_fact_id_1"] == fact.figure_fact_id
+    assert "missing" not in first
+    assert "positioning" not in first
+    assert first["context_bundle_id"] == runtime.bundle.bundle_id
+    assert first["context_bundle_hash"] == runtime.bundle.content_hash
+    assert first["context_bundle_run_id"] == runtime.bundle.run_id
+    assert first["canonical_state_id"] == runtime.bundle.canonical_state_id
+    assert first == replay
+
+
+def test_review_metadata_overlays_current_bundle_snapshot_passport(
+    tmp_path,
+) -> None:
+    evidence = _evidence()
+    evidence["payload"]["metadata"] = {
+        SNAPSHOT_PASSPORT_METADATA_KEY: {
+            "analysis_snapshot": "XAUUSD:2026-07-22:run-current",
+            "analysis_snapshot_db_id": "00000000-0000-0000-0000-000000000022",
+            "macro": "macro-current",
+            "options": "options-current",
+            "options_detail.raw_file_sha256": "raw-current",
+        }
+    }
+    shadow_input = _shadow_input(evidence=[evidence])
+    shadow_input["canonical_state"]["input_snapshot_ids"] = {
+        "analysis_snapshot": "XAUUSD:2026-07-21:run-previous",
+        "macro": "macro-previous",
+        "options": "options-previous",
+        "predecessor_only": "retained-lineage",
+    }
+    runtime = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-current-snapshot-passport",
+        created_at=NOW,
+        shadow_input=shadow_input,
+    )
+
+    snapshot_ids = execute_composite_state_shadow(
+        runtime=runtime,
+        analyzer=_candidate,
+        _return_review=True,
+    )["_review_result"].next_state.input_snapshot_ids
+
+    assert snapshot_ids["analysis_snapshot"] == "XAUUSD:2026-07-22:run-current"
+    assert snapshot_ids["analysis_snapshot_db_id"] == "00000000-0000-0000-0000-000000000022"
+    assert snapshot_ids["macro"] == "macro-current"
+    assert snapshot_ids["options"] == "options-current"
+    assert snapshot_ids["options_detail.raw_file_sha256"] == "raw-current"
+    assert snapshot_ids["predecessor_only"] == "retained-lineage"
+    assert snapshot_ids["context_bundle_id"] == runtime.bundle.bundle_id
+
+
+def test_review_metadata_rejects_conflicting_current_snapshot_passports(
+    tmp_path,
+) -> None:
+    market = _evidence()
+    macro = _macro_evidence(current=101.0)
+    market["payload"]["metadata"] = {
+        SNAPSHOT_PASSPORT_METADATA_KEY: {"analysis_snapshot": "snapshot-current-a"}
+    }
+    macro["payload"]["metadata"] = {
+        SNAPSHOT_PASSPORT_METADATA_KEY: {"analysis_snapshot": "snapshot-current-b"}
+    }
+    runtime = prepare_composite_state_shadow(
+        storage_root=tmp_path,
+        run_id="run-conflicting-snapshot-passport",
+        created_at=NOW,
+        shadow_input=_shadow_input(evidence=[market, macro]),
+    )
+
+    trace = execute_composite_state_shadow(
+        runtime=runtime,
+        analyzer=_candidate,
+        _return_review=True,
+    )
+
+    assert trace["status"] == "candidate_rejected"
+    assert "conflicting AnalysisSnapshot passports" in trace["reason"]
 
 
 def test_shadow_analyzer_failure_is_contained_as_needs_review(tmp_path) -> None:
@@ -371,26 +515,7 @@ def test_duplicate_evidence_skips_analyzer_from_recovered_semantic_hash(tmp_path
 
 
 def test_accepted_figure_fact_enters_facts_and_evidence_delta_decision(tmp_path) -> None:
-    fact = FigureFact.build(
-        figure_id="fig-accepted",
-        report_id="225145",
-        page_no=1,
-        bbox=[0, 0, 10, 10],
-        asset="XAUUSD",
-        observations=["关键支撑 4000"],
-        numeric_values=[],
-        derived_claims=[],
-        interpretation_limits=[],
-        source_ref={
-            "report_id": "225145",
-            "figure_id": "fig-accepted",
-            "page_no": 1,
-            "bbox": [0, 0, 10, 10],
-        },
-        quality_status="accepted",
-        image_content_hash="b" * 64,
-        created_by_run_id="run-figure",
-    )
+    fact = _accepted_figure_fact()
     shadow_input = _shadow_input()
     shadow_input["figure_facts"] = [fact]
 

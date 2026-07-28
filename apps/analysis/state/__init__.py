@@ -14,8 +14,9 @@ from .repository import (
     list_candidate_states,
     list_candidate_states_scoped,
 )
+from apps.analysis.agents.schemas import AcceptedStateConclusion
+
 from .materializer import (
-    AcceptedStateConclusion,
     AnalyticalStatePatch,
     ManualReviewMaterializationAuthority,
     StateMaterializationResult,

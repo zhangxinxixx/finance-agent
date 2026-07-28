@@ -248,6 +248,9 @@ def test_execute_conservative_synthesis_fallback_uses_explicit_coordinator_outpu
     assert fallback.bias is AgentBias.NEUTRAL
     assert fallback.status is AgentStatus.PARTIAL
     assert fallback.confidence == 0.55
+    assert fallback.accepted_state_conclusion is not None
+    assert fallback.accepted_state_conclusion.direction is AgentBias.NEUTRAL
+    assert fallback.accepted_state_conclusion.state_bias == "neutral"
     assert fallback.input_payload["fallback_of"]["agent_name"] == "coordinator_agent"
     assert execution.fallback_quality_gate_decision is not None
 

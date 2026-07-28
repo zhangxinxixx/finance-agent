@@ -391,7 +391,11 @@ def _collect_evidence_items(*, outputs: list[AgentOutput], overview: dict[str, A
 
 
 def _max_confidence(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> float:
-    values = [output.confidence for output in outputs]
+    values = [
+        output.confidence
+        for output in outputs
+        if output.agent_name != "fact_review_agent"
+    ]
     for key in ("confidence", "confidence_score"):
         value = overview.get(key)
         if isinstance(value, int | float):

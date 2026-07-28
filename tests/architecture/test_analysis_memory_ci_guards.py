@@ -10,6 +10,9 @@ def test_ci_runs_analysis_memory_focused_and_postgres_suites() -> None:
 
     focused_suites = {
         "tests/database/test_analysis_state_core.py",
+        "tests/database/test_canary_approvals.py",
+        "tests/database/test_canary_attempts.py",
+        "tests/database/test_canary_migrations.py",
         "tests/analysis/test_context_bundle.py",
         "tests/analysis/test_context_bundle_selection.py",
         "tests/analysis/test_evidence_delta_evaluator.py",
@@ -19,6 +22,7 @@ def test_ci_runs_analysis_memory_focused_and_postgres_suites() -> None:
         "tests/output/test_figure_fact_artifacts.py",
         "tests/worker/test_composite_state_shadow.py",
         "tests/worker/test_canary_materialization.py",
+        "tests/worker/test_composite_analysis_pipeline_helpers.py",
         "tests/worker/test_context_bundle_artifact_registration.py",
         "tests/analysis/test_state_bootstrap.py",
         "tests/scripts/test_bootstrap_analysis_state.py",

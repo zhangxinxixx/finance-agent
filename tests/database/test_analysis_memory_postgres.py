@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from threading import Barrier
 from typing import Iterator
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import Session
 
@@ -22,7 +24,13 @@ from apps.analysis.state import (
 )
 from database.migrations.runtime import build_alembic_config
 from database.models.analysis import AnalysisSnapshot
-from database.models.analysis_state import AnalysisState, AnalysisStateHead
+from database.models.analysis_state import AnalysisState, AnalysisStateHead, CanaryApproval, CanaryAttempt
+from database.queries.canary_approvals import (
+    CanaryApprovalConsumptionError,
+    consume_canary_approval,
+    issue_canary_approval,
+)
+from database.queries.canary_attempts import create_or_resume_canary_attempt
 
 
 POSTGRES_URL_ENV = "ANALYSIS_MEMORY_POSTGRES_URL"
@@ -321,5 +329,111 @@ def test_canonical_head_cas_uses_real_postgresql() -> None:
                     "daily_close": (winner_id, 2),
                     "intraday": (intraday_next, 2),
                 }
+        finally:
+            engine.dispose()
+
+
+def test_canary_approval_has_one_postgres_concurrent_consumer() -> None:
+    database_url = _postgres_url()
+    with _isolated_schema(database_url) as schema_url:
+        command.upgrade(build_alembic_config(schema_url), "head")
+        engine = create_engine(schema_url)
+        now = datetime(2026, 7, 28, 8, tzinfo=UTC)
+        try:
+            with Session(engine) as session, session.begin():
+                approval = issue_canary_approval(
+                    session,
+                    approval_id="approval-postgres-concurrency",
+                    asset="XAUUSD",
+                    state_scope="daily_close",
+                    trade_date=now.date(),
+                    run_id=None,
+                    approved_by="postgres-ci",
+                    approved_role="canary_approver",
+                    approved_at=now - timedelta(minutes=1),
+                    expires_at=now + timedelta(hours=1),
+                )
+                approval_hash = approval.approval_hash
+
+            barrier = Barrier(2)
+
+            def consume(run_id: str) -> str:
+                with Session(engine) as session:
+                    barrier.wait(timeout=10)
+                    try:
+                        with session.begin():
+                            consume_canary_approval(
+                                session,
+                                approval_id="approval-postgres-concurrency",
+                                expected_approval_hash=approval_hash,
+                                run_id=run_id,
+                                consumed_at=now,
+                            )
+                        return "consumed"
+                    except CanaryApprovalConsumptionError:
+                        return "rejected"
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                outcomes = list(executor.map(consume, ("run-a", "run-b")))
+            assert sorted(outcomes) == ["consumed", "rejected"]
+            with Session(engine) as session:
+                stored = session.get(CanaryApproval, "approval-postgres-concurrency")
+                assert stored is not None
+                assert stored.status == "consumed"
+                assert stored.consumed_by_run_id in {"run-a", "run-b"}
+        finally:
+            engine.dispose()
+
+
+def test_canary_attempt_postgres_concurrent_create_recovers_one_identity() -> None:
+    database_url = _postgres_url()
+    with _isolated_schema(database_url) as schema_url:
+        command.upgrade(build_alembic_config(schema_url), "head")
+        engine = create_engine(schema_url)
+        barrier = Barrier(2)
+        now = datetime(2026, 7, 28, 8, tzinfo=UTC)
+
+        def create() -> str:
+            with Session(engine) as session:
+                synchronized = False
+
+                def synchronize_insert(_session, _flush_context, _instances) -> None:
+                    nonlocal synchronized
+                    if not synchronized and any(isinstance(item, CanaryAttempt) for item in session.new):
+                        synchronized = True
+                        barrier.wait(timeout=10)
+
+                event.listen(session, "before_flush", synchronize_insert)
+                with session.begin():
+                    attempt = create_or_resume_canary_attempt(
+                        session,
+                        run_id="run-postgres-concurrency",
+                        approval_id="approval-postgres-concurrency",
+                        approval_hash="a" * 64,
+                        attempt_no=0,
+                        asset="XAUUSD",
+                        state_scope="daily_close",
+                        trade_date=now.date(),
+                        requested_canonical_state_id="state-0",
+                        expected_head_version=1,
+                        started_at=now,
+                    )
+                    attempt_id = attempt.attempt_id
+                return attempt_id
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                attempt_ids = list(executor.map(lambda _item: create(), range(2)))
+            assert attempt_ids[0] == attempt_ids[1]
+            with Session(engine) as session:
+                attempts = list(
+                    session.scalars(
+                        select(CanaryAttempt).where(
+                            CanaryAttempt.run_id == "run-postgres-concurrency"
+                        )
+                    )
+                )
+                assert len(attempts) == 1
+                assert attempts[0].attempt_id == attempt_ids[0]
         finally:
             engine.dispose()

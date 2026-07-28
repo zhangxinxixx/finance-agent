@@ -103,7 +103,15 @@ def analyze_macro_liquidity(
         deterministic_output=deterministic,
         context_projection=projection,
     )
-    return _bind_context_projection(_merge_macro_liquidity_output(snapshot, deterministic, llm_result), projection)
+    return _bind_context_projection(
+        _merge_macro_liquidity_output(
+            snapshot,
+            deterministic,
+            llm_result,
+            context_projection=projection,
+        ),
+        projection,
+    )
 
 
 def invoke_macro_liquidity_llm(
@@ -125,11 +133,12 @@ def invoke_macro_liquidity_llm(
             "skipped": True,
         }
 
-    prompt = build_macro_liquidity_prompt(
+    structured_payload = build_macro_liquidity_structured_payload(
         snapshot,
         deterministic_output=deterministic_output,
         context_projection=context_projection,
     )
+    prompt_messages = _prompt_messages_for_payload(structured_payload)
     provider = os.getenv("MACRO_LIQUIDITY_LLM_PROVIDER", _DEFAULT_LLM_PROVIDER)
     model = os.getenv("MACRO_LIQUIDITY_LLM_MODEL", os.getenv("LLM_COCKPIT_MODEL", _DEFAULT_LLM_MODEL))
     reasoning_effort = os.getenv(
@@ -137,10 +146,7 @@ def invoke_macro_liquidity_llm(
         os.getenv("LLM_COCKPIT_REASONING_EFFORT", _DEFAULT_LLM_REASONING_EFFORT),
     )
     response = chat_sync(
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+        messages=prompt_messages,
         provider=provider,
         model=model,
         reasoning_effort=reasoning_effort,
@@ -152,11 +158,7 @@ def invoke_macro_liquidity_llm(
             "run_id": snapshot.get("run_id"),
             "snapshot_id": snapshot.get("snapshot_id"),
             "trade_date": snapshot.get("trade_date"),
-            "input_payload": build_macro_liquidity_structured_payload(
-                snapshot,
-                deterministic_output=deterministic_output,
-                context_projection=context_projection,
-            ),
+            "input_payload": structured_payload,
         },
     )
     return {
@@ -169,6 +171,8 @@ def invoke_macro_liquidity_llm(
         "prompt_version": _PROMPT_VERSION,
         "skipped": False,
         "audit_id": getattr(response, "audit_id", None),
+        "prompt_messages": prompt_messages,
+        "input_payload": structured_payload,
     }
 
 
@@ -183,11 +187,21 @@ def build_macro_liquidity_prompt(
         deterministic_output=deterministic_output,
         context_projection=context_projection,
     )
-    return (
-        f"{build_macro_liquidity_prompt_template()}\n\n"
-        "=== 结构化输入 ===\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
-    )
+    return _prompt_messages_for_payload(payload)[1]["content"]
+
+
+def _prompt_messages_for_payload(payload: Mapping[str, Any]) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"{build_macro_liquidity_prompt_template()}\n\n"
+                "=== 结构化输入 ===\n"
+                f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+            ),
+        },
+    ]
 
 
 def build_macro_liquidity_structured_payload(
@@ -196,6 +210,25 @@ def build_macro_liquidity_structured_payload(
     deterministic_output: AgentOutput | None = None,
     context_projection: "ConsumerProjection | None" = None,
 ) -> dict[str, Any]:
+    if context_projection is not None:
+        from apps.analysis.context_bundle import consumer_projection_payload
+
+        return {
+            "report_type": "macro_liquidity_state_delta",
+            "snapshot_id": str(snapshot.get("snapshot_id") or "unknown"),
+            "trade_date": _trade_date(snapshot),
+            "input_contract": (
+                "Only consume canonical_state, retained_evidence, accepted_facts, and decision "
+                "from the validated ContextBundle projection."
+            ),
+            "context_bundle_identity": context_projection.identity_payload.model_dump(mode="json"),
+            "context_bundle_consumer": context_projection.consumer,
+            "context_bundle_summary": _context_projection_summary(context_projection),
+            "context_bundle_projection": consumer_projection_payload(
+                context_projection,
+                expected_consumer="macro",
+            ),
+        }
     deterministic_output = deterministic_output or _build_deterministic_output(
         snapshot_id=str(snapshot.get("snapshot_id") or "unknown"),
         input_snapshot_ids=_input_snapshot_ids(snapshot),
@@ -260,14 +293,6 @@ def build_macro_liquidity_structured_payload(
             "liquidity": {name: _indicator_snapshot(indicators, keys) for name, keys in _LIQUIDITY_GROUPS.items()},
         },
     }
-    if context_projection is not None:
-        payload["context_bundle_summary"] = _context_projection_summary(context_projection)
-        from apps.analysis.context_bundle import consumer_projection_payload
-
-        payload["context_bundle_projection"] = consumer_projection_payload(
-            context_projection,
-            expected_consumer="macro",
-        )
     return payload
 
 
@@ -320,15 +345,36 @@ def _merge_macro_liquidity_output(
     snapshot: dict[str, Any],
     deterministic: AgentOutput,
     llm_result: dict[str, Any],
+    *,
+    context_projection: "ConsumerProjection | None" = None,
 ) -> AgentOutput:
     markdown = str(llm_result.get("markdown") or "").strip()
     prompt_version = llm_result.get("prompt_version")
     generated_by = "llm" if markdown else "rule"
+    input_payload: dict[str, Any] = {}
+    prompt_messages: list[dict[str, str]] = []
+    if markdown:
+        audited_payload = llm_result.get("input_payload")
+        audited_messages = llm_result.get("prompt_messages")
+        if isinstance(audited_payload, dict) and isinstance(audited_messages, list):
+            input_payload = dict(audited_payload)
+            prompt_messages = [dict(item) for item in audited_messages if isinstance(item, dict)]
+        elif context_projection is not None:
+            input_payload = build_macro_liquidity_structured_payload(
+                snapshot,
+                deterministic_output=deterministic,
+                context_projection=context_projection,
+            )
+            prompt_messages = _prompt_messages_for_payload(input_payload)
+        else:
+            # Preserve the legacy snapshot-only audit contract for injected/test gateways.
+            input_payload = deterministic_input_payload(snapshot)
+            prompt_messages = deterministic_prompt_messages(snapshot, deterministic)
     payload = {
         "generated_by": generated_by,
         "prompt_version": prompt_version,
-        "prompt_messages": deterministic_prompt_messages(snapshot, deterministic) if markdown else [],
-        "input_payload": deterministic_input_payload(snapshot) if markdown else {},
+        "prompt_messages": prompt_messages,
+        "input_payload": input_payload,
         "llm_raw_output": markdown or None,
         "narrative_md": markdown or deterministic.summary,
         "data_category": "external_opinion" if markdown else str(deterministic.data_category.value),

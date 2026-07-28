@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,9 @@ from apps.analysis.agents.source_health import (
 from apps.analysis.agents.risk import analyze_risk
 from apps.analysis.agents.technical import analyze_technical
 from apps.analysis.context_bundle import ConsumerProjection, project_context_bundle
-from apps.analysis.state.transition_generator import generate_transition_candidate
+from apps.analysis.state.transition_generator import (
+    generate_scoped_transition_candidate_for_conclusion,
+)
 from apps.analysis.strategy.card import build_strategy_card
 from apps.gold_runtime_orchestration import build_gold_runtime_execution_summary
 from apps.output.final_report import write_final_report, write_strategy_card
@@ -184,17 +187,13 @@ def run_composite_analysis_pipeline(
                 )
                 for agent_name, consumer_name in _CONTEXT_BUNDLE_CONSUMERS.items()
             }
-            shadow_trace = execute_composite_state_shadow(
-                runtime=shadow_runtime,
-                analyzer=(
-                    state_delta_analyzer
-                    if state_delta_analyzer is not None
-                    else (generate_transition_candidate if context_mode == CANARY_CONTEXT_MODE else None)
-                ),
-                mode=context_mode,
-                _return_review=context_mode == CANARY_CONTEXT_MODE,
-            )
-            canary_review = shadow_trace.pop("_review_result", None)
+            if context_mode != CANARY_CONTEXT_MODE:
+                shadow_trace = execute_composite_state_shadow(
+                    runtime=shadow_runtime,
+                    analyzer=state_delta_analyzer,
+                    mode=context_mode,
+                    _return_review=False,
+                )
         except _CanaryNotActivated:
             pass
         except Exception as exc:
@@ -409,6 +408,24 @@ def run_composite_analysis_pipeline(
         fallback_execution=fallback_execution,
         agent_loop_decision=agent_loop_decision,
     )
+    if context_mode == CANARY_CONTEXT_MODE and shadow_runtime is not None:
+        conclusion = selected_coordinator.accepted_state_conclusion
+        if state_delta_analyzer is not None:
+            conclusion_analyzer = state_delta_analyzer
+        elif conclusion is not None and agent_loop_decision.accepted_output.source != "none":
+            conclusion_analyzer = partial(
+                generate_scoped_transition_candidate_for_conclusion,
+                accepted_state_conclusion=conclusion,
+            )
+        else:
+            conclusion_analyzer = None
+        shadow_trace = execute_composite_state_shadow(
+            runtime=shadow_runtime,
+            analyzer=conclusion_analyzer,
+            mode=CANARY_CONTEXT_MODE,
+            _return_review=True,
+        )
+        canary_review = shadow_trace.pop("_review_result", None)
 
     summaries["domain_agents"] = {
         "step": "domain_agents",
@@ -727,6 +744,7 @@ def report_coordinator_output(*, primary: Any, fallback_execution: Any, agent_lo
     return candidate.model_copy(
         update={
             "bias": AgentBias.NEUTRAL,
+            "accepted_state_conclusion": None,
             "confidence": min(candidate.confidence, 0.35),
             "summary": f"Observe and wait. No strong conclusion. {candidate.summary}",
             "watchlist": [*candidate.watchlist, "observe_wait: await validated source confirmation"],

@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision, evaluate_quality_gate
-from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
+from apps.analysis.agents.schemas import AcceptedStateConclusion, AgentBias, AgentOutput, AgentStatus
 
 
 class AgentLoopFallbackTask(BaseModel):
@@ -645,6 +645,8 @@ def _conservative_fallback_output(
     evidence_items = [dict(item) for item in primary.evidence_items if isinstance(item, dict)]
     confidence = min(float(primary.confidence), 0.55)
     task_types = [task.task_type for task in tasks]
+    fallback_summary = "No strong conclusion: fallback conservative synthesis is in effect."
+    primary_conclusion = primary.accepted_state_conclusion
     return AgentOutput(
         version=primary.version,
         agent_name="fallback_synthesis_agent",
@@ -671,13 +673,24 @@ def _conservative_fallback_output(
         ],
         invalid_conditions=list(primary.invalidation_conditions),
         active_blockers=list(unresolved_reason_codes),
-        summary="No strong conclusion: fallback conservative synthesis is in effect.",
+        summary=fallback_summary,
         source_refs=source_refs,
         status=AgentStatus.PARTIAL,
         created_at=created_at,
         evidence_refs=[dict(ref) for ref in primary.evidence_refs if isinstance(ref, dict)],
         evidence_items=evidence_items,
         data_quality=[*list(primary.data_quality), "fallback_synthesis", "no_strong_conclusion"],
+        accepted_state_conclusion=AcceptedStateConclusion(
+            direction=AgentBias.NEUTRAL,
+            state_bias=AgentBias.NEUTRAL.value,
+            market_stage=(
+                primary_conclusion.market_stage
+                if primary_conclusion is not None
+                else primary.market_phase or "direction_decision"
+            ),
+            core_thesis=fallback_summary,
+            dominant_drivers=[],
+        ),
         input_payload={
             "fallback_of": {
                 "agent_name": primary.agent_name,
