@@ -1,0 +1,130 @@
+{
+  "identity": {
+    "policy_version": "gold_policy.v3",
+    "model_version": "model.freeze.1",
+    "provider_id": "fixture",
+    "run_mode": "replay"
+  },
+  "cases": [
+    {
+      "case_id": "D0-blocked-first",
+      "sequence": 0,
+      "stratum": "five_day",
+      "input_fingerprint": "input:d0",
+      "result": {
+        "analysis_conclusion": "blocked",
+        "state_direction": "blocked",
+        "analysis_stage": "blocked",
+        "driver_ranking": [],
+        "attribution_status": "unavailable",
+        "attribution_supported": false,
+        "transition_supported": false,
+        "strategy_status": "NO_TRADE",
+        "strategy_direction": "long",
+        "strategy_change_supported": false,
+        "evidence_delta_kind": "ordinary",
+        "source_ids": ["feature:d0", "evidence:d0"]
+      }
+    },
+    {
+      "case_id": "D1-no-op",
+      "sequence": 1,
+      "stratum": "five_day",
+      "input_fingerprint": "input:d1",
+      "result": {
+        "analysis_conclusion": "accepted",
+        "state_direction": "bullish",
+        "analysis_stage": "monitoring",
+        "driver_ranking": ["real_rates", "usd"],
+        "attribution_status": "confirmed",
+        "attribution_supported": true,
+        "transition_supported": true,
+        "strategy_status": "OBSERVE",
+        "strategy_direction": "none",
+        "strategy_change_supported": true,
+        "evidence_delta_kind": "no_op",
+        "source_ids": ["feature:d1", "evidence:d1"]
+      }
+    },
+    {
+      "case_id": "D1-no-op-rerun",
+      "sequence": 2,
+      "stratum": "reproducibility",
+      "input_fingerprint": "input:d1",
+      "result": {
+        "analysis_conclusion": "accepted",
+        "state_direction": "bullish",
+        "analysis_stage": "monitoring",
+        "driver_ranking": ["real_rates", "usd"],
+        "attribution_status": "confirmed",
+        "attribution_supported": true,
+        "transition_supported": true,
+        "strategy_status": "OBSERVE",
+        "strategy_direction": "none",
+        "strategy_change_supported": true,
+        "evidence_delta_kind": "no_op",
+        "source_ids": ["feature:d1", "evidence:d1"]
+      }
+    },
+    {
+      "case_id": "D2-ordinary",
+      "sequence": 3,
+      "stratum": "five_day",
+      "input_fingerprint": "input:d2",
+      "result": {
+        "analysis_conclusion": "accepted",
+        "state_direction": "bullish",
+        "analysis_stage": "confirmed",
+        "driver_ranking": ["real_rates", "usd"],
+        "attribution_status": "confirmed",
+        "attribution_supported": true,
+        "transition_supported": true,
+        "strategy_status": "LONG_WATCH",
+        "strategy_direction": "long",
+        "strategy_change_supported": true,
+        "evidence_delta_kind": "ordinary",
+        "source_ids": ["feature:d2", "evidence:d2"]
+      }
+    },
+    {
+      "case_id": "D3-hard-invalidation",
+      "sequence": 4,
+      "stratum": "five_day",
+      "input_fingerprint": "input:d3",
+      "result": {
+        "analysis_conclusion": "invalidated",
+        "state_direction": "neutral",
+        "analysis_stage": "invalidated",
+        "driver_ranking": ["technical_break", "usd"],
+        "attribution_status": "confirmed",
+        "attribution_supported": true,
+        "transition_supported": true,
+        "strategy_status": "INVALIDATED",
+        "strategy_direction": "none",
+        "strategy_change_supported": true,
+        "evidence_delta_kind": "hard_invalidation",
+        "source_ids": ["feature:d3", "evidence:d3"]
+      }
+    },
+    {
+      "case_id": "D5-blocked",
+      "sequence": 5,
+      "stratum": "five_day",
+      "input_fingerprint": "input:d4",
+      "result": {
+        "analysis_conclusion": "blocked",
+        "state_direction": "blocked",
+        "analysis_stage": "blocked",
+        "driver_ranking": [],
+        "attribution_status": "unavailable",
+        "attribution_supported": false,
+        "transition_supported": false,
+        "strategy_status": "NO_TRADE",
+        "strategy_direction": "none",
+        "strategy_change_supported": false,
+        "evidence_delta_kind": "ordinary",
+        "source_ids": ["feature:d4", "evidence:d4"]
+      }
+    }
+  ]
+}

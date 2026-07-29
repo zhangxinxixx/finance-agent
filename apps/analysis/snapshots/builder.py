@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from apps.output.artifacts import normalize_run_id
+from apps.features.market_data.formal_snapshots import MarketPriceSnapshot, OilSnapshot
+from apps.features.news.formal_events import OfficialEventSnapshot
+from apps.features.positioning.formal_snapshot import COTSnapshot, build_cot_snapshot
 
 SNAPSHOT_VERSION = "1.0"
 
@@ -23,6 +27,8 @@ def build_analysis_snapshot(
     collected_points: list[dict[str, Any]] | None = None,
     news_snapshot: dict[str, Any] | None = None,
     gold_analysis_context: dict[str, Any] | None = None,
+    market_price_snapshot: MarketPriceSnapshot | None = None,
+    oil_snapshot: OilSnapshot | None = None,
 ) -> dict[str, Any]:
     """Build one deterministic premarket analysis snapshot from existing artifacts.
 
@@ -55,6 +61,10 @@ def build_analysis_snapshot(
     )
     if isinstance(context_ids, dict):
         input_snapshot_ids["gold_analysis_context"] = dict(context_ids)
+    if market_price_snapshot is not None:
+        input_snapshot_ids["market_prices"] = _formal_snapshot_content_id(market_price_snapshot)
+    if oil_snapshot is not None:
+        input_snapshot_ids["oil"] = _formal_snapshot_content_id(oil_snapshot)
 
     all_points = collected_points or []
     bounded_context_points = _context_points_on_or_before(all_points, trade_date)
@@ -71,6 +81,30 @@ def build_analysis_snapshot(
             options_snapshot=options_snapshot,
         )
     )
+    formal_market_section = _formal_snapshot_section(
+        market_price_snapshot,
+        section_name="market_prices",
+        snapshot_time=timestamp,
+    )
+    formal_oil_section = _formal_snapshot_section(
+        oil_snapshot,
+        section_name="oil",
+        snapshot_time=timestamp,
+    )
+    cot_snapshot, cot_section = _formal_cot_section(
+        candidates=_cot_candidates(all_points),
+        snapshot_time=timestamp,
+    )
+    if cot_snapshot is not None:
+        input_snapshot_ids["cot"] = _formal_snapshot_content_id(cot_snapshot)
+    official_event_snapshot, official_event_section = _formal_official_event_section(
+        news_snapshot=news_snapshot,
+        snapshot_time=timestamp,
+    )
+    if official_event_snapshot is not None:
+        input_snapshot_ids["official_events"] = _formal_snapshot_content_id(
+            official_event_snapshot
+        )
 
     return {
         "version": SNAPSHOT_VERSION,
@@ -83,10 +117,14 @@ def build_analysis_snapshot(
         "macro": _bounded_macro_section(macro_snapshot, trade_date, macro_future),
         "options": _bounded_section(options_snapshot, trade_date, options_future),
         "positioning": positioning_section,
+        "cot": cot_section,
+        "official_events": official_event_section,
         "news": _bounded_section(news_snapshot, trade_date, news_future) if news_snapshot is not None else _build_news_section(bounded_context_points, source_refs or [], trade_date),
         "jin10": _build_jin10_section(bounded_context_points),
         "technical": technical_section,
         "market_odds": market_odds_section,
+        "market_prices": formal_market_section,
+        "oil": formal_oil_section,
         "gold_analysis_context": (
             {"status": "available", "data": copy.deepcopy(gold_analysis_context)}
             if isinstance(gold_analysis_context, dict)
@@ -96,6 +134,10 @@ def build_analysis_snapshot(
             source_refs,
             macro_snapshot,
             gold_analysis_context.get("source_refs") if isinstance(gold_analysis_context, dict) else None,
+            _formal_snapshot_source_refs(market_price_snapshot),
+            _formal_snapshot_source_refs(oil_snapshot),
+            _formal_snapshot_source_refs(cot_snapshot),
+            _formal_snapshot_source_refs(official_event_snapshot),
         ),
     }
 
@@ -333,12 +375,15 @@ def _merge_source_refs(
     source_refs: list[dict[str, Any]] | None,
     macro_snapshot: dict[str, Any] | None,
     context_refs: list[dict[str, Any]] | None = None,
+    *additional_refs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     refs.extend(copy.deepcopy(source_refs or []))
     if macro_snapshot and isinstance(macro_snapshot.get("source_refs"), list):
         refs.extend(copy.deepcopy(macro_snapshot["source_refs"]))
     refs.extend(copy.deepcopy(context_refs or []))
+    for additional in additional_refs:
+        refs.extend(copy.deepcopy(additional))
 
     unique: dict[str, dict[str, Any]] = {}
     for ref in refs:
@@ -347,6 +392,234 @@ def _merge_source_refs(
         key = json.dumps(ref, ensure_ascii=False, sort_keys=True)
         unique[key] = ref
     return [unique[key] for key in sorted(unique)]
+
+
+def _formal_snapshot_content_id(
+    snapshot: MarketPriceSnapshot | OilSnapshot | COTSnapshot | OfficialEventSnapshot,
+) -> str:
+    payload = snapshot.model_dump(mode="json")
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"{payload['schema_version']}:{digest}"
+
+
+def _formal_snapshot_section(
+    snapshot: MarketPriceSnapshot | OilSnapshot | None,
+    *,
+    section_name: str,
+    snapshot_time: str,
+) -> dict[str, Any]:
+    if snapshot is None:
+        return {"status": "unavailable", "reason": f"{section_name}_not_provided"}
+    point_in_time = _parse_snapshot_timestamp(snapshot_time)
+    if point_in_time is None:
+        return {
+            "status": "unavailable",
+            "reason": "snapshot_time_invalid",
+            "alignment_status": "misaligned",
+        }
+    future_observations = _formal_future_observations(snapshot, point_in_time)
+    if future_observations:
+        return {
+            "status": "unavailable",
+            "reason": "formal_snapshot_future_or_misaligned",
+            "alignment_status": "misaligned",
+            "future_observations": future_observations,
+        }
+    return {"status": "available", "data": snapshot.model_dump(mode="json")}
+
+
+def _formal_cot_section(
+    *,
+    candidates: list[dict[str, Any]],
+    snapshot_time: str,
+) -> tuple[COTSnapshot | None, dict[str, Any]]:
+    """Materialize the formal COT contract without filtering point-in-time inputs.
+
+    ``build_cot_snapshot`` owns candidate qualification.  In particular, future
+    retrieval timestamps must reach that policy so its blocked lineage remains
+    visible instead of being silently discarded by this analysis snapshot.
+    """
+
+    point_in_time = _parse_snapshot_timestamp(snapshot_time)
+    if point_in_time is None:
+        return None, {
+            "status": "unavailable",
+            "reason": "snapshot_time_invalid",
+            "alignment_status": "misaligned",
+        }
+    snapshot = build_cot_snapshot(candidates=candidates, as_of=point_in_time)
+    return snapshot, {"status": "available", "data": snapshot.model_dump(mode="json")}
+
+
+def _formal_official_event_section(
+    *,
+    news_snapshot: dict[str, Any] | None,
+    snapshot_time: str,
+) -> tuple[OfficialEventSnapshot | None, dict[str, Any]]:
+    """Consume only the exact formal event contract from NewsSnapshot."""
+
+    if not isinstance(news_snapshot, dict):
+        return None, {
+            "status": "unavailable",
+            "reason": "official_event_snapshot_not_provided",
+        }
+    section = news_snapshot.get("official_events")
+    if not isinstance(section, dict) or section.get("status") != "available":
+        return None, {
+            "status": "unavailable",
+            "reason": "official_event_snapshot_not_available",
+        }
+    payload = section.get("data")
+    if not isinstance(payload, dict) or payload.get("schema_version") != "official_event_snapshot.v1":
+        return None, {
+            "status": "unavailable",
+            "reason": "official_event_snapshot_invalid_or_unsupported",
+        }
+    try:
+        snapshot = OfficialEventSnapshot.model_validate(payload)
+    except ValueError:
+        return None, {
+            "status": "unavailable",
+            "reason": "official_event_snapshot_invalid_or_unsupported",
+        }
+    point_in_time = _parse_snapshot_timestamp(snapshot_time)
+    if point_in_time is None:
+        return None, {
+            "status": "unavailable",
+            "reason": "snapshot_time_invalid",
+            "alignment_status": "misaligned",
+        }
+    future_observations = _formal_official_event_future_observations(
+        snapshot,
+        point_in_time,
+    )
+    if future_observations:
+        return None, {
+            "status": "unavailable",
+            "reason": "official_event_snapshot_future_or_misaligned",
+            "alignment_status": "misaligned",
+            "future_observations": future_observations,
+        }
+    return snapshot, {"status": "available", "data": snapshot.model_dump(mode="json")}
+
+
+def _parse_snapshot_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _formal_future_observations(
+    snapshot: MarketPriceSnapshot | OilSnapshot,
+    snapshot_time: datetime,
+) -> list[dict[str, str]]:
+    observations = (
+        (("xauusd_spot", snapshot.xauusd_spot), ("gc_futures", snapshot.gc_futures))
+        if isinstance(snapshot, MarketPriceSnapshot)
+        else (("wti", snapshot.wti), ("brent", snapshot.brent))
+    )
+    candidates: list[tuple[str, datetime]] = [("as_of", snapshot.as_of)]
+    for name, observation in observations:
+        for field_name, value in (
+            ("bar_open_time", observation.bar_open_time),
+            ("bar_close_time", observation.bar_close_time),
+        ):
+            if value is not None:
+                candidates.append((f"{name}.{field_name}", value))
+        for index, source_ref in enumerate(observation.source_refs):
+            candidates.append((f"{name}.source_refs[{index}].retrieved_at", source_ref.retrieved_at))
+    return [
+        {"field": field, "time": value.astimezone(timezone.utc).isoformat()}
+        for field, value in candidates
+        if value.astimezone(timezone.utc) > snapshot_time
+    ]
+
+
+def _formal_official_event_future_observations(
+    snapshot: OfficialEventSnapshot,
+    snapshot_time: datetime,
+) -> list[dict[str, str]]:
+    candidates: list[tuple[str, datetime]] = [("as_of", snapshot.as_of)]
+    candidates.extend(
+        (f"source_refs[{index}].retrieved_at", ref.retrieved_at)
+        for index, ref in enumerate(snapshot.source_refs)
+    )
+    for event_index, event in enumerate(snapshot.events):
+        candidates.append((f"events[{event_index}].occurred_at", event.occurred_at))
+        if event.reaction_baseline_time is not None:
+            candidates.append(
+                (
+                    f"events[{event_index}].reaction_baseline_time",
+                    event.reaction_baseline_time,
+                )
+            )
+        if event.reaction_after_time is not None:
+            candidates.append(
+                (
+                    f"events[{event_index}].reaction_after_time",
+                    event.reaction_after_time,
+                )
+            )
+        if event.reaction_window_end is not None:
+            candidates.append(
+                (
+                    f"events[{event_index}].reaction_window_end",
+                    event.reaction_window_end,
+                )
+            )
+        candidates.extend(
+            (
+                f"events[{event_index}].source_refs[{ref_index}].retrieved_at",
+                ref.retrieved_at,
+            )
+            for ref_index, ref in enumerate(event.source_refs)
+        )
+        candidates.extend(
+            (
+                f"events[{event_index}].reaction_source_refs[{ref_index}].retrieved_at",
+                ref.retrieved_at,
+            )
+            for ref_index, ref in enumerate(event.reaction_source_refs)
+        )
+    return [
+        {"field": field, "time": value.astimezone(timezone.utc).isoformat()}
+        for field, value in candidates
+        if value.astimezone(timezone.utc) > snapshot_time
+    ]
+
+
+def _formal_snapshot_source_refs(
+    snapshot: MarketPriceSnapshot | OilSnapshot | COTSnapshot | OfficialEventSnapshot | None,
+) -> list[dict[str, Any]]:
+    if snapshot is None:
+        return []
+    if isinstance(snapshot, COTSnapshot):
+        return [source_ref.model_dump(mode="json") for source_ref in snapshot.managed_money_net.source_refs]
+    if isinstance(snapshot, OfficialEventSnapshot):
+        return [source_ref.model_dump(mode="json") for source_ref in snapshot.source_refs]
+    observations = (
+        (snapshot.xauusd_spot, snapshot.gc_futures)
+        if isinstance(snapshot, MarketPriceSnapshot)
+        else (snapshot.wti, snapshot.brent)
+    )
+    return [source_ref.model_dump(mode="json") for observation in observations for source_ref in observation.source_refs]
+
+
+def _cot_candidates(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retain every COT-shaped point for formal policy qualification."""
+
+    return [
+        point
+        for point in points
+        if isinstance(point, dict)
+        and isinstance(point.get("symbol"), str)
+        and point["symbol"].startswith("COT_GOLD")
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -109,7 +109,11 @@ def parse_report_images(
             continue
         prepared_pages[page_no] = prepared
 
-        is_cover_page = _is_visual_cover_page(page_no=page_no, report_type=report_type)
+        is_cover_page = _is_visual_cover_page(
+            page_no=page_no,
+            report_type=report_type,
+            page_count=len(image_entries),
+        )
         if is_cover_page:
             cover_page_count += 1
             warnings.append(f"page_{page_no:03d} cover_page_skipped")
@@ -145,7 +149,11 @@ def parse_report_images(
     cover_pages = [
         page
         for page in page_payloads
-        if _is_visual_cover_page(page_no=int(page.get("page_no") or 0), report_type=report_type)
+        if _is_visual_cover_page(
+            page_no=int(page.get("page_no") or 0),
+            report_type=report_type,
+            page_count=len(page_payloads),
+        )
     ]
     if cover_pages:
         cover_runner = vision_cover_runner
@@ -174,7 +182,11 @@ def parse_report_images(
         vision_candidate_count = sum(
             1
             for page in page_payloads
-            if not _is_visual_cover_page(page_no=int(page.get("page_no") or 0), report_type=report_type)
+            if not _is_visual_cover_page(
+                page_no=int(page.get("page_no") or 0),
+                report_type=report_type,
+                page_count=len(page_payloads),
+            )
         )
         if len(vision_pages) < vision_candidate_count:
             warnings.append(
@@ -500,7 +512,7 @@ def _fallback_detect_visual_figures(
     figures: list[dict[str, Any]] = []
     for page in page_payloads:
         page_no = int(page.get("page_no") or 0)
-        if _is_visual_cover_page(page_no=page_no, report_type=report_type):
+        if _is_visual_cover_page(page_no=page_no, report_type=report_type, page_count=len(page_payloads)):
             continue
         prepared = prepared_pages.get(page_no)
         if prepared is None:
@@ -543,7 +555,11 @@ def _provisional_figures_from_pages(page_payloads: list[dict[str, Any]], *, repo
     figures: list[dict[str, Any]] = []
     for page in page_payloads:
         page_no = int(page.get("page_no") or 0)
-        if page_no <= 0 or _is_visual_cover_page(page_no=page_no, report_type=report_type):
+        if page_no <= 0 or _is_visual_cover_page(
+            page_no=page_no,
+            report_type=report_type,
+            page_count=len(page_payloads),
+        ):
             continue
         width = int(page.get("width") or 0)
         height = int(page.get("height") or 0)
@@ -609,6 +625,20 @@ def _figure_crop(artifacts: dict[str, Any], chart: dict[str, Any]) -> np.ndarray
     pages = ((artifacts.get("page_images") or {}).get("pages") or [])
     page = next((item for item in pages if int(item.get("page_no") or 0) == page_no), None)
     if not isinstance(page, dict):
+        chart_image_path = str(chart.get("image_path") or "").strip()
+        if chart_image_path:
+            resolved_chart_path = Path(chart_image_path).expanduser().resolve()
+            page = next(
+                (
+                    item
+                    for item in pages
+                    if isinstance(item, dict)
+                    and str(item.get("image_path") or "").strip()
+                    and Path(str(item["image_path"])).expanduser().resolve() == resolved_chart_path
+                ),
+                None,
+            )
+    if not isinstance(page, dict):
         raise ValueError("figure_source_page_not_found")
     image_path = Path(str(page.get("image_path") or ""))
     prepared = _prepare_page(image_path)
@@ -616,7 +646,7 @@ def _figure_crop(artifacts: dict[str, Any], chart: dict[str, Any]) -> np.ndarray
         raise ValueError("figure_source_image_unreadable")
     bbox = chart.get("bbox")
     if not isinstance(bbox, list) or len(bbox) != 4:
-        raise ValueError("figure_bbox_invalid")
+        return prepared.original
     return _crop_bbox(prepared.original, bbox)
 
 
@@ -1150,10 +1180,15 @@ def _strip_report_shell_lines(markdown: str, *, title: str, published_at: str | 
 
 
 def _vision_target_pages(page_payloads: list[dict[str, Any]], *, report_type: str | None = None) -> list[dict[str, Any]]:
+    page_count = len(page_payloads)
     page_payloads = [
         page
         for page in page_payloads
-        if not _is_visual_cover_page(page_no=int(page.get("page_no") or 0), report_type=report_type)
+        if not _is_visual_cover_page(
+            page_no=int(page.get("page_no") or 0),
+            report_type=report_type,
+            page_count=page_count,
+        )
     ]
     limit = _vision_page_limit()
     if limit <= 0 or len(page_payloads) <= limit:
@@ -1269,11 +1304,16 @@ def _pages_requiring_markdown_ocr(
     if not vision_markdown:
         return list(page_payloads)
     page_map = {int(page["page_no"]): page for page in page_payloads}
+    page_count = len(page_payloads)
     targets: list[dict[str, Any]] = []
     seen: set[int] = set()
     for page in vision_markdown.get("pages", []):
         page_no = int(page.get("page_no") or 0)
-        if page_no <= 0 or _is_visual_cover_page(page_no=page_no, report_type=report_type):
+        if page_no <= 0 or _is_visual_cover_page(
+            page_no=page_no,
+            report_type=report_type,
+            page_count=page_count,
+        ):
             continue
         if not _vision_page_markdown_is_usable(page) or _layout_page_needs_markdown_ocr(page):
             page_payload = page_map.get(page_no)
@@ -1281,7 +1321,11 @@ def _pages_requiring_markdown_ocr(
                 targets.append(page_payload)
                 seen.add(page_no)
     for page_no, page_payload in sorted(page_map.items()):
-        if page_no <= 0 or page_no in seen or _is_visual_cover_page(page_no=page_no, report_type=report_type):
+        if page_no <= 0 or page_no in seen or _is_visual_cover_page(
+            page_no=page_no,
+            report_type=report_type,
+            page_count=page_count,
+        ):
             continue
         if not any(int(page.get("page_no") or 0) == page_no for page in vision_markdown.get("pages", [])):
             targets.append(page_payload)
@@ -2418,7 +2462,11 @@ def _aggregate_parse_status(
     candidates = [
         page
         for page in page_payloads
-        if not _is_visual_cover_page(page_no=int(page.get("page_no") or 0), report_type=report_type)
+        if not _is_visual_cover_page(
+            page_no=int(page.get("page_no") or 0),
+            report_type=report_type,
+            page_count=len(page_payloads),
+        )
     ]
     recognized_pages = (vision_markdown or {}).get("pages") or []
     candidate_page_nos = {int(page.get("page_no") or 0) for page in candidates}
@@ -2601,8 +2649,15 @@ def _crop_page_borders(image: np.ndarray) -> np.ndarray:
     return image[top : bottom + 1, left : right + 1]
 
 
-def _is_visual_cover_page(*, page_no: int, report_type: str | None = None) -> bool:
+def _is_visual_cover_page(
+    *,
+    page_no: int,
+    report_type: str | None = None,
+    page_count: int | None = None,
+) -> bool:
     if str(report_type or "").strip().lower() in {"positioning", "technical_levels", "oil", "fx", "market_odds"}:
+        return False
+    if page_count is not None and page_count <= 1:
         return False
     return page_no == 1
 

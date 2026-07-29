@@ -33,7 +33,7 @@ DEFAULT_JIN10_AGENT_MODEL = "gpt-5.6-sol"
 DEFAULT_JIN10_AGENT_REASONING_EFFORT = "high"
 DEFAULT_JIN10_AGENT_REQUEST_TIMEOUT = 300.0
 DEFAULT_JIN10_AGENT_MAX_TOKENS = 4096
-DEFAULT_JIN10_AGENT_MAX_IMAGES = 25
+DEFAULT_JIN10_AGENT_MAX_IMAGES = 32
 STAGE_LABELS = (
     "利率压制态",
     "流动性踩踏态",
@@ -2023,7 +2023,7 @@ def build_jin10_agent_analysis_report_with_llm(
             request_timeout=llm_config["request_timeout"],
             temperature=0.3,
             max_tokens=llm_config["max_tokens"],
-            max_retries=0,
+            max_retries=1,
             json_mode=True,
             audit_context={
                 "caller": "jin10.build_jin10_agent_analysis_report_with_llm",

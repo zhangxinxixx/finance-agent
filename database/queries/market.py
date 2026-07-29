@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -81,6 +81,43 @@ def list_market_candles(
         )
     )
     if source:
+        stmt = stmt.where(MarketCandle.source == source)
+    stmt = stmt.order_by(MarketCandle.open_time.desc(), MarketCandle.id.desc()).limit(limit)
+    return list(reversed(list(session.scalars(stmt).all())))
+
+
+def list_completed_market_candles(
+    session: Session,
+    *,
+    asset: str,
+    timeframe: str,
+    as_of: datetime,
+    bar_duration: timedelta,
+    limit: int = 100,
+    source: str | None = None,
+) -> list[MarketCandle]:
+    """Return completed bars available at ``as_of`` in chronological order.
+
+    ``open_time`` is the bar start.  A bar is eligible only when its end is at
+    or before the point-in-time boundary, expressed as
+    ``open_time <= as_of - bar_duration``.  Naive datetimes are rejected so
+    callers cannot silently mix local clock time with canonical UTC storage.
+    """
+
+    if as_of.tzinfo is None or as_of.utcoffset() is None:
+        raise ValueError("as_of must be timezone-aware")
+    if not isinstance(bar_duration, timedelta) or bar_duration <= timedelta(0):
+        raise ValueError("bar_duration must be positive")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be positive")
+
+    cutoff = as_of.astimezone(UTC) - bar_duration
+    stmt = select(MarketCandle).where(
+        MarketCandle.asset == asset,
+        MarketCandle.timeframe == timeframe,
+        MarketCandle.open_time <= cutoff,
+    )
+    if source is not None:
         stmt = stmt.where(MarketCandle.source == source)
     stmt = stmt.order_by(MarketCandle.open_time.desc(), MarketCandle.id.desc()).limit(limit)
     return list(reversed(list(session.scalars(stmt).all())))

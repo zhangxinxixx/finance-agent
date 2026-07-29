@@ -136,6 +136,9 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     assert feature_summary["gold_mainline_count"] == 9
     assert feature_summary["gold_event_link_count"] == 2
     assert feature_summary["gold_event_mainlines_path"] == f"features/news/{state.retrieved_date}/run-news/gold_event_mainlines.json"
+    assert feature_summary["official_events_path"] == (
+        f"features/news/{state.retrieved_date}/run-news/official_event_snapshot.v1.json"
+    )
     assert brief_summary["confirmed_event_count"] == 1
     assert brief_summary["candidate_event_count"] == 1
     assert brief_summary["gold_mainline_count"] == 9
@@ -147,6 +150,11 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     )
     assert all(path.stat().st_mtime_ns == initial_mtimes[path] for path in immutable_gold_paths)
     assert state.snapshot_dict is not None
+    assert state.snapshot_dict["official_events"]["status"] == "available"
+    assert (
+        state.snapshot_dict["official_events"]["data"]["schema_version"]
+        == "official_event_snapshot.v1"
+    )
     assert state.snapshot_dict["daily_market_brief"]["confirmed_events"][0]["verification_status"] == "official_confirmed"
     assert state.snapshot_dict["gold_event_mainlines"]["mainlines"][0]["mainline_id"] == "fed_policy_path"
     assert state.snapshot_dict["gold_macro_overview"]["theme_rankings"][0]["mainline_id"] == "fed_policy_path"
@@ -171,6 +179,7 @@ def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     gold_overview_payload = json.loads((analysis_dir / "gold_macro_overview.json").read_text(encoding="utf-8"))
     assert (feature_dir / "event_candidates.json").exists()
     assert (feature_dir / "impact_assessments.json").exists()
+    assert (feature_dir / "official_event_snapshot.v1.json").exists()
     assert (feature_dir / "gold_event_mainlines.json").exists()
     assert (feature_dir / "daily_market_brief.json").exists()
     assert (feature_dir / "daily_brief_input_snapshot.json").exists()
@@ -435,6 +444,16 @@ def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp
             MarketCandle(
                 asset="WTI",
                 timeframe="1m",
+                open_time=datetime(2026, 6, 10, 12, 4, tzinfo=timezone.utc),
+                open=80.2,
+                high=80.2,
+                low=80.2,
+                close=80.2,
+                source="fixture",
+            ),
+            MarketCandle(
+                asset="WTI",
+                timeframe="1m",
                 open_time=datetime(2026, 6, 10, 12, 30, tzinfo=timezone.utc),
                 open=80.7,
                 high=80.7,
@@ -455,6 +474,16 @@ def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp
             MarketCandle(
                 asset="DXY",
                 timeframe="1m",
+                open_time=datetime(2026, 6, 10, 12, 4, tzinfo=timezone.utc),
+                open=104.05,
+                high=104.05,
+                low=104.05,
+                close=104.05,
+                source="fixture",
+            ),
+            MarketCandle(
+                asset="DXY",
+                timeframe="1m",
                 open_time=datetime(2026, 6, 10, 12, 30, tzinfo=timezone.utc),
                 open=104.15,
                 high=104.15,
@@ -470,6 +499,16 @@ def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp
                 high=4.40,
                 low=4.40,
                 close=4.40,
+                source="fixture",
+            ),
+            MarketCandle(
+                asset="US10Y",
+                timeframe="1m",
+                open_time=datetime(2026, 6, 10, 12, 4, tzinfo=timezone.utc),
+                open=4.42,
+                high=4.42,
+                low=4.42,
+                close=4.42,
                 source="fixture",
             ),
             MarketCandle(

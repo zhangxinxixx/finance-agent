@@ -1,0 +1,97 @@
+[
+  {
+    "case_id": "jin10_candidate_only",
+    "events": [
+      {
+        "type": "discover",
+        "source_role": "jin10_supplemental",
+        "factors": ["level_proposal"]
+      }
+    ],
+    "expected_lifecycle": "candidate",
+    "strategy_eligible": false
+  },
+  {
+    "case_id": "formal_confirmation_then_activation",
+    "events": [
+      {
+        "type": "discover",
+        "source_role": "cme_large_oi",
+        "factors": ["open_interest"]
+      },
+      {
+        "type": "confirm",
+        "source_role": "cme_options_model",
+        "factors": ["gex_wall", "oi_change"]
+      },
+      {
+        "type": "activate",
+        "source_role": "official_market",
+        "factors": ["official_close", "price_structure"]
+      }
+    ],
+    "expected_lifecycle": "active",
+    "strategy_eligible": true
+  },
+  {
+    "case_id": "touch_then_hold",
+    "start_lifecycle": "active",
+    "events": [
+      {
+        "type": "touch",
+        "source_role": "official_market",
+        "factors": ["price_touch"]
+      },
+      {
+        "type": "hold_confirmed",
+        "source_role": "official_market",
+        "factors": ["official_close", "hold_window"]
+      }
+    ],
+    "expected_lifecycle": "holding",
+    "strategy_eligible": true
+  },
+  {
+    "case_id": "break_reclaim_hold",
+    "start_lifecycle": "holding",
+    "events": [
+      {
+        "type": "break_confirmed",
+        "source_role": "official_market",
+        "factors": ["official_close", "break_window"]
+      },
+      {
+        "type": "reclaim_confirmed",
+        "source_role": "official_market",
+        "factors": ["official_close", "reclaim_window"]
+      },
+      {
+        "type": "reclaim_hold_confirmed",
+        "source_role": "official_market",
+        "factors": ["official_close", "hold_window"]
+      }
+    ],
+    "expected_lifecycle": "holding",
+    "strategy_eligible": true
+  },
+  {
+    "case_id": "retired_is_terminal",
+    "start_lifecycle": "active",
+    "events": [
+      {
+        "type": "retire",
+        "source_role": "system_scheduler",
+        "factors": ["validity_expired"],
+        "retirement_rule": "validity_expired",
+        "day_offset": 31
+      },
+      {
+        "type": "activate",
+        "source_role": "official_market",
+        "factors": ["official_close", "price_structure"]
+      }
+    ],
+    "expected_lifecycle": "retired",
+    "strategy_eligible": false
+  }
+]

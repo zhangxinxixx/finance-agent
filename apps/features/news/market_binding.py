@@ -78,7 +78,10 @@ def build_market_reaction(
         window_assets: dict[str, dict[str, Any]] = {}
         target_time = event_time + timedelta(minutes=WINDOW_MINUTES.get(window, 30))
         for asset in tracked_assets:
-            candles = sorted((_candle_dict(candle) for candle in candles_by_asset.get(asset, [])), key=lambda row: row["open_time"] or datetime.min.replace(tzinfo=timezone.utc))
+            candles = sorted(
+                (row for candle in candles_by_asset.get(asset, []) if (row := _candle_dict(candle)) is not None),
+                key=lambda row: row["open_time"],
+            )
             baseline = _baseline_candle(candles, event_time=event_time)
             after = _after_candle(candles, event_time=event_time, target_time=target_time)
             if baseline is None or after is None:
@@ -106,7 +109,7 @@ def build_market_reaction(
             market_snapshot=empty_snapshot,
             pricing_status="unknown",
             confirmation_summary={"confirmed_count": 0, "contradicted_count": 0, "observed_count": 0},
-            warnings=["No market candles available for event assets."],
+            warnings=sorted(set(warnings)) or ["No market candles available for event assets."],
         )
 
     status = "partial" if warnings else "available"
@@ -166,7 +169,7 @@ def market_snapshot_assets_for_event(
     return ordered
 
 
-def _candle_dict(candle: Any) -> dict[str, Any]:
+def _candle_dict(candle: Any) -> dict[str, Any] | None:
     if isinstance(candle, dict):
         raw = candle
     else:
@@ -179,13 +182,29 @@ def _candle_dict(candle: Any) -> dict[str, Any]:
             "low": getattr(candle, "low", None),
             "close": getattr(candle, "close", None),
             "source": getattr(candle, "source", None),
+            "source_ref": getattr(candle, "source_ref", None),
+            "source_url": getattr(candle, "source_url", None),
+            "raw_path": getattr(candle, "raw_path", None),
+            "retrieved_at": getattr(candle, "retrieved_at", None),
+            "updated_at": getattr(candle, "updated_at", None),
+            "created_at": getattr(candle, "created_at", None),
         }
+    open_time = _parse_time(raw.get("open_time"))
+    close = _finite_number(raw.get("close"))
+    if open_time is None or close is None:
+        return None
     return {
         "asset": str(raw.get("asset") or ""),
         "timeframe": str(raw.get("timeframe") or ""),
-        "open_time": _parse_time(raw.get("open_time")),
-        "close": float(raw.get("close")),
+        "open_time": open_time,
+        "close": close,
         "source": raw.get("source"),
+        "source_ref": raw.get("source_ref"),
+        "source_url": raw.get("source_url"),
+        "raw_path": raw.get("raw_path"),
+        "retrieved_at": raw.get("retrieved_at"),
+        "updated_at": raw.get("updated_at"),
+        "created_at": raw.get("created_at"),
     }
 
 
@@ -196,10 +215,7 @@ def _baseline_candle(candles: list[dict[str, Any]], *, event_time: datetime) -> 
 
 def _after_candle(candles: list[dict[str, Any]], *, event_time: datetime, target_time: datetime) -> dict[str, Any] | None:
     eligible = [candle for candle in candles if candle["open_time"] and event_time < candle["open_time"] <= target_time]
-    if eligible:
-        return eligible[-1]
-    later = [candle for candle in candles if candle["open_time"] and candle["open_time"] > event_time]
-    return later[0] if later else None
+    return eligible[-1] if eligible else None
 
 
 def _asset_reaction(
@@ -243,7 +259,84 @@ def _asset_reaction(
         "threshold": threshold,
         "threshold_unit": threshold_unit,
         "threshold_hit": threshold_hit,
+        "baseline_candle_refs": _candle_lineage(baseline, role="baseline", asset=asset),
+        "after_candle_refs": _candle_lineage(after, role="after", asset=asset),
     }
+
+
+def _candle_lineage(candle: dict[str, Any], *, role: str, asset: str) -> list[dict[str, str]]:
+    """Return auditable candle lineage, or no refs when legacy data is incomplete."""
+
+    source_ref = candle.get("source_ref")
+    source_ref = source_ref if isinstance(source_ref, dict) else {}
+    source = _nonempty(source_ref.get("source")) or _nonempty(candle.get("source"))
+    reference = (
+        _nonempty(source_ref.get("reference"))
+        or _nonempty(source_ref.get("source_url"))
+        or _nonempty(source_ref.get("raw_path"))
+        or _nonempty(candle.get("source_url"))
+        or _nonempty(candle.get("raw_path"))
+    )
+    raw_path = _nonempty(source_ref.get("raw_path")) or _nonempty(candle.get("raw_path"))
+    retrieved_at, retrieval_basis = _lineage_retrieval_time(source_ref, candle)
+    if source is None or reference is None or retrieved_at is None or retrieval_basis is None:
+        return []
+    return [{
+        "role": role,
+        "asset": asset,
+        "timeframe": str(candle.get("timeframe") or ""),
+        "open_time": _iso(candle.get("open_time")) or "",
+        "source": source,
+        "reference": reference,
+        "raw_path": raw_path or "",
+        "retrieved_at": _iso(retrieved_at) or "",
+        "retrieval_basis": retrieval_basis,
+    }]
+
+
+def _lineage_retrieval_time(
+    source_ref: dict[str, Any], candle: dict[str, Any],
+) -> tuple[datetime | None, str | None]:
+    for value, basis in (
+        (source_ref.get("retrieved_at"), "source_ref.retrieved_at"),
+        (candle.get("retrieved_at"), "candle.retrieved_at"),
+        (candle.get("updated_at"), "orm.updated_at"),
+        (candle.get("created_at"), "orm.created_at"),
+    ):
+        parsed = _parse_aware_time(value)
+        if parsed is not None:
+            return parsed, basis
+    return None, None
+
+
+def _parse_aware_time(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _nonempty(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result == result and result not in (float("inf"), float("-inf")) else None
 
 
 def _expected_directions(impact: dict[str, Any]) -> dict[str, str]:

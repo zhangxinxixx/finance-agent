@@ -13,6 +13,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apps.collectors.jin10.adapter import collect_raw_index
+from apps.collectors.jin10.reportory import reportory_daily_gold_report_id
 from apps.data_layer.jin10_image_assets import DEFAULT_JIN10_IMAGE_RETENTION_DAYS
 from scripts.run_daily_report_pipeline import (
     COMPLETION_MARKER_NAME,
@@ -81,7 +82,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--analysis-model", default=None, help="Agent analysis model; defaults to --model.")
     parser.add_argument("--analysis-reasoning-effort", default="high", choices=("low", "medium", "high"))
     parser.add_argument("--analysis-timeout", type=float, default=300.0)
-    parser.add_argument("--analysis-max-images", type=int, default=25)
+    parser.add_argument("--analysis-max-images", type=int, default=32)
     parser.add_argument(
         "--vision-provider",
         default="cockpit",
@@ -150,17 +151,42 @@ def _fetch_article(
     report_type: str,
     external_root: Path,
     browser_profile: str | None,
+    source_url: str | None = None,
+    title: str | None = None,
+    published_at: str | None = None,
 ) -> dict[str, Any]:
-    cmd = [
-        sys.executable,
-        "scripts/fetch_jin10_report.py",
-        "--article-id",
-        article_id,
-        "--report-type",
-        report_type,
-        "--external-root",
-        str(external_root),
-    ]
+    is_reportory_daily = False
+    if source_url:
+        try:
+            reportory_daily_gold_report_id(source_url)
+        except ValueError:
+            pass
+        else:
+            is_reportory_daily = True
+    if is_reportory_daily:
+        cmd = [
+            sys.executable,
+            "scripts/fetch_jin10_reportory_daily_gold.py",
+            "--url",
+            str(source_url),
+            "--external-root",
+            str(external_root),
+        ]
+        if title:
+            cmd.extend(["--title", title])
+        if published_at:
+            cmd.extend(["--published-at", published_at])
+    else:
+        cmd = [
+            sys.executable,
+            "scripts/fetch_jin10_report.py",
+            "--article-id",
+            article_id,
+            "--report-type",
+            report_type,
+            "--external-root",
+            str(external_root),
+        ]
     if browser_profile:
         cmd.extend(["--browser-profile", browser_profile])
     return _run_json_command(cmd, env=env)
@@ -278,6 +304,9 @@ def _attempt_once(
             report_type=args.report_type,
             external_root=external_root,
             browser_profile=args.browser_profile,
+            source_url=str(discovered.get("source_url") or ""),
+            title=str(discovered.get("title") or ""),
+            published_at=str(discovered.get("published_at") or ""),
         )
         report_dir = str(fetched.get("report_dir") or "")
 
@@ -298,7 +327,7 @@ def _attempt_once(
             article_id=article_id,
             pipeline_summary=marker,
         )
-        if completion.completed and marker is not None:
+        if completion.status == "success" and marker is not None:
             return _attempt_from_completion(
                 completion,
                 trade_date=trade_date,
@@ -322,7 +351,7 @@ def _attempt_once(
         analysis_model=getattr(args, "analysis_model", None) or getattr(args, "model", DEFAULT_MODEL),
         analysis_reasoning_effort=getattr(args, "analysis_reasoning_effort", "high"),
         analysis_timeout=getattr(args, "analysis_timeout", 300.0),
-        analysis_max_images=getattr(args, "analysis_max_images", 25),
+        analysis_max_images=getattr(args, "analysis_max_images", 32),
     )
     completion = validate_daily_analysis_completion(
         storage_root=storage_root,

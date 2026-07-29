@@ -20,6 +20,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.collectors.jin10.fetcher import Jin10CategoryEntry, fetch_category_entries  # noqa: E402
+from apps.collectors.jin10.reportory import (  # noqa: E402
+    fetch_reportory_daily_gold_entries,
+    reportory_daily_gold_report_date,
+    reportory_daily_gold_report_id,
+)
 from apps.collectors.cme.downloader import build_daily_bulletin_url  # noqa: E402
 from apps.worker.pipelines.weekly_context_revision import (  # noqa: E402
     build_weekly_context_revision_input_snapshot,
@@ -165,7 +170,7 @@ def matching_entries(
             continue
         if any(marker in entry.title for marker in window.exclude):
             continue
-        published_on = publication_date(entry.published_at, now=now)
+        published_on = _entry_publication_date(entry, now=now)
         if published_on is None:
             continue
         age_days = (today - published_on).days
@@ -175,6 +180,12 @@ def matching_entries(
         if len(matches) >= window.max_articles:
             break
     return matches
+
+
+def _entry_publication_date(entry: Jin10CategoryEntry, *, now: datetime) -> date | None:
+    if _is_reportory_daily_gold_entry(entry):
+        return date.fromisoformat(reportory_daily_gold_report_date(entry.source_url))
+    return publication_date(entry.published_at, now=now)
 
 
 class CommandExecutionError(RuntimeError):
@@ -192,23 +203,70 @@ def run_command(command: list[str], *, env: dict[str, str]) -> dict[str, Any]:
     return json.loads(stdout) if stdout else {}
 
 
+def accepted_agent_analysis(path: Path) -> bool:
+    """Return true only for an analysis that no longer needs review or retry."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    quality_audit = payload.get("quality_audit")
+    return isinstance(quality_audit, dict) and quality_audit.get("status") == "accepted"
+
+
+def _is_reportory_daily_gold_entry(entry: Jin10CategoryEntry) -> bool:
+    try:
+        reportory_daily_gold_report_id(entry.source_url)
+    except ValueError:
+        return False
+    return True
+
+
+def _dedupe_entries(entries: list[Jin10CategoryEntry]) -> list[Jin10CategoryEntry]:
+    selected: list[Jin10CategoryEntry] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        identity = (entry.article_id, entry.source_url)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(entry)
+    return selected
+
+
 def scan_jin10(
     window: ScanWindow, *, now: datetime, external_root: Path, storage_root: Path, dry_run: bool, env: dict[str, str]
 ) -> dict[str, Any]:
     assert window.category and window.report_type
+    discovery_errors: list[dict[str, str]] = []
     with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-        entries = fetch_category_entries(category_code=window.category, client=client)
+        if window.key == "jin10_gold":
+            reportory_entries: list[Jin10CategoryEntry] = []
+            legacy_entries: list[Jin10CategoryEntry] = []
+            try:
+                reportory_entries = fetch_reportory_daily_gold_entries(client=client)
+            except Exception as exc:
+                discovery_errors.append({"source": "reportory_daily_gold", "error": str(exc)})
+            try:
+                legacy_entries = fetch_category_entries(category_code=window.category, client=client)
+            except Exception as exc:
+                discovery_errors.append({"source": "xnews_legacy", "error": str(exc)})
+            entries = _dedupe_entries([*reportory_entries, *legacy_entries])
+        else:
+            entries = fetch_category_entries(category_code=window.category, client=client)
     candidates = matching_entries(entries, window=window, now=now)
     actions: list[dict[str, Any]] = []
     for entry in candidates:
-        published_on = publication_date(entry.published_at, now=now)
+        published_on = _entry_publication_date(entry, now=now)
         trade_date = (published_on or now.astimezone(BEIJING).date()).isoformat()
         external_meta = external_root / trade_date / window.report_type / entry.article_id / "meta.json"
         output = storage_root / "outputs" / "jin10" / trade_date / entry.article_id / "agent_analysis_report.json"
         completion = (
             storage_root / "outputs" / "jin10" / trade_date / entry.article_id / "daily_analysis_completion.json"
         )
-        if output.exists() and completion.exists():
+        if output.exists() and completion.exists() and accepted_agent_analysis(output):
             action: dict[str, Any] = {
                 "article_id": entry.article_id,
                 "status": "complete",
@@ -235,8 +293,21 @@ def scan_jin10(
             )
             continue
         if not external_meta.exists():
-            run_command(
-                [
+            if _is_reportory_daily_gold_entry(entry):
+                fetch_command = [
+                    sys.executable,
+                    "scripts/fetch_jin10_reportory_daily_gold.py",
+                    "--url",
+                    entry.source_url,
+                    "--external-root",
+                    str(external_root),
+                ]
+                if entry.published_at:
+                    fetch_command.extend(["--published-at", entry.published_at])
+                if entry.title:
+                    fetch_command.extend(["--title", entry.title])
+            else:
+                fetch_command = [
                     sys.executable,
                     "scripts/fetch_jin10_report.py",
                     "--article-id",
@@ -245,9 +316,8 @@ def scan_jin10(
                     window.category,
                     "--external-root",
                     str(external_root),
-                ],
-                env=env,
-            )
+                ]
+            run_command(fetch_command, env=env)
         summary = run_command(
             [
                 sys.executable,
@@ -281,6 +351,7 @@ def scan_jin10(
         "listing_count": len(entries),
         "candidate_count": len(candidates),
         "actions": actions,
+        "discovery_errors": discovery_errors,
     }
 
 

@@ -178,7 +178,7 @@ def main() -> int:
     parser.add_argument("--analysis-model", default="gpt-5.6-sol")
     parser.add_argument("--analysis-reasoning-effort", default="high", choices=("low", "medium", "high"))
     parser.add_argument("--analysis-timeout", type=float, default=300.0)
-    parser.add_argument("--analysis-max-images", type=int, default=25)
+    parser.add_argument("--analysis-max-images", type=int, default=32)
     parser.add_argument("--article-id", action="append", default=None, help="Only process the given Jin10 article id. Repeatable.")
     args = parser.parse_args()
     os.environ["JIN10_IMAGE_RECOGNITION"] = "vlm"

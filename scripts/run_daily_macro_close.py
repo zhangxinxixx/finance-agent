@@ -99,6 +99,33 @@ def _build_close_snapshot(
     return close_snapshot
 
 
+def _gold_policy_runtime_kwargs(*, storage_root: Path, snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Prepare the formal policy shadow inputs without blocking legacy reports."""
+
+    try:
+        from apps.analysis.gold_policy.runtime_inputs import prepare_gold_policy_runtime_inputs
+
+        runtime = prepare_gold_policy_runtime_inputs(storage_root=storage_root, snapshot=snapshot)
+        return (
+            {
+                "gold_feature_snapshot_prebuilt": runtime.current,
+                "previous_gold_feature_snapshot_prebuilt": runtime.previous,
+                "gold_policy_execution_mode": "shadow",
+            },
+            {"status": "ready", "lookup": runtime.lookup.summary()},
+        )
+    except Exception as exc:
+        return (
+            {},
+            {
+                "status": "failed",
+                "reason_code": "gold_policy_runtime_prepare_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "lookup": {},
+            },
+        )
+
+
 def run_daily_macro_close(*, trade_date: str, storage_root: Path, asset: str = "XAUUSD", run_id: str | None = None) -> dict[str, Any]:
     context = build_daily_analysis_context(trade_date=trade_date, storage_root=storage_root, asset=asset)
     premarket, premarket_path = _latest_premarket_snapshot(storage_root, trade_date=trade_date, asset=asset)
@@ -121,11 +148,19 @@ def run_daily_macro_close(*, trade_date: str, storage_root: Path, asset: str = "
         run_id=close_run_id,
         asset=asset,
     )
+    # Input passports must be derived from the original premarket artifact:
+    # the close wrapper has a new snapshot_time, but it must not relabel a
+    # reused observation as newly fresh.
+    runtime_kwargs, gold_policy_runtime = _gold_policy_runtime_kwargs(
+        storage_root=storage_root,
+        snapshot=premarket,
+    )
     summaries, outputs = run_composite_analysis_pipeline(
         storage_root=storage_root,
         snapshot=snapshot,
         run_id=close_run_id,
         created_at=datetime.now(timezone.utc),
+        **runtime_kwargs,
     )
     manifest = {
         "schema_version": "daily-macro-close-v1",
@@ -142,6 +177,8 @@ def run_daily_macro_close(*, trade_date: str, storage_root: Path, asset: str = "
             "analysis_baseline": context.get("analysis_baseline") or {},
             "freshness": context.get("freshness") or {},
         },
+        "gold_policy_runtime": gold_policy_runtime,
+        "gold_policy_artifact_paths": dict(outputs.get("gold_policy_artifact_paths") or {}),
         "summaries": summaries,
         "final_report_paths": list((outputs.get("report_result") or {}).get("paths") or []),
         "strategy_card_paths": list((outputs.get("card_result") or {}).get("paths") or []),
@@ -155,6 +192,8 @@ def run_daily_macro_close(*, trade_date: str, storage_root: Path, asset: str = "
         "final_report_paths": manifest["final_report_paths"],
         "strategy_card_paths": manifest["strategy_card_paths"],
         "gold_analysis_context": manifest["gold_analysis_context"],
+        "gold_policy_runtime": manifest["gold_policy_runtime"],
+        "gold_policy_artifact_paths": manifest["gold_policy_artifact_paths"],
     }
 
 

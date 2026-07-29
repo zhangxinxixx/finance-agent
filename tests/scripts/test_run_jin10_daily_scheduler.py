@@ -107,6 +107,39 @@ def test_attempt_once_dry_run_reports_ready_after_discovery(monkeypatch, tmp_pat
     assert result.article_id == "221300"
 
 
+def test_fetch_article_routes_reportory_daily_to_new_collector(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    source_url = (
+        "https://reportory.jin10.com/jin10-report-hub/v2/market-report/"
+        "daily-gold-silver-report/2026/07/28/20260728T025217Z-9958b921.html"
+    )
+
+    def fake_run_json_command(cmd, *, env):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return {"article_id": "20260728T025217Z-9958b921"}
+
+    monkeypatch.setattr(scheduler, "_run_json_command", fake_run_json_command)
+
+    result = scheduler._fetch_article(
+        env={"no_proxy": "localhost"},
+        article_id="20260728T025217Z-9958b921",
+        report_type="daily",
+        external_root=tmp_path,
+        browser_profile="/tmp/profile",
+        source_url=source_url,
+        title="每日金银报告",
+        published_at="2026-07-28 10:54:01",
+    )
+
+    cmd = captured["cmd"]
+    assert "scripts/fetch_jin10_reportory_daily_gold.py" in cmd
+    assert cmd[cmd.index("--url") + 1] == source_url
+    assert cmd[cmd.index("--published-at") + 1] == "2026-07-28 10:54:01"
+    assert cmd[cmd.index("--browser-profile") + 1] == "/tmp/profile"
+    assert result["article_id"] == "20260728T025217Z-9958b921"
+
+
 def test_invalid_existing_json_does_not_claim_success_and_reruns(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(scheduler, "_has_local_report", lambda **_: {"article_id": "221250"})
     base = tmp_path / "outputs" / "jin10" / "2026-06-05" / "221250"
@@ -142,6 +175,31 @@ def test_validated_existing_marker_can_skip_pipeline(monkeypatch, tmp_path: Path
 
     assert result.status == "success"
     assert result.pipeline_summary["skipped"] is True
+
+
+def test_needs_review_existing_marker_reruns_pipeline(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(scheduler, "_has_local_report", lambda **_: {"article_id": "221250"})
+    _write_complete_artifacts(tmp_path, quality_status="needs_review")
+    base = tmp_path / "outputs" / "jin10" / "2026-06-05" / "221250"
+    (base / scheduler.COMPLETION_MARKER_NAME).write_text(
+        json.dumps(_pipeline_summary(quality_status="needs_review")),
+        encoding="utf-8",
+    )
+    calls = 0
+
+    def fake_run_pipeline(**_):
+        nonlocal calls
+        calls += 1
+        _write_complete_artifacts(tmp_path, quality_status="accepted")
+        return _pipeline_summary(quality_status="accepted")
+
+    monkeypatch.setattr(scheduler, "_run_pipeline", fake_run_pipeline)
+
+    result = scheduler._attempt_once(trade_date="2026-06-05", args=_args(tmp_path), env={})
+
+    assert calls == 1
+    assert result.status == "success"
+    assert not result.pipeline_summary.get("skipped")
 
 
 def test_needs_review_is_limited_success(monkeypatch, tmp_path: Path) -> None:

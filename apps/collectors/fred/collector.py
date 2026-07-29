@@ -22,8 +22,10 @@ FRED_SERIES = (
     "DGS2",
     "DGS3MO",
     "DGS10",
+    "DGS30",
     "DFII10",
     "T10YIE",
+    "DTWEXBGS",
 )
 FRED_MILLIONS_TO_BILLIONS = frozenset({"WRESBAL"})
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"

@@ -29,6 +29,13 @@ from sqlalchemy.orm import sessionmaker
 
 from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
 from apps.analysis.context_bundle.snapshot_evidence import build_state_shadow_input
+from apps.analysis.gold_policy.runtime_inputs import prepare_gold_policy_runtime_inputs
+from apps.features.market_data import (
+    build_market_price_snapshot,
+    build_oil_snapshot,
+    load_formal_market_snapshots,
+    resolve_formal_snapshot_as_of,
+)
 from apps.output.context_bundle import load_context_bundle, write_context_bundle
 from apps.output.artifacts import artifact_run_dir
 from apps.premarket import (
@@ -155,6 +162,7 @@ __all__ = [
     "_register_run_support_artifacts",
     "_register_runner_step_artifacts",
     "_run_composite_analysis_pipeline",
+    "prepare_gold_policy_runtime_inputs",
     "_create_step_dispatch_state",
     "_dispatch_premarket_step",
     "_has_blocked_upstream_in_same_pipeline",
@@ -1284,6 +1292,7 @@ def run_premarket(
     # Persist unified Analysis Snapshot before generic provenance so failures are reflected.
     analysis_snapshot: dict[str, Any] | None = None
     try:
+        snapshot_run_time = _now()
         analysis_snapshot_path, analysis_snapshot = _persist_analysis_snapshot(
             storage_root,
             run_id,
@@ -1291,6 +1300,8 @@ def run_premarket(
             cme_state,
             news_state,
             analysis_context_date=task.trade_date,
+            db_session=db,
+            run_time=snapshot_run_time,
         )
         macro_state.step_summaries["analysis_snapshot"] = {
             "step": "analysis_snapshot",
@@ -1366,6 +1377,27 @@ def run_premarket(
                 }
             try:
                 composite_created_at = datetime.now(timezone.utc)
+                gold_policy_runtime_inputs = None
+                try:
+                    gold_policy_runtime_inputs = prepare_gold_policy_runtime_inputs(
+                        storage_root=storage_root,
+                        snapshot=analysis_snapshot,
+                    )
+                    macro_state.step_summaries["gold_policy_runtime"] = {
+                        "step": "gold_policy_runtime",
+                        "status": "success",
+                        "execution_mode": "shadow",
+                        "current_snapshot_id": gold_policy_runtime_inputs.current.snapshot_id,
+                        "previous_lookup": gold_policy_runtime_inputs.lookup.summary(),
+                    }
+                except Exception as gold_policy_exc:
+                    logger.exception("Gold policy shadow runtime preparation failed")
+                    macro_state.step_summaries["gold_policy_runtime"] = {
+                        "step": "gold_policy_runtime",
+                        "status": "failed",
+                        "execution_mode": "shadow",
+                        "error": str(gold_policy_exc),
+                    }
                 resolved_shadow_input = state_shadow_input
                 if resolve_analysis_context_mode(analysis_context_mode) in {
                     STATE_DELTA_CONTEXT_MODE,
@@ -1415,6 +1447,17 @@ def run_premarket(
                         run_id=run_id,
                         created_at=composite_created_at,
                         analysis_context_mode=LEGACY_CONTEXT_MODE,
+                        gold_feature_snapshot_prebuilt=(
+                            gold_policy_runtime_inputs.current
+                            if gold_policy_runtime_inputs is not None
+                            else None
+                        ),
+                        previous_gold_feature_snapshot_prebuilt=(
+                            gold_policy_runtime_inputs.previous
+                            if gold_policy_runtime_inputs is not None
+                            else None
+                        ),
+                        gold_policy_execution_mode="shadow",
                     )
                     if canary_setup_error is None and recovered_canary_result is None:
                         try:
@@ -1471,6 +1514,17 @@ def run_premarket(
                         analysis_context_mode=analysis_context_mode,
                         state_shadow_input=resolved_shadow_input,
                         state_delta_analyzer=state_delta_analyzer,
+                        gold_feature_snapshot_prebuilt=(
+                            gold_policy_runtime_inputs.current
+                            if gold_policy_runtime_inputs is not None
+                            else None
+                        ),
+                        previous_gold_feature_snapshot_prebuilt=(
+                            gold_policy_runtime_inputs.previous
+                            if gold_policy_runtime_inputs is not None
+                            else None
+                        ),
+                        gold_policy_execution_mode="shadow",
                     )
                 macro_state.step_summaries.update(composite_summaries)
                 if recovered_canary_result is not None:
@@ -2060,6 +2114,8 @@ def _persist_analysis_snapshot(
     news_state: object | None = None,
     *,
     analysis_context_date: str | None = None,
+    db_session: DBSession | None = None,
+    run_time: datetime | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Build and write the unified Analysis Snapshot from in-memory pipeline states.
 
@@ -2074,6 +2130,47 @@ def _persist_analysis_snapshot(
         options_snapshot,
         analysis_context_date=analysis_context_date,
     )
+    snapshot_run_time = _safe_aware_utc(run_time or _now())
+    formal_as_of = snapshot_run_time
+    try:
+        formal_as_of = resolve_formal_snapshot_as_of(
+            trade_date=trade_date,
+            run_time=snapshot_run_time,
+        )
+        if db_session is None:
+            raise RuntimeError("formal market snapshot session unavailable")
+        formal_bundle = load_formal_market_snapshots(db_session, as_of=formal_as_of)
+        market_price_snapshot = formal_bundle.market_prices
+        oil_snapshot = formal_bundle.oil
+        formal_status = (
+            "success"
+            if market_price_snapshot.readiness == "ready" and oil_snapshot.readiness == "ready"
+            else "degraded"
+        )
+        formal_error = None
+    except Exception as formal_exc:
+        # Formal market data never falls back to legacy prose, quote points, or
+        # an unconstrained DB read.  Preserve the legacy analysis path with a
+        # deterministic blocked formal section instead.
+        logger.warning("Formal market snapshot load failed: %s", type(formal_exc).__name__)
+        market_price_snapshot = build_market_price_snapshot(
+            candidates=[],
+            as_of=formal_as_of,
+        )
+        oil_snapshot = build_oil_snapshot(candidates=[], as_of=formal_as_of)
+        formal_status = "degraded"
+        formal_error = f"{type(formal_exc).__name__}: formal market snapshot load failed"
+
+    step_summaries = getattr(macro_state, "step_summaries", None)
+    if isinstance(step_summaries, dict):
+        step_summaries["formal_market_snapshots"] = {
+            "step": "formal_market_snapshots",
+            "status": formal_status,
+            "as_of": formal_as_of.isoformat(),
+            "market_prices_readiness": market_price_snapshot.readiness,
+            "oil_readiness": oil_snapshot.readiness,
+            "error": formal_error,
+        }
     source_refs = list(getattr(macro_state, "all_source_refs", []) or [])
     source_refs.extend(_cme_source_refs(cme_state))
     source_refs.extend(getattr(news_state, "source_refs", []) or [])
@@ -2098,9 +2195,20 @@ def _persist_analysis_snapshot(
         collected_points=collected_points,
         news_snapshot=news_snapshot,
         gold_analysis_context=gold_analysis_context,
+        market_price_snapshot=market_price_snapshot,
+        oil_snapshot=oil_snapshot,
+        snapshot_time=snapshot_run_time.isoformat(),
     )
     path = write_analysis_snapshot(snapshot, storage_root=storage_root)
     return path, snapshot
+
+
+def _safe_aware_utc(value: datetime) -> datetime:
+    """Normalize runner time without admitting a naive point-in-time boundary."""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("run_time must be timezone-aware")
+    return value.astimezone(timezone.utc)
 
 
 def _resolve_analysis_trade_date(

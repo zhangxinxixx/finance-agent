@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 from apps.features.news.market_binding import archive_market_reactions, build_market_reaction
@@ -22,8 +23,8 @@ HORMUZ_ASSESSMENT = {
 }
 
 
-def _candle(asset: str, open_time: str, close: float, timeframe: str = "1m") -> dict[str, object]:
-    return {
+def _candle(asset: str, open_time: str, close: float, timeframe: str = "1m", **extra: object) -> dict[str, object]:
+    candle: dict[str, object] = {
         "asset": asset,
         "timeframe": timeframe,
         "open_time": open_time,
@@ -33,6 +34,8 @@ def _candle(asset: str, open_time: str, close: float, timeframe: str = "1m") -> 
         "close": close,
         "source": "fixture",
     }
+    candle.update(extra)
+    return candle
 
 
 def test_market_reaction_marks_partially_priced_when_expected_assets_move() -> None:
@@ -131,6 +134,119 @@ def test_market_reaction_uses_default_5m_window_and_observes_usdjpy_in_core_snap
     assert usdjpy_snapshot["status"] == "observed"
     assert usdjpy_snapshot["latest_window"] == "2h"
     assert usdjpy_snapshot["observed_window_count"] == 3
+
+
+def test_market_reaction_attaches_complete_candle_lineage_without_mutating_input() -> None:
+    source_ref = {
+        "source": "twelve_data",
+        "reference": "https://api.example.test/xauusd",
+        "raw_path": "raw/market/xauusd.json",
+        "retrieved_at": "2026-06-10T08:20:00+00:00",
+    }
+    candles = {
+        "XAUUSD": [
+            _candle("XAUUSD", "2026-06-10T08:14:00+00:00", 2300.0, source_ref=source_ref),
+            _candle("XAUUSD", "2026-06-10T08:45:00+00:00", 2310.0, source_ref=source_ref),
+        ]
+    }
+    before = copy.deepcopy(candles)
+    results = [build_market_reaction(EVENT, HORMUZ_ASSESSMENT, candles, windows=("30m",)).to_dict() for _ in range(100)]
+    movement = results[0]["windows"]["30m"]["XAUUSD"]
+
+    assert all(result == results[0] for result in results)
+    assert candles == before
+    for role, refs, open_time in (
+        ("baseline", movement["baseline_candle_refs"], "2026-06-10T08:14:00+00:00"),
+        ("after", movement["after_candle_refs"], "2026-06-10T08:45:00+00:00"),
+    ):
+        assert refs == [{
+            "role": role,
+            "asset": "XAUUSD",
+            "timeframe": "1m",
+            "open_time": open_time,
+            "source": "twelve_data",
+            "reference": "https://api.example.test/xauusd",
+            "raw_path": "raw/market/xauusd.json",
+            "retrieved_at": "2026-06-10T08:20:00+00:00",
+            "retrieval_basis": "source_ref.retrieved_at",
+        }]
+
+
+def test_market_reaction_keeps_legacy_observation_without_complete_lineage() -> None:
+    candles = {
+        "XAUUSD": [
+            _candle("XAUUSD", "2026-06-10T08:14:00+00:00", 2300.0),
+            _candle("XAUUSD", "2026-06-10T08:45:00+00:00", 2310.0),
+        ]
+    }
+
+    movement = build_market_reaction(EVENT, HORMUZ_ASSESSMENT, candles, windows=("30m",)).to_dict()["windows"]["30m"]["XAUUSD"]
+
+    assert movement["direction"] == "up"
+    assert movement["baseline_candle_refs"] == []
+    assert movement["after_candle_refs"] == []
+
+
+def test_market_reaction_does_not_use_candle_after_strict_window() -> None:
+    candles = {
+        "XAUUSD": [
+            _candle("XAUUSD", "2026-06-10T08:14:00+00:00", 2300.0),
+            _candle("XAUUSD", "2026-06-10T08:46:00+00:00", 2310.0),
+        ]
+    }
+
+    reaction = build_market_reaction(EVENT, HORMUZ_ASSESSMENT, candles, windows=("30m",)).to_dict()
+
+    assert reaction["status"] == "unavailable"
+    assert reaction["windows"] == {}
+    assert reaction["warnings"] == ["XAUUSD has insufficient candles for 30m."]
+
+
+def test_market_reaction_keeps_future_retrieval_in_lineage_for_downstream_rejection() -> None:
+    source_ref = {
+        "reference": "market://xauusd",
+        "retrieved_at": "2026-06-10T09:00:00+00:00",
+    }
+    candles = {
+        "XAUUSD": [
+            _candle("XAUUSD", "2026-06-10T08:14:00+00:00", 2300.0, source_ref=source_ref),
+            _candle("XAUUSD", "2026-06-10T08:45:00+00:00", 2310.0, source_ref=source_ref),
+        ]
+    }
+
+    movement = build_market_reaction(EVENT, HORMUZ_ASSESSMENT, candles, windows=("30m",)).to_dict()["windows"]["30m"]["XAUUSD"]
+
+    assert movement["baseline_candle_refs"][0]["retrieved_at"] == "2026-06-10T09:00:00+00:00"
+    assert movement["after_candle_refs"][0]["retrieved_at"] == "2026-06-10T09:00:00+00:00"
+
+
+def test_market_reaction_uses_orm_ingestion_time_when_source_ref_has_no_retrieval_time() -> None:
+    candles = {
+        "XAUUSD": [
+            _candle("XAUUSD", "2026-06-10T08:14:00+00:00", 2300.0, source_url="market://xauusd", created_at="2026-06-10T08:16:00+00:00"),
+            _candle("XAUUSD", "2026-06-10T08:45:00+00:00", 2310.0, source_url="market://xauusd", updated_at="2026-06-10T08:46:00+00:00"),
+        ]
+    }
+
+    movement = build_market_reaction(EVENT, HORMUZ_ASSESSMENT, candles, windows=("30m",)).to_dict()["windows"]["30m"]["XAUUSD"]
+
+    assert movement["baseline_candle_refs"][0]["retrieval_basis"] == "orm.created_at"
+    assert movement["after_candle_refs"][0]["retrieval_basis"] == "orm.updated_at"
+
+
+def test_market_reaction_skips_malformed_candles_without_crashing() -> None:
+    candles = {
+        "XAUUSD": [
+            _candle("XAUUSD", "bad-time", 2300.0),
+            _candle("XAUUSD", "2026-06-10T08:14:00+00:00", float("nan")),
+            _candle("XAUUSD", "2026-06-10T08:14:00+00:00", 2300.0),
+            _candle("XAUUSD", "2026-06-10T08:45:00+00:00", 2310.0),
+        ]
+    }
+
+    reaction = build_market_reaction(EVENT, HORMUZ_ASSESSMENT, candles, windows=("30m",)).to_dict()
+
+    assert reaction["windows"]["30m"]["XAUUSD"]["direction"] == "up"
 
 
 def test_archive_market_reactions_writes_feature_artifact(tmp_path: Path) -> None:

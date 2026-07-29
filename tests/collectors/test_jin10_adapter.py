@@ -1679,6 +1679,42 @@ def test_agent_output_quality_audit_checks_rendered_consistency_and_daily_covera
     assert {"daily_confirmation_matrix_missing", "daily_scenario_coverage_low", "render_conclusion_mismatch"} <= codes
 
 
+def test_agent_output_quality_audit_does_not_require_daily_context_for_weekly_report() -> None:
+    confirmation_matrix = {
+        "阶段": "观察",
+        "底部证据": "存在",
+        "趋势反转证据": "待确认",
+        "价格确认": "未完成",
+        "宏观确认": "未完成",
+        "资金确认": "未完成",
+    }
+    agent_report = {
+        "one_line_conclusion": "黄金周度反转仍待确认。",
+        "gold_analysis": "收益率与价格确认尚未同时完成。",
+        "final_summary": "保持条件性观察。",
+        "market_stage": {"label": "反转观察窗口", "confirmation_matrix": confirmation_matrix},
+        "key_levels": [{"value": "5.2%"}],
+        "scenario_paths": [{"name": str(i)} for i in range(3)],
+        "trading_implications": [{"role": str(i)} for i in range(3)],
+        "source_refs": [{"source": "jin10", "article_id": "225745"}],
+        "evidence_basis": {"report_facts": ["10年期美债收益率是关键变量"]},
+        "generated_from": {
+            "prompt_profile": "default_daily",
+            "source": "jin10_agent_analysis_llm",
+            "daily_context": {},
+        },
+    }
+    rendered = "\n".join(("黄金周度反转仍待确认。", "反转观察窗口", "5.2%"))
+
+    audit = _build_agent_output_quality_audit(
+        agent_report=agent_report,
+        rendered_markdown=rendered,
+        report_type="weekly",
+    )
+
+    assert audit == {"status": "accepted", "reasons": [], "checked_at": audit["checked_at"]}
+
+
 def test_combine_quality_audits_never_promotes_needs_review_or_rejected() -> None:
     accepted = {"status": "accepted", "reasons": []}
     needs_review = {"status": "needs_review", "reasons": [{"code": "degraded"}]}

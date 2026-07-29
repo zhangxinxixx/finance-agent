@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import copy
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from apps.analysis.agents import AgentBias, AgentOutput, AgentStatus
 from apps.analysis.agents.coordinator import coordinate_agent_outputs
+from apps.analysis.gold_policy.analysis_policy import evaluate_gold_analysis_policy
+from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
+_GOLD_POLICY_FIXTURES = Path(__file__).parents[1] / "fixtures" / "gold_policy"
 
 
 def _snapshot(*, unavailable_modules: list[str] | None = None) -> dict:
@@ -80,6 +85,52 @@ def _positioning(bias: AgentBias = AgentBias.BEARISH, confidence: float = 0.55) 
 
 def _news(bias: AgentBias = AgentBias.NEUTRAL, confidence: float = 0.65) -> AgentOutput:
     return _agent_output(agent_name="news_agent", module="news", bias=bias, confidence=confidence)
+
+
+def _gold_policy_snapshot(name: str):
+    payload = json.loads((_GOLD_POLICY_FIXTURES / name).read_text())
+    return build_feature_snapshot(payload)
+
+
+def test_coordinator_exposes_typed_gold_decision_without_overwriting_state_contract():
+    previous = _gold_policy_snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
+    current = _gold_policy_snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    decision = evaluate_gold_analysis_policy(current, previous)
+
+    output = coordinate_agent_outputs(
+        _snapshot(),
+        macro_output=None,
+        options_output=None,
+        risk_output=None,
+        accepted_state_conclusion=decision,
+        created_at=_CREATED_AT,
+    )
+
+    assert output.accepted_gold_analysis_decision == decision
+    assert output.accepted_state_conclusion is not None
+    assert output.accepted_state_conclusion.direction.value == decision.direction
+    assert output.accepted_state_conclusion.market_stage == decision.market_stage_candidate
+    assert output.bias.value == decision.direction
+    assert output.confidence == decision.confidence
+    assert output.input_snapshot_ids["gold_analysis_policy_current"] == current.snapshot_id
+    assert output.input_snapshot_ids["gold_analysis_policy_previous"] == previous.snapshot_id
+    assert output.source_refs
+
+
+def test_coordinator_rejects_untyped_text_as_accepted_state_conclusion():
+    output = coordinate_agent_outputs(
+        {**_snapshot(), "summary": "bullish", "market_state": "trend_confirmed"},
+        macro_output=None,
+        options_output=None,
+        risk_output=None,
+        accepted_state_conclusion={"direction": "bullish", "summary": "infer me"},
+        created_at=_CREATED_AT,
+    )
+
+    assert output.accepted_gold_analysis_decision is None
+    assert output.accepted_state_conclusion is None
+    assert output.bias is AgentBias.UNAVAILABLE
+    assert any("强类型校验" in item for item in output.risk_points)
 
 
 def test_aligned_macro_options_outputs_schema_valid_final_view():

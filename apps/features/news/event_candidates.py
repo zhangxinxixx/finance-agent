@@ -52,6 +52,14 @@ MAINLINE_EVENT_TYPES: set[str] = {
 NEWS_RECENCY_WINDOW_DAYS = 14
 OFFICIAL_CALENDAR_PAST_WINDOW_DAYS = 1
 OFFICIAL_CALENDAR_FUTURE_WINDOW_DAYS = 7
+_SCHEDULED_EVENT_TYPES = frozenset({
+    "fomc_statement",
+    "inflation_release",
+    "labor_release",
+    "pce_release",
+    "gdp_release",
+    "energy_inventory_release",
+})
 
 
 @dataclass(frozen=True)
@@ -141,7 +149,7 @@ def build_event_candidates(
     standard_items = _dedupe_raw_items(standard_items)
     standard_items, stale_news_item_count = _filter_current_items(standard_items, as_of=as_of)
     grouped = _group_items(standard_items)
-    event_candidates = [_build_event_candidate(group_items) for group_items in grouped.values()]
+    event_candidates = [_build_event_candidate(group_items, as_of=as_of) for group_items in grouped.values()]
     event_candidates = sorted(event_candidates, key=_event_sort_key, reverse=True)
     top_market_events = [event for event in event_candidates if _can_enter_top_market_events(event)]
     source_mix = _source_mix(standard_items)
@@ -203,6 +211,9 @@ def _standardize_item(item: RawNewsItem | dict[str, Any]) -> StandardNewsItem:
         "url": url,
         "domain": raw.get("domain"),
         "published_at": raw.get("published_at"),
+        # Collection time is lineage, not an event-time substitute.  A naive,
+        # malformed, or absent source time remains explicitly unavailable.
+        "retrieved_at": _normalized_aware_retrieved_at(raw.get("fetched_at")),
         "raw_path": raw.get("raw_path"),
         "parsed_path": raw.get("parsed_path"),
     }]
@@ -293,7 +304,7 @@ def _group_items(items: list[StandardNewsItem]) -> dict[str, list[StandardNewsIt
     return grouped
 
 
-def _build_event_candidate(items: list[StandardNewsItem]) -> EventCandidate:
+def _build_event_candidate(items: list[StandardNewsItem], *, as_of: str) -> EventCandidate:
     canonical_type = _select_event_type(items)
     duplicate_group = _group_key(
         event_type=canonical_type,
@@ -317,13 +328,14 @@ def _build_event_candidate(items: list[StandardNewsItem]) -> EventCandidate:
         "grouping_strategy": "mainline" if _uses_mainline_grouping(canonical_type) else "title_time",
         "merged_item_count": len(items),
     }
+    event_time = _event_time(items, event_type=canonical_type)
     return EventCandidate(
         event_id=_event_id(event_type=canonical_type, duplicate_group=duplicate_group),
         primary_news_item_id=primary.news_item_id,
         related_news_item_ids=sorted(item.news_item_id for item in items),
-        event_time=_event_time(items, event_type=canonical_type),
+        event_time=event_time,
         event_type=canonical_type,
-        event_status=_event_status(canonical_type),
+        event_status=_event_status(canonical_type, event_time=event_time, as_of=as_of),
         asset_tags=_asset_tags(canonical_type),
         region_tags=_region_tags(items, canonical_type),
         entities=_entities(items),
@@ -482,6 +494,23 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _normalized_aware_retrieved_at(value: object) -> str | None:
+    """Normalize only an aware RawNewsItem.fetched_at timestamp for lineage."""
+
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def _uses_mainline_grouping(event_type: str) -> bool:
     return event_type in MAINLINE_EVENT_TYPES
 
@@ -530,10 +559,28 @@ def _event_time(items: list[StandardNewsItem], *, event_type: str) -> str | None
     return times[0] if times else None
 
 
-def _event_status(event_type: str) -> str:
-    if event_type in {"inflation_release", "labor_release", "pce_release", "gdp_release", "energy_inventory_release"}:
+def _event_status(event_type: str, *, event_time: str | None, as_of: str) -> str:
+    if event_type not in _SCHEDULED_EVENT_TYPES:
+        return "developing"
+    event_at = _parse_aware_iso_datetime(event_time)
+    anchor = _parse_aware_iso_datetime(as_of)
+    if event_at is None or anchor is None:
         return "scheduled"
-    return "developing"
+    if event_at <= anchor:
+        return "occurred"
+    return "scheduled"
+
+
+def _parse_aware_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 def _asset_tags(event_type: str) -> list[str]:

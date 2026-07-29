@@ -6,12 +6,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from apps.parsers.jin10.report import _parser_report_type
 from apps.parsers.jin10.report_image_parser import (
     PARSER_VERSION,
     _aggregate_parse_status,
     _detect_white_chart_panels,
+    _is_visual_cover_page,
     _normalize_vision_markdown_payload,
     figure_analysis_image_data_url,
     figure_image_data_url,
@@ -67,6 +69,14 @@ def test_aggregate_parse_status_reports_partial_when_only_some_pages_are_substan
     assert result["empty_page_ratio"] == 0.5
 
 
+def test_single_page_daily_report_is_not_treated_as_cover_only() -> None:
+    assert not _is_visual_cover_page(page_no=1, report_type="daily", page_count=1)
+
+
+def test_first_page_of_multi_page_daily_report_remains_cover() -> None:
+    assert _is_visual_cover_page(page_no=1, report_type="daily", page_count=3)
+
+
 def test_figure_image_data_url_crops_from_in_memory_page_artifacts(tmp_path: Path) -> None:
     image_path = tmp_path / "page.png"
     _write_page_image(image_path, include_chart=True)
@@ -106,6 +116,34 @@ def test_figure_analysis_image_data_url_bounds_size_and_uses_jpeg(tmp_path: Path
     assert encoded.startswith("data:image/jpeg;base64,")
     assert decoded is not None
     assert max(decoded.shape[:2]) == 1200
+
+
+def test_figure_analysis_image_data_url_uses_canonical_full_page_for_fallback_chart(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.jpg"
+    image = np.full((1178, 1392, 3), 255, dtype=np.uint8)
+    cv2.putText(image, "FOMC", (120, 300), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 8)
+    cv2.imwrite(str(image_path), image)
+    artifacts = {"page_images": {"pages": [{"page_no": 1, "image_path": str(image_path)}]}}
+    chart = {"image_path": str(image_path), "title": "第1页报告图"}
+
+    encoded = figure_analysis_image_data_url(artifacts, chart)
+    payload = base64.b64decode(encoded.split(",", 1)[1])
+    decoded = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    assert encoded.startswith("data:image/jpeg;base64,")
+    assert decoded is not None
+    assert decoded.shape[:2] == image.shape[:2]
+
+
+def test_figure_analysis_image_data_url_rejects_noncanonical_fallback_path(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.jpg"
+    other_path = tmp_path / "other.jpg"
+    _write_page_image(image_path, include_chart=True)
+    _write_page_image(other_path, include_chart=True)
+    artifacts = {"page_images": {"pages": [{"page_no": 1, "image_path": str(image_path)}]}}
+
+    with pytest.raises(ValueError, match="figure_source_page_not_found"):
+        figure_analysis_image_data_url(artifacts, {"image_path": str(other_path)})
 
 
 def test_cover_unified_prompt_preserves_formal_report_classification() -> None:

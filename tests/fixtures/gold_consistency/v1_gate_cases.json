@@ -1,0 +1,80 @@
+[
+  {
+    "case_id": "bootstrap_accepts_exact_policy_output",
+    "scenario": "bootstrap",
+    "expected_status": "consistent",
+    "expected_change_kind": "bootstrap",
+    "expected_reason": "BOOTSTRAP_ACCEPTED"
+  },
+  {
+    "case_id": "non_bootstrap_requires_predecessor_lineage",
+    "scenario": "missing_predecessor",
+    "expected_status": "unverifiable",
+    "expected_change_kind": "rejected",
+    "expected_reason": "PREVIOUS_LINEAGE_MISSING"
+  },
+  {
+    "case_id": "same_input_keeps_exact_strategy",
+    "scenario": "unchanged",
+    "expected_status": "consistent",
+    "expected_change_kind": "unchanged",
+    "expected_reason": "EXACT_DECISION_MAINTAINED"
+  },
+  {
+    "case_id": "event_blackout_applies_no_trade_gate",
+    "scenario": "event_blackout",
+    "expected_status": "consistent",
+    "expected_change_kind": "risk_gate_applied",
+    "expected_reason": "RISK_GATE_APPLIED"
+  },
+  {
+    "case_id": "mixed_state_remains_observe_without_collapse",
+    "scenario": "mixed_observe",
+    "expected_status": "consistent",
+    "expected_change_kind": "unchanged",
+    "expected_reason": "EXACT_DECISION_MAINTAINED",
+    "expected_strategy_status": "OBSERVE"
+  },
+  {
+    "case_id": "canonical_state_advance_updates_strategy_lineage",
+    "scenario": "state_advance",
+    "expected_status": "consistent",
+    "expected_change_kind": "state_advance",
+    "expected_reason": "CANONICAL_STATE_ADVANCED"
+  },
+  {
+    "case_id": "cleared_event_window_releases_no_trade",
+    "scenario": "risk_release",
+    "expected_status": "consistent",
+    "expected_change_kind": "risk_gate_released",
+    "expected_reason": "RISK_GATE_RELEASED"
+  },
+  {
+    "case_id": "exact_policy_mismatch_is_blocked",
+    "scenario": "candidate_mismatch",
+    "expected_status": "blocked",
+    "expected_change_kind": "rejected",
+    "expected_reason": "CURRENT_POLICY_OUTPUT_MISMATCH"
+  },
+  {
+    "case_id": "continuous_hold_proof_enables_watch_trigger",
+    "scenario": "watch_trigger",
+    "expected_status": "consistent",
+    "expected_change_kind": "readiness_changed",
+    "expected_reason": "TYPED_SUPPORT_CHANGED"
+  },
+  {
+    "case_id": "continuous_break_proof_enables_invalidation",
+    "scenario": "invalidation",
+    "expected_status": "consistent",
+    "expected_change_kind": "invalidated",
+    "expected_reason": "FORMAL_INVALIDATION_CONFIRMED"
+  },
+  {
+    "case_id": "direct_long_short_flip_is_blocked",
+    "scenario": "direct_flip",
+    "expected_status": "blocked",
+    "expected_change_kind": "rejected",
+    "expected_reason": "DIRECT_DIRECTION_FLIP"
+  }
+]

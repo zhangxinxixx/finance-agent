@@ -15,6 +15,7 @@ def _item(
     domain: str,
     event_type: str,
     published_at: str = "2026-06-10T08:15:00+00:00",
+    fetched_at: str = "2026-06-10T08:20:00+00:00",
     verification_status: str = "single_source",
     feed_key: str = "middle_east_hormuz",
 ) -> RawNewsItem:
@@ -27,7 +28,7 @@ def _item(
         url=url,
         domain=domain,
         published_at=published_at,
-        fetched_at="2026-06-10T08:20:00+00:00",
+        fetched_at=fetched_at,
         summary="Short evidence summary",
         source_country="US",
         source_language="en",
@@ -337,6 +338,145 @@ def test_official_release_enters_top_market_events_as_confirmed_scheduled_event(
     assert "inflation" in event["topic_tags"]
     assert data["top_market_events"][0]["event_id"] == event["event_id"]
     assert data["data_quality"]["official_confirmed_count"] == 1
+    official_ref = next(ref for ref in event["source_refs"] if ref["source"] == "bls_calendar")
+    assert official_ref["retrieved_at"] == "2026-06-10T08:20:00+00:00"
+    assert official_ref["published_at"] == "2026-06-11T12:30:00+00:00"
+
+
+def test_published_official_release_becomes_occurred_without_changing_verification() -> None:
+    bundle = build_event_candidates(
+        [
+            _item(
+                source_key="federal_reserve",
+                source_type="official",
+                title="FOMC Statement",
+                url="https://www.federalreserve.gov/monetarypolicy/fomcstatements.htm",
+                domain="federalreserve.gov",
+                event_type="fomc_statement",
+                published_at="2026-06-10T08:15:00+00:00",
+                verification_status="official_confirmed",
+            )
+        ],
+        as_of="2026-06-10T08:30:00+00:00",
+    )
+
+    event = bundle.to_dict()["event_candidates"][0]
+    assert event["event_status"] == "occurred"
+    assert event["verification_status"] == "official_confirmed"
+
+
+def test_release_at_exact_as_of_boundary_is_occurred() -> None:
+    bundle = build_event_candidates(
+        [
+            _item(
+                source_key="bls_calendar",
+                source_type="official",
+                title="Consumer Price Index",
+                url="https://www.bls.gov/cpi/",
+                domain="bls.gov",
+                event_type="inflation_release",
+                published_at="2026-06-10T08:30:00+00:00",
+                verification_status="official_confirmed",
+            )
+        ],
+        as_of="2026-06-10T08:30:00+00:00",
+    )
+
+    assert bundle.to_dict()["event_candidates"][0]["event_status"] == "occurred"
+
+
+def test_naive_or_invalid_event_time_is_conservatively_scheduled() -> None:
+    items = [
+        _item(
+            source_key="bls_naive_event",
+            source_type="official",
+            title="Consumer Price Index naive event time",
+            url="https://www.bls.gov/cpi/naive-event",
+            domain="bls.gov",
+            event_type="inflation_release",
+            published_at="2026-06-10T08:15:00",
+            verification_status="official_confirmed",
+        ),
+        _item(
+            source_key="bls_invalid_event",
+            source_type="official",
+            title="Consumer Price Index invalid event time",
+            url="https://www.bls.gov/cpi/invalid-event",
+            domain="bls.gov",
+            event_type="inflation_release",
+            published_at="not-a-time",
+            verification_status="official_confirmed",
+        ),
+    ]
+
+    event_statuses = [
+        event["event_status"]
+        for event in build_event_candidates(items, as_of="2026-06-10T08:30:00+00:00").to_dict()["event_candidates"]
+    ]
+    invalid_as_of = build_event_candidates([items[0]], as_of="2026-06-10T08:30:00").to_dict()
+
+    assert event_statuses == ["scheduled", "scheduled"]
+    assert invalid_as_of["event_candidates"][0]["event_status"] == "scheduled"
+
+
+def test_invalid_or_naive_fetched_at_stays_explicitly_missing_in_event_lineage() -> None:
+    bundle = build_event_candidates(
+        [
+            _item(
+                source_key="bls_missing_fetch",
+                source_type="official",
+                title="Consumer Price Index missing fetch time",
+                url="https://www.bls.gov/cpi/missing-fetch",
+                domain="bls.gov",
+                event_type="inflation_release",
+                verification_status="official_confirmed",
+                fetched_at="",
+            ),
+            _item(
+                source_key="bls_naive_fetch",
+                source_type="official",
+                title="Employment Situation naive fetch time",
+                url="https://www.bls.gov/ces/naive-fetch",
+                domain="bls.gov",
+                event_type="labor_release",
+                verification_status="official_confirmed",
+                fetched_at="2026-06-10T08:20:00",
+            ),
+        ],
+        as_of="2026-06-10T08:30:00+00:00",
+    )
+
+    refs = {
+        ref["source"]: ref
+        for event in bundle.to_dict()["event_candidates"]
+        for ref in event["source_refs"]
+        if ref["source"].startswith("bls_")
+    }
+    assert refs["bls_missing_fetch"]["retrieved_at"] is None
+    assert refs["bls_naive_fetch"]["retrieved_at"] is None
+    assert refs["bls_missing_fetch"]["retrieved_at"] != refs["bls_missing_fetch"]["published_at"]
+    assert refs["bls_naive_fetch"]["retrieved_at"] != refs["bls_naive_fetch"]["published_at"]
+    assert {event["verification_status"] for event in bundle.to_dict()["event_candidates"]} == {"official_confirmed"}
+
+
+def test_event_lineage_retrieval_normalization_is_stable() -> None:
+    items = [
+        _item(
+            source_key="bls_calendar",
+            source_type="official",
+            title="Consumer Price Index",
+            url="https://www.bls.gov/cpi/",
+            domain="bls.gov",
+            event_type="inflation_release",
+            verification_status="official_confirmed",
+            fetched_at="2026-06-10T16:20:00+08:00",
+        )
+    ]
+
+    results = [build_event_candidates(items, as_of="2026-06-10T08:30:00+00:00").to_dict() for _ in range(100)]
+
+    assert len({str(result) for result in results}) == 1
+    assert results[0]["event_candidates"][0]["source_refs"][0]["retrieved_at"] == "2026-06-10T08:20:00+00:00"
 
 
 def test_local_media_only_stays_unverified() -> None:

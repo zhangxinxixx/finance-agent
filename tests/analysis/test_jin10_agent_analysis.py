@@ -857,8 +857,9 @@ def test_llm_agent_analysis_submits_real_images_and_records_visual_trace(monkeyp
     assert captured["model"] == "gpt-5.6-sol"
     assert captured["reasoning_effort"] == "high"
     assert captured["request_timeout"] == 300.0
+    assert captured["max_retries"] == 1
     assert captured["json_mode"] is True
-    assert result.generated_from["max_images"] == 25
+    assert result.generated_from["max_images"] == 32
     assert result.generated_from["vision_model"] == "gpt-5.5"
     assert result.generated_from["submitted_image_count"] == 1
     assert result.generated_from["image_processing_status"] == "success"

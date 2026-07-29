@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from database.models.analysis import AnalysisBase, MarketCandle, ensure_analysis_tables
-from database.queries.market import list_market_candles, upsert_market_candle
+from database.queries.market import (
+    list_completed_market_candles,
+    list_market_candles,
+    upsert_market_candle,
+)
 
 
 def _make_engine():
@@ -143,3 +148,111 @@ def test_upsert_reclassifies_gc_f_as_separate_gc_asset() -> None:
     assert row.asset == "GC"
     assert row.source_ref["identity_guard"] == "reclassified_xauusd_futures"
     assert list_market_candles(session, asset="XAUUSD", timeframe="1d") == []
+
+
+def test_list_completed_market_candles_uses_inclusive_cutoff_and_stable_order() -> None:
+    session = _make_session()
+    as_of = datetime(2026, 6, 5, tzinfo=UTC)
+    for day, source in ((2, "provider_b"), (3, "provider_a"), (4, "provider_a")):
+        upsert_market_candle(
+            session,
+            asset="XAUUSD",
+            timeframe="1d",
+            open_time=datetime(2026, 6, day, tzinfo=UTC),
+            open=3300.0,
+            high=3310.0,
+            low=3290.0,
+            close=3305.0 + day,
+            source=source,
+        )
+    session.commit()
+
+    rows = list_completed_market_candles(
+        session,
+        asset="XAUUSD",
+        timeframe="1d",
+        as_of=as_of,
+        bar_duration=timedelta(days=1),
+        limit=10,
+    )
+
+    # June 4 is exactly completed at the cutoff; June 5 is not eligible.
+    assert [row.open_time.day for row in rows] == [2, 3, 4]
+    assert [row.source for row in rows] == ["provider_b", "provider_a", "provider_a"]
+
+
+def test_list_completed_market_candles_applies_source_and_limit() -> None:
+    session = _make_session()
+    for day, source in ((1, "primary"), (2, "secondary"), (3, "primary"), (4, "primary")):
+        upsert_market_candle(
+            session,
+            asset="GC",
+            timeframe="1d",
+            open_time=datetime(2026, 6, day, tzinfo=UTC),
+            open=3300.0,
+            high=3310.0,
+            low=3290.0,
+            close=3305.0,
+            source=source,
+        )
+    session.commit()
+
+    rows = list_completed_market_candles(
+        session,
+        asset="GC",
+        timeframe="1d",
+        as_of=datetime(2026, 6, 10, tzinfo=UTC),
+        bar_duration=timedelta(days=1),
+        source="primary",
+        limit=2,
+    )
+
+    assert [row.open_time.day for row in rows] == [3, 4]
+    assert all(row.source == "primary" for row in rows)
+
+
+def test_list_completed_market_candles_rejects_invalid_point_in_time_arguments() -> None:
+    session = _make_session()
+    kwargs = {
+        "session": session,
+        "asset": "XAUUSD",
+        "timeframe": "1d",
+        "as_of": datetime(2026, 6, 5),
+        "bar_duration": timedelta(days=1),
+    }
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        list_completed_market_candles(**kwargs)
+    with pytest.raises(ValueError, match="bar_duration"):
+        list_completed_market_candles(
+            **{**kwargs, "as_of": datetime(2026, 6, 5, tzinfo=UTC), "bar_duration": timedelta(0)}
+        )
+    with pytest.raises(ValueError, match="limit"):
+        list_completed_market_candles(
+            **{**kwargs, "as_of": datetime(2026, 6, 5, tzinfo=UTC), "limit": 0}
+        )
+
+
+def test_completed_query_keeps_gc_futures_out_of_xauusd() -> None:
+    session = _make_session()
+    upsert_market_candle(
+        session,
+        asset="XAUUSD",
+        timeframe="1d",
+        open_time=datetime(2026, 6, 3, tzinfo=UTC),
+        open=3300.0,
+        high=3310.0,
+        low=3290.0,
+        close=3305.0,
+        source="yahoo_finance_gc_f",
+        source_ref={"provider_symbol": "GC=F"},
+    )
+    session.commit()
+
+    query = {
+        "timeframe": "1d",
+        "as_of": datetime(2026, 6, 5, tzinfo=UTC),
+        "bar_duration": timedelta(days=1),
+    }
+    assert list_completed_market_candles(session, asset="XAUUSD", **query) == []
+    assert len(list_completed_market_candles(session, asset="GC", **query)) == 1

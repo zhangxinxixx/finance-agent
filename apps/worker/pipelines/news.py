@@ -31,6 +31,11 @@ from apps.features.news.daily_analysis_triggers import (
     build_daily_analysis_triggers,
 )
 from apps.features.news.event_candidates import EventCandidateBundle, archive_event_candidates, build_event_candidates
+from apps.features.news.formal_events import (
+    OfficialEventSnapshot,
+    archive_official_event_snapshot,
+    build_official_event_snapshot,
+)
 from apps.features.news.gold_event_mainlines import archive_gold_event_mainlines, build_gold_event_mainlines
 from apps.features.news.impact_classifier import EventImpactAssessment, archive_impact_assessments, build_impact_assessments
 from apps.features.news.market_binding import (
@@ -66,6 +71,7 @@ class NewsPipelineState:
     daily_analysis_triggers: DailyAnalysisTriggerBundle | None = None
     report_event_extraction: Jin10ReportEventExtraction | None = None
     market_reactions: list[MarketReaction] = field(default_factory=list)
+    official_event_snapshot: OfficialEventSnapshot | None = None
     daily_market_brief: DailyMarketBrief | None = None
     gold_macro_overview: Any | None = None
     etf_holdings_context: dict[str, Any] = field(default_factory=dict)
@@ -361,6 +367,11 @@ def _step_feature(
         db_session=db_session,
         as_of=as_of,
     )
+    official_event_snapshot = build_official_event_snapshot(
+        candidates=(event.to_dict() for event in bundle.event_candidates),
+        reactions=(reaction.to_dict() for reaction in reactions),
+        as_of=datetime.fromisoformat(as_of),
+    )
     event_candidates_path = archive_event_candidates(
         storage_root=storage_root,
         retrieved_date=state.retrieved_date,
@@ -384,6 +395,12 @@ def _step_feature(
         retrieved_date=state.retrieved_date,
         run_id=run_key,
         reactions=reactions,
+    )
+    official_events_path = archive_official_event_snapshot(
+        storage_root=storage_root,
+        retrieved_date=state.retrieved_date,
+        run_id=run_key,
+        snapshot=official_event_snapshot,
     )
     gold_event_mainlines = build_gold_event_mainlines(
         bundle.event_candidates,
@@ -410,11 +427,13 @@ def _step_feature(
     state.daily_analysis_triggers = daily_analysis_triggers
     state.report_event_extraction = report_extraction
     state.market_reactions = reactions
+    state.official_event_snapshot = official_event_snapshot
     state.artifact_paths.update({
         "event_candidates": event_candidates_path,
         "impact_assessments": impact_assessments_path,
         "daily_analysis_triggers": daily_analysis_triggers_path,
         "market_reactions": market_reactions_path,
+        "official_events": official_events_path,
         "gold_event_mainlines": gold_event_mainlines_path,
     })
     if report_events_path is not None:
@@ -431,6 +450,8 @@ def _step_feature(
         "daily_analysis_trigger_count": len(daily_analysis_triggers.triggers),
         "report_event_count": len(report_extraction.items) if report_extraction is not None else 0,
         "market_reaction_count": len(reactions),
+        "official_event_count": len(official_event_snapshot.events),
+        "official_event_readiness": official_event_snapshot.readiness,
         "gold_mainline_count": len(gold_event_mainlines.mainlines),
         "gold_event_link_count": len(gold_event_mainlines.event_links),
         "event_candidates_path": event_candidates_path,
@@ -438,6 +459,7 @@ def _step_feature(
         "daily_analysis_triggers_path": daily_analysis_triggers_path,
         "report_events_path": report_events_path,
         "market_reactions_path": market_reactions_path,
+        "official_events_path": official_events_path,
         "gold_event_mainlines_path": gold_event_mainlines_path,
         "etf_report_count": etf_report_count,
         "etf_holdings_path": etf_holdings_path,
@@ -619,6 +641,14 @@ def _step_brief(
     data_quality["news_freshness"] = dict(state.news_freshness)
     state.snapshot_dict = {
         "news_freshness": dict(state.news_freshness),
+        "official_events": (
+            {
+                "status": "available",
+                "data": state.official_event_snapshot.model_dump(mode="json"),
+            }
+            if state.official_event_snapshot is not None
+            else {"status": "unavailable", "reason": "official_event_snapshot_not_materialized"}
+        ),
         "daily_market_brief": brief.to_dict(),
         "gold_event_mainlines": gold_event_mainlines_payload,
         "gold_macro_overview": gold_macro_overview_snapshot,

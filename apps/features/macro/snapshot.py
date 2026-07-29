@@ -56,6 +56,10 @@ MACRO_INDICATOR_SPECS: tuple[_MacroIndicatorSpec, ...] = (
     _MacroIndicatorSpec("US03M", "US03M", ("DGS3MO",), "rate", "%"),
     _MacroIndicatorSpec("US02Y", "US02Y", ("DGS2",), "rate", "%"),
     _MacroIndicatorSpec("US10Y", "US10Y", ("DGS10",), "rate", "%"),
+    _MacroIndicatorSpec("US30Y", "US30Y", ("DGS30",), "rate", "%"),
+    _MacroIndicatorSpec("T10YIE", "10Y Breakeven Inflation", ("T10YIE",), "rate", "%"),
+    _MacroIndicatorSpec("REAL10Y", "10Y 实际利率（TIPS / FRED DFII10）", ("DFII10",), "rate", "%"),
+    _MacroIndicatorSpec("BROAD_DOLLAR", "Broad Dollar (FRED DTWEXBGS)", ("DTWEXBGS",), "index", "index"),
     _MacroIndicatorSpec("BREAKEVEN_10Y", "10Y Breakeven", ("T10YIE",), "rate", "%"),
     _MacroIndicatorSpec("REAL_10Y", "10Y 实际利率 = US10Y - T10YIE", ("DGS10", "T10YIE"), "rate", "%"),
     _MacroIndicatorSpec("YIELD_SPREAD_10Y_2Y", "10Y-2Y 利差", ("DGS10", "DGS2"), "spread", "%"),
@@ -96,6 +100,10 @@ def build_macro_snapshot(
     for spec in MACRO_INDICATOR_SPECS:
         series = _build_indicator_series(spec=spec, by_symbol=by_symbol)
         if not series:
+            if spec.symbol == "BROAD_DOLLAR":
+                # The formal gold-analysis input is the FRED broad-dollar index;
+                # DXY is a legacy, separate report field and is not a substitute.
+                unavailable.add(spec.symbol)
             unavailable.update(_missing_symbols_for_spec(spec, by_symbol))
             continue
 
@@ -244,6 +252,12 @@ def _direction_note(
     if spec.kind == "index":
         if spec.symbol == "DXY" and float(current["value"]) >= 101:
             return "美元指数位于 101 上方，对黄金形成逆风"
+        if spec.symbol == "BROAD_DOLLAR":
+            if negative and not positive:
+                return "广义美元走弱，对黄金形成顺风"
+            if positive and not negative:
+                return "广义美元走强，对黄金形成压力"
+            return "广义美元方向混杂，仍需后续数据确认"
         if negative and not positive:
             return "美元指数转弱，对黄金形成顺风"
         if positive and not negative:

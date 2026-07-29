@@ -1339,6 +1339,7 @@ def _build_daily_report_bundle(
     output_quality_audit = _build_agent_output_quality_audit(
         agent_report=agent_analysis.to_dict(),
         rendered_markdown=agent_analysis_markdown,
+        report_type=report_type,
     )
     quality_audit = _combine_quality_audits(input_quality_audit, output_quality_audit)
     visual_json["input_quality_audit"] = input_quality_audit
@@ -1565,6 +1566,7 @@ def _build_agent_output_quality_audit(
     *,
     agent_report: dict[str, Any],
     rendered_markdown: str,
+    report_type: str | None = None,
 ) -> dict[str, Any]:
     """Audit the final structured report and its rendered representation."""
 
@@ -1592,7 +1594,7 @@ def _build_agent_output_quality_audit(
         if len(agent_report.get("trading_implications") or []) < 3:
             reasons.append({"code": "daily_role_coverage_low", "message": "fewer than three trading roles"})
         daily_context = generated_from.get("daily_context")
-        if isinstance(daily_context, dict):
+        if report_type != "weekly" and isinstance(daily_context, dict):
             freshness = daily_context.get("freshness") or {}
             if str(daily_context.get("baseline_kind") or "") == "weekly_fallback":
                 reasons.append(

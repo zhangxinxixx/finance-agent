@@ -150,6 +150,30 @@ def register_composite_output_artifacts(
                 }
             )
         )
+    gold_policy_execution_mode = composite_outputs.get("gold_policy_execution_mode") if isinstance(composite_outputs, dict) else None
+    gold_policy_paths = composite_outputs.get("gold_policy_artifact_paths") if isinstance(composite_outputs, dict) else None
+    if gold_policy_execution_mode == "shadow" and isinstance(gold_policy_paths, dict):
+        for filename, artifact_type in (
+            ("feature_snapshot.v1.json", "feature_json"),
+            ("gold_analysis_decision.v1.json", "structured_json"),
+            ("gold_price_attribution.v1.json", "structured_json"),
+        ):
+            path = gold_policy_paths.get(filename)
+            if not isinstance(path, str) or not path:
+                continue
+            artifacts.append(
+                enrich_runner_artifact_metadata(
+                    {
+                        "artifact_id": f"{run_id}:gold_policy_shadow:{filename}",
+                        "artifact_type": artifact_type,
+                        "file_path": path,
+                        "publish_allowed": False,
+                        "output_mode": "observe",
+                        "execution_mode": "shadow",
+                        "gold_policy_execution_mode": "shadow",
+                    }
+                )
+            )
     if not artifacts:
         return
 
@@ -160,8 +184,8 @@ def register_composite_output_artifacts(
     input_snapshot_ids = merge_lineage_input_snapshot_ids(
         analysis_snapshot.get("input_snapshot_ids") if isinstance(analysis_snapshot, dict) else None,
         dict(getattr(card, "input_snapshot_ids", {}) or {}) if card is not None else None,
+        _gold_policy_input_snapshot_ids(composite_outputs),
     )
-
     register_step_artifacts(
         db,
         run_id=run_id,
@@ -425,6 +449,25 @@ def _context_bundle_registry_source_refs(raw_refs: Any, *, bundle_id: str) -> li
             ref["ref"] = f"context_bundle:{bundle_id}"
         refs.append(ref)
     return refs or [{"source": "analysis_context_bundle", "ref": f"context_bundle:{bundle_id}"}]
+
+
+def _gold_policy_input_snapshot_ids(composite_outputs: dict[str, Any]) -> dict[str, str] | None:
+    if composite_outputs.get("gold_policy_execution_mode") != "shadow":
+        return None
+    feature_snapshot = composite_outputs.get("gold_feature_snapshot")
+    snapshot_id = getattr(feature_snapshot, "snapshot_id", None)
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        return None
+    result = {"gold_policy_feature_snapshot": snapshot_id}
+    decision = composite_outputs.get("gold_analysis_decision")
+    previous_snapshot_id = getattr(decision, "previous_snapshot_id", None)
+    if (
+        isinstance(previous_snapshot_id, str)
+        and previous_snapshot_id
+        and previous_snapshot_id != "missing"
+    ):
+        result["gold_policy_previous_feature_snapshot"] = previous_snapshot_id
+    return result
 
 
 def register_run_support_artifacts(

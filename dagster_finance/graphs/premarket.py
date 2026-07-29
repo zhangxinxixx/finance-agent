@@ -8,6 +8,7 @@ canonical analysis pipeline.
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from dagster import Config, graph, op
 
@@ -38,6 +39,9 @@ from dagster_finance.ops.task_run_lifecycle import (
     premarket_task_run_complete_op,
     premarket_task_run_init_op,
 )
+
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 # ── Macro sub-pipeline ──────────────────────────────────────────
@@ -89,6 +93,51 @@ class MergeSnapshotConfig(Config):
     storage_root: str = "./storage"
 
 
+def _open_formal_market_read_session() -> Any:
+    """Open the dedicated read session used only by formal market materialization."""
+
+    from database.models.engine import SessionLocal
+
+    return SessionLocal()
+
+
+def _load_formal_market_snapshot_bundle(
+    *, trade_date: str, run_time: datetime
+) -> tuple[Any, str | None]:
+    """Load formal market inputs, degrading to explicit empty snapshots on failure."""
+
+    from apps.features.market_data.formal_snapshot_loader import (
+        FormalSnapshotBundle,
+        load_formal_market_snapshots,
+        resolve_formal_snapshot_as_of,
+    )
+    from apps.features.market_data.formal_snapshots import (
+        build_market_price_snapshot,
+        build_oil_snapshot,
+    )
+
+    session = None
+    try:
+        as_of = resolve_formal_snapshot_as_of(trade_date=trade_date, run_time=run_time)
+        session = _open_formal_market_read_session()
+        return load_formal_market_snapshots(session, as_of=as_of), None
+    except Exception as exc:
+        # A read/resolve failure must not silently substitute legacy market
+        # data.  Empty formal contracts preserve the blocked/missing lineage.
+        fallback_as_of = run_time.astimezone(timezone.utc)
+        return (
+            FormalSnapshotBundle(
+                market_prices=build_market_price_snapshot(candidates=(), as_of=fallback_as_of),
+                oil=build_oil_snapshot(candidates=(), as_of=fallback_as_of),
+                as_of=fallback_as_of,
+            ),
+            f"{type(exc).__name__}: formal market snapshot load failed",
+        )
+    finally:
+        if session is not None:
+            session.close()
+
+
 def _resolve_analysis_trade_date(
     *,
     macro_snapshot: dict[str, Any] | None,
@@ -135,6 +184,7 @@ def merge_analysis_snapshot_op(
     from apps.analysis.jin10.daily_context import build_daily_analysis_context
 
     context.log.info("Merging analysis snapshot from macro + cme + news")
+    run_time = datetime.now(timezone.utc)
 
     macro_snapshot = getattr(macro_state, "snapshot_dict", None)
     options_snapshot = getattr(cme_state, "snapshot_dict", None)
@@ -144,8 +194,14 @@ def merge_analysis_snapshot_op(
         macro_snapshot=macro_snapshot,
         options_snapshot=options_snapshot,
         news_snapshot=news_snapshot,
-        fallback_date=datetime.now(timezone.utc).date(),
+        fallback_date=run_time.astimezone(_SHANGHAI).date(),
     )
+    formal_bundle, formal_degraded_reason = _load_formal_market_snapshot_bundle(
+        trade_date=trade_date,
+        run_time=run_time,
+    )
+    if formal_degraded_reason:
+        context.log.warning("Formal market snapshot load degraded: %s", formal_degraded_reason)
 
     source_refs = list(getattr(macro_state, "all_source_refs", []) or [])
     # CME source refs
@@ -176,6 +232,9 @@ def merge_analysis_snapshot_op(
             asset="XAUUSD",
             preferred_run_id=context.run_id,
         ),
+        market_price_snapshot=formal_bundle.market_prices,
+        oil_snapshot=formal_bundle.oil,
+        snapshot_time=run_time.isoformat(),
     )
     snapshot_path = write_analysis_snapshot(snapshot, storage_root=Path(config.storage_root))
     context.log.info(f"Snapshot merged: trade_date={snapshot.get('trade_date')}, "

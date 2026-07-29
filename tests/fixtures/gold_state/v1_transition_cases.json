@@ -1,0 +1,66 @@
+[
+  {
+    "case_id": "bootstrap_bearish_pressure",
+    "previous": null,
+    "analysis": {"direction": "bearish", "quality": "accepted"},
+    "evidence": {"kind": "ordinary", "categories": ["macro"]},
+    "expected": {
+      "action": "strengthen",
+      "advance": true,
+      "stage": "pressure",
+      "bias": "bearish"
+    }
+  },
+  {
+    "case_id": "no_op_preserves_trend",
+    "previous": {"stage": "trend_confirmed", "bias": "bullish"},
+    "analysis": {"direction": "neutral", "quality": "accepted"},
+    "evidence": {"kind": "no_op", "categories": []},
+    "expected": {
+      "action": "maintain",
+      "advance": false,
+      "stage": "trend_confirmed",
+      "bias": "bullish"
+    }
+  },
+  {
+    "case_id": "blocked_preserves_head",
+    "previous": {"stage": "pressure", "bias": "bullish"},
+    "analysis": {"direction": "unavailable", "quality": "blocked"},
+    "evidence": {"kind": "ordinary", "categories": ["macro"]},
+    "expected": {
+      "action": "pending",
+      "advance": false,
+      "stage": "pressure",
+      "bias": "bullish"
+    }
+  },
+  {
+    "case_id": "ordinary_support_one_edge",
+    "previous": {"stage": "pressure", "bias": "bullish"},
+    "analysis": {"direction": "bullish", "quality": "accepted"},
+    "evidence": {"kind": "ordinary", "categories": ["macro"]},
+    "expected": {
+      "action": "strengthen",
+      "advance": true,
+      "stage": "weak_repair",
+      "bias": "bullish"
+    }
+  },
+  {
+    "case_id": "hard_invalidation_denies_opposite_trend",
+    "previous": {"stage": "trend_confirmed", "bias": "bullish"},
+    "analysis": {"direction": "bearish", "quality": "accepted"},
+    "evidence": {
+      "kind": "hard_invalidation",
+      "categories": ["price"],
+      "rule_code": "CONFIRMED_SUPPORT_BREAK"
+    },
+    "expected": {
+      "action": "invalidate",
+      "advance": true,
+      "stage": "direction_decision",
+      "bias": "mixed"
+    }
+  }
+]

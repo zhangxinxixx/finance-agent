@@ -57,21 +57,55 @@ def canonical_composite_analysis_op(
     from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
 
     context.log.info("Running canonical FactReview/QualityGate composite analysis")
+    runtime_kwargs, runtime_summary = _gold_policy_runtime_kwargs(
+        storage_root=Path(config.storage_root),
+        snapshot=snapshot,
+    )
     summaries, outputs = run_composite_analysis_pipeline(
         storage_root=Path(config.storage_root),
         snapshot=snapshot,
         run_id=context.run_id,
         created_at=_canonical_created_at(snapshot),
+        **runtime_kwargs,
     )
+    summaries = {**summaries, "gold_policy_runtime": runtime_summary}
     return {
         "premarket_readiness_gate": readiness_gate,
         "summaries": summaries,
+        "gold_policy_runtime": runtime_summary,
         "quality_gate_decision": _to_dict(outputs["quality_gate_decision"]),
         "agent_loop_decision": _to_dict(outputs["agent_loop_decision"]),
         "output_mode": summaries["final_report"]["output_mode"],
         "report_result": outputs["report_result"],
         "card_result": outputs["card_result"],
     }
+
+
+def _gold_policy_runtime_kwargs(*, storage_root: Path, snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Prepare optional formal-policy inputs without affecting legacy publication."""
+
+    try:
+        from apps.analysis.gold_policy.runtime_inputs import prepare_gold_policy_runtime_inputs
+
+        runtime = prepare_gold_policy_runtime_inputs(storage_root=storage_root, snapshot=snapshot)
+        return (
+            {
+                "gold_feature_snapshot_prebuilt": runtime.current,
+                "previous_gold_feature_snapshot_prebuilt": runtime.previous,
+                "gold_policy_execution_mode": "shadow",
+            },
+            {"status": "ready", "lookup": runtime.lookup.summary()},
+        )
+    except Exception as exc:
+        return (
+            {},
+            {
+                "status": "failed",
+                "reason_code": "gold_policy_runtime_prepare_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "lookup": {},
+            },
+        )
 
 
 def _canonical_created_at(snapshot: dict[str, Any]) -> datetime:

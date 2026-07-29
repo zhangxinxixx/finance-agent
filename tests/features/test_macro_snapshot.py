@@ -15,8 +15,10 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
             "DGS10": [("2026-04-06", 4.0), ("2026-04-29", 4.2), ("2026-05-06", 4.3)],
             "DGS2": [("2026-04-06", 3.7), ("2026-04-29", 3.9), ("2026-05-06", 4.0)],
             "DGS3MO": [("2026-04-06", 4.9), ("2026-04-29", 4.7), ("2026-05-06", 4.6)],
+            "DGS30": [("2026-04-06", 4.3), ("2026-04-29", 4.5), ("2026-05-06", 4.6)],
             "DFII10": [("2026-04-06", 1.90), ("2026-04-29", 1.93), ("2026-05-06", 1.91)],
             "T10YIE": [("2026-04-06", 2.0), ("2026-04-29", 2.3), ("2026-05-06", 2.35)],
+            "DTWEXBGS": [("2026-04-06", 120.0), ("2026-04-29", 119.0), ("2026-05-06", 118.5)],
             "SOFR": [("2026-04-06", 4.35), ("2026-04-29", 4.37), ("2026-05-06", 4.40)],
             "EFFR": [("2026-04-06", 4.32), ("2026-04-29", 4.33), ("2026-05-06", 4.36)],
             "IORB": [("2026-04-06", 4.45), ("2026-04-29", 4.45), ("2026-05-06", 4.45)],
@@ -46,11 +48,33 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     us03m = snapshot.indicators["US03M"]
     us10y = snapshot.indicators["US10Y"]
     rrp_usage = snapshot.indicators["ON_RRP_USAGE"]
+    us30y = snapshot.indicators["US30Y"]
+    breakeven = snapshot.indicators["T10YIE"]
+    real10y = snapshot.indicators["REAL10Y"]
+    broad_dollar = snapshot.indicators["BROAD_DOLLAR"]
 
     assert real_10y.label == "10Y 实际利率 = US10Y - T10YIE"
     assert real_10y.value == 1.95
     assert real_10y.weekly_change == 0.05
     assert real_10y.monthly_change == -0.05
+    assert us30y.value == 4.6
+    assert us30y.daily_change == 0.1
+    assert us30y.weekly_change == 0.1
+    assert us30y.monthly_change == 0.3
+    assert breakeven.value == 2.35
+    assert breakeven.daily_change == 0.05
+    assert breakeven.weekly_change == 0.05
+    assert breakeven.monthly_change == 0.35
+    assert real10y.label == "10Y 实际利率（TIPS / FRED DFII10）"
+    assert real10y.value == 1.91
+    assert real10y.daily_change == -0.02
+    assert real10y.weekly_change == -0.02
+    assert real10y.monthly_change == 0.01
+    assert broad_dollar.value == 118.5
+    assert broad_dollar.daily_change == -0.5
+    assert broad_dollar.weekly_change == -0.5
+    assert broad_dollar.monthly_change == -1.5
+    assert broad_dollar.direction_note == "广义美元走弱，对黄金形成顺风"
     assert yield_spread.value == 0.3
     assert yield_spread.weekly_change == 0.0
     assert short_curve_spread.label == "2Y-3M 利差"
@@ -70,6 +94,8 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     assert "DXY" in snapshot.unavailable_symbols
     assert "TGA" in snapshot.unavailable_symbols
     assert snapshot.source_refs["TGA"]["reason"] == "collector unavailable"
+    assert snapshot.source_refs["DFII10"]["source_url"] == "fixture://fred/DFII10"
+    assert snapshot.source_refs["DTWEXBGS"]["source_url"] == "fixture://fred/DTWEXBGS"
 
     markdown = render_macro_snapshot_markdown(snapshot)
     assert "# XAUUSD 宏观数据报告" in markdown
@@ -106,6 +132,22 @@ def test_macro_snapshot_marks_real_10y_unavailable_when_t10yie_is_missing() -> N
     assert "YIELD_SPREAD_2Y_3M" not in snapshot.indicators
     assert snapshot.indicators["US10Y"].value == 4.3
     assert snapshot.source_refs["DGS10"]["source_url"] == "fixture://fred/DGS10"
+
+
+def test_macro_snapshot_does_not_substitute_dxy_for_missing_broad_dollar() -> None:
+    snapshot = build_macro_snapshot(
+        _build_points(
+            {
+                "DXY": [("2026-05-06", 101.0)],
+            }
+        ),
+        as_of="2026-05-06",
+    )
+
+    assert snapshot.indicators["DXY"].value == 101.0
+    assert "BROAD_DOLLAR" not in snapshot.indicators
+    assert "BROAD_DOLLAR" in snapshot.unavailable_symbols
+    assert "DTWEXBGS" in snapshot.unavailable_symbols
 
 
 def test_macro_snapshot_keeps_source_refs_for_unavailable_collector_symbols() -> None:

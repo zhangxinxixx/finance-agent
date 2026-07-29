@@ -1,0 +1,8 @@
+[
+  {"case_id":"bullish_watch","bias":"bullish","stage":"weak_repair","expected_status":"LONG_WATCH","expected_direction":"long"},
+  {"case_id":"bullish_daily_pressure_observe","bias":"bullish","stage":"pressure","expected_status":"OBSERVE","expected_direction":"none"},
+  {"case_id":"bearish_watch","bias":"bearish","stage":"pressure","expected_status":"SHORT_WATCH","expected_direction":"short"},
+  {"case_id":"neutral_observe","bias":"neutral","stage":"range","expected_status":"OBSERVE","expected_direction":"none"},
+  {"case_id":"mixed_observe","bias":"mixed","stage":"direction_decision","expected_status":"OBSERVE","expected_direction":"none"},
+  {"case_id":"blackout_no_trade","bias":"bullish","stage":"trend_confirmed","event_risk":"blackout","expected_status":"NO_TRADE","expected_direction":"none","expected_reason":"MAJOR_EVENT_BLACKOUT"}
+]

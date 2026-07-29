@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from contextlib import nullcontext
 from datetime import datetime
@@ -76,6 +77,22 @@ def test_matching_entries_filters_non_report_headlines_and_old_items() -> None:
     assert [item.article_id for item in matching_entries(entries, window=window, now=now)] == ["1"]
 
 
+def test_matching_reportory_daily_uses_url_date_instead_of_relative_listing_time() -> None:
+    window = next(item for item in WINDOWS if item.key == "jin10_gold")
+    entry = Jin10CategoryEntry(
+        "20260728T025217Z-9958b921",
+        "每日金银报告——新版发布",
+        (
+            "https://reportory.jin10.com/jin10-report-hub/v2/market-report/"
+            "daily-gold-silver-report/2026/07/28/20260728T025217Z-9958b921.html"
+        ),
+        "7小时前",
+    )
+
+    assert matching_entries([entry], window=window, now=_at("2026-07-28T11:00:00")) == [entry]
+    assert matching_entries([entry], window=window, now=_at("2026-07-30T11:00:00")) == []
+
+
 def test_weekly_matching_accepts_saturday_publication_on_sunday() -> None:
     window = next(item for item in WINDOWS if item.key == "jin10_gold_weekly")
     now = _at("2026-07-19T12:00:00")
@@ -124,12 +141,101 @@ def test_weekly_scan_uses_article_publication_date(tmp_path, monkeypatch) -> Non
     assert result["actions"][0]["article_id"] == "224965"
 
 
+def test_gold_scan_prefers_reportory_daily_and_keeps_legacy_discovery(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "jin10_gold")
+    reportory_url = (
+        "https://reportory.jin10.com/jin10-report-hub/v2/market-report/"
+        "daily-gold-silver-report/2026/07/28/20260728T025217Z-9958b921.html"
+    )
+    commands: list[list[str]] = []
+    calls: list[str] = []
+
+    monkeypatch.setattr(scanner.httpx, "Client", lambda **kwargs: nullcontext(object()))
+    monkeypatch.setattr(
+        scanner,
+        "fetch_reportory_daily_gold_entries",
+        lambda **kwargs: calls.append("reportory")
+        or [
+            Jin10CategoryEntry(
+                "20260728T025217Z-9958b921",
+                "每日金银报告——新版发布",
+                reportory_url,
+                "2026-07-28 10:54:01",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        scanner,
+        "fetch_category_entries",
+        lambda **kwargs: calls.append("legacy")
+        or [Jin10CategoryEntry("225900", "旧版每日金银报告", "/details/225900", "2026-07-28 10:50:00")],
+    )
+    monkeypatch.setattr(scanner, "run_command", lambda command, *, env: commands.append(command) or {"status": "ok"})
+
+    result = scanner.scan_jin10(
+        window,
+        now=_at("2026-07-28T11:00:00"),
+        external_root=tmp_path / "external",
+        storage_root=tmp_path / "storage",
+        dry_run=False,
+        env={},
+    )
+
+    assert calls == ["reportory", "legacy"]
+    assert result["actions"][0]["article_id"] == "20260728T025217Z-9958b921"
+    fetch_command = next(
+        command
+        for command in commands
+        if any(item.endswith("fetch_jin10_reportory_daily_gold.py") for item in command)
+    )
+    assert fetch_command[fetch_command.index("--url") + 1] == reportory_url
+    assert not any("scripts/fetch_jin10_report.py" in command for command in commands)
+
+
+def test_gold_scan_falls_back_to_legacy_when_reportory_discovery_fails(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "jin10_gold")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(scanner.httpx, "Client", lambda **kwargs: nullcontext(object()))
+    monkeypatch.setattr(
+        scanner,
+        "fetch_reportory_daily_gold_entries",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("reportory unavailable")),
+    )
+    monkeypatch.setattr(
+        scanner,
+        "fetch_category_entries",
+        lambda **kwargs: [
+            Jin10CategoryEntry("225900", "旧版每日金银报告", "/details/225900", "2026-07-28 10:50:00")
+        ],
+    )
+    monkeypatch.setattr(scanner, "run_command", lambda command, *, env: commands.append(command) or {"status": "ok"})
+
+    result = scanner.scan_jin10(
+        window,
+        now=_at("2026-07-28T11:00:00"),
+        external_root=tmp_path / "external",
+        storage_root=tmp_path / "storage",
+        dry_run=False,
+        env={},
+    )
+
+    assert result["actions"][0]["article_id"] == "225900"
+    assert result["discovery_errors"] == [
+        {"source": "reportory_daily_gold", "error": "reportory unavailable"}
+    ]
+    assert any("scripts/fetch_jin10_report.py" in command for command in commands)
+
+
 def test_completed_weekly_scan_triggers_context_revision_with_latest_snapshot_id(tmp_path, monkeypatch) -> None:
     window = next(item for item in WINDOWS if item.key == "jin10_gold_weekly")
     storage_root = tmp_path / "storage"
     output_dir = storage_root / "outputs/jin10/2026-07-18/224965"
     output_dir.mkdir(parents=True)
-    (output_dir / "agent_analysis_report.json").write_text("{}", encoding="utf-8")
+    (output_dir / "agent_analysis_report.json").write_text(
+        json.dumps({"quality_audit": {"status": "accepted"}}),
+        encoding="utf-8",
+    )
     (output_dir / "daily_analysis_completion.json").write_text("{}", encoding="utf-8")
     generated: list[dict] = []
 
@@ -171,6 +277,48 @@ def test_completed_weekly_scan_triggers_context_revision_with_latest_snapshot_id
     assert generated[0]["baseline_date"] == "2026-07-18"
     assert generated[0]["trade_date"] == "2026-07-19"
     assert generated[0]["run_id"] == "224965-context-run-v1"
+
+
+def test_weekly_scan_reprocesses_existing_analysis_that_needs_review(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "jin10_gold_weekly")
+    external_root = tmp_path / "external"
+    storage_root = tmp_path / "storage"
+    meta = external_root / "2026-07-18/weekly/224965/meta.json"
+    meta.parent.mkdir(parents=True)
+    meta.write_text("{}", encoding="utf-8")
+    output_dir = storage_root / "outputs/jin10/2026-07-18/224965"
+    output_dir.mkdir(parents=True)
+    (output_dir / "agent_analysis_report.json").write_text(
+        json.dumps({"quality_audit": {"status": "needs_review"}}),
+        encoding="utf-8",
+    )
+    (output_dir / "daily_analysis_completion.json").write_text("{}", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(scanner.httpx, "Client", lambda **kwargs: nullcontext(object()))
+    monkeypatch.setattr(
+        scanner,
+        "fetch_category_entries",
+        lambda **kwargs: [Jin10CategoryEntry("224965", "黄金投资者周报", "/224965", "1天前")],
+    )
+    monkeypatch.setattr(
+        scanner,
+        "run_command",
+        lambda command, *, env: commands.append(command) or {"status": "success"},
+    )
+    monkeypatch.setattr(scanner, "ensure_weekly_context_revision", lambda **kwargs: {"status": "generated"})
+
+    result = scanner.scan_jin10(
+        window,
+        now=_at("2026-07-19T12:00:00"),
+        external_root=external_root,
+        storage_root=storage_root,
+        dry_run=False,
+        env={},
+    )
+
+    assert result["actions"][0]["status"] == "processed"
+    assert any("scripts/run_daily_report_pipeline.py" in command for command in commands)
 
 
 def test_previous_weekday_handles_monday() -> None:

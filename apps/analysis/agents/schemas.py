@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from apps.analysis.gold_policy.analysis_policy import GoldAnalysisDecision
+
 
 class AgentBias(StrEnum):
     BULLISH = "bullish"
@@ -175,6 +177,13 @@ class AgentOutput(BaseModel):
         default=None,
         description="Authoritative typed state conclusion; debug input_payload is never authoritative.",
     )
+    accepted_gold_analysis_decision: GoldAnalysisDecision | None = Field(
+        default=None,
+        description=(
+            "Formal deterministic gold-policy decision accepted by the Coordinator. "
+            "This remains separate from the Analysis Memory state conclusion contract."
+        ),
+    )
     # ── LLM metadata (optional, only for LLM-powered agents) ──
     llm_model: str | None = Field(default=None, description="LLM model used for this analysis")
     llm_provider: str | None = Field(default=None, description="LLM provider name")
@@ -203,6 +212,9 @@ class AgentOutput(BaseModel):
         if self.accepted_state_conclusion is not None:
             if self.bias is AgentBias.UNAVAILABLE or self.accepted_state_conclusion.direction is not self.bias:
                 raise ValueError("accepted state conclusion direction contradicts AgentOutput.bias")
+        if self.accepted_gold_analysis_decision is not None:
+            if self.accepted_gold_analysis_decision.direction != self.bias.value:
+                raise ValueError("accepted gold analysis decision direction contradicts AgentOutput.bias")
         return self
 
 

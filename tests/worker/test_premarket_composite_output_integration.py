@@ -753,6 +753,314 @@ def test_composite_shadow_setup_failure_does_not_break_legacy_outputs(tmp_path: 
         state_shadow_input={"state_scope": {"untrusted": "must-not-enter-trace"}},
     )
     assert replay_outputs["state_delta_shadow"]["review_items"][0]["review_id"] == review["review_id"]
+def _gold_policy_fixture(name: str) -> dict:
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "gold_policy" / name
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
+def _daily_close_controls_fixture():
+    from apps.analysis.gold_policy.attribution_policy import attribute_gold_price
+    from apps.analysis.gold_policy.daily_close_runtime import GoldDailyCloseRuntimeControls
+    from tests.analysis.test_gold_daily_close_loop import _evidence
+    from tests.analysis.test_gold_strategy_policy import _policy_input, _snapshot
+
+    current = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    previous = _snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
+    support = _policy_input(
+        bias="bearish",
+        feature=current,
+        attribution=attribute_gold_price(current, previous),
+    )
+    controls = GoldDailyCloseRuntimeControls(
+        decision_as_of=support.decision_as_of,
+        transition_evidence=_evidence(support.decision_as_of),
+        options_regime=support.options_regime,
+        event_risk=support.event_risk,
+    )
+    return current, previous, controls
+
+
+def test_composite_pipeline_persists_explicit_gold_policy_artifacts_and_coordinates_typed_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.analysis.agents import coordinator as coordinator_module
+    from apps.analysis.gold_policy.analysis_policy import GoldAnalysisDecision
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+
+    recorded_conclusions: list[object] = []
+    original_coordinator = coordinator_module.coordinate_agent_outputs
+
+    def record_coordinator(*args: object, **kwargs: object):
+        recorded_conclusions.append(kwargs.get("accepted_state_conclusion"))
+        return original_coordinator(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator_module, "coordinate_agent_outputs", record_coordinator)
+    summaries, outputs = run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-gold-policy-seam"),
+        run_id="run-gold-policy-seam",
+        created_at=_CREATED_AT,
+        gold_feature_snapshot_prebuilt=_gold_policy_fixture("feature_snapshot_v1_bearish_2025-01-21.json"),
+        previous_gold_feature_snapshot_prebuilt=_gold_policy_fixture(
+            "feature_snapshot_v1_bullish_2025-01-17.json"
+        ),
+        gold_policy_execution_mode="authoritative",
+    )
+
+    assert len(recorded_conclusions) == 1
+    assert isinstance(recorded_conclusions[0], GoldAnalysisDecision)
+    policy_summary = summaries["gold_policy"]
+    assert policy_summary["quality_status"] in {"accepted", "observe", "blocked"}
+    assert policy_summary["direction"] in {"bullish", "bearish", "neutral", "mixed", "unavailable"}
+    assert policy_summary["attribution_status"] in {
+        "confirmed_event",
+        "cross_asset_consistent",
+        "historical_model_inference",
+        "agent_inference",
+        "unconfirmed",
+    }
+    for key in (
+        "feature_snapshot_path",
+        "gold_analysis_decision_path",
+        "gold_price_attribution_path",
+    ):
+        artifact_path = tmp_path / policy_summary[key]
+        assert artifact_path.exists()
+        assert json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert outputs["gold_analysis_decision"] is recorded_conclusions[0]
+
+
+def test_composite_pipeline_executes_typed_daily_close_loop_without_report_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.analysis.agents import coordinator as coordinator_module
+    from apps.analysis.gold_policy.analysis_policy import GoldAnalysisDecision
+    from apps.analysis.gold_policy.attribution_policy import attribute_gold_price
+    from apps.analysis.gold_policy.daily_close_runtime import GoldDailyCloseRuntimeControls
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+    from tests.analysis.test_gold_daily_close_loop import _evidence
+    from tests.analysis.test_gold_strategy_policy import _policy_input, _snapshot
+
+    current = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    previous = _snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
+    support = _policy_input(
+        bias="bearish",
+        feature=current,
+        attribution=attribute_gold_price(current, previous),
+    )
+    controls = GoldDailyCloseRuntimeControls(
+        decision_as_of=support.decision_as_of,
+        transition_evidence=_evidence(support.decision_as_of),
+        options_regime=support.options_regime,
+        event_risk=support.event_risk,
+    )
+    accepted_conclusions: list[object] = []
+    original_coordinator = coordinator_module.coordinate_agent_outputs
+
+    def record_coordinator(*args: object, **kwargs: object):
+        accepted_conclusions.append(kwargs.get("accepted_state_conclusion"))
+        return original_coordinator(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator_module, "coordinate_agent_outputs", record_coordinator)
+
+    summaries, outputs = run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-daily-close-loop"),
+        run_id="run-daily-close-loop",
+        created_at=_CREATED_AT,
+        gold_feature_snapshot_prebuilt=current,
+        previous_gold_feature_snapshot_prebuilt=previous,
+        gold_daily_close_controls_prebuilt=controls,
+        gold_policy_execution_mode="authoritative",
+    )
+
+    execution = outputs["gold_daily_close_execution"]
+    policy_summary = summaries["gold_policy"]
+    assert execution.result.canonical_action.value == "bootstrap"
+    assert execution.result.model_invocations == 0
+    assert policy_summary["daily_close_result_id"] == execution.result.result_id
+    assert policy_summary["daily_close_action"] == "bootstrap"
+    assert policy_summary["daily_close_model_invocations"] == 0
+    assert (tmp_path / policy_summary["daily_close_bundle_path"]).is_dir()
+    assert outputs["strategy_card"] is not execution.result.candidate_strategy
+    assert len(accepted_conclusions) == 1
+    assert isinstance(accepted_conclusions[0], GoldAnalysisDecision)
+    assert execution.result.result_id not in outputs["strategy_card"].model_dump_json()
+    assert execution.result.candidate_strategy.decision_id not in outputs[
+        "strategy_card"
+    ].model_dump_json()
+
+
+def test_composite_pipeline_second_session_uses_durable_predecessor_without_caller_copy(
+    tmp_path: Path,
+) -> None:
+    from apps.analysis.gold_policy.daily_close_runtime import GoldDailyCloseRuntimeControls
+    from apps.analysis.gold_policy.daily_close_store import load_gold_daily_close_head
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+    from tests.analysis.test_gold_daily_close_store import _next_pair
+
+    current, previous, controls = _daily_close_controls_fixture()
+    run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-daily-close-bootstrap"),
+        run_id="run-daily-close-bootstrap",
+        created_at=_CREATED_AT,
+        gold_feature_snapshot_prebuilt=current,
+        previous_gold_feature_snapshot_prebuilt=previous,
+        gold_daily_close_controls_prebuilt=controls,
+        gold_policy_execution_mode="authoritative",
+    )
+    head = load_gold_daily_close_head(storage_root=tmp_path).head
+    next_input, expected = _next_pair(head)
+    next_controls = GoldDailyCloseRuntimeControls(
+        decision_as_of=next_input.decision_as_of,
+        transition_evidence=next_input.transition_evidence,
+        options_regime=next_input.options_regime,
+        event_risk=next_input.event_risk,
+    )
+
+    summaries, outputs = run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(
+            run_id="run-daily-close-next",
+            trade_date=next_input.current_feature.as_of.date().isoformat(),
+        ),
+        run_id="run-daily-close-next",
+        created_at=next_input.decision_as_of,
+        gold_feature_snapshot_prebuilt=next_input.current_feature,
+        gold_daily_close_controls_prebuilt=next_controls,
+        gold_policy_execution_mode="authoritative",
+    )
+
+    execution = outputs["gold_daily_close_execution"]
+    assert execution.predecessor_lookup.status == "found"
+    assert execution.loop_input.previous_feature == head.feature_snapshot
+    assert execution.result == expected
+    assert outputs["gold_analysis_decision"] == execution.result.analysis_decision
+    assert outputs["gold_price_attribution"] == execution.result.price_attribution
+    assert summaries["gold_policy"]["daily_close_result_id"] == execution.result.result_id
+
+
+def test_composite_pipeline_rejects_daily_close_controls_in_shadow_mode(
+    tmp_path: Path,
+) -> None:
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+
+    current, previous, controls = _daily_close_controls_fixture()
+
+    with pytest.raises(ValueError, match="requires authoritative mode"):
+        run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=_make_rich_snapshot(run_id="run-daily-close-shadow"),
+            run_id="run-daily-close-shadow",
+            created_at=_CREATED_AT,
+            gold_feature_snapshot_prebuilt=current,
+            previous_gold_feature_snapshot_prebuilt=previous,
+            gold_daily_close_controls_prebuilt=controls,
+            gold_policy_execution_mode="shadow",
+        )
+
+    assert not list(tmp_path.glob("analysis/gold_mainlines/*/run-daily-close-shadow/daily_close"))
+
+
+def test_composite_pipeline_propagates_daily_close_runtime_failure_before_legacy_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+
+    current, previous, controls = _daily_close_controls_fixture()
+
+    def fail_runtime(**_: object):
+        raise RuntimeError("formal daily-close predecessor invalid")
+
+    monkeypatch.setattr(
+        "apps.analysis.gold_policy.daily_close_runtime.execute_gold_daily_close_runtime",
+        fail_runtime,
+    )
+
+    with pytest.raises(RuntimeError, match="predecessor invalid"):
+        run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=_make_rich_snapshot(run_id="run-daily-close-failure"),
+            run_id="run-daily-close-failure",
+            created_at=_CREATED_AT,
+            gold_feature_snapshot_prebuilt=current,
+            previous_gold_feature_snapshot_prebuilt=previous,
+            gold_daily_close_controls_prebuilt=controls,
+            gold_policy_execution_mode="authoritative",
+        )
+
+    assert not (tmp_path / "outputs/final_report").exists()
+    assert not (tmp_path / "outputs/strategy_card").exists()
+    assert not list(tmp_path.glob("analysis/gold_mainlines/*/run-daily-close-failure/daily_close"))
+
+
+def test_composite_pipeline_current_only_gold_policy_fails_closed(tmp_path: Path) -> None:
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+
+    summaries, outputs = run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-gold-policy-current-only"),
+        run_id="run-gold-policy-current-only",
+        created_at=_CREATED_AT,
+        gold_feature_snapshot_prebuilt=_gold_policy_fixture("feature_snapshot_v1_bullish_2025-01-17.json"),
+    )
+
+    assert summaries["gold_policy"]["quality_status"] == "blocked"
+    assert summaries["gold_policy"]["direction"] == "unavailable"
+    assert summaries["gold_policy"]["attribution_status"] == "unconfirmed"
+    assert outputs["gold_analysis_decision"].previous_snapshot_id == "missing"
+    assert outputs["gold_price_attribution"].price_move == "unavailable"
+
+
+def test_composite_pipeline_shadow_gold_policy_never_reaches_coordinator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.analysis.agents import coordinator as coordinator_module
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+
+    recorded_conclusions: list[object] = []
+    original_coordinator = coordinator_module.coordinate_agent_outputs
+
+    def record_coordinator(*args: object, **kwargs: object):
+        recorded_conclusions.append(kwargs.get("accepted_state_conclusion"))
+        return original_coordinator(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator_module, "coordinate_agent_outputs", record_coordinator)
+    summaries, outputs = run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-gold-policy-shadow"),
+        run_id="run-gold-policy-shadow",
+        created_at=_CREATED_AT,
+        gold_feature_snapshot_prebuilt=_gold_policy_fixture("feature_snapshot_v1_bearish_2025-01-21.json"),
+        previous_gold_feature_snapshot_prebuilt=_gold_policy_fixture(
+            "feature_snapshot_v1_bullish_2025-01-17.json"
+        ),
+    )
+
+    assert recorded_conclusions == [None]
+    assert summaries["gold_policy"]["execution_mode"] == "shadow"
+    assert summaries["gold_policy"]["output_mode"] == "observe"
+    assert outputs["gold_policy_execution_mode"] == "shadow"
+
+
+def test_composite_pipeline_rejects_invalid_explicit_gold_feature_snapshot(tmp_path: Path) -> None:
+    from pydantic import ValidationError
+
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+
+    with pytest.raises(ValidationError):
+        run_composite_analysis_pipeline(
+            storage_root=tmp_path,
+            snapshot=_make_rich_snapshot(run_id="run-invalid-gold-policy"),
+            run_id="run-invalid-gold-policy",
+            created_at=_CREATED_AT,
+            gold_feature_snapshot_prebuilt={"asset": "GC"},
+        )
 
 
 def test_composite_source_health_uses_completed_snapshot_over_preliminary_news_health() -> None:
@@ -1717,6 +2025,24 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
     summaries = json.loads(summaries_candidates[0].read_text(encoding="utf-8"))
     assert "domain_agents" in summaries["steps"]
     assert "final_report" in summaries["steps"]
+    gold_policy_runtime = summaries["steps"]["gold_policy_runtime"]
+    assert gold_policy_runtime["status"] == "success"
+    assert gold_policy_runtime["execution_mode"] == "shadow"
+    assert gold_policy_runtime["current_snapshot_id"].startswith("feature_snapshot.v1:")
+    assert gold_policy_runtime["previous_lookup"] == {
+        "status": "missing",
+        "reason_code": "previous_feature_snapshot_missing",
+        "source_path": None,
+    }
+
+    gold_policy_paths = list(
+        (tmp_path / "analysis" / "gold_mainlines" / _TRADE_DATE / run_id).glob("*.v1.json")
+    )
+    assert {path.name for path in gold_policy_paths} >= {
+        "feature_snapshot.v1.json",
+        "gold_analysis_decision.v1.json",
+        "gold_price_attribution.v1.json",
+    }
 
     support_artifact_paths = {
         row.file_path for row in db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
@@ -1742,6 +2068,13 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
     assert strategy_card_md_artifact.content_type == "text/markdown"
     assert strategy_card_md_artifact.byte_size == sc_md_candidates[0].stat().st_size
     assert any(artifact.artifact_type == "analysis_md" for artifact in run_artifacts)
+    shadow_artifacts = [
+        artifact
+        for artifact in run_artifacts
+        if artifact.artifact_metadata.get("execution_mode") == "shadow"
+    ]
+    assert len(shadow_artifacts) == 3
+    assert all(artifact.artifact_metadata["output_mode"] == "observe" for artifact in shadow_artifacts)
 
 
 def test_run_premarket_with_composite_analysis_registers_report_registry_entries(tmp_path: Path) -> None:

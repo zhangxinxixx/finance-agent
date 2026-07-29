@@ -19,6 +19,7 @@ from apps.analysis.agents.schemas import (
 if TYPE_CHECKING:
     from apps.analysis.context_bundle import ConsumerProjection
 from apps.analysis.confidence import compute_confidence_kernel
+from apps.analysis.gold_policy.analysis_policy import GoldAnalysisDecision
 
 _AGENT_NAME = "coordinator_agent"
 _MODULE = "coordinator"
@@ -62,6 +63,7 @@ def coordinate_agent_outputs(
     positioning_output: AgentOutput | dict[str, Any] | None = None,
     news_output: AgentOutput | dict[str, Any] | None = None,
     market_odds_output: AgentOutput | dict[str, Any] | None = None,
+    accepted_state_conclusion: GoldAnalysisDecision | dict[str, Any] | None = None,
     created_at: datetime | None = None,
     context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
 ) -> AgentOutput:
@@ -80,6 +82,7 @@ def coordinate_agent_outputs(
             positioning_output=positioning_output,
             news_output=news_output,
             market_odds_output=market_odds_output,
+            accepted_state_conclusion=accepted_state_conclusion,
             created_at=created_at,
         ),
         projection,
@@ -96,6 +99,7 @@ def _coordinate_agent_outputs(
     positioning_output: AgentOutput | dict[str, Any] | None = None,
     news_output: AgentOutput | dict[str, Any] | None = None,
     market_odds_output: AgentOutput | dict[str, Any] | None = None,
+    accepted_state_conclusion: GoldAnalysisDecision | dict[str, Any] | None = None,
     created_at: datetime | None = None,
 ) -> AgentOutput:
     """Coordinate already-computed pseudo-agent outputs into one read-only AgentOutput."""
@@ -129,6 +133,7 @@ def _coordinate_agent_outputs(
     positioning = _coerce_output(positioning_output)
     news = _coerce_output(news_output)
     market_odds = _coerce_output(market_odds_output)
+    accepted_conclusion = _coerce_gold_analysis_decision(accepted_state_conclusion)
     prior_outputs = [
         output for output in (macro, options, risk, technical, positioning, news, market_odds) if output is not None
     ]
@@ -141,6 +146,11 @@ def _coordinate_agent_outputs(
     risk_points: list[str] = []
     invalid_conditions: list[str] = []
     status = AgentStatus.SUCCESS
+
+    if accepted_state_conclusion is not None and accepted_conclusion is None:
+        risk_points.append("accepted_state_conclusion 未通过 GoldAnalysisDecision 强类型校验。")
+        invalid_conditions.append("无效的正式状态结论不得进入 Coordinator 输出。")
+        status = AgentStatus.PARTIAL
 
     status = _add_prior_notes("宏观", macro, key_findings, risk_points, invalid_conditions, status)
     status = _add_prior_notes("期权", options, key_findings, risk_points, invalid_conditions, status)
@@ -199,7 +209,7 @@ def _coordinate_agent_outputs(
         risk_points.append(f"统一分析上下文状态为 {context_status or 'missing'}；综合结论保持观察态。")
         invalid_conditions.append("统一分析上下文缺失或过期时，不得把综合结论升级为确定性方向。")
 
-    if not prior_outputs:
+    if not prior_outputs and accepted_conclusion is None:
         status = AgentStatus.UNAVAILABLE
         bias = AgentBias.UNAVAILABLE
     elif all(_is_unavailable_prior(output) for output in prior_outputs):
@@ -221,6 +231,18 @@ def _coordinate_agent_outputs(
             status = AgentStatus.PARTIAL
             confidence = min(confidence, 0.55)
 
+    if accepted_conclusion is not None:
+        bias = _accepted_decision_bias(accepted_conclusion)
+        status = _accepted_decision_status(accepted_conclusion)
+        confidence = accepted_conclusion.confidence
+        input_snapshot_ids["gold_analysis_policy_current"] = accepted_conclusion.current_snapshot_id
+        input_snapshot_ids["gold_analysis_policy_previous"] = accepted_conclusion.previous_snapshot_id
+        source_refs = _dedupe_refs([*source_refs, *_accepted_decision_source_refs(accepted_conclusion)])
+        key_findings.append(
+            "正式状态结论已由 "
+            f"{accepted_conclusion.policy_version} 接受：{accepted_conclusion.direction}。"
+        )
+
     if status is AgentStatus.UNAVAILABLE:
         key_findings = []
         confidence = 0.0
@@ -229,13 +251,14 @@ def _coordinate_agent_outputs(
 
     bullish_drivers, bearish_drivers = _directional_drivers(prior_outputs)
     summary = _summary(bias, status, _clamp(confidence, 0.0, 1.0))
-    accepted_state_conclusion = _accepted_state_conclusion(
+    state_conclusion = _accepted_state_conclusion(
         snapshot=snapshot,
         prior_outputs=prior_outputs,
         bias=bias,
         summary=summary,
         bullish_drivers=bullish_drivers,
         bearish_drivers=bearish_drivers,
+        accepted_decision=accepted_conclusion,
     )
     return AgentOutput(
         version=_VERSION,
@@ -255,7 +278,8 @@ def _coordinate_agent_outputs(
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
         evidence_items=evidence_items,
-        accepted_state_conclusion=accepted_state_conclusion,
+        accepted_state_conclusion=state_conclusion,
+        accepted_gold_analysis_decision=accepted_conclusion,
         input_payload={
             "confidence_kernel": confidence_kernel.model_dump(mode="json"),
             "gold_analysis_context": _gold_analysis_context_payload(snapshot),
@@ -273,9 +297,43 @@ def _accepted_state_conclusion(
     summary: str,
     bullish_drivers: list[str],
     bearish_drivers: list[str],
+    accepted_decision: GoldAnalysisDecision | None,
 ) -> AcceptedStateConclusion | None:
     if bias is AgentBias.UNAVAILABLE:
         return None
+    if accepted_decision is not None:
+        direction_tilt = accepted_decision.direction_tilt
+        tilt = (
+            direction_tilt
+            if direction_tilt != "none" and bias in {AgentBias.MIXED, AgentBias.NEUTRAL}
+            else None
+        )
+        state_bias = bias.value
+        if tilt is not None and bias in {AgentBias.MIXED, AgentBias.NEUTRAL}:
+            state_bias = f"{bias.value}_{tilt}"
+        return AcceptedStateConclusion(
+            direction=bias,
+            direction_tilt=tilt,
+            state_bias=state_bias,
+            market_stage=accepted_decision.market_stage_candidate,
+            core_thesis=(
+                f"{accepted_decision.policy_version}: {accepted_decision.macro_regime}; "
+                f"direction={accepted_decision.direction}."
+            ),
+            dominant_drivers=[
+                {
+                    "driver_id": driver.factor,
+                    "label": driver.factor,
+                    "rank": index,
+                    "score": abs(driver.delta),
+                    "direction": "tailwind" if driver.direction == "bullish" else "headwind",
+                    "coverage_status": "covered",
+                    "rule_code": driver.rule_code,
+                    "source_refs": [ref.model_dump(mode="json") for ref in driver.source_refs],
+                }
+                for index, driver in enumerate(accepted_decision.dominant_drivers, start=1)
+            ],
+        )
     overview = _gold_macro_overview(snapshot)
     state_bias, direction_tilt = _state_bias(
         overview.get("net_bias"),
@@ -396,6 +454,44 @@ def _coerce_output(value: AgentOutput | dict[str, Any] | None) -> AgentOutput | 
         except ValidationError:
             return None
     return None
+
+
+def _coerce_gold_analysis_decision(
+    value: GoldAnalysisDecision | dict[str, Any] | None,
+) -> GoldAnalysisDecision | None:
+    if isinstance(value, GoldAnalysisDecision):
+        return value
+    if isinstance(value, dict):
+        try:
+            return GoldAnalysisDecision.model_validate(value)
+        except ValidationError:
+            return None
+    return None
+
+
+def _accepted_decision_bias(decision: GoldAnalysisDecision) -> AgentBias:
+    return {
+        "bullish": AgentBias.BULLISH,
+        "bearish": AgentBias.BEARISH,
+        "neutral": AgentBias.NEUTRAL,
+        "mixed": AgentBias.MIXED,
+        "unavailable": AgentBias.UNAVAILABLE,
+    }[decision.direction]
+
+
+def _accepted_decision_status(decision: GoldAnalysisDecision) -> AgentStatus:
+    if decision.quality_status == "blocked" or decision.direction == "unavailable":
+        return AgentStatus.UNAVAILABLE
+    if decision.quality_status == "observe":
+        return AgentStatus.PARTIAL
+    return AgentStatus.SUCCESS
+
+
+def _accepted_decision_source_refs(decision: GoldAnalysisDecision) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for driver in (*decision.dominant_drivers, *decision.counter_drivers):
+        refs.extend(ref.model_dump(mode="json") for ref in driver.source_refs)
+    return refs
 
 
 def _normalize_bias_value(value: Any) -> str:

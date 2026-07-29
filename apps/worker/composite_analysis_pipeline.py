@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from apps.analysis.agents.cme_options import analyze_cme_options
 from apps.analysis.agents.fact_review import build_runtime_fact_review_agent_output
@@ -34,6 +34,7 @@ from apps.analysis.agents.source_health import (
 from apps.analysis.agents.risk import analyze_risk
 from apps.analysis.agents.technical import analyze_technical
 from apps.analysis.context_bundle import ConsumerProjection, project_context_bundle
+from apps.analysis.gold_policy.daily_close_delivery import build_gold_daily_close_delivery
 from apps.analysis.state.transition_generator import (
     generate_scoped_transition_candidate_for_conclusion,
 )
@@ -87,6 +88,21 @@ def _safe_requested_state_scope(shadow_input: dict[str, Any] | None) -> str | No
     return None
 
 
+def _build_gold_daily_close_summary(*, execution: Any, storage_root: Path) -> dict[str, Any]:
+    result = execution.result
+    delivery = build_gold_daily_close_delivery(execution.loop_input, result)
+    return {
+        "daily_close_result_id": result.result_id,
+        "daily_close_action": result.canonical_action.value,
+        "daily_close_strategy_status": delivery.strategy_diff.selected_status,
+        "daily_close_candidate_strategy_status": delivery.strategy_diff.candidate_status,
+        "daily_close_bundle_path": execution.write_result.bundle_path.relative_to(
+            storage_root
+        ).as_posix(),
+        "daily_close_model_invocations": result.model_invocations,
+    }
+
+
 def evaluate_quality_gate(**kwargs: Any) -> Any:
     from apps.worker import runner
 
@@ -114,8 +130,15 @@ def run_composite_analysis_pipeline(
     state_delta_analyzer: StateDeltaAnalyzer | None = None,
     canary_sidecar_attempt: int | None = None,
     canary_activation: CanaryActivation | None = None,
+    gold_feature_snapshot_prebuilt: Any = None,
+    previous_gold_feature_snapshot_prebuilt: Any = None,
+    gold_daily_close_controls_prebuilt: Any = None,
+    gold_policy_execution_mode: Literal["authoritative", "shadow"] = "shadow",
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """Run the composite analysis pipeline on an already-persisted analysis snapshot."""
+
+    if gold_policy_execution_mode not in {"authoritative", "shadow"}:
+        raise ValueError("gold_policy_execution_mode must be authoritative or shadow")
 
     created_at = created_at or datetime.now(timezone.utc)
     summaries: dict[str, dict[str, Any]] = {}
@@ -239,6 +262,68 @@ def run_composite_analysis_pipeline(
         storage_root=storage_root,
     )
 
+    gold_feature_snapshot = None
+    previous_gold_feature_snapshot = None
+    gold_analysis_decision = None
+    gold_price_attribution = None
+    gold_daily_close_execution = None
+    gold_policy_artifact_paths: dict[str, str] = {}
+    if gold_feature_snapshot_prebuilt is not None:
+        # This seam deliberately accepts only an explicit, typed FeatureSnapshot
+        # input.  It must never infer formal policy state from the free-text
+        # analysis snapshot or from report output.
+        from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
+
+        gold_feature_snapshot = build_feature_snapshot(gold_feature_snapshot_prebuilt)
+        previous_gold_feature_snapshot = (
+            build_feature_snapshot(previous_gold_feature_snapshot_prebuilt)
+            if previous_gold_feature_snapshot_prebuilt is not None
+            else None
+        )
+
+    if gold_daily_close_controls_prebuilt is not None:
+        if gold_policy_execution_mode != "authoritative":
+            raise ValueError("daily-close canonical execution requires authoritative mode")
+        if gold_feature_snapshot is None:
+            raise ValueError("daily-close canonical execution requires a typed FeatureSnapshot")
+        from apps.analysis.gold_policy.daily_close_runtime import (
+            GoldDailyCloseRuntimeControls,
+            execute_gold_daily_close_runtime,
+        )
+
+        controls = GoldDailyCloseRuntimeControls.model_validate(gold_daily_close_controls_prebuilt)
+        gold_daily_close_execution = execute_gold_daily_close_runtime(
+            storage_root=storage_root,
+            run_id=run_id,
+            current_feature=gold_feature_snapshot,
+            controls=controls,
+            bootstrap_previous_feature=previous_gold_feature_snapshot,
+        )
+        gold_analysis_decision = gold_daily_close_execution.result.analysis_decision
+        gold_price_attribution = gold_daily_close_execution.result.price_attribution
+    elif gold_feature_snapshot is not None:
+        from apps.analysis.gold_policy.analysis_policy import evaluate_gold_analysis_policy
+        from apps.analysis.gold_policy.attribution_policy import attribute_gold_price
+
+        gold_analysis_decision = evaluate_gold_analysis_policy(
+            gold_feature_snapshot,
+            previous_gold_feature_snapshot,
+        )
+        gold_price_attribution = attribute_gold_price(
+            gold_feature_snapshot,
+            previous_gold_feature_snapshot,
+        )
+
+    if gold_feature_snapshot is not None:
+        for filename, payload in (
+            ("feature_snapshot.v1.json", gold_feature_snapshot.model_dump(mode="json")),
+            ("gold_analysis_decision.v1.json", gold_analysis_decision.model_dump(mode="json")),
+            ("gold_price_attribution.v1.json", gold_price_attribution.model_dump(mode="json")),
+        ):
+            target_path = canonical_run_dir / filename
+            write_canonical_gold_json(target_path, payload, storage_root=storage_root)
+            gold_policy_artifact_paths[filename] = target_path.relative_to(storage_root).as_posix()
+
     macro_output = (
         macro_output_prebuilt
         if macro_output_prebuilt is not None
@@ -343,6 +428,13 @@ def run_composite_analysis_pipeline(
             positioning_output=positioning_output,
             news_output=news_output,
             market_odds_output=market_odds_output,
+            # Shadow policy output is evidence-only.  It must not advance the
+            # Coordinator's typed authority or alter legacy report gating.
+            accepted_state_conclusion=(
+                gold_analysis_decision
+                if gold_policy_execution_mode == "authoritative"
+                else None
+            ),
             created_at=created_at,
             context_projection=consumer_projections.get("coordinator_agent"),
         )
@@ -440,6 +532,26 @@ def run_composite_analysis_pipeline(
         "fact_review_status": fact_review_output.input_payload["fact_review_status"],
         "coordinator_status": coordinator_output.status.value,
     }
+    if gold_feature_snapshot is not None:
+        summaries["gold_policy"] = {
+            "step": "gold_policy",
+            "status": "success",
+            "quality_status": gold_analysis_decision.quality_status,
+            "direction": gold_analysis_decision.direction,
+            "attribution_status": gold_price_attribution.attribution_status,
+            "execution_mode": gold_policy_execution_mode,
+            "output_mode": "observe" if gold_policy_execution_mode == "shadow" else "authoritative",
+            "feature_snapshot_path": gold_policy_artifact_paths["feature_snapshot.v1.json"],
+            "gold_analysis_decision_path": gold_policy_artifact_paths["gold_analysis_decision.v1.json"],
+            "gold_price_attribution_path": gold_policy_artifact_paths["gold_price_attribution.v1.json"],
+        }
+        if gold_daily_close_execution is not None:
+            summaries["gold_policy"].update(
+                _build_gold_daily_close_summary(
+                    execution=gold_daily_close_execution,
+                    storage_root=storage_root,
+                )
+            )
 
     markdown = render_final_report_markdown(
         snapshot=snapshot,
@@ -622,6 +734,12 @@ def run_composite_analysis_pipeline(
         "source_health": source_health,
         "source_health_path": canonical_source_health_path,
         "quality_gate_result_path": canonical_quality_gate_path,
+        "gold_feature_snapshot": gold_feature_snapshot,
+        "gold_analysis_decision": gold_analysis_decision,
+        "gold_price_attribution": gold_price_attribution,
+        "gold_policy_artifact_paths": gold_policy_artifact_paths,
+        "gold_policy_execution_mode": gold_policy_execution_mode,
+        "gold_daily_close_execution": gold_daily_close_execution,
     }
     if finalized_shadow is not None:
         composite_outputs["state_delta_shadow"] = finalized_shadow
