@@ -1,0 +1,45 @@
+{
+  "manifest_version": "gold_policy_v1_baseline_manifest.v1",
+  "feature_snapshot_schema_version": "feature_snapshot.v1",
+  "policy_versions": {
+    "analysis": "gold_analysis_policy.v1",
+    "attribution": "gold_price_attribution.v1",
+    "consistency": "analysis_strategy_consistency_policy.v1",
+    "daily_close_loop": "gold_daily_close_loop_policy.v1",
+    "key_level_lifecycle": "key_level_lifecycle_policy.v1",
+    "state": "analysis_state.v1",
+    "state_transition": "analysis_state_transition_policy.v1",
+    "strategy": "gold_strategy_policy.v1"
+  },
+  "fixture_sha256": {
+    "tests/fixtures/evaluation/replay/five_day_boundary_cases.json": "2c8f845d49b5d31473a006486efc0b74d303325fc3f717004d0bd0d9c59951be",
+    "tests/fixtures/gold_consistency/v1_gate_cases.json": "83b082fccb9f81a64225abd4c9a582d3b2a900f1713c3550f69362c93ccf2be1",
+    "tests/fixtures/gold_daily_close/feature_snapshot_v1_blocked_2025-01-30.json": "ed7232151c4fed6a9b42995dddf8759fd6822f4330c20a1cea8c1c949d579da8",
+    "tests/fixtures/gold_daily_close/feature_snapshot_v1_ordinary_2025-01-28.json": "2f4601f449f3193c0ba5a6405a3a7232d04cdc478ec1a52f1f7695f902009554",
+    "tests/fixtures/gold_daily_close/five_day_chain_v1.json": "45d5d2e5af1419d0f1777f2d52cf6d3ebc92a80c3a3d1fec27af4a34bb102ad5",
+    "tests/fixtures/gold_key_levels/v1_lifecycle_sequences.json": "fe0874dc5dc1afb45a61972c431770d1f2bc4dd053bd81059ea70b741090d972",
+    "tests/fixtures/gold_policy/feature_snapshot_v1_bearish_2025-01-21.json": "5c6b693833a1e94f0cc06dcf78e1603884902c46728d8ee3f25d13dc79ba4dab",
+    "tests/fixtures/gold_policy/feature_snapshot_v1_blocked_2025-01-22.json": "b0f9eea3ebbf70ab33313b48b56ee9024da0aade2b4bd1b4582f22451474d35f",
+    "tests/fixtures/gold_policy/feature_snapshot_v1_bullish_2025-01-17.json": "28039ee0dc8913d53dbeb1c876f8395f7b6bc1f225868c87cbfb6d59c705c34e",
+    "tests/fixtures/gold_policy/feature_snapshot_v1_event_flat_2025-01-29.json": "689a058b261d5838f95c9569b716f09382c41dc6b3d7f22c3bb273d04c4266b8",
+    "tests/fixtures/gold_policy/feature_snapshot_v1_mixed_2025-01-24.json": "d7b73abbf2ef33f1fed734b90398e7ac517aabb21b44597f419fb4e6661de6d3",
+    "tests/fixtures/gold_state/v1_transition_cases.json": "b0568120703cc00aa229e1067faf6cad4e4315359a4d9dba85aaeabc79093545",
+    "tests/fixtures/gold_strategy/v1_decision_cases.json": "4d949a17acf5e689101d17a78dd92f1c94cb0fd0964b3363036eb49301a1a990"
+  },
+  "representative_outputs": {
+    "analysis_decision_sha256": "21560ed78f38b2d9cb482c02878de5c3261e30f16e64710fcd2580d340663831",
+    "consistency_decision_id": "analysis_strategy_consistency_decision.v1:6fb0796cbbb0cec8ce9a3e772dc77e4f015f8ed5e2a0a91b26f5c52fcc1feecf",
+    "daily_close_result_hash": "b5d61073f742ffa6f204b416c2d3e541db41d5a58a6a6392ad6b767832e5483e",
+    "daily_close_result_id": "gold_daily_close_loop_result.v1:b5d61073f742ffa6f204b416c2d3e541db41d5a58a6a6392ad6b767832e5483e",
+    "feature_snapshot_id": "feature_snapshot.v1:d87176947bf21cd4c1abc67303a4070cb7d0d0e27beaf8cd867b1f9b6c3ecd91",
+    "price_attribution_sha256": "9dffb9c04ac2f9097b1b3b803891d0aba2bd8ccdfcef0ecdfc7b60f3ad42417d",
+    "state_id": "analysis_state.v1:9eeb58f189ad3d0d34765ffe7836ee833332223196fa6c69900c38caa9c6775e",
+    "strategy_decision_id": "strategy_decision.v1:6bf4bf47a462e2fb68959b2bff5f00f9226e6c943231a9803b65d447ef45a469",
+    "transition_decision_hash": "c198f20ab28d99df38381f9df48512edc4d952237bd4237f20c5e875d5ab6f6b"
+  },
+  "reviewed_update_reason": "Freeze the published Gold Policy v1 fixture corpus and representative deterministic policy-chain identities before versioned v2 contract work.",
+  "upgrade_policy": {
+    "v2_requires_new_manifest": true,
+    "v1_manifest_is_immutable": true
+  }
+}

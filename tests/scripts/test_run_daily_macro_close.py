@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import run_daily_macro_close as close
 
@@ -38,6 +39,18 @@ def test_close_uses_latest_premarket_and_serial_context(tmp_path: Path, monkeypa
         )
 
     monkeypatch.setattr(close, "run_composite_analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(
+        close,
+        "_gold_policy_runtime_kwargs",
+        lambda **kwargs: (
+            {
+                "gold_feature_snapshot_prebuilt": {"snapshot_id": "current"},
+                "gold_daily_close_controls_prebuilt": {"schema_version": "controls"},
+                "gold_policy_execution_mode": "authoritative",
+            },
+            {"status": "ready", "execution_mode": "authoritative"},
+        ),
+    )
     result = close.run_daily_macro_close(trade_date="2026-07-14", storage_root=tmp_path, run_id="close-test")
 
     assert result["status"] == "completed"
@@ -47,7 +60,7 @@ def test_close_uses_latest_premarket_and_serial_context(tmp_path: Path, monkeypa
     assert manifest.exists()
 
 
-def test_close_prepares_current_only_shadow_runtime_from_original_premarket(tmp_path: Path, monkeypatch) -> None:
+def test_close_prepares_authoritative_runtime_from_original_premarket(tmp_path: Path, monkeypatch) -> None:
     premarket_path = tmp_path / "features/snapshots/XAUUSD/2026-07-14/premarket/premarket_snapshot.json"
     _write(premarket_path, {"snapshot_id": "premarket-id", "trade_date": "2026-07-14", "snapshot_time": "2026-07-14T12:00:00+00:00", "source_refs": []})
     monkeypatch.setattr(close, "build_daily_analysis_context", lambda **kwargs: {"status": "ready"})
@@ -57,8 +70,17 @@ def test_close_prepares_current_only_shadow_runtime_from_original_premarket(tmp_
     def fake_runtime(**kwargs):
         runtime_snapshot.update(kwargs["snapshot"])
         return (
-            {"gold_feature_snapshot_prebuilt": {"snapshot_id": "current"}, "previous_gold_feature_snapshot_prebuilt": None, "gold_policy_execution_mode": "shadow"},
-            {"status": "ready", "lookup": {"current": "found", "previous": "missing"}},
+            {
+                "gold_feature_snapshot_prebuilt": {"snapshot_id": "current"},
+                "previous_gold_feature_snapshot_prebuilt": None,
+                "gold_daily_close_controls_prebuilt": {"schema_version": "controls"},
+                "gold_policy_execution_mode": "authoritative",
+            },
+            {
+                "status": "ready",
+                "execution_mode": "authoritative",
+                "lookup": {"current": "found", "previous": "missing"},
+            },
         )
 
     monkeypatch.setattr(close, "_gold_policy_runtime_kwargs", fake_runtime)
@@ -69,12 +91,13 @@ def test_close_prepares_current_only_shadow_runtime_from_original_premarket(tmp_
     assert runtime_snapshot["snapshot_time"] == "2026-07-14T12:00:00+00:00"
     assert captured["gold_feature_snapshot_prebuilt"] == {"snapshot_id": "current"}
     assert captured["previous_gold_feature_snapshot_prebuilt"] is None
-    assert captured["gold_policy_execution_mode"] == "shadow"
+    assert captured["gold_daily_close_controls_prebuilt"] == {"schema_version": "controls"}
+    assert captured["gold_policy_execution_mode"] == "authoritative"
     assert result["gold_policy_runtime"]["lookup"]["previous"] == "missing"
     assert result["gold_policy_artifact_paths"] == {"feature": "analysis/feature.json"}
 
 
-def test_close_continues_legacy_pipeline_when_runtime_prepare_fails(tmp_path: Path, monkeypatch) -> None:
+def test_close_blocks_when_authoritative_runtime_prepare_fails(tmp_path: Path, monkeypatch) -> None:
     _write(tmp_path / "features/snapshots/XAUUSD/2026-07-14/premarket/premarket_snapshot.json", {"snapshot_id": "premarket-id", "trade_date": "2026-07-14", "source_refs": []})
     monkeypatch.setattr(close, "build_daily_analysis_context", lambda **kwargs: {"status": "ready"})
     monkeypatch.setattr(close, "_gold_policy_runtime_kwargs", lambda **kwargs: ({}, {"status": "failed", "reason_code": "gold_policy_runtime_prepare_failed", "lookup": {}}))
@@ -83,9 +106,9 @@ def test_close_continues_legacy_pipeline_when_runtime_prepare_fails(tmp_path: Pa
 
     result = close.run_daily_macro_close(trade_date="2026-07-14", storage_root=tmp_path, run_id="runtime-failure")
 
-    assert captured["snapshot"]["snapshot_id"].endswith("runtime-failure")
-    assert "gold_policy_execution_mode" not in captured
-    assert result["status"] == "completed"
+    assert captured == {}
+    assert result["status"] == "blocked"
+    assert result["reason"] == "gold_policy_runtime_prepare_failed"
     assert result["gold_policy_runtime"]["status"] == "failed"
 
 
@@ -94,3 +117,42 @@ def test_close_blocks_without_market_snapshot(tmp_path: Path, monkeypatch) -> No
     result = close.run_daily_macro_close(trade_date="2026-07-14", storage_root=tmp_path)
     assert result["status"] == "blocked"
     assert result["reason"] == "premarket_snapshot_missing"
+
+
+def test_authoritative_output_paths_require_a_complete_package_and_keep_degraded_card(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "analysis/gold_mainlines/2026-07-14/run/daily_close"
+    bundle.mkdir(parents=True)
+    outputs = {
+        "gold_daily_close_execution": SimpleNamespace(
+            write_result=SimpleNamespace(bundle_path=bundle)
+        )
+    }
+
+    reports, cards = close._authoritative_output_paths(
+        storage_root=tmp_path,
+        outputs=outputs,
+    )
+    assert reports == []
+    assert cards == []
+
+    for name in (
+        "source.md",
+        "analysis.md",
+        "visual.html",
+        "report_structured.json",
+        "evidence.json",
+        "data_quality.json",
+        "report_manifest.json",
+        "strategy_card.json",
+        "strategy_card.md",
+    ):
+        (bundle / name).write_text("{}" if name.endswith(".json") else "# report\n", encoding="utf-8")
+
+    reports, cards = close._authoritative_output_paths(
+        storage_root=tmp_path,
+        outputs=outputs,
+    )
+    assert len(reports) == 9
+    assert {Path(path).name for path in cards} == {"strategy_card.json", "strategy_card.md"}

@@ -1,0 +1,50 @@
+{
+  "schema_version": "gold_daily_close_five_day_fixture.v2",
+  "bootstrap_previous_fixture": "feature_snapshot_v1_bullish_2025-01-17.json",
+  "days": [
+    {
+      "day": "D1",
+      "feature_fixture": "feature_snapshot_v1_bearish_2025-01-21.json",
+      "delta_kind": "ordinary",
+      "categories": ["macro"],
+      "options_bias": "bearish"
+    },
+    {
+      "day": "D2",
+      "feature_fixture": "feature_snapshot_v1_mixed_2025-01-24.json",
+      "delta_kind": "no_op",
+      "categories": [],
+      "options_bias": "bearish"
+    },
+    {
+      "day": "D3",
+      "feature_fixture": "feature_snapshot_v1_ordinary_2025-01-28.json",
+      "delta_kind": "ordinary",
+      "categories": ["macro"],
+      "options_bias": "bullish"
+    },
+    {
+      "day": "D4",
+      "feature_fixture": "feature_snapshot_v1_event_flat_2025-01-29.json",
+      "delta_kind": "ordinary",
+      "categories": ["macro"],
+      "options_bias": "bullish"
+    },
+    {
+      "day": "D5",
+      "feature_fixture": "feature_snapshot_v1_blocked_2025-01-30.json",
+      "patch": {
+        "us10y": {
+          "value": null,
+          "freshness_status": "missing",
+          "quality_status": "blocked",
+          "alignment_status": "unknown"
+        }
+      },
+      "delta_kind": "ordinary",
+      "categories": ["macro"],
+      "options_bias": "bearish",
+      "expected_strategy": "NO_TRADE"
+    }
+  ]
+}

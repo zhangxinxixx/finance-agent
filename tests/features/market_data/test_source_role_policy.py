@@ -129,6 +129,113 @@ def test_unqualified_jin10_usoil_quote_stays_blocked() -> None:
     assert (result.quality_status, result.normalized_role) == ("blocked", "unknown")
 
 
+def test_usoil_is_rejected_even_when_declared_oil_primary() -> None:
+    result = qualify_market_source(
+        asset="WTI",
+        source="official_benchmark_futures",
+        source_ref={
+            "provider_symbol": "USOIL",
+            "instrument_type": "futures_benchmark",
+            "source_role": "oil_primary",
+        },
+    )
+    assert (result.quality_status, result.reason_code) == (
+        "blocked",
+        "usoil_provider_symbol_blocked",
+    )
+
+
+@pytest.mark.parametrize(
+    ("asset", "source", "provider_symbol"),
+    [
+        ("WTI", "yahoo_finance_cl_f", "CL=F"),
+        ("BRENT", "yahoo_finance_bz_f", "BZ=F"),
+    ],
+)
+def test_oil_yahoo_benchmark_requires_exact_identity(asset: str, source: str, provider_symbol: str) -> None:
+    accepted = qualify_market_source(
+        asset=asset,
+        source=source,
+        source_ref={
+            "provider_symbol": provider_symbol,
+            "instrument_type": "futures_benchmark",
+            "source_role": "oil_primary",
+        },
+    )
+    rejected = qualify_market_source(
+        asset=asset,
+        source=source,
+        source_ref={
+            "provider_symbol": "BZ=F" if provider_symbol == "CL=F" else "CL=F",
+            "instrument_type": "futures_benchmark",
+            "source_role": "oil_primary",
+        },
+    )
+    assert accepted.quality_status == "accepted"
+    assert rejected.quality_status == "blocked"
+
+
+@pytest.mark.parametrize(
+    ("asset", "source", "provider_symbol", "instrument_type"),
+    [
+        ("DXY", "yahoo_finance_dx_y_nyb", "DX-Y.NYB", "index"),
+        ("VIX", "yahoo_finance_vix", "^VIX", "volatility_index"),
+    ],
+)
+def test_market_context_accepts_only_exact_known_primary_identity(
+    asset: str, source: str, provider_symbol: str, instrument_type: str
+) -> None:
+    result = qualify_market_source(
+        asset=asset,
+        source=source,
+        source_ref={
+            "provider_symbol": provider_symbol,
+            "instrument_type": instrument_type,
+            "source_role": "market_primary",
+        },
+    )
+    assert (result.quality_status, result.normalized_role) == ("accepted", "market_primary")
+
+
+def test_xagusd_unverified_yahoo_identity_is_not_a_formal_source() -> None:
+    result = qualify_market_source(
+        asset="XAGUSD",
+        source="yahoo_finance_xagusd_x",
+        source_ref={
+            "provider_symbol": "XAGUSD=X",
+            "instrument_type": "otc_spot_quote_proxy",
+            "source_role": "market_primary",
+        },
+    )
+
+    assert result.quality_status == "blocked"
+    assert result.reason_code == "xagusd_formal_source_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("asset", "source", "provider_symbol", "instrument_type"),
+    [
+        ("XAGUSD", "yahoo_finance_xagusd_x", "SI=F", "otc_spot_quote_proxy"),
+        ("XAGUSD", "yahoo_finance_xagusd_x", "GC=F", "otc_spot_quote_proxy"),
+        ("DXY", "yahoo_finance_dx_y_nyb", "DTWEXBGS", "index"),
+        ("VIX", "unknown_vix", "^VIX", "volatility_index"),
+    ],
+)
+def test_market_context_rejects_substituted_or_unknown_identity(
+    asset: str, source: str, provider_symbol: str, instrument_type: str
+) -> None:
+    result = qualify_market_source(
+        asset=asset,
+        source=source,
+        source_ref={
+            "provider_symbol": provider_symbol,
+            "instrument_type": instrument_type,
+            "source_role": "market_primary",
+        },
+    )
+    assert result.quality_status == "blocked"
+
+
 def test_same_input_is_deterministic_and_output_is_frozen() -> None:
     source_ref = _spot_ref()
     results = [

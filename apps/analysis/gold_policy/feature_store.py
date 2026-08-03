@@ -10,7 +10,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
-from apps.analysis.gold_policy.schemas import FeatureSnapshot, FeatureSnapshotInput
+from apps.analysis.gold_policy.schemas import (
+    FeatureSnapshot,
+    FeatureSnapshotContract,
+    FeatureSnapshotInput,
+    FeatureSnapshotV2,
+    FeatureSnapshotV2Input,
+)
 
 
 LookupStatus = Literal["found", "missing", "ambiguous", "invalid"]
@@ -24,7 +30,7 @@ class PreviousFeatureSnapshotLookup(BaseModel):
     status: LookupStatus
     reason_code: str
     source_path: Path | None
-    snapshot: FeatureSnapshot | None
+    snapshot: FeatureSnapshotContract | None
 
     def summary(self) -> dict[str, str | None]:
         """Return compact JSON-safe audit metadata without duplicating payloads."""
@@ -33,7 +39,7 @@ class PreviousFeatureSnapshotLookup(BaseModel):
 
 
 def load_previous_feature_snapshot(
-    *, storage_root: Path, current: FeatureSnapshot
+    *, storage_root: Path, current: FeatureSnapshotContract
 ) -> PreviousFeatureSnapshotLookup:
     """Load the latest valid prior-day snapshot without falling back past a bad day.
 
@@ -48,6 +54,7 @@ def load_previous_feature_snapshot(
         return _missing()
 
     candidates_by_date: dict[date, list[Path]] = {}
+    artifact_name = f"{current.schema_version}.json"
     for date_dir in sorted(base.iterdir(), key=lambda path: path.name):
         candidate_date = _parse_directory_date_name(date_dir)
         if candidate_date is None or candidate_date >= current.as_of.date():
@@ -55,11 +62,11 @@ def load_previous_feature_snapshot(
         if date_dir.is_symlink():
             # A date-directory symlink could redirect the whole lookup outside
             # the storage root. Treat that date as invalid, never as absent.
-            candidates_by_date[candidate_date] = [date_dir / "feature_snapshot.v1.json"]
+            candidates_by_date[candidate_date] = [date_dir / artifact_name]
             continue
         if not date_dir.is_dir():
             continue
-        candidates = sorted(date_dir.glob("*/feature_snapshot.v1.json"), key=lambda path: path.as_posix())
+        candidates = sorted(date_dir.glob(f"*/{artifact_name}"), key=lambda path: path.as_posix())
         if candidates:
             candidates_by_date[candidate_date] = candidates
 
@@ -67,7 +74,7 @@ def load_previous_feature_snapshot(
         return _missing()
 
     latest_date = max(candidates_by_date)
-    valid: list[tuple[Path, FeatureSnapshot]] = []
+    valid: list[tuple[Path, FeatureSnapshot | FeatureSnapshotV2]] = []
     for candidate in candidates_by_date[latest_date]:
         snapshot = _read_verified_snapshot(candidate, root=root, expected_date=latest_date)
         if snapshot is not None:
@@ -117,7 +124,7 @@ def _parse_directory_date_name(path: Path) -> date | None:
 
 def _read_verified_snapshot(
     path: Path, *, root: Path, expected_date: date
-) -> FeatureSnapshot | None:
+) -> FeatureSnapshot | FeatureSnapshotV2 | None:
     """Validate a candidate's containment, contract, and deterministic identity."""
 
     try:
@@ -127,15 +134,33 @@ def _read_verified_snapshot(
         payload = json.loads(resolved.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             return None
-        persisted = FeatureSnapshot.model_validate(payload)
-        input_payload = persisted.model_dump(
-            mode="python", exclude={"data_quality", "payload_hash", "snapshot_id"}
-        )
-        rebuilt = build_feature_snapshot(FeatureSnapshotInput.model_validate(input_payload))
+        if payload.get("schema_version") == "feature_snapshot.v2":
+            persisted = FeatureSnapshotV2.model_validate(payload)
+            input_payload = persisted.model_dump(
+                mode="python",
+                exclude={
+                    "real10y_estimated",
+                    "real10y_basis_bp",
+                    "real10y_alignment",
+                    "real10y_reason_codes",
+                    "real10y_quality",
+                    "data_quality",
+                    "payload_hash",
+                    "snapshot_id",
+                },
+            )
+            rebuilt = build_feature_snapshot(FeatureSnapshotV2Input.model_validate(input_payload))
+        else:
+            persisted = FeatureSnapshot.model_validate(payload)
+            input_payload = persisted.model_dump(
+                mode="python", exclude={"data_quality", "payload_hash", "snapshot_id"}
+            )
+            rebuilt = build_feature_snapshot(FeatureSnapshotInput.model_validate(input_payload))
     except (OSError, json.JSONDecodeError, ValidationError, ValueError):
         return None
     if (
-        persisted.payload_hash != rebuilt.payload_hash
+        persisted != rebuilt
+        or persisted.payload_hash != rebuilt.payload_hash
         or persisted.snapshot_id != rebuilt.snapshot_id
         or persisted.data_quality != rebuilt.data_quality
         or persisted.asset != "XAUUSD"

@@ -12,13 +12,13 @@ from apps.analysis.gold_policy.feature_store import (
     PreviousFeatureSnapshotLookup,
     load_previous_feature_snapshot,
 )
-from apps.analysis.gold_policy.schemas import FeatureSnapshot
+from apps.analysis.gold_policy.schemas import FeatureSnapshotContract
 
 
 @dataclass(frozen=True)
 class GoldPolicyRuntimeInputs:
-    current: FeatureSnapshot
-    previous: FeatureSnapshot | None
+    current: FeatureSnapshotContract
+    previous: FeatureSnapshotContract | None
     lookup: PreviousFeatureSnapshotLookup
 
 

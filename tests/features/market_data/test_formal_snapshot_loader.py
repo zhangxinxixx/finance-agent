@@ -83,11 +83,16 @@ def test_loader_queries_completed_bars_for_each_formal_asset(monkeypatch: pytest
         ("GC", "1d", timedelta(days=1)),
         ("WTI", "1d", timedelta(days=1)),
         ("BRENT", "1d", timedelta(days=1)),
+        ("XAGUSD", "1d", timedelta(days=1)),
+        ("DXY", "1d", timedelta(days=1)),
+        ("VIX", "1d", timedelta(days=1)),
     ]
     assert all(item["as_of"] == as_of for item in calls)
     assert bundle.as_of == as_of
     assert bundle.market_prices.readiness == "blocked"
     assert bundle.oil.readiness == "blocked"
+    assert bundle.market_context is not None
+    assert bundle.market_context.readiness == "blocked"
 
 
 def test_loader_normalizes_sqlite_orm_rows_and_selects_xau_primary() -> None:
@@ -146,6 +151,8 @@ def test_loader_normalizes_sqlite_orm_rows_and_selects_xau_primary() -> None:
     assert bundle.oil.readiness == "blocked"
     assert bundle.oil.wti.freshness_status == "missing"
     assert bundle.oil.brent.freshness_status == "missing"
+    assert bundle.market_context is not None
+    assert bundle.market_context.readiness == "blocked"
 
 
 def test_loader_propagates_repository_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -197,3 +204,4 @@ def test_loader_is_stable_for_repeated_completed_queries() -> None:
 
     assert len({item.market_prices.model_dump_json() for item in results}) == 1
     assert len({item.oil.model_dump_json() for item in results}) == 1
+    assert len({item.market_context.model_dump_json() for item in results if item.market_context is not None}) == 1

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -17,7 +18,7 @@ from apps.api.schemas.common import ArtifactType, DataStatus, ReportLifecycleSta
 from apps.api.schemas.report import ReportAnalysisAgentOutput, ReportAnalysisInputs, ReportDeterministicInput
 from apps.api.schemas.report import ReportArtifact as ReportArtifactSchema
 from apps.api.schemas.report import ReportDetail
-from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef
+from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef, SourceRef
 from apps.api.services._report_lineage import resolve_report_lineage_context
 from apps.api.services._storage import _PROJECT_ROOT, _iso, _latest_asset_date_run, _try_db_session
 from apps.api.services._trace_refs import coerce_artifact_type, dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
@@ -30,6 +31,7 @@ from apps.renderer.contracts import MacroEventFollowupStructuredPayload, WeeklyC
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
 from database.models.report import ReportArtifact as ReportArtifactModel
 from database.models.report import ReportItem
+from database.models.task import TaskRun, TaskStatus as TaskRunStatus
 from database.queries.report import get_report_artifacts as query_report_artifacts
 from database.queries.report import get_report_detail as query_report_detail
 
@@ -79,6 +81,8 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
         if item is not None:
             artifacts = query_report_artifacts(db, report_id)
             detail = _build_report_detail_from_item(item, artifacts)
+            detail = _enrich_macro_report_lineage(detail)
+            detail = _enforce_task_run_report_authority(db, detail)
             detail = _enrich_report_detail_with_lineage_warnings(db, detail)
             detail = _enrich_report_detail_with_llm_audits(db, detail)
             return _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
@@ -87,8 +91,159 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
     detail = _build_legacy_report_detail(db, report_id)
     if detail is None:
         return None
+    detail = _enrich_macro_report_lineage(detail)
+    detail = _enforce_task_run_report_authority(db, detail)
     detail = _enrich_report_detail_with_llm_audits(db, detail)
     return _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
+
+
+def _non_authoritative_premarket_run_ids(db: Session, run_ids: Iterable[str | None]) -> set[str]:
+    parsed_ids: dict[uuid.UUID, str] = {}
+    for run_id in run_ids:
+        if not run_id:
+            continue
+        try:
+            parsed_ids[uuid.UUID(str(run_id))] = str(run_id)
+        except ValueError:
+            continue
+    if not parsed_ids:
+        return set()
+
+    try:
+        rows = db.scalars(select(TaskRun).where(TaskRun.id.in_(parsed_ids))).all()
+    except (OperationalError, ProgrammingError):
+        return set()
+    return {
+        str(row.id)
+        for row in rows
+        if row.name == "premarket" and row.status != TaskRunStatus.success
+    }
+
+
+def _load_non_authoritative_premarket_run_ids(run_ids: Iterable[str | None]) -> set[str]:
+    db = _try_db_session()
+    if db is None:
+        return set()
+    try:
+        return _non_authoritative_premarket_run_ids(db, run_ids)
+    finally:
+        db.close()
+
+
+def _enforce_task_run_report_authority(db: Session, detail: ReportDetail) -> ReportDetail:
+    if detail.family != "macro_report":
+        return detail
+    task_blocked = detail.run_id in _non_authoritative_premarket_run_ids(db, [detail.run_id])
+    publish_allowed = _gold_publish_allowed(detail.trade_date, detail.run_id)
+    quality_blocked = publish_allowed is False
+    lineage_blocked = publish_allowed is True and (
+        not detail.snapshot_id or not detail.source_refs or not detail.input_snapshot_ids
+    )
+    if not task_blocked and not quality_blocked and not lineage_blocked:
+        return detail
+    if task_blocked:
+        code = "upstream-task-not-successful"
+        message = "The premarket task did not complete successfully; this intermediate report is not authoritative."
+    elif quality_blocked:
+        code = "quality-gate-blocked"
+        message = "The Gold analysis QualityGate blocked publication; this intermediate report is not authoritative."
+    else:
+        code = "macro-lineage-unavailable"
+        message = "The accepted macro report lacks a validated canonical snapshot or source lineage; it is not authoritative."
+    return detail.model_copy(
+        update={
+            "data_status": DataStatus.unavailable,
+            "lifecycle_status": ReportLifecycleStatus.needs_review,
+            "warnings": _merge_warning_items(
+                detail.warnings,
+                [
+                    WarningItem(
+                        code=code,
+                        message=message,
+                    )
+                ],
+            ),
+        }
+    )
+
+
+def _enrich_macro_report_lineage(detail: ReportDetail) -> ReportDetail:
+    if detail.family != "macro_report":
+        return detail
+    lineage = _load_macro_report_lineage(detail.trade_date, detail.run_id)
+    if lineage is None:
+        return detail
+    snapshot_id, source_refs, input_snapshot_ids = lineage
+    return detail.model_copy(
+        update={
+            "snapshot_id": snapshot_id,
+            "source_refs": dedupe_source_refs([*detail.source_refs, *source_refs]),
+            "input_snapshot_ids": list(
+                dict.fromkeys([*detail.input_snapshot_ids, *input_snapshot_ids])
+            ),
+        }
+    )
+
+
+def _load_macro_report_lineage(
+    trade_date: str | None,
+    run_id: str | None,
+) -> tuple[str, list[SourceRef], list[str]] | None:
+    if not trade_date or not run_id:
+        return None
+    snapshot = _read_optional_json(
+        _PROJECT_ROOT
+        / "storage"
+        / "features"
+        / "snapshots"
+        / "XAUUSD"
+        / trade_date
+        / run_id
+        / "premarket_snapshot.json"
+    )
+    quality_gate = _read_optional_json(
+        _PROJECT_ROOT
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / trade_date
+        / run_id
+        / "quality_gate_result.json"
+    )
+    if not isinstance(snapshot, dict) or not isinstance(quality_gate, dict):
+        return None
+    expected_snapshot_id = f"XAUUSD:{trade_date}:{run_id}"
+    if (
+        snapshot.get("asset") != "XAUUSD"
+        or snapshot.get("trade_date") != trade_date
+        or snapshot.get("run_id") != run_id
+        or snapshot.get("snapshot_id") != expected_snapshot_id
+        or quality_gate.get("trade_date") != trade_date
+        or quality_gate.get("run_id") != run_id
+        or quality_gate.get("snapshot_id") != expected_snapshot_id
+    ):
+        return None
+    source_refs = parse_source_refs(snapshot.get("source_refs"))
+    input_snapshot_ids = _normalize_snapshot_ids(snapshot.get("input_snapshot_ids"))
+    if not source_refs or not input_snapshot_ids:
+        return None
+    return expected_snapshot_id, source_refs, input_snapshot_ids
+
+
+def _gold_publish_allowed(trade_date: str | None, run_id: str | None) -> bool | None:
+    if not trade_date or not run_id:
+        return None
+    payload = _read_optional_json(
+        _PROJECT_ROOT
+        / "storage"
+        / "analysis"
+        / "gold_mainlines"
+        / trade_date
+        / run_id
+        / "quality_gate_result.json"
+    )
+    value = payload.get("publish_allowed") if isinstance(payload, dict) else None
+    return value if isinstance(value, bool) else None
 
 
 def _enrich_report_detail_with_llm_audits(db: Session, detail: ReportDetail) -> ReportDetail:
@@ -3237,12 +3392,22 @@ def _collect_registered_reports_from_db(asset: str) -> list[dict[str, Any]]:
             .where(or_(ReportItem.asset == asset, ReportItem.asset.is_(None)))
             .order_by(ReportItem.trade_date.desc(), ReportItem.updated_at.desc(), ReportItem.created_at.desc())
         ).all()
+        non_authoritative_run_ids = _non_authoritative_premarket_run_ids(db, (item.run_id for item in rows))
         for item in rows:
             artifacts = list(item.artifacts or [])
             report_type = str(item.report_type or item.family or "").strip()
             if not report_type:
                 continue
             trade_date = _iso(item.trade_date)
+            if report_type == "macro_report" and (
+                item.run_id in non_authoritative_run_ids
+                or _gold_publish_allowed(trade_date, item.run_id) is False
+                or (
+                    _gold_publish_allowed(trade_date, item.run_id) is True
+                    and _load_macro_report_lineage(trade_date, item.run_id) is None
+                )
+            ):
+                continue
             results.append(
                 {
                     "type": report_type,
@@ -3550,12 +3715,29 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
 
     macro_base = _PROJECT_ROOT / "storage" / "outputs" / "macro"
     if macro_base.exists():
+        macro_run_ids = [
+            run_dir.name
+            for date_dir in macro_base.iterdir()
+            if date_dir.is_dir()
+            for run_dir in date_dir.iterdir()
+            if run_dir.is_dir()
+        ]
+        non_authoritative_run_ids = _load_non_authoritative_premarket_run_ids(macro_run_ids)
         for date_dir in sorted(macro_base.iterdir(), reverse=True):
             if not date_dir.is_dir():
                 continue
             runs = [run_dir for run_dir in date_dir.iterdir() if run_dir.is_dir()]
             if runs:
                 for run_dir in sorted(runs, reverse=True):
+                    if run_dir.name in non_authoritative_run_ids:
+                        continue
+                    if _gold_publish_allowed(date_dir.name, run_dir.name) is False:
+                        continue
+                    if (
+                        _gold_publish_allowed(date_dir.name, run_dir.name) is True
+                        and _load_macro_report_lineage(date_dir.name, run_dir.name) is None
+                    ):
+                        continue
                     report_md = _macro_report_md_path(run_dir)
                     if report_md is not None:
                         reports.append(

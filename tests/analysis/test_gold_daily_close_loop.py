@@ -7,6 +7,7 @@ import pytest
 from apps.analysis.gold_policy.attribution_policy import attribute_gold_price
 from apps.analysis.gold_policy.daily_close_loop import evaluate_gold_daily_close_loop
 from apps.analysis.gold_policy.daily_close_schemas import DailyCloseLoopInput
+from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
 from apps.analysis.gold_policy.key_level_policy import evaluate_key_level_lifecycle
 from apps.analysis.gold_policy.key_level_schemas import build_key_level_lifecycle_decision
 from apps.analysis.gold_policy.state_schemas import TransitionEvidence
@@ -37,6 +38,23 @@ def _evidence(
     if rule_code is not None:
         payload["rule_code"] = rule_code
     return TransitionEvidence.model_validate(payload)
+
+
+def _v2_snapshot(snapshot, **changes):
+    payload = snapshot.model_dump(
+        mode="json",
+        exclude={"data_quality", "payload_hash", "snapshot_id"},
+    )
+    direct = payload.pop("real10y")
+    direct["market_role"] = "real_yield_direct"
+    payload.update(schema_version="feature_snapshot.v2", real10y_direct=direct)
+    for field, values in changes.items():
+        payload[field].update(values)
+    for field, value in payload.items():
+        if isinstance(value, dict) and "source_refs" in value:
+            for source_ref in value["source_refs"]:
+                source_ref["retrieved_at"] = payload["as_of"]
+    return build_feature_snapshot(payload)
 
 
 def _bootstrap_result():
@@ -115,6 +133,47 @@ def test_accepted_bootstrap_builds_the_complete_formal_chain() -> None:
     assert result.consistency_decision.status.value == "consistent"
     assert result.selected_state_id == result.analysis_state.state_id
     assert result.selected_strategy_id == result.candidate_strategy.decision_id
+    assert result.model_invocations == 0
+
+
+def test_v2_bootstrap_consumes_estimated_real_yield_through_complete_chain() -> None:
+    previous_v1 = _snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
+    previous_estimated = previous_v1.us10y.value - previous_v1.t10yie.value
+    previous = _v2_snapshot(
+        previous_v1,
+        real10y_direct={"value": previous_estimated},
+    )
+    current_v1 = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    current_us10y = previous.us10y.value + 0.2
+    current = _v2_snapshot(
+        current_v1,
+        us10y={"value": current_us10y},
+        real10y_direct={"value": current_us10y - current_v1.t10yie.value},
+    )
+    attribution = attribute_gold_price(current, previous)
+    support = _policy_input(bias="bearish", feature=current, attribution=attribution)
+
+    result = evaluate_gold_daily_close_loop(
+        DailyCloseLoopInput(
+            decision_as_of=support.decision_as_of,
+            current_feature=current,
+            previous_feature=previous,
+            transition_evidence=_evidence(support.decision_as_of),
+            options_regime=support.options_regime,
+            event_risk=support.event_risk,
+        )
+    )
+
+    real_yield_drivers = tuple(
+        driver
+        for driver in (*result.analysis_decision.dominant_drivers, *result.analysis_decision.counter_drivers)
+        if driver.factor == "real_yield"
+    )
+    assert result.current_feature_id.startswith("feature_snapshot.v2:")
+    assert result.strategy_policy_input.feature_snapshot == current
+    assert result.analysis_decision.real10y_cross_check is not None
+    assert real_yield_drivers
+    assert all(driver.current_value == current.real10y_estimated.value for driver in real_yield_drivers)
     assert result.model_invocations == 0
 
 

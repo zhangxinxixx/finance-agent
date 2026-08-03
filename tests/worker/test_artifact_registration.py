@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from apps.worker.artifact_registration import register_composite_output_artifacts
 
 
@@ -22,15 +24,17 @@ class _GoldAnalysisDecision:
     previous_snapshot_id: str
 
 
+@pytest.mark.parametrize("version", ("v1", "v2"))
 def test_registers_gold_policy_shadow_artifacts_with_observe_lineage(
     tmp_path: Path,
     monkeypatch,
+    version: str,
 ) -> None:
     paths = {}
     for filename in (
-        "feature_snapshot.v1.json",
-        "gold_analysis_decision.v1.json",
-        "gold_price_attribution.v1.json",
+        f"feature_snapshot.{version}.json",
+        f"gold_analysis_decision.{version}.json",
+        f"gold_price_attribution.{version}.json",
     ):
         path = tmp_path / filename
         path.write_text("{}\n", encoding="utf-8")
@@ -50,8 +54,12 @@ def test_registers_gold_policy_shadow_artifacts_with_observe_lineage(
         composite_outputs={
             "gold_policy_execution_mode": "shadow",
             "gold_policy_artifact_paths": paths,
-            "gold_feature_snapshot": _FeatureSnapshot("feature_snapshot.v1:test"),
-            "gold_analysis_decision": _GoldAnalysisDecision("feature_snapshot.v1:previous"),
+            "gold_feature_snapshot": _FeatureSnapshot(
+                f"feature_snapshot.{version}:test"
+            ),
+            "gold_analysis_decision": _GoldAnalysisDecision(
+                f"feature_snapshot.{version}:previous"
+            ),
         },
         analysis_snapshot={
             "source_refs": [{"source": "analysis_snapshot", "snapshot_id": "snap-1"}],
@@ -67,6 +75,6 @@ def test_registers_gold_policy_shadow_artifacts_with_observe_lineage(
     assert all(item["output_mode"] == "observe" for item in shadow_artifacts)
     assert captured["input_snapshot_ids"] == {
         "analysis_snapshot": "snap-1",
-        "gold_policy_feature_snapshot": "feature_snapshot.v1:test",
-        "gold_policy_previous_feature_snapshot": "feature_snapshot.v1:previous",
+        "gold_policy_feature_snapshot": f"feature_snapshot.{version}:test",
+        "gold_policy_previous_feature_snapshot": f"feature_snapshot.{version}:previous",
     }

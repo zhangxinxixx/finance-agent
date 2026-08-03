@@ -38,6 +38,7 @@ def test_jin10_cache_refresh_scheduler_preserves_registered_jobs_and_startup_ref
         "web_flash": object(),
         "web_article_analysis": object(),
         "twelvedata": object(),
+        "market_candles_daily": object(),
     }
     monkeypatch.setattr(service, "BackgroundScheduler", FakeScheduler)
     monkeypatch.setattr(service, "Thread", FakeThread)
@@ -48,6 +49,7 @@ def test_jin10_cache_refresh_scheduler_preserves_registered_jobs_and_startup_ref
     monkeypatch.setattr(service, "refresh_jin10_web_flash_briefs", refreshers["web_flash"])
     monkeypatch.setattr(service, "refresh_jin10_web_article_analysis", refreshers["web_article_analysis"])
     monkeypatch.setattr(service, "refresh_due_twelvedata_xauusd", refreshers["twelvedata"])
+    monkeypatch.setattr(service, "refresh_market_candle_daily_cache", refreshers["market_candles_daily"])
     monkeypatch.setattr(
         service,
         "record_jin10_refresh",
@@ -74,12 +76,12 @@ def test_jin10_cache_refresh_scheduler_preserves_registered_jobs_and_startup_ref
     )
     assert [job["id"] for job in cron_jobs] == [
         "twelvedata_xauusd_dispatch_refresh",
+        "market_candles_daily_refresh",
     ]
-    assert [job["minute"] for job in cron_jobs] == [
-        "1,6,11,16,21,26,31,36,41,46,51,56",
-    ]
-    assert cron_jobs[-1]["timezone"] == "UTC"
-    assert all(job["second"] == 30 for job in cron_jobs)
+    assert cron_jobs[0]["minute"] == "1,6,11,16,21,26,31,36,41,46,51,56"
+    assert cron_jobs[0]["second"] == 30
+    assert (cron_jobs[1]["hour"], cron_jobs[1]["minute"], cron_jobs[1]["second"]) == (13, 10, 0)
+    assert all(job["timezone"] == "UTC" for job in cron_jobs)
     assert all(job["coalesce"] is True and job["max_instances"] == 1 for job in cron_jobs)
 
     for job in jobs:
@@ -92,6 +94,7 @@ def test_jin10_cache_refresh_scheduler_preserves_registered_jobs_and_startup_ref
         "jin10_web_flash",
         "jin10_web_article_analysis",
         "twelvedata_xauusd_dispatch",
+        "market_candles_daily",
     ]
     assert started_threads == [
         ("startup-quotes", refreshers["quotes"]),
@@ -99,6 +102,7 @@ def test_jin10_cache_refresh_scheduler_preserves_registered_jobs_and_startup_ref
         ("startup-flash", refreshers["flash"]),
         ("startup-web-flash", refreshers["web_flash"]),
         ("startup-web-article-analysis", refreshers["web_article_analysis"]),
+        ("startup-market-daily", refreshers["market_candles_daily"]),
     ]
 
 

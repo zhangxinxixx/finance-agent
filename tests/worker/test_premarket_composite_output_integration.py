@@ -831,6 +831,57 @@ def test_composite_pipeline_persists_explicit_gold_policy_artifacts_and_coordina
     assert outputs["gold_analysis_decision"] is recorded_conclusions[0]
 
 
+def test_composite_pipeline_uses_v2_artifact_names_and_typed_coordinator_contract(
+    tmp_path: Path,
+) -> None:
+    from apps.analysis.gold_policy.analysis_policy import GoldAnalysisDecisionV2
+    from apps.analysis.gold_policy.attribution_policy import GoldPriceAttributionV2
+    from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+    from tests.analysis.test_gold_analysis_policy import _v2
+
+    previous = _v2(
+        build_feature_snapshot(
+            _gold_policy_fixture("feature_snapshot_v1_bullish_2025-01-17.json")
+        )
+    )
+    current = _v2(
+        build_feature_snapshot(
+            _gold_policy_fixture("feature_snapshot_v1_bearish_2025-01-21.json")
+        )
+    )
+
+    summaries, outputs = run_composite_analysis_pipeline(
+        storage_root=tmp_path,
+        snapshot=_make_rich_snapshot(run_id="run-gold-policy-v2-seam"),
+        run_id="run-gold-policy-v2-seam",
+        created_at=_CREATED_AT,
+        gold_feature_snapshot_prebuilt=current,
+        previous_gold_feature_snapshot_prebuilt=previous,
+        gold_policy_execution_mode="authoritative",
+    )
+
+    assert isinstance(outputs["gold_analysis_decision"], GoldAnalysisDecisionV2)
+    assert isinstance(outputs["gold_price_attribution"], GoldPriceAttributionV2)
+    assert outputs["agents"]["coordinator_agent"].accepted_state_conclusion == outputs[
+        "gold_analysis_decision"
+    ]
+    paths = summaries["gold_policy"]
+    assert paths["feature_snapshot_path"].endswith("feature_snapshot.v2.json")
+    assert paths["gold_analysis_decision_path"].endswith(
+        "gold_analysis_decision.v2.json"
+    )
+    assert paths["gold_price_attribution_path"].endswith(
+        "gold_price_attribution.v2.json"
+    )
+    for key in (
+        "feature_snapshot_path",
+        "gold_analysis_decision_path",
+        "gold_price_attribution_path",
+    ):
+        assert (tmp_path / paths[key]).is_file()
+
+
 def test_composite_pipeline_executes_typed_daily_close_loop_without_report_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2028,7 +2079,7 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
     gold_policy_runtime = summaries["steps"]["gold_policy_runtime"]
     assert gold_policy_runtime["status"] == "success"
     assert gold_policy_runtime["execution_mode"] == "shadow"
-    assert gold_policy_runtime["current_snapshot_id"].startswith("feature_snapshot.v1:")
+    assert gold_policy_runtime["current_snapshot_id"].startswith("feature_snapshot.v2:")
     assert gold_policy_runtime["previous_lookup"] == {
         "status": "missing",
         "reason_code": "previous_feature_snapshot_missing",
@@ -2036,12 +2087,14 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
     }
 
     gold_policy_paths = list(
-        (tmp_path / "analysis" / "gold_mainlines" / _TRADE_DATE / run_id).glob("*.v1.json")
+        (tmp_path / "analysis" / "gold_mainlines" / _TRADE_DATE / run_id).glob(
+            "*.v2.json"
+        )
     )
     assert {path.name for path in gold_policy_paths} >= {
-        "feature_snapshot.v1.json",
-        "gold_analysis_decision.v1.json",
-        "gold_price_attribution.v1.json",
+        "feature_snapshot.v2.json",
+        "gold_analysis_decision.v2.json",
+        "gold_price_attribution.v2.json",
     }
 
     support_artifact_paths = {

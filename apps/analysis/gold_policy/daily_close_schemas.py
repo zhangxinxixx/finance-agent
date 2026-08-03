@@ -7,12 +7,18 @@ import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from apps.analysis.gold_policy.analysis_policy import GoldAnalysisDecision
-from apps.analysis.gold_policy.attribution_policy import GoldPriceAttribution
+from apps.analysis.gold_policy.analysis_policy import (
+    GoldAnalysisDecision,
+    GoldAnalysisDecisionV2,
+)
+from apps.analysis.gold_policy.attribution_policy import (
+    GoldPriceAttribution,
+    GoldPriceAttributionV2,
+)
 from apps.analysis.gold_policy.consistency_schemas import AnalysisStrategyConsistencyDecision
 from apps.analysis.gold_policy.key_level_schemas import (
     KeyLevelAuthorityStatus,
@@ -26,19 +32,64 @@ from apps.analysis.gold_policy.key_level_schemas import (
     KeyLevelSourceRole,
     KeyLevelTransitionAction,
 )
-from apps.analysis.gold_policy.schemas import FeatureSnapshot, SourceReference
+from apps.analysis.gold_policy.schemas import FeatureSnapshotContract, SourceReference
 from apps.analysis.gold_policy.state_schemas import (
     AnalysisState,
+    AnalysisStateV2,
     HardInvalidationRule,
     StateTransitionPolicyDecision,
+    StateTransitionPolicyDecisionV2,
     TransitionEvidence,
 )
 from apps.analysis.gold_policy.strategy_schemas import (
     StrategyDecision,
+    StrategyDecisionV2,
     StrategyEventRiskSnapshot,
     StrategyOptionsRegimeSnapshot,
     StrategyPolicyInput,
+    StrategyPolicyInputV2,
 )
+
+
+GoldAnalysisDecisionContract = Annotated[
+    GoldAnalysisDecision | GoldAnalysisDecisionV2,
+    Field(discriminator="policy_version"),
+]
+GoldPriceAttributionContract = Annotated[
+    GoldPriceAttribution | GoldPriceAttributionV2,
+    Field(discriminator="policy_version"),
+]
+AnalysisStateContract = Annotated[
+    AnalysisState | AnalysisStateV2,
+    Field(discriminator="schema_version"),
+]
+StateTransitionDecisionContract = Annotated[
+    StateTransitionPolicyDecision | StateTransitionPolicyDecisionV2,
+    Field(discriminator="policy_version"),
+]
+StrategyPolicyInputContract = Annotated[
+    StrategyPolicyInput | StrategyPolicyInputV2,
+    Field(discriminator="schema_version"),
+]
+StrategyDecisionContract = Annotated[
+    StrategyDecision | StrategyDecisionV2,
+    Field(discriminator="schema_version"),
+]
+
+
+def _contract_version(value: object) -> Literal["v1", "v2"]:
+    raw = value if isinstance(value, str) else None
+    for field_name in ("schema_version", "policy_version"):
+        candidate = getattr(value, field_name, None)
+        if isinstance(candidate, str):
+            raw = candidate
+            break
+    if not isinstance(raw, str) or ".v" not in raw:
+        raise ValueError("versioned daily-close contract is missing its discriminator")
+    version = raw.rsplit(".v", 1)[1].split(":", 1)[0]
+    if version not in {"1", "2"}:
+        raise ValueError("unsupported daily-close contract version")
+    return "v1" if version == "1" else "v2"
 
 
 class CanonicalCommitAction(StrEnum):
@@ -65,12 +116,12 @@ class DailyCloseLoopInput(_FrozenContract):
     asset: Literal["XAUUSD"] = "XAUUSD"
     scope: Literal["daily_close"] = "daily_close"
     decision_as_of: datetime
-    current_feature: FeatureSnapshot
-    previous_feature: FeatureSnapshot | None = None
-    previous_policy_input: StrategyPolicyInput | None = None
-    previous_state: AnalysisState | None = None
-    previous_transition: StateTransitionPolicyDecision | None = None
-    previous_strategy: StrategyDecision | None = None
+    current_feature: FeatureSnapshotContract
+    previous_feature: FeatureSnapshotContract | None = None
+    previous_policy_input: StrategyPolicyInputContract | None = None
+    previous_state: AnalysisStateContract | None = None
+    previous_transition: StateTransitionDecisionContract | None = None
+    previous_strategy: StrategyDecisionContract | None = None
     transition_evidence: TransitionEvidence
     options_regime: StrategyOptionsRegimeSnapshot
     event_risk: StrategyEventRiskSnapshot
@@ -136,6 +187,19 @@ class DailyCloseLoopInput(_FrozenContract):
                 raise ValueError("previous strategy must bind previous state")
             if self.previous_strategy.transition_decision_hash != self.previous_transition.decision_hash:
                 raise ValueError("previous strategy must bind previous transition")
+            predecessor_versions = {
+                _contract_version(self.previous_feature),
+                _contract_version(self.previous_policy_input),
+                _contract_version(self.previous_state),
+                _contract_version(self.previous_transition),
+                _contract_version(self.previous_strategy),
+            }
+            if predecessor_versions != {_contract_version(self.current_feature)}:
+                raise ValueError("daily-close predecessor contracts must match the current version")
+        elif self.previous_feature is not None and _contract_version(self.previous_feature) != _contract_version(
+            self.current_feature
+        ):
+            raise ValueError("bootstrap previous feature must match the current version")
         for values, name, identity in (
             (self.key_levels, "key_levels", lambda item: item.state_id),
             (
@@ -166,8 +230,7 @@ class DailyCloseLoopInput(_FrozenContract):
             and decision.to_state_id in levels
             and decision.decision_hash in decisions
             and levels[decision.to_state_id].lifecycle is KeyLevelLifecycle.BROKEN
-            and levels[decision.to_state_id].authority_status
-            is KeyLevelAuthorityStatus.CANONICAL_XAUUSD_VALIDATED
+            and levels[decision.to_state_id].authority_status is KeyLevelAuthorityStatus.CANONICAL_XAUUSD_VALIDATED
             and levels[decision.to_state_id].quality_status == "accepted"
             and levels[decision.to_state_id].spec == decision.event.spec
             and levels[decision.to_state_id].last_event_id == decision.event.event_id
@@ -182,9 +245,7 @@ class DailyCloseLoopInput(_FrozenContract):
             and decision.triggered_rule is KeyLevelRuleCode.BREAK_CANONICAL_WINDOW
             for decision in self.key_level_proof
         ):
-            raise ValueError(
-                "price-level hard invalidation requires matching canonical XAUUSD break proof"
-            )
+            raise ValueError("price-level hard invalidation requires matching canonical XAUUSD break proof")
 
 
 class DailyCloseLoopResultInput(_FrozenContract):
@@ -192,34 +253,34 @@ class DailyCloseLoopResultInput(_FrozenContract):
     asset: Literal["XAUUSD"] = "XAUUSD"
     scope: Literal["daily_close"] = "daily_close"
     decision_as_of: datetime
-    current_feature_id: str = Field(pattern=r"^feature_snapshot\.v1:[0-9a-f]{64}$")
+    current_feature_id: str = Field(pattern=r"^feature_snapshot\.v[12]:[0-9a-f]{64}$")
     previous_feature_id: str | None = Field(
         default=None,
-        pattern=r"^feature_snapshot\.v1:[0-9a-f]{64}$",
+        pattern=r"^feature_snapshot\.v[12]:[0-9a-f]{64}$",
     )
     previous_state_id: str | None = Field(
         default=None,
-        pattern=r"^analysis_state\.v1:[0-9a-f]{64}$",
+        pattern=r"^analysis_state\.v[12]:[0-9a-f]{64}$",
     )
     previous_strategy_id: str | None = Field(
         default=None,
-        pattern=r"^strategy_decision\.v1:[0-9a-f]{64}$",
+        pattern=r"^strategy_decision\.v[12]:[0-9a-f]{64}$",
     )
-    analysis_decision: GoldAnalysisDecision
-    price_attribution: GoldPriceAttribution
-    transition_decision: StateTransitionPolicyDecision
-    analysis_state: AnalysisState | None = None
-    strategy_policy_input: StrategyPolicyInput | None = None
-    candidate_strategy: StrategyDecision | None = None
+    analysis_decision: GoldAnalysisDecisionContract
+    price_attribution: GoldPriceAttributionContract
+    transition_decision: StateTransitionDecisionContract
+    analysis_state: AnalysisStateContract | None = None
+    strategy_policy_input: StrategyPolicyInputContract | None = None
+    candidate_strategy: StrategyDecisionContract | None = None
     consistency_decision: AnalysisStrategyConsistencyDecision | None = None
     canonical_action: CanonicalCommitAction
     selected_state_id: str | None = Field(
         default=None,
-        pattern=r"^analysis_state\.v1:[0-9a-f]{64}$",
+        pattern=r"^analysis_state\.v[12]:[0-9a-f]{64}$",
     )
     selected_strategy_id: str | None = Field(
         default=None,
-        pattern=r"^strategy_decision\.v1:[0-9a-f]{64}$",
+        pattern=r"^strategy_decision\.v[12]:[0-9a-f]{64}$",
     )
     reason_codes: tuple[DailyCloseLoopReason, ...] = Field(min_length=1)
     source_refs: tuple[SourceReference, ...] = Field(min_length=1)
@@ -261,6 +322,22 @@ class DailyCloseLoopResultInput(_FrozenContract):
             raise ValueError("analysis decision must bind the previous feature")
         if self.price_attribution.previous_snapshot_id != expected_previous_feature_id:
             raise ValueError("price attribution must bind the previous feature")
+        versions = {
+            _contract_version(self.current_feature_id),
+            _contract_version(self.analysis_decision),
+            _contract_version(self.price_attribution),
+            _contract_version(self.transition_decision),
+        }
+        if self.analysis_state is not None:
+            versions.update(
+                {
+                    _contract_version(self.analysis_state),
+                    _contract_version(self.strategy_policy_input),
+                    _contract_version(self.candidate_strategy),
+                }
+            )
+        if len(versions) != 1:
+            raise ValueError("daily-close result contracts must use one version family")
         if self.transition_decision.from_state_id != self.previous_state_id:
             raise ValueError("transition must start from the previous canonical state")
         if self.transition_decision.evidence.as_of > self.decision_as_of:

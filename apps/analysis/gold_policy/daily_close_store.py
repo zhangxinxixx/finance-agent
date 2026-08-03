@@ -13,8 +13,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from apps.analysis.gold_policy.analysis_policy import GoldAnalysisDecision
-from apps.analysis.gold_policy.attribution_policy import GoldPriceAttribution
+from apps.analysis.gold_policy.analysis_policy import (
+    GoldAnalysisDecision,
+    GoldAnalysisDecisionV2,
+)
+from apps.analysis.gold_policy.attribution_policy import (
+    GoldPriceAttribution,
+    GoldPriceAttributionV2,
+)
 from apps.analysis.gold_policy.consistency_schemas import AnalysisStrategyConsistencyDecision
 from apps.analysis.gold_policy.daily_close_loop import evaluate_gold_daily_close_loop
 from apps.analysis.gold_policy.daily_close_delivery import (
@@ -24,17 +30,47 @@ from apps.analysis.gold_policy.daily_close_delivery import (
     GoldDailyCloseTokenTrace,
     build_gold_daily_close_delivery,
 )
+from apps.analysis.gold_policy.report_context import (
+    GoldReportContext,
+    build_gold_report_context,
+)
+from apps.renderer.gold_policy_report import (
+    GoldReportRender,
+    build_gold_policy_report_render,
+)
+from apps.renderer.gold_policy_report_bundle import build_gold_policy_report_bundle
 from apps.analysis.gold_policy.daily_close_schemas import (
+    AnalysisStateContract,
     CanonicalCommitAction,
     DailyCloseLoopInput,
     DailyCloseLoopResult,
+    StateTransitionDecisionContract,
+    StrategyDecisionContract,
+    StrategyPolicyInputContract,
 )
 from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
-from apps.analysis.gold_policy.schemas import FeatureSnapshot, FeatureSnapshotInput
-from apps.analysis.gold_policy.state_schemas import AnalysisState, StateTransitionPolicyDecision
-from apps.analysis.gold_policy.strategy_schemas import StrategyDecision, StrategyPolicyInput
+from apps.analysis.gold_policy.schemas import (
+    FeatureSnapshot,
+    FeatureSnapshotContract,
+    FeatureSnapshotInput,
+    FeatureSnapshotV2,
+    FeatureSnapshotV2Input,
+)
+from apps.analysis.gold_policy.state_schemas import (
+    AnalysisState,
+    AnalysisStateV2,
+    StateTransitionPolicyDecision,
+    StateTransitionPolicyDecisionV2,
+)
+from apps.analysis.gold_policy.strategy_schemas import (
+    StrategyDecision,
+    StrategyDecisionV2,
+    StrategyPolicyInput,
+    StrategyPolicyInputV2,
+)
 from apps.runtime.immutable_artifact import (
     ImmutableArtifactConflictError,
+    ImmutableArtifactItem,
     immutable_json_item,
     write_immutable_artifact_bundle,
 )
@@ -47,18 +83,13 @@ _ATTEMPT = ".daily-close-attempt.json"
 _MANIFEST = ".bundle-manifest.json"
 _INPUT = "gold_daily_close_loop_input.v1.json"
 _RESULT = "gold_daily_close_loop_result.v1.json"
-_FEATURE = "feature_snapshot.v1.json"
-_ANALYSIS = "gold_analysis_decision.v1.json"
-_ATTRIBUTION = "gold_price_attribution.v1.json"
-_TRANSITION = "state_transition_policy_decision.v1.json"
-_STATE = "analysis_state.v1.json"
-_POLICY_INPUT = "strategy_policy_input.v1.json"
-_STRATEGY = "strategy_decision.v1.json"
 _CONSISTENCY = "analysis_strategy_consistency_decision.v1.json"
 _STRATEGY_DIFF = "strategy_diff.v1.json"
 _FINAL_REPORT = "final_report.v1.json"
 _CONTEXT_BUNDLE = "context_bundle.v1.json"
 _TOKEN_TRACE = "token_trace.v1.json"
+_REPORT_CONTEXT = "gold_report_context.v1.json"
+_REPORT_RENDER = "gold_policy_report_render.v1.json"
 _RECEIPT = "canonical_receipt.v1.json"
 
 
@@ -89,10 +120,10 @@ class DailyCloseArtifactPointer(_FrozenContract):
 
 class DailyCloseEffectiveHead(_FrozenContract):
     result_id: str = Field(pattern=r"^gold_daily_close_loop_result\.v1:[0-9a-f]{64}$")
-    feature_snapshot_id: str = Field(pattern=r"^feature_snapshot\.v1:[0-9a-f]{64}$")
-    state_id: str = Field(pattern=r"^analysis_state\.v1:[0-9a-f]{64}$")
+    feature_snapshot_id: str = Field(pattern=r"^feature_snapshot\.v[12]:[0-9a-f]{64}$")
+    state_id: str = Field(pattern=r"^analysis_state\.v[12]:[0-9a-f]{64}$")
     transition_decision_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    strategy_id: str = Field(pattern=r"^strategy_decision\.v1:[0-9a-f]{64}$")
+    strategy_id: str = Field(pattern=r"^strategy_decision\.v[12]:[0-9a-f]{64}$")
     consistency_decision_id: str = Field(pattern=r"^analysis_strategy_consistency_decision\.v1:[0-9a-f]{64}$")
     feature: DailyCloseArtifactPointer
     state: DailyCloseArtifactPointer
@@ -108,16 +139,22 @@ class DailyCloseCanonicalReceiptInput(_FrozenContract):
     decision_as_of: datetime
     session_date: date
     run_id: str = Field(min_length=1, max_length=128)
+    revision_no: int = Field(ge=1)
+    finalization_status: Literal["finalized"] = "finalized"
+    supersedes_receipt_id: str | None = Field(
+        default=None,
+        pattern=r"^gold_daily_close_canonical_receipt\.v1:[0-9a-f]{64}$",
+    )
     result_id: str = Field(pattern=r"^gold_daily_close_loop_result\.v1:[0-9a-f]{64}$")
     result_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     action: CanonicalCommitAction
     candidate_state_id: str | None = Field(
         default=None,
-        pattern=r"^analysis_state\.v1:[0-9a-f]{64}$",
+        pattern=r"^analysis_state\.v[12]:[0-9a-f]{64}$",
     )
     candidate_strategy_id: str | None = Field(
         default=None,
-        pattern=r"^strategy_decision\.v1:[0-9a-f]{64}$",
+        pattern=r"^strategy_decision\.v[12]:[0-9a-f]{64}$",
     )
     consistency_decision_id: str | None = Field(
         default=None,
@@ -149,6 +186,10 @@ class DailyCloseCanonicalReceiptInput(_FrozenContract):
     def _receipt_semantics(self) -> "DailyCloseCanonicalReceiptInput":
         if self.decision_as_of.date() != self.session_date:
             raise ValueError("receipt session_date must match decision_as_of")
+        if self.revision_no == 1 and self.supersedes_receipt_id is not None:
+            raise ValueError("first session revision cannot supersede another receipt")
+        if self.revision_no > 1 and self.supersedes_receipt_id is None:
+            raise ValueError("later session revisions must name the superseded receipt")
         predecessor_pair = self.predecessor_receipt_id is not None, self.predecessor_receipt is not None
         if predecessor_pair[0] != predecessor_pair[1]:
             raise ValueError("predecessor receipt identity and pointer must be paired")
@@ -182,11 +223,11 @@ class DailyCloseCanonicalHead(_FrozenContract):
     latest_receipt_path: Path
     latest_receipt: DailyCloseCanonicalReceipt
     selected_bundle_path: Path
-    feature_snapshot: FeatureSnapshot
-    strategy_policy_input: StrategyPolicyInput
-    analysis_state: AnalysisState
-    transition_decision: StateTransitionPolicyDecision
-    strategy_decision: StrategyDecision
+    feature_snapshot: FeatureSnapshotContract
+    strategy_policy_input: StrategyPolicyInputContract
+    analysis_state: AnalysisStateContract
+    transition_decision: StateTransitionDecisionContract
+    strategy_decision: StrategyDecisionContract
     consistency_decision: AnalysisStrategyConsistencyDecision
     loop_result: DailyCloseLoopResult
 
@@ -209,6 +250,8 @@ class DailyCloseBundleWriteResult(_FrozenContract):
     bundle_path: Path
     result_id: str
     receipt_id: str
+    revision_no: int = Field(ge=1)
+    finalization_status: Literal["finalized"] = "finalized"
     head_updated: bool
     artifact_results: tuple[dict[str, Any], ...]
 
@@ -294,20 +337,13 @@ def load_gold_daily_close_head(
                 source_path=bundle_path,
             )
         verified.append(bundle)
-    semantic_receipts = {
-        (
-            item.receipt.result_id,
-            item.receipt.action,
-            _head_identity(item.receipt.effective_head),
-        )
-        for item in verified
-    }
-    if len(semantic_receipts) != 1:
+    ordered = sorted(verified, key=lambda item: item.receipt.revision_no)
+    if not _valid_revision_chain(ordered):
         return DailyCloseHeadLookup(
-            status="ambiguous",
-            reason_code="daily_close_latest_session_ambiguous",
+            status="invalid",
+            reason_code="daily_close_latest_session_revision_chain_invalid",
         )
-    selected = min(verified, key=lambda item: item.receipt_path.as_posix())
+    selected = ordered[-1]
     if selected.head is None:
         return DailyCloseHeadLookup(
             status="missing",
@@ -372,15 +408,29 @@ def _persist_locked(
             bundle_path=bundle_path,
             result_id=result.result_id,
             receipt_id=existing.receipt.receipt_id,
+            revision_no=existing.receipt.revision_no,
             head_updated=result.canonical_action is not CanonicalCommitAction.HOLD,
             artifact_results=(),
         )
 
-    same_session = _session_bundle_paths(base / session_date.isoformat())
-    if same_session:
-        raise DailyCloseHeadConflictError("daily-close session already has a committed or partial bundle")
-
-    predecessor = load_gold_daily_close_head(storage_root=root, before_date=session_date)
+    same_session: list[_VerifiedBundle] = []
+    for existing_path in _session_bundle_paths(base / session_date.isoformat()):
+        existing = _read_verified_bundle(existing_path, root=root, visited=set())
+        if existing is None:
+            raise DailyCloseHeadConflictError(
+                "daily-close session contains an incomplete or invalid revision"
+            )
+        same_session.append(existing)
+    ordered_session = sorted(same_session, key=lambda item: item.receipt.revision_no)
+    if ordered_session and not _valid_revision_chain(ordered_session):
+        raise DailyCloseHeadConflictError("daily-close session revision chain is invalid")
+    revision_no = len(ordered_session) + 1
+    supersedes = ordered_session[-1].receipt if ordered_session else None
+    predecessor = (
+        _lookup_from_verified(ordered_session[-1])
+        if ordered_session
+        else load_gold_daily_close_head(storage_root=root, before_date=session_date)
+    )
     predecessor_receipt = _bind_predecessor(loop_input, result, predecessor)
     payloads = _bundle_payloads(loop_input, result)
     pointers = {name: _pointer(root, bundle_path / name, payload) for name, payload in payloads.items()}
@@ -391,6 +441,8 @@ def _persist_locked(
         current_result=pointers[_RESULT],
         predecessor=predecessor_receipt,
         effective_head=effective_head,
+        revision_no=revision_no,
+        supersedes=supersedes,
     )
     payloads[_RECEIPT] = receipt.model_dump(mode="json")
     attempt_path = bundle_path.parent / _ATTEMPT
@@ -402,19 +454,32 @@ def _persist_locked(
                     "schema_version": "gold_daily_close_commit_attempt.v1",
                     "session_date": session_date.isoformat(),
                     "run_id": run_id,
+                    "revision_no": revision_no,
                     "result_id": result.result_id,
                 },
             )
         ],
         storage_root=root,
     )
+    report_context = build_gold_report_context(loop_input, result)
+    report_render = build_gold_policy_report_render(report_context)
+    report_items = build_gold_policy_report_bundle(report_context, report_render)
     items = [immutable_json_item(bundle_path / name, payload) for name, payload in payloads.items()]
+    items.extend(
+        ImmutableArtifactItem(
+            path=bundle_path / item.path,
+            content=item.content,
+            encoding=item.encoding,
+        )
+        for item in report_items
+    )
     results = write_immutable_artifact_bundle(items, storage_root=root)
     attempt_path.unlink(missing_ok=True)
     return DailyCloseBundleWriteResult(
         bundle_path=bundle_path,
         result_id=result.result_id,
         receipt_id=receipt.receipt_id,
+        revision_no=receipt.revision_no,
         head_updated=result.canonical_action is not CanonicalCommitAction.HOLD,
         artifact_results=tuple(asdict(item) for item in results),
     )
@@ -452,29 +517,36 @@ def _bundle_payloads(
     loop_input: DailyCloseLoopInput,
     result: DailyCloseLoopResult,
 ) -> dict[str, dict[str, Any]]:
+    report_context = build_gold_report_context(loop_input, result)
+    report_render = build_gold_policy_report_render(report_context)
     payloads = {
         _INPUT: loop_input.model_dump(mode="json"),
         _RESULT: result.model_dump(mode="json"),
-        _FEATURE: loop_input.current_feature.model_dump(mode="json"),
-        _ANALYSIS: result.analysis_decision.model_dump(mode="json"),
-        _ATTRIBUTION: result.price_attribution.model_dump(mode="json"),
-        _TRANSITION: result.transition_decision.model_dump(mode="json"),
+        _feature_artifact_name(loop_input.current_feature): loop_input.current_feature.model_dump(mode="json"),
+        _analysis_artifact_name(result.analysis_decision): result.analysis_decision.model_dump(mode="json"),
+        _attribution_artifact_name(result.price_attribution): result.price_attribution.model_dump(mode="json"),
+        _transition_artifact_name(result.transition_decision): result.transition_decision.model_dump(mode="json"),
+        _REPORT_CONTEXT: report_context.model_dump(mode="json"),
+        _REPORT_RENDER: report_render.model_dump(mode="json"),
     }
-    delivery = build_gold_daily_close_delivery(loop_input, result)
-    payloads.update(
-        {
-            _STRATEGY_DIFF: delivery.strategy_diff.model_dump(mode="json"),
-            _FINAL_REPORT: delivery.final_report.model_dump(mode="json"),
-            _CONTEXT_BUNDLE: delivery.context_bundle.model_dump(mode="json"),
-            _TOKEN_TRACE: delivery.token_trace.model_dump(mode="json"),
-        }
-    )
+    if result.analysis_decision.policy_version == "gold_analysis_policy.v1":
+        delivery = build_gold_daily_close_delivery(loop_input, result)
+        payloads.update(
+            {
+                _STRATEGY_DIFF: delivery.strategy_diff.model_dump(mode="json"),
+                _FINAL_REPORT: delivery.final_report.model_dump(mode="json"),
+                _CONTEXT_BUNDLE: delivery.context_bundle.model_dump(mode="json"),
+                _TOKEN_TRACE: delivery.token_trace.model_dump(mode="json"),
+            }
+        )
     if result.analysis_state is not None:
         payloads.update(
             {
-                _STATE: result.analysis_state.model_dump(mode="json"),
-                _POLICY_INPUT: result.strategy_policy_input.model_dump(mode="json"),
-                _STRATEGY: result.candidate_strategy.model_dump(mode="json"),
+                _state_artifact_name(result.analysis_state): result.analysis_state.model_dump(mode="json"),
+                _policy_input_artifact_name(result.strategy_policy_input): result.strategy_policy_input.model_dump(
+                    mode="json"
+                ),
+                _strategy_artifact_name(result.candidate_strategy): result.candidate_strategy.model_dump(mode="json"),
                 _CONSISTENCY: result.consistency_decision.model_dump(mode="json"),
             }
         )
@@ -495,11 +567,11 @@ def _effective_head(
         transition_decision_hash=result.transition_decision.decision_hash,
         strategy_id=result.selected_strategy_id,
         consistency_decision_id=result.consistency_decision.decision_id,
-        feature=pointers[_FEATURE],
-        state=pointers[_STATE],
-        transition=pointers[_TRANSITION],
-        strategy_policy_input=pointers[_POLICY_INPUT],
-        strategy=pointers[_STRATEGY],
+        feature=pointers[_feature_artifact_name(result.current_feature_id)],
+        state=pointers[_state_artifact_name(result.analysis_state)],
+        transition=pointers[_transition_artifact_name(result.transition_decision)],
+        strategy_policy_input=pointers[_policy_input_artifact_name(result.strategy_policy_input)],
+        strategy=pointers[_strategy_artifact_name(result.candidate_strategy)],
         consistency=pointers[_CONSISTENCY],
         result=pointers[_RESULT],
     )
@@ -512,11 +584,15 @@ def _build_receipt(
     current_result: DailyCloseArtifactPointer,
     predecessor: DailyCloseCanonicalReceipt | None,
     effective_head: DailyCloseEffectiveHead | None,
+    revision_no: int,
+    supersedes: DailyCloseCanonicalReceipt | None,
 ) -> DailyCloseCanonicalReceipt:
     value = DailyCloseCanonicalReceiptInput(
         decision_as_of=result.decision_as_of,
         session_date=result.decision_as_of.date(),
         run_id=run_id,
+        revision_no=revision_no,
+        supersedes_receipt_id=(supersedes.receipt_id if supersedes else None),
         result_id=result.result_id,
         result_hash=result.result_hash,
         action=result.canonical_action,
@@ -559,7 +635,13 @@ def _read_verified_bundle(
         loop_input = DailyCloseLoopInput.model_validate(input_payload)
         result = DailyCloseLoopResult.model_validate(result_payload)
         receipt = DailyCloseCanonicalReceipt.model_validate(receipt_payload)
-        expected_names = set(_bundle_payloads(loop_input, result)) | {_RECEIPT}
+        report_context = build_gold_report_context(loop_input, result)
+        report_render = build_gold_policy_report_render(report_context)
+        expected_names = (
+            set(_bundle_payloads(loop_input, result))
+            | {item.path.as_posix() for item in build_gold_policy_report_bundle(report_context, report_render)}
+            | {_RECEIPT}
+        )
         if set(manifest_items) != expected_names:
             return None
         if evaluate_gold_daily_close_loop(loop_input).result_id != result.result_id:
@@ -592,11 +674,11 @@ def _read_verified_bundle(
             return None
         if receipt.action is not CanonicalCommitAction.HOLD:
             expected_pointers = {
-                _FEATURE: receipt.effective_head.feature,
-                _STATE: receipt.effective_head.state,
-                _TRANSITION: receipt.effective_head.transition,
-                _POLICY_INPUT: receipt.effective_head.strategy_policy_input,
-                _STRATEGY: receipt.effective_head.strategy,
+                _feature_artifact_name(result.current_feature_id): receipt.effective_head.feature,
+                _state_artifact_name(result.analysis_state): receipt.effective_head.state,
+                _transition_artifact_name(result.transition_decision): receipt.effective_head.transition,
+                _policy_input_artifact_name(result.strategy_policy_input): receipt.effective_head.strategy_policy_input,
+                _strategy_artifact_name(result.candidate_strategy): receipt.effective_head.strategy,
                 _CONSISTENCY: receipt.effective_head.consistency,
                 _RESULT: receipt.effective_head.result,
             }
@@ -681,19 +763,40 @@ def _load_effective_head(
     root: Path,
 ) -> DailyCloseCanonicalHead:
     effective = receipt.effective_head
-    feature = _read_pointer_model(root, effective.feature, FeatureSnapshot)
-    rebuilt = build_feature_snapshot(
-        FeatureSnapshotInput.model_validate(
-            feature.model_dump(
-                mode="python",
-                exclude={"data_quality", "payload_hash", "snapshot_id"},
-            )
-        )
+    feature = _read_feature_pointer(root, effective.feature)
+    rebuilt = _rebuild_feature(feature)
+    state = _read_versioned_pointer(
+        root,
+        effective.state,
+        {
+            "analysis_state.v1.json": AnalysisState,
+            "analysis_state.v2.json": AnalysisStateV2,
+        },
     )
-    state = _read_pointer_model(root, effective.state, AnalysisState)
-    transition = _read_pointer_model(root, effective.transition, StateTransitionPolicyDecision)
-    policy_input = _read_pointer_model(root, effective.strategy_policy_input, StrategyPolicyInput)
-    strategy = _read_pointer_model(root, effective.strategy, StrategyDecision)
+    transition = _read_versioned_pointer(
+        root,
+        effective.transition,
+        {
+            "state_transition_policy_decision.v1.json": StateTransitionPolicyDecision,
+            "state_transition_policy_decision.v2.json": StateTransitionPolicyDecisionV2,
+        },
+    )
+    policy_input = _read_versioned_pointer(
+        root,
+        effective.strategy_policy_input,
+        {
+            "strategy_policy_input.v1.json": StrategyPolicyInput,
+            "strategy_policy_input.v2.json": StrategyPolicyInputV2,
+        },
+    )
+    strategy = _read_versioned_pointer(
+        root,
+        effective.strategy,
+        {
+            "strategy_decision.v1.json": StrategyDecision,
+            "strategy_decision.v2.json": StrategyDecisionV2,
+        },
+    )
     consistency = _read_pointer_model(
         root,
         effective.consistency,
@@ -740,40 +843,70 @@ def _verify_embedded_artifacts(
     loop_input: DailyCloseLoopInput,
     result: DailyCloseLoopResult,
 ) -> None:
-    feature = _read_typed(bundle, _FEATURE, manifest, FeatureSnapshot)
-    rebuilt = build_feature_snapshot(
-        FeatureSnapshotInput.model_validate(
-            feature.model_dump(
-                mode="python",
-                exclude={"data_quality", "payload_hash", "snapshot_id"},
-            )
-        )
-    )
+    feature = _read_feature_artifact(bundle, loop_input.current_feature, manifest)
+    rebuilt = _rebuild_feature(feature)
     if rebuilt != feature or feature != loop_input.current_feature:
         raise ValueError("persisted feature identity is invalid")
     pairs = (
-        (_ANALYSIS, GoldAnalysisDecision, result.analysis_decision),
-        (_ATTRIBUTION, GoldPriceAttribution, result.price_attribution),
-        (_TRANSITION, StateTransitionPolicyDecision, result.transition_decision),
+        (
+            _analysis_artifact_name(result.analysis_decision),
+            type(result.analysis_decision),
+            result.analysis_decision,
+        ),
+        (
+            _attribution_artifact_name(result.price_attribution),
+            type(result.price_attribution),
+            result.price_attribution,
+        ),
+        (
+            _transition_artifact_name(result.transition_decision),
+            type(result.transition_decision),
+            result.transition_decision,
+        ),
     )
     for name, model, expected in pairs:
         if _read_typed(bundle, name, manifest, model) != expected:
             raise ValueError(f"persisted {name} does not match loop result")
-    delivery = build_gold_daily_close_delivery(loop_input, result)
-    delivery_pairs = (
-        (_STRATEGY_DIFF, GoldDailyCloseStrategyDiff, delivery.strategy_diff),
-        (_FINAL_REPORT, GoldDailyCloseFinalReport, delivery.final_report),
-        (_CONTEXT_BUNDLE, GoldDailyCloseContextBundle, delivery.context_bundle),
-        (_TOKEN_TRACE, GoldDailyCloseTokenTrace, delivery.token_trace),
-    )
-    for name, model, expected in delivery_pairs:
+    report_context = build_gold_report_context(loop_input, result)
+    report_render = build_gold_policy_report_render(report_context)
+    for name, model, expected in (
+        (_REPORT_CONTEXT, GoldReportContext, report_context),
+        (_REPORT_RENDER, GoldReportRender, report_render),
+    ):
         if _read_typed(bundle, name, manifest, model) != expected:
-            raise ValueError(f"persisted {name} does not match loop delivery")
+            raise ValueError(f"persisted {name} does not match report renderer")
+    for item in build_gold_policy_report_bundle(report_context, report_render):
+        path = bundle / item.path
+        if path.name not in manifest or path.is_symlink() or path.read_bytes() != item.content:
+            raise ValueError(f"persisted {item.path} does not match report bundle")
+    if result.analysis_decision.policy_version == "gold_analysis_policy.v1":
+        delivery = build_gold_daily_close_delivery(loop_input, result)
+        delivery_pairs = (
+            (_STRATEGY_DIFF, GoldDailyCloseStrategyDiff, delivery.strategy_diff),
+            (_FINAL_REPORT, GoldDailyCloseFinalReport, delivery.final_report),
+            (_CONTEXT_BUNDLE, GoldDailyCloseContextBundle, delivery.context_bundle),
+            (_TOKEN_TRACE, GoldDailyCloseTokenTrace, delivery.token_trace),
+        )
+        for name, model, expected in delivery_pairs:
+            if _read_typed(bundle, name, manifest, model) != expected:
+                raise ValueError(f"persisted {name} does not match loop delivery")
     if result.analysis_state is not None:
         downstream = (
-            (_STATE, AnalysisState, result.analysis_state),
-            (_POLICY_INPUT, StrategyPolicyInput, result.strategy_policy_input),
-            (_STRATEGY, StrategyDecision, result.candidate_strategy),
+            (
+                _state_artifact_name(result.analysis_state),
+                type(result.analysis_state),
+                result.analysis_state,
+            ),
+            (
+                _policy_input_artifact_name(result.strategy_policy_input),
+                type(result.strategy_policy_input),
+                result.strategy_policy_input,
+            ),
+            (
+                _strategy_artifact_name(result.candidate_strategy),
+                type(result.candidate_strategy),
+                result.candidate_strategy,
+            ),
             (_CONSISTENCY, AnalysisStrategyConsistencyDecision, result.consistency_decision),
         )
         for name, model, expected in downstream:
@@ -825,6 +958,137 @@ def _read_payload(path: Path, manifest: dict[str, str]) -> dict[str, Any]:
     return payload
 
 
+def _feature_artifact_name(feature: FeatureSnapshotContract | str) -> str:
+    schema_version = feature.split(":", 1)[0] if isinstance(feature, str) else feature.schema_version
+    if schema_version not in {"feature_snapshot.v1", "feature_snapshot.v2"}:
+        raise ValueError("unsupported feature snapshot schema version")
+    return f"{schema_version}.json"
+
+
+def _analysis_artifact_name(
+    decision: GoldAnalysisDecision | GoldAnalysisDecisionV2,
+) -> str:
+    versions = {
+        "gold_analysis_policy.v1": "v1",
+        "gold_analysis_policy.v2": "v2",
+    }
+    try:
+        version = versions[decision.policy_version]
+    except KeyError as exc:
+        raise ValueError("unsupported gold analysis policy version") from exc
+    return f"gold_analysis_decision.{version}.json"
+
+
+def _attribution_artifact_name(
+    attribution: GoldPriceAttribution | GoldPriceAttributionV2,
+) -> str:
+    versions = {
+        "gold_price_attribution.v1": "v1",
+        "gold_price_attribution.v2": "v2",
+    }
+    try:
+        version = versions[attribution.policy_version]
+    except KeyError as exc:
+        raise ValueError("unsupported gold attribution policy version") from exc
+    return f"gold_price_attribution.{version}.json"
+
+
+def _state_artifact_name(state: AnalysisStateContract) -> str:
+    if state.schema_version not in {"analysis_state.v1", "analysis_state.v2"}:
+        raise ValueError("unsupported analysis state schema version")
+    return f"{state.schema_version}.json"
+
+
+def _transition_artifact_name(
+    transition: StateTransitionDecisionContract,
+) -> str:
+    versions = {
+        "analysis_state_transition_policy.v1": "v1",
+        "analysis_state_transition_policy.v2": "v2",
+    }
+    try:
+        version = versions[transition.policy_version]
+    except KeyError as exc:
+        raise ValueError("unsupported state transition policy version") from exc
+    return f"state_transition_policy_decision.{version}.json"
+
+
+def _policy_input_artifact_name(
+    policy_input: StrategyPolicyInputContract,
+) -> str:
+    if policy_input.schema_version not in {
+        "strategy_policy_input.v1",
+        "strategy_policy_input.v2",
+    }:
+        raise ValueError("unsupported strategy policy input schema version")
+    return f"{policy_input.schema_version}.json"
+
+
+def _strategy_artifact_name(strategy: StrategyDecisionContract) -> str:
+    if strategy.schema_version not in {"strategy_decision.v1", "strategy_decision.v2"}:
+        raise ValueError("unsupported strategy decision schema version")
+    return f"{strategy.schema_version}.json"
+
+
+def _feature_from_payload(payload: dict[str, Any]) -> FeatureSnapshotContract:
+    if payload.get("schema_version") == "feature_snapshot.v2":
+        return FeatureSnapshotV2.model_validate(payload)
+    if payload.get("schema_version") == "feature_snapshot.v1":
+        return FeatureSnapshot.model_validate(payload)
+    raise ValueError("unsupported feature snapshot schema version")
+
+
+def _rebuild_feature(feature: FeatureSnapshotContract) -> FeatureSnapshotContract:
+    excluded = {"data_quality", "payload_hash", "snapshot_id"}
+    if isinstance(feature, FeatureSnapshotV2):
+        excluded.update(
+            {
+                "real10y_estimated",
+                "real10y_basis_bp",
+                "real10y_alignment",
+                "real10y_reason_codes",
+                "real10y_quality",
+            }
+        )
+        rebuilt = build_feature_snapshot(
+            FeatureSnapshotV2Input.model_validate(feature.model_dump(mode="python", exclude=excluded))
+        )
+    else:
+        rebuilt = build_feature_snapshot(
+            FeatureSnapshotInput.model_validate(feature.model_dump(mode="python", exclude=excluded))
+        )
+    if rebuilt != feature:
+        raise ValueError("feature snapshot derived fields or identity are invalid")
+    return rebuilt
+
+
+def _read_feature_artifact(
+    bundle: Path,
+    expected_feature: FeatureSnapshotContract,
+    manifest: dict[str, str],
+) -> FeatureSnapshotContract:
+    name = _feature_artifact_name(expected_feature)
+    path = bundle / name
+    value = _feature_from_payload(_read_payload(path, manifest))
+    if immutable_json_item(path, value.model_dump(mode="json")).content != path.read_bytes():
+        raise ValueError("typed feature artifact bytes are not canonical")
+    return value
+
+
+def _read_feature_pointer(
+    root: Path,
+    pointer: DailyCloseArtifactPointer,
+) -> FeatureSnapshotContract:
+    path = _resolve_pointer(root, pointer)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("canonical feature pointer must resolve to an object")
+    value = _feature_from_payload(payload)
+    if immutable_json_item(path, value.model_dump(mode="json")).content != path.read_bytes():
+        raise ValueError("canonical feature pointer bytes are not canonical")
+    return value
+
+
 def _read_typed(bundle: Path, name: str, manifest: dict[str, str], model):
     payload = _read_payload(bundle / name, manifest)
     value = model.model_validate(payload)
@@ -842,6 +1106,18 @@ def _read_pointer_model(root: Path, pointer: DailyCloseArtifactPointer, model):
     if immutable_json_item(path, value.model_dump(mode="json")).content != path.read_bytes():
         raise ValueError("canonical artifact pointer bytes are not canonical")
     return value
+
+
+def _read_versioned_pointer(
+    root: Path,
+    pointer: DailyCloseArtifactPointer,
+    models: dict[str, type[BaseModel]],
+):
+    name = PurePosixPath(pointer.path).name
+    model = models.get(name)
+    if model is None:
+        raise ValueError("versioned artifact pointer filename is unsupported")
+    return _read_pointer_model(root, pointer, model)
 
 
 def _resolve_pointer(root: Path, pointer: DailyCloseArtifactPointer | None) -> Path:
@@ -882,6 +1158,40 @@ def _session_bundle_paths(date_dir: Path) -> list[Path]:
         if bundle.exists() or (run_dir / _ATTEMPT).exists():
             candidates.append(bundle)
     return sorted(candidates, key=lambda path: path.as_posix())
+
+
+def _valid_revision_chain(values: list[_VerifiedBundle]) -> bool:
+    if [item.receipt.revision_no for item in values] != list(range(1, len(values) + 1)):
+        return False
+    if values and values[0].receipt.supersedes_receipt_id is not None:
+        return False
+    return all(
+        current.receipt.supersedes_receipt_id == previous.receipt.receipt_id
+        for previous, current in zip(values, values[1:], strict=False)
+    )
+
+
+def _lookup_from_verified(value: _VerifiedBundle) -> DailyCloseHeadLookup:
+    if value.head is None:
+        return DailyCloseHeadLookup(
+            status="missing",
+            reason_code="daily_close_prebootstrap_hold",
+            latest_receipt=value.receipt,
+            source_path=value.receipt_path,
+        )
+    head = value.head.model_copy(
+        update={
+            "latest_receipt_path": value.receipt_path,
+            "latest_receipt": value.receipt,
+        }
+    )
+    return DailyCloseHeadLookup(
+        status="found",
+        reason_code="daily_close_head_found",
+        head=head,
+        latest_receipt=value.receipt,
+        source_path=value.receipt_path,
+    )
 
 
 def _reject_symlink_components(root: Path, target: Path) -> None:

@@ -112,6 +112,7 @@ def _load_formal_market_snapshot_bundle(
         resolve_formal_snapshot_as_of,
     )
     from apps.features.market_data.formal_snapshots import (
+        build_market_context_snapshot,
         build_market_price_snapshot,
         build_oil_snapshot,
     )
@@ -130,6 +131,9 @@ def _load_formal_market_snapshot_bundle(
                 market_prices=build_market_price_snapshot(candidates=(), as_of=fallback_as_of),
                 oil=build_oil_snapshot(candidates=(), as_of=fallback_as_of),
                 as_of=fallback_as_of,
+                market_context=build_market_context_snapshot(
+                    candidates=(), as_of=fallback_as_of
+                ),
             ),
             f"{type(exc).__name__}: formal market snapshot load failed",
         )
@@ -233,6 +237,7 @@ def merge_analysis_snapshot_op(
             preferred_run_id=context.run_id,
         ),
         market_price_snapshot=formal_bundle.market_prices,
+        market_context_snapshot=formal_bundle.market_context,
         oil_snapshot=formal_bundle.oil,
         snapshot_time=run_time.isoformat(),
     )

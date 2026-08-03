@@ -19,7 +19,12 @@ from apps.analysis.agents.schemas import (
 if TYPE_CHECKING:
     from apps.analysis.context_bundle import ConsumerProjection
 from apps.analysis.confidence import compute_confidence_kernel
-from apps.analysis.gold_policy.analysis_policy import GoldAnalysisDecision
+from apps.analysis.gold_policy.analysis_policy import (
+    GoldAnalysisDecision,
+    GoldAnalysisDecisionV2,
+)
+
+GoldAnalysisDecisionContract = GoldAnalysisDecision | GoldAnalysisDecisionV2
 
 _AGENT_NAME = "coordinator_agent"
 _MODULE = "coordinator"
@@ -63,7 +68,7 @@ def coordinate_agent_outputs(
     positioning_output: AgentOutput | dict[str, Any] | None = None,
     news_output: AgentOutput | dict[str, Any] | None = None,
     market_odds_output: AgentOutput | dict[str, Any] | None = None,
-    accepted_state_conclusion: GoldAnalysisDecision | dict[str, Any] | None = None,
+    accepted_state_conclusion: GoldAnalysisDecisionContract | dict[str, Any] | None = None,
     created_at: datetime | None = None,
     context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
 ) -> AgentOutput:
@@ -457,19 +462,24 @@ def _coerce_output(value: AgentOutput | dict[str, Any] | None) -> AgentOutput | 
 
 
 def _coerce_gold_analysis_decision(
-    value: GoldAnalysisDecision | dict[str, Any] | None,
-) -> GoldAnalysisDecision | None:
-    if isinstance(value, GoldAnalysisDecision):
+    value: GoldAnalysisDecisionContract | dict[str, Any] | None,
+) -> GoldAnalysisDecisionContract | None:
+    if isinstance(value, (GoldAnalysisDecision, GoldAnalysisDecisionV2)):
         return value
     if isinstance(value, dict):
+        model = (
+            GoldAnalysisDecisionV2
+            if value.get("policy_version") == "gold_analysis_policy.v2"
+            else GoldAnalysisDecision
+        )
         try:
-            return GoldAnalysisDecision.model_validate(value)
+            return model.model_validate(value)
         except ValidationError:
             return None
     return None
 
 
-def _accepted_decision_bias(decision: GoldAnalysisDecision) -> AgentBias:
+def _accepted_decision_bias(decision: GoldAnalysisDecisionContract) -> AgentBias:
     return {
         "bullish": AgentBias.BULLISH,
         "bearish": AgentBias.BEARISH,
@@ -479,7 +489,7 @@ def _accepted_decision_bias(decision: GoldAnalysisDecision) -> AgentBias:
     }[decision.direction]
 
 
-def _accepted_decision_status(decision: GoldAnalysisDecision) -> AgentStatus:
+def _accepted_decision_status(decision: GoldAnalysisDecisionContract) -> AgentStatus:
     if decision.quality_status == "blocked" or decision.direction == "unavailable":
         return AgentStatus.UNAVAILABLE
     if decision.quality_status == "observe":
@@ -487,7 +497,9 @@ def _accepted_decision_status(decision: GoldAnalysisDecision) -> AgentStatus:
     return AgentStatus.SUCCESS
 
 
-def _accepted_decision_source_refs(decision: GoldAnalysisDecision) -> list[dict[str, Any]]:
+def _accepted_decision_source_refs(
+    decision: GoldAnalysisDecisionContract,
+) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     for driver in (*decision.dominant_drivers, *decision.counter_drivers):
         refs.extend(ref.model_dump(mode="json") for ref in driver.source_refs)

@@ -6,14 +6,42 @@ import hashlib
 import json
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from apps.analysis.gold_policy.key_level_schemas import KeyLevelLifecycleDecision
 from apps.analysis.gold_policy.schemas import SourceReference
-from apps.analysis.gold_policy.state_schemas import AnalysisState, StateTransitionPolicyDecision
-from apps.analysis.gold_policy.strategy_schemas import StrategyDecision, StrategyPolicyInput
+from apps.analysis.gold_policy.state_schemas import (
+    AnalysisState,
+    AnalysisStateV2,
+    StateTransitionPolicyDecision,
+    StateTransitionPolicyDecisionV2,
+)
+from apps.analysis.gold_policy.strategy_schemas import (
+    StrategyDecision,
+    StrategyDecisionV2,
+    StrategyPolicyInput,
+    StrategyPolicyInputV2,
+)
+
+
+AnalysisStateContract = Annotated[
+    AnalysisState | AnalysisStateV2,
+    Field(discriminator="schema_version"),
+]
+StateTransitionDecisionContract = Annotated[
+    StateTransitionPolicyDecision | StateTransitionPolicyDecisionV2,
+    Field(discriminator="policy_version"),
+]
+StrategyPolicyInputContract = Annotated[
+    StrategyPolicyInput | StrategyPolicyInputV2,
+    Field(discriminator="schema_version"),
+]
+StrategyDecisionContract = Annotated[
+    StrategyDecision | StrategyDecisionV2,
+    Field(discriminator="schema_version"),
+]
 
 
 class ConsistencyStatus(StrEnum):
@@ -71,29 +99,42 @@ class _FrozenContract(BaseModel):
 
 class AnalysisStrategyConsistencyInput(_FrozenContract):
     schema_version: Literal["analysis_strategy_consistency_input.v1"] = "analysis_strategy_consistency_input.v1"
-    previous_policy_input: StrategyPolicyInput | None = None
-    previous_state: AnalysisState | None = None
-    previous_transition: StateTransitionPolicyDecision | None = None
-    previous_strategy: StrategyDecision | None = None
-    current_policy_input: StrategyPolicyInput
-    candidate_strategy: StrategyDecision
+    previous_policy_input: StrategyPolicyInputContract | None = None
+    previous_state: AnalysisStateContract | None = None
+    previous_transition: StateTransitionDecisionContract | None = None
+    previous_strategy: StrategyDecisionContract | None = None
+    current_policy_input: StrategyPolicyInputContract
+    candidate_strategy: StrategyDecisionContract
     key_level_proof: tuple[KeyLevelLifecycleDecision, ...] = ()
 
     @model_validator(mode="after")
     def _validate_unique_proof(self) -> "AnalysisStrategyConsistencyInput":
         if len({item.decision_hash for item in self.key_level_proof}) != len(self.key_level_proof):
             raise ValueError("key_level_proof decisions must be unique")
+        expected = _contract_version(self.current_policy_input)
+        if _contract_version(self.candidate_strategy) != expected:
+            raise ValueError("current policy input and candidate strategy versions must match")
+        predecessor = (
+            self.previous_policy_input,
+            self.previous_state,
+            self.previous_transition,
+            self.previous_strategy,
+        )
+        if any(item is not None for item in predecessor) and {
+            _contract_version(item) for item in predecessor if item is not None
+        } != {expected}:
+            raise ValueError("consistency predecessor versions must match the current family")
         return self
 
 
 class AnalysisStrategyConsistencyDecisionInput(_FrozenContract):
     schema_version: Literal["analysis_strategy_consistency_decision.v1"] = "analysis_strategy_consistency_decision.v1"
-    previous_state_id: str | None = Field(default=None, pattern=r"^analysis_state\.v1:[0-9a-f]{64}$")
+    previous_state_id: str | None = Field(default=None, pattern=r"^analysis_state\.v[12]:[0-9a-f]{64}$")
     previous_policy_input_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     previous_transition_decision_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    current_state_id: str = Field(pattern=r"^analysis_state\.v1:[0-9a-f]{64}$")
-    previous_strategy_id: str | None = Field(default=None, pattern=r"^strategy_decision\.v1:[0-9a-f]{64}$")
-    candidate_strategy_id: str = Field(pattern=r"^strategy_decision\.v1:[0-9a-f]{64}$")
+    current_state_id: str = Field(pattern=r"^analysis_state\.v[12]:[0-9a-f]{64}$")
+    previous_strategy_id: str | None = Field(default=None, pattern=r"^strategy_decision\.v[12]:[0-9a-f]{64}$")
+    candidate_strategy_id: str = Field(pattern=r"^strategy_decision\.v[12]:[0-9a-f]{64}$")
     transition_decision_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     proof_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: ConsistencyStatus
@@ -101,7 +142,7 @@ class AnalysisStrategyConsistencyDecisionInput(_FrozenContract):
     consistency_passed: bool
     selected_strategy_decision_id: str | None = Field(
         default=None,
-        pattern=r"^strategy_decision\.v1:[0-9a-f]{64}$",
+        pattern=r"^strategy_decision\.v[12]:[0-9a-f]{64}$",
     )
     reason_codes: tuple[ConsistencyReasonCode, ...] = Field(min_length=1)
     source_refs: tuple[SourceReference, ...] = Field(min_length=1)
@@ -116,6 +157,16 @@ class AnalysisStrategyConsistencyDecisionInput(_FrozenContract):
 
     @model_validator(mode="after")
     def _validate_semantics(self) -> "AnalysisStrategyConsistencyDecisionInput":
+        current_version = _contract_version(self.current_state_id)
+        if _contract_version(self.candidate_strategy_id) != current_version:
+            raise ValueError("consistency state and strategy versions must match")
+        for value in (
+            self.previous_state_id,
+            self.previous_strategy_id,
+            self.selected_strategy_decision_id,
+        ):
+            if value is not None and _contract_version(value) != current_version:
+                raise ValueError("consistency lineage cannot mix v1 and v2 identities")
         previous_presence = (
             self.previous_state_id is not None,
             self.previous_policy_input_hash is not None,
@@ -143,6 +194,21 @@ class AnalysisStrategyConsistencyDecisionInput(_FrozenContract):
         if len({(ref.source, ref.reference, ref.retrieved_at) for ref in self.source_refs}) != len(self.source_refs):
             raise ValueError("source_refs must be unique")
         return self
+
+
+def _contract_version(value: object) -> Literal["v1", "v2"]:
+    raw = value if isinstance(value, str) else None
+    for field_name in ("schema_version", "policy_version"):
+        candidate = getattr(value, field_name, None)
+        if isinstance(candidate, str):
+            raw = candidate
+            break
+    if not isinstance(raw, str) or ".v" not in raw:
+        raise ValueError("versioned consistency contract is missing its discriminator")
+    version = raw.rsplit(".v", 1)[1].split(":", 1)[0]
+    if version not in {"1", "2"}:
+        raise ValueError("unsupported consistency contract version")
+    return "v1" if version == "1" else "v2"
 
 
 class AnalysisStrategyConsistencyDecision(AnalysisStrategyConsistencyDecisionInput):

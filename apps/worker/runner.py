@@ -31,6 +31,7 @@ from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analy
 from apps.analysis.context_bundle.snapshot_evidence import build_state_shadow_input
 from apps.analysis.gold_policy.runtime_inputs import prepare_gold_policy_runtime_inputs
 from apps.features.market_data import (
+    build_market_context_snapshot,
     build_market_price_snapshot,
     build_oil_snapshot,
     load_formal_market_snapshots,
@@ -2142,9 +2143,16 @@ def _persist_analysis_snapshot(
         formal_bundle = load_formal_market_snapshots(db_session, as_of=formal_as_of)
         market_price_snapshot = formal_bundle.market_prices
         oil_snapshot = formal_bundle.oil
+        market_context_snapshot = formal_bundle.market_context or build_market_context_snapshot(
+            candidates=[], as_of=formal_as_of
+        )
         formal_status = (
             "success"
-            if market_price_snapshot.readiness == "ready" and oil_snapshot.readiness == "ready"
+            if (
+                market_price_snapshot.readiness == "ready"
+                and market_context_snapshot.readiness != "blocked"
+                and oil_snapshot.readiness == "ready"
+            )
             else "degraded"
         )
         formal_error = None
@@ -2157,6 +2165,7 @@ def _persist_analysis_snapshot(
             candidates=[],
             as_of=formal_as_of,
         )
+        market_context_snapshot = build_market_context_snapshot(candidates=[], as_of=formal_as_of)
         oil_snapshot = build_oil_snapshot(candidates=[], as_of=formal_as_of)
         formal_status = "degraded"
         formal_error = f"{type(formal_exc).__name__}: formal market snapshot load failed"
@@ -2168,6 +2177,7 @@ def _persist_analysis_snapshot(
             "status": formal_status,
             "as_of": formal_as_of.isoformat(),
             "market_prices_readiness": market_price_snapshot.readiness,
+            "market_context_readiness": market_context_snapshot.readiness,
             "oil_readiness": oil_snapshot.readiness,
             "error": formal_error,
         }
@@ -2195,6 +2205,7 @@ def _persist_analysis_snapshot(
         collected_points=collected_points,
         news_snapshot=news_snapshot,
         gold_analysis_context=gold_analysis_context,
+        market_context_snapshot=market_context_snapshot,
         market_price_snapshot=market_price_snapshot,
         oil_snapshot=oil_snapshot,
         snapshot_time=snapshot_run_time.isoformat(),

@@ -12,6 +12,7 @@ from apps.analysis.gold_policy.feature_adapter import (
     build_feature_snapshot_from_analysis_snapshot,
 )
 from apps.features.market_data.formal_snapshots import (
+    build_market_context_snapshot,
     build_market_price_snapshot,
     build_oil_snapshot,
 )
@@ -68,7 +69,29 @@ def _formal_market_snapshots():
         ],
         as_of=_FORMAL_AS_OF,
     )
-    return market, oil
+    market_context = build_market_context_snapshot(
+        candidates=[
+            _formal_bar(
+                asset=asset,
+                timeframe="1d",
+                source=source,
+                source_ref={
+                    "provider_symbol": symbol,
+                    "instrument_type": instrument_type,
+                    "source_role": role,
+                    "reference": f"market://{asset.lower()}",
+                },
+                open_time=_FORMAL_AS_OF - timedelta(days=2),
+                price=price,
+            )
+            for asset, source, symbol, instrument_type, role, price in (
+                ("DXY", "yahoo_finance_dx_y_nyb", "DX-Y.NYB", "index", "market_primary", 104),
+                ("VIX", "yahoo_finance_vix", "^VIX", "volatility_index", "market_primary", 18),
+            )
+        ],
+        as_of=_FORMAL_AS_OF,
+    )
+    return market, oil, market_context
 
 
 def _cot_point(**overrides: object) -> dict[str, object]:
@@ -263,13 +286,21 @@ def test_formal_official_event_wrong_version_or_future_lineage_is_unavailable() 
     ).isoformat()
 
     wrong = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="wrong-events",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="wrong-events",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
         news_snapshot=wrong_version,
     )
     future = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="future-events",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="future-events",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
         news_snapshot=future_lineage,
     )
 
@@ -280,45 +311,72 @@ def test_formal_official_event_wrong_version_or_future_lineage_is_unavailable() 
 
 
 def test_build_materializes_formal_market_and_oil_sections_with_content_addressed_lineage() -> None:
-    market, oil = _formal_market_snapshots()
+    market, oil, market_context = _formal_market_snapshots()
     snapshot = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="formal-sections",
-        macro_snapshot=None, options_snapshot=None,
-        snapshot_time=_FORMAL_AS_OF.isoformat(), market_price_snapshot=market, oil_snapshot=oil,
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="formal-sections",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
+        market_price_snapshot=market,
+        market_context_snapshot=market_context,
+        oil_snapshot=oil,
     )
 
     assert snapshot["market_prices"]["status"] == "available"
+    assert snapshot["market_context"]["status"] == "available"
     assert snapshot["market_prices"]["data"] == market.model_dump(mode="json")
+    assert snapshot["market_context"]["data"] == market_context.model_dump(mode="json")
     assert snapshot["oil"]["data"] == oil.model_dump(mode="json")
     assert snapshot["input_snapshot_ids"]["market_prices"].startswith("market_price_snapshot.v1:")
+    assert snapshot["input_snapshot_ids"]["market_context"].startswith("market_context_snapshot.v1:")
     assert snapshot["input_snapshot_ids"]["oil"].startswith("oil_snapshot.v1:")
     assert {ref["reference"] for ref in snapshot["source_refs"] if "reference" in ref} >= {
-        "market://xau", "market://gc", "market://wti", "market://brent"
+        "market://xau",
+        "market://gc",
+        "query://XAGUSD/1d",
+        "market://dxy",
+        "market://vix",
+        "market://wti",
+        "market://brent",
     }
 
 
 def test_formal_snapshot_missing_query_refs_are_kept_in_lineage() -> None:
     oil = build_oil_snapshot(candidates=[], as_of=_FORMAL_AS_OF)
     snapshot = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="missing-oil",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(), oil_snapshot=oil,
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="missing-oil",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
+        oil_snapshot=oil,
     )
     assert snapshot["oil"]["status"] == "available"
     assert {ref["reference"] for ref in snapshot["source_refs"] if "reference" in ref} >= {
-        "query://WTI/1d", "query://BRENT/1d"
+        "query://WTI/1d",
+        "query://BRENT/1d",
     }
 
 
 def test_formal_snapshot_future_as_of_or_retrieval_is_misaligned() -> None:
-    market, oil = _formal_market_snapshots()
+    market, oil, market_context = _formal_market_snapshots()
     future_market = market.model_copy(update={"as_of": _FORMAL_AS_OF + timedelta(minutes=1)})
     future_ref = oil.wti.source_refs[0].model_copy(update={"retrieved_at": _FORMAL_AS_OF + timedelta(minutes=1)})
     future_wti = oil.wti.model_copy(update={"source_refs": (future_ref,)})
     future_oil = oil.model_copy(update={"wti": future_wti})
     snapshot = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="future-formal",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
-        market_price_snapshot=future_market, oil_snapshot=future_oil,
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="future-formal",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
+        market_price_snapshot=future_market,
+        market_context_snapshot=market_context,
+        oil_snapshot=future_oil,
     )
     assert snapshot["market_prices"]["status"] == "unavailable"
     assert snapshot["market_prices"]["alignment_status"] == "misaligned"
@@ -326,46 +384,111 @@ def test_formal_snapshot_future_as_of_or_retrieval_is_misaligned() -> None:
     assert any(item["field"].endswith("retrieved_at") for item in snapshot["oil"]["future_observations"])
 
 
+def test_market_context_future_lineage_is_misaligned() -> None:
+    market, oil, market_context = _formal_market_snapshots()
+    future_ref = market_context.dxy.source_refs[0].model_copy(
+        update={"retrieved_at": _FORMAL_AS_OF + timedelta(minutes=1)}
+    )
+    future_context = market_context.model_copy(
+        update={"dxy": market_context.dxy.model_copy(update={"source_refs": (future_ref,)})}
+    )
+
+    snapshot = build_analysis_snapshot(
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="future-market-context",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
+        market_price_snapshot=market,
+        market_context_snapshot=future_context,
+        oil_snapshot=oil,
+    )
+
+    assert snapshot["market_context"]["status"] == "unavailable"
+    assert snapshot["market_context"]["alignment_status"] == "misaligned"
+    assert any(
+        item["field"] == "dxy.source_refs[0].retrieved_at" for item in snapshot["market_context"]["future_observations"]
+    )
+
+
 def test_formal_content_ids_are_stable_sensitive_and_inputs_immutable() -> None:
-    market, oil = _formal_market_snapshots()
+    market, oil, market_context = _formal_market_snapshots()
     before_market = market.model_dump(mode="json")
     before_oil = oil.model_dump(mode="json")
     snapshots = [
         build_analysis_snapshot(
-            asset="XAUUSD", trade_date="2026-05-14", run_id="stable-formal",
-            macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
-            market_price_snapshot=market, oil_snapshot=oil,
+            asset="XAUUSD",
+            trade_date="2026-05-14",
+            run_id="stable-formal",
+            macro_snapshot=None,
+            options_snapshot=None,
+            snapshot_time=_FORMAL_AS_OF.isoformat(),
+            market_price_snapshot=market,
+            market_context_snapshot=market_context,
+            oil_snapshot=oil,
         )
         for _ in range(100)
     ]
     ids = [item["input_snapshot_ids"] for item in snapshots]
     assert len({json.dumps(item, sort_keys=True) for item in ids}) == 1
+    assert ids[0]["market_context"].startswith("market_context_snapshot.v1:")
     changed_market = market.model_copy(
         update={"xauusd_spot": market.xauusd_spot.model_copy(update={"value": 2402.0, "close": 2402.0})}
     )
     changed = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="stable-formal",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
-        market_price_snapshot=changed_market, oil_snapshot=oil,
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="stable-formal",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
+        market_price_snapshot=changed_market,
+        market_context_snapshot=market_context,
+        oil_snapshot=oil,
     )
     assert changed["input_snapshot_ids"]["market_prices"] != ids[0]["market_prices"]
-    changed_oil = oil.model_copy(
-        update={"brent": oil.brent.model_copy(update={"value": 77.0, "close": 77.0})}
-    )
+    changed_oil = oil.model_copy(update={"brent": oil.brent.model_copy(update={"value": 77.0, "close": 77.0})})
     changed = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="stable-formal",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
-        market_price_snapshot=market, oil_snapshot=changed_oil,
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="stable-formal",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
+        market_price_snapshot=market,
+        market_context_snapshot=market_context,
+        oil_snapshot=changed_oil,
     )
     assert changed["input_snapshot_ids"]["oil"] != ids[0]["oil"]
+    changed_context = market_context.model_copy(
+        update={"vix": market_context.vix.model_copy(update={"value": 20.0, "close": 20.0})}
+    )
+    changed = build_analysis_snapshot(
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="stable-formal",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
+        market_price_snapshot=market,
+        market_context_snapshot=changed_context,
+        oil_snapshot=oil,
+    )
+    assert changed["input_snapshot_ids"]["market_context"] != ids[0]["market_context"]
     assert market.model_dump(mode="json") == before_market
     assert oil.model_dump(mode="json") == before_oil
+    assert market_context.model_dump(mode="json") == _formal_market_snapshots()[2].model_dump(mode="json")
 
 
 def test_build_materializes_formal_cot_without_replacing_legacy_positioning() -> None:
     snapshot = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="formal-cot",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="formal-cot",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
         collected_points=[_cot_point()],
     )
 
@@ -387,8 +510,12 @@ def test_build_materializes_formal_cot_without_replacing_legacy_positioning() ->
 
 def test_formal_cot_keeps_future_retrieval_candidate_as_blocked_lineage() -> None:
     snapshot = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="future-cot",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="future-cot",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
         collected_points=[_cot_point(retrieved_at="2026-05-14T10:01:00+00:00")],
     )
 
@@ -403,8 +530,12 @@ def test_formal_cot_keeps_future_retrieval_candidate_as_blocked_lineage() -> Non
 
 def test_formal_cot_empty_input_is_blocked_with_query_lineage() -> None:
     snapshot = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="empty-cot",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="empty-cot",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
     )
 
     assert snapshot["cot"]["status"] == "available"
@@ -419,16 +550,24 @@ def test_formal_cot_content_id_is_stable_sensitive_and_inputs_immutable() -> Non
     before = copy.deepcopy(points)
     snapshots = [
         build_analysis_snapshot(
-            asset="XAUUSD", trade_date="2026-05-14", run_id="stable-cot",
-            macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
+            asset="XAUUSD",
+            trade_date="2026-05-14",
+            run_id="stable-cot",
+            macro_snapshot=None,
+            options_snapshot=None,
+            snapshot_time=_FORMAL_AS_OF.isoformat(),
             collected_points=points,
         )
         for _ in range(100)
     ]
     assert len({item["input_snapshot_ids"]["cot"] for item in snapshots}) == 1
     changed = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="stable-cot",
-        macro_snapshot=None, options_snapshot=None, snapshot_time=_FORMAL_AS_OF.isoformat(),
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="stable-cot",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time=_FORMAL_AS_OF.isoformat(),
         collected_points=[_cot_point(value=178_501)],
     )
     assert changed["input_snapshot_ids"]["cot"] != snapshots[0]["input_snapshot_ids"]["cot"]
@@ -437,8 +576,12 @@ def test_formal_cot_content_id_is_stable_sensitive_and_inputs_immutable() -> Non
 
 def test_formal_cot_invalid_snapshot_time_is_unavailable_and_misaligned() -> None:
     snapshot = build_analysis_snapshot(
-        asset="XAUUSD", trade_date="2026-05-14", run_id="invalid-cot-time",
-        macro_snapshot=None, options_snapshot=None, snapshot_time="not-a-time",
+        asset="XAUUSD",
+        trade_date="2026-05-14",
+        run_id="invalid-cot-time",
+        macro_snapshot=None,
+        options_snapshot=None,
+        snapshot_time="not-a-time",
         collected_points=[_cot_point()],
     )
 

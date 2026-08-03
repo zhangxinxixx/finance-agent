@@ -48,7 +48,7 @@ class FormalSourceReference(_Frozen):
 class FormalMarketObservation(_Frozen):
     series_id: str
     asset: str
-    market_role: Literal["spot", "futures", "oil"]
+    market_role: Literal["spot", "futures", "oil", "index", "volatility_index"]
     timeframe: Literal["5m", "1d"]
     value: float | None
     open: float | None
@@ -122,6 +122,23 @@ class OilSnapshot(_Snapshot):
         return self
 
 
+class MarketContextSnapshot(_Snapshot):
+    """Supplemental cross-market context, isolated from the Gold input contract."""
+
+    schema_version: Literal["market_context_snapshot.v1"] = "market_context_snapshot.v1"
+    xagusd_spot: FormalMarketObservation
+    dxy: FormalMarketObservation
+    vix: FormalMarketObservation
+
+    @model_validator(mode="after")
+    def _market_context_contract(self) -> "MarketContextSnapshot":
+        _require_identity(self.xagusd_spot, "XAGUSD_SPOT", "XAGUSD", "spot", "1d")
+        _require_identity(self.dxy, "DXY", "DXY", "index", "1d")
+        _require_identity(self.vix, "VIX", "VIX", "volatility_index", "1d")
+        _require_market_context_readiness(self.readiness, self.xagusd_spot, self.dxy, self.vix)
+        return self
+
+
 def build_market_price_snapshot(*, candidates: Iterable[Mapping[str, Any]], as_of: datetime) -> MarketPriceSnapshot:
     """Build canonical XAUUSD spot and distinct GC futures observations."""
 
@@ -142,7 +159,24 @@ def build_oil_snapshot(*, candidates: Iterable[Mapping[str, Any]], as_of: dateti
     return OilSnapshot(as_of=point_in_time, readiness=_readiness(wti, brent), wti=wti, brent=brent)
 
 
-def _select(rows: tuple[dict[str, Any], ...], *, asset: str, series_id: str, role: Literal["spot", "futures", "oil"], timeframe: Literal["5m", "1d"], as_of: datetime) -> FormalMarketObservation:
+def build_market_context_snapshot(*, candidates: Iterable[Mapping[str, Any]], as_of: datetime) -> MarketContextSnapshot:
+    """Build explicit XAGUSD, DXY, and VIX context without changing Gold inputs."""
+
+    point_in_time = _aware_utc(as_of)
+    rows = tuple(dict(row) for row in candidates)
+    xagusd = _select(rows, asset="XAGUSD", series_id="XAGUSD_SPOT", role="spot", timeframe="1d", as_of=point_in_time)
+    dxy = _select(rows, asset="DXY", series_id="DXY", role="index", timeframe="1d", as_of=point_in_time)
+    vix = _select(rows, asset="VIX", series_id="VIX", role="volatility_index", timeframe="1d", as_of=point_in_time)
+    return MarketContextSnapshot(
+        as_of=point_in_time,
+        readiness=_market_context_readiness(xagusd, dxy, vix),
+        xagusd_spot=xagusd,
+        dxy=dxy,
+        vix=vix,
+    )
+
+
+def _select(rows: tuple[dict[str, Any], ...], *, asset: str, series_id: str, role: Literal["spot", "futures", "oil", "index", "volatility_index"], timeframe: Literal["5m", "1d"], as_of: datetime) -> FormalMarketObservation:
     matching = [row for row in rows if str(row.get("asset") or "").upper() == asset and row.get("timeframe") == timeframe]
     if asset == "XAUUSD":
         matching = [row for row in matching if is_xauusd_compatible_row(row)]
@@ -215,7 +249,7 @@ def _checked_row(row: dict[str, Any], *, asset: str, timeframe: str, as_of: date
     return {"eligible": eligible, "reason": reason, "future_or_incomplete": future_or_incomplete, "source": source, "source_ref": ref or _query_ref(asset, timeframe, as_of, reason), "qualification": qualification, "bar_open_time": open_time, "bar_close_time": close_time, "open": ohlc[0], "high": ohlc[1], "low": ohlc[2], "close": ohlc[3]}
 
 
-def _missing(series_id: str, asset: str, role: Literal["spot", "futures", "oil"], timeframe: Literal["5m", "1d"], as_of: datetime, reason: str, checked: list[dict[str, Any]], *, alignment: AlignmentStatus = "unknown") -> FormalMarketObservation:
+def _missing(series_id: str, asset: str, role: Literal["spot", "futures", "oil", "index", "volatility_index"], timeframe: Literal["5m", "1d"], as_of: datetime, reason: str, checked: list[dict[str, Any]], *, alignment: AlignmentStatus = "unknown") -> FormalMarketObservation:
     refs = tuple(item["source_ref"] for item in checked) or (_query_ref(asset, timeframe, as_of, reason),)
     return FormalMarketObservation(series_id=series_id, asset=asset, market_role=role, timeframe=timeframe, value=None, open=None, high=None, low=None, close=None, bar_open_time=None, bar_close_time=None, expected_frequency=timeframe, freshness_status="missing", quality_status="blocked", alignment_status=alignment, source_refs=refs)
 
@@ -247,6 +281,24 @@ def _readiness(*observations: FormalMarketObservation) -> Literal["ready", "obse
     return "ready"
 
 
+def _market_context_readiness(
+    *observations: FormalMarketObservation,
+) -> Literal["ready", "observe", "blocked"]:
+    usable = [
+        item
+        for item in observations
+        if item.value is not None and item.quality_status != "blocked" and item.alignment_status != "misaligned"
+    ]
+    if not usable:
+        return "blocked"
+    if len(usable) != len(observations) or any(
+        item.quality_status == "observe" or item.freshness_status == "stale" or item.alignment_status == "unknown"
+        for item in usable
+    ):
+        return "observe"
+    return "ready"
+
+
 def _no_completed_reason(rows: list[dict[str, Any]]) -> str:
     if any(row["future_or_incomplete"] for row in rows):
         return "future_or_incomplete_bar"
@@ -262,6 +314,12 @@ def _require_readiness(
     actual: str, *observations: FormalMarketObservation
 ) -> None:
     expected = _readiness(*observations)
+    if actual != expected:
+        raise ValueError(f"snapshot readiness must be {expected}")
+
+
+def _require_market_context_readiness(actual: str, *observations: FormalMarketObservation) -> None:
+    expected = _market_context_readiness(*observations)
     if actual != expected:
         raise ValueError(f"snapshot readiness must be {expected}")
 

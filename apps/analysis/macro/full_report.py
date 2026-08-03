@@ -157,9 +157,10 @@ def render_macro_full_report_markdown(
 
 def _one_line(conclusion):
     return (
-        f"今天黄金的宏观环境更接近 **{conclusion.bias}**：数量层{conclusion.quantity_layer}、"
+        f"宏观规则预判为 **{conclusion.bias}**（非 Gold Policy 权威方向）："
+        f"数量层{conclusion.quantity_layer}、"
         f"美元层{conclusion.dollar_layer}、价格层{conclusion.price_layer}；"
-        f"所以更适合按 **{conclusion.state}下的{conclusion.action}** 来处理，而不是直接追高。"
+        f"对应的 **{conclusion.state} / {conclusion.action}** 仅作观察输入，不得作为交易触发。"
     )
 
 
@@ -289,9 +290,53 @@ def _real_rate_fact_sentence(snapshot):
     us10y = snapshot.indicators.get("US10Y")
     breakeven = snapshot.indicators.get("BREAKEVEN_10Y")
     real = snapshot.indicators.get("REAL_10Y")
-    if us10y and breakeven and real:
-        return f"US10Y {us10y.value:.2f}%，T10YIE {breakeven.value:.2f}%，10Y 实际利率约 {real.value:.2f}%（主口径）。"
-    return "10Y 实际利率输入不完整，LLM 需要降级判断。"
+    if real is None:
+        return "10Y 实际利率输入不完整，LLM 需要降级判断。"
+
+    components = {item.source_symbol: item for item in real.components}
+    component_us10y = components.get("DGS10")
+    component_breakeven = components.get("T10YIE")
+    if (
+        real.derivation_version == "real10y_components.v1"
+        and set(components) == {"DGS10", "T10YIE"}
+        and component_us10y is not None
+        and component_breakeven is not None
+        and component_us10y.date == component_breakeven.date == real.date
+        and abs(component_us10y.value - component_breakeven.value - real.value) <= 1e-6
+    ):
+        sentence = (
+            f"同日口径（{real.date}）：US10Y {component_us10y.value:.2f}% - "
+            f"T10YIE {component_breakeven.value:.2f}% = 10Y 实际利率 {real.value:.2f}%（主口径）。"
+        )
+        if breakeven and (
+            breakeven.date != component_breakeven.date
+            or abs(breakeven.value - component_breakeven.value) > 1e-6
+        ):
+            sentence += (
+                f" T10YIE 最新观测为 {breakeven.value:.2f}%（{breakeven.date}），"
+                "不参与上述同日计算。"
+            )
+        return sentence
+
+    if (
+        us10y
+        and breakeven
+        and us10y.date == breakeven.date == real.date
+        and abs(us10y.value - breakeven.value - real.value) <= 1e-6
+    ):
+        return (
+            f"同日口径（{real.date}）：US10Y {us10y.value:.2f}% - "
+            f"T10YIE {breakeven.value:.2f}% = 10Y 实际利率 {real.value:.2f}%（主口径）。"
+        )
+
+    latest_inputs = ""
+    if us10y and breakeven:
+        latest_inputs = (
+            f" US10Y 最新观测为 {us10y.value:.2f}%（{us10y.date}），"
+            f"T10YIE 最新观测为 {breakeven.value:.2f}%（{breakeven.date}）；"
+            "两者日期或派生口径未通过校验，不可直接相减。"
+        )
+    return f"10Y 实际利率主口径为 {real.value:.2f}%（{real.date}）。{latest_inputs}"
 
 
 def _dollar_sentence(snapshot):

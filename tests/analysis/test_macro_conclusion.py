@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -23,7 +24,8 @@ def test_current_manual_macro_doc_generates_target_conclusion() -> None:
     assert conclusion.missing_inputs == []
     markdown = render_macro_full_report_markdown(snapshot, conclusion)
     assert "# XAUUSD 宏观 / 流动性更新（2026-05-08）" in markdown
-    assert "今天黄金的宏观环境更接近 **中性偏多**" in markdown
+    assert "宏观规则预判为 **中性偏多**（非 Gold Policy 权威方向）" in markdown
+    assert "不得作为交易触发" in markdown
     assert "过渡释放态" in markdown
     assert "XAUUSD 宏观交易引擎" not in markdown
     assert "US10Y - T10YIE" in markdown
@@ -55,7 +57,7 @@ def test_recent_trade_day_macro_doc_uses_authoritative_transition_phase() -> Non
     markdown = render_macro_full_report_markdown(snapshot, conclusion)
     assert "过渡释放态" in markdown
     assert "分裂偏紧" in markdown
-    assert "过渡释放态下的等待" in markdown
+    assert "**过渡释放态 / 等待** 仅作观察输入" in markdown
     assert "DXY 跌破 100.8" in markdown
     assert "10Y 实际利率跌回 2.10% 下方" in markdown
     assert "实际收益率 | 高位压制 | 待LLM判断" in markdown
@@ -66,6 +68,40 @@ def test_recent_trade_day_macro_doc_uses_authoritative_transition_phase() -> Non
     assert "## 联网补充与系统数据源缺口" not in markdown
     assert "## 数据源" not in markdown
     assert "规则预判方向与动作仅供对照，不是最终结论。" in markdown
+
+
+def test_macro_report_keeps_latest_breakeven_separate_from_same_day_real_rate() -> None:
+    snapshot = build_macro_snapshot(_recent_trade_day_points(), as_of="2026-06-26")
+    conclusion = build_macro_conclusion(snapshot)
+
+    markdown = render_macro_full_report_markdown(snapshot, conclusion)
+
+    assert (
+        "同日口径（2026-06-25）：US10Y 4.40% - T10YIE 2.21% = "
+        "10Y 实际利率 2.19%（主口径）。"
+    ) in markdown
+    assert "T10YIE 最新观测为 2.20%（2026-06-26），不参与上述同日计算。" in markdown
+    assert "US10Y 4.40%，T10YIE 2.20%，10Y 实际利率约 2.19%" not in markdown
+
+
+def test_macro_report_does_not_recalculate_misaligned_legacy_real_rate() -> None:
+    snapshot = build_macro_snapshot(_recent_trade_day_points(), as_of="2026-06-26")
+    real = replace(
+        snapshot.indicators["REAL_10Y"],
+        derivation_version=None,
+        components=(),
+    )
+    snapshot = replace(
+        snapshot,
+        indicators={**snapshot.indicators, "REAL_10Y": real},
+    )
+    conclusion = build_macro_conclusion(snapshot)
+
+    markdown = render_macro_full_report_markdown(snapshot, conclusion)
+
+    assert "10Y 实际利率主口径为 2.19%（2026-06-25）" in markdown
+    assert "两者日期或派生口径未通过校验，不可直接相减" in markdown
+    assert "US10Y 4.40% - T10YIE 2.20%" not in markdown
 
 
 def test_trend_tailwind_without_bullish_bias_does_not_create_long_action() -> None:

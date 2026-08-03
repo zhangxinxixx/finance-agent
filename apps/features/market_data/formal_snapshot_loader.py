@@ -9,8 +9,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from apps.features.market_data.formal_snapshots import (
+    MarketContextSnapshot,
     MarketPriceSnapshot,
     OilSnapshot,
+    build_market_context_snapshot,
     build_market_price_snapshot,
     build_oil_snapshot,
 )
@@ -27,6 +29,7 @@ class FormalSnapshotBundle:
     market_prices: MarketPriceSnapshot
     oil: OilSnapshot
     as_of: datetime
+    market_context: MarketContextSnapshot | None = None
 
 
 def resolve_formal_snapshot_as_of(*, trade_date: str, run_time: datetime) -> datetime:
@@ -88,6 +91,15 @@ def load_formal_market_snapshots(session: Any, *, as_of: datetime) -> FormalSnap
         as_of=point_in_time,
         bar_duration=_DAILY_DURATION,
     )
+    xagusd = list_completed_market_candles(
+        session, asset="XAGUSD", timeframe="1d", as_of=point_in_time, bar_duration=_DAILY_DURATION
+    )
+    dxy = list_completed_market_candles(
+        session, asset="DXY", timeframe="1d", as_of=point_in_time, bar_duration=_DAILY_DURATION
+    )
+    vix = list_completed_market_candles(
+        session, asset="VIX", timeframe="1d", as_of=point_in_time, bar_duration=_DAILY_DURATION
+    )
     market_candidates = [
         *(_candle_mapping(row, duration=_SPOT_DURATION) for row in xauusd),
         *(_candle_mapping(row, duration=_DAILY_DURATION) for row in gc),
@@ -96,10 +108,16 @@ def load_formal_market_snapshots(session: Any, *, as_of: datetime) -> FormalSnap
         *(_candle_mapping(row, duration=_DAILY_DURATION) for row in wti),
         *(_candle_mapping(row, duration=_DAILY_DURATION) for row in brent),
     ]
+    market_context_candidates = [
+        *(_candle_mapping(row, duration=_DAILY_DURATION) for row in xagusd),
+        *(_candle_mapping(row, duration=_DAILY_DURATION) for row in dxy),
+        *(_candle_mapping(row, duration=_DAILY_DURATION) for row in vix),
+    ]
     return FormalSnapshotBundle(
         market_prices=build_market_price_snapshot(candidates=market_candidates, as_of=point_in_time),
         oil=build_oil_snapshot(candidates=oil_candidates, as_of=point_in_time),
         as_of=point_in_time,
+        market_context=build_market_context_snapshot(candidates=market_context_candidates, as_of=point_in_time),
     )
 
 

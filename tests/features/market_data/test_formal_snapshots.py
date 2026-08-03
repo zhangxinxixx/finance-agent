@@ -8,7 +8,9 @@ import pytest
 from apps.features.market_data.formal_snapshots import (
     FormalMarketObservation,
     FormalSourceReference,
+    MarketContextSnapshot,
     MarketPriceSnapshot,
+    build_market_context_snapshot,
     build_market_price_snapshot,
     build_oil_snapshot,
 )
@@ -37,6 +39,26 @@ def _gc_bar(open_time: datetime) -> dict:
 
 def _oil_bar(asset: str, open_time: datetime) -> dict:
     return _bar(asset=asset, timeframe="1d", source="ice_settlement", open_time=open_time, source_ref={"provider_symbol": asset, "instrument_type": "futures_settlement", "source_role": "oil_primary"}, price=75)
+
+
+def _context_bar(asset: str, open_time: datetime) -> dict:
+    identities = {
+        "DXY": ("yahoo_finance_dx_y_nyb", "DX-Y.NYB", "index"),
+        "VIX": ("yahoo_finance_vix", "^VIX", "volatility_index"),
+    }
+    source, provider_symbol, instrument_type = identities[asset]
+    return _bar(
+        asset=asset,
+        timeframe="1d",
+        source=source,
+        open_time=open_time,
+        source_ref={
+            "provider_symbol": provider_symbol,
+            "instrument_type": instrument_type,
+            "source_role": "market_primary",
+        },
+        price=75,
+    )
 
 
 def test_market_snapshot_accepts_spot_5m_and_distinct_gc_daily_bar() -> None:
@@ -82,6 +104,57 @@ def test_oil_snapshot_accepts_explicit_wti_and_brent_daily_bars() -> None:
     assert snapshot.readiness == "ready"
     assert snapshot.wti.value == 76.0
     assert snapshot.brent.value == 76.0
+
+
+def test_market_context_snapshot_observes_supported_identities_and_marks_xag_missing() -> None:
+    snapshot = build_market_context_snapshot(
+        candidates=[_context_bar(asset, AS_OF - timedelta(days=2)) for asset in ("DXY", "VIX")],
+        as_of=AS_OF,
+    )
+
+    assert snapshot.schema_version == "market_context_snapshot.v1"
+    assert snapshot.readiness == "observe"
+    assert (snapshot.xagusd_spot.series_id, snapshot.xagusd_spot.market_role) == ("XAGUSD_SPOT", "spot")
+    assert snapshot.xagusd_spot.quality_status == "blocked"
+    assert snapshot.xagusd_spot.source_refs[0].reference == "query://XAGUSD/1d"
+    assert (snapshot.dxy.series_id, snapshot.dxy.market_role) == ("DXY", "index")
+    assert (snapshot.vix.series_id, snapshot.vix.market_role) == ("VIX", "volatility_index")
+
+
+def test_market_context_missing_is_blocked_with_query_lineage() -> None:
+    snapshot = build_market_context_snapshot(candidates=[], as_of=AS_OF)
+
+    assert snapshot.readiness == "blocked"
+    for item in (snapshot.xagusd_spot, snapshot.dxy, snapshot.vix):
+        assert (item.value, item.freshness_status, item.quality_status) == (None, "missing", "blocked")
+        assert item.source_refs[0].reference.startswith("query://")
+
+
+def test_market_context_future_stale_and_ambiguous_candidates_fail_closed() -> None:
+    future_dxy = _context_bar("DXY", AS_OF)
+    first_vix = _context_bar("VIX", AS_OF - timedelta(days=2))
+    second_vix = copy.deepcopy(first_vix)
+    snapshot = build_market_context_snapshot(candidates=[future_dxy, first_vix, second_vix], as_of=AS_OF)
+
+    assert (snapshot.xagusd_spot.freshness_status, snapshot.xagusd_spot.quality_status) == ("missing", "blocked")
+    assert (snapshot.dxy.freshness_status, snapshot.dxy.alignment_status) == ("missing", "misaligned")
+    assert (snapshot.vix.freshness_status, snapshot.vix.quality_status) == ("missing", "blocked")
+    assert snapshot.readiness == "blocked"
+
+
+def test_market_context_is_deterministic_and_contract_rejects_wrong_identity() -> None:
+    candidates = [_context_bar(asset, AS_OF - timedelta(days=2)) for asset in ("DXY", "VIX")]
+    results = [build_market_context_snapshot(candidates=candidates, as_of=AS_OF) for _ in range(100)]
+
+    assert len({item.model_dump_json() for item in results}) == 1
+    with pytest.raises(ValueError, match="XAGUSD_SPOT/XAGUSD/spot/1d"):
+        MarketContextSnapshot(
+            as_of=AS_OF,
+            readiness="blocked",
+            xagusd_spot=build_oil_snapshot(candidates=[], as_of=AS_OF).wti,
+            dxy=results[0].dxy,
+            vix=results[0].vix,
+        )
 
 
 def test_missing_oil_is_explicitly_blocked_with_query_lineage() -> None:

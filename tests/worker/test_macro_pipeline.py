@@ -832,6 +832,57 @@ class TestStepRender:
         full_md_content = full_md_path.read_text()
         assert "XAUUSD 宏观 / 流动性更新" in full_md_content
 
+    def test_render_preserves_real10y_same_day_components(self, tmp_path):
+        state = MacroPipelineState(
+            as_of="2026-07-31",
+            all_points=[
+                MacroPoint(
+                    symbol="DGS10",
+                    date="2026-07-30",
+                    value=4.68,
+                    source="fred",
+                    source_url="https://api.stlouisfed.org/fred/series/observations?series_id=DGS10",
+                    retrieved_at="2026-07-31T12:00:00+00:00",
+                    raw_path="storage/raw/macro/fred/2026-07-31/DGS10.json",
+                ),
+                MacroPoint(
+                    symbol="T10YIE",
+                    date="2026-07-30",
+                    value=2.27,
+                    source="fred",
+                    source_url="https://api.stlouisfed.org/fred/series/observations?series_id=T10YIE",
+                    retrieved_at="2026-07-31T12:00:00+00:00",
+                    raw_path="storage/raw/macro/fred/2026-07-31/T10YIE.json",
+                ),
+                MacroPoint(
+                    symbol="T10YIE",
+                    date="2026-07-31",
+                    value=2.28,
+                    source="fred",
+                    source_url="https://api.stlouisfed.org/fred/series/observations?series_id=T10YIE",
+                    retrieved_at="2026-07-31T12:00:00+00:00",
+                    raw_path="storage/raw/macro/fred/2026-07-31/T10YIE.json",
+                ),
+            ],
+        )
+
+        run_macro_step("macro_feature", state, storage_root=tmp_path)
+        run_macro_step("report_render", state, storage_root=tmp_path, run_id="run-real10y")
+
+        full_report = (
+            tmp_path
+            / "outputs"
+            / "macro"
+            / "2026-07-31"
+            / "run-real10y"
+            / "macro_full_report.md"
+        ).read_text()
+        assert (
+            "同日口径（2026-07-30）：US10Y 4.68% - T10YIE 2.27% = "
+            "10Y 实际利率 2.41%（主口径）。"
+        ) in full_report
+        assert "T10YIE 最新观测为 2.28%（2026-07-31），不参与上述同日计算。" in full_report
+
     def test_render_upserts_feature_snapshots_when_db_session_is_provided(self, tmp_path):
         state = MacroPipelineState()
         state.as_of = "2026-05-06"

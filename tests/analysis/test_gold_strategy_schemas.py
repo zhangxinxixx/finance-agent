@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from apps.analysis.gold_policy.attribution_policy import attribute_gold_price
+from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
 from apps.analysis.gold_policy.strategy_schemas import (
     StrategyDecision,
     StrategyDecisionInput,
@@ -12,9 +16,30 @@ from apps.analysis.gold_policy.strategy_schemas import (
     build_strategy_event_risk,
     build_strategy_options_regime,
 )
+from tests.analysis.test_gold_strategy_policy import _policy_input, _snapshot
 
 
 AS_OF = datetime(2025, 1, 17, 21, 5, tzinfo=UTC)
+
+
+def _v2_feature():
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "gold_policy" / "real10y_v2_cases.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    payload = json.loads(json.dumps(fixture["base_payload"]))
+    return build_feature_snapshot(payload)
+
+
+def test_strategy_input_schema_carries_v2_feature_without_version_conversion() -> None:
+    feature = _v2_feature()
+    legacy = _snapshot()
+    strategy_input = _policy_input(
+        feature=feature,
+        attribution=attribute_gold_price(legacy, legacy),
+    )
+
+    assert strategy_input.feature_snapshot == feature
+    assert strategy_input.feature_snapshot.schema_version == "feature_snapshot.v2"
+    assert strategy_input.feature_snapshot.snapshot_id.startswith("feature_snapshot.v2:")
 
 
 def _ref(name: str = "fixture") -> dict[str, object]:

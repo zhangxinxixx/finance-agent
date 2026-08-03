@@ -81,13 +81,14 @@ def _build_close_snapshot(
     trade_date: str,
     run_id: str,
     asset: str,
+    snapshot_time: datetime,
 ) -> dict[str, Any]:
     close_snapshot = dict(snapshot)
     close_snapshot["asset"] = asset
     close_snapshot["trade_date"] = trade_date
     close_snapshot["run_id"] = run_id
     close_snapshot["snapshot_id"] = f"{asset}:{trade_date}:{run_id}"
-    close_snapshot["snapshot_time"] = datetime.now(timezone.utc).isoformat()
+    close_snapshot["snapshot_time"] = snapshot_time.isoformat()
     close_snapshot["gold_analysis_context"] = {"status": "available", "data": context}
     input_ids = dict(close_snapshot.get("input_snapshot_ids") or {})
     input_ids["gold_analysis_context"] = dict(context.get("input_snapshot_ids") or {})
@@ -99,20 +100,54 @@ def _build_close_snapshot(
     return close_snapshot
 
 
-def _gold_policy_runtime_kwargs(*, storage_root: Path, snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Prepare the formal policy shadow inputs without blocking legacy reports."""
+def _gold_policy_runtime_kwargs(
+    *, storage_root: Path, snapshot: dict[str, Any], decision_as_of: datetime
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Prepare typed controls for the authoritative daily-close runtime."""
 
     try:
+        from apps.analysis.gold_policy.daily_close_store import load_gold_daily_close_head
         from apps.analysis.gold_policy.runtime_inputs import prepare_gold_policy_runtime_inputs
+        from apps.analysis.gold_policy.runtime_controls import (
+            build_gold_daily_close_runtime_controls,
+        )
 
         runtime = prepare_gold_policy_runtime_inputs(storage_root=storage_root, snapshot=snapshot)
+        canonical = load_gold_daily_close_head(
+            storage_root=storage_root,
+            before_date=runtime.current.as_of.astimezone(timezone.utc).date(),
+        )
+        if canonical.status in {"invalid", "ambiguous"}:
+            raise RuntimeError(
+                f"canonical daily-close lookup failed: {canonical.reason_code}"
+            )
+        head = canonical.head if canonical.status == "found" else None
+        previous_feature = head.feature_snapshot if head is not None else runtime.previous
+        controls = build_gold_daily_close_runtime_controls(
+            current_feature=runtime.current,
+            previous_feature=previous_feature,
+            previous_transition=(head.transition_decision if head is not None else None),
+            decision_as_of=decision_as_of,
+        )
         return (
             {
                 "gold_feature_snapshot_prebuilt": runtime.current,
-                "previous_gold_feature_snapshot_prebuilt": runtime.previous,
-                "gold_policy_execution_mode": "shadow",
+                "previous_gold_feature_snapshot_prebuilt": (
+                    runtime.previous if head is None else None
+                ),
+                "gold_daily_close_controls_prebuilt": controls,
+                "gold_policy_execution_mode": "authoritative",
             },
-            {"status": "ready", "lookup": runtime.lookup.summary()},
+            {
+                "status": "ready",
+                "execution_mode": "authoritative",
+                "lookup": runtime.lookup.summary(),
+                "canonical_lookup": {
+                    "status": canonical.status,
+                    "reason_code": canonical.reason_code,
+                },
+                "control_reason_codes": list(controls.reason_codes),
+            },
         )
     except Exception as exc:
         return (
@@ -124,6 +159,42 @@ def _gold_policy_runtime_kwargs(*, storage_root: Path, snapshot: dict[str, Any])
                 "lookup": {},
             },
         )
+
+
+def _authoritative_output_paths(
+    *, storage_root: Path, outputs: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    execution = outputs.get("gold_daily_close_execution")
+    if execution is None:
+        return [], []
+    bundle_path = Path(execution.write_result.bundle_path)
+    report_names = (
+        "source.md",
+        "analysis.md",
+        "visual.html",
+        "report_structured.json",
+        "evidence.json",
+        "data_quality.json",
+        "report_manifest.json",
+        "strategy_card.json",
+        "strategy_card.md",
+    )
+    reports = [str(bundle_path / name) for name in report_names]
+    if not all(Path(path).is_file() for path in reports):
+        return [], []
+    strategy_cards = [
+        str(bundle_path / "strategy_card.json"),
+        str(bundle_path / "strategy_card.md"),
+    ]
+    from apps.analysis.gold_policy.daily_close_store import load_gold_daily_close_head
+
+    lookup = load_gold_daily_close_head(storage_root=storage_root)
+    if lookup.status != "found" or lookup.head is None:
+        return reports, strategy_cards
+    strategy_path = lookup.head.selected_bundle_path / "strategy_decision.v2.json"
+    if not strategy_path.is_file():
+        strategy_path = lookup.head.selected_bundle_path / "strategy_decision.v1.json"
+    return reports, strategy_cards + ([str(strategy_path)] if strategy_path.is_file() else [])
 
 
 def run_daily_macro_close(*, trade_date: str, storage_root: Path, asset: str = "XAUUSD", run_id: str | None = None) -> dict[str, Any]:
@@ -141,12 +212,25 @@ def run_daily_macro_close(*, trade_date: str, storage_root: Path, asset: str = "
     if manifest_path.exists():
         return {"status": "complete", "run_id": close_run_id, "manifest": str(manifest_path)}
 
+    raw_snapshot_time = premarket.get("snapshot_time") or premarket.get("trade_date") or trade_date
+    try:
+        decision_as_of = datetime.fromisoformat(str(raw_snapshot_time).replace("Z", "+00:00"))
+    except ValueError:
+        return {
+            "status": "blocked",
+            "run_id": close_run_id,
+            "reason": "premarket_snapshot_time_invalid",
+        }
+    if decision_as_of.tzinfo is None or decision_as_of.utcoffset() is None:
+        decision_as_of = decision_as_of.replace(tzinfo=timezone.utc)
+    decision_as_of = decision_as_of.astimezone(timezone.utc)
     snapshot = _build_close_snapshot(
         snapshot=premarket,
         context=context,
         trade_date=trade_date,
         run_id=close_run_id,
         asset=asset,
+        snapshot_time=decision_as_of,
     )
     # Input passports must be derived from the original premarket artifact:
     # the close wrapper has a new snapshot_time, but it must not relabel a
@@ -154,14 +238,27 @@ def run_daily_macro_close(*, trade_date: str, storage_root: Path, asset: str = "
     runtime_kwargs, gold_policy_runtime = _gold_policy_runtime_kwargs(
         storage_root=storage_root,
         snapshot=premarket,
+        decision_as_of=decision_as_of,
     )
+    if gold_policy_runtime["status"] != "ready":
+        return {
+            "status": "blocked",
+            "run_id": close_run_id,
+            "reason": gold_policy_runtime["reason_code"],
+            "gold_policy_runtime": gold_policy_runtime,
+        }
     summaries, outputs = run_composite_analysis_pipeline(
         storage_root=storage_root,
         snapshot=snapshot,
         run_id=close_run_id,
-        created_at=datetime.now(timezone.utc),
+        created_at=decision_as_of,
         **runtime_kwargs,
     )
+    canonical_report_paths, canonical_strategy_paths = _authoritative_output_paths(
+        storage_root=storage_root, outputs=outputs
+    )
+    legacy_report_paths = list((outputs.get("report_result") or {}).get("paths") or [])
+    legacy_strategy_card_paths = list((outputs.get("card_result") or {}).get("paths") or [])
     manifest = {
         "schema_version": "daily-macro-close-v1",
         "status": "completed",
@@ -180,8 +277,10 @@ def run_daily_macro_close(*, trade_date: str, storage_root: Path, asset: str = "
         "gold_policy_runtime": gold_policy_runtime,
         "gold_policy_artifact_paths": dict(outputs.get("gold_policy_artifact_paths") or {}),
         "summaries": summaries,
-        "final_report_paths": list((outputs.get("report_result") or {}).get("paths") or []),
-        "strategy_card_paths": list((outputs.get("card_result") or {}).get("paths") or []),
+        "final_report_paths": canonical_report_paths or legacy_report_paths,
+        "strategy_card_paths": canonical_strategy_paths or legacy_strategy_card_paths,
+        "legacy_final_report_paths": legacy_report_paths,
+        "legacy_strategy_card_paths": legacy_strategy_card_paths,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

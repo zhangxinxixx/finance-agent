@@ -117,6 +117,34 @@ def test_coordinator_exposes_typed_gold_decision_without_overwriting_state_contr
     assert output.source_refs
 
 
+def test_coordinator_accepts_v2_typed_conclusion_and_canonical_payload():
+    from tests.analysis.test_gold_analysis_policy import _v2
+
+    previous = _v2(
+        _gold_policy_snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
+    )
+    current = _v2(
+        _gold_policy_snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    )
+    decision = evaluate_gold_analysis_policy(current, previous)
+
+    output = coordinate_agent_outputs(
+        _snapshot(),
+        macro_output=None,
+        options_output=None,
+        risk_output=None,
+        accepted_state_conclusion=decision.model_dump(mode="json"),
+        created_at=_CREATED_AT,
+    )
+
+    assert output.accepted_gold_analysis_decision == decision
+    assert output.accepted_state_conclusion is not None
+    assert output.accepted_state_conclusion.direction.value == decision.direction
+    assert output.bias.value == decision.direction
+    assert output.input_snapshot_ids["gold_analysis_policy_current"] == current.snapshot_id
+    assert output.source_refs
+
+
 def test_coordinator_rejects_untyped_text_as_accepted_state_conclusion():
     output = coordinate_agent_outputs(
         {**_snapshot(), "summary": "bullish", "market_state": "trend_confirmed"},

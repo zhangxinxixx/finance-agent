@@ -74,6 +74,9 @@ class MajorConfirmationRule(StrEnum):
 DirectionalBias = Literal["bullish", "bearish", "neutral", "mixed", "unavailable"]
 PendingDirection = Literal["bullish", "bearish", "neutral", "mixed"]
 StateQuality = Literal["accepted", "observe", "blocked"]
+DirectionalTilt = Literal["bullish", "bearish", "none"]
+V2MarketRegime = Literal["pressure", "range", "direction_decision", "repair", "trend"]
+V2TrendMaturity = Literal["forming", "watching", "confirmed", "invalidated"]
 
 
 class _FrozenContract(BaseModel):
@@ -103,11 +106,7 @@ class TransitionEvidence(_FrozenContract):
         if len(set(self.evidence_categories)) != len(self.evidence_categories):
             raise ValueError("evidence_categories must be unique")
         if self.delta_kind is EvidenceDeltaKind.NO_OP:
-            if (
-                self.evidence_categories
-                or self.rule_code is not None
-                or self.predecessor_evidence_id is not None
-            ):
+            if self.evidence_categories or self.rule_code is not None or self.predecessor_evidence_id is not None:
                 raise ValueError("no_op evidence cannot claim material categories or a rule")
             return self
         if not self.evidence_categories:
@@ -131,9 +130,7 @@ class TransitionEvidence(_FrozenContract):
                     EvidenceCategory.OFFICIAL_EVENT,
                 }
             ):
-                raise ValueError(
-                    "major_confirmation requires price plus macro, structure, or official_event"
-                )
+                raise ValueError("major_confirmation requires price plus macro, structure, or official_event")
             if self.rule_code is MajorConfirmationRule.OFFICIAL_EVENT_REACTION_CONFIRMED and not {
                 EvidenceCategory.PRICE,
                 EvidenceCategory.OFFICIAL_EVENT,
@@ -162,10 +159,14 @@ class TransitionEvidence(_FrozenContract):
                 raise ValueError("price structure confirmation requires price, structure, and macro")
         if self.delta_kind is EvidenceDeltaKind.HARD_INVALIDATION:
             categories = set(self.evidence_categories)
-            if self.rule_code in {
-                HardInvalidationRule.CONFIRMED_SUPPORT_BREAK,
-                HardInvalidationRule.CONFIRMED_RESISTANCE_BREAK,
-            } and EvidenceCategory.PRICE not in categories:
+            if (
+                self.rule_code
+                in {
+                    HardInvalidationRule.CONFIRMED_SUPPORT_BREAK,
+                    HardInvalidationRule.CONFIRMED_RESISTANCE_BREAK,
+                }
+                and EvidenceCategory.PRICE not in categories
+            ):
                 raise ValueError("price-level invalidation requires price evidence")
             if (
                 self.rule_code is HardInvalidationRule.MAJOR_MACRO_STATE_INVALIDATED
@@ -226,19 +227,12 @@ class AnalysisStateInput(_FrozenContract):
     @model_validator(mode="after")
     def _validate_state_semantics(self) -> "AnalysisStateInput":
         _require_source_refs(self.source_refs, as_of=self.as_of)
-        if (
-            self.pending_transition is not None
-            and self.pending_transition.last_seen_at > self.as_of
-        ):
+        if self.pending_transition is not None and self.pending_transition.last_seen_at > self.as_of:
             raise ValueError("pending transition cannot be after state as_of")
         if self.quality_status == "blocked" and (
-            self.directional_bias != "unavailable"
-            or self.pending_transition is not None
-            or self.confidence != 0.0
+            self.directional_bias != "unavailable" or self.pending_transition is not None or self.confidence != 0.0
         ):
-            raise ValueError(
-                "blocked state must be unavailable with zero confidence and no pending transition"
-            )
+            raise ValueError("blocked state must be unavailable with zero confidence and no pending transition")
         if self.quality_status == "accepted" and self.directional_bias == "unavailable":
             raise ValueError("accepted state cannot have unavailable directional_bias")
         if self.stage is AnalysisStage.TREND_CONFIRMED and self.directional_bias not in {
@@ -275,8 +269,7 @@ class AnalysisStateInput(_FrozenContract):
         ):
             raise ValueError("opposite_bias pending requires the opposite directional bias")
         if pending.rule is PendingRule.NEW_BIAS and (
-            self.directional_bias != "mixed"
-            or pending.direction not in {"bullish", "bearish"}
+            self.directional_bias != "mixed" or pending.direction not in {"bullish", "bearish"}
         ):
             raise ValueError("new_bias pending requires a mixed canonical bias")
         if pending.rule is PendingRule.CONFLICT and pending.direction != "mixed":
@@ -297,15 +290,93 @@ class AnalysisState(AnalysisStateInput):
         return self
 
 
+class AnalysisStateV2Input(_FrozenContract):
+    """Versioned orthogonal state; v1 remains a separate frozen contract."""
+
+    schema_version: Literal["analysis_state.v2"] = "analysis_state.v2"
+    asset: Literal["XAUUSD"] = "XAUUSD"
+    direction: DirectionalBias
+    direction_tilt: DirectionalTilt = "none"
+    market_regime: V2MarketRegime
+    trend_maturity: V2TrendMaturity
+    pending_transition: PendingTransition | None = None
+    scope: EvidenceScope
+    as_of: datetime
+    confidence: float = Field(ge=0.0, le=1.0)
+    quality_status: StateQuality
+    source_refs: tuple[SourceReference, ...] = Field(min_length=1)
+
+    @field_validator("as_of")
+    @classmethod
+    def _normalize_as_of(cls, value: datetime) -> datetime:
+        return _aware_utc(value, field_name="state as_of")
+
+    @model_validator(mode="after")
+    def _validate_semantics(self) -> "AnalysisStateV2Input":
+        _require_source_refs(self.source_refs, as_of=self.as_of)
+        if self.direction != "mixed" and self.direction_tilt != "none":
+            raise ValueError("only mixed state may carry a directional tilt")
+        if self.quality_status == "blocked" and (
+            self.direction != "unavailable"
+            or self.direction_tilt != "none"
+            or self.confidence != 0
+            or self.pending_transition is not None
+        ):
+            raise ValueError("blocked v2 state must be unavailable, untilted, and empty")
+        if self.quality_status == "accepted" and self.direction == "unavailable":
+            raise ValueError("accepted v2 state cannot be unavailable")
+        if self.trend_maturity == "confirmed" and (
+            self.market_regime != "trend" or self.direction not in {"bullish", "bearish"}
+        ):
+            raise ValueError("confirmed maturity requires a directional trend")
+        if self.market_regime == "trend" and self.direction not in {"bullish", "bearish"}:
+            raise ValueError("trend regime requires a directional state")
+        if self.pending_transition is not None:
+            if self.pending_transition.last_seen_at > self.as_of or not all(
+                ref in self.source_refs for ref in self.pending_transition.source_refs
+            ):
+                raise ValueError("invalid pending transition lineage")
+            if self.pending_transition.rule is PendingRule.OPPOSITE_BIAS and (
+                self.direction not in {"bullish", "bearish"} or self.pending_transition.direction == self.direction
+            ):
+                raise ValueError("opposite pending must oppose a directional state")
+            if self.pending_transition.rule is PendingRule.TREND_EXIT and (
+                self.market_regime != "trend"
+                or self.trend_maturity != "confirmed"
+                or self.direction not in {"bullish", "bearish"}
+                or self.pending_transition.direction == self.direction
+            ):
+                raise ValueError("trend exit pending must oppose a confirmed trend")
+            if self.pending_transition.rule is PendingRule.TREND_ENTRY and (
+                self.direction not in {"bullish", "bearish"}
+                or self.pending_transition.direction != self.direction
+                or self.trend_maturity != "watching"
+            ):
+                raise ValueError("trend entry pending requires a watched directional state")
+            if self.pending_transition.rule is PendingRule.NEW_BIAS and self.direction != "mixed":
+                raise ValueError("new bias pending requires mixed state")
+            if self.pending_transition.rule is PendingRule.CONFLICT and self.pending_transition.direction != "mixed":
+                raise ValueError("conflict pending must have mixed direction")
+        return self
+
+
+class AnalysisStateV2(AnalysisStateV2Input):
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    state_id: str = Field(pattern=r"^analysis_state\.v2:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "AnalysisStateV2":
+        digest = _sha256(canonical_analysis_state_v2_json(self))
+        if self.payload_hash != digest or self.state_id != f"analysis_state.v2:{digest}":
+            raise ValueError("analysis state v2 identity does not match canonical payload")
+        return self
+
+
 class StateTransitionPolicyDecisionInput(_FrozenContract):
     """Caller-owned transition-decision payload before hashing."""
 
-    from_state_id: str | None = Field(
-        default=None, pattern=r"^analysis_state\.v1:[0-9a-f]{64}$"
-    )
-    to_state_id: str | None = Field(
-        default=None, pattern=r"^analysis_state\.v1:[0-9a-f]{64}$"
-    )
+    from_state_id: str | None = Field(default=None, pattern=r"^analysis_state\.v1:[0-9a-f]{64}$")
+    to_state_id: str | None = Field(default=None, pattern=r"^analysis_state\.v1:[0-9a-f]{64}$")
     from_stage: AnalysisStage | None = None
     to_stage: AnalysisStage | None = None
     action: TransitionAction
@@ -314,9 +385,7 @@ class StateTransitionPolicyDecisionInput(_FrozenContract):
     stage_changed: bool
     evidence: TransitionEvidence
     reasons: tuple[str, ...] = Field(min_length=1)
-    policy_version: Literal["analysis_state_transition_policy.v1"] = (
-        "analysis_state_transition_policy.v1"
-    )
+    policy_version: Literal["analysis_state_transition_policy.v1"] = "analysis_state_transition_policy.v1"
 
     @field_validator("reasons")
     @classmethod
@@ -344,11 +413,7 @@ class StateTransitionPolicyDecisionInput(_FrozenContract):
             raise ValueError("a non-advancing decision cannot change stage")
         if self.stage_changed != (self.from_stage != self.to_stage):
             raise ValueError("stage_changed must match the stage fields")
-        if (
-            self.action is TransitionAction.PENDING
-            and self.from_stage is not None
-            and self.stage_changed
-        ):
+        if self.action is TransitionAction.PENDING and self.from_stage is not None and self.stage_changed:
             raise ValueError("pending decisions cannot change an existing stage")
         if self.action is TransitionAction.MAINTAIN and self.from_stage is not None and self.advance:
             raise ValueError("maintain cannot advance an existing state")
@@ -378,15 +443,101 @@ class StateTransitionPolicyDecision(StateTransitionPolicyDecisionInput):
         return self
 
 
+class StateTransitionPolicyDecisionV2Input(_FrozenContract):
+    """Versioned transition audit record for orthogonal AnalysisState v2."""
+
+    schema_version: Literal["analysis_state_transition.v2"] = "analysis_state_transition.v2"
+    from_state_id: str | None = Field(default=None, pattern=r"^analysis_state\.v2:[0-9a-f]{64}$")
+    to_state_id: str | None = Field(default=None, pattern=r"^analysis_state\.v2:[0-9a-f]{64}$")
+    action: TransitionAction
+    transition_allowed: bool
+    advance: bool
+    from_direction: DirectionalBias | None = None
+    to_direction: DirectionalBias | None = None
+    from_direction_tilt: DirectionalTilt | None = None
+    to_direction_tilt: DirectionalTilt | None = None
+    from_market_regime: V2MarketRegime | None = None
+    to_market_regime: V2MarketRegime | None = None
+    from_trend_maturity: V2TrendMaturity | None = None
+    to_trend_maturity: V2TrendMaturity | None = None
+    changed_dimensions: tuple[Literal["direction", "market_regime", "trend_maturity"], ...] = ()
+    evidence: TransitionEvidence
+    reasons: tuple[str, ...] = Field(min_length=1)
+    policy_version: Literal["analysis_state_transition_policy.v2"] = "analysis_state_transition_policy.v2"
+
+    @model_validator(mode="after")
+    def _validate_semantics(self) -> "StateTransitionPolicyDecisionV2Input":
+        if len(set(self.changed_dimensions)) != len(self.changed_dimensions):
+            raise ValueError("changed_dimensions must be unique")
+        if self.evidence.delta_kind is EvidenceDeltaKind.ORDINARY and len(self.changed_dimensions) > 1:
+            raise ValueError("ordinary evidence may change at most one v2 dimension")
+        from_projection = (
+            self.from_direction,
+            self.from_direction_tilt,
+            self.from_market_regime,
+            self.from_trend_maturity,
+        )
+        to_projection = (
+            self.to_direction,
+            self.to_direction_tilt,
+            self.to_market_regime,
+            self.to_trend_maturity,
+        )
+        if (self.from_state_id is None) != all(value is None for value in from_projection):
+            raise ValueError("from-state identity and projection must be paired")
+        if (self.to_state_id is None) != all(value is None for value in to_projection):
+            raise ValueError("to-state identity and projection must be paired")
+        if any(value is None for value in from_projection) and not all(value is None for value in from_projection):
+            raise ValueError("from-state projection must be complete")
+        if any(value is None for value in to_projection) and not all(value is None for value in to_projection):
+            raise ValueError("to-state projection must be complete")
+        derived: tuple[str, ...] = ()
+        if self.from_state_id is not None and self.to_state_id is not None:
+            if self.from_direction != self.to_direction or self.from_direction_tilt != self.to_direction_tilt:
+                derived += ("direction",)
+            if self.from_market_regime != self.to_market_regime:
+                derived += ("market_regime",)
+            if self.from_trend_maturity != self.to_trend_maturity:
+                derived += ("trend_maturity",)
+        if self.changed_dimensions != derived:
+            raise ValueError("changed_dimensions must match from/to projection")
+        if self.advance != (self.from_state_id != self.to_state_id):
+            raise ValueError("advance must match state identity change")
+        if self.advance and not self.transition_allowed:
+            raise ValueError("advancing transition must be allowed")
+        if self.action is TransitionAction.MAINTAIN and self.advance:
+            raise ValueError("maintain cannot advance a canonical state")
+        if self.evidence.delta_kind is EvidenceDeltaKind.NO_OP and (
+            self.action is not TransitionAction.MAINTAIN or self.advance
+        ):
+            raise ValueError("no_op evidence requires non-advancing maintain")
+        if (
+            self.evidence.delta_kind is EvidenceDeltaKind.HARD_INVALIDATION
+            and self.transition_allowed
+            and self.action is not TransitionAction.INVALIDATE
+        ):
+            raise ValueError("allowed hard invalidation requires invalidate action")
+        return self
+
+
+class StateTransitionPolicyDecisionV2(StateTransitionPolicyDecisionV2Input):
+    decision_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> "StateTransitionPolicyDecisionV2":
+        digest = _sha256(canonical_state_transition_decision_v2_json(self))
+        if self.decision_hash != digest:
+            raise ValueError("transition v2 decision hash does not match canonical payload")
+        return self
+
+
 def canonical_analysis_state_json(state: AnalysisStateInput | AnalysisState) -> str:
     """Return canonical JSON excluding generated state identity fields."""
 
     payload = state.model_dump(mode="json", exclude={"payload_hash", "state_id"})
     payload["source_refs"] = _canonical_source_refs(state.source_refs)
     if state.pending_transition is not None:
-        payload["pending_transition"]["source_refs"] = _canonical_source_refs(
-            state.pending_transition.source_refs
-        )
+        payload["pending_transition"]["source_refs"] = _canonical_source_refs(state.pending_transition.source_refs)
     return _canonical_json(payload)
 
 
@@ -395,16 +546,10 @@ def build_analysis_state(payload: Mapping[str, Any] | AnalysisStateInput | Analy
 
     if isinstance(payload, AnalysisState):
         return payload
-    input_state = (
-        payload
-        if isinstance(payload, AnalysisStateInput)
-        else AnalysisStateInput.model_validate(payload)
-    )
+    input_state = payload if isinstance(payload, AnalysisStateInput) else AnalysisStateInput.model_validate(payload)
     pending = input_state.pending_transition
     if pending is not None:
-        pending = pending.model_copy(
-            update={"source_refs": _normalized_source_refs(pending.source_refs)}
-        )
+        pending = pending.model_copy(update={"source_refs": _normalized_source_refs(pending.source_refs)})
     normalized = input_state.model_copy(
         update={
             "source_refs": _normalized_source_refs(input_state.source_refs),
@@ -420,15 +565,71 @@ def build_analysis_state(payload: Mapping[str, Any] | AnalysisStateInput | Analy
     )
 
 
+def canonical_analysis_state_v2_json(state: AnalysisStateV2Input | AnalysisStateV2) -> str:
+    payload = state.model_dump(mode="json", exclude={"payload_hash", "state_id"})
+    payload["source_refs"] = _canonical_source_refs(state.source_refs)
+    if state.pending_transition is not None:
+        payload["pending_transition"]["source_refs"] = _canonical_source_refs(state.pending_transition.source_refs)
+    return _canonical_json(payload)
+
+
+def build_analysis_state_v2(payload: Mapping[str, Any] | AnalysisStateV2Input | AnalysisStateV2) -> AnalysisStateV2:
+    if isinstance(payload, AnalysisStateV2):
+        return payload
+    raw = payload if isinstance(payload, AnalysisStateV2Input) else AnalysisStateV2Input.model_validate(payload)
+    pending = (
+        raw.pending_transition.model_copy(
+            update={"source_refs": _normalized_source_refs(raw.pending_transition.source_refs)}
+        )
+        if raw.pending_transition
+        else None
+    )
+    state = raw.model_copy(
+        update={"source_refs": _normalized_source_refs(raw.source_refs), "pending_transition": pending}
+    )
+    digest = _sha256(canonical_analysis_state_v2_json(state))
+    return AnalysisStateV2(**state.model_dump(), payload_hash=digest, state_id=f"analysis_state.v2:{digest}")
+
+
+def migrate_analysis_state_v1_to_v2(state: AnalysisState) -> AnalysisStateV2:
+    regime, maturity = {
+        AnalysisStage.PRESSURE: ("pressure", "forming"),
+        AnalysisStage.RANGE: ("range", "forming"),
+        AnalysisStage.DIRECTION_DECISION: ("direction_decision", "watching"),
+        AnalysisStage.WEAK_REPAIR: ("repair", "forming"),
+        AnalysisStage.REVERSAL_WATCH: ("repair", "watching"),
+        AnalysisStage.TREND_CONFIRMED: ("trend", "confirmed"),
+    }[state.stage]
+    tilt: DirectionalTilt = "none"
+    if state.directional_bias == "mixed":
+        tilt = (
+            state.pending_transition.direction
+            if state.pending_transition and state.pending_transition.direction in {"bullish", "bearish"}
+            else "none"
+        )
+    return build_analysis_state_v2(
+        {
+            "direction": state.directional_bias,
+            "direction_tilt": tilt,
+            "market_regime": regime,
+            "trend_maturity": maturity,
+            "pending_transition": state.pending_transition,
+            "scope": state.scope,
+            "as_of": state.as_of,
+            "confidence": state.confidence,
+            "quality_status": state.quality_status,
+            "source_refs": state.source_refs,
+        }
+    )
+
+
 def canonical_state_transition_decision_json(
     decision: StateTransitionPolicyDecisionInput | StateTransitionPolicyDecision,
 ) -> str:
     """Return canonical JSON excluding the generated transition hash."""
 
     payload = decision.model_dump(mode="json", exclude={"decision_hash"})
-    payload["evidence"]["source_refs"] = _canonical_source_refs(
-        decision.evidence.source_refs
-    )
+    payload["evidence"]["source_refs"] = _canonical_source_refs(decision.evidence.source_refs)
     payload["evidence"]["evidence_categories"] = sorted(
         category.value for category in decision.evidence.evidence_categories
     )
@@ -436,9 +637,7 @@ def canonical_state_transition_decision_json(
 
 
 def build_state_transition_policy_decision(
-    payload: Mapping[str, Any]
-    | StateTransitionPolicyDecisionInput
-    | StateTransitionPolicyDecision,
+    payload: Mapping[str, Any] | StateTransitionPolicyDecisionInput | StateTransitionPolicyDecision,
 ) -> StateTransitionPolicyDecision:
     """Build a deterministic transition decision without implementing policy."""
 
@@ -451,9 +650,7 @@ def build_state_transition_policy_decision(
     )
     normalized_evidence = input_decision.evidence.model_copy(
         update={
-            "source_refs": _normalized_source_refs(
-                input_decision.evidence.source_refs
-            ),
+            "source_refs": _normalized_source_refs(input_decision.evidence.source_refs),
             "evidence_categories": tuple(
                 sorted(
                     input_decision.evidence.evidence_categories,
@@ -470,9 +667,38 @@ def build_state_transition_policy_decision(
     )
 
 
-def _require_source_refs(
-    source_refs: tuple[SourceReference, ...], *, as_of: datetime
-) -> None:
+def canonical_state_transition_decision_v2_json(
+    decision: StateTransitionPolicyDecisionV2Input | StateTransitionPolicyDecisionV2,
+) -> str:
+    payload = decision.model_dump(mode="json", exclude={"decision_hash"})
+    payload["evidence"]["source_refs"] = _canonical_source_refs(decision.evidence.source_refs)
+    payload["evidence"]["evidence_categories"] = sorted(item.value for item in decision.evidence.evidence_categories)
+    return _canonical_json(payload)
+
+
+def build_state_transition_policy_decision_v2(
+    payload: Mapping[str, Any] | StateTransitionPolicyDecisionV2Input | StateTransitionPolicyDecisionV2,
+) -> StateTransitionPolicyDecisionV2:
+    if isinstance(payload, StateTransitionPolicyDecisionV2):
+        return payload
+    raw = (
+        payload
+        if isinstance(payload, StateTransitionPolicyDecisionV2Input)
+        else StateTransitionPolicyDecisionV2Input.model_validate(payload)
+    )
+    evidence = raw.evidence.model_copy(
+        update={
+            "source_refs": _normalized_source_refs(raw.evidence.source_refs),
+            "evidence_categories": tuple(sorted(raw.evidence.evidence_categories, key=lambda item: item.value)),
+        }
+    )
+    decision = raw.model_copy(update={"evidence": evidence})
+    return StateTransitionPolicyDecisionV2(
+        **decision.model_dump(), decision_hash=_sha256(canonical_state_transition_decision_v2_json(decision))
+    )
+
+
+def _require_source_refs(source_refs: tuple[SourceReference, ...], *, as_of: datetime) -> None:
     identities: set[tuple[str, str, datetime]] = set()
     for source_ref in source_refs:
         retrieved_at = _aware_utc(
@@ -510,10 +736,7 @@ def _normalized_source_refs(
 def _canonical_source_refs(
     source_refs: tuple[SourceReference, ...],
 ) -> list[dict[str, Any]]:
-    return [
-        source_ref.model_dump(mode="json")
-        for source_ref in _normalized_source_refs(source_refs)
-    ]
+    return [source_ref.model_dump(mode="json") for source_ref in _normalized_source_refs(source_refs)]
 
 
 def _aware_utc(value: datetime, *, field_name: str) -> datetime:

@@ -1,0 +1,23 @@
+{
+  "case_id": "confirmatory_missing",
+  "base_fixture": "ready.json",
+  "patch": {
+    "etf_flow": {"value": null, "freshness_status": "missing", "quality_status": "blocked", "alignment_status": "unknown"},
+    "cot": {"value": null, "freshness_status": "missing", "quality_status": "blocked", "alignment_status": "unknown"}
+  },
+  "expected": {
+    "readiness_policy_version": "gold_readiness_policy.v1",
+    "analysis_readiness": "observe",
+    "strategy_readiness": "observe",
+    "options_readiness": "ready",
+    "event_attribution_readiness": "ready",
+    "missing_required_inputs": [],
+    "missing_confirmatory_inputs": ["ETF", "COT"],
+    "prohibited_outputs": ["TRIGGERED_STRATEGY"],
+    "reason_codes": [
+      "CONFIRMATORY_INPUT_UNUSABLE:ETF",
+      "CONFIRMATORY_INPUT_UNUSABLE:COT",
+      "OFFICIAL_EVENT_REACTION_CONFIRMED"
+    ]
+  }
+}

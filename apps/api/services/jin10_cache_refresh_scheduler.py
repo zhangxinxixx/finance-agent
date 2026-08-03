@@ -14,6 +14,7 @@ from apps.scheduler.jin10_refresh import (
     refresh_jin10_calendar_cache,
     refresh_jin10_flash_cache,
     refresh_jin10_kline_cache,
+    refresh_market_candle_daily_cache,
     refresh_jin10_quotes_cache,
     refresh_jin10_web_article_analysis,
     refresh_jin10_web_flash_briefs,
@@ -79,6 +80,19 @@ def _twelvedata_jobs() -> tuple[tuple[str, str, str, dict[str, Any]], ...]:
     )
 
 
+def _daily_market_jobs() -> tuple[tuple[str, str, Any, str, dict[str, Any], str], ...]:
+    return (
+        (
+            "market_candles_daily",
+            "正式跨资产日线刷新",
+            refresh_market_candle_daily_cache,
+            "market_candles_daily_refresh",
+            {"hour": 13, "minute": 10, "second": 0, "timezone": "UTC"},
+            "startup-market-daily",
+        ),
+    )
+
+
 def start_jin10_cache_refresh_scheduler() -> BackgroundScheduler:
     """Register periodic refreshes and run the existing eager refreshes asynchronously."""
     scheduler = BackgroundScheduler(daemon=True)
@@ -116,6 +130,22 @@ def start_jin10_cache_refresh_scheduler() -> BackgroundScheduler:
             **cron_kwargs,
         )
         scheduled_jobs += 1
+
+    for task_type, task_name, refresher, job_id, cron_kwargs, startup_thread_name in _daily_market_jobs():
+        if not _job_is_enabled(task_type, configured_jobs):
+            continue
+        scheduler.add_job(
+            partial(record_jin10_refresh, task_type, task_name, refresher),
+            "cron",
+            id=job_id,
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=1800,
+            **cron_kwargs,
+        )
+        scheduled_jobs += 1
+        Thread(target=refresher, daemon=True, name=startup_thread_name).start()
 
     scheduler.start()
     logger.info("Market cache refresh scheduler started: %s jobs", scheduled_jobs)

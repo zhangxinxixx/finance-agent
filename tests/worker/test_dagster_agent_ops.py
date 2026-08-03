@@ -16,6 +16,7 @@ from dagster_finance.graphs.premarket import (
 )
 from apps.features.market_data.formal_snapshot_loader import FormalSnapshotBundle
 from apps.features.market_data.formal_snapshots import (
+    build_market_context_snapshot,
     build_market_price_snapshot,
     build_oil_snapshot,
 )
@@ -35,6 +36,7 @@ def _empty_formal_bundle(as_of: datetime = _CREATED_AT) -> FormalSnapshotBundle:
         market_prices=build_market_price_snapshot(candidates=(), as_of=as_of),
         oil=build_oil_snapshot(candidates=(), as_of=as_of),
         as_of=as_of,
+        market_context=build_market_context_snapshot(candidates=(), as_of=as_of),
     )
 
 
@@ -181,6 +183,7 @@ def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
 
     assert context_mock.call_args.kwargs["preferred_run_id"] == context.run_id
     assert build_mock.call_args.kwargs["market_price_snapshot"] is formal_bundle.market_prices
+    assert build_mock.call_args.kwargs["market_context_snapshot"] is formal_bundle.market_context
     assert build_mock.call_args.kwargs["oil_snapshot"] is formal_bundle.oil
     assert formal_loader.call_args.kwargs["trade_date"] == "2026-07-21"
     assert formal_loader.call_args.kwargs["run_time"].tzinfo is not None
@@ -204,6 +207,7 @@ def test_dagster_merge_passes_explicit_empty_formal_snapshots_when_loader_degrad
         merge_analysis_snapshot_op(context, MergeSnapshotConfig(storage_root=str(tmp_path)), macro_state, cme_state, None)
 
     assert build_mock.call_args.kwargs["market_price_snapshot"].readiness == "blocked"
+    assert build_mock.call_args.kwargs["market_context_snapshot"].readiness == "blocked"
     assert build_mock.call_args.kwargs["oil_snapshot"].readiness == "blocked"
 
 

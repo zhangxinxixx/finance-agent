@@ -25,10 +25,26 @@ from tests.analysis.test_gold_key_level_policy import _direct_state, _event, _sp
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "gold_policy"
 GOLDEN_CASES = Path(__file__).parents[1] / "fixtures" / "gold_strategy" / "v1_decision_cases.json"
+READINESS_READY = FIXTURES / "readiness_v2" / "ready.json"
 
 
 def _snapshot(name: str = "feature_snapshot_v1_bullish_2025-01-17.json"):
     return build_feature_snapshot(json.loads((FIXTURES / name).read_text()))
+
+
+def _readiness_v2_snapshot(case: str = "ready", *, options_quality: str | None = None):
+    path = READINESS_READY.with_name(f"{case}.json")
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+    if "input" not in fixture:
+        base = json.loads(READINESS_READY.read_text(encoding="utf-8"))["input"]
+        for field, changes in fixture["patch"].items():
+            base[field].update(changes)
+        payload = base
+    else:
+        payload = fixture["input"]
+    if options_quality is not None:
+        payload["cme_options_regime"]["quality_status"] = options_quality
+    return build_feature_snapshot(payload)
 
 
 def _current(direction: str = "bullish"):
@@ -150,6 +166,54 @@ def _policy_input(
             }
         ),
         event_risk=build_strategy_event_risk(event_payload),
+    )
+
+
+def _triggerable_policy_input(*, bias: str = "bullish") -> StrategyPolicyInput:
+    comparator = "above_or_equal" if bias == "bullish" else "below_or_equal"
+    reference_price = "4500" if bias == "bullish" else "4510"
+    base = _policy_input(bias=bias, stage="trend_confirmed")
+    level_as_of = base.decision_as_of - timedelta(minutes=3)
+    common_spec = {
+        "comparator": comparator,
+        "reference_price": reference_price,
+        "effective_from": level_as_of - timedelta(days=1),
+        "expires_at": level_as_of + timedelta(days=30),
+    }
+    trigger_spec = _spec(role="trigger", **common_spec)
+    active = _direct_state("active", spec=trigger_spec, as_of=level_as_of)
+    tested = evaluate_key_level_lifecycle(
+        active,
+        _event(
+            "touch",
+            spec=trigger_spec,
+            source_role="official_market",
+            factors=("price_touch",),
+            as_of=level_as_of + timedelta(minutes=1),
+        ),
+    )
+    assert tested.state is not None
+    held = evaluate_key_level_lifecycle(
+        tested.state,
+        _event(
+            "hold_confirmed",
+            spec=trigger_spec,
+            source_role="official_market",
+            factors=("official_close", "hold_window"),
+            as_of=level_as_of + timedelta(minutes=2),
+        ),
+    )
+    assert held.state is not None
+    invalidation = _direct_state(
+        "active",
+        spec=_spec(role="invalidation", **common_spec),
+        as_of=level_as_of,
+    )
+    return base.model_copy(
+        update={
+            "key_levels": (held.state, invalidation),
+            "key_level_decisions": (held.decision,),
+        }
     )
 
 
@@ -289,67 +353,103 @@ def test_no_formal_trigger_event_can_never_emit_research_triggered() -> None:
 
 
 @pytest.mark.parametrize(
-    ("bias", "comparator", "reference_price", "expected"),
+    ("bias", "expected"),
     [
-        ("bullish", "above_or_equal", "4500", "LONG_RESEARCH_TRIGGERED"),
-        ("bearish", "below_or_equal", "4510", "SHORT_RESEARCH_TRIGGERED"),
+        ("bullish", "LONG_RESEARCH_TRIGGERED"),
+        ("bearish", "SHORT_RESEARCH_TRIGGERED"),
     ],
 )
 def test_research_trigger_requires_verified_hold_and_invalidation_lineage(
     bias: str,
-    comparator: str,
-    reference_price: str,
     expected: str,
 ) -> None:
-    base = _policy_input(bias=bias, stage="trend_confirmed")
-    level_as_of = base.decision_as_of - timedelta(minutes=3)
-    common_spec = {
-        "comparator": comparator,
-        "reference_price": reference_price,
-        "effective_from": level_as_of - timedelta(days=1),
-        "expires_at": level_as_of + timedelta(days=30),
-    }
-    trigger_spec = _spec(role="trigger", **common_spec)
-    active = _direct_state("active", spec=trigger_spec, as_of=level_as_of)
-    tested = evaluate_key_level_lifecycle(
-        active,
-        _event(
-            "touch",
-            spec=trigger_spec,
-            source_role="official_market",
-            factors=("price_touch",),
-            as_of=level_as_of + timedelta(minutes=1),
-        ),
-    )
-    assert tested.state is not None
-    held = evaluate_key_level_lifecycle(
-        tested.state,
-        _event(
-            "hold_confirmed",
-            spec=trigger_spec,
-            source_role="official_market",
-            factors=("official_close", "hold_window"),
-            as_of=level_as_of + timedelta(minutes=2),
-        ),
-    )
-    assert held.state is not None
-    invalidation = _direct_state(
-        "active",
-        spec=_spec(role="invalidation", **common_spec),
-        as_of=level_as_of,
-    )
-    policy_input = base.model_copy(
-        update={
-            "key_levels": (held.state, invalidation),
-            "key_level_decisions": (held.decision,),
-        }
-    )
+    policy_input = _triggerable_policy_input(bias=bias)
 
     decision = evaluate_gold_strategy_policy(policy_input)
 
     assert decision.status.value == expected
-    assert decision.trigger_level_ids == (trigger_spec.level_id,)
+    trigger_level = next(level for level in policy_input.key_levels if level.spec.role.value == "trigger")
+    invalidation = next(
+        level for level in policy_input.key_levels if level.spec.role.value == "invalidation"
+    )
+    assert decision.trigger_level_ids == (trigger_level.spec.level_id,)
     assert decision.invalidation_level_ids == (invalidation.spec.level_id,)
+
+
+def _with_v2_feature(policy_input: StrategyPolicyInput, feature) -> StrategyPolicyInput:
+    attribution = policy_input.price_attribution.model_copy(
+        update={"current_snapshot_id": feature.snapshot_id}
+    )
+    options = policy_input.options_regime.model_copy(
+        update={"source_snapshot_id": feature.snapshot_id}
+    )
+    return policy_input.model_copy(
+        update={
+            "feature_snapshot": feature,
+            "price_attribution": attribution,
+            "options_regime": options,
+        }
+    )
+
+
+def test_v2_strategy_blocked_is_no_trade_even_when_other_trigger_inputs_are_valid() -> None:
+    base = _triggerable_policy_input()
+    feature = _readiness_v2_snapshot("required_real10y_missing")
+    assert feature.data_quality.strategy_readiness == "blocked"
+    decision = evaluate_gold_strategy_policy(_with_v2_feature(base, feature))
+
+    assert decision.status.value == "NO_TRADE"
+    assert decision.no_trade_reason_code.value == "DATA_QUALITY_BLOCKED"
+    assert "FEATURE_SNAPSHOT_STRATEGY_BLOCKED" in decision.reason_codes
+
+
+def test_forged_v2_readiness_cannot_bypass_strategy_gate() -> None:
+    base = _triggerable_policy_input()
+    blocked = _readiness_v2_snapshot("required_real10y_missing")
+    forged_quality = blocked.data_quality.model_copy(
+        update={
+            "analysis_readiness": "ready",
+            "strategy_readiness": "ready",
+            "missing_required_inputs": (),
+            "prohibited_outputs": (),
+        }
+    )
+    forged = blocked.model_copy(update={"data_quality": forged_quality})
+
+    decision = evaluate_gold_strategy_policy(_with_v2_feature(base, forged))
+
+    assert decision.status.value == "NO_TRADE"
+    assert decision.no_trade_reason_code.value == "DATA_QUALITY_BLOCKED"
+    assert "FEATURE_SNAPSHOT_DERIVATION_INVALID" in decision.reason_codes
+    assert not decision.trigger_level_ids
+
+
+def test_v2_strategy_observe_prevents_trigger_with_explicit_reason() -> None:
+    base = _triggerable_policy_input()
+    feature = _readiness_v2_snapshot("confirmatory_missing")
+    assert feature.data_quality.strategy_readiness == "observe"
+    decision = evaluate_gold_strategy_policy(_with_v2_feature(base, feature))
+
+    assert decision.status.value == "LONG_WATCH"
+    assert "STRATEGY_READINESS_OBSERVE_ONLY" in decision.reason_codes
+    assert not decision.trigger_level_ids
+
+
+@pytest.mark.parametrize("options_readiness", ["observe", "blocked"])
+def test_v2_options_not_ready_prevents_confirmation_and_trigger(options_readiness: str) -> None:
+    base = _triggerable_policy_input()
+    feature = (
+        _readiness_v2_snapshot("options_missing")
+        if options_readiness == "blocked"
+        else _readiness_v2_snapshot(options_quality="observe")
+    )
+    assert feature.data_quality.options_readiness == options_readiness
+    decision = evaluate_gold_strategy_policy(_with_v2_feature(base, feature))
+
+    assert decision.status.value == "LONG_WATCH"
+    assert "OPTIONS_READINESS_NOT_READY" in decision.reason_codes
+    assert "OPTIONS_REGIME_NOT_DIRECTIONALLY_CONFIRMED" in decision.reason_codes
+    assert not decision.trigger_level_ids
 
 
 def test_same_input_is_exactly_reproducible_100_times() -> None:

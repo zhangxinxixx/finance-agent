@@ -14,17 +14,88 @@ from apps.analysis.gold_policy.daily_close_schemas import DailyCloseLoopInput
 from apps.analysis.gold_policy.daily_close_store import (
     DailyCloseHeadConflictError,
     DailyCloseStoreError,
+    _feature_artifact_name,
+    _rebuild_feature,
     load_gold_daily_close_head,
     persist_gold_daily_close_run,
 )
 from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
 from apps.analysis.gold_policy.key_level_policy import evaluate_key_level_lifecycle
+from apps.analysis.gold_policy.report_context import build_gold_report_context
+from apps.renderer.gold_policy_report import build_gold_policy_report_render
 from apps.analysis.gold_policy.strategy_schemas import build_strategy_decision
 from apps.runtime.immutable_artifact import ImmutableArtifactConflictError
-from tests.analysis.test_gold_daily_close_loop import _evidence
+from tests.analysis.test_gold_daily_close_loop import _evidence, _v2_snapshot
 from tests.analysis.test_gold_key_level_policy import _event as _level_event
 from tests.analysis.test_gold_key_level_policy import _spec as _level_spec
 from tests.analysis.test_gold_strategy_policy import _policy_input, _snapshot
+
+
+_REPORT_PACKAGE = {
+    "source.md",
+    "analysis.md",
+    "visual.html",
+    "report_structured.json",
+    "evidence.json",
+    "data_quality.json",
+    "report_manifest.json",
+    "strategy_card.json",
+    "strategy_card.md",
+}
+
+
+def _v2_feature(case_id: str = "aligned"):
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "gold_policy" / "real10y_v2_cases.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    case = next(item for item in fixture["cases"] if item["id"] == case_id)
+    payload = json.loads(json.dumps(fixture["base_payload"]))
+    for field, changes in case["patch"].items():
+        payload[field].update(changes)
+    return build_feature_snapshot(payload)
+
+
+def test_v2_feature_rebuild_is_version_preserving_and_rejects_tampered_derivations() -> None:
+    feature = _v2_feature()
+
+    assert feature.schema_version == "feature_snapshot.v2"
+    assert _feature_artifact_name(feature) == "feature_snapshot.v2.json"
+    assert _rebuild_feature(feature) == feature
+
+    with pytest.raises(ValueError, match="derived fields or identity"):
+        _rebuild_feature(feature.model_copy(update={"real10y_basis_bp": 999.0}))
+
+    tampered_quality = feature.data_quality.model_copy(
+        update={"strategy_readiness": "ready"}
+    )
+    with pytest.raises(ValueError, match="derived fields or identity"):
+        _rebuild_feature(feature.model_copy(update={"data_quality": tampered_quality}))
+
+
+def _bootstrap_v2_pair() -> tuple[DailyCloseLoopInput, object]:
+    previous_v1 = _snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
+    previous = _v2_snapshot(
+        previous_v1,
+        real10y_direct={"value": previous_v1.us10y.value - previous_v1.t10yie.value},
+    )
+    current_v1 = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    current = _v2_snapshot(
+        current_v1,
+        real10y_direct={"value": current_v1.us10y.value - current_v1.t10yie.value},
+    )
+    support = _policy_input(
+        bias="bearish",
+        feature=current,
+        attribution=attribute_gold_price(current, previous),
+    )
+    loop_input = DailyCloseLoopInput(
+        decision_as_of=support.decision_as_of,
+        current_feature=current,
+        previous_feature=previous,
+        transition_evidence=_evidence(support.decision_as_of),
+        options_regime=support.options_regime,
+        event_risk=support.event_risk,
+    )
+    return loop_input, evaluate_gold_daily_close_loop(loop_input)
 
 
 def _bootstrap_pair() -> tuple[DailyCloseLoopInput, object]:
@@ -106,10 +177,76 @@ def test_bootstrap_bundle_is_complete_readable_and_idempotent(tmp_path: Path) ->
         "final_report.v1.json",
         "context_bundle.v1.json",
         "token_trace.v1.json",
+        "gold_report_context.v1.json",
+        "gold_policy_report_render.v1.json",
     } <= {path.name for path in first.bundle_path.iterdir()}
+    assert _REPORT_PACKAGE <= {path.name for path in first.bundle_path.iterdir()}
     formal_report = json.loads((first.bundle_path / "final_report.v1.json").read_text(encoding="utf-8"))
     assert formal_report["authority_result_id"] == result.result_id
     assert formal_report["language_generation"] == "not_invoked"
+
+
+def test_v2_daily_close_store_round_trip_preserves_readiness(tmp_path: Path) -> None:
+    loop_input, result = _bootstrap_v2_pair()
+    write = persist_gold_daily_close_run(
+        storage_root=tmp_path,
+        run_id="run-v2-readiness",
+        loop_input=loop_input,
+        result=result,
+    )
+
+    lookup = load_gold_daily_close_head(storage_root=tmp_path)
+
+    assert write.head_updated is True
+    assert lookup.status == "found"
+    assert lookup.head.feature_snapshot == loop_input.current_feature
+    assert lookup.head.feature_snapshot.readiness_policy_version == "gold_readiness_policy.v1"
+    assert (
+        lookup.head.feature_snapshot.data_quality
+        == loop_input.current_feature.data_quality
+    )
+    assert lookup.head.feature_snapshot.data_quality.analysis_readiness == "ready"
+    assert lookup.head.feature_snapshot.data_quality.strategy_readiness == "ready"
+    assert (write.bundle_path / "feature_snapshot.v2.json").is_file()
+    assert (write.bundle_path / "gold_analysis_decision.v2.json").is_file()
+    assert (write.bundle_path / "gold_price_attribution.v2.json").is_file()
+    assert (write.bundle_path / "gold_report_context.v1.json").is_file()
+    assert (write.bundle_path / "gold_policy_report_render.v1.json").is_file()
+    assert _REPORT_PACKAGE <= {path.name for path in write.bundle_path.iterdir()}
+    assert not (write.bundle_path / "gold_analysis_decision.v1.json").exists()
+    assert not (write.bundle_path / "gold_price_attribution.v1.json").exists()
+
+
+def test_report_context_and_renderer_are_typed_deterministic_v2_projections() -> None:
+    loop_input, result = _bootstrap_v2_pair()
+
+    context = build_gold_report_context(loop_input, result)
+    render = build_gold_policy_report_render(context)
+
+    assert context.candidate_state == result.analysis_state
+    assert context.selected_state == result.analysis_state
+    assert context.candidate_strategy == result.candidate_strategy
+    assert context.selected_strategy == result.candidate_strategy
+    assert context.transition_decision.to_state_id == context.candidate_state.state_id
+    assert render.report_status == "accepted"
+    assert render.markdown == build_gold_policy_report_render(context).markdown
+    assert "# XAUUSD Gold Policy Daily Report" in render.markdown
+    assert "LLM" not in render.markdown
+
+
+def test_report_package_manifest_hashes_every_non_manifest_report_artifact(
+    tmp_path: Path,
+) -> None:
+    _, _, write, _ = _persist_bootstrap(tmp_path)
+
+    manifest = json.loads((write.bundle_path / "report_manifest.json").read_text(encoding="utf-8"))
+    expected_hashes = {item["filename"]: item["sha256"] for item in manifest["artifacts"]}
+
+    assert set(expected_hashes) == _REPORT_PACKAGE - {"report_manifest.json"}
+    assert all(
+        hashlib.sha256((write.bundle_path / name).read_bytes()).hexdigest() == digest
+        for name, digest in expected_hashes.items()
+    )
 
 
 def test_maintain_uses_durable_predecessor_and_updates_strategy_head(tmp_path: Path) -> None:
@@ -320,10 +457,10 @@ def test_same_run_with_different_result_is_an_immutable_conflict(tmp_path: Path)
         )
 
 
-def test_store_level_compare_and_set_rejects_second_run_in_same_session(tmp_path: Path) -> None:
+def test_store_rejects_same_session_revision_without_latest_predecessor(tmp_path: Path) -> None:
     loop_input, result, _, _ = _persist_bootstrap(tmp_path)
 
-    with pytest.raises(DailyCloseHeadConflictError, match="session already"):
+    with pytest.raises(DailyCloseHeadConflictError, match="cannot bootstrap"):
         persist_gold_daily_close_run(
             storage_root=tmp_path,
             run_id="run-concurrent-rival",
@@ -452,7 +589,7 @@ def test_existing_partial_bundle_is_never_repaired(tmp_path: Path) -> None:
     assert not (target / ".bundle-manifest.json").exists()
 
 
-def test_same_session_different_committed_heads_are_ambiguous(tmp_path: Path) -> None:
+def test_same_session_unlinked_revision_heads_are_invalid(tmp_path: Path) -> None:
     _persist_bootstrap(tmp_path)
     alternate_root = tmp_path / "alternate"
     current = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
@@ -489,8 +626,8 @@ def test_same_session_different_committed_heads_are_ambiguous(tmp_path: Path) ->
 
     lookup = load_gold_daily_close_head(storage_root=tmp_path)
 
-    assert lookup.status == "ambiguous"
-    assert lookup.reason_code == "daily_close_latest_session_ambiguous"
+    assert lookup.status == "invalid"
+    assert lookup.reason_code == "daily_close_latest_session_revision_chain_invalid"
     assert lookup.head is None
 
 

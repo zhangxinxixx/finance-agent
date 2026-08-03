@@ -31,6 +31,38 @@ def _changed(snapshot, **changes):
     return build_feature_snapshot(payload)
 
 
+def _v2(snapshot, **changes):
+    payload = snapshot.model_dump(mode="json", exclude={"data_quality", "payload_hash", "snapshot_id"})
+    direct = payload.pop("real10y")
+    direct["market_role"] = "real_yield_direct"
+    payload.update(schema_version="feature_snapshot.v2", real10y_direct=direct)
+    for dotted_key, value in changes.items():
+        target = payload
+        path = dotted_key.split(".")
+        for part in path[:-1]:
+            target = target[int(part)] if isinstance(target, list) else target[part]
+        if isinstance(target, list):
+            target[int(path[-1])] = value
+        else:
+            target[path[-1]] = value
+    _clamp_source_ref_times(payload, payload["as_of"])
+    return build_feature_snapshot(payload)
+
+
+def _clamp_source_ref_times(value, cutoff: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in {"source_refs", "reaction_source_refs"} and isinstance(child, list):
+                for reference in child:
+                    if isinstance(reference, dict):
+                        reference["retrieved_at"] = cutoff
+            else:
+                _clamp_source_ref_times(child, cutoff)
+    elif isinstance(value, list):
+        for child in value:
+            _clamp_source_ref_times(child, cutoff)
+
+
 def test_up_cross_asset_consistent_and_reproducible() -> None:
     previous = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
     current = _changed(
@@ -186,3 +218,139 @@ def test_future_previous_snapshot_is_explicitly_unavailable() -> None:
     assert result.price_move == "unavailable"
     assert result.attribution_status == "unconfirmed"
     assert result.reason_codes == ("PREVIOUS_SNAPSHOT_AFTER_CURRENT",)
+
+
+def test_v2_attribution_uses_estimated_real_yield_not_direct_cross_check() -> None:
+    previous = _v2(_snapshot("feature_snapshot_v1_bullish_2025-01-17.json"))
+    current = _v2(
+        _snapshot("feature_snapshot_v1_bullish_2025-01-17.json"),
+        **{
+            "as_of": "2025-01-21T21:00:00Z",
+            "xauusd_spot.value": 2720.0,
+            "us10y.value": 4.55,
+            "real10y_direct.value": 1.00,
+        },
+    )
+    changed_direct = _v2(
+        _snapshot("feature_snapshot_v1_bullish_2025-01-17.json"),
+        **{
+            "as_of": "2025-01-21T21:00:00Z",
+            "xauusd_spot.value": 2720.0,
+            "us10y.value": 4.55,
+            "real10y_direct.value": 3.00,
+        },
+    )
+
+    result = attribute_gold_price(current, previous)
+    direct_only = attribute_gold_price(changed_direct, previous)
+
+    result_drivers = (*result.primary_drivers, *result.secondary_drivers, *result.counter_drivers)
+    direct_drivers = (*direct_only.primary_drivers, *direct_only.secondary_drivers, *direct_only.counter_drivers)
+    assert [(driver.factor, driver.direction, driver.delta) for driver in result_drivers] == [
+        (driver.factor, driver.direction, driver.delta) for driver in direct_drivers
+    ]
+    real_driver = next(driver for driver in result_drivers if driver.factor == "real_yield")
+    assert real_driver.previous_value == previous.real10y_estimated.value
+    assert real_driver.current_value == current.real10y_estimated.value
+
+
+def test_v2_estimated_change_is_attributable_when_direct_is_missing() -> None:
+    previous = _v2(_snapshot("feature_snapshot_v1_bullish_2025-01-17.json"))
+    current = _v2(
+        _snapshot("feature_snapshot_v1_bullish_2025-01-17.json"),
+        **{
+            "as_of": "2025-01-21T21:00:00Z",
+            "xauusd_spot.value": 2720.0,
+            "us10y.value": 4.55,
+            "real10y_direct.value": None,
+            "real10y_direct.freshness_status": "missing",
+            "real10y_direct.quality_status": "blocked",
+            "real10y_direct.alignment_status": "unknown",
+        },
+    )
+
+    result = attribute_gold_price(current, previous)
+
+    real_driver = next(
+        driver
+        for driver in (*result.primary_drivers, *result.secondary_drivers, *result.counter_drivers)
+        if driver.factor == "real_yield"
+    )
+    assert real_driver.current_value == current.real10y_estimated.value
+
+
+def test_mixed_feature_snapshot_versions_do_not_create_real_yield_attribution_delta() -> None:
+    v1_previous = _snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
+    v2_current = _v2(
+        v1_previous,
+        **{
+            "as_of": "2025-01-21T21:00:00Z",
+            "xauusd_spot.value": 2720.0,
+            "us10y.value": 4.55,
+            "broad_dollar.value": 120.60,
+        },
+    )
+
+    result = attribute_gold_price(v2_current, v1_previous)
+    reverse = attribute_gold_price(v1_previous, _v2(v1_previous))
+    drivers = (*result.primary_drivers, *result.secondary_drivers, *result.counter_drivers)
+    reverse_drivers = (
+        *reverse.primary_drivers,
+        *reverse.secondary_drivers,
+        *reverse.counter_drivers,
+    )
+
+    assert result.reason_codes == ("REAL10Y_SCHEMA_TRANSITION_NO_DELTA",)
+    assert all(driver.factor != "real_yield" for driver in drivers)
+    assert any(driver.factor == "broad_dollar" for driver in drivers)
+    assert reverse.reason_codes == ("REAL10Y_SCHEMA_TRANSITION_NO_DELTA",)
+    assert all(driver.factor != "real_yield" for driver in reverse_drivers)
+
+
+def test_v2_official_event_driver_requires_ready_event_attribution_domain() -> None:
+    previous = _snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
+    base = _snapshot("feature_snapshot_v1_event_flat_2025-01-29.json")
+    changes = {
+        "xauusd_spot.value": 2720.0,
+        "official_events.events.0.reaction_status": "confirmed",
+        "official_events.events.0.reaction_return_pct": 0.62,
+        "official_events.events.0.reaction_source_refs": [
+            {
+                "source": "fixture",
+                "reference": "contract://event-ready/xauusd-reaction-window",
+                "retrieved_at": "2025-01-29T21:00:00Z",
+            }
+        ],
+    }
+    ready = _v2(base, **changes)
+    observe = _v2(base, **changes, **{"official_events.quality_status": "observe"})
+    blocked = _v2(base, **changes, **{"official_events.quality_status": "blocked"})
+
+    assert ready.data_quality.event_attribution_readiness == "ready"
+    assert observe.data_quality.event_attribution_readiness == "observe"
+    assert blocked.data_quality.event_attribution_readiness == "blocked"
+
+    ready_result = attribute_gold_price(ready, previous)
+    observe_result = attribute_gold_price(observe, previous)
+    blocked_result = attribute_gold_price(blocked, previous)
+
+    assert any(driver.factor == "official_event" for driver in ready_result.primary_drivers)
+    assert all(driver.factor != "official_event" for driver in observe_result.primary_drivers)
+    assert all(driver.factor != "official_event" for driver in blocked_result.primary_drivers)
+    assert "EVENT_ATTRIBUTION_READINESS_OBSERVE" in observe_result.reason_codes
+    assert "EVENT_ATTRIBUTION_READINESS_BLOCKED" in blocked_result.reason_codes
+
+
+def test_forged_v2_event_readiness_cannot_bypass_attribution_gate() -> None:
+    previous = _v2(_snapshot("feature_snapshot_v1_bullish_2025-01-17.json"))
+    current = _v2(_snapshot("feature_snapshot_v1_event_flat_2025-01-29.json"))
+    forged_quality = current.data_quality.model_copy(
+        update={"event_attribution_readiness": "ready"}
+    )
+    forged = current.model_copy(update={"data_quality": forged_quality})
+
+    result = attribute_gold_price(forged, previous)
+
+    assert result.attribution_status == "unconfirmed"
+    assert result.primary_drivers == ()
+    assert result.reason_codes == ("FEATURE_SNAPSHOT_DERIVATION_INVALID",)
