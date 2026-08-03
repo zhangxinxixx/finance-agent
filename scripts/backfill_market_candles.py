@@ -27,8 +27,35 @@ from database.models.engine import DATABASE_URL, SessionLocal  # noqa: E402
 from database.queries.market import upsert_market_candle  # noqa: E402
 
 
-YAHOO_GC_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
-YAHOO_DXY_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB"
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+
+
+@dataclass(frozen=True)
+class DailyMarketInstrument:
+    provider_symbol: str
+    openbb_symbol: str
+    asset_type: str
+    openbb_router: str
+    instrument_type: str
+    source_role: str
+
+    @property
+    def source(self) -> str:
+        safe_symbol = self.provider_symbol.lower().replace("=", "_").replace("^", "").replace("-", "_").replace(".", "_")
+        return f"yahoo_finance_{safe_symbol}"
+
+    @property
+    def source_url(self) -> str:
+        return YAHOO_CHART_URL.format(symbol=self.provider_symbol)
+
+
+DAILY_MARKET_INSTRUMENTS: dict[str, DailyMarketInstrument] = {
+    "GC": DailyMarketInstrument("GC=F", "GC", "futures", "futures", "futures_continuous_proxy", "market_primary"),
+    "DXY": DailyMarketInstrument("DX-Y.NYB", "DX-Y.NYB", "index", "index", "index", "market_primary"),
+    "VIX": DailyMarketInstrument("^VIX", "^VIX", "index", "index", "volatility_index", "market_primary"),
+    "WTI": DailyMarketInstrument("CL=F", "CL", "futures", "futures", "futures_benchmark", "oil_primary"),
+    "BRENT": DailyMarketInstrument("BZ=F", "BZ", "futures", "futures", "futures_benchmark", "oil_primary"),
+}
 
 
 @dataclass
@@ -40,9 +67,9 @@ class ImportResult:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill market candles into market_candles.")
-    parser.add_argument("--asset", default="GC", help="Supported: GC (GC=F), XAUUSD (1m staging), DXY")
+    parser.add_argument("--asset", default="GC", help="Daily: GC, DXY, VIX, WTI, BRENT; intraday: GC, XAUUSD")
     parser.add_argument("--timeframe", default="1d", help="Supported now: 1d, 1h, 1m")
-    parser.add_argument("--range", dest="range_", default="1y", help="Historical range for 1d fallback fetches, for example 3mo/1y/2y/5y.")
+    parser.add_argument("--range", dest="range_", default="1mo", help="Historical range for 1d fallback fetches, for example 3mo/1y/2y/5y.")
     parser.add_argument("--start-date", default="", help="Optional start date YYYY-MM-DD for OpenBB-backed 1d/1h fetches.")
     parser.add_argument("--end-date", default="", help="Optional end date YYYY-MM-DD for OpenBB-backed 1d/1h fetches.")
     parser.add_argument("--input-json", default="", help="Optional local Yahoo chart payload JSON path for offline import")
@@ -64,12 +91,12 @@ def main() -> None:
 
     asset = args.asset.upper()
     timeframe = args.timeframe.lower()
-    if asset not in {"GC", "XAUUSD", "DXY"}:
-        raise SystemExit(f"unsupported --asset {asset!r}; currently only GC, XAUUSD and DXY are implemented")
+    if asset not in {*DAILY_MARKET_INSTRUMENTS, "XAUUSD"}:
+        raise SystemExit(f"unsupported --asset {asset!r}; expected one of {sorted([*DAILY_MARKET_INSTRUMENTS, 'XAUUSD'])}")
     if timeframe not in {"1d", "1h", "1m"}:
         raise SystemExit(f"unsupported --timeframe {timeframe!r}; currently only 1d, 1h and 1m are implemented")
-    if asset == "DXY" and timeframe != "1d":
-        raise SystemExit("DXY is only supported as daily candles; do not backfill fabricated intraday DXY data")
+    if asset in DAILY_MARKET_INSTRUMENTS and timeframe != "1d" and asset != "GC":
+        raise SystemExit(f"{asset} is only supported as daily candles")
     if asset == "GC" and timeframe not in {"1d", "1h"}:
         raise SystemExit("GC is supported as 1d or 1h GC=F candles")
     if asset == "XAUUSD" and timeframe != "1m":
@@ -223,29 +250,29 @@ def collect_daily_candles(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> tuple[list[dict[str, Any]], str, str, dict[str, Any]]:
-    if asset == "GC":
-        candles, raw_path = collect_gc_daily_candles(
-            storage_root=storage_root,
-            input_json=input_json,
-            range_=range_,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        return candles, raw_path, "yahoo_finance_gc_f", {
-            "provider_symbol": "GC=F",
-            "instrument_type": "futures_continuous_proxy",
-            "url": YAHOO_GC_CHART_URL,
-        }
-    if asset != "DXY":
-        raise ValueError(f"daily candles are not available for {asset}; use GC for GC=F")
-    candles, raw_path = collect_dxy_daily_candles(
+    instrument = DAILY_MARKET_INSTRUMENTS.get(asset)
+    if instrument is None:
+        raise ValueError(f"daily candles are not available for {asset}")
+    candles, raw_path = collect_yahoo_daily_candles(
         storage_root=storage_root,
+        instrument=instrument,
         input_json=input_json,
         range_=range_,
         start_date=start_date,
         end_date=end_date,
     )
-    return candles, raw_path, "yahoo_finance_dx_y_nyb", {"ticker": "DX-Y.NYB", "url": YAHOO_DXY_CHART_URL}
+    return (
+        candles,
+        raw_path,
+        instrument.source,
+        {
+            "provider_symbol": instrument.provider_symbol,
+            "openbb_symbol": instrument.openbb_symbol,
+            "instrument_type": instrument.instrument_type,
+            "source_role": instrument.source_role,
+            "source_url": instrument.source_url,
+        },
+    )
 
 
 def collect_gc_daily_candles(
@@ -256,44 +283,14 @@ def collect_gc_daily_candles(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
-    if input_json:
-        payload_path = Path(input_json).resolve()
-        payload = json.loads(payload_path.read_text(encoding="utf-8"))
-        raw_path = payload_path.relative_to(storage_root).as_posix() if payload_path.is_relative_to(storage_root) else str(payload_path)
-        return _parse_yahoo_daily_candles(payload), raw_path
-
-    try:
-        payload = _fetch_openbb_daily_payload(
-            symbol="GC=F",
-            asset_type="equity",
-            start_date=start_date,
-            end_date=end_date,
-            range_=range_,
-        )
-    except Exception:
-        try:
-            with httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False) as client:
-                response = client.get(YAHOO_GC_CHART_URL, params={"range": _normalize_yahoo_range(range_), "interval": "1d"})
-                response.raise_for_status()
-                payload = response.json()
-        except Exception as exc:
-            local_candidates = sorted((storage_root / "raw" / "technical" / "yahoo").glob("*/GC=F-*.json"))
-            if local_candidates:
-                payload_path = local_candidates[-1]
-                payload = json.loads(payload_path.read_text(encoding="utf-8"))
-                raw_path = payload_path.relative_to(storage_root).as_posix()
-                return _parse_yahoo_daily_candles(payload), raw_path
-            raise ValueError(f"unable to fetch GC daily candles and no local raw fallback found: {exc}") from exc
-
-    today = datetime.now(UTC).date().isoformat()
-    raw_path = archive_raw_payload(
+    return collect_yahoo_daily_candles(
         storage_root=storage_root,
-        source="yahoo_finance_gc_f",
-        retrieved_date=today,
-        symbol="GC=F",
-        payload=payload,
+        instrument=DAILY_MARKET_INSTRUMENTS["GC"],
+        input_json=input_json,
+        range_=range_,
+        start_date=start_date,
+        end_date=end_date,
     )
-    return _parse_dxy_daily_payload(payload), raw_path
 
 
 def collect_dxy_daily_candles(
@@ -304,16 +301,36 @@ def collect_dxy_daily_candles(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
+    return collect_yahoo_daily_candles(
+        storage_root=storage_root,
+        instrument=DAILY_MARKET_INSTRUMENTS["DXY"],
+        input_json=input_json,
+        range_=range_,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def collect_yahoo_daily_candles(
+    *,
+    storage_root: Path,
+    instrument: DailyMarketInstrument,
+    input_json: str | None = None,
+    range_: str = "1y",
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> tuple[list[dict[str, Any]], str]:
     if input_json:
         payload_path = Path(input_json).resolve()
         payload = json.loads(payload_path.read_text(encoding="utf-8"))
         raw_path = payload_path.relative_to(storage_root).as_posix() if payload_path.is_relative_to(storage_root) else str(payload_path)
-        return _parse_dxy_daily_payload(payload), raw_path
+        return _parse_daily_payload(payload), raw_path
 
     try:
         payload = _fetch_openbb_daily_payload(
-            symbol="DX-Y.NYB",
-            asset_type="index",
+            symbol=instrument.openbb_symbol,
+            asset_type=instrument.asset_type,
+            router=instrument.openbb_router,
             start_date=start_date,
             end_date=end_date,
             range_=range_,
@@ -321,30 +338,43 @@ def collect_dxy_daily_candles(
     except Exception:
         try:
             with httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False) as client:
-                response = client.get(YAHOO_DXY_CHART_URL, params={"range": _normalize_yahoo_range(range_), "interval": "1d"})
+                response = client.get(
+                    instrument.source_url, params={"range": _normalize_yahoo_range(range_), "interval": "1d"}
+                )
                 response.raise_for_status()
                 payload = response.json()
-        except Exception:
-            local_candidates = sorted((storage_root / "raw" / "macro" / "openbb_yfinance").glob("*/DX-Y.NYB-*.json"))
+        except Exception as exc:
+            local_candidates = _local_daily_raw_candidates(storage_root, instrument)
             if local_candidates:
                 payload_path = local_candidates[-1]
                 payload = json.loads(payload_path.read_text(encoding="utf-8"))
                 raw_path = payload_path.relative_to(storage_root).as_posix()
-                return _parse_dxy_daily_payload(payload), raw_path
-            raise
+                return _parse_daily_payload(payload), raw_path
+            raise ValueError(
+                f"unable to fetch {instrument.provider_symbol} daily candles and no local raw fallback found: {exc}"
+            ) from exc
 
     today = datetime.now(UTC).date().isoformat()
     raw_path = archive_raw_payload(
         storage_root=storage_root,
-        source="yahoo_finance_dx_y_nyb",
+        source=instrument.source,
         retrieved_date=today,
-        symbol="DX-Y.NYB",
+        symbol=instrument.provider_symbol,
         payload=payload,
     )
-    return _parse_dxy_daily_payload(payload), raw_path
+    return _parse_daily_payload(payload), raw_path
 
 
-def _parse_dxy_daily_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _local_daily_raw_candidates(storage_root: Path, instrument: DailyMarketInstrument) -> list[Path]:
+    roots = [(storage_root / "raw" / "macro" / instrument.source, instrument.provider_symbol)]
+    if instrument.provider_symbol == "GC=F":
+        roots.append((storage_root / "raw" / "technical" / "yahoo", "GC=F"))
+    elif instrument.provider_symbol == "DX-Y.NYB":
+        roots.append((storage_root / "raw" / "macro" / "openbb_yfinance", "DX-Y.NYB"))
+    return sorted({candidate for root, symbol in roots for candidate in root.glob(f"*/{symbol}-*.json")})
+
+
+def _parse_daily_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(payload.get("chart"), dict):
         return _parse_yahoo_daily_candles(payload)
     return _parse_openbb_ohlcv_payload(payload)
@@ -354,6 +384,7 @@ def _fetch_openbb_daily_payload(
     *,
     symbol: str,
     asset_type: str,
+    router: str,
     start_date: date | None = None,
     end_date: date | None = None,
     range_: str = "1y",
@@ -362,13 +393,21 @@ def _fetch_openbb_daily_payload(
 
     end_day = end_date or datetime.now(UTC).date()
     start_day = start_date or _start_day_for_range(end_day, range_)
-    result = obb.equity.price.historical(
-        symbol=symbol,
-        provider="yfinance",
-        start_date=start_day.isoformat(),
-        end_date=end_day.isoformat(),
-        interval="1d",
-    )
+    request = {
+        "symbol": symbol,
+        "provider": "yfinance",
+        "start_date": start_day.isoformat(),
+        "end_date": end_day.isoformat(),
+        "interval": "1d",
+    }
+    if router == "currency":
+        result = obb.currency.price.historical(**request)
+    elif router == "index":
+        result = obb.index.price.historical(**request)
+    elif router == "futures":
+        result = obb.derivatives.futures.historical(**request)
+    else:
+        raise ValueError(f"unsupported OpenBB market router: {router}")
     df = result.to_df()
     if df is None or df.empty:
         raise ValueError(f"openbb yfinance returned empty {symbol} 1d data")
@@ -452,6 +491,7 @@ def _parse_openbb_ohlcv_payload(payload: dict[str, Any]) -> list[dict[str, Any]]
             if fallback_day is None:
                 continue
             from datetime import timedelta
+
             open_time = datetime.combine(fallback_day - timedelta(days=(len(rows) - index - 1)), datetime.min.time(), tzinfo=UTC)
         candles.append(
             {
@@ -466,8 +506,6 @@ def _parse_openbb_ohlcv_payload(payload: dict[str, Any]) -> list[dict[str, Any]]
     if not candles:
         raise ValueError("openbb yfinance payload produced no valid candles")
     return candles
-
-
 
 
 def collect_intraday_hourly_candles(

@@ -315,10 +315,25 @@ def run_composite_analysis_pipeline(
         )
 
     if gold_feature_snapshot is not None:
+        feature_artifact_name = f"{gold_feature_snapshot.schema_version}.json"
+        analysis_version = gold_analysis_decision.policy_version.rsplit(".", 1)[-1]
+        attribution_version = gold_price_attribution.policy_version.rsplit(".", 1)[-1]
+        if analysis_version not in {"v1", "v2"} or attribution_version not in {
+            "v1",
+            "v2",
+        }:
+            raise ValueError("unsupported Gold Policy output version")
+        analysis_artifact_name = f"gold_analysis_decision.{analysis_version}.json"
+        attribution_artifact_name = (
+            f"gold_price_attribution.{attribution_version}.json"
+        )
         for filename, payload in (
-            ("feature_snapshot.v1.json", gold_feature_snapshot.model_dump(mode="json")),
-            ("gold_analysis_decision.v1.json", gold_analysis_decision.model_dump(mode="json")),
-            ("gold_price_attribution.v1.json", gold_price_attribution.model_dump(mode="json")),
+            (feature_artifact_name, gold_feature_snapshot.model_dump(mode="json")),
+            (analysis_artifact_name, gold_analysis_decision.model_dump(mode="json")),
+            (
+                attribution_artifact_name,
+                gold_price_attribution.model_dump(mode="json"),
+            ),
         ):
             target_path = canonical_run_dir / filename
             write_canonical_gold_json(target_path, payload, storage_root=storage_root)
@@ -541,9 +556,13 @@ def run_composite_analysis_pipeline(
             "attribution_status": gold_price_attribution.attribution_status,
             "execution_mode": gold_policy_execution_mode,
             "output_mode": "observe" if gold_policy_execution_mode == "shadow" else "authoritative",
-            "feature_snapshot_path": gold_policy_artifact_paths["feature_snapshot.v1.json"],
-            "gold_analysis_decision_path": gold_policy_artifact_paths["gold_analysis_decision.v1.json"],
-            "gold_price_attribution_path": gold_policy_artifact_paths["gold_price_attribution.v1.json"],
+            "feature_snapshot_path": gold_policy_artifact_paths[feature_artifact_name],
+            "gold_analysis_decision_path": gold_policy_artifact_paths[
+                analysis_artifact_name
+            ],
+            "gold_price_attribution_path": gold_policy_artifact_paths[
+                attribution_artifact_name
+            ],
         }
         if gold_daily_close_execution is not None:
             summaries["gold_policy"].update(

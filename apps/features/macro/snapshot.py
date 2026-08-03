@@ -5,6 +5,13 @@ from datetime import date, timedelta
 
 
 @dataclass(frozen=True)
+class MacroIndicatorComponent:
+    source_symbol: str
+    date: str
+    value: float
+
+
+@dataclass(frozen=True)
 class MacroIndicator:
     symbol: str
     date: str
@@ -15,9 +22,16 @@ class MacroIndicator:
     label: str = ""
     unit: str = ""
     direction_note: str = ""
+    derivation_version: str | None = None
+    components: tuple[MacroIndicatorComponent, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        payload = asdict(self)
+        if self.derivation_version is None:
+            payload.pop("derivation_version")
+        if not self.components:
+            payload.pop("components")
+        return payload
 
 
 @dataclass(frozen=True)
@@ -85,11 +99,14 @@ def build_macro_snapshot(
     for point in points:
         symbol = str(point["symbol"])
         by_symbol.setdefault(symbol, []).append(point)
-        refs_by_symbol[symbol] = {
+        point_ref = {
             "source": str(point["source"]),
             "source_url": str(point["source_url"]),
             "raw_path": str(point["raw_path"]),
         }
+        if point.get("retrieved_at") is not None:
+            point_ref["retrieved_at"] = str(point["retrieved_at"])
+        refs_by_symbol[symbol] = point_ref
 
     for series in by_symbol.values():
         series.sort(key=lambda item: str(item["date"]))
@@ -100,6 +117,7 @@ def build_macro_snapshot(
     for spec in MACRO_INDICATOR_SPECS:
         series = _build_indicator_series(spec=spec, by_symbol=by_symbol)
         if not series:
+            unavailable.add(spec.symbol)
             if spec.symbol == "BROAD_DOLLAR":
                 # The formal gold-analysis input is the FRED broad-dollar index;
                 # DXY is a legacy, separate report field and is not a substitute.
@@ -128,6 +146,10 @@ def build_macro_snapshot(
             label=spec.label,
             unit=spec.unit,
             direction_note=_direction_note(spec=spec, current=current, weekly=weekly, monthly=monthly),
+            derivation_version=(
+                "real10y_components.v1" if spec.symbol == "REAL_10Y" else None
+            ),
+            components=tuple(current.get("components", ())),
         )
 
     _apply_short_curve_direction_note(indicators)
@@ -159,16 +181,60 @@ def _build_indicator_series(
         ]
 
     first_symbol, second_symbol = spec.source_symbols[:2]
-    first_by_date = {str(point["date"]): point for point in by_symbol.get(first_symbol, [])}
-    second_by_date = {str(point["date"]): point for point in by_symbol.get(second_symbol, [])}
+    if spec.symbol == "REAL_10Y":
+        first_by_date = _strict_points_by_date(by_symbol.get(first_symbol, []))
+        second_by_date = _strict_points_by_date(by_symbol.get(second_symbol, []))
+        if first_by_date is None or second_by_date is None:
+            return []
+    else:
+        first_by_date = {
+            str(point["date"]): point for point in by_symbol.get(first_symbol, [])
+        }
+        second_by_date = {
+            str(point["date"]): point for point in by_symbol.get(second_symbol, [])
+        }
     common_dates = sorted(set(first_by_date) & set(second_by_date))
-    return [
-        {
+    series: list[dict[str, object]] = []
+    for date_value in common_dates:
+        point: dict[str, object] = {
             "date": date_value,
             "value": float(first_by_date[date_value]["value"]) - float(second_by_date[date_value]["value"]),
         }
-        for date_value in common_dates
-    ]
+        if spec.symbol == "REAL_10Y":
+            point["components"] = (
+                MacroIndicatorComponent(
+                    source_symbol=first_symbol,
+                    date=date_value,
+                    value=float(first_by_date[date_value]["value"]),
+                ),
+                MacroIndicatorComponent(
+                    source_symbol=second_symbol,
+                    date=date_value,
+                    value=float(second_by_date[date_value]["value"]),
+                ),
+            )
+        series.append(point)
+    return series
+
+
+def _strict_points_by_date(
+    points: list[dict[str, object]],
+) -> dict[str, dict[str, object]] | None:
+    by_date: dict[str, dict[str, object]] = {}
+    for point in points:
+        date_value = str(point["date"])
+        previous = by_date.get(date_value)
+        if previous is not None and _point_identity(previous) != _point_identity(point):
+            return None
+        by_date.setdefault(date_value, point)
+    return by_date
+
+
+def _point_identity(point: dict[str, object]) -> tuple[object, ...]:
+    return tuple(
+        point.get(field)
+        for field in ("value", "source", "source_url", "raw_path", "retrieved_at")
+    )
 
 
 def _missing_symbols_for_spec(

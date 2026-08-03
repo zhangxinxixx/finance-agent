@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from apps.analysis.gold_policy.feature_snapshot import feature_snapshot_integrity_valid
 from apps.analysis.gold_policy.key_level_schemas import (
     KeyLevelAuthorityStatus,
     KeyLevelComparator,
@@ -13,7 +14,7 @@ from apps.analysis.gold_policy.key_level_schemas import (
     KeyLevelTransitionAction,
     key_level_strategy_eligible_at,
 )
-from apps.analysis.gold_policy.schemas import SourceReference
+from apps.analysis.gold_policy.schemas import FeatureSnapshotV2, SourceReference
 from apps.analysis.gold_policy.state_schemas import AnalysisStage, TransitionAction
 from apps.analysis.gold_policy.strategy_schemas import (
     EventRiskStatus,
@@ -22,10 +23,13 @@ from apps.analysis.gold_policy.strategy_schemas import (
     ReleaseConditionCode,
     ReviewTriggerCode,
     StrategyDecision,
+    StrategyDecisionV2,
     StrategyDirection,
     StrategyPolicyInput,
+    StrategyPolicyInputV2,
     StrategyStatus,
     build_strategy_decision,
+    build_strategy_decision_v2,
 )
 
 
@@ -87,10 +91,21 @@ _NO_TRADE_REMEDIATION = {
 }
 
 
-def evaluate_gold_strategy_policy(policy_input: StrategyPolicyInput) -> StrategyDecision:
+def evaluate_gold_strategy_policy(
+    policy_input: StrategyPolicyInput | StrategyPolicyInputV2,
+) -> StrategyDecision | StrategyDecisionV2:
     """Return a content-addressed decision without consulting prose, LLMs, or clocks."""
 
+    if isinstance(policy_input, StrategyPolicyInputV2):
+        return _evaluate_gold_strategy_policy_v2(policy_input)
+
     diagnostics = _input_diagnostics(policy_input)
+    if not feature_snapshot_integrity_valid(policy_input.feature_snapshot):
+        return _no_trade(
+            policy_input,
+            NoTradeReasonCode.DATA_QUALITY_BLOCKED,
+            (*diagnostics, "FEATURE_SNAPSHOT_DERIVATION_INVALID"),
+        )
     for reason in (
         NoTradeReasonCode.INPUT_LINEAGE_INVALID,
         NoTradeReasonCode.INPUT_SCOPE_MISMATCH,
@@ -99,6 +114,15 @@ def evaluate_gold_strategy_policy(policy_input: StrategyPolicyInput) -> Strategy
         if reason.value in diagnostics:
             return _no_trade(policy_input, reason, diagnostics)
 
+    if (
+        isinstance(policy_input.feature_snapshot, FeatureSnapshotV2)
+        and policy_input.feature_snapshot.data_quality.strategy_readiness == "blocked"
+    ):
+        return _no_trade(
+            policy_input,
+            NoTradeReasonCode.DATA_QUALITY_BLOCKED,
+            (*diagnostics, "FEATURE_SNAPSHOT_STRATEGY_BLOCKED"),
+        )
     if policy_input.feature_snapshot.data_quality.analysis_readiness == "blocked":
         return _no_trade(
             policy_input,
@@ -221,6 +245,11 @@ def evaluate_gold_strategy_policy(policy_input: StrategyPolicyInput) -> Strategy
         watch_reasons.append("STATE_TRANSITION_PENDING")
     if policy_input.feature_snapshot.data_quality.analysis_readiness != "ready":
         watch_reasons.append("DATA_QUALITY_OBSERVE_ONLY")
+    if isinstance(policy_input.feature_snapshot, FeatureSnapshotV2):
+        if policy_input.feature_snapshot.data_quality.strategy_readiness == "observe":
+            watch_reasons.append("STRATEGY_READINESS_OBSERVE_ONLY")
+        if policy_input.feature_snapshot.data_quality.options_readiness != "ready":
+            watch_reasons.append("OPTIONS_READINESS_NOT_READY")
     if policy_input.event_risk.risk_status is EventRiskStatus.WATCH:
         watch_reasons.append("EVENT_RISK_WATCH")
     if stage not in _TRIGGER_STAGES:
@@ -253,6 +282,330 @@ def evaluate_gold_strategy_policy(policy_input: StrategyPolicyInput) -> Strategy
         trigger_level_ids=tuple(level.spec.level_id for level in trigger_levels),
         invalidation_level_ids=invalidation_level_ids,
     )
+
+
+def _evaluate_gold_strategy_policy_v2(policy_input: StrategyPolicyInputV2) -> StrategyDecisionV2:
+    """Evaluate the independent direction, regime, and maturity v2 gates."""
+
+    state = policy_input.analysis_state
+    diagnostics = _input_diagnostics_v2(policy_input)
+    for reason in (
+        NoTradeReasonCode.INPUT_LINEAGE_INVALID,
+        NoTradeReasonCode.INPUT_SCOPE_MISMATCH,
+        NoTradeReasonCode.INPUT_TIME_INVALID,
+    ):
+        if reason.value in diagnostics:
+            return _decision_v2(
+                policy_input,
+                status=StrategyStatus.NO_TRADE,
+                direction=StrategyDirection.NONE,
+                reason_codes=(reason.value,),
+                no_trade_reason_code=reason,
+            )
+    direction = _enum_value(state.direction)
+    regime = _enum_value(state.market_regime)
+    maturity = _enum_value(state.trend_maturity)
+    tilt = _enum_value(state.direction_tilt)
+    if not feature_snapshot_integrity_valid(policy_input.feature_snapshot):
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.NO_TRADE,
+            direction=StrategyDirection.NONE,
+            reason_codes=(NoTradeReasonCode.DATA_QUALITY_BLOCKED.value,),
+            no_trade_reason_code=NoTradeReasonCode.DATA_QUALITY_BLOCKED,
+        )
+    if (
+        isinstance(policy_input.feature_snapshot, FeatureSnapshotV2)
+        and policy_input.feature_snapshot.data_quality.strategy_readiness == "blocked"
+    ) or policy_input.feature_snapshot.data_quality.analysis_readiness == "blocked":
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.NO_TRADE,
+            direction=StrategyDirection.NONE,
+            reason_codes=(NoTradeReasonCode.DATA_QUALITY_BLOCKED.value,),
+            no_trade_reason_code=NoTradeReasonCode.DATA_QUALITY_BLOCKED,
+        )
+    if state.quality_status != "accepted":
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.NO_TRADE,
+            direction=StrategyDirection.NONE,
+            reason_codes=(NoTradeReasonCode.ANALYSIS_STATE_NOT_ACCEPTED.value,),
+            no_trade_reason_code=NoTradeReasonCode.ANALYSIS_STATE_NOT_ACCEPTED,
+        )
+    if direction == "unavailable":
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.NO_TRADE,
+            direction=StrategyDirection.NONE,
+            reason_codes=(NoTradeReasonCode.ANALYSIS_STATE_UNAVAILABLE.value,),
+            no_trade_reason_code=NoTradeReasonCode.ANALYSIS_STATE_UNAVAILABLE,
+        )
+    if (
+        policy_input.event_risk.risk_status is EventRiskStatus.UNAVAILABLE
+        or policy_input.event_risk.quality_status != "accepted"
+    ):
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.NO_TRADE,
+            direction=StrategyDirection.NONE,
+            reason_codes=(NoTradeReasonCode.EVENT_RISK_UNAVAILABLE.value,),
+            no_trade_reason_code=NoTradeReasonCode.EVENT_RISK_UNAVAILABLE,
+        )
+    if policy_input.event_risk.risk_status is EventRiskStatus.BLACKOUT:
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.NO_TRADE,
+            direction=StrategyDirection.NONE,
+            reason_codes=(NoTradeReasonCode.MAJOR_EVENT_BLACKOUT.value,),
+            no_trade_reason_code=NoTradeReasonCode.MAJOR_EVENT_BLACKOUT,
+        )
+    broken = _broken_invalidation_levels(policy_input)
+    if policy_input.state_transition.action is TransitionAction.INVALIDATE and not (
+        policy_input.state_transition.transition_allowed and policy_input.state_transition.advance
+    ):
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.NO_TRADE,
+            direction=StrategyDirection.NONE,
+            reason_codes=(NoTradeReasonCode.INVALIDATION_NOT_CANONICAL.value,),
+            no_trade_reason_code=NoTradeReasonCode.INVALIDATION_NOT_CANONICAL,
+        )
+    if policy_input.state_transition.action is TransitionAction.INVALIDATE or maturity == "invalidated" or broken:
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.INVALIDATED,
+            direction=StrategyDirection.NONE,
+            reason_codes=("FORMAL_INVALIDATION_CONFIRMED",),
+            eligible_levels=broken,
+            invalidation_level_ids=tuple(level.spec.level_id for level in broken),
+        )
+    # A tilt is descriptive evidence only.  It never permits mixed direction
+    # to leak into a directional watch or trigger.
+    if direction in {"mixed", "neutral"}:
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.OBSERVE,
+            direction=StrategyDirection.NONE,
+            reason_codes=(f"STATE_DIRECTION_{direction.upper()}", f"STATE_TILT_{tilt.upper()}"),
+        )
+    if regime in {"pressure", "range", "direction_decision"} or maturity == "forming":
+        return _decision_v2(
+            policy_input,
+            status=StrategyStatus.OBSERVE,
+            direction=StrategyDirection.NONE,
+            reason_codes=("V2_DIRECTION_OR_REGIME_OR_MATURITY_NOT_ELIGIBLE",),
+        )
+    strategy_direction = StrategyDirection.LONG if direction == "bullish" else StrategyDirection.SHORT
+    watch_status = (
+        StrategyStatus.LONG_WATCH if strategy_direction is StrategyDirection.LONG else StrategyStatus.SHORT_WATCH
+    )
+    triggered_status = (
+        StrategyStatus.LONG_RESEARCH_TRIGGERED
+        if strategy_direction is StrategyDirection.LONG
+        else StrategyStatus.SHORT_RESEARCH_TRIGGERED
+    )
+    if regime != "trend" or maturity != "confirmed":
+        return _decision_v2(
+            policy_input,
+            status=watch_status,
+            direction=strategy_direction,
+            reason_codes=("V2_TREND_CONFIRMATION_PENDING",),
+        )
+    eligible = tuple(
+        level
+        for level in policy_input.key_levels
+        if key_level_strategy_eligible_at(
+            level, decision_as_of=policy_input.decision_as_of, current_quality_status=level.quality_status
+        )
+    )
+    trigger_levels = tuple(
+        level
+        for level in eligible
+        if _is_directional_trigger(level, direction=strategy_direction)
+        and _has_verified_hold_decision(policy_input, level.state_id)
+    )
+    invalidations = tuple(level.spec.level_id for level in eligible if level.spec.role is KeyLevelRole.INVALIDATION)
+    if (
+        not trigger_levels
+        or not invalidations
+        or not _attribution_supports_direction(policy_input, direction=strategy_direction)
+        or not _options_support_direction(policy_input, direction=strategy_direction)
+    ):
+        return _decision_v2(
+            policy_input,
+            status=watch_status,
+            direction=strategy_direction,
+            reason_codes=("V2_CONFIRMED_TREND_TRIGGER_CHECKS_PENDING",),
+        )
+    return _decision_v2(
+        policy_input,
+        status=triggered_status,
+        direction=strategy_direction,
+        reason_codes=("V2_RESEARCH_TRIGGER_REQUIREMENTS_SATISFIED",),
+        eligible_levels=eligible,
+        trigger_level_ids=tuple(level.spec.level_id for level in trigger_levels),
+        invalidation_level_ids=invalidations,
+    )
+
+
+def _enum_value(value) -> str:
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _decision_v2(
+    policy_input: StrategyPolicyInputV2,
+    *,
+    status: StrategyStatus,
+    direction: StrategyDirection,
+    reason_codes: tuple[str, ...],
+    no_trade_reason_code: NoTradeReasonCode | None = None,
+    eligible_levels=(),
+    trigger_level_ids: tuple[str, ...] = (),
+    invalidation_level_ids: tuple[str, ...] = (),
+) -> StrategyDecisionV2:
+    state = policy_input.analysis_state
+    if not eligible_levels:
+        eligible_levels = tuple(
+            level
+            for level in policy_input.key_levels
+            if key_level_strategy_eligible_at(
+                level, decision_as_of=policy_input.decision_as_of, current_quality_status=level.quality_status
+            )
+        )
+    refs = _all_source_refs_v2(policy_input)
+    release_conditions, review_triggers = ((), ())
+    if no_trade_reason_code is not None:
+        release_conditions, review_triggers = _NO_TRADE_REMEDIATION[no_trade_reason_code]
+        reason_codes = tuple(dict.fromkeys((no_trade_reason_code.value, *reason_codes)))
+    return build_strategy_decision_v2(
+        {
+            "decision_as_of": policy_input.decision_as_of,
+            "analysis_state_id": state.state_id,
+            "transition_decision_hash": policy_input.state_transition.decision_hash,
+            "feature_snapshot_id": policy_input.feature_snapshot.snapshot_id,
+            "attribution_snapshot_ids": (
+                policy_input.price_attribution.previous_snapshot_id,
+                policy_input.price_attribution.current_snapshot_id,
+            ),
+            "options_snapshot_id": policy_input.options_regime.snapshot_id,
+            "event_risk_snapshot_id": policy_input.event_risk.snapshot_id,
+            "level_refs": tuple(
+                {
+                    "level_id": level.spec.level_id,
+                    "state_id": level.state_id,
+                    "role": level.spec.role,
+                    "comparator": level.spec.comparator,
+                    "lifecycle": level.lifecycle,
+                    "authority_status": level.authority_status,
+                    "quality_status": level.quality_status,
+                    "effective_from": level.spec.effective_from,
+                    "expires_at": level.spec.expires_at,
+                    "strategy_eligible_at_decision": key_level_strategy_eligible_at(
+                        level, decision_as_of=policy_input.decision_as_of, current_quality_status=level.quality_status
+                    ),
+                }
+                for level in eligible_levels
+            ),
+            "key_level_state_ids": tuple(level.state_id for level in eligible_levels),
+            "trigger_level_ids": trigger_level_ids,
+            "invalidation_level_ids": invalidation_level_ids,
+            "status": status,
+            "direction": direction,
+            "state_direction": _enum_value(state.direction),
+            "direction_tilt": _enum_value(state.direction_tilt),
+            "market_regime": _enum_value(state.market_regime),
+            "trend_maturity": _enum_value(state.trend_maturity),
+            "reason_codes": tuple(dict.fromkeys(reason_codes)),
+            "no_trade_reason_code": no_trade_reason_code,
+            "release_conditions": release_conditions,
+            "review_triggers": review_triggers,
+            "source_refs": refs,
+        }
+    )
+
+
+def _all_source_refs_v2(policy_input: StrategyPolicyInputV2) -> tuple[SourceReference, ...]:
+    feature = policy_input.feature_snapshot
+    refs = (
+        *policy_input.analysis_state.source_refs,
+        *policy_input.state_transition.evidence.source_refs,
+        *policy_input.price_attribution.source_refs,
+        *policy_input.options_regime.source_refs,
+        *policy_input.event_risk.source_refs,
+        *feature.xauusd_spot.source_refs,
+        *feature.cme_options_regime.source_refs,
+        *feature.official_events.source_refs,
+        *(ref for level in policy_input.key_levels for ref in level.source_refs),
+        *(ref for item in policy_input.key_level_decisions for ref in item.event.evidence.source_refs),
+    )
+    unique = {(ref.source, ref.reference, ref.retrieved_at): ref for ref in refs}
+    return tuple(unique[key] for key in sorted(unique))
+
+
+def _input_diagnostics_v2(policy_input: StrategyPolicyInputV2) -> tuple[str, ...]:
+    state, transition, feature = (
+        policy_input.analysis_state,
+        policy_input.state_transition,
+        policy_input.feature_snapshot,
+    )
+    diagnostics: list[str] = []
+    if (
+        transition.to_state_id != state.state_id
+        or policy_input.price_attribution.current_snapshot_id != feature.snapshot_id
+        or policy_input.options_regime.source_snapshot_id != feature.snapshot_id
+    ):
+        diagnostics.append(NoTradeReasonCode.INPUT_LINEAGE_INVALID.value)
+    if (
+        state.scope is not policy_input.scope
+        or transition.evidence.scope is not state.scope
+        or feature.scope != policy_input.scope.value
+        or any(level.spec.scope is not state.scope for level in policy_input.key_levels)
+    ):
+        diagnostics.append(NoTradeReasonCode.INPUT_SCOPE_MISMATCH.value)
+    refs = _all_source_refs_v2(policy_input)
+    timestamps = (
+        feature.as_of,
+        state.as_of,
+        transition.evidence.as_of,
+        policy_input.options_regime.as_of,
+        policy_input.event_risk.as_of,
+        *(level.as_of for level in policy_input.key_levels),
+        *(item.event.evidence.as_of for item in policy_input.key_level_decisions),
+        *(ref.retrieved_at for ref in refs),
+    )
+    if (
+        any(value > policy_input.decision_as_of for value in timestamps)
+        or policy_input.options_regime.as_of != policy_input.decision_as_of
+        or policy_input.event_risk.as_of != policy_input.decision_as_of
+    ):
+        diagnostics.append(NoTradeReasonCode.INPUT_TIME_INVALID.value)
+    for driver in (
+        *policy_input.price_attribution.primary_drivers,
+        *policy_input.price_attribution.secondary_drivers,
+        *policy_input.price_attribution.counter_drivers,
+    ):
+        try:
+            current_as_of = datetime.fromisoformat(driver.current_as_of)
+            previous_as_of = datetime.fromisoformat(driver.previous_as_of) if driver.previous_as_of else None
+        except ValueError:
+            diagnostics.append(NoTradeReasonCode.INPUT_TIME_INVALID.value)
+            break
+        if current_as_of.tzinfo is None or (previous_as_of is not None and previous_as_of.tzinfo is None):
+            diagnostics.append(NoTradeReasonCode.INPUT_TIME_INVALID.value)
+            break
+        if current_as_of > policy_input.decision_as_of or (
+            previous_as_of is not None and previous_as_of > policy_input.decision_as_of
+        ):
+            diagnostics.append(NoTradeReasonCode.INPUT_TIME_INVALID.value)
+            break
+    level_by_state_id = {level.state_id: level for level in policy_input.key_levels}
+    for item in policy_input.key_level_decisions:
+        level = level_by_state_id.get(item.to_state_id or "")
+        if level is None or item.event.spec.level_id != level.spec.level_id:
+            diagnostics.append(NoTradeReasonCode.INPUT_LINEAGE_INVALID.value)
+            break
+    return tuple(dict.fromkeys(diagnostics))
 
 
 def _input_diagnostics(policy_input: StrategyPolicyInput) -> tuple[str, ...]:
@@ -373,13 +726,18 @@ def _attribution_supports_direction(policy_input: StrategyPolicyInput, *, direct
 
 def _options_support_direction(policy_input: StrategyPolicyInput, *, direction: StrategyDirection) -> bool:
     options = policy_input.options_regime
+    if (
+        isinstance(policy_input.feature_snapshot, FeatureSnapshotV2)
+        and policy_input.feature_snapshot.data_quality.options_readiness != "ready"
+    ):
+        return False
     expected_bias = "bullish" if direction is StrategyDirection.LONG else "bearish"
     return (
         options.quality_status == "accepted"
         and options.freshness_status == "fresh"
         and options.alignment_status == "aligned"
-        and options.regime is OptionsRegime.NORMAL
-        and options.directional_bias in {expected_bias, "neutral"}
+        and options.regime.value == OptionsRegime.NORMAL.value
+        and options.directional_bias == expected_bias
     )
 
 

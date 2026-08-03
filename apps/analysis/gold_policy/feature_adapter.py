@@ -1,14 +1,16 @@
-"""Fail-closed adapter from legacy analysis snapshots to FeatureSnapshot v1."""
+"""Fail-closed adapter from legacy analysis snapshots to FeatureSnapshot v2."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, time
+from decimal import Decimal
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
-from apps.analysis.gold_policy.schemas import FeatureSnapshot, SourceReference
+from apps.analysis.gold_policy.schemas import FeatureSnapshotV2, SourceReference
 from apps.features.news.formal_events import OfficialEventSnapshot as FormalOfficialEventSnapshot
 from apps.features.positioning.formal_snapshot import COTSnapshot
 
@@ -18,11 +20,17 @@ _OBSERVATIONS: tuple[tuple[str, str, str, str, str], ...] = (
     ("us10y", "US10Y", "US10Y", "yield", "percent"),
     ("us30y", "US30Y", "US30Y", "yield", "percent"),
     ("t10yie", "T10YIE", "T10YIE", "breakeven_inflation", "percent"),
-    # REAL10Y is deliberately the new formal key.  REAL_10Y is a legacy
-    # computed series and must never stand in for the DFII10 observation.
-    ("real10y", "REAL10Y", "DFII10", "real_yield", "percent"),
     ("broad_dollar", "BROAD_DOLLAR", "DTWEXBGS", "broad_dollar", "index"),
 )
+
+_MACRO_SOURCE_SYMBOLS: dict[str, str] = {
+    "US02Y": "DGS2",
+    "US10Y": "DGS10",
+    "US30Y": "DGS30",
+    "T10YIE": "T10YIE",
+    "REAL10Y": "DFII10",
+    "BROAD_DOLLAR": "DTWEXBGS",
+}
 
 _OPTIONAL: tuple[tuple[str, str, str, str], ...] = (
     ("gc_futures", "GC_FUTURES", "futures", "price"),
@@ -34,7 +42,7 @@ _OPTIONAL: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
-def build_feature_snapshot_from_analysis_snapshot(snapshot: Mapping[str, Any]) -> FeatureSnapshot:
+def build_feature_snapshot_from_analysis_snapshot(snapshot: Mapping[str, Any]) -> FeatureSnapshotV2:
     """Adapt only verifiable structured legacy fields, otherwise explicitly block.
 
     This boundary intentionally has no I/O and does not inspect prose.  It is a
@@ -52,7 +60,8 @@ def build_feature_snapshot_from_analysis_snapshot(snapshot: Mapping[str, Any]) -
     cot = snapshot.get("cot")
 
     payload: dict[str, Any] = {
-        "schema_version": "feature_snapshot.v1",
+        "schema_version": "feature_snapshot.v2",
+        "readiness_policy_version": "gold_readiness_policy.v1",
         "asset": "XAUUSD",
         "scope": "daily_close",
         "as_of": as_of,
@@ -61,10 +70,35 @@ def build_feature_snapshot_from_analysis_snapshot(snapshot: Mapping[str, Any]) -
         "official_events": _official_events(snapshot, as_of, snapshot_ref),
     }
     indicators = macro.get("indicators") if isinstance(macro.get("indicators"), Mapping) else {}
+    aligned_real10y = _aligned_real10y_observations(macro, as_of, snapshot_ref)
     for field, key, series_id, role, unit in _OBSERVATIONS:
-        payload[field] = _indicator_observation(
-            indicators.get(key), series_id, role, unit, as_of, snapshot_ref
-        )
+        if aligned_real10y is not None and field in {"us10y", "t10yie"}:
+            payload[field] = aligned_real10y.get(field) or _missing(
+                series_id, role, unit, as_of, snapshot_ref
+            )
+        else:
+            payload[field] = _macro_indicator_observation(
+                indicators.get(key),
+                macro.get("source_refs"),
+                source_symbol=_MACRO_SOURCE_SYMBOLS[key],
+                series_id=series_id,
+                role=role,
+                unit=unit,
+                snapshot_time=as_of,
+                snapshot_ref=snapshot_ref,
+            )
+    # REAL10Y is the direct DFII10 observation only.  The estimated real yield
+    # is constructed by the canonical v2 builder from US10Y and T10YIE.
+    payload["real10y_direct"] = _macro_indicator_observation(
+        indicators.get("REAL10Y"),
+        macro.get("source_refs"),
+        source_symbol="DFII10",
+        series_id="DFII10",
+        role="real_yield_direct",
+        unit="percent",
+        snapshot_time=as_of,
+        snapshot_ref=snapshot_ref,
+    )
     for field, series_id, role, unit in _OPTIONAL:
         if field == "gc_futures" and "market_prices" in snapshot:
             payload[field] = payload[field] or _formal_missing(series_id, role, unit, as_of, snapshot_ref)
@@ -74,7 +108,10 @@ def build_feature_snapshot_from_analysis_snapshot(snapshot: Mapping[str, Any]) -
             payload[field] = _formal_observation(oil, "oil_snapshot.v1", field, series_id, role, unit, "1d", as_of, snapshot_ref)
         else:
             payload[field] = _optional_observation(snapshot, field, series_id, role, unit, as_of, snapshot_ref)
-    return build_feature_snapshot(payload)
+    result = build_feature_snapshot(payload)
+    if not isinstance(result, FeatureSnapshotV2):
+        raise AssertionError("legacy adapter must produce feature_snapshot.v2")
+    return result
 
 
 def _snapshot_time(snapshot: Mapping[str, Any]) -> datetime:
@@ -246,6 +283,181 @@ def _indicator_observation(value: object, series_id: str, role: str, unit: str, 
     if not isinstance(value, Mapping) or not _number(value.get("value")):
         return _missing(series_id, role, unit, snapshot_time, snapshot_ref)
     return _present_observation(value, series_id, role, unit, snapshot_time, snapshot_ref)
+
+
+def _macro_indicator_observation(
+    value: object,
+    source_refs: object,
+    *,
+    source_symbol: str,
+    series_id: str,
+    role: str,
+    unit: str,
+    snapshot_time: datetime,
+    snapshot_ref: SourceReference,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or not _number(value.get("value")):
+        return _missing(series_id, role, unit, snapshot_time, snapshot_ref)
+    if not isinstance(source_refs, Mapping) or source_symbol not in source_refs:
+        return _indicator_observation(
+            value, series_id, role, unit, snapshot_time, snapshot_ref
+        )
+    source_ref = _strict_macro_source_reference(
+        source_refs.get(source_symbol),
+        expected_symbol=source_symbol,
+        snapshot_time=snapshot_time,
+    )
+    if source_ref is None:
+        return _missing(series_id, role, unit, snapshot_time, snapshot_ref)
+    candidate = {
+        **value,
+        "source_refs": (source_ref.model_dump(mode="json"),),
+    }
+    return _indicator_observation(
+        candidate, series_id, role, unit, snapshot_time, snapshot_ref
+    )
+
+
+def _aligned_real10y_observations(
+    macro: Mapping[str, Any],
+    snapshot_time: datetime,
+    snapshot_ref: SourceReference,
+) -> dict[str, dict[str, Any]] | None:
+    """Return exact same-date constituents used by canonical REAL_10Y.
+
+    Absence preserves legacy input behavior. Once a producer advertises
+    components, malformed arithmetic or lineage blocks both core observations
+    instead of falling back to independently latest values.
+    """
+
+    indicators = macro.get("indicators")
+    if not isinstance(indicators, Mapping):
+        return None
+    derived = indicators.get("REAL_10Y")
+    if not isinstance(derived, Mapping):
+        return None
+    derivation_version = derived.get("derivation_version")
+    if derivation_version is None and "components" not in derived:
+        return None
+    if derivation_version != "real10y_components.v1" or "components" not in derived:
+        return {}
+    raw_components = derived.get("components")
+    if (
+        not isinstance(raw_components, Sequence)
+        or isinstance(raw_components, (str, bytes))
+        or len(raw_components) != 2
+        or not _number(derived.get("value"))
+    ):
+        return {}
+
+    derived_at = _parse_time(derived.get("date") or derived.get("as_of"))
+    if derived_at is None or derived_at > snapshot_time:
+        return {}
+    source_refs = macro.get("source_refs")
+    if not isinstance(source_refs, Mapping):
+        return {}
+
+    by_symbol: dict[str, tuple[float, SourceReference]] = {}
+    for raw in raw_components:
+        if not isinstance(raw, Mapping):
+            return {}
+        symbol = raw.get("source_symbol")
+        component_at = _parse_time(raw.get("date") or raw.get("as_of"))
+        if (
+            symbol not in {"DGS10", "T10YIE"}
+            or symbol in by_symbol
+            or component_at != derived_at
+            or not _number(raw.get("value"))
+        ):
+            return {}
+        source_ref = _strict_macro_source_reference(
+            source_refs.get(symbol), expected_symbol=str(symbol), snapshot_time=snapshot_time
+        )
+        if source_ref is None:
+            return {}
+        by_symbol[str(symbol)] = (float(raw["value"]), source_ref)
+
+    if set(by_symbol) != {"DGS10", "T10YIE"}:
+        return {}
+    us10y_value, us10y_ref = by_symbol["DGS10"]
+    t10yie_value, t10yie_ref = by_symbol["T10YIE"]
+    if us10y_ref.reference == t10yie_ref.reference:
+        return {}
+    derived_value = Decimal(str(us10y_value)) - Decimal(str(t10yie_value))
+    if round(derived_value, 6) != round(Decimal(str(derived["value"])), 6):
+        return {}
+
+    freshness_status = _daily_observation_freshness(derived_at, snapshot_time)
+
+    return {
+        "us10y": _present_observation(
+            {
+                "value": us10y_value,
+                "date": derived_at.isoformat(),
+                "freshness_status": freshness_status,
+                "quality_status": "accepted",
+                "alignment_status": "aligned",
+                "source_refs": (us10y_ref.model_dump(mode="json"),),
+            },
+            "US10Y",
+            "yield",
+            "percent",
+            snapshot_time,
+            snapshot_ref,
+        ),
+        "t10yie": _present_observation(
+            {
+                "value": t10yie_value,
+                "date": derived_at.isoformat(),
+                "freshness_status": freshness_status,
+                "quality_status": "accepted",
+                "alignment_status": "aligned",
+                "source_refs": (t10yie_ref.model_dump(mode="json"),),
+            },
+            "T10YIE",
+            "breakeven_inflation",
+            "percent",
+            snapshot_time,
+            snapshot_ref,
+        ),
+    }
+
+
+def _strict_macro_source_reference(
+    value: object,
+    *,
+    expected_symbol: str,
+    snapshot_time: datetime,
+) -> SourceReference | None:
+    if not isinstance(value, Mapping):
+        return None
+    source = value.get("source")
+    reference = value.get("source_url")
+    raw_path = value.get("raw_path")
+    retrieved_at = _parse_formal_time(value.get("retrieved_at"))
+    parsed_reference = urlparse(reference) if isinstance(reference, str) else None
+    series_ids = parse_qs(parsed_reference.query).get("series_id", []) if parsed_reference else []
+    if (
+        not isinstance(source, str)
+        or source.strip().lower() != "fred"
+        or not isinstance(reference, str)
+        or not reference.strip()
+        or parsed_reference is None
+        or parsed_reference.scheme != "https"
+        or parsed_reference.hostname != "api.stlouisfed.org"
+        or parsed_reference.path != "/fred/series/observations"
+        or series_ids != [expected_symbol]
+        or not isinstance(raw_path, str)
+        or not raw_path.strip()
+        or retrieved_at is None
+        or retrieved_at > snapshot_time
+    ):
+        return None
+    return SourceReference(source=source, reference=reference, retrieved_at=retrieved_at)
+
+
+def _daily_observation_freshness(observed_at: datetime, snapshot_time: datetime) -> str:
+    return "fresh" if (snapshot_time.date() - observed_at.date()).days <= 3 else "stale"
 
 
 def _spot_observation(technical: Mapping[str, Any], snapshot_time: datetime, snapshot_ref: SourceReference) -> dict[str, Any]:

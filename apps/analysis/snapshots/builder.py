@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from apps.output.artifacts import normalize_run_id
-from apps.features.market_data.formal_snapshots import MarketPriceSnapshot, OilSnapshot
+from apps.features.market_data.formal_snapshots import (
+    MarketContextSnapshot,
+    MarketPriceSnapshot,
+    OilSnapshot,
+)
 from apps.features.news.formal_events import OfficialEventSnapshot
 from apps.features.positioning.formal_snapshot import COTSnapshot, build_cot_snapshot
 
@@ -27,6 +31,7 @@ def build_analysis_snapshot(
     collected_points: list[dict[str, Any]] | None = None,
     news_snapshot: dict[str, Any] | None = None,
     gold_analysis_context: dict[str, Any] | None = None,
+    market_context_snapshot: MarketContextSnapshot | None = None,
     market_price_snapshot: MarketPriceSnapshot | None = None,
     oil_snapshot: OilSnapshot | None = None,
 ) -> dict[str, Any]:
@@ -63,6 +68,8 @@ def build_analysis_snapshot(
         input_snapshot_ids["gold_analysis_context"] = dict(context_ids)
     if market_price_snapshot is not None:
         input_snapshot_ids["market_prices"] = _formal_snapshot_content_id(market_price_snapshot)
+    if market_context_snapshot is not None:
+        input_snapshot_ids["market_context"] = _formal_snapshot_content_id(market_context_snapshot)
     if oil_snapshot is not None:
         input_snapshot_ids["oil"] = _formal_snapshot_content_id(oil_snapshot)
 
@@ -84,6 +91,11 @@ def build_analysis_snapshot(
     formal_market_section = _formal_snapshot_section(
         market_price_snapshot,
         section_name="market_prices",
+        snapshot_time=timestamp,
+    )
+    formal_market_context_section = _formal_snapshot_section(
+        market_context_snapshot,
+        section_name="market_context",
         snapshot_time=timestamp,
     )
     formal_oil_section = _formal_snapshot_section(
@@ -124,6 +136,7 @@ def build_analysis_snapshot(
         "technical": technical_section,
         "market_odds": market_odds_section,
         "market_prices": formal_market_section,
+        "market_context": formal_market_context_section,
         "oil": formal_oil_section,
         "gold_analysis_context": (
             {"status": "available", "data": copy.deepcopy(gold_analysis_context)}
@@ -135,6 +148,7 @@ def build_analysis_snapshot(
             macro_snapshot,
             gold_analysis_context.get("source_refs") if isinstance(gold_analysis_context, dict) else None,
             _formal_snapshot_source_refs(market_price_snapshot),
+            _formal_snapshot_source_refs(market_context_snapshot),
             _formal_snapshot_source_refs(oil_snapshot),
             _formal_snapshot_source_refs(cot_snapshot),
             _formal_snapshot_source_refs(official_event_snapshot),
@@ -395,7 +409,7 @@ def _merge_source_refs(
 
 
 def _formal_snapshot_content_id(
-    snapshot: MarketPriceSnapshot | OilSnapshot | COTSnapshot | OfficialEventSnapshot,
+    snapshot: MarketContextSnapshot | MarketPriceSnapshot | OilSnapshot | COTSnapshot | OfficialEventSnapshot,
 ) -> str:
     payload = snapshot.model_dump(mode="json")
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -404,7 +418,7 @@ def _formal_snapshot_content_id(
 
 
 def _formal_snapshot_section(
-    snapshot: MarketPriceSnapshot | OilSnapshot | None,
+    snapshot: MarketContextSnapshot | MarketPriceSnapshot | OilSnapshot | None,
     *,
     section_name: str,
     snapshot_time: str,
@@ -515,14 +529,10 @@ def _parse_snapshot_timestamp(value: str) -> datetime | None:
 
 
 def _formal_future_observations(
-    snapshot: MarketPriceSnapshot | OilSnapshot,
+    snapshot: MarketContextSnapshot | MarketPriceSnapshot | OilSnapshot,
     snapshot_time: datetime,
 ) -> list[dict[str, str]]:
-    observations = (
-        (("xauusd_spot", snapshot.xauusd_spot), ("gc_futures", snapshot.gc_futures))
-        if isinstance(snapshot, MarketPriceSnapshot)
-        else (("wti", snapshot.wti), ("brent", snapshot.brent))
-    )
+    observations = _market_snapshot_observations(snapshot)
     candidates: list[tuple[str, datetime]] = [("as_of", snapshot.as_of)]
     for name, observation in observations:
         for field_name, value in (
@@ -594,7 +604,7 @@ def _formal_official_event_future_observations(
 
 
 def _formal_snapshot_source_refs(
-    snapshot: MarketPriceSnapshot | OilSnapshot | COTSnapshot | OfficialEventSnapshot | None,
+    snapshot: MarketContextSnapshot | MarketPriceSnapshot | OilSnapshot | COTSnapshot | OfficialEventSnapshot | None,
 ) -> list[dict[str, Any]]:
     if snapshot is None:
         return []
@@ -602,12 +612,25 @@ def _formal_snapshot_source_refs(
         return [source_ref.model_dump(mode="json") for source_ref in snapshot.managed_money_net.source_refs]
     if isinstance(snapshot, OfficialEventSnapshot):
         return [source_ref.model_dump(mode="json") for source_ref in snapshot.source_refs]
-    observations = (
-        (snapshot.xauusd_spot, snapshot.gc_futures)
-        if isinstance(snapshot, MarketPriceSnapshot)
-        else (snapshot.wti, snapshot.brent)
-    )
-    return [source_ref.model_dump(mode="json") for observation in observations for source_ref in observation.source_refs]
+    return [
+        source_ref.model_dump(mode="json")
+        for _, observation in _market_snapshot_observations(snapshot)
+        for source_ref in observation.source_refs
+    ]
+
+
+def _market_snapshot_observations(
+    snapshot: MarketContextSnapshot | MarketPriceSnapshot | OilSnapshot,
+) -> tuple[tuple[str, Any], ...]:
+    if isinstance(snapshot, MarketPriceSnapshot):
+        return (("xauusd_spot", snapshot.xauusd_spot), ("gc_futures", snapshot.gc_futures))
+    if isinstance(snapshot, MarketContextSnapshot):
+        return (
+            ("xagusd_spot", snapshot.xagusd_spot),
+            ("dxy", snapshot.dxy),
+            ("vix", snapshot.vix),
+        )
+    return (("wti", snapshot.wti), ("brent", snapshot.brent))
 
 
 def _cot_candidates(points: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -154,36 +154,45 @@ def _download_cme_pdf_bytes(*, source_url: str) -> bytes:
                         "Chrome/124.0.0.0 Safari/537.36"
                     )
                 )
-                page = context.new_page()
-                # CME's Daily Bulletin index can fail under some WSL/proxy paths with
-                # ERR_HTTP2_PROTOCOL_ERROR. A browser-origin XHR from a neutral data URL
-                # still uses Chromium's TLS/browser fingerprint and avoids that brittle
-                # warm-up navigation.
-                page.goto("data:text/html,<html></html>")
-                payload = page.evaluate(
-                    """
-                    async (targetUrl) => {
-                        return await new Promise((resolve, reject) => {
-                            const xhr = new XMLHttpRequest();
-                            xhr.open("GET", targetUrl, true);
-                            xhr.responseType = "arraybuffer";
-                            xhr.onload = () => {
-                                if (xhr.status !== 200) {
-                                    reject(new Error(`HTTP ${xhr.status} ${xhr.statusText}`));
-                                    return;
-                                }
-                                resolve(Array.from(new Uint8Array(xhr.response)));
-                            };
-                            xhr.onerror = () => reject(new Error("CME PDF XHR network error"));
-                            xhr.send();
-                        });
-                    }
-                    """,
-                    source_url,
-                )
-                return bytes(payload)
+                return _download_with_page_xhr(context=context, source_url=source_url)
             finally:
                 browser.close()
+
+
+def _download_with_page_xhr(*, context: Any, source_url: str, max_page_attempts: int = 2) -> bytes:
+    """Fetch with Chromium's page fingerprint and rebuild a destroyed page context."""
+
+    last_error: Exception | None = None
+    for _ in range(max_page_attempts):
+        page = context.new_page()
+        try:
+            payload = page.evaluate(
+                """
+                async (targetUrl) => {
+                    return await new Promise((resolve, reject) => {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open("GET", targetUrl, true);
+                        xhr.responseType = "arraybuffer";
+                        xhr.onload = () => {
+                            if (xhr.status !== 200) {
+                                reject(new Error(`HTTP ${xhr.status} ${xhr.statusText}`));
+                                return;
+                            }
+                            resolve(Array.from(new Uint8Array(xhr.response)));
+                        };
+                        xhr.onerror = () => reject(new Error("CME PDF XHR network error"));
+                        xhr.send();
+                    });
+                }
+                """,
+                source_url,
+            )
+            return bytes(payload)
+        except Exception as exc:
+            last_error = exc
+        finally:
+            page.close()
+    raise RuntimeError(f"CME PDF page download failed after {max_page_attempts} attempts: {last_error}") from last_error
 
 
 def _validate_pdf_header(raw: bytes) -> None:

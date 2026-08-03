@@ -386,6 +386,43 @@ def test_register_step_artifacts_accepts_legacy_source_ref_shape() -> None:
     assert json.loads(saved.source_refs or "[]") == [{"source": "fred", "symbol": "DGS10"}]
 
 
+def test_register_step_artifacts_accepts_formal_snapshot_query_reference() -> None:
+    session = _make_session()
+    run = TaskRun(name="premarket", status=TaskStatus.pending, snapshot_id="snap-registry-001")
+    session.add(run)
+    session.flush()
+    step = TaskStep(task_run_id=run.id, name="merge_snapshot", status=StepStatus.success)
+    session.add(step)
+    session.flush()
+
+    source_refs = [
+        {
+            "source": "formal_market_snapshot_query",
+            "reference": "query://XAGUSD/1d",
+            "retrieved_at": "2026-08-11T09:14:41Z",
+            "qualification_reason": "no_candidate",
+            "normalized_role": "query",
+        }
+    ]
+    register_step_artifacts(
+        session,
+        run_id=str(run.id),
+        step=step,
+        output_refs=[
+            {
+                "artifact_id": "art-formal-query-001",
+                "artifact_type": "structured_json",
+                "file_path": "storage/features/snapshots/formal-query.json",
+                "sha256": "formal-query",
+            }
+        ],
+        source_refs=source_refs,
+    )
+
+    saved = session.query(RunArtifact).one()
+    assert saved.source_refs_data == source_refs
+
+
 def test_register_step_artifacts_accepts_normalized_source_ref_shape() -> None:
     session = _make_session()
     run = TaskRun(name="premarket", status=TaskStatus.pending, snapshot_id="snap-registry-001")
@@ -502,7 +539,14 @@ def test_register_step_artifacts_persists_structured_registry_metadata() -> None
                 "generated_at": "2026-05-26T10:00:00+00:00",
             }
         ],
-        source_refs=[{"source_id": "src-report-001", "source_name": "analysis_snapshot", "source_type": "snapshot", "snapshot_id": "snap-registry-001"}],
+        source_refs=[
+            {
+                "source_id": "src-report-001",
+                "source_name": "analysis_snapshot",
+                "source_type": "snapshot",
+                "snapshot_id": "snap-registry-001",
+            }
+        ],
         input_snapshot_ids={"analysis_snapshot": "snap-registry-001"},
     )
     session.commit()
@@ -512,7 +556,12 @@ def test_register_step_artifacts_persists_structured_registry_metadata() -> None
     assert saved.byte_size == 2048
     assert saved.generated_at.isoformat() == "2026-05-26T10:00:00"
     assert saved.source_refs_data == [
-        {"source_id": "src-report-001", "source_name": "analysis_snapshot", "source_type": "snapshot", "snapshot_id": "snap-registry-001"}
+        {
+            "source_id": "src-report-001",
+            "source_name": "analysis_snapshot",
+            "source_type": "snapshot",
+            "snapshot_id": "snap-registry-001",
+        }
     ]
     assert saved.artifact_metadata["artifact_id"] == "art-structured-registry-001"
     assert saved.artifact_metadata["input_snapshot_ids"] == {"analysis_snapshot": "snap-registry-001"}

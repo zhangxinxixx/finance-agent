@@ -184,6 +184,207 @@ jobs:
           path: test-results/analysis-memory-postgres.xml
           if-no-files-found: warn
 
+  gold-policy-core:
+    name: Gold Policy core
+    runs-on: ubuntu-latest
+    env:
+      FINANCE_AGENT_DISABLE_BACKGROUND_JOBS: "1"
+      UV_CACHE_DIR: /tmp/uv-cache
+      no_proxy: 127.0.0.1,localhost,::1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: uv sync --locked --extra dev
+      - name: Compile Gold Policy sources and tests
+        run: >-
+          uv run python -m compileall -q
+          apps/analysis/gold_policy
+          apps/evaluation/replay
+          apps/features/market_data
+          apps/features/news/formal_events.py
+          apps/features/positioning
+          apps/renderer/gold_policy_report.py
+          apps/renderer/gold_policy_report_bundle.py
+          scripts/run_gold_daily_close_chain.py
+          scripts/run_daily_macro_close.py
+          scripts/run_gold_daily_report.py
+          scripts/run_gold_mainline_pipeline.py
+          tests/scripts/test_run_daily_macro_close.py
+          tests/scripts/test_run_gold_daily_close_chain.py
+          tests/scripts/test_run_gold_daily_report.py
+          tests/analysis/test_gold_policy_v1_baseline_manifest.py
+          tests/architecture/test_gold_policy_ci_guards.py
+          tests/analysis/evaluation/test_replay.py
+          tests/analysis/test_gold_agent_artifacts.py
+          tests/analysis/test_coordinator_agent.py
+          tests/analysis/test_gold_analysis_policy.py
+          tests/analysis/test_gold_analysis_v2_contract.py
+          tests/analysis/test_gold_consistency_policy.py
+          tests/analysis/test_gold_consistency_schemas.py
+          tests/analysis/test_gold_cme_options_loader.py
+          tests/analysis/test_gold_cme_options_regime.py
+          tests/analysis/test_gold_daily_close_batch.py
+          tests/analysis/test_gold_daily_close_delivery.py
+          tests/analysis/test_gold_daily_close_five_day_replay.py
+          tests/analysis/test_gold_daily_close_v2_replay.py
+          tests/analysis/test_gold_daily_close_loop.py
+          tests/analysis/test_gold_daily_close_runtime.py
+          tests/analysis/test_gold_daily_close_schemas.py
+          tests/analysis/test_gold_daily_close_store.py
+          tests/analysis/test_gold_report_context_v1_1.py
+          tests/analysis/test_gold_feature_snapshot_adapter.py
+          tests/analysis/test_gold_feature_snapshot_policy.py
+          tests/analysis/test_gold_real10y_v2_contract.py
+          tests/analysis/test_gold_readiness_policy.py
+          tests/analysis/test_gold_readiness_v2_contract.py
+          tests/analysis/test_gold_feature_store.py
+          tests/analysis/test_gold_key_level_policy.py
+          tests/analysis/test_gold_key_level_controls.py
+          tests/analysis/test_gold_key_level_schemas.py
+          tests/renderer/test_gold_policy_report_v2.py
+          tests/renderer/test_gold_policy_report_bundle_v2.py
+          tests/analysis/test_gold_mainline_engine.py
+          tests/analysis/test_gold_materiality_policy.py
+          tests/analysis/test_gold_price_attribution_policy.py
+          tests/analysis/test_gold_price_attribution_v2_contract.py
+          tests/analysis/test_gold_runtime_agents.py
+          tests/analysis/test_gold_runtime_controls.py
+          tests/analysis/test_gold_state_schemas.py
+          tests/analysis/test_gold_state_v2_contract.py
+          tests/analysis/test_gold_state_transition_policy.py
+          tests/analysis/test_gold_state_transition_v2_policy.py
+          tests/analysis/test_gold_strategy_policy.py
+          tests/analysis/test_gold_strategy_schemas.py
+          tests/analysis/test_gold_strategy_v2_policy.py
+          tests/worker/test_artifact_registration.py
+          tests/evaluation/replay
+      - name: Lint Gold Policy sources and tests
+        run: >-
+          uv run ruff check
+          apps/analysis/gold_policy
+          apps/evaluation/replay
+          apps/features/market_data
+          apps/features/news/formal_events.py
+          apps/features/positioning
+          apps/renderer/gold_policy_report.py
+          apps/renderer/gold_policy_report_bundle.py
+          scripts/run_gold_daily_close_chain.py
+          scripts/run_daily_macro_close.py
+          scripts/run_gold_daily_report.py
+          scripts/run_gold_mainline_pipeline.py
+          tests/scripts/test_run_daily_macro_close.py
+          tests/scripts/test_run_gold_daily_close_chain.py
+          tests/scripts/test_run_gold_daily_report.py
+          tests/analysis/test_gold_policy_v1_baseline_manifest.py
+          tests/architecture/test_gold_policy_ci_guards.py
+          tests/analysis/evaluation/test_replay.py
+          tests/analysis/test_gold_agent_artifacts.py
+          tests/analysis/test_coordinator_agent.py
+          tests/analysis/test_gold_analysis_policy.py
+          tests/analysis/test_gold_analysis_v2_contract.py
+          tests/analysis/test_gold_consistency_policy.py
+          tests/analysis/test_gold_consistency_schemas.py
+          tests/analysis/test_gold_cme_options_loader.py
+          tests/analysis/test_gold_cme_options_regime.py
+          tests/analysis/test_gold_daily_close_batch.py
+          tests/analysis/test_gold_daily_close_delivery.py
+          tests/analysis/test_gold_daily_close_five_day_replay.py
+          tests/analysis/test_gold_daily_close_v2_replay.py
+          tests/analysis/test_gold_daily_close_loop.py
+          tests/analysis/test_gold_daily_close_runtime.py
+          tests/analysis/test_gold_daily_close_schemas.py
+          tests/analysis/test_gold_daily_close_store.py
+          tests/analysis/test_gold_report_context_v1_1.py
+          tests/analysis/test_gold_feature_snapshot_adapter.py
+          tests/analysis/test_gold_feature_snapshot_policy.py
+          tests/analysis/test_gold_real10y_v2_contract.py
+          tests/analysis/test_gold_readiness_policy.py
+          tests/analysis/test_gold_readiness_v2_contract.py
+          tests/analysis/test_gold_feature_store.py
+          tests/analysis/test_gold_key_level_policy.py
+          tests/analysis/test_gold_key_level_controls.py
+          tests/analysis/test_gold_key_level_schemas.py
+          tests/renderer/test_gold_policy_report_v2.py
+          tests/renderer/test_gold_policy_report_bundle_v2.py
+          tests/analysis/test_gold_mainline_engine.py
+          tests/analysis/test_gold_materiality_policy.py
+          tests/analysis/test_gold_price_attribution_policy.py
+          tests/analysis/test_gold_price_attribution_v2_contract.py
+          tests/analysis/test_gold_runtime_agents.py
+          tests/analysis/test_gold_runtime_controls.py
+          tests/analysis/test_gold_state_schemas.py
+          tests/analysis/test_gold_state_v2_contract.py
+          tests/analysis/test_gold_state_transition_policy.py
+          tests/analysis/test_gold_state_transition_v2_policy.py
+          tests/analysis/test_gold_strategy_policy.py
+          tests/analysis/test_gold_strategy_schemas.py
+          tests/analysis/test_gold_strategy_v2_policy.py
+          tests/worker/test_artifact_registration.py
+          tests/evaluation/replay
+      - name: Run Gold Policy core and replay safety tests
+        run: >-
+          mkdir -p test-results && uv run pytest -q --junitxml=test-results/gold-policy-core.xml
+          tests/scripts/test_run_daily_macro_close.py
+          tests/scripts/test_run_gold_daily_close_chain.py
+          tests/scripts/test_run_gold_daily_report.py
+          tests/analysis/test_gold_policy_v1_baseline_manifest.py
+          tests/architecture/test_gold_policy_ci_guards.py
+          tests/analysis/evaluation/test_replay.py
+          tests/analysis/test_gold_agent_artifacts.py
+          tests/analysis/test_coordinator_agent.py
+          tests/analysis/test_gold_analysis_policy.py
+          tests/analysis/test_gold_analysis_v2_contract.py
+          tests/analysis/test_gold_consistency_policy.py
+          tests/analysis/test_gold_consistency_schemas.py
+          tests/analysis/test_gold_cme_options_loader.py
+          tests/analysis/test_gold_cme_options_regime.py
+          tests/analysis/test_gold_daily_close_batch.py
+          tests/analysis/test_gold_daily_close_delivery.py
+          tests/analysis/test_gold_daily_close_five_day_replay.py
+          tests/analysis/test_gold_daily_close_v2_replay.py
+          tests/analysis/test_gold_daily_close_loop.py
+          tests/analysis/test_gold_daily_close_runtime.py
+          tests/analysis/test_gold_daily_close_schemas.py
+          tests/analysis/test_gold_daily_close_store.py
+          tests/analysis/test_gold_report_context_v1_1.py
+          tests/analysis/test_gold_feature_snapshot_adapter.py
+          tests/analysis/test_gold_feature_snapshot_policy.py
+          tests/analysis/test_gold_real10y_v2_contract.py
+          tests/analysis/test_gold_readiness_policy.py
+          tests/analysis/test_gold_readiness_v2_contract.py
+          tests/analysis/test_gold_feature_store.py
+          tests/analysis/test_gold_key_level_policy.py
+          tests/analysis/test_gold_key_level_controls.py
+          tests/analysis/test_gold_key_level_schemas.py
+          tests/renderer/test_gold_policy_report_v2.py
+          tests/renderer/test_gold_policy_report_bundle_v2.py
+          tests/analysis/test_gold_mainline_engine.py
+          tests/analysis/test_gold_materiality_policy.py
+          tests/analysis/test_gold_price_attribution_policy.py
+          tests/analysis/test_gold_price_attribution_v2_contract.py
+          tests/analysis/test_gold_runtime_agents.py
+          tests/analysis/test_gold_runtime_controls.py
+          tests/analysis/test_gold_state_schemas.py
+          tests/analysis/test_gold_state_v2_contract.py
+          tests/analysis/test_gold_state_transition_policy.py
+          tests/analysis/test_gold_state_transition_v2_policy.py
+          tests/analysis/test_gold_strategy_policy.py
+          tests/analysis/test_gold_strategy_schemas.py
+          tests/analysis/test_gold_strategy_v2_policy.py
+          tests/worker/test_artifact_registration.py
+          tests/evaluation/replay
+      - name: Upload Gold Policy JUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-policy-core-junit
+          path: test-results/gold-policy-core.xml
+          if-no-files-found: warn
+
   frontend:
     name: Frontend contracts
     runs-on: ubuntu-latest

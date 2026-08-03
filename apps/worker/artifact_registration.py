@@ -153,11 +153,23 @@ def register_composite_output_artifacts(
     gold_policy_execution_mode = composite_outputs.get("gold_policy_execution_mode") if isinstance(composite_outputs, dict) else None
     gold_policy_paths = composite_outputs.get("gold_policy_artifact_paths") if isinstance(composite_outputs, dict) else None
     if gold_policy_execution_mode == "shadow" and isinstance(gold_policy_paths, dict):
-        for filename, artifact_type in (
-            ("feature_snapshot.v1.json", "feature_json"),
-            ("gold_analysis_decision.v1.json", "structured_json"),
-            ("gold_price_attribution.v1.json", "structured_json"),
-        ):
+        for filename in sorted(gold_policy_paths):
+            if not (
+                filename in {"feature_snapshot.v1.json", "feature_snapshot.v2.json"}
+                or filename
+                in {
+                    "gold_analysis_decision.v1.json",
+                    "gold_analysis_decision.v2.json",
+                    "gold_price_attribution.v1.json",
+                    "gold_price_attribution.v2.json",
+                }
+            ):
+                continue
+            artifact_type = (
+                "feature_json"
+                if filename.startswith("feature_snapshot.")
+                else "structured_json"
+            )
             path = gold_policy_paths.get(filename)
             if not isinstance(path, str) or not path:
                 continue

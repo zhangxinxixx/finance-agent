@@ -17,6 +17,46 @@ class PremarketReadinessGateConfig(Config):
     observed_at: str | None = None
 
 
+class PremarketReadinessRefreshConfig(Config):
+    storage_root: str = "./storage"
+    observed_at: str | None = None
+    run_source_probes: bool = False
+    run_consistency_checks: bool = False
+
+
+@op(tags={"pipeline": "premarket", "step": "refresh_readiness"})
+def refresh_premarket_readiness_op(
+    context,
+    config: PremarketReadinessRefreshConfig,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Materialize current readiness after this run's snapshot is complete."""
+
+    from apps.monitoring import run_data_quality_monitor
+
+    trade_date = _snapshot_trade_date(snapshot)
+    result = run_data_quality_monitor(
+        storage_root=Path(config.storage_root),
+        trade_date=trade_date,
+        observed_at=_parse_datetime(config.observed_at) if config.observed_at else None,
+        record_task_run=False,
+        run_source_probes=config.run_source_probes,
+        run_consistency_checks=config.run_consistency_checks,
+    )
+    readiness = result["downstream_readiness"]
+    context.log.info(
+        "Premarket readiness refreshed: trade_date=%s readiness=%s can_run_full_analysis=%s",
+        trade_date,
+        readiness.get("readiness"),
+        readiness.get("can_run_full_analysis"),
+    )
+    return {
+        "trade_date": trade_date,
+        "downstream_readiness": readiness,
+        "artifacts": result.get("artifacts") or {},
+    }
+
+
 def evaluate_premarket_readiness(
     *,
     storage_root: Path,
@@ -76,6 +116,7 @@ def evaluate_premarket_readiness(
     capabilities = readiness.get("capabilities")
     full_analysis = capabilities.get("full_daily_analysis") if isinstance(capabilities, dict) else None
     can_run_full = readiness.get("can_run_full_analysis")
+    can_run_daily_report = readiness.get("can_run_daily_report")
     if readiness_state not in {"ready", "partial"}:
         return _blocked(
             source_ref,
@@ -85,6 +126,9 @@ def evaluate_premarket_readiness(
             observed_at=gate_time.isoformat(),
             age_minutes=age_minutes,
             readiness=readiness_state,
+            capabilities=capabilities if isinstance(capabilities, dict) else {},
+            can_run_daily_report=can_run_daily_report is True,
+            can_run_full_analysis=can_run_full is True,
             blocked_outputs=readiness.get("blocked_outputs") or [],
         )
     if can_run_full is not True or full_analysis in {None, "blocked"}:
@@ -96,6 +140,9 @@ def evaluate_premarket_readiness(
             observed_at=gate_time.isoformat(),
             age_minutes=age_minutes,
             readiness=readiness_state,
+            capabilities=capabilities if isinstance(capabilities, dict) else {},
+            can_run_daily_report=can_run_daily_report is True,
+            can_run_full_analysis=can_run_full is True,
             blocked_outputs=readiness.get("blocked_outputs") or [],
         )
 
@@ -110,6 +157,8 @@ def evaluate_premarket_readiness(
         "age_minutes": age_minutes,
         "max_age_minutes": max_age_minutes,
         "capabilities": capabilities if isinstance(capabilities, dict) else {},
+        "can_run_daily_report": can_run_daily_report is True,
+        "can_run_full_analysis": can_run_full is True,
         "blocked_outputs": readiness.get("blocked_outputs") or [],
     }
 
@@ -119,10 +168,20 @@ def premarket_readiness_gate_op(
     context,
     config: PremarketReadinessGateConfig,
     snapshot: dict[str, Any],
+    readiness_refresh: dict[str, Any],
 ) -> dict[str, Any]:
     """Gate the canonical analysis graph using the snapshot's trade date."""
 
     trade_date = _snapshot_trade_date(snapshot)
+    refreshed_trade_date = str(readiness_refresh.get("trade_date") or "")
+    if refreshed_trade_date != trade_date:
+        return _blocked(
+            f"monitoring/{trade_date}/downstream_readiness.json",
+            "downstream_readiness_refresh_trade_date_mismatch",
+            trade_date,
+            config.max_age_minutes,
+            artifact_trade_date=refreshed_trade_date or None,
+        )
     decision = evaluate_premarket_readiness(
         storage_root=Path(config.storage_root),
         trade_date=trade_date,
@@ -184,6 +243,9 @@ def _blocked(
     age_minutes: int | None = None,
     artifact_trade_date: str | None = None,
     readiness: str | None = None,
+    capabilities: dict[str, Any] | None = None,
+    can_run_daily_report: bool = False,
+    can_run_full_analysis: bool = False,
     blocked_outputs: list[Any] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -196,6 +258,8 @@ def _blocked(
         "observed_at": observed_at,
         "age_minutes": age_minutes,
         "max_age_minutes": max_age_minutes,
-        "capabilities": {},
+        "capabilities": capabilities or {},
+        "can_run_daily_report": can_run_daily_report,
+        "can_run_full_analysis": can_run_full_analysis,
         "blocked_outputs": blocked_outputs or [],
     }

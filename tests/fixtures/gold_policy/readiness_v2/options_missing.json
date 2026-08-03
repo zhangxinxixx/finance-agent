@@ -1,0 +1,18 @@
+{
+  "case_id": "options_missing",
+  "base_fixture": "ready.json",
+  "patch": {
+    "cme_options_regime": {"value": null, "freshness_status": "missing", "quality_status": "blocked", "alignment_status": "unknown"}
+  },
+  "expected": {
+    "readiness_policy_version": "gold_readiness_policy.v1",
+    "analysis_readiness": "ready",
+    "strategy_readiness": "observe",
+    "options_readiness": "blocked",
+    "event_attribution_readiness": "ready",
+    "missing_required_inputs": [],
+    "missing_confirmatory_inputs": [],
+    "prohibited_outputs": ["OPTIONS_CONFIRMATION", "TRIGGERED_STRATEGY"],
+    "reason_codes": ["OPTIONS_INPUT_UNUSABLE", "OFFICIAL_EVENT_REACTION_CONFIRMED"]
+  }
+}

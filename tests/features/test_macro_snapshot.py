@@ -54,7 +54,12 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     broad_dollar = snapshot.indicators["BROAD_DOLLAR"]
 
     assert real_10y.label == "10Y 实际利率 = US10Y - T10YIE"
+    assert real_10y.derivation_version == "real10y_components.v1"
     assert real_10y.value == 1.95
+    assert [(item.source_symbol, item.date, item.value) for item in real_10y.components] == [
+        ("DGS10", "2026-05-06", 4.3),
+        ("T10YIE", "2026-05-06", 2.35),
+    ]
     assert real_10y.weekly_change == 0.05
     assert real_10y.monthly_change == -0.05
     assert us30y.value == 4.6
@@ -96,6 +101,7 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     assert snapshot.source_refs["TGA"]["reason"] == "collector unavailable"
     assert snapshot.source_refs["DFII10"]["source_url"] == "fixture://fred/DFII10"
     assert snapshot.source_refs["DTWEXBGS"]["source_url"] == "fixture://fred/DTWEXBGS"
+    assert snapshot.source_refs["DGS10"]["retrieved_at"] == "2026-05-06T00:00:00+00:00"
 
     markdown = render_macro_snapshot_markdown(snapshot)
     assert "# XAUUSD 宏观数据报告" in markdown
@@ -132,6 +138,43 @@ def test_macro_snapshot_marks_real_10y_unavailable_when_t10yie_is_missing() -> N
     assert "YIELD_SPREAD_2Y_3M" not in snapshot.indicators
     assert snapshot.indicators["US10Y"].value == 4.3
     assert snapshot.source_refs["DGS10"]["source_url"] == "fixture://fred/DGS10"
+
+
+def test_macro_snapshot_real10y_components_use_latest_common_date() -> None:
+    snapshot = build_macro_snapshot(
+        _build_points(
+            {
+                "DGS10": [("2026-05-05", 4.30), ("2026-05-06", 4.35)],
+                "T10YIE": [("2026-05-05", 2.20), ("2026-05-07", 2.25)],
+            }
+        ),
+        as_of="2026-05-07",
+    )
+
+    real_10y = snapshot.indicators["REAL_10Y"]
+    assert real_10y.date == "2026-05-05"
+    assert real_10y.value == 2.1
+    assert [(item.source_symbol, item.date, item.value) for item in real_10y.components] == [
+        ("DGS10", "2026-05-05", 4.3),
+        ("T10YIE", "2026-05-05", 2.2),
+    ]
+
+
+def test_macro_snapshot_real10y_conflicting_same_day_point_fails_closed() -> None:
+    points = _build_points(
+        {
+            "DGS10": [("2026-05-05", 4.30)],
+            "T10YIE": [("2026-05-05", 2.20)],
+        }
+    )
+    conflicting = dict(points[0])
+    conflicting["value"] = 4.31
+    points.append(conflicting)
+
+    snapshot = build_macro_snapshot(points, as_of="2026-05-05")
+
+    assert "REAL_10Y" not in snapshot.indicators
+    assert "REAL_10Y" in snapshot.unavailable_symbols
 
 
 def test_macro_snapshot_does_not_substitute_dxy_for_missing_broad_dollar() -> None:

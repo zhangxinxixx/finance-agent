@@ -1,5 +1,15 @@
 """Deterministic contracts and policy engines for the XAUUSD decision chain."""
 
+from apps.analysis.gold_policy.cme_options_loader import (
+    CMEOptionsArtifactLoadResult,
+    load_cme_options_artifact,
+)
+from apps.analysis.gold_policy.cme_options_regime import (
+    CMEOptionsRegime,
+    CMEOptionsRegimeSnapshot,
+    adapt_options_analysis_to_cme_options_regime,
+    build_cme_options_regime_snapshot,
+)
 from apps.analysis.gold_policy.consistency_policy import evaluate_analysis_strategy_consistency
 from apps.analysis.gold_policy.consistency_schemas import (
     AnalysisStrategyConsistencyDecision,
@@ -30,7 +40,18 @@ from apps.analysis.gold_policy.daily_close_runtime import (
     GoldDailyCloseRuntimeExecution,
     execute_gold_daily_close_runtime,
 )
+from apps.analysis.gold_policy.report_context import (
+    GoldReportContext,
+    GoldReportContextContract,
+    GoldReportContextV1_1,
+    build_gold_report_context,
+)
+from apps.analysis.gold_policy.canonical_predecessor import (
+    CanonicalPredecessorResolver,
+    resolve_canonical_predecessor,
+)
 from apps.analysis.gold_policy.daily_close_store import (
+    DailyCloseBundleVerification,
     DailyCloseBundleWriteResult,
     DailyCloseCanonicalHead,
     DailyCloseCanonicalReceipt,
@@ -39,16 +60,21 @@ from apps.analysis.gold_policy.daily_close_store import (
     DailyCloseStoreError,
     load_gold_daily_close_head,
     persist_gold_daily_close_run,
+    verify_gold_daily_close_bundle,
 )
 
 from apps.analysis.gold_policy.analysis_policy import (
     GoldAnalysisDecision,
+    GoldAnalysisDecisionV2,
+    GoldAnalysisFactorContributionV2,
     PolicyDriver,
     evaluate_gold_analysis_policy,
 )
 from apps.analysis.gold_policy.attribution_policy import (
     AttributionDriver,
+    AttributionDriverV2,
     GoldPriceAttribution,
+    GoldPriceAttributionV2,
     attribute_gold_price,
 )
 from apps.analysis.gold_policy.feature_adapter import build_feature_snapshot_from_analysis_snapshot
@@ -59,6 +85,15 @@ from apps.analysis.gold_policy.feature_store import (
 from apps.analysis.gold_policy.key_level_policy import (
     KeyLevelLifecycleResult,
     evaluate_key_level_lifecycle,
+)
+from apps.analysis.gold_policy.key_level_controls import (
+    KeyLevelControls,
+    KeyLevelControlsBuilder,
+    KeyLevelControlsInput,
+)
+from apps.analysis.gold_policy.materiality_policy import (
+    GoldMaterialityDecision,
+    evaluate_gold_materiality,
 )
 from apps.analysis.gold_policy.key_level_schemas import (
     KeyLevelAuthorityStatus,
@@ -90,15 +125,32 @@ from apps.analysis.gold_policy.key_level_schemas import (
     build_key_level_spec,
     key_level_strategy_eligible_at,
 )
-from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
+from apps.analysis.gold_policy.readiness_policy import (
+    GoldReadinessDecision,
+    evaluate_gold_readiness,
+)
+from apps.analysis.gold_policy.feature_snapshot import (
+    build_feature_snapshot,
+    feature_snapshot_integrity_valid,
+)
 from apps.analysis.gold_policy.runtime_inputs import (
+    GoldPolicyFormalOptionsInputs,
     GoldPolicyRuntimeInputs,
+    prepare_gold_policy_formal_options_inputs,
     prepare_gold_policy_runtime_inputs,
 )
-from apps.analysis.gold_policy.schemas import FeatureSnapshot, FeatureSnapshotInput
+from apps.analysis.gold_policy.schemas import (
+    DataQualitySnapshotV2,
+    FeatureSnapshot,
+    FeatureSnapshotContract,
+    FeatureSnapshotInput,
+    FeatureSnapshotV2,
+    FeatureSnapshotV2Input,
+)
 from apps.analysis.gold_policy.state_schemas import (
     AnalysisStage,
     AnalysisState,
+    AnalysisStateV2,
     EvidenceCategory,
     EvidenceDeltaKind,
     EvidenceScope,
@@ -107,14 +159,20 @@ from apps.analysis.gold_policy.state_schemas import (
     PendingRule,
     PendingTransition,
     StateTransitionPolicyDecision,
+    StateTransitionPolicyDecisionV2,
     TransitionAction,
     TransitionEvidence,
     build_analysis_state,
+    build_analysis_state_v2,
     build_state_transition_policy_decision,
+    build_state_transition_policy_decision_v2,
+    migrate_analysis_state_v1_to_v2,
 )
 from apps.analysis.gold_policy.state_transition_policy import (
     AnalysisStateTransitionResult,
+    AnalysisStateTransitionV2Result,
     evaluate_analysis_state_transition,
+    evaluate_analysis_state_transition_v2,
     ordinary_stage_distance,
 )
 from apps.analysis.gold_policy.strategy_policy import evaluate_gold_strategy_policy
@@ -125,13 +183,17 @@ from apps.analysis.gold_policy.strategy_schemas import (
     ReleaseConditionCode,
     ReviewTriggerCode,
     StrategyDecision,
+    StrategyDecisionV2,
     StrategyDirection,
     StrategyEventRiskSnapshot,
     StrategyLevelReference,
     StrategyOptionsRegimeSnapshot,
+    StrategyOptionsRegimeContract,
     StrategyPolicyInput,
+    StrategyPolicyInputV2,
     StrategyStatus,
     build_strategy_decision,
+    build_strategy_decision_v2,
     build_strategy_event_risk,
     build_strategy_options_regime,
 )
@@ -143,25 +205,38 @@ __all__ = [
     "AnalysisStage",
     "AnalysisState",
     "AnalysisStateTransitionResult",
+    "AnalysisStateTransitionV2Result",
+    "AnalysisStateV2",
     "CanonicalCommitAction",
+    "CanonicalPredecessorResolver",
     "ConsistencyReasonCode",
     "ConsistencyStatus",
+    "CMEOptionsArtifactLoadResult",
+    "CMEOptionsRegime",
+    "CMEOptionsRegimeSnapshot",
     "DailyCloseLoopInput",
     "DailyCloseLoopReason",
     "DailyCloseLoopResult",
     "DailyCloseBundleWriteResult",
+    "DailyCloseBundleVerification",
     "DailyCloseCanonicalHead",
     "DailyCloseCanonicalReceipt",
     "DailyCloseHeadConflictError",
     "DailyCloseHeadLookup",
     "DailyCloseStoreError",
+    "DataQualitySnapshotV2",
     "EvidenceCategory",
     "EvidenceDeltaKind",
     "EvidenceScope",
     "EventRiskStatus",
     "FeatureSnapshot",
+    "FeatureSnapshotContract",
     "FeatureSnapshotInput",
+    "FeatureSnapshotV2",
+    "FeatureSnapshotV2Input",
     "GoldAnalysisDecision",
+    "GoldAnalysisDecisionV2",
+    "GoldAnalysisFactorContributionV2",
     "GoldDailyCloseRuntimeControls",
     "GoldDailyCloseRuntimeExecution",
     "GoldDailyCloseContextBundle",
@@ -170,9 +245,19 @@ __all__ = [
     "GoldDailyCloseStrategyDiff",
     "GoldDailyCloseTokenTrace",
     "GoldPriceAttribution",
+    "GoldPriceAttributionV2",
+    "GoldReportContext",
+    "GoldReportContextContract",
+    "GoldReportContextV1_1",
+    "GoldMaterialityDecision",
     "GoldPolicyRuntimeInputs",
+    "GoldPolicyFormalOptionsInputs",
+    "GoldReadinessDecision",
     "HardInvalidationRule",
     "KeyLevelAuthorityStatus",
+    "KeyLevelControls",
+    "KeyLevelControlsBuilder",
+    "KeyLevelControlsInput",
     "KeyLevelCalculationMethod",
     "KeyLevelComparator",
     "KeyLevelEvent",
@@ -203,45 +288,65 @@ __all__ = [
     "PendingRule",
     "PendingTransition",
     "PolicyDriver",
+    "AttributionDriverV2",
     "PreviousFeatureSnapshotLookup",
     "ReleaseConditionCode",
     "ReviewTriggerCode",
     "StrategyDecision",
+    "StrategyDecisionV2",
     "StrategyDirection",
     "StrategyEventRiskSnapshot",
     "StrategyLevelReference",
     "StrategyOptionsRegimeSnapshot",
+    "StrategyOptionsRegimeContract",
     "StrategyPolicyInput",
+    "StrategyPolicyInputV2",
     "StrategyStatus",
     "StrategyChangeKind",
     "StateTransitionPolicyDecision",
+    "StateTransitionPolicyDecisionV2",
     "TransitionAction",
     "TransitionEvidence",
     "attribute_gold_price",
+    "adapt_options_analysis_to_cme_options_regime",
     "build_feature_snapshot",
     "build_feature_snapshot_from_analysis_snapshot",
     "build_analysis_state",
+    "build_analysis_state_v2",
     "build_analysis_strategy_consistency_decision",
     "build_daily_close_loop_result",
     "build_gold_daily_close_delivery",
+    "build_gold_report_context",
+    "build_cme_options_regime_snapshot",
     "build_key_level_event",
     "build_key_level_lifecycle_decision",
     "build_key_level_spec",
     "evaluate_analysis_state_transition",
+    "evaluate_analysis_state_transition_v2",
     "evaluate_analysis_strategy_consistency",
     "build_state_transition_policy_decision",
+    "build_state_transition_policy_decision_v2",
     "build_strategy_decision",
+    "build_strategy_decision_v2",
     "build_strategy_event_risk",
     "build_strategy_options_regime",
     "evaluate_gold_analysis_policy",
+    "evaluate_gold_materiality",
     "evaluate_gold_daily_close_loop",
+    "evaluate_gold_readiness",
     "execute_gold_daily_close_runtime",
     "evaluate_key_level_lifecycle",
     "evaluate_gold_strategy_policy",
+    "feature_snapshot_integrity_valid",
     "key_level_strategy_eligible_at",
     "load_previous_feature_snapshot",
+    "load_cme_options_artifact",
     "load_gold_daily_close_head",
+    "migrate_analysis_state_v1_to_v2",
     "ordinary_stage_distance",
     "prepare_gold_policy_runtime_inputs",
+    "prepare_gold_policy_formal_options_inputs",
     "persist_gold_daily_close_run",
+    "resolve_canonical_predecessor",
+    "verify_gold_daily_close_bundle",
 ]

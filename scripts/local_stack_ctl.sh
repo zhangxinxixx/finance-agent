@@ -245,14 +245,48 @@ listening_pid_for_port() {
   ss -ltnp 2>/dev/null | sed -nE "s/.*:${port} .*pid=([0-9]+).*/\\1/p" | head -n 1
 }
 
-adopt_existing_api() {
-  cleanup_pid_file "$API_PID_FILE"
-  if [[ -f "$API_PID_FILE" ]]; then
+api_has_required_background_refresh() {
+  local pid="$1"
+  local proc_environ="/proc/$pid/environ"
+  local environment
+  local configured_jobs
+  local required_job
+  [[ -r "$proc_environ" ]] || return 1
+
+  environment="$(tr '\0' '\n' <"$proc_environ")"
+  grep -Fxq "FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH=1" <<<"$environment" || return 1
+
+  configured_jobs="$(sed -n 's/^FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS=//p' <<<"$environment" | tail -n 1)"
+  configured_jobs="${configured_jobs//[[:space:]]/}"
+  # An empty value or "*" enables all scheduler jobs.
+  if [[ -z "$configured_jobs" || "$configured_jobs" == "*" ]]; then
     return 0
   fi
+  for required_job in jin10_kline twelvedata_xauusd_dispatch market_candles_daily; do
+    case ",$configured_jobs," in
+      *",$required_job,"*) ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+adopt_existing_api() {
+  cleanup_pid_file "$API_PID_FILE"
   local pid
+  if pid="$(pid_from_file "$API_PID_FILE" 2>/dev/null)"; then
+    if api_has_required_background_refresh "$pid"; then
+      return 0
+    fi
+    rm -f "$API_PID_FILE"
+    echo "Refusing managed API pid=$pid: required market refresh jobs are not enabled." >&2
+    return 1
+  fi
   pid="$(listening_pid_for_port "$API_PORT" || true)"
   if [[ -n "$pid" ]] && pid_running "$pid" && wait_for_http "$HEALTH_URL" 1 1; then
+    if ! api_has_required_background_refresh "$pid"; then
+      echo "Refusing to adopt API pid=$pid: required market refresh jobs are not enabled." >&2
+      return 1
+    fi
     printf '%s\n' "$pid" >"$API_PID_FILE"
   fi
 }
@@ -387,7 +421,10 @@ ensure_local_services() {
 }
 
 start_api() {
-  adopt_existing_api
+  if ! adopt_existing_api; then
+    echo "Stop or restart the existing API with scripts/local_stack_ctl.sh before continuing." >&2
+    return 1
+  fi
 
   if existing_pid="$(pid_from_file "$API_PID_FILE" 2>/dev/null)"; then
     if pid_running "$existing_pid" && wait_for_http "$HEALTH_URL" 2 1; then
@@ -411,7 +448,7 @@ start_api() {
     export FRONTEND_WEB_URL="${FRONTEND_WEB_URL:-$FRONTEND_URL}"
     export DAGSTER_GRAPHQL_URL="${DAGSTER_GRAPHQL_URL:-$DAGSTER_GRAPHQL_URL_DEFAULT}"
     export FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH="${FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH:-1}"
-    export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS:-jin10_kline,twelvedata_xauusd_dispatch}"
+    export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS:-jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily}"
     local -a api_env
     api_env=()
     if [[ -n "${EVENT_FLOW_TRANSLATION_PROVIDER_DEFAULT}" ]]; then
@@ -668,7 +705,10 @@ stop_frontend() {
 }
 
 show_status() {
-  adopt_existing_api
+  local api_adoption_failed="0"
+  if ! adopt_existing_api; then
+    api_adoption_failed="1"
+  fi
   adopt_existing_frontend
   local api_status="stopped"
   local api_pid=""
@@ -684,6 +724,10 @@ show_status() {
     else
       api_pid=""
     fi
+  fi
+  if [[ "$api_adoption_failed" == "1" ]]; then
+    api_status="running, refresh misconfigured"
+    api_pid="$(listening_pid_for_port "$API_PORT" || true)"
   fi
   if frontend_pid="$(pid_from_file "$FRONTEND_PID_FILE" 2>/dev/null)"; then
     if pid_running "$frontend_pid"; then

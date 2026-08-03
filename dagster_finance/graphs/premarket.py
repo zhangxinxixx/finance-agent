@@ -46,6 +46,7 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 # ── Macro sub-pipeline ──────────────────────────────────────────
 
+
 @graph(
     name="macro_pipeline",
     description="Macro data collection → feature engineering → report rendering",
@@ -59,6 +60,7 @@ def macro_pipeline(task_run_ready):
 
 
 # ── CME sub-pipeline ────────────────────────────────────────────
+
 
 @graph(
     name="cme_pipeline",
@@ -75,6 +77,7 @@ def cme_pipeline(task_run_ready):
 
 # ── News sub-pipeline ───────────────────────────────────────────
 
+
 @graph(
     name="news_pipeline",
     description="News collection → feature extraction → daily brief",
@@ -89,6 +92,7 @@ def news_pipeline(task_run_ready):
 
 # ── Merge snapshot op ───────────────────────────────────────────
 
+
 class MergeSnapshotConfig(Config):
     storage_root: str = "./storage"
 
@@ -101,9 +105,7 @@ def _open_formal_market_read_session() -> Any:
     return SessionLocal()
 
 
-def _load_formal_market_snapshot_bundle(
-    *, trade_date: str, run_time: datetime
-) -> tuple[Any, str | None]:
+def _load_formal_market_snapshot_bundle(*, trade_date: str, run_time: datetime) -> tuple[Any, str | None]:
     """Load formal market inputs, degrading to explicit empty snapshots on failure."""
 
     from apps.features.market_data.formal_snapshot_loader import (
@@ -112,6 +114,7 @@ def _load_formal_market_snapshot_bundle(
         resolve_formal_snapshot_as_of,
     )
     from apps.features.market_data.formal_snapshots import (
+        build_market_context_snapshot,
         build_market_price_snapshot,
         build_oil_snapshot,
     )
@@ -130,6 +133,7 @@ def _load_formal_market_snapshot_bundle(
                 market_prices=build_market_price_snapshot(candidates=(), as_of=fallback_as_of),
                 oil=build_oil_snapshot(candidates=(), as_of=fallback_as_of),
                 as_of=fallback_as_of,
+                market_context=build_market_context_snapshot(candidates=(), as_of=fallback_as_of),
             ),
             f"{type(exc).__name__}: formal market snapshot load failed",
         )
@@ -169,7 +173,9 @@ def _resolve_analysis_trade_date(
             continue
     return max(resolved, default=fallback_date).isoformat()
 
+
 @op(
+    required_resource_keys={"db_session"},
     tags={"pipeline": "premarket", "step": "merge_snapshot"},
 )
 def merge_analysis_snapshot_op(
@@ -182,6 +188,10 @@ def merge_analysis_snapshot_op(
     """Merge the three pipeline states into a unified analysis snapshot."""
     from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
     from apps.analysis.jin10.daily_context import build_daily_analysis_context
+    from apps.runtime.premarket_snapshot_authority import (
+        canonicalize_premarket_snapshot_payload,
+        stage_premarket_snapshot_authority,
+    )
 
     context.log.info("Merging analysis snapshot from macro + cme + news")
     run_time = datetime.now(timezone.utc)
@@ -233,17 +243,35 @@ def merge_analysis_snapshot_op(
             preferred_run_id=context.run_id,
         ),
         market_price_snapshot=formal_bundle.market_prices,
+        market_context_snapshot=formal_bundle.market_context,
         oil_snapshot=formal_bundle.oil,
         snapshot_time=run_time.isoformat(),
     )
+    snapshot = canonicalize_premarket_snapshot_payload(snapshot)
     snapshot_path = write_analysis_snapshot(snapshot, storage_root=Path(config.storage_root))
-    context.log.info(f"Snapshot merged: trade_date={snapshot.get('trade_date')}, "
-                     f"snapshot_id={snapshot.get('snapshot_id', 'unknown')[:12]}, "
-                     f"path={snapshot_path}")
+    db = context.resources.db_session
+    try:
+        stage_premarket_snapshot_authority(
+            db,
+            run_id=context.run_id,
+            snapshot=snapshot,
+            snapshot_path=snapshot_path,
+            storage_root=Path(config.storage_root),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    context.log.info(
+        f"Snapshot merged: trade_date={snapshot.get('trade_date')}, "
+        f"snapshot_id={snapshot.get('snapshot_id', 'unknown')[:12]}, "
+        f"path={snapshot_path}"
+    )
     return snapshot
 
 
 # ── Canonical analysis sub-pipeline ─────────────────────────────
+
 
 @graph(
     name="canonical_analysis_pipeline",
@@ -254,6 +282,7 @@ def canonical_analysis_pipeline(snapshot: dict[str, Any], readiness_gate: dict[s
 
 
 # ── Full premarket graph ────────────────────────────────────────
+
 
 @graph(
     name="premarket",

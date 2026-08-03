@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -26,10 +27,14 @@ from apps.collectors.jin10.reportory import (  # noqa: E402
     reportory_daily_gold_report_id,
 )
 from apps.collectors.cme.downloader import build_daily_bulletin_url  # noqa: E402
+from apps.runtime.premarket_snapshot_authority import (  # noqa: E402
+    resolve_gold_daily_report_premarket_snapshot,
+)
 from apps.worker.pipelines.weekly_context_revision import (  # noqa: E402
     build_weekly_context_revision_input_snapshot,
     generate_weekly_context_revision,
 )
+from database.models.engine import SessionLocal  # noqa: E402
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 DEFAULT_EXTERNAL_ROOT = Path(
@@ -398,7 +403,9 @@ def ensure_weekly_context_revision(
             return {"status": "complete", "run_id": run_id, "output": str(output_dir)}
         raise
     return {
-        "status": "generated" if result.get("artifact_type") == "weekly_context_revision" else str(result.get("status") or "waiting"),
+        "status": "generated"
+        if result.get("artifact_type") == "weekly_context_revision"
+        else str(result.get("status") or "waiting"),
         "run_id": run_id,
         "quality_status": (result.get("structured_payload") or {}).get("quality_status"),
         "publication_status": (result.get("structured_payload") or {}).get("publication_status"),
@@ -518,6 +525,7 @@ def scan_daily_macro_close(
     storage_root: Path,
     dry_run: bool,
     env: dict[str, str],
+    session_factory: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     trade_date = now.astimezone(BEIJING).date().isoformat()
     if dry_run:
@@ -526,19 +534,65 @@ def scan_daily_macro_close(
             "status": "would_finalize",
             "trade_date": trade_date,
             "cutoff": "21:00 Asia/Shanghai",
+            "pipeline": "gold_daily_report",
         }
+
+    try:
+        with (session_factory or SessionLocal)() as session:
+            authority = resolve_gold_daily_report_premarket_snapshot(
+                session,
+                storage_root=storage_root,
+                trade_date=trade_date,
+            )
+    except Exception as exc:
+        return {
+            "window": window.key,
+            "status": "blocked",
+            "trade_date": trade_date,
+            "reason_code": "premarket_snapshot_authority_unavailable",
+            "detail": type(exc).__name__,
+        }
+
+    authority_identity = {
+        "run_id": authority.run_id,
+        "snapshot_id": authority.snapshot_id,
+    }
+    if authority.status == "missing":
+        return {
+            "window": window.key,
+            "status": "waiting",
+            "trade_date": trade_date,
+            "reason_code": authority.reason_code,
+            "authority": authority_identity,
+        }
+    if authority.status != "found" or authority.snapshot_path is None:
+        reason_code = (
+            "premarket_snapshot_authority_unavailable" if authority.status == "unavailable" else authority.reason_code
+        )
+        return {
+            "window": window.key,
+            "status": "blocked",
+            "trade_date": trade_date,
+            "reason_code": reason_code,
+            "authority": authority_identity,
+        }
+
+    command_env = env.copy()
+    command_env["FINANCE_AGENT_DISABLE_JIN10"] = "true"
     result = run_command(
         [
             sys.executable,
-            "scripts/run_daily_macro_close.py",
+            "scripts/run_gold_daily_report.py",
             "--date",
             trade_date,
             "--storage-root",
             str(storage_root),
+            "--snapshot-path",
+            str(authority.snapshot_path),
         ],
-        env=env,
+        env=command_env,
     )
-    return {"window": window.key, **result}
+    return {"window": window.key, **result, "authority": authority_identity}
 
 
 def execute(args: argparse.Namespace) -> dict[str, Any]:

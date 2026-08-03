@@ -9,6 +9,7 @@ import pytest
 
 from apps.collectors.cme.downloader import (
     CmeRawFile,
+    _download_with_page_xhr,
     archive_cme_pdf,
     build_daily_bulletin_url,
     download_cme_pdf,
@@ -147,3 +148,50 @@ def test_download_cme_pdf_reports_exhausted_attempts(tmp_path: Path, monkeypatch
 
     with pytest.raises(RuntimeError, match="failed after 2 attempts.*XHR network error"):
         download_cme_pdf(storage_root=tmp_path, max_attempts=2, retry_delay_seconds=0)
+
+
+def test_page_xhr_rebuilds_destroyed_execution_context() -> None:
+    raw = _make_pdf_bytes(text="Fri, Jul 31, 2026")
+    pages: list[object] = []
+
+    class Page:
+        def __init__(self, *, should_fail: bool) -> None:
+            self.should_fail = should_fail
+            self.closed = False
+
+        def evaluate(self, script: str, source_url: str) -> list[int]:
+            if self.should_fail:
+                raise RuntimeError("Execution context was destroyed, most likely because of a navigation")
+            return list(raw)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Context:
+        def new_page(self) -> Page:
+            page = Page(should_fail=not pages)
+            pages.append(page)
+            return page
+
+    assert _download_with_page_xhr(
+        context=Context(),
+        source_url=build_daily_bulletin_url(),
+    ) == raw
+    assert len(pages) == 2
+    assert all(page.closed for page in pages)
+
+
+def test_page_xhr_preserves_exhausted_error() -> None:
+    class Page:
+        def evaluate(self, script: str, source_url: str) -> list[int]:
+            raise RuntimeError("CME PDF XHR network error")
+
+        def close(self) -> None:
+            pass
+
+    class Context:
+        def new_page(self) -> Page:
+            return Page()
+
+    with pytest.raises(RuntimeError, match="failed after 2 attempts.*XHR network error"):
+        _download_with_page_xhr(context=Context(), source_url=build_daily_bulletin_url())

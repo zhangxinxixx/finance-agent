@@ -125,9 +125,17 @@ def _formal_cot(*, value: float | None = 116_161.0, report_date: str | None = "2
 
 def test_adapts_complete_canonical_structured_input() -> None:
     result = build_feature_snapshot_from_analysis_snapshot(_complete_snapshot())
+    assert result.schema_version == "feature_snapshot.v2"
+    assert result.readiness_policy_version == "gold_readiness_policy.v1"
+    assert result.data_quality.readiness_policy_version == "gold_readiness_policy.v1"
     assert result.data_quality.analysis_readiness == "ready"
+    assert result.data_quality.strategy_readiness == "ready"
+    assert result.data_quality.options_readiness == "ready"
+    assert result.data_quality.event_attribution_readiness == "ready"
     assert result.xauusd_spot.value == 2711.0
-    assert result.real10y.series_id == "DFII10"
+    assert result.real10y_direct.series_id == "DFII10"
+    assert result.real10y_direct.market_role == "real_yield_direct"
+    assert result.real10y_estimated.value == result.us10y.value - result.t10yie.value
     assert result.broad_dollar.series_id == "DTWEXBGS"
     assert result.us10y.source_refs[0].reference == "https://example.test/US10Y"
     assert result.official_events.events[0].reaction_status == "confirmed"
@@ -341,7 +349,127 @@ def test_dxy_and_computed_real_10y_do_not_substitute_canonical_inputs() -> None:
     indicators["REAL_10Y"] = {"value": 2.2, "source_refs": [_ref("REAL_10Y")]}
     result = build_feature_snapshot_from_analysis_snapshot(snapshot)
     assert result.broad_dollar.value is None
-    assert result.real10y.value is None
+    assert result.real10y_direct.value is None
+
+
+def test_real10y_uses_exact_same_date_components_and_independent_fred_lineage() -> None:
+    snapshot = _snapshot()
+    snapshot["snapshot_time"] = "2025-01-21T21:05:00Z"
+    macro = snapshot["macro"]["data"]
+    macro["indicators"]["T10YIE"].update(value=2.38, date="2025-01-18")
+    macro["indicators"]["REAL_10Y"] = {
+        "derivation_version": "real10y_components.v1",
+        "value": 2.24,
+        "date": "2025-01-17",
+        "components": [
+            {"source_symbol": "DGS10", "date": "2025-01-17", "value": 4.61},
+            {"source_symbol": "T10YIE", "date": "2025-01-17", "value": 2.37},
+        ],
+    }
+    macro["source_refs"] = {
+        "DGS10": {
+            "source": "fred",
+            "source_url": "https://api.stlouisfed.org/fred/series/observations?series_id=DGS10",
+            "raw_path": "raw/macro/DGS10.json",
+            "retrieved_at": "2025-01-20T20:00:00Z",
+        },
+        "T10YIE": {
+            "source": "fred",
+            "source_url": "https://api.stlouisfed.org/fred/series/observations?series_id=T10YIE",
+            "raw_path": "raw/macro/T10YIE.json",
+            "retrieved_at": "2025-01-20T20:00:00Z",
+        },
+    }
+
+    result = build_feature_snapshot_from_analysis_snapshot(snapshot)
+
+    assert result.us10y.as_of == result.t10yie.as_of
+    assert result.us10y.as_of.isoformat() == "2025-01-17T00:00:00+00:00"
+    assert (result.us10y.value, result.t10yie.value, result.real10y_estimated.value) == (
+        4.61,
+        2.37,
+        2.24,
+    )
+    assert [ref.reference for ref in result.real10y_estimated.source_refs] == [
+        "https://api.stlouisfed.org/fred/series/observations?series_id=DGS10",
+        "https://api.stlouisfed.org/fred/series/observations?series_id=T10YIE",
+    ]
+    assert "REAL10Y_ESTIMATED_AVAILABLE" in result.real10y_reason_codes
+    assert result.real10y_estimated.freshness_status == "stale"
+    assert result.data_quality.analysis_readiness == "observe"
+
+
+def test_macro_top_level_fred_refs_replace_analysis_snapshot_fallback_lineage() -> None:
+    snapshot = _snapshot()
+    macro = snapshot["macro"]["data"]
+    macro["source_refs"] = {
+        symbol: {
+            "source": "fred",
+            "source_url": (
+                "https://api.stlouisfed.org/fred/series/observations"
+                f"?series_id={symbol}"
+            ),
+            "raw_path": f"raw/macro/{symbol}.json",
+            "retrieved_at": "2025-01-17T21:00:00Z",
+        }
+        for symbol in ("DGS2", "DGS10", "DGS30", "T10YIE", "DFII10", "DTWEXBGS")
+    }
+
+    result = build_feature_snapshot_from_analysis_snapshot(snapshot)
+
+    observations = (
+        result.us02y,
+        result.us10y,
+        result.us30y,
+        result.t10yie,
+        result.real10y_direct,
+        result.broad_dollar,
+    )
+    assert all(item.source_refs[0].source == "fred" for item in observations)
+    assert all("api.stlouisfed.org" in item.source_refs[0].reference for item in observations)
+    assert all(item.source_refs[0].source != "analysis_snapshot" for item in observations)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("arithmetic", "duplicate_ref", "missing_retrieved_at", "wrong_provider"),
+)
+def test_real10y_advertised_components_fail_closed_when_lineage_is_invalid(
+    corruption: str,
+) -> None:
+    snapshot = _snapshot()
+    macro = snapshot["macro"]["data"]
+    macro["indicators"]["REAL_10Y"] = {
+        "derivation_version": "real10y_components.v1",
+        "value": 2.24,
+        "date": "2025-01-17T21:00:00Z",
+        "components": [
+            {"source_symbol": "DGS10", "date": "2025-01-17T21:00:00Z", "value": 4.61},
+            {"source_symbol": "T10YIE", "date": "2025-01-17T21:00:00Z", "value": 2.37},
+        ],
+    }
+    macro["source_refs"] = {
+        "DGS10": {**_ref("DGS10"), "raw_path": "raw/macro/DGS10.json"},
+        "T10YIE": {**_ref("T10YIE"), "raw_path": "raw/macro/T10YIE.json"},
+    }
+    if corruption == "arithmetic":
+        macro["indicators"]["REAL_10Y"]["components"][1]["value"] = 2.30
+    elif corruption == "duplicate_ref":
+        macro["source_refs"]["T10YIE"]["source_url"] = macro["source_refs"]["DGS10"]["source_url"]
+    elif corruption == "wrong_provider":
+        macro["source_refs"]["T10YIE"].update(
+            source="mirror",
+            source_url="https://example.test/fred/series/observations?series_id=T10YIE",
+        )
+    else:
+        macro["source_refs"]["T10YIE"].pop("retrieved_at")
+
+    result = build_feature_snapshot_from_analysis_snapshot(snapshot)
+
+    assert result.us10y.value is None
+    assert result.t10yie.value is None
+    assert result.real10y_estimated.value is None
+    assert "REAL10Y_ESTIMATED_CORE_INPUT_UNUSABLE" in result.real10y_reason_codes
 
 
 def test_gc_futures_yahoo_source_cannot_become_xauusd_spot() -> None:

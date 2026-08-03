@@ -16,12 +16,16 @@ from apps.analysis.gold_policy.daily_close_schemas import (
     DailyCloseLoopResult,
     build_daily_close_loop_result,
 )
-from apps.analysis.gold_policy.schemas import SourceReference
+from apps.analysis.gold_policy.schemas import FeatureSnapshotV2, SourceReference
 from apps.analysis.gold_policy.state_transition_policy import (
     evaluate_analysis_state_transition,
+    evaluate_analysis_state_transition_v2,
 )
 from apps.analysis.gold_policy.strategy_policy import evaluate_gold_strategy_policy
-from apps.analysis.gold_policy.strategy_schemas import StrategyPolicyInput
+from apps.analysis.gold_policy.strategy_schemas import (
+    StrategyPolicyInput,
+    StrategyPolicyInputV2,
+)
 
 
 def evaluate_gold_daily_close_loop(loop_input: DailyCloseLoopInput) -> DailyCloseLoopResult:
@@ -35,12 +39,20 @@ def evaluate_gold_daily_close_loop(loop_input: DailyCloseLoopInput) -> DailyClos
         loop_input.current_feature,
         loop_input.previous_feature,
     )
-    transition_result = evaluate_analysis_state_transition(
-        loop_input.previous_state,
-        analysis,
-        loop_input.transition_evidence,
-        previous_transition=loop_input.previous_transition,
-    )
+    if isinstance(loop_input.current_feature, FeatureSnapshotV2):
+        transition_result = evaluate_analysis_state_transition_v2(
+            loop_input.previous_state,
+            analysis,
+            loop_input.transition_evidence,
+            previous_transition=loop_input.previous_transition,
+        )
+    else:
+        transition_result = evaluate_analysis_state_transition(
+            loop_input.previous_state,
+            analysis,
+            loop_input.transition_evidence,
+            previous_transition=loop_input.previous_transition,
+        )
     transition = transition_result.decision
     state = transition_result.state
 
@@ -65,7 +77,10 @@ def evaluate_gold_daily_close_loop(loop_input: DailyCloseLoopInput) -> DailyClos
             }
         )
 
-    strategy_input = StrategyPolicyInput(
+    strategy_input_model = (
+        StrategyPolicyInputV2 if isinstance(loop_input.current_feature, FeatureSnapshotV2) else StrategyPolicyInput
+    )
+    strategy_input = strategy_input_model(
         decision_as_of=loop_input.decision_as_of,
         feature_snapshot=loop_input.current_feature,
         analysis_state=state,
@@ -160,6 +175,12 @@ def _source_refs(
     candidate=None,
     consistency=None,
 ) -> tuple[SourceReference, ...]:
+    attribution_driver_groups = (
+        attribution.primary_drivers,
+        attribution.secondary_drivers,
+        attribution.counter_drivers,
+        getattr(attribution, "filtered_drivers", ()),
+    )
     refs = [
         *_feature_refs(loop_input.current_feature),
         *loop_input.transition_evidence.source_refs,
@@ -170,11 +191,7 @@ def _source_refs(
         *(ref for driver in (*analysis.dominant_drivers, *analysis.counter_drivers) for ref in driver.source_refs),
         *(
             ref
-            for driver in (
-                *attribution.primary_drivers,
-                *attribution.secondary_drivers,
-                *attribution.counter_drivers,
-            )
+            for driver in (item for group in attribution_driver_groups for item in group)
             for ref in driver.source_refs
         ),
     ]
@@ -199,6 +216,11 @@ def _source_refs(
 
 
 def _feature_refs(feature) -> tuple[SourceReference, ...]:
+    real10y_observations = (
+        (feature.real10y_estimated, feature.real10y_direct)
+        if isinstance(feature, FeatureSnapshotV2)
+        else (feature.real10y,)
+    )
     observations = (
         feature.xauusd_spot,
         feature.gc_futures,
@@ -206,7 +228,7 @@ def _feature_refs(feature) -> tuple[SourceReference, ...]:
         feature.us10y,
         feature.us30y,
         feature.t10yie,
-        feature.real10y,
+        *real10y_observations,
         feature.broad_dollar,
         feature.wti,
         feature.brent,

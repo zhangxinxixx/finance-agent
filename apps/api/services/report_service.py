@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -17,10 +18,15 @@ from apps.api.schemas.common import ArtifactType, DataStatus, ReportLifecycleSta
 from apps.api.schemas.report import ReportAnalysisAgentOutput, ReportAnalysisInputs, ReportDeterministicInput
 from apps.api.schemas.report import ReportArtifact as ReportArtifactSchema
 from apps.api.schemas.report import ReportDetail
-from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef
+from apps.api.schemas.source_trace import ArtifactRef, SnapshotRef, SourceRef
 from apps.api.services._report_lineage import resolve_report_lineage_context
 from apps.api.services._storage import _PROJECT_ROOT, _iso, _latest_asset_date_run, _try_db_session
-from apps.api.services._trace_refs import coerce_artifact_type, dedupe_artifact_refs, dedupe_source_refs, parse_source_refs
+from apps.api.services._trace_refs import (
+    coerce_artifact_type,
+    dedupe_artifact_refs,
+    dedupe_source_refs,
+    parse_source_refs,
+)
 from apps.api.services.agent_output_service import build_agent_output_summary
 from apps.api.services.llm_audit_service import audit_summary, build_report_llm_audit_view
 from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
@@ -30,6 +36,7 @@ from apps.renderer.contracts import MacroEventFollowupStructuredPayload, WeeklyC
 from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
 from database.models.report import ReportArtifact as ReportArtifactModel
 from database.models.report import ReportItem
+from database.models.task import TaskRun, TaskStatus as TaskRunStatus
 from database.queries.report import get_report_artifacts as query_report_artifacts
 from database.queries.report import get_report_detail as query_report_detail
 
@@ -79,6 +86,8 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
         if item is not None:
             artifacts = query_report_artifacts(db, report_id)
             detail = _build_report_detail_from_item(item, artifacts)
+            detail = _enrich_macro_report_lineage(detail)
+            detail = _enforce_task_run_report_authority(db, detail)
             detail = _enrich_report_detail_with_lineage_warnings(db, detail)
             detail = _enrich_report_detail_with_llm_audits(db, detail)
             return _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
@@ -87,8 +96,143 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
     detail = _build_legacy_report_detail(db, report_id)
     if detail is None:
         return None
+    detail = _enrich_macro_report_lineage(detail)
+    detail = _enforce_task_run_report_authority(db, detail)
     detail = _enrich_report_detail_with_llm_audits(db, detail)
     return _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
+
+
+def _non_authoritative_premarket_run_ids(db: Session, run_ids: Iterable[str | None]) -> set[str]:
+    parsed_ids: dict[uuid.UUID, str] = {}
+    for run_id in run_ids:
+        if not run_id:
+            continue
+        try:
+            parsed_ids[uuid.UUID(str(run_id))] = str(run_id)
+        except ValueError:
+            continue
+    if not parsed_ids:
+        return set()
+
+    try:
+        rows = db.scalars(select(TaskRun).where(TaskRun.id.in_(parsed_ids))).all()
+    except (OperationalError, ProgrammingError):
+        return set()
+    return {str(row.id) for row in rows if row.name == "premarket" and row.status != TaskRunStatus.success}
+
+
+def _load_non_authoritative_premarket_run_ids(run_ids: Iterable[str | None]) -> set[str]:
+    db = _try_db_session()
+    if db is None:
+        return set()
+    try:
+        return _non_authoritative_premarket_run_ids(db, run_ids)
+    finally:
+        db.close()
+
+
+def _enforce_task_run_report_authority(db: Session, detail: ReportDetail) -> ReportDetail:
+    if detail.family != "macro_report":
+        return detail
+    task_blocked = detail.run_id in _non_authoritative_premarket_run_ids(db, [detail.run_id])
+    publish_allowed = _gold_publish_allowed(detail.trade_date, detail.run_id)
+    quality_blocked = publish_allowed is False
+    lineage_blocked = publish_allowed is True and (
+        not detail.snapshot_id or not detail.source_refs or not detail.input_snapshot_ids
+    )
+    if not task_blocked and not quality_blocked and not lineage_blocked:
+        return detail
+    if task_blocked:
+        code = "upstream-task-not-successful"
+        message = "The premarket task did not complete successfully; this intermediate report is not authoritative."
+    elif quality_blocked:
+        code = "quality-gate-blocked"
+        message = "The Gold analysis QualityGate blocked publication; this intermediate report is not authoritative."
+    else:
+        code = "macro-lineage-unavailable"
+        message = (
+            "The accepted macro report lacks a validated canonical snapshot or source lineage; it is not authoritative."
+        )
+    return detail.model_copy(
+        update={
+            "data_status": DataStatus.unavailable,
+            "lifecycle_status": ReportLifecycleStatus.needs_review,
+            "warnings": _merge_warning_items(
+                detail.warnings,
+                [
+                    WarningItem(
+                        code=code,
+                        message=message,
+                    )
+                ],
+            ),
+        }
+    )
+
+
+def _enrich_macro_report_lineage(detail: ReportDetail) -> ReportDetail:
+    if detail.family != "macro_report":
+        return detail
+    lineage = _load_macro_report_lineage(detail.trade_date, detail.run_id)
+    if lineage is None:
+        return detail
+    snapshot_id, source_refs, input_snapshot_ids = lineage
+    return detail.model_copy(
+        update={
+            "snapshot_id": snapshot_id,
+            "source_refs": dedupe_source_refs([*detail.source_refs, *source_refs]),
+            "input_snapshot_ids": list(dict.fromkeys([*detail.input_snapshot_ids, *input_snapshot_ids])),
+        }
+    )
+
+
+def _load_macro_report_lineage(
+    trade_date: str | None,
+    run_id: str | None,
+) -> tuple[str, list[SourceRef], list[str]] | None:
+    if not trade_date or not run_id:
+        return None
+    snapshot = _read_optional_json(
+        _PROJECT_ROOT
+        / "storage"
+        / "features"
+        / "snapshots"
+        / "XAUUSD"
+        / trade_date
+        / run_id
+        / "premarket_snapshot.json"
+    )
+    quality_gate = _read_optional_json(
+        _PROJECT_ROOT / "storage" / "analysis" / "gold_mainlines" / trade_date / run_id / "quality_gate_result.json"
+    )
+    if not isinstance(snapshot, dict) or not isinstance(quality_gate, dict):
+        return None
+    expected_snapshot_id = f"XAUUSD:{trade_date}:{run_id}"
+    if (
+        snapshot.get("asset") != "XAUUSD"
+        or snapshot.get("trade_date") != trade_date
+        or snapshot.get("run_id") != run_id
+        or snapshot.get("snapshot_id") != expected_snapshot_id
+        or quality_gate.get("trade_date") != trade_date
+        or quality_gate.get("run_id") != run_id
+        or quality_gate.get("snapshot_id") != expected_snapshot_id
+    ):
+        return None
+    source_refs = parse_source_refs(snapshot.get("source_refs"))
+    input_snapshot_ids = _normalize_snapshot_ids(snapshot.get("input_snapshot_ids"))
+    if not source_refs or not input_snapshot_ids:
+        return None
+    return expected_snapshot_id, source_refs, input_snapshot_ids
+
+
+def _gold_publish_allowed(trade_date: str | None, run_id: str | None) -> bool | None:
+    if not trade_date or not run_id:
+        return None
+    payload = _read_optional_json(
+        _PROJECT_ROOT / "storage" / "analysis" / "gold_mainlines" / trade_date / run_id / "quality_gate_result.json"
+    )
+    value = payload.get("publish_allowed") if isinstance(payload, dict) else None
+    return value if isinstance(value, bool) else None
 
 
 def _enrich_report_detail_with_llm_audits(db: Session, detail: ReportDetail) -> ReportDetail:
@@ -142,7 +286,7 @@ def get_report_visual(db: Session, report_id: str) -> dict[str, Any] | None:
 
 
 def get_report_evidence(db: Session, report_id: str) -> dict[str, Any] | None:
-    return _build_report_artifact_payload(db, report_id, ArtifactType.structured_json)
+    return _build_report_artifact_payload_by_basename(db, report_id, ArtifactType.structured_json, "evidence.json")
 
 
 def get_report_analysis_inputs(db: Session, report_id: str) -> ReportAnalysisInputs | None:
@@ -177,7 +321,9 @@ def get_report_analysis_inputs(db: Session, report_id: str) -> ReportAnalysisInp
     deterministic_inputs: list[ReportDeterministicInput] = []
     if snapshot is not None:
         deterministic_inputs.append(_build_analysis_snapshot_input(snapshot))
-        deterministic_inputs.extend(_build_input_snapshot_items(db, snapshot.input_snapshot_ids, run_id=snapshot.run_id))
+        deterministic_inputs.extend(
+            _build_input_snapshot_items(db, snapshot.input_snapshot_ids, run_id=snapshot.run_id)
+        )
     elif detail_input_snapshot_ids:
         deterministic_inputs.extend(_build_input_snapshot_items(db, detail_input_snapshot_ids, run_id=detail.run_id))
     elif agent_rows:
@@ -259,7 +405,24 @@ def _build_report_artifact_payload(db: Session, report_id: str, artifact_type: A
     return _build_artifact_payload(artifact, report_id=detail.report_id)
 
 
-def get_report_artifact_asset_path(db: Session, report_id: str, artifact_type: ArtifactType, asset_path: str) -> Path | None:
+def _build_report_artifact_payload_by_basename(
+    db: Session, report_id: str, artifact_type: ArtifactType, basename: str
+) -> dict[str, Any] | None:
+    """Pick an artifact by type, preferring one whose file basename matches.
+
+    Falls back to the first artifact of the given type if no basename match
+    exists, preserving legacy behavior for reports without named files.
+    """
+    detail = get_report_detail(db, report_id)
+    if detail is None:
+        return None
+    artifact = _pick_artifact_by_basename(detail.artifacts, artifact_type, basename)
+    return _build_artifact_payload(artifact, report_id=detail.report_id)
+
+
+def get_report_artifact_asset_path(
+    db: Session, report_id: str, artifact_type: ArtifactType, asset_path: str
+) -> Path | None:
     detail = get_report_detail(db, report_id)
     if detail is None:
         return None
@@ -279,9 +442,15 @@ def _enrich_report_detail_with_lineage_warnings(db: Session, detail: ReportDetai
     warnings = _merge_warning_items(detail.warnings, lineage.warnings)
     normalized_run_id = lineage.resolved_run_id
     normalized_snapshot_id = lineage.resolved_snapshot_id
-    if warnings == detail.warnings and normalized_run_id == detail.run_id and normalized_snapshot_id == detail.snapshot_id:
+    if (
+        warnings == detail.warnings
+        and normalized_run_id == detail.run_id
+        and normalized_snapshot_id == detail.snapshot_id
+    ):
         return detail
-    return detail.model_copy(update={"warnings": warnings, "run_id": normalized_run_id, "snapshot_id": normalized_snapshot_id})
+    return detail.model_copy(
+        update={"warnings": warnings, "run_id": normalized_run_id, "snapshot_id": normalized_snapshot_id}
+    )
 
 
 def _enrich_report_detail_with_gold_macro_context(detail: ReportDetail) -> ReportDetail:
@@ -366,7 +535,9 @@ def _build_report_agent_output(row: AgentOutput) -> ReportAnalysisAgentOutput:
         watchlist=[str(item) for item in summary["watchlist"]],
         invalid_conditions=[str(item) for item in summary["invalid_conditions"]],
         source_refs=parse_source_refs(summary["source_refs"]),
-        artifact_refs=_normalize_agent_artifact_refs(summary["artifact_refs"], agent_output_id=summary["agent_output_id"]),
+        artifact_refs=_normalize_agent_artifact_refs(
+            summary["artifact_refs"], agent_output_id=summary["agent_output_id"]
+        ),
         claims=summary["claims"],
         claim_reviews=summary["claim_reviews"],
         claim_count=int(summary["claim_count"]),
@@ -537,7 +708,16 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
     if schema_artifacts and (_missing_standard_artifacts(schema_artifacts) or _missing_files(schema_artifacts)):
         if data_status == DataStatus.live:
             data_status = DataStatus.partial
-        warnings.append(WarningItem(code="report-artifacts-partial", message="Standard report artifacts are incomplete"))
+        warnings.append(
+            WarningItem(code="report-artifacts-partial", message="Standard report artifacts are incomplete")
+        )
+
+    input_snapshot_ids: list[str] = []
+    report_identity: dict[str, Any] | None = None
+    metadata = item.report_metadata if isinstance(item.report_metadata, dict) else {}
+    if item.family == "gold_policy_daily_report":
+        input_snapshot_ids = _normalize_snapshot_ids(metadata.get("input_snapshot_ids"))
+        report_identity = _project_gold_policy_report_identity(metadata)
 
     return ReportDetail(
         run_id=item.run_id,
@@ -554,8 +734,34 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
         lifecycle_status=_coerce_lifecycle_status(item.lifecycle_status),
         generated_at=item.updated_at or item.created_at,
         artifacts=schema_artifacts,
+        input_snapshot_ids=input_snapshot_ids,
+        report_identity=report_identity,
         structured_payload=_load_structured_payload(schema_artifacts),
     )
+
+
+_GOLD_POLICY_REPORT_IDENTITY_KEYS = (
+    "report_context_id",
+    "report_render_id",
+    "authority_result_id",
+    "canonical_receipt_id",
+    "canonical_receipt_revision_no",
+    "canonical_commit_action",
+    "manifest_schema_version",
+    "structured_schema_version",
+    "publication_status",
+)
+
+
+def _project_gold_policy_report_identity(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Project non-empty registry metadata fields into a read-only report_identity."""
+    identity: dict[str, Any] = {}
+    for key in _GOLD_POLICY_REPORT_IDENTITY_KEYS:
+        value = metadata.get(key)
+        if value in (None, ""):
+            continue
+        identity[key] = value
+    return identity or None
 
 
 def _merge_warning_items(*warning_groups: list[WarningItem]) -> list[WarningItem]:
@@ -746,7 +952,9 @@ def _legacy_macro_event_followup_detail(report_id: str) -> ReportDetail | None:
         followup_date, followup_run_id = followup_id.split(":", 1)
 
     if followup_date:
-        run_dir = _PROJECT_ROOT / "storage" / "outputs" / "macro_event_followup" / "XAUUSD" / followup_date / followup_run_id
+        run_dir = (
+            _PROJECT_ROOT / "storage" / "outputs" / "macro_event_followup" / "XAUUSD" / followup_date / followup_run_id
+        )
         base = (followup_date, run_dir) if run_dir.is_dir() else None
     else:
         base = _find_run_dir(_PROJECT_ROOT / "storage" / "outputs" / "macro_event_followup" / "XAUUSD", followup_run_id)
@@ -768,9 +976,15 @@ def _legacy_macro_event_followup_detail(report_id: str) -> ReportDetail | None:
     return ReportDetail(
         run_id=followup_run_id,
         snapshot_id=None,
-        data_status=DataStatus.partial if _missing_standard_artifacts(artifacts) or _missing_files(artifacts) else DataStatus.live,
+        data_status=DataStatus.partial
+        if _missing_standard_artifacts(artifacts) or _missing_files(artifacts)
+        else DataStatus.live,
         artifact_refs=artifacts,
-        warnings=[WarningItem(code="legacy-report-adapter", message="Legacy macro event follow-up report adapted to report detail")],
+        warnings=[
+            WarningItem(
+                code="legacy-report-adapter", message="Legacy macro event follow-up report adapted to report detail"
+            )
+        ],
         report_id=report_id,
         family=_report_index_family("macro_event_followup"),
         title=_report_index_title("macro_event_followup", trade_date),
@@ -778,7 +992,9 @@ def _legacy_macro_event_followup_detail(report_id: str) -> ReportDetail | None:
         trade_date=trade_date,
         lifecycle_status=ReportLifecycleStatus.generated,
         artifacts=artifacts,
-        structured_payload=payload.model_dump(mode="json") if payload is not None else _load_structured_payload(artifacts),
+        structured_payload=payload.model_dump(mode="json")
+        if payload is not None
+        else _load_structured_payload(artifacts),
     )
 
 
@@ -837,11 +1053,7 @@ def _legacy_weekly_context_revision_detail(report_id: str) -> ReportDetail | Non
     return ReportDetail(
         run_id=revision_run_id,
         snapshot_id=None,
-        data_status=(
-            DataStatus.partial
-            if observe_only or _missing_files(artifacts)
-            else DataStatus.live
-        ),
+        data_status=(DataStatus.partial if observe_only or _missing_files(artifacts) else DataStatus.live),
         artifact_refs=artifacts,
         warnings=warnings,
         report_id=report_id,
@@ -855,6 +1067,8 @@ def _legacy_weekly_context_revision_detail(report_id: str) -> ReportDetail | Non
             payload.model_dump(mode="json") if payload is not None else _load_structured_payload(artifacts)
         ),
     )
+
+
 def _legacy_jin10_report_detail(report_id: str) -> ReportDetail | None:
     base = _find_run_dir(_PROJECT_ROOT / "storage" / "outputs" / "jin10", report_id)
     if base is None:
@@ -887,21 +1101,34 @@ def _legacy_jin10_report_detail(report_id: str) -> ReportDetail | None:
         "jin10_market_observation_report",
     }:
         resolved_family = family
-        resolved_title = _jin10_source_title(raw_payload, external_meta) or str(daily_payload.get("title") or agent_payload.get("title") or "").strip() or _report_index_title(family, trade_date)
+        resolved_title = (
+            _jin10_source_title(raw_payload, external_meta)
+            or str(daily_payload.get("title") or agent_payload.get("title") or "").strip()
+            or _report_index_title(family, trade_date)
+        )
     elif family == "jin10_weekly_visual" or _is_explicit_jin10_weekly(external_meta or daily_payload):
         resolved_family = "jin10_weekly_visual"
-        resolved_title = _jin10_source_title(raw_payload, external_meta) or str(daily_payload.get("title") or agent_payload.get("title") or "").strip() or "Jin10 weekly report"
+        resolved_title = (
+            _jin10_source_title(raw_payload, external_meta)
+            or str(daily_payload.get("title") or agent_payload.get("title") or "").strip()
+            or "Jin10 weekly report"
+        )
     else:
         resolved_family = "jin10_daily_visual"
-        resolved_title = _jin10_source_title(raw_payload, external_meta) or str(daily_payload.get("title") or agent_payload.get("title") or "").strip() or "Jin10 daily report"
+        resolved_title = (
+            _jin10_source_title(raw_payload, external_meta)
+            or str(daily_payload.get("title") or agent_payload.get("title") or "").strip()
+            or "Jin10 daily report"
+        )
     structured_payload = _build_legacy_jin10_structured_payload(run_dir=run_dir, artifacts=artifacts)
-    generation_trace = (structured_payload or {}).get("_generation_trace") if isinstance(structured_payload, dict) else {}
+    generation_trace = (
+        (structured_payload or {}).get("_generation_trace") if isinstance(structured_payload, dict) else {}
+    )
     quality_audit = _normalize_jin10_quality_audit(agent_payload, raw_payload, daily_payload)
     quality_needs_review = _jin10_report_status(quality_audit) != "ready"
     quality_blocks_content = _jin10_quality_blocks_content(quality_audit)
-    semantic_needs_review = (
-        isinstance(generation_trace, dict)
-        and ((generation_trace.get("quality_audit") or {}).get("semantic_review_status") == "needs_review")
+    semantic_needs_review = isinstance(generation_trace, dict) and (
+        (generation_trace.get("quality_audit") or {}).get("semantic_review_status") == "needs_review"
     )
     asset_audit = generation_trace.get("asset_audit") if isinstance(generation_trace, dict) else {}
     asset_needs_review = isinstance(asset_audit, dict) and asset_audit.get("status") not in {None, "pass"}
@@ -979,7 +1206,9 @@ def _jin10_report_identity(*payloads: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _build_legacy_jin10_structured_payload(*, run_dir: Path, artifacts: list[ReportArtifactSchema]) -> dict[str, Any] | None:
+def _build_legacy_jin10_structured_payload(
+    *, run_dir: Path, artifacts: list[ReportArtifactSchema]
+) -> dict[str, Any] | None:
     raw_payload = _read_optional_json(run_dir / "raw_article_report.json") or {}
     if not raw_payload:
         raw_payload = _load_structured_payload(artifacts) or {}
@@ -1002,9 +1231,15 @@ def _build_jin10_generation_trace(
     agent_payload: dict[str, Any],
     daily_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    raw_generated_from = raw_payload.get("generated_from") if isinstance(raw_payload.get("generated_from"), dict) else {}
-    agent_generated_from = agent_payload.get("generated_from") if isinstance(agent_payload.get("generated_from"), dict) else {}
-    parser_trace = raw_generated_from.get("parser_trace") if isinstance(raw_generated_from.get("parser_trace"), dict) else {}
+    raw_generated_from = (
+        raw_payload.get("generated_from") if isinstance(raw_payload.get("generated_from"), dict) else {}
+    )
+    agent_generated_from = (
+        agent_payload.get("generated_from") if isinstance(agent_payload.get("generated_from"), dict) else {}
+    )
+    parser_trace = (
+        raw_generated_from.get("parser_trace") if isinstance(raw_generated_from.get("parser_trace"), dict) else {}
+    )
     parser_status = parser_trace.get("status") if isinstance(parser_trace.get("status"), dict) else {}
 
     def trace_value(key: str) -> Any:
@@ -1016,9 +1251,13 @@ def _build_jin10_generation_trace(
     chart_text_issues = _jin10_chart_text_issues(charts)
     semantic_review_status = "needs_review" if chart_text_issues else "pass"
     vision_layout_path = run_dir / "vision_layout.json"
-    vlm_provider = trace_value("vision_provider") or raw_generated_from.get("provider") or raw_generated_from.get("source")
+    vlm_provider = (
+        trace_value("vision_provider") or raw_generated_from.get("provider") or raw_generated_from.get("source")
+    )
     vlm_model = trace_value("vision_model") or raw_generated_from.get("model") or raw_generated_from.get("vlm_model")
-    vision_layout_status = trace_value("vision_layout_status") or ("present" if vision_layout_path.exists() else "missing")
+    vision_layout_status = trace_value("vision_layout_status") or (
+        "present" if vision_layout_path.exists() else "missing"
+    )
     vlm_tracked = bool(vlm_model or trace_value("parser_run_id"))
 
     return {
@@ -1049,7 +1288,9 @@ def _build_jin10_generation_trace(
         "quality_audit": {
             "status": quality_audit.get("status"),
             "checked_at": quality_audit.get("checked_at"),
-            "reason_count": len(quality_audit.get("reasons") or []) if isinstance(quality_audit.get("reasons"), list) else 0,
+            "reason_count": len(quality_audit.get("reasons") or [])
+            if isinstance(quality_audit.get("reasons"), list)
+            else 0,
             "semantic_review_status": semantic_review_status,
             "chart_text_issue_count": len(chart_text_issues),
             "chart_text_issues": chart_text_issues[:8],
@@ -1063,7 +1304,9 @@ def _build_jin10_generation_trace(
         },
         "strategy_handoff": {
             "scenario_paths": _summarize_named_items(agent_payload.get("scenario_paths")),
-            "trading_implications": _summarize_named_items(agent_payload.get("trading_implications"), title_key="stance"),
+            "trading_implications": _summarize_named_items(
+                agent_payload.get("trading_implications"), title_key="stance"
+            ),
             "source_artifact_refs": agent_payload.get("source_artifact_refs") or [],
         },
     }
@@ -1083,18 +1326,9 @@ def _build_jin10_asset_audit(*, run_dir: Path, raw_payload: dict[str, Any]) -> d
     article_id = str(raw_payload.get("article_id") or run_dir.name).strip()
     if not re.fullmatch(r"\d+", article_id):
         article_id = run_dir.name
-    parsed_figures = (
-        _PROJECT_ROOT
-        / "storage"
-        / "parsed"
-        / "jin10"
-        / run_dir.parent.name
-        / article_id
-        / "figures"
-    )
+    parsed_figures = _PROJECT_ROOT / "storage" / "parsed" / "jin10" / run_dir.parent.name / article_id / "figures"
     canonical_figure_paths = {
-        _normalize_jin10_image_ref(f"figures/{path.name}")
-        for path in parsed_figures.glob("*.png")
+        _normalize_jin10_image_ref(f"figures/{path.name}") for path in parsed_figures.glob("*.png")
     }
     expected_refs = markdown_refs | chart_refs
     figure_paths = canonical_figure_paths & expected_refs
@@ -1225,7 +1459,9 @@ def _jin10_chart_text_issues(charts: Any) -> list[dict[str, Any]]:
 def _count_jin10_source_images(source_refs: Any) -> int:
     if not isinstance(source_refs, list):
         return 0
-    return sum(1 for ref in source_refs if isinstance(ref, dict) and str(ref.get("asset_type") or "").lower() == "image")
+    return sum(
+        1 for ref in source_refs if isinstance(ref, dict) and str(ref.get("asset_type") or "").lower() == "image"
+    )
 
 
 def _summarize_named_items(raw_items: Any, *, title_key: str = "path") -> list[dict[str, Any]]:
@@ -1265,7 +1501,9 @@ def _legacy_external_jin10_weekly_detail(report_id: str) -> ReportDetail | None:
         snapshot_id=None,
         data_status=DataStatus.partial,
         artifact_refs=artifacts,
-        warnings=[WarningItem(code="legacy-report-adapter", message="Legacy Jin10 weekly source adapted to report detail")],
+        warnings=[
+            WarningItem(code="legacy-report-adapter", message="Legacy Jin10 weekly source adapted to report detail")
+        ],
         report_id=report_id,
         family="jin10_weekly_visual",
         title="Jin10 weekly report",
@@ -1299,7 +1537,9 @@ def _legacy_cme_visual_detail(report_id: str) -> ReportDetail | None:
         snapshot_id=None,
         data_status=DataStatus.partial,
         artifact_refs=artifacts,
-        warnings=[WarningItem(code="legacy-report-adapter", message="Legacy CME visual report adapted to report detail")],
+        warnings=[
+            WarningItem(code="legacy-report-adapter", message="Legacy CME visual report adapted to report detail")
+        ],
         report_id=report_id,
         family="cme_options_visual",
         title="CME options visual report",
@@ -1530,7 +1770,9 @@ def _missing_standard_artifacts(artifacts: list[ReportArtifactSchema]) -> bool:
 
 
 def _missing_files(artifacts: list[ReportArtifactSchema]) -> bool:
-    return any((path := _resolve_report_path(artifact.file_path)) is None or not path.exists() for artifact in artifacts)
+    return any(
+        (path := _resolve_report_path(artifact.file_path)) is None or not path.exists() for artifact in artifacts
+    )
 
 
 def _missing_file_warnings(artifacts: list[ReportArtifactSchema]) -> list[WarningItem]:
@@ -1549,8 +1791,29 @@ def _missing_file_warnings(artifacts: list[ReportArtifactSchema]) -> list[Warnin
     return warnings
 
 
+def _pick_artifact_by_basename(
+    artifacts: list[ReportArtifactSchema], artifact_type: ArtifactType, basename: str
+) -> ReportArtifactSchema | None:
+    """Pick an artifact by type, preferring one whose file basename matches.
+
+    Falls back to the first artifact of the given type if no basename match
+    exists, preserving legacy behavior for reports without named files.
+    """
+    fallback: ReportArtifactSchema | None = None
+    target = basename.lower()
+    for artifact in artifacts:
+        if artifact.artifact_type != artifact_type:
+            continue
+        if fallback is None:
+            fallback = artifact
+        normalized = str(artifact.file_path).replace("\\", "/").lower()
+        if normalized.rsplit("/", 1)[-1] == target:
+            return artifact
+    return fallback
+
+
 def _load_structured_payload(artifacts: list[ReportArtifactSchema]) -> dict | None:
-    artifact = _pick_report_artifact(artifacts, ArtifactType.structured_json)
+    artifact = _pick_artifact_by_basename(artifacts, ArtifactType.structured_json, "report_structured.json")
     if artifact is None:
         return None
     path = _resolve_report_path(artifact.file_path)
@@ -1584,8 +1847,6 @@ def _normalize_snapshot_ids(raw: Any) -> list[str]:
     return list(dict.fromkeys(snapshot_ids))
 
 
-
-
 def _find_run_dir(base: Path, report_id: str) -> tuple[str, Path] | None:
     if not base.exists():
         return None
@@ -1598,7 +1859,7 @@ def _find_run_dir(base: Path, report_id: str) -> tuple[str, Path] | None:
 
 def _strip_report_type_prefix(report_id: str, report_type: str) -> str:
     prefix = f"{report_type}:"
-    return report_id[len(prefix):] if report_id.startswith(prefix) else report_id
+    return report_id[len(prefix) :] if report_id.startswith(prefix) else report_id
 
 
 def _resolve_report_path(file_path: str | Path) -> Path | None:
@@ -1639,6 +1900,7 @@ def _read_artifact_content(path: Path, artifact_type: ArtifactType) -> Any:
         except Exception:
             return raw
     return path.read_text(encoding="utf-8")
+
 
 def _report_quality_score(md_path: Path) -> tuple[int, float, str]:
     try:
@@ -1929,7 +2191,9 @@ def _build_strategy_card_detail(
     md_content: str | None = None,
     market_regime: str | None = None,
 ) -> dict[str, Any]:
-    detail_source_refs = source_refs or (sc_data.get("source_refs") if isinstance(sc_data.get("source_refs"), list) else []) or []
+    detail_source_refs = (
+        source_refs or (sc_data.get("source_refs") if isinstance(sc_data.get("source_refs"), list) else []) or []
+    )
     result: dict[str, Any] = {
         "strategy_card_id": strategy_card_id,
         "asset": asset,
@@ -2056,7 +2320,9 @@ def _build_strategy_weekend_context(
         and _strategy_report_identity(item) != weekly_key
     ][:4]
 
-    should_show = bool(weekly_report or recent_context or (latest_report_date and latest_report_date > anchor_trade_date))
+    should_show = bool(
+        weekly_report or recent_context or (latest_report_date and latest_report_date > anchor_trade_date)
+    )
     if not should_show:
         return None
 
@@ -2206,7 +2472,9 @@ def _build_strategy_hero(
         "bias": sc_data.get("bias") or "",
         "direction": sc_data.get("direction") or "unknown",
         "confidence": sc_data.get("confidence"),
-        "market_regime": market_regime if market_regime is not None else sc_data.get("market_regime") or sc_data.get("macro_phase"),
+        "market_regime": market_regime
+        if market_regime is not None
+        else sc_data.get("market_regime") or sc_data.get("macro_phase"),
         "trade_date": trade_date,
         "run_id": run_id,
         "snapshot_id": snapshot_id,
@@ -2219,11 +2487,7 @@ def _strategy_card_status(sc_data: dict[str, Any]) -> str:
     if explicit_status in {"available", "partial", "unavailable", "error"}:
         return explicit_status
 
-    data_quality = {
-        str(item).strip().lower()
-        for item in sc_data.get("data_quality") or []
-        if str(item).strip()
-    }
+    data_quality = {str(item).strip().lower() for item in sc_data.get("data_quality") or [] if str(item).strip()}
     scenario_summary = str(sc_data.get("scenario_summary") or "").lower()
     if data_quality.intersection({"observe_wait", "no_strong_conclusion"}) or "blocked" in scenario_summary:
         return "partial"
@@ -2255,7 +2519,9 @@ def _build_strategy_scenario(sc_data: dict[str, Any]) -> dict[str, Any] | None:
         "alternative_scenarios": list(sc_data.get("alternative_scenarios") or []),
         "key_levels": key_levels,
         "trigger_conditions": list(sc_data.get("trigger_conditions") or sc_data.get("triggers") or []),
-        "invalidation_conditions": list(sc_data.get("invalidation_conditions") or sc_data.get("invalid_conditions") or []),
+        "invalidation_conditions": list(
+            sc_data.get("invalidation_conditions") or sc_data.get("invalid_conditions") or []
+        ),
         "confirmation_conditions": list(sc_data.get("confirmation_conditions") or []),
         "risk_points": list(sc_data.get("risk_points") or []),
         "watchlist": list(sc_data.get("watchlist") or []),
@@ -2350,8 +2616,7 @@ def _collect_fs_strategy_cards(base: Path, asset: str, limit: int) -> list[dict[
                     artifact_refs=[str(json_path.relative_to(_PROJECT_ROOT))],
                     market_regime=market_regime,
                     updated_at=(
-                        _strategy_card_payload_timestamp(sc_data)
-                        or _generated_at_from_paths(json_path, md_path)
+                        _strategy_card_payload_timestamp(sc_data) or _generated_at_from_paths(json_path, md_path)
                     ),
                 )
             )
@@ -2554,14 +2819,7 @@ def _load_strategy_analysis_snapshot_payload(json_path: Path) -> dict[str, Any] 
     trade_date = parts[storage_idx + 4]
     run_id = parts[storage_idx + 5]
     analysis_path = (
-        _PROJECT_ROOT
-        / "storage"
-        / "features"
-        / "snapshots"
-        / asset
-        / trade_date
-        / run_id
-        / "premarket_snapshot.json"
+        _PROJECT_ROOT / "storage" / "features" / "snapshots" / asset / trade_date / run_id / "premarket_snapshot.json"
     )
     if not analysis_path.exists():
         return None
@@ -2580,9 +2838,7 @@ def _strategy_market_regime_from_json(json_path: Path) -> str | None:
     regime = _strategy_market_regime_from_payload(payload)
     if regime is not None:
         return regime
-    return _strategy_market_regime_from_analysis_snapshot_payload(
-        _load_strategy_analysis_snapshot_payload(json_path)
-    )
+    return _strategy_market_regime_from_analysis_snapshot_payload(_load_strategy_analysis_snapshot_payload(json_path))
 
 
 def _strategy_regime_counts_payload(regime_counts: defaultdict[str, int]) -> list[dict[str, Any]]:
@@ -2667,7 +2923,11 @@ def list_strategy_assets() -> dict[str, Any]:
                     FinalAnalysisResult.asset.isnot(None),
                     FinalAnalysisResult.strategy_card.isnot(None),
                 )
-                .order_by(FinalAnalysisResult.asset.asc(), FinalAnalysisResult.trade_date.desc(), FinalAnalysisResult.id.desc())
+                .order_by(
+                    FinalAnalysisResult.asset.asc(),
+                    FinalAnalysisResult.trade_date.desc(),
+                    FinalAnalysisResult.id.desc(),
+                )
             ).all()
             if rows:
                 items = _summarize_strategy_assets(rows)
@@ -2917,9 +3177,7 @@ def get_jin10_report_bundle_asset_path(date: str, run_id: str, asset_path: str) 
         if re.fullmatch(r"\d+", article_id) and article_id not in canonical_ids:
             canonical_ids.append(article_id)
         for canonical_id in canonical_ids:
-            parsed_base = (
-                _PROJECT_ROOT / "storage" / "parsed" / "jin10" / date / canonical_id
-            ).resolve()
+            parsed_base = (_PROJECT_ROOT / "storage" / "parsed" / "jin10" / date / canonical_id).resolve()
             candidate = (parsed_base / "figures" / parts[1]).resolve()
             if not candidate.is_file():
                 continue
@@ -3004,7 +3262,9 @@ def _jin10_quality_blocks_content(quality_audit: dict[str, Any] | None) -> bool:
     )
 
 
-def _build_jin10_view_payload(*, kind: str, content: str | None, path: Path, asset_base_url: str | None = None) -> dict[str, Any]:
+def _build_jin10_view_payload(
+    *, kind: str, content: str | None, path: Path, asset_base_url: str | None = None
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "kind": kind,
         "available": bool(content and content.strip()),
@@ -3057,11 +3317,7 @@ def _load_jin10_report_bundle(date: str, run_id: str) -> dict[str, Any] | None:
     if not any(view["available"] for view in views.values()):
         return None
 
-    title = (
-        (agent_json or {}).get("title")
-        or (daily_json or {}).get("title")
-        or (raw_json or {}).get("title")
-    )
+    title = (agent_json or {}).get("title") or (daily_json or {}).get("title") or (raw_json or {}).get("title")
     source_url = (
         (agent_json or {}).get("source_url")
         or (daily_json or {}).get("source_url")
@@ -3090,7 +3346,10 @@ def _load_jin10_report_bundle(date: str, run_id: str) -> dict[str, Any] | None:
         payload["quality_audit"] = quality_audit
     return payload
 
-def _collect_reports(base_rel: str, report_type: str, fmt: str, asset: str, md_filename: str | None = None) -> list[dict[str, Any]]:
+
+def _collect_reports(
+    base_rel: str, report_type: str, fmt: str, asset: str, md_filename: str | None = None
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     base = _PROJECT_ROOT / "storage" / "outputs" / base_rel / asset
     if not base.exists():
@@ -3169,8 +3428,11 @@ def _collect_reports_from_db(report_type: str, fmt: str, asset: str) -> list[dic
                 candidate_paths = [row.strategy_card_json_path, row.strategy_card_md_path]
                 if any(candidate_paths):
                     existing_paths = [
-                        _PROJECT_ROOT / path for path in candidate_paths
-                        if path is not None and (_PROJECT_ROOT / path).exists() and (_PROJECT_ROOT / path).is_relative_to(storage_root)
+                        _PROJECT_ROOT / path
+                        for path in candidate_paths
+                        if path is not None
+                        and (_PROJECT_ROOT / path).exists()
+                        and (_PROJECT_ROOT / path).is_relative_to(storage_root)
                     ]
                     if not existing_paths:
                         continue
@@ -3237,12 +3499,22 @@ def _collect_registered_reports_from_db(asset: str) -> list[dict[str, Any]]:
             .where(or_(ReportItem.asset == asset, ReportItem.asset.is_(None)))
             .order_by(ReportItem.trade_date.desc(), ReportItem.updated_at.desc(), ReportItem.created_at.desc())
         ).all()
+        non_authoritative_run_ids = _non_authoritative_premarket_run_ids(db, (item.run_id for item in rows))
         for item in rows:
             artifacts = list(item.artifacts or [])
             report_type = str(item.report_type or item.family or "").strip()
             if not report_type:
                 continue
             trade_date = _iso(item.trade_date)
+            if report_type == "macro_report" and (
+                item.run_id in non_authoritative_run_ids
+                or _gold_publish_allowed(trade_date, item.run_id) is False
+                or (
+                    _gold_publish_allowed(trade_date, item.run_id) is True
+                    and _load_macro_report_lineage(trade_date, item.run_id) is None
+                )
+            ):
+                continue
             results.append(
                 {
                     "type": report_type,
@@ -3294,7 +3566,9 @@ def _collect_jin10_reports() -> list[dict[str, Any]]:
                 quality_audit = _normalize_jin10_quality_audit(agent_payload, payload, raw_payload)
                 external_meta = _find_external_jin10_meta(date_dir.name, run_dir.name)
                 source_title = _jin10_source_title(raw_payload, external_meta)
-                is_weekly = str(payload.get("family") or "").strip() == "jin10_weekly_visual" or _is_explicit_jin10_weekly(external_meta or payload)
+                is_weekly = str(
+                    payload.get("family") or ""
+                ).strip() == "jin10_weekly_visual" or _is_explicit_jin10_weekly(external_meta or payload)
                 report_type = _jin10_index_report_type(
                     payload,
                     is_weekly=is_weekly,
@@ -3441,6 +3715,7 @@ def _find_external_jin10_meta(date: str, article_id: str) -> dict[str, Any] | No
             return meta
     return None
 
+
 def _is_explicit_jin10_weekly(meta: dict[str, Any]) -> bool:
     category = str(meta.get("category") or "").strip()
     category_code = str(meta.get("category_code") or "").strip()
@@ -3550,12 +3825,29 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
 
     macro_base = _PROJECT_ROOT / "storage" / "outputs" / "macro"
     if macro_base.exists():
+        macro_run_ids = [
+            run_dir.name
+            for date_dir in macro_base.iterdir()
+            if date_dir.is_dir()
+            for run_dir in date_dir.iterdir()
+            if run_dir.is_dir()
+        ]
+        non_authoritative_run_ids = _load_non_authoritative_premarket_run_ids(macro_run_ids)
         for date_dir in sorted(macro_base.iterdir(), reverse=True):
             if not date_dir.is_dir():
                 continue
             runs = [run_dir for run_dir in date_dir.iterdir() if run_dir.is_dir()]
             if runs:
                 for run_dir in sorted(runs, reverse=True):
+                    if run_dir.name in non_authoritative_run_ids:
+                        continue
+                    if _gold_publish_allowed(date_dir.name, run_dir.name) is False:
+                        continue
+                    if (
+                        _gold_publish_allowed(date_dir.name, run_dir.name) is True
+                        and _load_macro_report_lineage(date_dir.name, run_dir.name) is None
+                    ):
+                        continue
                     report_md = _macro_report_md_path(run_dir)
                     if report_md is not None:
                         reports.append(
@@ -3623,8 +3915,7 @@ def list_reports_index(asset: str = "XAUUSD") -> dict[str, Any]:
             for run_dir in sorted((run for run in date_dir.iterdir() if run.is_dir()), reverse=True):
                 payload = _load_weekly_context_revision_payload(run_dir)
                 available = payload is not None and all(
-                    (run_dir / filename).exists()
-                    for filename in ("source.md", "analysis.md", "report_structured.json")
+                    (run_dir / filename).exists() for filename in ("source.md", "analysis.md", "report_structured.json")
                 )
                 if not available:
                     continue
@@ -3751,7 +4042,9 @@ def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:
 
     if roots["final_report"].exists():
         for date_dir in sorted(roots["final_report"].iterdir()):
-            if date_dir.is_dir() and any((run_dir / "final_report.md").exists() for run_dir in date_dir.iterdir() if run_dir.is_dir()):
+            if date_dir.is_dir() and any(
+                (run_dir / "final_report.md").exists() for run_dir in date_dir.iterdir() if run_dir.is_dir()
+            ):
                 date_modules[date_dir.name].add("final_report")
                 runs = sorted((run_dir for run_dir in date_dir.iterdir() if run_dir.is_dir()), reverse=True)
                 if runs:
@@ -3759,13 +4052,17 @@ def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:
 
     if roots["strategy_card"].exists():
         for date_dir in sorted(roots["strategy_card"].iterdir()):
-            if date_dir.is_dir() and any((run_dir / "strategy_card.json").exists() for run_dir in date_dir.iterdir() if run_dir.is_dir()):
+            if date_dir.is_dir() and any(
+                (run_dir / "strategy_card.json").exists() for run_dir in date_dir.iterdir() if run_dir.is_dir()
+            ):
                 date_modules[date_dir.name].add("strategy_card")
 
     cme_base = _PROJECT_ROOT / "storage" / "outputs" / "cme_options"
     if cme_base.exists():
         for date_dir in sorted(cme_base.iterdir()):
-            if date_dir.is_dir() and ((date_dir / "options_analysis.json").exists() or (date_dir / "options_analysis.md").exists()):
+            if date_dir.is_dir() and (
+                (date_dir / "options_analysis.json").exists() or (date_dir / "options_analysis.md").exists()
+            ):
                 date_modules[date_dir.name].add("options")
 
     macro_base = _PROJECT_ROOT / "storage" / "outputs" / "macro"
@@ -3773,7 +4070,9 @@ def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:
         for date_dir in sorted(macro_base.iterdir()):
             if not date_dir.is_dir():
                 continue
-            if _macro_report_md_path(date_dir) is not None or any(_macro_report_md_path(run_dir) is not None for run_dir in date_dir.iterdir() if run_dir.is_dir()):
+            if _macro_report_md_path(date_dir) is not None or any(
+                _macro_report_md_path(run_dir) is not None for run_dir in date_dir.iterdir() if run_dir.is_dir()
+            ):
                 date_modules[date_dir.name].add("macro")
 
     if roots["jin10"].exists():
@@ -3788,7 +4087,10 @@ def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:
                 raw_payload = _read_optional_json(run_dir / "raw_article_report.json")
                 external_meta = _find_external_jin10_meta(date_dir.name, run_dir.name)
                 source_title = _jin10_source_title(raw_payload, external_meta)
-                is_weekly = str(payload.get("family") or "").strip() == "jin10_weekly_visual" or str(payload.get("report_type") or "").strip().lower() == "weekly"
+                is_weekly = (
+                    str(payload.get("family") or "").strip() == "jin10_weekly_visual"
+                    or str(payload.get("report_type") or "").strip().lower() == "weekly"
+                )
                 report_type = _jin10_index_report_type(
                     payload,
                     is_weekly=is_weekly,

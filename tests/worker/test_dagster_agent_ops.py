@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from dagster import build_op_context
 import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
+from apps.runtime.premarket_snapshot_authority import (
+    resolve_authoritative_premarket_snapshot,
+    stage_premarket_snapshot_authority,
+)
+from database.models.analysis import AnalysisBase, AnalysisSnapshot
+from database.models.execution import ExecutionBase, RunArtifact
+from database.models.task import Base, TaskRun
 from dagster_finance.graphs.premarket import (
     MergeSnapshotConfig,
     canonical_analysis_pipeline,
@@ -16,6 +29,7 @@ from dagster_finance.graphs.premarket import (
 )
 from apps.features.market_data.formal_snapshot_loader import FormalSnapshotBundle
 from apps.features.market_data.formal_snapshots import (
+    build_market_context_snapshot,
     build_market_price_snapshot,
     build_oil_snapshot,
 )
@@ -26,6 +40,10 @@ from dagster_finance.ops.agents import (
     final_report_op,
     strategy_card_op,
 )
+from dagster_finance.ops.task_run_lifecycle import (
+    complete_premarket_task_run,
+    ensure_premarket_task_run,
+)
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
 
@@ -35,7 +53,72 @@ def _empty_formal_bundle(as_of: datetime = _CREATED_AT) -> FormalSnapshotBundle:
         market_prices=build_market_price_snapshot(candidates=(), as_of=as_of),
         oil=build_oil_snapshot(candidates=(), as_of=as_of),
         as_of=as_of,
+        market_context=build_market_context_snapshot(candidates=(), as_of=as_of),
     )
+
+
+def _sqlite_session_factory(tmp_path: Path, name: str = "dagster-authority.db") -> sessionmaker[Session]:
+    engine = create_engine(f"sqlite:///{tmp_path / name}")
+    Base.metadata.create_all(engine)
+    AnalysisBase.metadata.create_all(engine)
+    ExecutionBase.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def _merge_context(db_session) -> SimpleNamespace:
+    return SimpleNamespace(
+        run_id=str(uuid.uuid4()),
+        resources=SimpleNamespace(db_session=db_session),
+        log=Mock(),
+    )
+
+
+def _invoke_merge(
+    context: SimpleNamespace,
+    config: MergeSnapshotConfig,
+    macro_state: SimpleNamespace,
+    cme_state: SimpleNamespace,
+    news_state: SimpleNamespace | None,
+) -> dict:
+    return merge_analysis_snapshot_op.compute_fn.decorated_fn(
+        context,
+        config,
+        macro_state,
+        cme_state,
+        news_state,
+    )
+
+
+def _authority_cot_point() -> SimpleNamespace:
+    payload = {
+        "symbol": "COT_GOLD_noncomm_net",
+        "date": "2026-08-05",
+        "value": 116_161,
+        "source": "cftc",
+        "source_url": "https://www.cftc.gov/files/dea/history/fut_disagg_txt_2026.zip",
+        "raw_path": "raw/positioning/2026-08-08/cot_gold.json",
+        "retrieved_at": "2026-08-08T20:00:00Z",
+    }
+    return SimpleNamespace(to_dict=lambda: payload)
+
+
+class _TrackingSession:
+    def __init__(self, session: Session, *, fail_commit: bool = False) -> None:
+        self._session = session
+        self.fail_commit = fail_commit
+        self.rollback_calls = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self._session, name)
+
+    def commit(self) -> None:
+        if self.fail_commit:
+            raise RuntimeError("injected authority commit failure")
+        self._session.commit()
+
+    def rollback(self) -> None:
+        self.rollback_calls += 1
+        self._session.rollback()
 
 
 def _allow_readiness_gate() -> dict[str, object]:
@@ -138,7 +221,8 @@ def test_premarket_graph_contains_readiness_gate_before_canonical_analysis_subgr
 
 
 def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
-    context = build_op_context()
+    db = Mock()
+    context = build_op_context(resources={"db_session": db})
     macro_state = SimpleNamespace(
         snapshot_dict={"as_of": "2026-07-21"},
         all_source_refs=[],
@@ -170,6 +254,7 @@ def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
             "dagster_finance.graphs.premarket._load_formal_market_snapshot_bundle",
             return_value=(formal_bundle, None),
         ) as formal_loader,
+        patch("apps.runtime.premarket_snapshot_authority.stage_premarket_snapshot_authority") as authority_mock,
     ):
         merge_analysis_snapshot_op(
             context,
@@ -181,35 +266,53 @@ def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
 
     assert context_mock.call_args.kwargs["preferred_run_id"] == context.run_id
     assert build_mock.call_args.kwargs["market_price_snapshot"] is formal_bundle.market_prices
+    assert build_mock.call_args.kwargs["market_context_snapshot"] is formal_bundle.market_context
     assert build_mock.call_args.kwargs["oil_snapshot"] is formal_bundle.oil
     assert formal_loader.call_args.kwargs["trade_date"] == "2026-07-21"
     assert formal_loader.call_args.kwargs["run_time"].tzinfo is not None
     assert build_mock.call_args.kwargs["snapshot_time"] == formal_loader.call_args.kwargs["run_time"].isoformat()
+    assert authority_mock.call_args.kwargs == {
+        "run_id": context.run_id,
+        "snapshot": {"trade_date": "2026-07-21", "snapshot_id": "XAUUSD:test"},
+        "snapshot_path": tmp_path / "premarket_snapshot.json",
+        "storage_root": tmp_path,
+    }
+    assert authority_mock.call_args.args == (db,)
+    db.commit.assert_called_once_with()
+    db.rollback.assert_not_called()
 
 
 def test_dagster_merge_passes_explicit_empty_formal_snapshots_when_loader_degrades(tmp_path) -> None:
-    context = build_op_context()
+    db = Mock()
+    context = build_op_context(resources={"db_session": db})
     macro_state = SimpleNamespace(snapshot_dict={"as_of": "2026-07-21"}, all_source_refs=[], all_points=[])
     cme_state = SimpleNamespace(snapshot_dict={"trade_date": "2026-07-21"}, raw_file=None)
     empty_bundle = _empty_formal_bundle()
     with (
         patch("apps.analysis.jin10.daily_context.build_daily_analysis_context", return_value={"status": "ready"}),
-        patch("apps.analysis.snapshots.builder.build_analysis_snapshot", return_value={"trade_date": "2026-07-21", "snapshot_id": "XAUUSD:test"}) as build_mock,
-        patch("apps.analysis.snapshots.builder.write_analysis_snapshot", return_value=tmp_path / "premarket_snapshot.json"),
+        patch(
+            "apps.analysis.snapshots.builder.build_analysis_snapshot",
+            return_value={"trade_date": "2026-07-21", "snapshot_id": "XAUUSD:test"},
+        ) as build_mock,
+        patch(
+            "apps.analysis.snapshots.builder.write_analysis_snapshot", return_value=tmp_path / "premarket_snapshot.json"
+        ),
         patch(
             "dagster_finance.graphs.premarket._load_formal_market_snapshot_bundle",
             return_value=(empty_bundle, "RuntimeError: read failed"),
         ),
+        patch("apps.runtime.premarket_snapshot_authority.stage_premarket_snapshot_authority"),
     ):
-        merge_analysis_snapshot_op(context, MergeSnapshotConfig(storage_root=str(tmp_path)), macro_state, cme_state, None)
+        merge_analysis_snapshot_op(
+            context, MergeSnapshotConfig(storage_root=str(tmp_path)), macro_state, cme_state, None
+        )
 
     assert build_mock.call_args.kwargs["market_price_snapshot"].readiness == "blocked"
+    assert build_mock.call_args.kwargs["market_context_snapshot"].readiness == "blocked"
     assert build_mock.call_args.kwargs["oil_snapshot"].readiness == "blocked"
 
 
-def test_dagster_merge_uses_shanghai_date_when_sources_have_no_trade_date(
-    tmp_path, monkeypatch
-) -> None:
+def test_dagster_merge_uses_shanghai_date_when_sources_have_no_trade_date(tmp_path, monkeypatch) -> None:
     from dagster_finance.graphs import premarket as premarket_module
 
     class FixedDateTime(datetime):
@@ -221,6 +324,8 @@ def test_dagster_merge_uses_shanghai_date_when_sources_have_no_trade_date(
     formal_bundle = _empty_formal_bundle(datetime(2026, 7, 20, 18, 0, tzinfo=timezone.utc))
     macro_state = SimpleNamespace(snapshot_dict=None, all_source_refs=[], all_points=[])
     cme_state = SimpleNamespace(snapshot_dict=None, raw_file=None)
+    db = Mock()
+    context = build_op_context(resources={"db_session": db})
     with (
         patch("apps.analysis.jin10.daily_context.build_daily_analysis_context", return_value={}),
         patch(
@@ -232,9 +337,10 @@ def test_dagster_merge_uses_shanghai_date_when_sources_have_no_trade_date(
             "dagster_finance.graphs.premarket._load_formal_market_snapshot_bundle",
             return_value=(formal_bundle, None),
         ) as formal_loader,
+        patch("apps.runtime.premarket_snapshot_authority.stage_premarket_snapshot_authority"),
     ):
         merge_analysis_snapshot_op(
-            build_op_context(),
+            context,
             MergeSnapshotConfig(storage_root=str(tmp_path)),
             macro_state,
             cme_state,
@@ -242,6 +348,199 @@ def test_dagster_merge_uses_shanghai_date_when_sources_have_no_trade_date(
         )
 
     assert formal_loader.call_args.kwargs["trade_date"] == "2026-07-21"
+
+
+def test_dagster_merge_commits_real_premarket_snapshot_authority(tmp_path: Path) -> None:
+    factory = _sqlite_session_factory(tmp_path)
+    storage_root = tmp_path / "storage"
+    with factory() as session:
+        context = _merge_context(session)
+        ensure_premarket_task_run(session, run_id=context.run_id)
+        macro_state = SimpleNamespace(
+            snapshot_dict={"as_of": "2026-08-11"},
+            all_source_refs=[],
+            all_points=[_authority_cot_point()],
+        )
+        cme_state = SimpleNamespace(
+            snapshot_dict={
+                "trade_date": "2026-08-11",
+                "calibration": {"wall_map": {4100: {"call_oi": 12}}},
+            },
+            raw_file=None,
+        )
+        formal_bundle = SimpleNamespace(market_prices=None, market_context=None, oil=None)
+
+        with (
+            patch(
+                "apps.analysis.jin10.daily_context.build_daily_analysis_context",
+                return_value={"status": "ready"},
+            ),
+            patch(
+                "dagster_finance.graphs.premarket._load_formal_market_snapshot_bundle",
+                return_value=(formal_bundle, None),
+            ),
+        ):
+            snapshot = _invoke_merge(
+                context,
+                MergeSnapshotConfig(storage_root=str(storage_root)),
+                macro_state,
+                cme_state,
+                None,
+            )
+
+        expected_path = (
+            storage_root
+            / "features"
+            / "snapshots"
+            / "XAUUSD"
+            / "2026-08-11"
+            / context.run_id
+            / "premarket_snapshot.json"
+        )
+        saved_run = session.get(TaskRun, uuid.UUID(context.run_id))
+        snapshots = list(session.scalars(select(AnalysisSnapshot)).all())
+        artifacts = list(session.scalars(select(RunArtifact)).all())
+
+        assert snapshot["snapshot_id"] == f"XAUUSD:2026-08-11:{context.run_id}"
+        assert snapshot["options"]["data"]["calibration"]["wall_map"] == {"4100": {"call_oi": 12}}
+        assert json.loads(expected_path.read_text(encoding="utf-8")) == snapshot
+        assert saved_run is not None
+        assert saved_run.trade_date == "2026-08-11"
+        assert saved_run.snapshot_id == snapshot["snapshot_id"]
+        assert len(snapshots) == 1
+        assert snapshots[0].payload == snapshot
+        assert snapshots[0].artifact_path == str(expected_path)
+        assert len(artifacts) == 1
+        assert artifacts[0].file_path == str(expected_path)
+        assert artifacts[0].sha256 == hashlib.sha256(expected_path.read_bytes()).hexdigest()
+
+        complete_premarket_task_run(session, run_id=context.run_id)
+        authority = resolve_authoritative_premarket_snapshot(
+            session,
+            storage_root=storage_root,
+            trade_date="2026-08-11",
+        )
+
+    assert authority.status == "found"
+    assert authority.run_id == context.run_id
+    assert authority.snapshot_id == snapshot["snapshot_id"]
+    assert authority.snapshot_path == expected_path
+
+
+def test_dagster_merge_rolls_back_when_authority_stage_fails(tmp_path: Path) -> None:
+    factory = _sqlite_session_factory(tmp_path, "authority-stage-failure.db")
+    storage_root = tmp_path / "storage-stage-failure"
+    with factory() as session:
+        tracked_session = _TrackingSession(session)
+        context = _merge_context(tracked_session)
+        ensure_premarket_task_run(session, run_id=context.run_id)
+        macro_state = SimpleNamespace(
+            snapshot_dict={"as_of": "2026-08-11"},
+            all_source_refs=[],
+            all_points=[_authority_cot_point()],
+        )
+        cme_state = SimpleNamespace(
+            snapshot_dict={"trade_date": "2026-08-11"},
+            raw_file=None,
+        )
+
+        def stage_then_fail(*args, **kwargs):
+            stage_premarket_snapshot_authority(*args, **kwargs)
+            raise RuntimeError("injected authority stage failure")
+
+        with (
+            patch(
+                "apps.analysis.jin10.daily_context.build_daily_analysis_context",
+                return_value={},
+            ),
+            patch(
+                "dagster_finance.graphs.premarket._load_formal_market_snapshot_bundle",
+                return_value=(
+                    SimpleNamespace(market_prices=None, market_context=None, oil=None),
+                    None,
+                ),
+            ),
+            patch(
+                "apps.runtime.premarket_snapshot_authority.stage_premarket_snapshot_authority",
+                side_effect=stage_then_fail,
+            ),
+            pytest.raises(RuntimeError, match="injected authority stage failure"),
+        ):
+            _invoke_merge(
+                context,
+                MergeSnapshotConfig(storage_root=str(storage_root)),
+                macro_state,
+                cme_state,
+                None,
+            )
+
+        assert tracked_session.rollback_calls == 1
+        snapshot_path = (
+            storage_root
+            / "features"
+            / "snapshots"
+            / "XAUUSD"
+            / "2026-08-11"
+            / context.run_id
+            / "premarket_snapshot.json"
+        )
+        assert snapshot_path.is_file()
+
+    _assert_authority_was_not_committed(factory, run_id=context.run_id)
+
+
+def test_dagster_merge_rolls_back_when_authority_commit_fails(tmp_path: Path) -> None:
+    factory = _sqlite_session_factory(tmp_path, "authority-commit-failure.db")
+    storage_root = tmp_path / "storage-commit-failure"
+    with factory() as session:
+        tracked_session = _TrackingSession(session, fail_commit=True)
+        context = _merge_context(tracked_session)
+        ensure_premarket_task_run(session, run_id=context.run_id)
+        macro_state = SimpleNamespace(
+            snapshot_dict={"as_of": "2026-08-11"},
+            all_source_refs=[],
+            all_points=[_authority_cot_point()],
+        )
+        cme_state = SimpleNamespace(
+            snapshot_dict={"trade_date": "2026-08-11"},
+            raw_file=None,
+        )
+
+        with (
+            patch(
+                "apps.analysis.jin10.daily_context.build_daily_analysis_context",
+                return_value={},
+            ),
+            patch(
+                "dagster_finance.graphs.premarket._load_formal_market_snapshot_bundle",
+                return_value=(
+                    SimpleNamespace(market_prices=None, market_context=None, oil=None),
+                    None,
+                ),
+            ),
+            pytest.raises(RuntimeError, match="injected authority commit failure"),
+        ):
+            _invoke_merge(
+                context,
+                MergeSnapshotConfig(storage_root=str(storage_root)),
+                macro_state,
+                cme_state,
+                None,
+            )
+
+        assert tracked_session.rollback_calls == 1
+
+    _assert_authority_was_not_committed(factory, run_id=context.run_id)
+
+
+def _assert_authority_was_not_committed(factory: sessionmaker[Session], *, run_id: str) -> None:
+    with factory() as observer:
+        saved_run = observer.get(TaskRun, uuid.UUID(run_id))
+        assert saved_run is not None
+        assert saved_run.trade_date is None
+        assert saved_run.snapshot_id is None
+        assert list(observer.scalars(select(AnalysisSnapshot)).all()) == []
+        assert list(observer.scalars(select(RunArtifact)).all()) == []
 
 
 def test_formal_market_loader_uses_read_only_session_and_closes_it(monkeypatch) -> None:
@@ -261,9 +560,7 @@ def test_formal_market_loader_uses_read_only_session_and_closes_it(monkeypatch) 
         lambda actual_session, *, as_of: calls.append((actual_session, as_of)) or expected,
     )
 
-    bundle, reason = premarket_module._load_formal_market_snapshot_bundle(
-        trade_date="2026-05-14", run_time=_CREATED_AT
-    )
+    bundle, reason = premarket_module._load_formal_market_snapshot_bundle(trade_date="2026-05-14", run_time=_CREATED_AT)
 
     assert bundle is expected
     assert reason is None
@@ -286,9 +583,7 @@ def test_formal_market_loader_failure_returns_explicit_empty_snapshots_and_close
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("password=secret")),
     )
 
-    bundle, reason = premarket_module._load_formal_market_snapshot_bundle(
-        trade_date="2026-05-14", run_time=_CREATED_AT
-    )
+    bundle, reason = premarket_module._load_formal_market_snapshot_bundle(trade_date="2026-05-14", run_time=_CREATED_AT)
 
     assert bundle.market_prices.readiness == "blocked"
     assert bundle.oil.readiness == "blocked"
@@ -310,9 +605,7 @@ def test_formal_market_resolve_failure_returns_empty_snapshots_without_opening_s
         lambda: (_ for _ in ()).throw(AssertionError("session must not open")),
     )
 
-    bundle, reason = premarket_module._load_formal_market_snapshot_bundle(
-        trade_date="not-a-date", run_time=_CREATED_AT
-    )
+    bundle, reason = premarket_module._load_formal_market_snapshot_bundle(trade_date="not-a-date", run_time=_CREATED_AT)
 
     assert bundle.market_prices.readiness == "blocked"
     assert bundle.oil.readiness == "blocked"
@@ -346,19 +639,34 @@ def test_canonical_composite_analysis_op_delegates_to_gated_pipeline() -> None:
 
 def test_canonical_composite_analysis_op_passes_shadow_runtime_with_previous_snapshot(monkeypatch) -> None:
     fake_outputs = {
-        "quality_gate_decision": {"action": "pass"}, "agent_loop_decision": {"decision": "passed"},
-        "report_result": {"paths": []}, "card_result": {"paths": []},
+        "quality_gate_decision": {"action": "pass"},
+        "agent_loop_decision": {"decision": "passed"},
+        "report_result": {"paths": []},
+        "card_result": {"paths": []},
     }
-    runtime = SimpleNamespace(current={"snapshot_id": "current"}, previous={"snapshot_id": "previous"}, lookup={"current": "found", "previous": "found"})
+    runtime = SimpleNamespace(
+        current={"snapshot_id": "current"},
+        previous={"snapshot_id": "previous"},
+        lookup={"current": "found", "previous": "found"},
+    )
     monkeypatch.setattr(
         "dagster_finance.ops.agents._gold_policy_runtime_kwargs",
         lambda **kwargs: (
-            {"gold_feature_snapshot_prebuilt": runtime.current, "previous_gold_feature_snapshot_prebuilt": runtime.previous, "gold_policy_execution_mode": "shadow"},
+            {
+                "gold_feature_snapshot_prebuilt": runtime.current,
+                "previous_gold_feature_snapshot_prebuilt": runtime.previous,
+                "gold_policy_execution_mode": "shadow",
+            },
             {"status": "ready", "lookup": runtime.lookup},
         ),
     )
-    with patch("apps.worker.composite_analysis_pipeline.run_composite_analysis_pipeline", return_value=({"final_report": {"output_mode": "accepted"}}, fake_outputs)) as pipeline:
-        result = canonical_composite_analysis_op(build_op_context(), AgentConfig(), {**_snapshot(), "trade_date": "2026-05-14"}, _allow_readiness_gate())
+    with patch(
+        "apps.worker.composite_analysis_pipeline.run_composite_analysis_pipeline",
+        return_value=({"final_report": {"output_mode": "accepted"}}, fake_outputs),
+    ) as pipeline:
+        result = canonical_composite_analysis_op(
+            build_op_context(), AgentConfig(), {**_snapshot(), "trade_date": "2026-05-14"}, _allow_readiness_gate()
+        )
 
     assert pipeline.call_args.kwargs["gold_feature_snapshot_prebuilt"] == runtime.current
     assert pipeline.call_args.kwargs["previous_gold_feature_snapshot_prebuilt"] == runtime.previous
@@ -367,7 +675,13 @@ def test_canonical_composite_analysis_op_passes_shadow_runtime_with_previous_sna
 
 
 def test_gold_policy_runtime_preparation_passes_current_previous_and_compact_lookup(monkeypatch, tmp_path) -> None:
-    lookup = SimpleNamespace(summary=lambda: {"status": "found", "reason_code": "previous_feature_snapshot_found", "source_path": "analysis/prior.json"})
+    lookup = SimpleNamespace(
+        summary=lambda: {
+            "status": "found",
+            "reason_code": "previous_feature_snapshot_found",
+            "source_path": "analysis/prior.json",
+        }
+    )
     runtime = SimpleNamespace(current={"snapshot_id": "current"}, previous={"snapshot_id": "previous"}, lookup=lookup)
     monkeypatch.setattr(
         "apps.analysis.gold_policy.runtime_inputs.prepare_gold_policy_runtime_inputs",
@@ -390,8 +704,13 @@ def test_canonical_composite_analysis_op_continues_legacy_pipeline_when_runtime_
         lambda **kwargs: ({}, {"status": "failed", "reason_code": "gold_policy_runtime_prepare_failed", "lookup": {}}),
     )
     fake_outputs = {"quality_gate_decision": {}, "agent_loop_decision": {}, "report_result": None, "card_result": None}
-    with patch("apps.worker.composite_analysis_pipeline.run_composite_analysis_pipeline", return_value=({"final_report": {"output_mode": "accepted"}}, fake_outputs)) as pipeline:
-        result = canonical_composite_analysis_op(build_op_context(), AgentConfig(), {**_snapshot(), "trade_date": "2026-05-14"}, _allow_readiness_gate())
+    with patch(
+        "apps.worker.composite_analysis_pipeline.run_composite_analysis_pipeline",
+        return_value=({"final_report": {"output_mode": "accepted"}}, fake_outputs),
+    ) as pipeline:
+        result = canonical_composite_analysis_op(
+            build_op_context(), AgentConfig(), {**_snapshot(), "trade_date": "2026-05-14"}, _allow_readiness_gate()
+        )
 
     assert pipeline.call_count == 1
     assert "gold_policy_execution_mode" not in pipeline.call_args.kwargs
@@ -469,7 +788,9 @@ def test_final_report_op_renders_and_writes_dagster_agent_payloads() -> None:
     with (
         patch("dagster_finance.ops.agents.render_final_report_markdown", return_value="# report\n") as render_mock,
         patch("dagster_finance.ops.agents.build_structured_report") as structured_mock,
-        patch("dagster_finance.ops.agents.write_final_report", return_value={"paths": ["final_report.md"]}) as write_mock,
+        patch(
+            "dagster_finance.ops.agents.write_final_report", return_value={"paths": ["final_report.md"]}
+        ) as write_mock,
     ):
         structured_mock.return_value.model_dump.return_value = {"report_id": "final-report-test"}
         context = build_op_context()

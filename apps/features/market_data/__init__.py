@@ -11,9 +11,11 @@ from .canonical_candles import (
 from .formal_snapshots import (
     FormalMarketObservation,
     FormalSourceReference,
+    MarketContextSnapshot,
     MarketPriceSnapshot,
     OilSnapshot,
     build_market_price_snapshot,
+    build_market_context_snapshot,
     build_oil_snapshot,
 )
 from .formal_snapshot_loader import (
@@ -31,9 +33,11 @@ __all__ = [
     "select_canonical_xauusd_rows",
     "FormalMarketObservation",
     "FormalSourceReference",
+    "MarketContextSnapshot",
     "MarketPriceSnapshot",
     "OilSnapshot",
     "build_market_price_snapshot",
+    "build_market_context_snapshot",
     "build_oil_snapshot",
     "FormalSnapshotBundle",
     "load_formal_market_snapshots",

@@ -160,8 +160,8 @@ def test_refresh_market_candle_daily_cache_upserts_daily_assets(monkeypatch):
     base_time = datetime(2026, 7, 6, tzinfo=UTC)
 
     def fake_collect_daily_market_candles(*, storage_root, asset: str, range_: str):
-        assert range_ == "10d"
-        offset = 0 if asset == "GC" else 1
+        assert range_ == "1mo"
+        offset = scheduler.DAILY_MARKET_CANDLE_ASSETS.index(asset)
         return (
             [
                 {
@@ -175,7 +175,7 @@ def test_refresh_market_candle_daily_cache_upserts_daily_assets(monkeypatch):
             ],
             f"raw/{asset.lower()}.json",
             f"test_source_{asset.lower()}",
-            {"ticker": asset},
+            {"provider_symbol": asset, "instrument_type": "test", "source_role": "market_primary", "source_url": f"https://example.test/{asset}"},
         )
 
     monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
@@ -185,10 +185,27 @@ def test_refresh_market_candle_daily_cache_upserts_daily_assets(monkeypatch):
 
     with session_factory() as session:
         rows = session.query(MarketCandle).order_by(MarketCandle.asset.asc()).all()
-        assert [row.asset for row in rows] == ["DXY", "GC"]
+        assert [row.asset for row in rows] == ["BRENT", "DXY", "GC", "VIX", "WTI"]
         assert {row.timeframe for row in rows} == {"1d"}
-        assert rows[0].source_ref["refresh_role"] == "scheduled_daily_gap_repair"
-        assert rows[1].source_ref["refresh_role"] == "scheduled_daily_gap_repair"
+        assert all(row.source_ref["refresh_role"] == "scheduled_daily_gap_repair" for row in rows)
+
+
+def test_refresh_market_candle_daily_cache_isolates_one_asset_failure(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def fake_collect_daily_market_candles(*, storage_root, asset: str, range_: str):
+        if asset == "VIX":
+            raise RuntimeError("provider unavailable")
+        return ([{"open_time": datetime(2026, 7, 6, tzinfo=UTC), "open": 1, "high": 2, "low": 1, "close": 2, "volume": None}], "raw/test.json", "test_source", {"provider_symbol": asset})
+
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler, "_collect_daily_market_candles", fake_collect_daily_market_candles)
+    scheduler.refresh_market_candle_daily_cache()
+
+    with session_factory() as session:
+        rows = session.query(MarketCandle).order_by(MarketCandle.asset.asc()).all()
+        assert [row.asset for row in rows] == ["BRENT", "DXY", "GC", "WTI"]
 
 
 class _FakeHttpResponse:

@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.backfill_market_candles import (
+    DAILY_MARKET_INSTRUMENTS,
+    _local_daily_raw_candidates,
     _extract_jin10_kline_rows,
     _parse_openbb_intraday_payload,
     _parse_jin10_hourly_candles,
@@ -66,6 +68,39 @@ def test_parse_yahoo_daily_candles_skips_incomplete_rows() -> None:
 
     assert len(candles) == 1
     assert candles[0]["close"] == 3315.0
+
+
+def test_daily_market_instruments_preserve_formal_provider_identities(tmp_path: Path) -> None:
+    payload = {"chart": {"result": [{"timestamp": [1746403200], "indicators": {"quote": [{"open": [100.0], "high": [101.0], "low": [99.0], "close": [100.5], "volume": [10]}]}}]}}
+    storage_root = tmp_path / "storage"
+    input_json = storage_root / "raw" / "fixtures" / "market.json"
+    input_json.parent.mkdir(parents=True, exist_ok=True)
+    input_json.write_text(json.dumps(payload), encoding="utf-8")
+
+    from scripts.backfill_market_candles import collect_daily_candles
+
+    for asset, instrument in DAILY_MARKET_INSTRUMENTS.items():
+        candles, _, source, source_ref = collect_daily_candles(storage_root=storage_root, asset=asset, input_json=str(input_json))
+        assert len(candles) == 1
+        assert source == instrument.source
+        assert source_ref["provider_symbol"] == instrument.provider_symbol
+        assert source_ref["openbb_symbol"] == instrument.openbb_symbol
+        assert source_ref["source_url"] == instrument.source_url
+
+    assert {"GC", "DXY", "VIX", "WTI", "BRENT"} == set(DAILY_MARKET_INSTRUMENTS)
+    assert "USOIL" not in {item.provider_symbol for item in DAILY_MARKET_INSTRUMENTS.values()}
+
+
+def test_local_daily_raw_candidates_preserve_gc_and_dxy_legacy_locations(tmp_path: Path) -> None:
+    storage_root = tmp_path / "storage"
+    gc_legacy = storage_root / "raw" / "technical" / "yahoo" / "2026-08-03" / "GC=F-legacy.json"
+    dxy_legacy = storage_root / "raw" / "macro" / "openbb_yfinance" / "2026-08-03" / "DX-Y.NYB-legacy.json"
+    for path in (gc_legacy, dxy_legacy):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+
+    assert gc_legacy in _local_daily_raw_candidates(storage_root, DAILY_MARKET_INSTRUMENTS["GC"])
+    assert _local_daily_raw_candidates(storage_root, DAILY_MARKET_INSTRUMENTS["DXY"]) == [dxy_legacy]
 
 
 def test_backfill_market_candles_supports_dxy_yahoo_payload(tmp_path: Path) -> None:

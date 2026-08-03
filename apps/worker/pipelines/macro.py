@@ -32,7 +32,12 @@ from apps.analysis.macro.full_report import render_macro_full_report_markdown
 from apps.analysis.macro.summary import render_macro_snapshot_markdown
 from apps.data_layer.models import DualSourceResult
 from apps.data_layer.service import DEFAULT_FRED_RATE_SYMBOLS, MacroDataService
-from apps.features.macro.snapshot import MacroIndicator, MacroSnapshot, build_macro_snapshot
+from apps.features.macro.snapshot import (
+    MacroIndicator,
+    MacroIndicatorComponent,
+    MacroSnapshot,
+    build_macro_snapshot,
+)
 from apps.output.artifacts import artifact_run_dir
 from apps.parsers.macro.models import MacroPoint
 from apps.runtime.artifact_registry import register_artifact
@@ -1530,6 +1535,25 @@ def _snapshot_from_dict(data: dict[str, Any]) -> MacroSnapshot:
 
     indicators: dict[str, MacroIndicator] = {}
     for symbol, ind_dict in data.get("indicators", {}).items():
+        components: list[MacroIndicatorComponent] = []
+        for raw_component in ind_dict.get("components") or []:
+            if not isinstance(raw_component, dict):
+                continue
+            source_symbol = str(raw_component.get("source_symbol") or "").strip()
+            component_date = str(raw_component.get("date") or "").strip()
+            try:
+                component_value = float(raw_component["value"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not source_symbol or not component_date:
+                continue
+            components.append(
+                MacroIndicatorComponent(
+                    source_symbol=source_symbol,
+                    date=component_date,
+                    value=component_value,
+                )
+            )
         indicators[symbol] = MacroIndicator(
             symbol=ind_dict["symbol"],
             date=ind_dict["date"],
@@ -1540,6 +1564,8 @@ def _snapshot_from_dict(data: dict[str, Any]) -> MacroSnapshot:
             label=ind_dict.get("label", ""),
             unit=ind_dict.get("unit", ""),
             direction_note=ind_dict.get("direction_note", ""),
+            derivation_version=ind_dict.get("derivation_version"),
+            components=tuple(components),
         )
 
     return MacroSnapshot(

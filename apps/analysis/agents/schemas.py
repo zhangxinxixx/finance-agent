@@ -6,7 +6,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from apps.analysis.gold_policy.analysis_policy import GoldAnalysisDecision
+from apps.analysis.gold_policy.analysis_policy import (
+    GoldAnalysisDecision,
+    GoldAnalysisDecisionV2,
+)
 
 
 class AgentBias(StrEnum):
@@ -31,18 +34,8 @@ class DataCategory(StrEnum):
     SYSTEM_INFERENCE = "system_inference"      # Deterministic agent derivations
 
 
-class AgentDataGap(BaseModel):
-    """Structured current data gap consumed by QualityGate."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    code: str
-    message: str
-    severity: Literal["info", "warning", "p0", "blocker"] = "warning"
-
-
 class AcceptedStateConclusion(BaseModel):
-    """Typed state semantics owned by an accepted synthesis output."""
+    """Typed Analysis Memory state semantics kept separate from Gold Policy."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -78,27 +71,32 @@ class AcceptedStateConclusion(BaseModel):
 
 
 def state_bias_direction(value: str) -> tuple[AgentBias | None, Literal["bullish", "bearish"] | None]:
-    """Map the explicit project vocabulary; ``None`` means fail closed or fall back."""
-
     normalized = str(value).strip().lower()
-    if normalized == "mixed_bullish":
-        return AgentBias.MIXED, "bullish"
-    if normalized == "mixed_bearish":
-        return AgentBias.MIXED, "bearish"
-    if normalized == "neutral_bullish":
-        return AgentBias.NEUTRAL, "bullish"
-    if normalized == "neutral_bearish":
-        return AgentBias.NEUTRAL, "bearish"
-    if normalized == "strong_bullish":
-        return AgentBias.BULLISH, None
-    if normalized == "strong_bearish":
-        return AgentBias.BEARISH, None
-    if normalized == "event_risk":
-        return AgentBias.MIXED, None
+    mappings = {
+        "mixed_bullish": (AgentBias.MIXED, "bullish"),
+        "mixed_bearish": (AgentBias.MIXED, "bearish"),
+        "neutral_bullish": (AgentBias.NEUTRAL, "bullish"),
+        "neutral_bearish": (AgentBias.NEUTRAL, "bearish"),
+        "strong_bullish": (AgentBias.BULLISH, None),
+        "strong_bearish": (AgentBias.BEARISH, None),
+        "event_risk": (AgentBias.MIXED, None),
+    }
+    if normalized in mappings:
+        return mappings[normalized]
     try:
         return AgentBias(normalized), None
     except ValueError:
         return None, None
+
+
+class AgentDataGap(BaseModel):
+    """Structured current data gap consumed by QualityGate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+    severity: Literal["info", "warning", "p0", "blocker"] = "warning"
 
 
 class AgentOutput(BaseModel):
@@ -173,17 +171,6 @@ class AgentOutput(BaseModel):
         default_factory=list,
         description="Data quality tags: stale_data, proxy_gex, prelim_data, etc.",
     )
-    accepted_state_conclusion: AcceptedStateConclusion | None = Field(
-        default=None,
-        description="Authoritative typed state conclusion; debug input_payload is never authoritative.",
-    )
-    accepted_gold_analysis_decision: GoldAnalysisDecision | None = Field(
-        default=None,
-        description=(
-            "Formal deterministic gold-policy decision accepted by the Coordinator. "
-            "This remains separate from the Analysis Memory state conclusion contract."
-        ),
-    )
     # ── LLM metadata (optional, only for LLM-powered agents) ──
     llm_model: str | None = Field(default=None, description="LLM model used for this analysis")
     llm_provider: str | None = Field(default=None, description="LLM provider name")
@@ -199,6 +186,19 @@ class AgentOutput(BaseModel):
         default=None,
         description="Structured input payload used by the agent for prompt/output inspection",
     )
+    accepted_state_conclusion: AcceptedStateConclusion | None = Field(
+        default=None,
+        description=(
+            "Authoritative typed state conclusion; debug input_payload is never authoritative."
+        ),
+    )
+    accepted_gold_analysis_decision: GoldAnalysisDecision | GoldAnalysisDecisionV2 | None = Field(
+        default=None,
+        description=(
+            "Formal deterministic Gold Policy decision; it remains separate from "
+            "the Analysis Memory state conclusion contract."
+        ),
+    )
     llm_raw_output: str | None = Field(
         default=None,
         description="Raw LLM response text before parsing, when available",
@@ -209,12 +209,6 @@ class AgentOutput(BaseModel):
         combined = _dedupe_strings([*self.invalidation_conditions, *self.invalid_conditions])
         self.invalidation_conditions = combined
         self.invalid_conditions = list(combined)
-        if self.accepted_state_conclusion is not None:
-            if self.bias is AgentBias.UNAVAILABLE or self.accepted_state_conclusion.direction is not self.bias:
-                raise ValueError("accepted state conclusion direction contradicts AgentOutput.bias")
-        if self.accepted_gold_analysis_decision is not None:
-            if self.accepted_gold_analysis_decision.direction != self.bias.value:
-                raise ValueError("accepted gold analysis decision direction contradicts AgentOutput.bias")
         return self
 
 

@@ -12,6 +12,14 @@ FreshnessStatus = Literal["fresh", "stale", "missing"]
 QualityStatus = Literal["accepted", "observe", "blocked"]
 AlignmentStatus = Literal["aligned", "misaligned", "unknown"]
 AnalysisReadiness = Literal["ready", "observe", "blocked"]
+Real10YAlignment = Literal["aligned", "observe", "diverged", "unavailable"]
+ReadinessProhibitedOutput = Literal[
+    "DIRECTIONAL_ANALYSIS",
+    "DIRECTIONAL_STRATEGY",
+    "OPTIONS_CONFIRMATION",
+    "TRIGGERED_STRATEGY",
+    "CONFIRMED_EVENT_ATTRIBUTION",
+]
 
 
 class FrozenContract(BaseModel):
@@ -97,8 +105,29 @@ class DataQualitySnapshot(FrozenContract):
     analysis_readiness: AnalysisReadiness
 
 
+class DataQualitySnapshotV2(DataQualitySnapshot):
+    """Versioned multi-domain readiness output for ``feature_snapshot.v2``."""
+
+    readiness_policy_version: Literal["gold_readiness_policy.v1"]
+    strategy_readiness: AnalysisReadiness
+    options_readiness: AnalysisReadiness
+    event_attribution_readiness: AnalysisReadiness
+    missing_required_inputs: tuple[str, ...]
+    missing_confirmatory_inputs: tuple[str, ...]
+    prohibited_outputs: tuple[ReadinessProhibitedOutput, ...]
+    reason_codes: tuple[str, ...]
+
+
+class Real10YQualityDiagnostics(FrozenContract):
+    """v2-only guardrail: DFII10 disagreement cannot confirm macro direction."""
+
+    real10y_alignment: Real10YAlignment
+    reason_codes: tuple[str, ...] = Field(min_length=1)
+    prohibited_conclusions: tuple[str, ...] = ()
+
+
 class FeatureSnapshotInput(FrozenContract):
-    """Hashable policy payload before the deterministic identity is attached."""
+    """Read-only hashable payload for the legacy ``feature_snapshot.v1`` contract."""
 
     schema_version: Literal["feature_snapshot.v1"]
     asset: Literal["XAUUSD"]
@@ -151,3 +180,76 @@ class FeatureSnapshot(FeatureSnapshotInput):
     data_quality: DataQualitySnapshot
     payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     snapshot_id: str = Field(min_length=1)
+
+
+class FeatureSnapshotV2Input(FrozenContract):
+    """Hashable input for the dual-basis ``feature_snapshot.v2`` contract.
+
+    The estimated real yield and basis are intentionally absent from this input:
+    they are deterministic derivations of the independently sourced US10Y,
+    T10YIE, and DFII10 observations and cannot be supplied by an adapter.
+    """
+
+    schema_version: Literal["feature_snapshot.v2"]
+    real10y_policy_version: Literal["real10y_dual_basis.v1"] = "real10y_dual_basis.v1"
+    readiness_policy_version: Literal["gold_readiness_policy.v1"] = (
+        "gold_readiness_policy.v1"
+    )
+    asset: Literal["XAUUSD"]
+    scope: Literal["daily_close"]
+    as_of: datetime
+    xauusd_spot: VariableObservation
+    gc_futures: VariableObservation
+    us02y: VariableObservation
+    us10y: VariableObservation
+    us30y: VariableObservation
+    t10yie: VariableObservation
+    real10y_direct: VariableObservation
+    broad_dollar: VariableObservation
+    wti: VariableObservation
+    brent: VariableObservation
+    etf_flow: VariableObservation
+    cot: VariableObservation
+    cme_options_regime: VariableObservation
+    official_events: OfficialEventSnapshot
+
+    @model_validator(mode="after")
+    def _enforce_canonical_series_and_market_roles(self) -> "FeatureSnapshotV2Input":
+        required = {
+            "xauusd_spot": ("XAUUSD_SPOT", "spot"),
+            "gc_futures": ("GC_FUTURES", "futures"),
+            "us02y": ("US02Y", "yield"),
+            "us10y": ("US10Y", "yield"),
+            "us30y": ("US30Y", "yield"),
+            "t10yie": ("T10YIE", "breakeven_inflation"),
+            "real10y_direct": ("DFII10", "real_yield_direct"),
+            "broad_dollar": ("DTWEXBGS", "broad_dollar"),
+            "wti": ("WTI", "oil"),
+            "brent": ("BRENT", "oil"),
+            "etf_flow": ("GOLD_ETF_FLOW", "flow"),
+            "cot": ("GOLD_COT", "positioning"),
+            "cme_options_regime": ("CME_GC_OPTIONS_REGIME", "options_regime"),
+        }
+        for field_name, (series_id, market_role) in required.items():
+            observation = getattr(self, field_name)
+            if observation.series_id != series_id or observation.market_role != market_role:
+                raise ValueError(
+                    f"{field_name} must use series_id={series_id} and market_role={market_role}"
+                )
+        return self
+
+
+class FeatureSnapshotV2(FeatureSnapshotV2Input):
+    """Formal v2 snapshot including deterministic real-yield derivations."""
+
+    real10y_estimated: VariableObservation
+    real10y_basis_bp: float | None
+    real10y_alignment: Real10YAlignment
+    real10y_reason_codes: tuple[str, ...] = Field(min_length=1)
+    real10y_quality: Real10YQualityDiagnostics
+    data_quality: DataQualitySnapshotV2
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    snapshot_id: str = Field(min_length=1)
+
+
+FeatureSnapshotContract = FeatureSnapshot | FeatureSnapshotV2

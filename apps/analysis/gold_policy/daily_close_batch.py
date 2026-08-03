@@ -22,7 +22,7 @@ from apps.analysis.gold_policy.daily_close_store import (
     DailyCloseHeadConflictError,
     load_gold_daily_close_head,
 )
-from apps.analysis.gold_policy.schemas import FeatureSnapshot
+from apps.analysis.gold_policy.schemas import FeatureSnapshotContract
 
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -36,9 +36,9 @@ class GoldDailyCloseBatchCase(_FrozenContract):
     """One explicit, immutable session to execute in an ordered batch."""
 
     run_id: str = Field(min_length=1, max_length=128)
-    current_feature: FeatureSnapshot
+    current_feature: FeatureSnapshotContract
     controls: GoldDailyCloseRuntimeControls
-    bootstrap_previous_feature: FeatureSnapshot | None = None
+    bootstrap_previous_feature: FeatureSnapshotContract | None = None
 
     @model_validator(mode="after")
     def _validate_case(self) -> "GoldDailyCloseBatchCase":

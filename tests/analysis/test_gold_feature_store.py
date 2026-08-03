@@ -19,7 +19,7 @@ def _snapshot(name: str):
 
 
 def _write_snapshot(root: Path, *, trade_date: str, run_id: str, snapshot) -> Path:
-    path = root / "analysis" / "gold_mainlines" / trade_date / run_id / "feature_snapshot.v1.json"
+    path = root / "analysis" / "gold_mainlines" / trade_date / run_id / f"{snapshot.schema_version}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(snapshot.model_dump(mode="json")), encoding="utf-8")
     return path
@@ -27,6 +27,29 @@ def _write_snapshot(root: Path, *, trade_date: str, run_id: str, snapshot) -> Pa
 
 def _current():
     return _snapshot("feature_snapshot_v1_event_flat_2025-01-29.json")
+
+
+def _v2_snapshot():
+    return _to_v2(_snapshot("feature_snapshot_v1_bearish_2025-01-21.json"))
+
+
+def _readiness_v2_snapshot():
+    fixture = _fixture("readiness_v2/ready.json")
+    return build_feature_snapshot(fixture["input"])
+
+
+def _current_v2():
+    return _to_v2(_current())
+
+
+def _to_v2(snapshot):
+    payload = snapshot.model_dump(
+        mode="python", exclude={"data_quality", "payload_hash", "snapshot_id"}
+    )
+    direct = payload.pop("real10y")
+    direct["market_role"] = "real_yield_direct"
+    payload.update(schema_version="feature_snapshot.v2", real10y_direct=direct)
+    return build_feature_snapshot(payload)
 
 
 def test_previous_feature_snapshot_missing_when_no_prior_candidate(tmp_path: Path) -> None:
@@ -127,6 +150,72 @@ def test_future_candidate_is_ignored(tmp_path: Path) -> None:
     )
     lookup = load_previous_feature_snapshot(storage_root=tmp_path, current=_current())
     assert lookup.status == "missing"
+
+
+def test_v2_snapshot_is_verified_from_its_own_contract_without_rehashing_v1(tmp_path: Path) -> None:
+    snapshot = _v2_snapshot()
+    path = tmp_path / "analysis" / "gold_mainlines" / "2025-01-21" / "v2" / "feature_snapshot.v2.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(snapshot.model_dump(mode="json")), encoding="utf-8")
+
+    lookup = load_previous_feature_snapshot(storage_root=tmp_path, current=_current_v2())
+
+    assert lookup.status == "found"
+    assert lookup.snapshot == snapshot
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["real10y_estimated"]["value"] = 999.0
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    invalid = load_previous_feature_snapshot(storage_root=tmp_path, current=_current_v2())
+    assert (invalid.status, invalid.reason_code) == (
+        "invalid",
+        "previous_feature_snapshot_latest_date_invalid",
+    )
+
+
+def test_v2_readiness_round_trip_is_preserved_and_tampering_is_rejected(tmp_path: Path) -> None:
+    snapshot = _readiness_v2_snapshot()
+    path = _write_snapshot(
+        tmp_path,
+        trade_date="2025-01-17",
+        run_id="readiness-v2",
+        snapshot=snapshot,
+    )
+
+    lookup = load_previous_feature_snapshot(storage_root=tmp_path, current=_current_v2())
+
+    assert lookup.status == "found"
+    assert lookup.snapshot == snapshot
+    assert lookup.snapshot.readiness_policy_version == "gold_readiness_policy.v1"
+    assert lookup.snapshot.data_quality == snapshot.data_quality
+    assert lookup.snapshot.data_quality.analysis_readiness == "ready"
+    assert lookup.snapshot.data_quality.strategy_readiness == "ready"
+    assert lookup.snapshot.data_quality.options_readiness == "ready"
+    assert lookup.snapshot.data_quality.event_attribution_readiness == "ready"
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["data_quality"]["analysis_readiness"] = "blocked"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    invalid = load_previous_feature_snapshot(storage_root=tmp_path, current=_current_v2())
+    assert (invalid.status, invalid.reason_code, invalid.snapshot) == (
+        "invalid",
+        "previous_feature_snapshot_latest_date_invalid",
+        None,
+    )
+
+
+def test_lookup_selects_only_the_current_schema_version_when_versions_coexist(tmp_path: Path) -> None:
+    v1 = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    v2 = _v2_snapshot()
+    v1_path = _write_snapshot(tmp_path, trade_date="2025-01-21", run_id="v1", snapshot=v1)
+    v2_path = _write_snapshot(tmp_path, trade_date="2025-01-21", run_id="v2", snapshot=v2)
+
+    v1_lookup = load_previous_feature_snapshot(storage_root=tmp_path, current=_current())
+    v2_lookup = load_previous_feature_snapshot(storage_root=tmp_path, current=_current_v2())
+
+    assert (v1_lookup.status, v1_lookup.source_path, v1_lookup.snapshot) == ("found", v1_path, v1)
+    assert (v2_lookup.status, v2_lookup.source_path, v2_lookup.snapshot) == ("found", v2_path, v2)
 
 
 def test_symlink_escape_is_invalid_and_never_read(tmp_path: Path) -> None:

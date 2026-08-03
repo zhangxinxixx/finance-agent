@@ -16,17 +16,17 @@ from apps.analysis.gold_policy.state_schemas import (
     TransitionAction,
     TransitionEvidence,
     build_analysis_state,
+    build_analysis_state_v2,
 )
 from apps.analysis.gold_policy.state_transition_policy import (
     evaluate_analysis_state_transition,
+    evaluate_analysis_state_transition_v2,
     ordinary_stage_distance,
 )
 
 
 AS_OF = datetime(2026, 7, 29, 21, 0, tzinfo=UTC)
-GOLDEN_CASES = (
-    Path(__file__).parents[1] / "fixtures" / "gold_state" / "v1_transition_cases.json"
-)
+GOLDEN_CASES = Path(__file__).parents[1] / "fixtures" / "gold_state" / "v1_transition_cases.json"
 
 
 def _ref(source: str, as_of: datetime = AS_OF) -> dict[str, object]:
@@ -108,6 +108,27 @@ def _state(
             "confidence": confidence,
             "quality_status": "accepted",
             "source_refs": [_ref("previous_state")],
+        }
+    )
+
+
+def _v2_state(
+    regime: str = "pressure",
+    maturity: str = "forming",
+    direction: str = "bullish",
+):
+    return build_analysis_state_v2(
+        {
+            "direction": direction,
+            "direction_tilt": "none",
+            "market_regime": regime,
+            "trend_maturity": maturity,
+            "pending_transition": None,
+            "scope": "daily_close",
+            "as_of": AS_OF,
+            "confidence": 0.75,
+            "quality_status": "accepted",
+            "source_refs": [_ref("previous_v2_state")],
         }
     )
 
@@ -224,9 +245,7 @@ def test_scope_heads_are_independent() -> None:
 
 def test_inconsistent_analysis_candidate_fails_closed() -> None:
     previous = _state("pressure", "bullish")
-    inconsistent = _analysis("bullish").model_copy(
-        update={"market_stage_candidate": "range"}
-    )
+    inconsistent = _analysis("bullish").model_copy(update={"market_stage_candidate": "range"})
     result = evaluate_analysis_state_transition(
         previous,
         inconsistent,
@@ -630,10 +649,7 @@ def test_hard_invalidation_can_cross_edges_but_never_confirms_opposite_trend() -
     assert result.decision.action is TransitionAction.INVALIDATE
     assert result.state.stage is AnalysisStage.DIRECTION_DECISION
     assert result.state.directional_bias == "mixed"
-    assert not (
-        result.state.stage is AnalysisStage.TREND_CONFIRMED
-        and result.state.directional_bias == "bearish"
-    )
+    assert not (result.state.stage is AnalysisStage.TREND_CONFIRMED and result.state.directional_bias == "bearish")
 
 
 def test_same_input_is_reproducible_100_times_and_inputs_are_immutable() -> None:
@@ -644,10 +660,7 @@ def test_same_input_is_reproducible_100_times_and_inputs_are_immutable() -> None
     analysis_dump = deepcopy(analysis.model_dump(mode="python"))
     evidence_dump = deepcopy(evidence.model_dump(mode="python"))
 
-    results = [
-        evaluate_analysis_state_transition(previous, analysis, evidence)
-        for _ in range(100)
-    ]
+    results = [evaluate_analysis_state_transition(previous, analysis, evidence) for _ in range(100)]
 
     assert all(result == results[0] for result in results)
     assert previous.model_dump(mode="python") == previous_dump
@@ -737,17 +750,55 @@ def test_hard_invalidation_kind_is_explicit() -> None:
     assert evidence.scope is EvidenceScope.DAILY_CLOSE
 
 
+def test_v2_transition_action_resolver_uses_explicit_business_semantics() -> None:
+    unchanged = evaluate_analysis_state_transition_v2(
+        _v2_state(), _analysis("bullish"), _evidence(1, kind="no_op", categories=())
+    )
+    assert unchanged.decision.action is TransitionAction.MAINTAIN
+
+    repair = evaluate_analysis_state_transition_v2(_v2_state(), _analysis("bullish"), _evidence(1))
+    assert repair.decision.action is TransitionAction.WEAKEN
+
+    strengthened = evaluate_analysis_state_transition_v2(
+        _v2_state("repair", "forming"), _analysis("bullish"), _evidence(1)
+    )
+    assert strengthened.decision.action is TransitionAction.STRENGTHEN
+
+    invalidated = evaluate_analysis_state_transition_v2(
+        _v2_state(),
+        _analysis("bullish"),
+        _evidence(
+            1,
+            kind="hard_invalidation",
+            categories=("price",),
+            rule_code="CONFIRMED_SUPPORT_BREAK",
+        ),
+    )
+    assert invalidated.decision.action is TransitionAction.INVALIDATE
+
+
+def test_v2_completed_bullish_bearish_reversal_is_switch_not_strengthen() -> None:
+    first = evaluate_analysis_state_transition_v2(_v2_state(), _analysis("bearish"), _evidence(1))
+    assert first.decision.action is TransitionAction.PENDING
+    assert first.state is not None
+
+    second = evaluate_analysis_state_transition_v2(
+        first.state,
+        _analysis("bearish"),
+        _evidence(2, predecessor_evidence_id="evidence:ordinary:1"),
+        previous_transition=first.decision,
+    )
+    assert second.decision.action is TransitionAction.SWITCH
+    assert second.decision.action is not TransitionAction.STRENGTHEN
+
+
 def test_v1_golden_transition_cases() -> None:
     cases = json.loads(GOLDEN_CASES.read_text(encoding="utf-8"))
     assert len(cases) == 5
 
     for case in cases:
         previous_payload = case["previous"]
-        previous = (
-            None
-            if previous_payload is None
-            else _state(previous_payload["stage"], previous_payload["bias"])
-        )
+        previous = None if previous_payload is None else _state(previous_payload["stage"], previous_payload["bias"])
         analysis_payload = case["analysis"]
         confidence = 0.0 if analysis_payload["quality"] == "blocked" else 0.7
         evidence_payload = case["evidence"]

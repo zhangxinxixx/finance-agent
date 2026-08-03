@@ -1,0 +1,111 @@
+{
+  "base_payload": {
+    "source_fixture": "feature_snapshot_v1_bullish_2025-01-17.json",
+    "current_as_of": "2025-01-21T21:00:00Z",
+    "common_changes": {
+      "xauusd_spot.value": 2730.0
+    }
+  },
+  "cases": [
+    {
+      "id": "noise_filtered",
+      "changes": {
+        "broad_dollar.value": 120.89,
+        "us10y.value": 4.61,
+        "t10yie.value": 2.36
+      },
+      "expected": {
+        "support_contribution": "0E-8",
+        "counter_contribution": "0E-8",
+        "explained_ratio": "0E-8",
+        "unexplained_component": "1.00000000",
+        "evidence_coverage_ratio": "1.00000000",
+        "filtered": {
+          "broad_dollar": "small",
+          "real_yield": "noise",
+          "breakeven": "noise"
+        }
+      }
+    },
+    {
+      "id": "material_support_with_counter",
+      "changes": {
+        "broad_dollar.value": 120.8,
+        "us10y.value": 4.55,
+        "t10yie.value": 2.32
+      },
+      "expected": {
+        "support_contribution": "0.75000000",
+        "counter_contribution": "0.25000000",
+        "explained_ratio": "0.50000000",
+        "unexplained_component": "0.50000000",
+        "evidence_coverage_ratio": "1.00000000",
+        "ordered_factors": ["real_yield", "broad_dollar", "breakeven"]
+      }
+    },
+    {
+      "id": "oil_conditional_paths",
+      "variants": {
+        "inflation_support": {
+          "changes": {
+            "us10y.value": 4.64,
+            "t10yie.value": 2.38,
+            "wti.value": 78.4,
+            "brent.value": 81.3
+          },
+          "expected_path": "inflation_support",
+          "expected_oil_contribution": "0.15000000"
+        },
+        "opportunity_cost_conflict": {
+          "changes": {
+            "us10y.value": 4.67,
+            "t10yie.value": 2.38,
+            "wti.value": 78.4,
+            "brent.value": 81.3
+          },
+          "expected_path": "opportunity_cost_conflict",
+          "expected_oil_contribution": "0E-8"
+        },
+        "non_dominant": {
+          "changes": {
+            "us10y.value": 4.64,
+            "t10yie.value": 2.38,
+            "wti.value": 78.0,
+            "brent.value": 81.3
+          },
+          "expected_path": "non_dominant",
+          "expected_oil_contribution": "0E-8"
+        }
+      }
+    },
+    {
+      "id": "event_reaction_materiality",
+      "variants": {
+        "material": {
+          "reaction_return_pct": 0.2,
+          "expected_bucket": "material",
+          "expected_contribution": "0.40000000",
+          "expected_role": "primary"
+        },
+        "micro": {
+          "reaction_return_pct": 0.09,
+          "expected_bucket": "noise",
+          "expected_contribution": "0E-8",
+          "expected_role": "filtered"
+        }
+      }
+    },
+    {
+      "id": "stable_identity_and_injection_guards",
+      "changes": {
+        "broad_dollar.value": 120.8,
+        "us10y.value": 4.58,
+        "t10yie.value": 2.35
+      },
+      "expected": {
+        "policy_version": "gold_price_attribution.v2",
+        "materiality_policy_version": "gold_attribution_materiality.v1"
+      }
+    }
+  ]
+}

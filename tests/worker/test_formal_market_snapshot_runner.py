@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from apps.features.market_data.formal_snapshot_loader import FormalSnapshotBundle
 from apps.features.market_data.formal_snapshots import (
+    build_market_context_snapshot,
     build_market_price_snapshot,
     build_oil_snapshot,
 )
@@ -78,7 +79,33 @@ def _ready_bundle(as_of: datetime) -> FormalSnapshotBundle:
         ],
         as_of=as_of,
     )
-    return FormalSnapshotBundle(market_prices=market_prices, oil=oil, as_of=as_of)
+    market_context = build_market_context_snapshot(
+        candidates=[
+            _bar(
+                asset=asset,
+                timeframe="1d",
+                source=source,
+                source_ref={
+                    "provider_symbol": symbol,
+                    "instrument_type": instrument_type,
+                    "source_role": role,
+                    "reference": f"fixture://{asset.lower()}",
+                },
+                open_time=as_of - timedelta(days=2),
+            )
+            for asset, source, symbol, instrument_type, role in (
+                ("DXY", "yahoo_finance_dx_y_nyb", "DX-Y.NYB", "index", "market_primary"),
+                ("VIX", "yahoo_finance_vix", "^VIX", "volatility_index", "market_primary"),
+            )
+        ],
+        as_of=as_of,
+    )
+    return FormalSnapshotBundle(
+        market_prices=market_prices,
+        oil=oil,
+        as_of=as_of,
+        market_context=market_context,
+    )
 
 
 def _states() -> tuple[SimpleNamespace, SimpleNamespace]:
@@ -127,12 +154,14 @@ def test_persist_snapshot_passes_loaded_formal_models_and_one_run_time(
     assert captured == {"session": session, "as_of": as_of}
     assert snapshot["snapshot_time"] == run_time.isoformat()
     assert snapshot["market_prices"]["data"]["readiness"] == "ready"
+    assert snapshot["market_context"]["data"]["readiness"] == "observe"
     assert snapshot["oil"]["data"]["readiness"] == "ready"
     assert macro_state.step_summaries["formal_market_snapshots"] == {
         "step": "formal_market_snapshots",
         "status": "success",
         "as_of": as_of.isoformat(),
         "market_prices_readiness": "ready",
+        "market_context_readiness": "observe",
         "oil_readiness": "ready",
         "error": None,
     }

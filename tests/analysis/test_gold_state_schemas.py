@@ -78,9 +78,7 @@ def _decision_payload(
             "scope": "daily_close",
             "delta_kind": "ordinary",
             "as_of": AS_OF + timedelta(days=1),
-            "source_refs": [
-                _ref("gold_analysis_decision", retrieved_at=AS_OF + timedelta(days=1))
-            ],
+            "source_refs": [_ref("gold_analysis_decision", retrieved_at=AS_OF + timedelta(days=1))],
             "evidence_categories": ["macro"],
         },
         "reasons": ["REAL_YIELD_FALL_CONFIRMED"],
@@ -105,6 +103,7 @@ def test_enums_are_closed_to_the_issue_95_values() -> None:
         "weaken",
         "invalidate",
         "pending",
+        "switch",
     }
     assert {item.value for item in EvidenceScope} == {
         "intraday",
@@ -156,16 +155,12 @@ def test_analysis_state_is_content_addressed_stable_and_does_not_mutate_input() 
     assert expected.schema_version == "analysis_state.v1"
     assert expected.asset == "XAUUSD"
     assert [ref.source for ref in expected.source_refs] == ["a_source", "z_source"]
-    assert expected.payload_hash == hashlib.sha256(
-        canonical_analysis_state_json(expected).encode()
-    ).hexdigest()
+    assert expected.payload_hash == hashlib.sha256(canonical_analysis_state_json(expected).encode()).hexdigest()
     assert expected.state_id == f"analysis_state.v1:{expected.payload_hash}"
 
 
 def test_equivalent_timezone_and_reference_order_have_one_state_identity() -> None:
-    first = build_analysis_state(
-        _state_payload(source_refs=[_ref("b"), _ref("a")])
-    )
+    first = build_analysis_state(_state_payload(source_refs=[_ref("b"), _ref("a")]))
     equivalent_as_of = AS_OF.astimezone(timezone(timedelta(hours=8)))
     second = build_analysis_state(
         _state_payload(
@@ -204,9 +199,7 @@ def test_equivalent_timezone_and_reference_order_have_one_state_identity() -> No
                 "first_seen_at": AS_OF + timedelta(seconds=1),
                 "last_seen_at": AS_OF + timedelta(seconds=1),
                 "last_evidence_id": "future",
-                "source_refs": [
-                    _ref(retrieved_at=AS_OF + timedelta(seconds=1))
-                ],
+                "source_refs": [_ref(retrieved_at=AS_OF + timedelta(seconds=1))],
             }
         },
         {"quality_status": "accepted", "directional_bias": "unavailable"},
@@ -341,12 +334,14 @@ def test_transition_decision_is_content_addressed_stable_and_non_mutating() -> N
 
     assert all(decision == expected for decision in decisions)
     assert payload == original
-    assert expected.decision_hash == hashlib.sha256(
-        canonical_state_transition_decision_json(expected).encode()
-    ).hexdigest()
-    assert json.loads(canonical_state_transition_decision_json(expected))[
-        "policy_version"
-    ] == "analysis_state_transition_policy.v1"
+    assert (
+        expected.decision_hash
+        == hashlib.sha256(canonical_state_transition_decision_json(expected).encode()).hexdigest()
+    )
+    assert (
+        json.loads(canonical_state_transition_decision_json(expected))["policy_version"]
+        == "analysis_state_transition_policy.v1"
+    )
 
 
 def test_no_op_requires_non_advancing_maintain() -> None:
@@ -373,9 +368,7 @@ def test_no_op_requires_non_advancing_maintain() -> None:
     assert decision.advance is False
 
     with pytest.raises(ValidationError, match="no_op"):
-        build_state_transition_policy_decision(
-            {**payload, "action": "strengthen"}
-        )
+        build_state_transition_policy_decision({**payload, "action": "strengthen"})
 
 
 def test_hard_invalidation_requires_invalidate_action() -> None:
@@ -397,9 +390,7 @@ def test_hard_invalidation_requires_invalidate_action() -> None:
             "scope": "daily_close",
             "delta_kind": "hard_invalidation",
             "as_of": AS_OF + timedelta(days=1),
-            "source_refs": [
-                _ref("hard_invalidation", retrieved_at=AS_OF + timedelta(days=1))
-            ],
+            "source_refs": [_ref("hard_invalidation", retrieved_at=AS_OF + timedelta(days=1))],
             "evidence_categories": ["price"],
             "rule_code": "CONFIRMED_SUPPORT_BREAK",
         },
@@ -438,9 +429,7 @@ def test_transition_decision_rejects_inconsistent_or_extra_fields(
         )
     )
     with pytest.raises(ValidationError):
-        build_state_transition_policy_decision(
-            _decision_payload(previous, current, **changes)
-        )
+        build_state_transition_policy_decision(_decision_payload(previous, current, **changes))
 
 
 def test_transition_decision_rejects_naive_or_future_evidence_and_tampered_hash() -> None:

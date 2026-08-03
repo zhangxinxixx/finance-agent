@@ -20,13 +20,14 @@ from apps.analysis.gold_policy.key_level_schemas import (
     KeyLevelTransitionAction,
 )
 from apps.analysis.gold_policy.schemas import SourceReference
-from apps.analysis.gold_policy.state_schemas import AnalysisState, StateTransitionPolicyDecision
 from apps.analysis.gold_policy.strategy_policy import evaluate_gold_strategy_policy
 from apps.analysis.gold_policy.strategy_schemas import (
     NoTradeReasonCode,
     StrategyDecision,
+    StrategyDecisionV2,
     StrategyDirection,
     StrategyPolicyInput,
+    StrategyPolicyInputV2,
     StrategyStatus,
 )
 
@@ -66,7 +67,7 @@ def evaluate_analysis_strategy_consistency(
             ConsistencyReasonCode.IDENTITY_REVALIDATION_FAILED,
             proof_hash,
         )
-    if transition.to_state_id != current_state.state_id or transition.to_stage is not current_state.stage:
+    if not _transition_targets_state(transition, current_state):
         return _reject(
             gate_input,
             ConsistencyStatus.BLOCKED,
@@ -87,7 +88,7 @@ def evaluate_analysis_strategy_consistency(
             ConsistencyReasonCode.CURRENT_STRATEGY_TRANSITION_MISMATCH,
             proof_hash,
         )
-    if candidate.scope.value != current_state.scope.value or candidate.stage is not current_state.stage:
+    if candidate.scope.value != current_state.scope.value or not _strategy_projects_state(candidate, current_state):
         return _reject(
             gate_input,
             ConsistencyStatus.BLOCKED,
@@ -180,10 +181,7 @@ def evaluate_analysis_strategy_consistency(
             ConsistencyReasonCode.PREVIOUS_STRATEGY_STATE_MISMATCH,
             proof_hash,
         )
-    if (
-        previous_transition.to_state_id != previous_state.state_id
-        or previous_transition.to_stage is not previous_state.stage
-    ):
+    if not _transition_targets_state(previous_transition, previous_state):
         return _reject(
             gate_input,
             ConsistencyStatus.BLOCKED,
@@ -412,11 +410,37 @@ def evaluate_analysis_strategy_consistency(
     )
 
 
-def _direction_matches_state(decision: StrategyDecision, state: AnalysisState) -> bool:
+def _transition_targets_state(transition, state) -> bool:
+    if transition.to_state_id != state.state_id:
+        return False
+    if hasattr(transition, "to_stage"):
+        return transition.to_stage is state.stage
+    projections = (
+        (transition.to_direction, state.direction),
+        (transition.to_direction_tilt, state.direction_tilt),
+        (transition.to_market_regime, state.market_regime),
+        (transition.to_trend_maturity, state.trend_maturity),
+    )
+    return all(projected is None or projected == actual for projected, actual in projections)
+
+
+def _strategy_projects_state(decision, state) -> bool:
+    if isinstance(decision, StrategyDecisionV2):
+        return (
+            decision.state_direction == state.direction
+            and decision.direction_tilt == state.direction_tilt
+            and decision.market_regime == state.market_regime
+            and decision.trend_maturity == state.trend_maturity
+        )
+    return decision.stage is state.stage
+
+
+def _direction_matches_state(decision, state) -> bool:
+    state_direction = getattr(state, "direction", None) or state.directional_bias
     if decision.direction is StrategyDirection.LONG:
-        return state.quality_status == "accepted" and state.directional_bias == "bullish"
+        return state.quality_status == "accepted" and state_direction == "bullish"
     if decision.direction is StrategyDirection.SHORT:
-        return state.quality_status == "accepted" and state.directional_bias == "bearish"
+        return state.quality_status == "accepted" and state_direction == "bearish"
     return True
 
 
@@ -424,7 +448,10 @@ def _opposite_direction(previous: StrategyDirection, current: StrategyDirection)
     return {previous, current} == {StrategyDirection.LONG, StrategyDirection.SHORT}
 
 
-def _typed_support_changed(previous: StrategyDecision, current: StrategyDecision) -> bool:
+def _typed_support_changed(
+    previous: StrategyDecision | StrategyDecisionV2,
+    current: StrategyDecision | StrategyDecisionV2,
+) -> bool:
     return any(
         (
             previous.feature_snapshot_id != current.feature_snapshot_id,
@@ -554,20 +581,19 @@ def _all_changed_candidate_levels_proven(gate_input: AnalysisStrategyConsistency
 
 def _identities_revalidate(gate_input: AnalysisStrategyConsistencyInput) -> bool:
     try:
-        StrategyPolicyInput.model_validate(gate_input.current_policy_input.model_dump(mode="json"))
-        StrategyDecision.model_validate(gate_input.candidate_strategy.model_dump(mode="json"))
-        AnalysisState.model_validate(gate_input.current_policy_input.analysis_state.model_dump(mode="json"))
-        StateTransitionPolicyDecision.model_validate(
-            gate_input.current_policy_input.state_transition.model_dump(mode="json")
+        values = (
+            gate_input.current_policy_input,
+            gate_input.candidate_strategy,
+            gate_input.current_policy_input.analysis_state,
+            gate_input.current_policy_input.state_transition,
+            gate_input.previous_state,
+            gate_input.previous_policy_input,
+            gate_input.previous_strategy,
+            gate_input.previous_transition,
         )
-        if gate_input.previous_state is not None:
-            AnalysisState.model_validate(gate_input.previous_state.model_dump(mode="json"))
-        if gate_input.previous_policy_input is not None:
-            StrategyPolicyInput.model_validate(gate_input.previous_policy_input.model_dump(mode="json"))
-        if gate_input.previous_strategy is not None:
-            StrategyDecision.model_validate(gate_input.previous_strategy.model_dump(mode="json"))
-        if gate_input.previous_transition is not None:
-            StateTransitionPolicyDecision.model_validate(gate_input.previous_transition.model_dump(mode="json"))
+        for value in values:
+            if value is not None:
+                type(value).model_validate(value.model_dump(mode="json"))
         for decision in gate_input.key_level_proof:
             type(decision).model_validate(decision.model_dump(mode="json"))
     except (ValidationError, ValueError):
@@ -682,13 +708,22 @@ def _key_level_proof(gate_input: AnalysisStrategyConsistencyInput):
     return tuple(decisions[key] for key in sorted(decisions))
 
 
-def _attribution_proof_payload(current: StrategyPolicyInput):
+def _attribution_proof_payload(
+    current: StrategyPolicyInput | StrategyPolicyInputV2,
+):
     payload = current.price_attribution.model_dump(mode="json")
     payload["source_refs"] = sorted(
         payload["source_refs"],
         key=lambda ref: (ref["source"], ref["reference"], ref["retrieved_at"]),
     )
-    for group in ("primary_drivers", "secondary_drivers", "counter_drivers"):
+    for group in (
+        "primary_drivers",
+        "secondary_drivers",
+        "counter_drivers",
+        "filtered_drivers",
+    ):
+        if group not in payload:
+            continue
         for driver in payload[group]:
             driver["source_refs"] = sorted(
                 driver["source_refs"],
@@ -697,7 +732,9 @@ def _attribution_proof_payload(current: StrategyPolicyInput):
     return payload
 
 
-def _policy_input_hash(policy_input: StrategyPolicyInput) -> str:
+def _policy_input_hash(
+    policy_input: StrategyPolicyInput | StrategyPolicyInputV2,
+) -> str:
     payload = policy_input.model_dump(mode="json")
     payload["price_attribution"] = _attribution_proof_payload(policy_input)
     payload["key_levels"] = sorted(payload["key_levels"], key=lambda level: level["state_id"])

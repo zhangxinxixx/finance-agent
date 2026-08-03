@@ -72,7 +72,7 @@ QUOTE_SYMBOLS = [
 ]
 
 KLINE_SYMBOLS = ["XAUUSD"]
-DAILY_MARKET_CANDLE_ASSETS = ("GC", "DXY")
+DAILY_MARKET_CANDLE_ASSETS = ("GC", "DXY", "VIX", "WTI", "BRENT")
 _JIN10_MCP_MARKET_SOURCE_KEY = "jin10_mcp_market"
 
 
@@ -581,7 +581,7 @@ def refresh_jin10_kline_cache(
         logger.warning("Jin10 MCP kline refresh failed: %s", exc)
 
 
-def refresh_market_candle_daily_cache(*, range_: str = "10d") -> None:
+def refresh_market_candle_daily_cache(*, range_: str = "1mo") -> None:
     """Refresh recent daily market candles for local coverage and gap repair."""
     try:
         storage_root = Path("./storage").resolve()
@@ -590,11 +590,15 @@ def refresh_market_candle_daily_cache(*, range_: str = "10d") -> None:
             imported = 0
             scanned = 0
             for asset in DAILY_MARKET_CANDLE_ASSETS:
-                candles, raw_path, source, source_ref = _collect_daily_market_candles(
-                    storage_root=storage_root,
-                    asset=asset,
-                    range_=range_,
-                )
+                try:
+                    candles, raw_path, source, source_ref = _collect_daily_market_candles(
+                        storage_root=storage_root,
+                        asset=asset,
+                        range_=range_,
+                    )
+                except Exception as exc:
+                    logger.warning("Daily market candle refresh failed for %s: %s", asset, exc)
+                    continue
                 for candle in candles:
                     scanned += 1
                     upsert_market_candle(

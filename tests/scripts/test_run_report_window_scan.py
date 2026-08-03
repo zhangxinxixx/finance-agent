@@ -2,18 +2,149 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from apps.collectors.jin10.fetcher import Jin10CategoryEntry
+from apps.runtime.premarket_snapshot_authority import stage_premarket_snapshot_authority
+from database.models.analysis import AnalysisBase
+from database.models.execution import ExecutionBase
+from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 from scripts import run_report_window_scan as scanner
 from scripts.run_report_window_scan import WINDOWS, due_windows, matching_entries, previous_weekday, publication_date
 
 BEIJING = ZoneInfo("Asia/Shanghai")
+
+
+def _authority_factory(tmp_path: Path, name: str = "scanner-authority.db") -> sessionmaker[Session]:
+    engine = create_engine(f"sqlite:///{tmp_path / name}")
+    Base.metadata.create_all(engine)
+    AnalysisBase.metadata.create_all(engine)
+    ExecutionBase.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def _stage_authoritative_snapshot(
+    factory: sessionmaker[Session], storage_root: Path, *, trade_date: str = "2026-08-11"
+) -> tuple[str, str, Path]:
+    with factory() as session:
+        run = TaskRun(
+            id=uuid.uuid4(),
+            name="premarket",
+            task_type="premarket",
+            status=TaskStatus.running,
+        )
+        session.add(run)
+        session.flush()
+        run_id = str(run.id)
+        snapshot_id = f"XAUUSD:{trade_date}:{run_id}"
+        snapshot = {
+            "asset": "XAUUSD",
+            "trade_date": trade_date,
+            "run_id": run_id,
+            "snapshot_id": snapshot_id,
+            "input_snapshot_ids": {"macro": f"macro:{trade_date}:{run_id}"},
+            "source_refs": [],
+            "macro": {"status": "available", "data": {"as_of": trade_date}},
+            "options": {"status": "unavailable"},
+        }
+        snapshot_path = (
+            storage_root / "features" / "snapshots" / "XAUUSD" / trade_date / run_id / "premarket_snapshot.json"
+        )
+        snapshot_path.parent.mkdir(parents=True)
+        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+        stage_premarket_snapshot_authority(
+            session,
+            run_id=run_id,
+            snapshot=snapshot,
+            snapshot_path=snapshot_path,
+            storage_root=storage_root,
+        )
+        run.status = TaskStatus.success
+        session.commit()
+    return run_id, snapshot_id, snapshot_path
+
+
+def _stage_limited_gold_daily_snapshot(
+    factory: sessionmaker[Session], storage_root: Path, *, trade_date: str = "2026-08-11"
+) -> tuple[str, str, Path]:
+    with factory() as session:
+        run = TaskRun(
+            id=uuid.uuid4(),
+            name="premarket",
+            task_type="premarket",
+            status=TaskStatus.running,
+        )
+        session.add(run)
+        session.flush()
+        run_id = str(run.id)
+        snapshot_id = f"XAUUSD:{trade_date}:{run_id}"
+        snapshot = {
+            "asset": "XAUUSD",
+            "trade_date": trade_date,
+            "run_id": run_id,
+            "snapshot_id": snapshot_id,
+            "input_snapshot_ids": {"macro": f"macro:{trade_date}:{run_id}"},
+            "source_refs": [],
+            "macro": {"status": "available", "data": {"as_of": trade_date}},
+            "options": {"status": "unavailable"},
+        }
+        snapshot_path = (
+            storage_root / "features" / "snapshots" / "XAUUSD" / trade_date / run_id / "premarket_snapshot.json"
+        )
+        snapshot_path.parent.mkdir(parents=True)
+        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+        stage_premarket_snapshot_authority(
+            session,
+            run_id=run_id,
+            snapshot=snapshot,
+            snapshot_path=snapshot_path,
+            storage_root=storage_root,
+        )
+        reason_code = "downstream_readiness_not_ready"
+        receipt = {
+            "schema_version": "gold_daily_report_premarket_authority.v1",
+            "authority_scope": "gold_daily_report_only",
+            "run_id": run_id,
+            "snapshot_id": snapshot_id,
+            "trade_date": trade_date,
+            "readiness_decision": "block",
+            "readiness": "blocked",
+            "reason_code": reason_code,
+            "can_run_daily_report": True,
+            "can_run_full_analysis": False,
+            "publish_allowed": False,
+            "source_ref": f"monitoring/{trade_date}/downstream_readiness.json",
+            "observed_at": f"{trade_date}T01:00:00+00:00",
+        }
+        session.add(
+            TaskStep(
+                task_run_id=run.id,
+                name="strategy_card",
+                status=StepStatus.blocked,
+                blocked_reason=reason_code,
+                output_json=json.dumps(
+                    {
+                        "output_mode": "blocked",
+                        "publish_allowed": False,
+                        "reason_code": reason_code,
+                        "gold_daily_report_authority": receipt,
+                    },
+                    sort_keys=True,
+                ),
+            )
+        )
+        run.status = TaskStatus.blocked
+        run.error_summary = reason_code
+        session.commit()
+    return run_id, snapshot_id, snapshot_path
 
 
 def _at(value: str) -> datetime:
@@ -154,21 +285,25 @@ def test_gold_scan_prefers_reportory_daily_and_keeps_legacy_discovery(tmp_path, 
     monkeypatch.setattr(
         scanner,
         "fetch_reportory_daily_gold_entries",
-        lambda **kwargs: calls.append("reportory")
-        or [
-            Jin10CategoryEntry(
-                "20260728T025217Z-9958b921",
-                "每日金银报告——新版发布",
-                reportory_url,
-                "2026-07-28 10:54:01",
-            )
-        ],
+        lambda **kwargs: (
+            calls.append("reportory")
+            or [
+                Jin10CategoryEntry(
+                    "20260728T025217Z-9958b921",
+                    "每日金银报告——新版发布",
+                    reportory_url,
+                    "2026-07-28 10:54:01",
+                )
+            ]
+        ),
     )
     monkeypatch.setattr(
         scanner,
         "fetch_category_entries",
-        lambda **kwargs: calls.append("legacy")
-        or [Jin10CategoryEntry("225900", "旧版每日金银报告", "/details/225900", "2026-07-28 10:50:00")],
+        lambda **kwargs: (
+            calls.append("legacy")
+            or [Jin10CategoryEntry("225900", "旧版每日金银报告", "/details/225900", "2026-07-28 10:50:00")]
+        ),
     )
     monkeypatch.setattr(scanner, "run_command", lambda command, *, env: commands.append(command) or {"status": "ok"})
 
@@ -184,9 +319,7 @@ def test_gold_scan_prefers_reportory_daily_and_keeps_legacy_discovery(tmp_path, 
     assert calls == ["reportory", "legacy"]
     assert result["actions"][0]["article_id"] == "20260728T025217Z-9958b921"
     fetch_command = next(
-        command
-        for command in commands
-        if any(item.endswith("fetch_jin10_reportory_daily_gold.py") for item in command)
+        command for command in commands if any(item.endswith("fetch_jin10_reportory_daily_gold.py") for item in command)
     )
     assert fetch_command[fetch_command.index("--url") + 1] == reportory_url
     assert not any("scripts/fetch_jin10_report.py" in command for command in commands)
@@ -205,9 +338,7 @@ def test_gold_scan_falls_back_to_legacy_when_reportory_discovery_fails(tmp_path,
     monkeypatch.setattr(
         scanner,
         "fetch_category_entries",
-        lambda **kwargs: [
-            Jin10CategoryEntry("225900", "旧版每日金银报告", "/details/225900", "2026-07-28 10:50:00")
-        ],
+        lambda **kwargs: [Jin10CategoryEntry("225900", "旧版每日金银报告", "/details/225900", "2026-07-28 10:50:00")],
     )
     monkeypatch.setattr(scanner, "run_command", lambda command, *, env: commands.append(command) or {"status": "ok"})
 
@@ -221,9 +352,7 @@ def test_gold_scan_falls_back_to_legacy_when_reportory_discovery_fails(tmp_path,
     )
 
     assert result["actions"][0]["article_id"] == "225900"
-    assert result["discovery_errors"] == [
-        {"source": "reportory_daily_gold", "error": "reportory unavailable"}
-    ]
+    assert result["discovery_errors"] == [{"source": "reportory_daily_gold", "error": "reportory unavailable"}]
     assert any("scripts/fetch_jin10_report.py" in command for command in commands)
 
 
@@ -323,6 +452,264 @@ def test_weekly_scan_reprocesses_existing_analysis_that_needs_review(tmp_path, m
 
 def test_previous_weekday_handles_monday() -> None:
     assert previous_weekday(_at("2026-07-20T12:00:00").date()).isoformat() == "2026-07-17"
+
+
+def test_daily_macro_close_dry_run_does_not_open_authority_session(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "gold_daily_macro_close")
+
+    def forbidden_factory():
+        raise AssertionError("dry-run must not create a database session")
+
+    monkeypatch.setattr(
+        scanner,
+        "run_command",
+        lambda *args, **kwargs: pytest.fail("dry-run must not execute a command"),
+    )
+
+    result = scanner.scan_daily_macro_close(
+        window,
+        now=_at("2026-08-11T20:10:00"),
+        storage_root=tmp_path / "storage",
+        dry_run=True,
+        env={},
+        session_factory=forbidden_factory,
+    )
+
+    assert result == {
+        "window": "gold_daily_macro_close",
+        "status": "would_finalize",
+        "trade_date": "2026-08-11",
+        "cutoff": "21:00 Asia/Shanghai",
+        "pipeline": "gold_daily_report",
+    }
+
+
+def test_daily_macro_close_runs_gold_cli_for_exact_authoritative_snapshot(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "gold_daily_macro_close")
+    storage_root = tmp_path / "storage"
+    factory = _authority_factory(tmp_path)
+    run_id, snapshot_id, snapshot_path = _stage_authoritative_snapshot(factory, storage_root)
+    calls: list[tuple[list[str], dict[str, str]]] = []
+    input_env = {"UPSTREAM": "preserved", "FINANCE_AGENT_DISABLE_JIN10": "false"}
+
+    def fake_run_command(command, *, env):
+        calls.append((command, env))
+        return {"status": "completed", "report_id": "gold-policy-report"}
+
+    monkeypatch.setattr(scanner, "run_command", fake_run_command)
+
+    result = scanner.scan_daily_macro_close(
+        window,
+        now=_at("2026-08-11T20:10:00"),
+        storage_root=storage_root,
+        dry_run=False,
+        env=input_env,
+        session_factory=factory,
+    )
+
+    assert calls == [
+        (
+            [
+                scanner.sys.executable,
+                "scripts/run_gold_daily_report.py",
+                "--date",
+                "2026-08-11",
+                "--storage-root",
+                str(storage_root),
+                "--snapshot-path",
+                str(snapshot_path),
+            ],
+            {
+                "UPSTREAM": "preserved",
+                "FINANCE_AGENT_DISABLE_JIN10": "true",
+            },
+        )
+    ]
+    assert input_env == {"UPSTREAM": "preserved", "FINANCE_AGENT_DISABLE_JIN10": "false"}
+    assert all("scripts/run_daily_macro_close.py" not in command for command, _ in calls)
+    assert result == {
+        "window": "gold_daily_macro_close",
+        "status": "completed",
+        "report_id": "gold-policy-report",
+        "authority": {"run_id": run_id, "snapshot_id": snapshot_id},
+    }
+
+
+def test_daily_macro_close_runs_gold_cli_for_limited_blocked_snapshot(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "gold_daily_macro_close")
+    storage_root = tmp_path / "storage"
+    factory = _authority_factory(tmp_path)
+    run_id, snapshot_id, snapshot_path = _stage_limited_gold_daily_snapshot(factory, storage_root)
+    calls: list[list[str]] = []
+
+    def fake_run_command(command, *, env):
+        calls.append(command)
+        assert env["FINANCE_AGENT_DISABLE_JIN10"] == "true"
+        return {"status": "completed", "report_id": "limited-gold-report"}
+
+    monkeypatch.setattr(scanner, "run_command", fake_run_command)
+
+    result = scanner.scan_daily_macro_close(
+        window,
+        now=_at("2026-08-11T20:10:00"),
+        storage_root=storage_root,
+        dry_run=False,
+        env={},
+        session_factory=factory,
+    )
+
+    assert calls == [
+        [
+            scanner.sys.executable,
+            "scripts/run_gold_daily_report.py",
+            "--date",
+            "2026-08-11",
+            "--storage-root",
+            str(storage_root),
+            "--snapshot-path",
+            str(snapshot_path),
+        ]
+    ]
+    assert result == {
+        "window": "gold_daily_macro_close",
+        "status": "completed",
+        "report_id": "limited-gold-report",
+        "authority": {"run_id": run_id, "snapshot_id": snapshot_id},
+    }
+
+
+def test_daily_macro_close_waits_when_authority_is_missing(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "gold_daily_macro_close")
+    factory = _authority_factory(tmp_path)
+    monkeypatch.setattr(
+        scanner,
+        "run_command",
+        lambda *args, **kwargs: pytest.fail("missing authority must not execute a command"),
+    )
+
+    result = scanner.scan_daily_macro_close(
+        window,
+        now=_at("2026-08-11T20:10:00"),
+        storage_root=tmp_path / "storage",
+        dry_run=False,
+        env={},
+        session_factory=factory,
+    )
+
+    assert result["status"] == "waiting"
+    assert result["reason_code"] == "successful_premarket_run_missing"
+
+
+def test_daily_macro_close_blocks_ambiguous_authority(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "gold_daily_macro_close")
+    factory = _authority_factory(tmp_path)
+    with factory() as session:
+        for _ in range(2):
+            session.add(
+                TaskRun(
+                    name="premarket",
+                    task_type="premarket",
+                    trade_date="2026-08-11",
+                    status=TaskStatus.success,
+                )
+            )
+        session.commit()
+    monkeypatch.setattr(
+        scanner,
+        "run_command",
+        lambda *args, **kwargs: pytest.fail("ambiguous authority must not execute a command"),
+    )
+
+    result = scanner.scan_daily_macro_close(
+        window,
+        now=_at("2026-08-11T20:10:00"),
+        storage_root=tmp_path / "storage",
+        dry_run=False,
+        env={},
+        session_factory=factory,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "multiple_successful_premarket_runs"
+
+
+def test_daily_macro_close_blocks_invalid_authority(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "gold_daily_macro_close")
+    storage_root = tmp_path / "storage"
+    factory = _authority_factory(tmp_path)
+    _run_id, _snapshot_id, snapshot_path = _stage_authoritative_snapshot(factory, storage_root)
+    snapshot_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        scanner,
+        "run_command",
+        lambda *args, **kwargs: pytest.fail("invalid authority must not execute a command"),
+    )
+
+    result = scanner.scan_daily_macro_close(
+        window,
+        now=_at("2026-08-11T20:10:00"),
+        storage_root=storage_root,
+        dry_run=False,
+        env={},
+        session_factory=factory,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "authority_integrity_invalid"
+
+
+def test_daily_macro_close_blocks_unavailable_authority_database(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "gold_daily_macro_close")
+    engine = create_engine(f"sqlite:///{tmp_path / 'missing-tables.db'}")
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(
+        scanner,
+        "run_command",
+        lambda *args, **kwargs: pytest.fail("unavailable authority must not execute a command"),
+    )
+
+    result = scanner.scan_daily_macro_close(
+        window,
+        now=_at("2026-08-11T20:10:00"),
+        storage_root=tmp_path / "storage",
+        dry_run=False,
+        env={},
+        session_factory=factory,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "premarket_snapshot_authority_unavailable"
+
+
+def test_daily_macro_close_session_failure_redacts_secret_detail(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "gold_daily_macro_close")
+    secret_url = "postgresql://finance-agent:super-secret@example.invalid/db"
+
+    class SecretSessionFailure(RuntimeError):
+        pass
+
+    def failing_factory():
+        raise SecretSessionFailure(secret_url)
+
+    monkeypatch.setattr(
+        scanner,
+        "run_command",
+        lambda *args, **kwargs: pytest.fail("session failure must not execute a command"),
+    )
+
+    result = scanner.scan_daily_macro_close(
+        window,
+        now=_at("2026-08-11T20:10:00"),
+        storage_root=tmp_path / "storage",
+        dry_run=False,
+        env={},
+        session_factory=failing_factory,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "premarket_snapshot_authority_unavailable"
+    assert result["detail"] == "SecretSessionFailure"
+    assert secret_url not in json.dumps(result)
 
 
 def test_scan_cme_passes_parsed_json_to_options_analysis(tmp_path, monkeypatch) -> None:

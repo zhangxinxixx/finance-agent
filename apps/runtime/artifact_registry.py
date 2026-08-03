@@ -33,7 +33,9 @@ _SOURCE_REF_TRACE_KEYS = frozenset(
         "file_path",
         "raw_path",
         "ref",
+        "reference",
         "report_date",
+        "retrieved_at",
         "sha256",
         "snapshot_id",
         "source_ref",
@@ -414,8 +416,7 @@ def select_context_bundle_artifact_for_run(
     recompute = [
         row
         for row in candidates
-        if isinstance(row.artifact_metadata, dict)
-        and row.artifact_metadata.get("artifact_role") == "canary_recompute"
+        if isinstance(row.artifact_metadata, dict) and row.artifact_metadata.get("artifact_role") == "canary_recompute"
     ]
     predecessor = [row for row in candidates if row not in recompute]
     if len(recompute) != 1 or len(predecessor) != 1:
@@ -446,18 +447,12 @@ def select_canary_terminal_result_for_run(
     """Recover the one terminal canary outcome for a TaskRun, if committed."""
 
     run_uuid = _coerce_run_uuid(run_id)
-    rows = (
-        db.query(RunArtifact)
-        .filter(RunArtifact.run_id == run_uuid)
-        .order_by(RunArtifact.created_at.asc())
-        .all()
-    )
+    rows = db.query(RunArtifact).filter(RunArtifact.run_id == run_uuid).order_by(RunArtifact.created_at.asc()).all()
     candidates = [
         row
         for row in rows
         if isinstance(row.artifact_metadata, dict)
-        and row.artifact_metadata.get("artifact_family")
-        == "analysis_state_canary_terminal"
+        and row.artifact_metadata.get("artifact_family") == "analysis_state_canary_terminal"
     ]
     if not candidates:
         return None
@@ -609,9 +604,7 @@ def select_exact_context_bundle_artifact(
         "state_scope": str(state_scope).strip(),
         "canonical_state_id": str(base_canonical_state_id).strip(),
     }
-    if any(not value for value in expected.values()) or not _is_lowercase_sha256(
-        expected["content_hash"]
-    ):
+    if any(not value for value in expected.values()) or not _is_lowercase_sha256(expected["content_hash"]):
         raise ValueError("ContextBundle exact selector identity is incomplete")
 
     rows = (
@@ -619,14 +612,12 @@ def select_exact_context_bundle_artifact(
         .filter(
             RunArtifact.run_id == source_run_uuid,
             RunArtifact.artifact_type == ArtifactType.structured_json.value,
-            RunArtifact.artifact_metadata["artifact_family"].as_string()
-            == _CONTEXT_BUNDLE_ARTIFACT_FAMILY,
+            RunArtifact.artifact_metadata["artifact_family"].as_string() == _CONTEXT_BUNDLE_ARTIFACT_FAMILY,
             RunArtifact.artifact_metadata["bundle_id"].as_string() == expected["bundle_id"],
             RunArtifact.artifact_metadata["content_hash"].as_string() == expected["content_hash"],
             RunArtifact.artifact_metadata["asset"].as_string() == expected["asset"],
             RunArtifact.artifact_metadata["state_scope"].as_string() == expected["state_scope"],
-            RunArtifact.artifact_metadata["canonical_state_id"].as_string()
-            == expected["canonical_state_id"],
+            RunArtifact.artifact_metadata["canonical_state_id"].as_string() == expected["canonical_state_id"],
         )
         .order_by(RunArtifact.created_at.asc(), RunArtifact.artifact_id.asc())
         .limit(2)

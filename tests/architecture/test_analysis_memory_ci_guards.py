@@ -42,7 +42,8 @@ def test_ci_runs_analysis_memory_focused_and_postgres_suites() -> None:
     assert "tests/database/test_analysis_memory_postgres.py" in workflow
     assert "ANALYSIS_MEMORY_POSTGRES_URL" in workflow
     assert "postgresql+psycopg2://" in workflow
-    assert workflow.count("mkdir -p test-results &&") == 2
+    assert workflow.count("--junitxml=test-results/analysis-memory.xml") == 1
+    assert workflow.count("--junitxml=test-results/analysis-memory-postgres.xml") == 1
     assert "actions/upload-artifact@v4" in workflow
 
 

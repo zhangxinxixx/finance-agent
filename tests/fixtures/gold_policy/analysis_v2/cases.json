@@ -1,0 +1,72 @@
+{
+  "schema_version": "gold_analysis_v2_contract_fixture.v1",
+  "materiality_policy_version": "gold_analysis_materiality.v1",
+  "output_quantum": "0.00000001",
+  "base_payload": {
+    "schema_version": "feature_snapshot.v2",
+    "asset": "XAUUSD",
+    "scope": "daily_close",
+    "as_of": "2025-01-17T21:00:00Z",
+    "xauusd_spot": {"series_id": "XAUUSD_SPOT", "market_role": "spot", "value": 2703.2, "unit": "USD/troy_oz", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily_close", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/xauusd", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "gc_futures": {"series_id": "GC_FUTURES", "market_role": "futures", "value": 2709.4, "unit": "USD/troy_oz", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily_close", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/gc", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "us02y": {"series_id": "US02Y", "market_role": "yield", "value": 4.22, "unit": "percent", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/us02y", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "us10y": {"series_id": "US10Y", "market_role": "yield", "value": 4.5, "unit": "percent", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/us10y", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "us30y": {"series_id": "US30Y", "market_role": "yield", "value": 4.85, "unit": "percent", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/us30y", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "t10yie": {"series_id": "T10YIE", "market_role": "breakeven_inflation", "value": 2.3, "unit": "percent", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/t10yie", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "real10y_direct": {"series_id": "DFII10", "market_role": "real_yield_direct", "value": 2.2, "unit": "percent", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/dfii10", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "broad_dollar": {"series_id": "DTWEXBGS", "market_role": "broad_dollar", "value": 121.0, "unit": "index", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/dollar", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "wti": {"series_id": "WTI", "market_role": "oil", "value": 77.9, "unit": "USD/barrel", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily_close", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/wti", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "brent": {"series_id": "BRENT", "market_role": "oil", "value": 80.8, "unit": "USD/barrel", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily_close", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/brent", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "etf_flow": {"series_id": "GOLD_ETF_FLOW", "market_role": "flow", "value": 12.3, "unit": "tonnes", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/etf", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "cot": {"series_id": "GOLD_COT", "market_role": "positioning", "value": 185000, "unit": "net_contracts", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "weekly", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/cot", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "cme_options_regime": {"series_id": "CME_GC_OPTIONS_REGIME", "market_role": "options_regime", "value": 1.0, "unit": "regime_score", "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "daily", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/options", "retrieved_at": "2025-01-17T21:00:00Z"}]},
+    "official_events": {"events": [], "as_of": "2025-01-17T21:00:00Z", "expected_frequency": "event_driven", "freshness_status": "fresh", "quality_status": "accepted", "alignment_status": "aligned", "source_refs": [{"source": "fixture", "reference": "contract://analysis-v2/events", "retrieved_at": "2025-01-17T21:00:00Z"}]}
+  },
+  "confidence": {
+    "direction_threshold": "0.25",
+    "net_strength_cap": "1.0",
+    "readiness_weights": {"ready": "1.0", "observe": "0.75", "blocked": "0.0"}
+  },
+  "factors": {
+    "real10y_estimated": {"materiality_threshold": "0.03", "factor_weight": "0.40", "direction_on_rise": "bearish"},
+    "broad_dollar": {"materiality_threshold": "0.20", "factor_weight": "0.35", "direction_on_rise": "bearish"},
+    "breakeven": {"materiality_threshold": "0.03", "factor_weight": "0.25", "direction_on_rise": "bullish"}
+  },
+  "boundary_cases": [
+    {"raw_ratio": "0.49999999", "bucket": "noise", "normalized_move": "0.0"},
+    {"raw_ratio": "0.5", "bucket": "small", "normalized_move": "0.0"},
+    {"raw_ratio": "0.99999999", "bucket": "small", "normalized_move": "0.0"},
+    {"raw_ratio": "1.0", "bucket": "material", "normalized_move": "1.0"},
+    {"raw_ratio": "1.99999999", "bucket": "material", "normalized_move": "1.99999999"},
+    {"raw_ratio": "2.0", "bucket": "large", "normalized_move": "2.0"},
+    {"raw_ratio": "3.0", "bucket": "large", "normalized_move": "2.0"}
+  ],
+  "cases": [
+    {
+      "id": "xauusd_only_up",
+      "deltas": {"xauusd_spot": "250.0"},
+      "expected": {"direction": "neutral", "direction_tilt": "none", "net_contribution": "0.0"}
+    },
+    {
+      "id": "material_conflict_net_bullish",
+      "deltas": {"real10y_estimated": "-0.06", "broad_dollar": "0.20", "breakeven": "-0.03"},
+      "expected": {"direction": "mixed", "direction_tilt": "bullish", "bullish_contribution": "0.8", "bearish_contribution": "0.60", "net_contribution": "0.20"}
+    },
+    {
+      "id": "confirmatory_gap_observe",
+      "deltas": {"real10y_estimated": "-0.03"},
+      "missing_confirmatory": ["etf_flow", "cot"],
+      "expected": {"direction": "bullish", "direction_tilt": "bullish", "quality_status": "observe"}
+    },
+    {
+      "id": "dfii10_direct_only",
+      "deltas": {"real10y_direct": "0.05"},
+      "expected": {"direction": "neutral", "direction_tilt": "none", "net_contribution": "0.0"}
+    },
+    {
+      "id": "deterministic_material_bearish",
+      "deltas": {"broad_dollar": "0.40"},
+      "expected": {"direction": "bearish", "direction_tilt": "bearish", "bullish_contribution": "0.0", "bearish_contribution": "0.70", "net_contribution": "-0.70"}
+    }
+  ]
+}
