@@ -48,6 +48,7 @@ class PremarketSnapshotAuthority:
     snapshot_path: Path | None = None
     run_id: str | None = None
     snapshot_id: str | None = None
+    file_sha256: str | None = None
 
 
 def canonicalize_premarket_snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -433,7 +434,8 @@ def _resolve_exact_run_authority(
         )
         _validate_file_path(expected_path, storage_root=storage_root)
         raw = expected_path.read_bytes()
-        if not artifact.sha256 or hashlib.sha256(raw).hexdigest() != artifact.sha256:
+        file_sha256 = hashlib.sha256(raw).hexdigest()
+        if not artifact.sha256 or file_sha256 != artifact.sha256:
             raise ValueError("artifact file hash mismatch")
         if artifact.byte_size is not None and artifact.byte_size != len(raw):
             raise ValueError("artifact byte size mismatch")
@@ -451,7 +453,7 @@ def _resolve_exact_run_authority(
             artifact,
             run_uuid=run.id,
             persisted_path=persisted_path,
-            file_sha256=hashlib.sha256(raw).hexdigest(),
+            file_sha256=file_sha256,
             byte_size=len(raw),
             snapshot_id=expected_snapshot_id,
             trade_date=trade_date,
@@ -471,6 +473,7 @@ def _resolve_exact_run_authority(
         snapshot_path=expected_path,
         run_id=run_id,
         snapshot_id=snapshot_id,
+        file_sha256=file_sha256,
     )
 
 
@@ -625,6 +628,7 @@ def _result(
     snapshot_path: Path | None = None,
     run_id: str | None = None,
     snapshot_id: str | None = None,
+    file_sha256: str | None = None,
 ) -> PremarketSnapshotAuthority:
     return PremarketSnapshotAuthority(
         status=status,
@@ -632,4 +636,5 @@ def _result(
         snapshot_path=snapshot_path,
         run_id=run_id,
         snapshot_id=snapshot_id,
+        file_sha256=file_sha256,
     )

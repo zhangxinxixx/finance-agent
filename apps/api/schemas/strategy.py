@@ -6,8 +6,16 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from apps.analysis.strategy.live_schemas import LiveStrategyOutput
+
 from .common import ReviewStatus, SchemaModel, TraceableResponse
 from .source_trace import ArtifactRef, SourceRef
+
+
+class LiveStrategyLatestResponse(LiveStrategyOutput):
+    """API-only identity enrichment; persisted live_strategy.v1 stays frozen."""
+
+    result_identity: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StrategyCard(TraceableResponse):

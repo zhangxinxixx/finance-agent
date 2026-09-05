@@ -25,6 +25,7 @@ from apps.analysis.gold_policy.runtime_inputs import (
     prepare_gold_policy_formal_options_inputs,
     prepare_gold_policy_runtime_inputs,
 )
+from apps.runtime.premarket_snapshot_authority import resolve_gold_daily_report_premarket_snapshot
 from apps.worker.report_registry_sink import register_gold_policy_report_bundle
 from database.models.engine import SessionLocal
 
@@ -75,10 +76,65 @@ def run_gold_daily_report(
     except ValueError:
         return {"status": "blocked", "reason": "trade_date_invalid", "trade_date": trade_date}
     root = storage_root.expanduser().resolve()
-    snapshot, resolved_snapshot, snapshot_error = _load_formal_snapshot(
+    resolved_request_path = snapshot_path
+    authority_file_sha256: str | None = None
+    if not dry_run and db is not None:
+        authority = resolve_gold_daily_report_premarket_snapshot(
+            db,
+            storage_root=root,
+            trade_date=trade_date,
+        )
+        authority_identity = {
+            "status": authority.status,
+            "run_id": authority.run_id,
+            "snapshot_id": authority.snapshot_id,
+        }
+        if (
+            authority.status != "found"
+            or authority.snapshot_path is None
+            or authority.file_sha256 is None
+        ):
+            return {
+                "status": "blocked",
+                "reason": (
+                    authority.reason_code
+                    if authority.status != "found"
+                    else "authority_integrity_invalid"
+                ),
+                "trade_date": trade_date,
+                "authority": authority_identity,
+                "jin10": "not_used",
+            }
+        authority_file_sha256 = authority.file_sha256
+        authority_path = authority.snapshot_path.expanduser().resolve()
+        if snapshot_path is not None:
+            candidate = snapshot_path.expanduser().resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                return {
+                    "status": "blocked",
+                    "reason": "snapshot_path_outside_storage_root",
+                    "trade_date": trade_date,
+                    "authority": authority_identity,
+                    "jin10": "not_used",
+                }
+            if candidate != authority_path:
+                return {
+                    "status": "blocked",
+                    "reason": "snapshot_path_not_authoritative",
+                    "trade_date": trade_date,
+                    "snapshot_path": str(candidate),
+                    "authority": authority_identity,
+                    "jin10": "not_used",
+                }
+        # The production write path must bind the resolver's exact verified
+        # artifact; never fall back to a same-date filesystem scan.
+        resolved_request_path = authority_path
+    snapshot, resolved_snapshot, snapshot_error, snapshot_file_sha256 = _load_formal_snapshot(
         root=root,
         trade_date=requested_date,
-        requested_path=snapshot_path,
+        requested_path=resolved_request_path,
     )
     if snapshot_error is not None:
         return {
@@ -87,12 +143,29 @@ def run_gold_daily_report(
             "trade_date": trade_date,
             "jin10": "not_used",
         }
+    if authority_file_sha256 is not None and snapshot_file_sha256 != authority_file_sha256:
+        return {
+            "status": "blocked",
+            "reason": "snapshot_authority_integrity_changed",
+            "trade_date": trade_date,
+            "snapshot_path": str(resolved_snapshot),
+            "authority": authority_identity,
+            "jin10": "not_used",
+        }
 
     try:
         runtime = prepare_gold_policy_runtime_inputs(storage_root=root, snapshot=snapshot)
         current = runtime.current
         if current.as_of.astimezone(UTC).date() != requested_date:
             raise ValueError("formal_feature_date_mismatch")
+        if runtime.lookup.status in {"ambiguous", "invalid"}:
+            return {
+                "status": "blocked",
+                "reason": runtime.lookup.reason_code,
+                "trade_date": trade_date,
+                "snapshot_path": str(resolved_snapshot),
+                "jin10": "not_used",
+            }
         resolved_run_id = run_id or _default_run_id(
             trade_date=trade_date,
             feature_id=current.snapshot_id,
@@ -106,13 +179,23 @@ def run_gold_daily_report(
             decision_as_of=decision_time,
         )
         bundle_path = root / "analysis" / "gold_mainlines" / trade_date / resolved_run_id / "daily_close"
-        existing = _existing_completed_result(
+        existing, existing_reason = _existing_completed_result(
             storage_root=root,
             bundle_path=bundle_path,
             trade_date=trade_date,
             run_id=resolved_run_id,
             snapshot_path=resolved_snapshot,
+            feature_snapshot_id=current.snapshot_id,
         )
+        if existing_reason is not None and not dry_run:
+            return {
+                "status": "blocked",
+                "reason": existing_reason,
+                "trade_date": trade_date,
+                "run_id": resolved_run_id,
+                "snapshot_path": str(resolved_snapshot),
+                "jin10": "not_used",
+            }
         if existing is not None and not dry_run:
             return _stage_report_registry(
                 existing,
@@ -212,13 +295,13 @@ def _load_formal_snapshot(
     root: Path,
     trade_date: date,
     requested_path: Path | None,
-) -> tuple[dict[str, Any], Path, str | None]:
+) -> tuple[dict[str, Any], Path, str | None, str | None]:
     if requested_path is not None:
         candidate = requested_path.expanduser().resolve()
         try:
             candidate.relative_to(root)
         except ValueError:
-            return {}, candidate, "snapshot_path_outside_storage_root"
+            return {}, candidate, "snapshot_path_outside_storage_root", None
         candidates = [candidate]
     else:
         base = root / "features" / "snapshots" / "XAUUSD" / trade_date.isoformat()
@@ -226,17 +309,21 @@ def _load_formal_snapshot(
         candidates = [canonical] if canonical.is_file() else sorted(base.glob("*/premarket_snapshot.json"))
     existing = [path for path in candidates if path.is_file() and not path.is_symlink()]
     if not existing:
-        return {}, root, "premarket_snapshot_missing"
+        return {}, root, "premarket_snapshot_missing", None
     if len(existing) != 1:
-        return {}, root, "premarket_snapshot_ambiguous"
+        return {}, root, "premarket_snapshot_ambiguous", None
     path = existing[0]
-    payload = _read_json(path)
-    if not payload:
-        return {}, path, "premarket_snapshot_invalid"
+    try:
+        raw = path.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}, path, "premarket_snapshot_invalid", None
+    if not isinstance(payload, dict) or not payload:
+        return {}, path, "premarket_snapshot_invalid", None
     declared_date = payload.get("trade_date")
     if declared_date is not None and declared_date != trade_date.isoformat():
-        return {}, path, "premarket_snapshot_date_mismatch"
-    return payload, path, None
+        return {}, path, "premarket_snapshot_date_mismatch", None
+    return payload, path, None, hashlib.sha256(raw).hexdigest()
 
 
 def _default_run_id(*, trade_date: str, feature_id: str) -> str:
@@ -296,34 +383,40 @@ def _existing_completed_result(
     trade_date: str,
     run_id: str,
     snapshot_path: Path,
-) -> dict[str, Any] | None:
+    feature_snapshot_id: str,
+) -> tuple[dict[str, Any] | None, str | None]:
     verification = verify_gold_daily_close_bundle(
         storage_root=storage_root,
         bundle_path=bundle_path,
     )
     if verification.status != "valid" or verification.receipt is None:
-        return None
+        return None, None
+    if verification.current_feature_id != feature_snapshot_id:
+        return None, "existing_bundle_feature_snapshot_mismatch"
     report_paths = _complete_report_paths(bundle_path)
     data_quality = _read_json(bundle_path / "data_quality.json")
     report_manifest = _read_json(bundle_path / "report_manifest.json")
     if not report_paths or not data_quality or not report_manifest:
-        return None
-    return {
-        "status": "completed",
-        "trade_date": trade_date,
-        "run_id": run_id,
-        "snapshot_path": str(snapshot_path),
-        "daily_close_result_id": verification.receipt.result_id,
-        "canonical_action": verification.receipt.action.value,
-        "report_status": data_quality.get("report_status"),
-        "report_paths": report_paths,
-        "strategy_card_paths": [
-            str(bundle_path / "strategy_card.json"),
-            str(bundle_path / "strategy_card.md"),
-        ],
-        "report_manifest": report_manifest,
-        "jin10": "not_used",
-    }
+        return None, None
+    return (
+        {
+            "status": "completed",
+            "trade_date": trade_date,
+            "run_id": run_id,
+            "snapshot_path": str(snapshot_path),
+            "daily_close_result_id": verification.receipt.result_id,
+            "canonical_action": verification.receipt.action.value,
+            "report_status": data_quality.get("report_status"),
+            "report_paths": report_paths,
+            "strategy_card_paths": [
+                str(bundle_path / "strategy_card.json"),
+                str(bundle_path / "strategy_card.md"),
+            ],
+            "report_manifest": report_manifest,
+            "jin10": "not_used",
+        },
+        None,
+    )
 
 
 def _read_json(path: Path) -> dict[str, Any]:

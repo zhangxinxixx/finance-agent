@@ -8,6 +8,7 @@ import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
+import { ResultIdentityBar } from "@/components/shared/ResultIdentityBar";
 import { GoldMainlineRequirementArchitecturePanel } from "@/components/gold-mainlines/GoldMainlineRequirementArchitecturePanel";
 import { GoldTopicOverviewCard, GoldTopicStatusBar } from "@/components/gold-mainlines/GoldMainlinePageFrame";
 import { MainlineDetailDrawer } from "@/components/gold-mainlines/MainlineDetailDrawer";
@@ -105,6 +106,11 @@ export function GoldMainlinesPage() {
   if (!overview) {
     return (
       <FAPageScaffold>
+        <ResultIdentityBar
+          identity={data.result_identity}
+          subjectLabel="黄金主线结果"
+          baselineLabel="当前有效 Gold 基线"
+        />
         <FAEmptyState
           title="黄金主线总览未生成"
           description={warningText(data.warnings) || "当前没有可用的黄金主线总览。"}
@@ -139,6 +145,12 @@ export function GoldMainlinesPage() {
       {data.warnings.length ? (
         <FAWarningBanner title="降级提示" description={warningText(data.warnings)} tone="info" />
       ) : null}
+
+      <ResultIdentityBar
+        identity={data.result_identity}
+        subjectLabel="黄金主线结果"
+        baselineLabel="当前有效 Gold 基线"
+      />
 
       <GoldMainlineHero overview={overview} rows={coverageRows} />
       <MainlineRankingTable rows={coverageRows} />

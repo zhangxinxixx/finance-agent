@@ -65,6 +65,26 @@ jobs:
           tests/scripts/test_run_automation_orchestrator.py
           tests/worker/test_premarket_composite_output_integration.py
           tests/architecture/test_contract_review_guards.py
+      - name: Run formal snapshot and verified result integration tests
+        run: >-
+          uv run pytest -q
+          tests/analysis/strategy
+          tests/analysis/test_source_health_agent.py
+          tests/api/test_gold_result_identity.py
+          tests/api/test_gold_result_identity_delivery.py
+          tests/api/test_jin10_cache_refresh_scheduler.py
+          tests/api/test_live_strategy_api.py
+          tests/api/test_premarket_contract.py
+          tests/collectors/test_data_layer.py
+          tests/dagster_finance/test_premarket_readiness_gate.py
+          tests/data_control/test_availability_calendar.py
+          tests/data_control/test_gold_gap_actions.py
+          tests/data_control/test_processing_snapshot_seam.py
+          tests/scripts/test_gold_daily_report_production_caller.py
+          tests/scripts/test_local_stack_ctl.py
+          tests/worker/test_dagster_agent_ops.py
+          tests/worker/test_macro_pipeline.py
+          tests/worker/test_news_pipeline.py
       - name: Lint Analysis Memory boundaries
         run: >-
           uv run ruff check

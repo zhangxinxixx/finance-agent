@@ -15,9 +15,10 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from apps.runtime.secret_resolver import resolve_runtime_secret
 from apps.data_layer.models import DualSourceResult
 from apps.parsers.macro.models import CollectorResult, MacroPoint
+from apps.runtime.secret_resolver import resolve_runtime_secret
+from apps.runtime.source_controls import jin10_disabled
 
 
 class MacroDataService:
@@ -58,8 +59,10 @@ class MacroDataService:
                 source_refs=result.source_refs,
             )
 
-        # 2. 备用源：Jin10 行情
-        jin10 = self._try_jin10_rates(symbols, retrieved_date, result.source_refs)
+        # 2. 备用源：Jin10 行情（可由运行时开关显式禁用）
+        jin10 = None
+        if not jin10_disabled():
+            jin10 = self._try_jin10_rates(symbols, retrieved_date, result.source_refs)
         if jin10 is not None:
             return jin10
 
@@ -69,7 +72,11 @@ class MacroDataService:
             source_used=None,
             unavailable_symbols=list(symbols),
             source_refs=result.source_refs,
-            warnings=["FRED 利率：OpenBB 和 Jin10 均不可用"],
+            warnings=[
+                "FRED 利率：Jin10 兜底已禁用"
+                if jin10_disabled()
+                else "FRED 利率：OpenBB 和 Jin10 均不可用"
+            ],
         )
 
     def collect_market_prices(
@@ -105,10 +112,12 @@ class MacroDataService:
                 source_refs=result.source_refs,
             )
 
-        # 2. 备用源：Jin10 行情
-        jin10 = self._try_jin10_prices(
-            list(symbols.keys()), retrieved_date, result.source_refs
-        )
+        # 2. 备用源：Jin10 行情（可由运行时开关显式禁用）
+        jin10 = None
+        if not jin10_disabled():
+            jin10 = self._try_jin10_prices(
+                list(symbols.keys()), retrieved_date, result.source_refs
+            )
         if jin10 is not None:
             return jin10
 
@@ -117,7 +126,11 @@ class MacroDataService:
             source_used=None,
             unavailable_symbols=list(symbols.keys()),
             source_refs=result.source_refs,
-            warnings=["市场价格：OpenBB 和 Jin10 均不可用"],
+            warnings=[
+                "市场价格：Jin10 兜底已禁用"
+                if jin10_disabled()
+                else "市场价格：OpenBB 和 Jin10 均不可用"
+            ],
         )
 
     # ── Jin10 fallback helpers ──────────────────────────────────────────
@@ -129,6 +142,8 @@ class MacroDataService:
         openbb_refs: list[dict[str, str]],
     ) -> DualSourceResult | None:
         """尝试通过 Jin10 获取利率 proxy。"""
+        if jin10_disabled():
+            return None
         jin10_symbols = _fred_to_jin10_map(symbols)
         if not jin10_symbols:
             return None
@@ -154,6 +169,8 @@ class MacroDataService:
         openbb_refs: list[dict[str, str]],
     ) -> DualSourceResult | None:
         """尝试通过 Jin10 获取价格兜底。"""
+        if jin10_disabled():
+            return None
         jin10_symbols = _price_to_jin10_map(symbols)
         if not jin10_symbols:
             return None

@@ -96,7 +96,56 @@ def test_data_quality_monitor_writes_three_artifacts_for_full_content(tmp_path, 
     readiness = json.loads((storage_root / artifacts["downstream_readiness"]).read_text(encoding="utf-8"))
     assert readiness["can_run_full_analysis"] is True
     assert readiness["can_run_research_distillation"] is True
+    assert readiness["jin10_disabled"] is False
+    assert readiness["disabled_sources"] == []
     assert "knowledge distillation" in readiness["allowed_outputs"]
+
+
+def test_data_quality_monitor_no_jin10_skips_external_checks_but_stays_partial(tmp_path, monkeypatch) -> None:
+    storage_root = tmp_path / "storage"
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+    monkeypatch.setattr(data_quality_agent, "get_data_source_health_latest", lambda date=None: _health_snapshot())
+
+    class RaisingProbeRunner:
+        def run(self, **kwargs):
+            raise AssertionError("Jin10-disabled mode must not run an empty probe set")
+
+    class RaisingConsistencyChecker:
+        def run(self, **kwargs):
+            raise AssertionError("Jin10-disabled mode must not run market consistency")
+
+    result = run_data_quality_monitor(
+        storage_root=storage_root,
+        trade_date="2026-07-08",
+        observed_at=OBSERVED_AT,
+        record_task_run=False,
+        run_source_probes=True,
+        source_probe_runner=RaisingProbeRunner(),
+        run_consistency_checks=True,
+        consistency_checker=RaisingConsistencyChecker(),
+    )
+
+    readiness = result["downstream_readiness"]
+    finding = next(
+        issue for issue in result["data_quality_report"]["checks"] if issue["reason_code"] == "jin10_disabled"
+    )
+    assert finding["source_key"] == "jin10"
+    assert readiness["readiness"] == "partial"
+    assert readiness["can_run_full_analysis"] is True
+    assert readiness["can_run_research_distillation"] is False
+    assert readiness["capabilities"]["full_daily_analysis"] == "degraded"
+    assert readiness["capabilities"]["technical_trigger_confirmation"] == "degraded"
+    assert readiness["capabilities"]["research_report_interpretation"] == "blocked"
+    assert readiness["capabilities"]["knowledge_distillation"] == "blocked"
+    assert readiness["jin10_disabled"] is True
+    assert readiness["disabled_sources"]
+    assert result["source_health"]["jin10_disabled"] is True
+    assert result["source_health"]["overall_status"] == "partial"
+    assert result["source_health"]["monitored_sources"] == []
+    assert result["source_health"]["probe_mode"] == "disabled"
+    assert "jin10_mcp_calendar" in result["source_health"]["disabled_sources"]
+    assert result["source_health"]["checks"] == []
+    assert result["data_quality_report"]["summary"]["freshness_problem_count"] == 0
 
 
 def test_data_quality_monitor_includes_live_probe_findings_in_readiness(tmp_path, monkeypatch) -> None:

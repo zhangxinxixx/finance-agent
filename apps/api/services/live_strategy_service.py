@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from apps.analysis.strategy.history_store import StrategyHistoryStore
+from apps.analysis.strategy.gold_baseline_adapter import resolve_verified_gold_baseline
 from apps.analysis.strategy.live import build_live_strategy
 from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.market_candle_service import get_market_candles
 from apps.api.services.options_service import get_options_decision
 from apps.api.services.report_service import get_strategy_card_read_model_latest
+from apps.api.services.gold_result_identity import build_live_result_identity
 
 
 LIVE_STRATEGY_HISTORY_SCHEMA_VERSION = "live_strategy.history_api.v1"
@@ -92,12 +94,18 @@ def get_live_strategy_latest(
     db: Any | None = None,
     now: datetime | None = None,
     event_observation: Mapping[str, Any] | None = None,
+    include_result_identity: bool = False,
 ) -> dict[str, Any]:
     """Load immutable inputs and build the current read-only live state."""
     normalized_asset = str(asset or "XAUUSD").upper()
     if normalized_asset != "XAUUSD":
         raise ValueError("live_strategy.v1 supports only XAUUSD")
-    baseline = get_strategy_card_read_model_latest(asset=normalized_asset)
+    current_time = now or datetime.now(timezone.utc)
+    premarket_context = get_strategy_card_read_model_latest(asset=normalized_asset)
+    gold_baseline = resolve_verified_gold_baseline(
+        storage_root=_PROJECT_ROOT / "storage",
+        now=current_time,
+    )
     canonical_market = get_market_candles(
         asset=normalized_asset,
         timeframe="5m",
@@ -111,16 +119,22 @@ def get_live_strategy_latest(
         session=db,
     )
     options_decision = get_options_decision(db=db)
-    return build_live_strategy(
+    payload = build_live_strategy(
         asset=normalized_asset,
-        baseline=baseline,
+        baseline=premarket_context,
+        gold_baseline=gold_baseline,
         canonical_market=canonical_market,
         canonical_market_15m=canonical_market_15m,
         options_decision=options_decision,
         quote_cache=_load_quote_cache(_PROJECT_ROOT),
         event_observation=event_observation,
-        now=now,
+        now=current_time,
     )
+    if include_result_identity:
+        payload["result_identity"] = build_live_result_identity(
+            storage_root=_PROJECT_ROOT / "storage", baseline=gold_baseline,
+        )
+    return payload
 
 
 def _load_quote_cache(project_root: Path) -> dict[str, Any] | None:

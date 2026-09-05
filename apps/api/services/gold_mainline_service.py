@@ -10,6 +10,7 @@ from apps.analysis.agents.source_health import build_gold_v3_source_health
 from apps.analysis.gold_mainline_engine import build_gold_macro_overview
 from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.source_service import get_data_source_statuses
+from apps.api.services.gold_result_identity import build_mainline_result_identity
 from apps.contracts.gold import normalize_gold_mainline_id
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,15 @@ _MAINLINES_FILENAME = "gold_event_mainlines.json"
 
 
 def get_gold_mainlines_latest(*, project_root: Path | None = None) -> dict[str, Any]:
+    root = project_root or _PROJECT_ROOT
+    payload = _get_gold_mainlines_latest(project_root=root)
+    payload["result_identity"] = build_mainline_result_identity(
+        storage_root=root / "storage", run_id=payload.get("run_id"),
+    )
+    return payload
+
+
+def _get_gold_mainlines_latest(*, project_root: Path) -> dict[str, Any]:
     root = project_root or _PROJECT_ROOT
     base = root / "storage" / "analysis" / "gold_mainlines"
     for date, run_id, overview_path in _latest_artifact_paths(base=base, filename=_OVERVIEW_FILENAME):
@@ -35,6 +45,15 @@ def get_gold_mainlines_latest(*, project_root: Path | None = None) -> dict[str, 
 
 
 def get_gold_mainlines(*, date: str, run_id: str, project_root: Path | None = None) -> dict[str, Any]:
+    root = project_root or _PROJECT_ROOT
+    payload = _get_gold_mainlines(date=date, run_id=run_id, project_root=root)
+    payload["result_identity"] = build_mainline_result_identity(
+        storage_root=root / "storage", run_id=payload.get("run_id"),
+    )
+    return payload
+
+
+def _get_gold_mainlines(*, date: str, run_id: str, project_root: Path) -> dict[str, Any]:
     root = project_root or _PROJECT_ROOT
     overview_path = root / "storage" / "analysis" / "gold_mainlines" / date / run_id / _OVERVIEW_FILENAME
     if not overview_path.exists():

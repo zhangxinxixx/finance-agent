@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from apps.features.market_data.formal_snapshots import MarketPriceSnapshot, OilSnapshot
+
 
 P0_SOURCE_IDS = [
     "xauusd_price",
@@ -463,6 +465,47 @@ def source_statuses_from_analysis_snapshot(snapshot: dict[str, Any]) -> list[dic
     )
     add("brent_wti", updated_at=snapshot_time, source_ref=oil_ref)
 
+    analysis_time = _parse_dt(snapshot_time)
+    if analysis_time is not None and not _has_source_row(rows, "xauusd_price"):
+        market_prices = _validated_formal_snapshot(
+            snapshot.get("market_prices"),
+            model=MarketPriceSnapshot,
+            analysis_time=analysis_time,
+        )
+        if market_prices is not None and _formal_observation_is_usable(
+            market_prices.xauusd_spot,
+            as_of=market_prices.as_of,
+        ):
+            source_ref = market_prices.xauusd_spot.source_refs[0]
+            add(
+                "xauusd_price",
+                updated_at=market_prices.xauusd_spot.bar_close_time.isoformat(),
+                source_ref={"source_ref": source_ref.reference},
+            )
+
+    if analysis_time is not None and not _has_source_row(rows, "brent_wti"):
+        oil_snapshot = _validated_formal_snapshot(
+            snapshot.get("oil"),
+            model=OilSnapshot,
+            analysis_time=analysis_time,
+        )
+        if oil_snapshot is not None:
+            observation = next(
+                (
+                    item
+                    for item in (oil_snapshot.brent, oil_snapshot.wti)
+                    if _formal_observation_is_usable(item, as_of=oil_snapshot.as_of)
+                ),
+                None,
+            )
+            if observation is not None:
+                source_ref = observation.source_refs[0]
+                add(
+                    "brent_wti",
+                    updated_at=observation.bar_close_time.isoformat(),
+                    source_ref={"source_ref": source_ref.reference},
+                )
+
     geopolitical_ref = _find_snapshot_ref(
         refs,
         lambda ref: _snapshot_ref_is_ready(ref)
@@ -499,6 +542,44 @@ def source_statuses_from_analysis_snapshot(snapshot: dict[str, Any]) -> list[dic
     )
     add("usdcnh", updated_at=snapshot_time, source_ref=usdcnh_ref)
     return rows
+
+
+def _validated_formal_snapshot(
+    section: Any,
+    *,
+    model: type[MarketPriceSnapshot] | type[OilSnapshot],
+    analysis_time: datetime,
+) -> MarketPriceSnapshot | OilSnapshot | None:
+    if not isinstance(section, dict) or str(section.get("status") or "").lower() != "available":
+        return None
+    data = section.get("data")
+    if not isinstance(data, dict):
+        return None
+    try:
+        snapshot = model.model_validate(data)
+    except ValueError:
+        return None
+    if snapshot.as_of > analysis_time:
+        return None
+    return snapshot
+
+
+def _formal_observation_is_usable(observation: Any, *, as_of: datetime) -> bool:
+    if (
+        observation.value is None
+        or observation.bar_close_time is None
+        or observation.bar_close_time > as_of
+        or observation.freshness_status == "missing"
+        or observation.quality_status == "blocked"
+        or observation.alignment_status == "misaligned"
+        or not observation.source_refs
+    ):
+        return False
+    return all(source_ref.retrieved_at <= as_of for source_ref in observation.source_refs)
+
+
+def _has_source_row(rows: list[dict[str, Any]], source_key: str) -> bool:
+    return any(row.get("source_key") == source_key for row in rows)
 
 
 def _available_section_data(snapshot: dict[str, Any], section_name: str) -> dict[str, Any]:

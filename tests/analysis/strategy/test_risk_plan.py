@@ -44,3 +44,39 @@ def test_no_trade_range_uses_only_existing_support_and_resistance() -> None:
 
     assert plan["no_trade"]["range"] == [98.0, 103.0]
     assert "confirmed_price_event_required" in plan["no_trade"]["waiting_conditions"]
+
+
+def test_direction_authority_only_allows_its_authorized_side() -> None:
+    long = build_risk_plan(
+        price=100.7,
+        key_levels=LEVELS,
+        atr14=2.0,
+        latest_price_event=_event("above"),
+        allowed_directions=("long",),
+        restricted_direction_reason="gold_direction_mismatch",
+    )
+    blocked_short = build_risk_plan(
+        price=99.3,
+        key_levels=LEVELS,
+        atr14=2.0,
+        latest_price_event=_event("below"),
+        allowed_directions=("long",),
+        restricted_direction_reason="gold_direction_mismatch",
+    )
+    unavailable = build_risk_plan(
+        price=100.7,
+        key_levels=LEVELS,
+        atr14=2.0,
+        latest_price_event=_event("above"),
+        allowed_directions=(),
+        restricted_direction_reason="gold_direction_authority_unavailable",
+    )
+
+    assert long["active_scenario"] == "long"
+    assert long["setups"][1]["status"] == "unavailable"
+    assert long["setups"][1]["gate"]["reasons"] == ["gold_direction_mismatch"]
+    assert blocked_short["active_scenario"] is None
+    assert blocked_short["setups"][1]["status"] == "unavailable"
+    assert blocked_short["setups"][1]["gate"]["reasons"] == ["gold_direction_mismatch"]
+    assert not any(item["status"] == "triggered" for item in unavailable["setups"])
+    assert "verified_gold_direction_required" in unavailable["no_trade"]["waiting_conditions"]

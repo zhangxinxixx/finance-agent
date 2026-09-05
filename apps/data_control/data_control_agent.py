@@ -1,22 +1,31 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from apps.data_control.availability_calendar import build_data_availability_snapshot
+from apps.data_control.availability_calendar import DEFAULT_AVAILABILITY_RULES, build_data_availability_snapshot
 from apps.data_control.collection_planner import build_collection_plan
+from apps.data_control.gold_processing_context import GoldProcessingContext, build_gold_processing_context
 from apps.data_control.hourly_reporter import build_hourly_report, render_hourly_report_markdown
 from apps.data_control.processing_planner import build_processing_plan
 from apps.data_control.schemas import DataControlArtifacts
 from apps.data_control.task_dispatcher import build_dispatch_plan
+from apps.runtime.source_controls import jin10_disabled
 from apps.runtime.task_recorder import record_task
 
 
 class DataControlAgent:
-    def __init__(self, *, storage_root: Path | str = "storage"):
+    def __init__(
+        self,
+        *,
+        storage_root: Path | str = "storage",
+        session_factory: Callable[[], Any] | None = None,
+    ):
         self.storage_root = Path(storage_root)
+        self.session_factory = session_factory
 
     def run(
         self,
@@ -28,9 +37,33 @@ class DataControlAgent:
         now = _ensure_utc(observed_at or datetime.now(timezone.utc))
         day = trade_date or now.date().isoformat()
         hour = now.strftime("%H")
-        availability = build_data_availability_snapshot(storage_root=self.storage_root, trade_date=day, observed_at=now)
+        jin10_is_disabled = jin10_disabled()
+        active_rules = tuple(
+            rule for rule in DEFAULT_AVAILABILITY_RULES if not (jin10_is_disabled and rule.source_key.startswith("jin10_"))
+        )
+        disabled_sources = [rule.source_key for rule in DEFAULT_AVAILABILITY_RULES if rule not in active_rules]
+        availability = build_data_availability_snapshot(
+            storage_root=self.storage_root,
+            trade_date=day,
+            observed_at=now,
+            rules=active_rules,
+        )
+        availability["disabled_sources"] = disabled_sources
         collection_plan = build_collection_plan(availability_snapshot=availability)
-        processing_plan = build_processing_plan(storage_root=self.storage_root, trade_date=day, observed_at=now.isoformat())
+        collection_plan["disabled_sources"] = disabled_sources
+        gold_context = build_gold_processing_context(
+            storage_root=self.storage_root,
+            trade_date=day,
+            observed_at=now,
+            session_factory=self.session_factory,
+        )
+        processing_plan = build_processing_plan(
+            storage_root=self.storage_root,
+            trade_date=day,
+            observed_at=now.isoformat(),
+            gold_context=gold_context,
+        )
+        processing_plan["disabled_sources"] = disabled_sources
         dispatch_plan = build_dispatch_plan(collection_plan=collection_plan, processing_plan=processing_plan)
         hourly_report = build_hourly_report(
             trade_date=day,
@@ -57,11 +90,20 @@ class DataControlAgent:
             "status": hourly_report["status"],
             "main_analysis_readiness": hourly_report["main_analysis_readiness"],
             "knowledge_distillation_readiness": hourly_report["knowledge_distillation_readiness"],
+            "gold_processing": gold_context.to_dict(),
+            "gold_authority": gold_context.to_dict()["authority"],
+            "gold_limits": gold_context.limits_dict(),
+            "disabled_sources": disabled_sources,
             "artifacts": artifacts.to_dict(),
             "notification_request": hourly_report["notification_request"],
         }
         if record_task_run:
-            summary["task_run_id"] = _record_data_control_task(day=day, artifacts=artifacts, hourly_report=hourly_report)
+            summary["task_run_id"] = _record_data_control_task(
+                day=day,
+                artifacts=artifacts,
+                hourly_report=hourly_report,
+                gold_context=gold_context,
+            )
         return summary
 
     def _write_artifacts(
@@ -105,16 +147,32 @@ def run_data_control_agent(
     trade_date: str | None = None,
     observed_at: datetime | None = None,
     record_task_run: bool = True,
+    session_factory: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
-    return DataControlAgent(storage_root=storage_root).run(
+    return DataControlAgent(storage_root=storage_root, session_factory=session_factory).run(
         trade_date=trade_date,
         observed_at=observed_at,
         record_task_run=record_task_run,
     )
 
 
-def _record_data_control_task(*, day: str, artifacts: DataControlArtifacts, hourly_report: dict[str, Any]) -> str | None:
+def _record_data_control_task(
+    *,
+    day: str,
+    artifacts: DataControlArtifacts,
+    hourly_report: dict[str, Any],
+    gold_context: GoldProcessingContext | None = None,
+) -> str | None:
     with record_task(task_type="data_control_agent", task_name="Data Control Agent", trade_date=day) as recorder:
+        source_refs = [
+            {
+                "source": "data_control_agent",
+                "source_ref": f"data-control:{day}",
+                "data_date": day,
+            }
+        ]
+        if gold_context is not None:
+            source_refs.extend(gold_context.source_refs())
         recorder.step(
             "write_data_control_artifacts",
             status="success",
@@ -128,18 +186,7 @@ def _record_data_control_task(*, day: str, artifacts: DataControlArtifacts, hour
                 {"artifact_type": "hourly_report_json", "path": artifacts.hourly_report_json_path},
                 {"artifact_type": "hourly_report_md", "path": artifacts.hourly_report_md_path},
             ],
-            source_refs=[
-                {
-                    "source": "data_control_agent",
-                    "source_ref": f"data-control:{day}",
-                    "data_date": day,
-                },
-                {
-                    "source": "data_quality_monitor",
-                    "source_ref": f"monitoring:{day}:downstream_readiness",
-                    "data_date": day,
-                },
-            ],
+            source_refs=source_refs,
         )
         recorder.step(
             "prepare_notification_request",

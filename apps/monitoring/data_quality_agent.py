@@ -12,6 +12,10 @@ from apps.monitoring.freshness_rules import MONITORED_JIN10_SOURCES, build_sourc
 from apps.monitoring.schemas import DATA_QUALITY_CAPABILITIES, DataHealthCheck, MonitoringArtifacts
 from apps.monitoring.source_probe_runner import DEFAULT_PROBE_SOURCE_KEYS, SourceProbeRunner
 from apps.runtime.task_recorder import record_task
+from apps.runtime.source_controls import jin10_disabled
+
+
+_JIN10_SOURCE_KEYS = tuple(dict.fromkeys((*MONITORED_JIN10_SOURCES, *DEFAULT_PROBE_SOURCE_KEYS)))
 
 
 class DataQualityMonitorAgent:
@@ -39,32 +43,57 @@ class DataQualityMonitorAgent:
     ) -> dict[str, Any]:
         now = observed_at or datetime.now(timezone.utc)
         day = trade_date or now.date().isoformat()
+        jin10_is_disabled = jin10_disabled()
+        monitored_sources = () if jin10_is_disabled else MONITORED_JIN10_SOURCES
+        probe_sources = (
+            tuple(source_key for source_key in probe_source_keys if not source_key.startswith("jin10_"))
+            if jin10_is_disabled
+            else probe_source_keys
+        )
         source_snapshot = get_data_source_health_latest(date=day)
-        freshness_checks = build_source_freshness_checks(health_snapshot=source_snapshot, observed_at=now)
+        freshness_checks = build_source_freshness_checks(
+            health_snapshot=source_snapshot, observed_at=now, source_keys=monitored_sources
+        )
         probe_checks = (
             (self.source_probe_runner or SourceProbeRunner()).run(
                 observed_at=now,
-                source_keys=probe_source_keys,
+                source_keys=probe_sources,
                 limit=probe_limit,
             )
-            if run_source_probes
+            if run_source_probes and probe_sources
             else []
         )
-        completeness_checks = build_artifact_completeness_checks(storage_root=self.storage_root, trade_date=day, observed_at=now)
-        permission_checks = jin10_report_access_checks(storage_root=self.storage_root, trade_date=day, observed_at=now)
+        completeness_checks = build_artifact_completeness_checks(
+            storage_root=self.storage_root, trade_date=day, observed_at=now, source_keys=monitored_sources
+        )
+        permission_checks = (
+            jin10_report_access_checks(storage_root=self.storage_root, trade_date=day, observed_at=now)
+            if not jin10_is_disabled
+            else []
+        )
         consistency_checks = (
             (self.consistency_checker or MarketConsistencyChecker(storage_root=self.storage_root)).run(observed_at=now)
-            if run_consistency_checks
+            if run_consistency_checks and not jin10_is_disabled
             else []
         )
-        all_checks = [*freshness_checks, *probe_checks, *completeness_checks, *permission_checks, *consistency_checks]
+        source_control_checks = [_jin10_disabled_check(observed_at=now)] if jin10_is_disabled else []
+        all_checks = [
+            *freshness_checks,
+            *probe_checks,
+            *completeness_checks,
+            *permission_checks,
+            *consistency_checks,
+            *source_control_checks,
+        ]
         source_health = _source_health_report(
             day=day,
             observed_at=now,
             source_snapshot=source_snapshot,
             freshness_checks=freshness_checks,
             probe_checks=probe_checks,
-            probes_enabled=run_source_probes,
+            probes_enabled=run_source_probes and bool(probe_sources),
+            monitored_sources=monitored_sources,
+            jin10_is_disabled=jin10_is_disabled,
         )
         data_quality = _data_quality_report(
             day=day,
@@ -74,8 +103,14 @@ class DataQualityMonitorAgent:
             completeness_checks=completeness_checks,
             permission_checks=permission_checks,
             consistency_checks=consistency_checks,
+            jin10_is_disabled=jin10_is_disabled,
         )
-        downstream = _downstream_readiness(day=day, observed_at=now, checks=all_checks)
+        downstream = _downstream_readiness(
+            day=day,
+            observed_at=now,
+            checks=all_checks,
+            jin10_is_disabled=jin10_is_disabled,
+        )
         artifacts = self._write_reports(day=day, source_health=source_health, data_quality=data_quality, downstream=downstream)
         summary = {
             "trade_date": day,
@@ -148,14 +183,18 @@ def _source_health_report(
     freshness_checks: list[DataHealthCheck],
     probe_checks: list[DataHealthCheck],
     probes_enabled: bool,
+    monitored_sources: tuple[str, ...],
+    jin10_is_disabled: bool,
 ) -> dict[str, Any]:
     source_checks = [*freshness_checks, *probe_checks]
     return {
         "trade_date": day,
         "observed_at": observed_at.isoformat(),
         "source": "data_source_health_read_model+ingestion_source_test" if probes_enabled else "data_source_health_read_model",
-        "overall_status": _overall_status(source_checks),
-        "monitored_sources": list(MONITORED_JIN10_SOURCES),
+        "overall_status": "partial" if jin10_is_disabled else _overall_status(source_checks),
+        "monitored_sources": list(monitored_sources),
+        "jin10_disabled": jin10_is_disabled,
+        "disabled_sources": list(_JIN10_SOURCE_KEYS) if jin10_is_disabled else [],
         "probe_mode": "live" if probes_enabled else "disabled",
         "probed_sources": [check.source_key for check in probe_checks],
         "checks": [check.to_dict() for check in freshness_checks],
@@ -178,12 +217,15 @@ def _data_quality_report(
     completeness_checks: list[DataHealthCheck],
     permission_checks: list[DataHealthCheck],
     consistency_checks: list[DataHealthCheck],
+    jin10_is_disabled: bool,
 ) -> dict[str, Any]:
     problem_checks = [check for check in checks if check.status != "ok"]
     return {
         "trade_date": day,
         "observed_at": observed_at.isoformat(),
         "overall_status": _overall_status(checks),
+        "jin10_disabled": jin10_is_disabled,
+        "disabled_sources": list(_JIN10_SOURCE_KEYS) if jin10_is_disabled else [],
         "checks": [check.to_dict() for check in checks],
         "summary": {
             "total_checks": len(checks),
@@ -199,7 +241,9 @@ def _data_quality_report(
     }
 
 
-def _downstream_readiness(*, day: str, observed_at: datetime, checks: list[DataHealthCheck]) -> dict[str, Any]:
+def _downstream_readiness(
+    *, day: str, observed_at: datetime, checks: list[DataHealthCheck], jin10_is_disabled: bool
+) -> dict[str, Any]:
     capabilities = {capability: "allowed" for capability in DATA_QUALITY_CAPABILITIES}
     for check in checks:
         if check.status == "ok":
@@ -244,6 +288,8 @@ def _downstream_readiness(*, day: str, observed_at: datetime, checks: list[DataH
         "trade_date": day,
         "observed_at": observed_at.isoformat(),
         "readiness": readiness,
+        "jin10_disabled": jin10_is_disabled,
+        "disabled_sources": list(_JIN10_SOURCE_KEYS) if jin10_is_disabled else [],
         "capabilities": capabilities,
         "can_run_daily_report": True,
         "can_run_full_analysis": can_run_full_analysis,
@@ -253,6 +299,27 @@ def _downstream_readiness(*, day: str, observed_at: datetime, checks: list[DataH
         "blocking_issues": [_issue(check) for check in blocking_checks],
         "degraded_issues": [_issue(check) for check in degraded_checks],
     }
+
+
+def _jin10_disabled_check(*, observed_at: datetime) -> DataHealthCheck:
+    return DataHealthCheck(
+        source_key="jin10",
+        check_type="source_control",
+        status="partial",
+        severity="warning",
+        observed_at=observed_at.isoformat(),
+        reason_code="jin10_disabled",
+        message="Jin10 inputs are disabled by runtime source control",
+        blocked_capabilities=("research_report_interpretation", "knowledge_distillation"),
+        degraded_capabilities=("full_daily_analysis", "technical_trigger_confirmation"),
+        required_for=(
+            "full_daily_analysis",
+            "research_report_interpretation",
+            "knowledge_distillation",
+            "technical_trigger_confirmation",
+        ),
+        metadata={"disabled_sources": list(_JIN10_SOURCE_KEYS)},
+    )
 
 
 def _record_monitor_task(*, day: str, artifacts: MonitoringArtifacts, checks: list[DataHealthCheck]) -> str | None:

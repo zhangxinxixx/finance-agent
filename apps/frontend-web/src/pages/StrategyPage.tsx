@@ -24,6 +24,8 @@ import { useLiveStrategy } from "@/hooks/useLiveStrategy";
 import { useLatestShadowEvaluation } from "@/hooks/useShadowEvaluation";
 import { useShadowEvaluationHistory } from "@/hooks/useShadowEvaluationHistory";
 import { ShadowEvaluationHistoryPanel } from "@/components/strategy/ShadowEvaluationHistoryPanel";
+import { LegacyStrategyIdentityNotice, ResultIdentityBar } from "@/components/shared/ResultIdentityBar";
+import { hasVerifiedGoldBaseline } from "@/types/live-strategy";
 
 // ── Page ──
 
@@ -69,6 +71,9 @@ export function StrategyPage() {
     selectedRegimeLabel,
   } = useStrategyPageState(selectedAsset, assetOptions, data?.history ?? []);
   const unavailableReason = data?.unavailable_reason ?? null;
+  const hasVerifiedLiveGoldBaseline = liveStrategy.data
+    ? hasVerifiedGoldBaseline(liveStrategy.data.data_quality.gold_baseline)
+    : false;
 
   if (isLoading && !data) {
     return <StrategyPageLoadingState />;
@@ -106,22 +111,31 @@ export function StrategyPage() {
       </nav>
 
       {activeView === "current" && selectedAsset === "XAUUSD" ? (
-        <LiveStrategyWorkspace
-          data={liveStrategy.data}
-          isLoading={liveStrategy.isLoading}
-          error={liveStrategy.error}
-          tradeDate={data.hero.trade_date ?? data.trade_date}
-          dailyUpdatedAt={data.updated_at}
-          onRefresh={() => {
-            refetch();
-            liveStrategy.refetch();
-          }}
-        />
+        <>
+          <ResultIdentityBar
+            identity={liveStrategy.data?.result_identity}
+            subjectLabel="策略所用正式结果"
+            baselineLabel="当前有效 Gold 基线"
+          />
+          <LiveStrategyWorkspace
+            data={liveStrategy.data}
+            isLoading={liveStrategy.isLoading}
+            error={liveStrategy.error}
+            tradeDate={data.hero.trade_date ?? data.trade_date}
+            dailyUpdatedAt={data.updated_at}
+            onRefresh={() => {
+              refetch();
+              liveStrategy.refetch();
+            }}
+          />
+        </>
       ) : null}
+
+      {activeView !== "current" ? <LegacyStrategyIdentityNotice /> : null}
 
       {activeView === "daily" ? (
         <section className="strategy-tab-panel" aria-label="日度研究">
-          {liveStrategy.data && liveStrategy.data.status === "available" ? (
+          {liveStrategy.data && liveStrategy.data.status === "available" && hasVerifiedLiveGoldBaseline ? (
             <LiveStrategyScenarios
               activeScenario={liveStrategy.data.active_scenario}
               setups={liveStrategy.data.setups}

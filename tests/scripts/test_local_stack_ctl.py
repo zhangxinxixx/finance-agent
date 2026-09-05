@@ -17,7 +17,7 @@ LOCAL_STACK_SCRIPT = PROJECT_ROOT / "scripts" / "local_stack_ctl.sh"
 
 
 @contextmanager
-def _fake_health_api(*, refresh_enabled: str, refresh_jobs: str):
+def _fake_health_api(*, refresh_enabled: str, refresh_jobs: str, jin10_disabled: str = "0"):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -45,6 +45,7 @@ HTTPServer(("127.0.0.1", int(os.environ["TEST_API_PORT"])), Handler).serve_forev
         "TEST_API_PORT": str(port),
         "FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH": refresh_enabled,
         "FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS": refresh_jobs,
+        "FINANCE_AGENT_DISABLE_JIN10": jin10_disabled,
     }
     process = subprocess.Popen(
         [sys.executable, "-c", server_code],
@@ -77,8 +78,13 @@ def test_local_stack_enables_required_market_background_refresh_by_default() -> 
         'export FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH="${FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH:-1}"'
         in script
     )
+    assert "jin10_is_disabled_value()" in script
     assert (
-        'export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS:-jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily}"'
+        'export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="twelvedata_xauusd_dispatch,market_candles_daily"'
+        in script
+    )
+    assert (
+        'export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily"'
         in script
     )
 
@@ -86,7 +92,8 @@ def test_local_stack_enables_required_market_background_refresh_by_default() -> 
 def test_local_stack_keeps_explicit_background_refresh_override() -> None:
     script = (PROJECT_ROOT / "scripts" / "local_stack_ctl.sh").read_text(encoding="utf-8")
 
-    assert 'FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS:-jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily' in script
+    assert 'if [[ -z "${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS+x}" ]]; then' in script
+    assert "export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS" in script
 
 
 def test_local_stack_adopts_api_with_required_background_refresh_jobs(tmp_path: Path) -> None:
@@ -111,6 +118,56 @@ def test_local_stack_adopts_api_with_required_background_refresh_jobs(tmp_path: 
 
     assert (state_dir / "api.pid").read_text(encoding="utf-8").strip() == str(process.pid)
     assert "refresh misconfigured" not in result.stdout
+
+
+def test_local_stack_adopts_no_jin10_api_with_required_market_refresh_jobs(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    with _fake_health_api(
+        refresh_enabled="1",
+        refresh_jobs="twelvedata_xauusd_dispatch,market_candles_daily",
+        jin10_disabled=" yes ",
+    ) as (process, port):
+        result = subprocess.run(
+            ["bash", str(LOCAL_STACK_SCRIPT), "status", "--frontend=none"],
+            cwd=PROJECT_ROOT,
+            env={
+                **os.environ,
+                "FINANCE_AGENT_STATE_DIR": str(state_dir),
+                "FINANCE_AGENT_API_PORT": str(port),
+                "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+            },
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    assert (state_dir / "api.pid").read_text(encoding="utf-8").strip() == str(process.pid)
+    assert "refresh misconfigured" not in result.stdout
+
+
+def test_local_stack_rejects_no_jin10_api_without_daily_market_refresh(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    with _fake_health_api(
+        refresh_enabled="1",
+        refresh_jobs="twelvedata_xauusd_dispatch",
+        jin10_disabled="true",
+    ) as (_process, port):
+        result = subprocess.run(
+            ["bash", str(LOCAL_STACK_SCRIPT), "status", "--frontend=none"],
+            cwd=PROJECT_ROOT,
+            env={
+                **os.environ,
+                "FINANCE_AGENT_STATE_DIR": str(state_dir),
+                "FINANCE_AGENT_API_PORT": str(port),
+                "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+            },
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    assert not (state_dir / "api.pid").exists()
+    assert "refresh misconfigured" in result.stdout
 
 
 @pytest.mark.parametrize(

@@ -282,6 +282,50 @@ def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
     db.rollback.assert_not_called()
 
 
+def test_dagster_merge_skips_jin10_analysis_context_when_disabled(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+    db = Mock()
+    context = build_op_context(resources={"db_session": db})
+    macro_state = SimpleNamespace(
+        snapshot_dict={"as_of": "2026-07-21"},
+        all_source_refs=[],
+        all_points=[],
+    )
+    cme_state = SimpleNamespace(
+        snapshot_dict={"trade_date": "2026-07-21"},
+        raw_file=None,
+    )
+    formal_bundle = _empty_formal_bundle()
+    with (
+        patch(
+            "apps.analysis.jin10.daily_context.build_daily_analysis_context",
+        ) as context_mock,
+        patch(
+            "apps.analysis.snapshots.builder.build_analysis_snapshot",
+            return_value={"trade_date": "2026-07-21", "snapshot_id": "XAUUSD:test"},
+        ) as build_mock,
+        patch(
+            "apps.analysis.snapshots.builder.write_analysis_snapshot",
+            return_value=tmp_path / "premarket_snapshot.json",
+        ),
+        patch(
+            "dagster_finance.graphs.premarket._load_formal_market_snapshot_bundle",
+            return_value=(formal_bundle, None),
+        ),
+        patch("apps.runtime.premarket_snapshot_authority.stage_premarket_snapshot_authority"),
+    ):
+        merge_analysis_snapshot_op(
+            context,
+            MergeSnapshotConfig(storage_root=str(tmp_path)),
+            macro_state,
+            cme_state,
+            None,
+        )
+
+    context_mock.assert_not_called()
+    assert build_mock.call_args.kwargs["gold_analysis_context"] is None
+
+
 def test_dagster_merge_passes_explicit_empty_formal_snapshots_when_loader_degrades(tmp_path) -> None:
     db = Mock()
     context = build_op_context(resources={"db_session": db})

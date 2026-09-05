@@ -392,6 +392,7 @@ def test_selector_finds_exact_committed_authority(tmp_path: Path) -> None:
     assert result.snapshot_path == path
     assert result.run_id == str(run.id)
     assert result.snapshot_id == payload["snapshot_id"]
+    assert result.file_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_selector_reports_missing_and_excludes_non_success_runs(tmp_path: Path) -> None:
@@ -435,6 +436,7 @@ def test_gold_daily_report_selector_accepts_exact_limited_blocked_authority(tmp_
     assert result.snapshot_path == path
     assert result.run_id == str(run.id)
     assert result.snapshot_id == payload["snapshot_id"]
+    assert result.file_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_gold_daily_report_selector_ignores_blocked_run_without_limited_receipt(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from dagster import Config, graph, op
 
+from apps.runtime.source_controls import jin10_disabled
 from dagster_finance.ops.macro import (
     macro_collect_op,
     macro_feature_op,
@@ -187,7 +188,6 @@ def merge_analysis_snapshot_op(
 ) -> dict[str, Any]:
     """Merge the three pipeline states into a unified analysis snapshot."""
     from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
-    from apps.analysis.jin10.daily_context import build_daily_analysis_context
     from apps.runtime.premarket_snapshot_authority import (
         canonicalize_premarket_snapshot_payload,
         stage_premarket_snapshot_authority,
@@ -227,6 +227,17 @@ def merge_analysis_snapshot_op(
         source_refs.extend(getattr(news_state, "source_refs", []) or [])
 
     collected_points = [p.to_dict() for p in getattr(macro_state, "all_points", [])]
+    if jin10_disabled():
+        gold_analysis_context = None
+    else:
+        from apps.analysis.jin10.daily_context import build_daily_analysis_context
+
+        gold_analysis_context = build_daily_analysis_context(
+            trade_date=trade_date,
+            storage_root=Path(config.storage_root),
+            asset="XAUUSD",
+            preferred_run_id=context.run_id,
+        )
     snapshot = build_analysis_snapshot(
         asset="XAUUSD",
         trade_date=trade_date,
@@ -236,12 +247,7 @@ def merge_analysis_snapshot_op(
         source_refs=source_refs,
         collected_points=collected_points,
         news_snapshot=news_snapshot,
-        gold_analysis_context=build_daily_analysis_context(
-            trade_date=trade_date,
-            storage_root=Path(config.storage_root),
-            asset="XAUUSD",
-            preferred_run_id=context.run_id,
-        ),
+        gold_analysis_context=gold_analysis_context,
         market_price_snapshot=formal_bundle.market_prices,
         market_context_snapshot=formal_bundle.market_context,
         oil_snapshot=formal_bundle.oil,

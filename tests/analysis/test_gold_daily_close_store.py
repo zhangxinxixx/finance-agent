@@ -306,6 +306,7 @@ def test_existing_bundle_full_verifier_accepts_exact_valid_bundle(tmp_path: Path
     assert verification.receipt is not None
     assert verification.receipt.result_id == result.result_id
     assert verification.receipt.receipt_id != next_write.receipt_id
+    assert verification.current_feature_id == result.current_feature_id
     assert verification.head is not None
     assert verification.head.loop_result == result
 

@@ -103,6 +103,25 @@ def test_macro_service_fred_both_fail(tmp_path: Path, monkeypatch) -> None:
     assert len(result.warnings) > 0
 
 
+def test_macro_service_fred_does_not_enter_jin10_fallback_when_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    mock_obb = MagicMock()
+    mock_obb.economy.fred_series.side_effect = RuntimeError("fail")
+    _inject_openbb(monkeypatch, mock_obb)
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", " yes ")
+    fallback = MagicMock(side_effect=AssertionError("Jin10 fallback must be skipped"))
+    monkeypatch.setattr("apps.data_layer.service.MacroDataService._try_jin10_rates", fallback)
+
+    result = MacroDataService(storage_root=tmp_path).collect_fred_rates(
+        retrieved_date="2026-05-20", symbols=("DGS10",)
+    )
+
+    fallback.assert_not_called()
+    assert result.source_used is None
+    assert result.warnings == ["FRED 利率：Jin10 兜底已禁用"]
+
+
 def test_macro_service_price_primary_succeeds(tmp_path: Path, monkeypatch) -> None:
     df = pd.DataFrame({"date": pd.to_datetime(["2026-05-20"]), "close": [100.0]})
     mock_obb = MagicMock()
@@ -136,6 +155,25 @@ def test_macro_service_price_both_fail(tmp_path: Path, monkeypatch) -> None:
 
     assert result.source_used is None
     assert "DX-Y.NYB" in result.unavailable_symbols
+
+
+def test_macro_service_prices_do_not_enter_jin10_fallback_when_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    mock_obb = MagicMock()
+    mock_obb.index.price.historical.side_effect = RuntimeError("fail")
+    _inject_openbb(monkeypatch, mock_obb)
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "ON")
+    fallback = MagicMock(side_effect=AssertionError("Jin10 fallback must be skipped"))
+    monkeypatch.setattr("apps.data_layer.service.MacroDataService._try_jin10_prices", fallback)
+
+    result = MacroDataService(storage_root=tmp_path).collect_market_prices(
+        retrieved_date="2026-05-20", symbols={"DX-Y.NYB": "index"}
+    )
+
+    fallback.assert_not_called()
+    assert result.source_used is None
+    assert result.warnings == ["市场价格：Jin10 兜底已禁用"]
 
 
 # ── NewsDataService tests ───────────────────────────────────────────────

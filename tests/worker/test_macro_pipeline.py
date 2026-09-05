@@ -257,6 +257,33 @@ class TestRunMacroStepDispatch:
 
 
 class TestStepCollect:
+    def test_collect_skips_jin10_collectors_when_disabled(self, tmp_path):
+        state = MacroPipelineState()
+        with (
+            patch("apps.worker.pipelines.macro.jin10_disabled", return_value=True),
+            patch("apps.collectors.fred.collector.collect_fred_series", return_value=_make_fred_result()) as fred,
+            patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_fed_result()) as fed,
+            patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_treasury_result()) as treasury,
+            patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()) as dxy,
+            patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()) as positioning,
+            patch("apps.collectors.technical.collector.collect_technical") as technical,
+            patch("apps.collectors.news.collector.collect_news") as news,
+            patch("apps.collectors.jin10.quotes.collect_quotes") as quotes,
+            patch("apps.collectors.jin10.kline.collect_kline") as kline,
+            patch("apps.collectors.jin10.articles.collect_articles") as articles,
+            patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=_make_data_layer_fred_result()),
+            patch("apps.data_layer.service.MacroDataService.collect_market_prices", return_value=_make_data_layer_market_result()),
+        ):
+            summary = run_macro_step("macro_collect", state, storage_root=tmp_path)
+
+        for collector in (technical, news, quotes, kline, articles):
+            collector.assert_not_called()
+        for collector in (fred, fed, treasury, dxy, positioning):
+            collector.assert_called_once()
+        statuses = {item["collector"]: item for item in summary["collectors"]}
+        for name in ("technical", "news", "jin10_quotes", "jin10_kline", "jin10_articles"):
+            assert statuses[name] == {"collector": name, "status": "skipped", "reason": "jin10_disabled"}
+
     def test_collect_aggregates_all_sources(self, tmp_path):
         """Verify that macro_collect calls all 3 collectors and merges results."""
         state = MacroPipelineState()

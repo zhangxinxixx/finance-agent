@@ -8,7 +8,13 @@ import {
   Target,
 } from "lucide-react";
 import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPill";
-import type { LiveStrategyResponse, LiveStrategySetup, LiveStrategyStatus } from "@/types/live-strategy";
+import {
+  hasVerifiedGoldBaseline,
+  type LiveStrategyGoldBaseline,
+  type LiveStrategyResponse,
+  type LiveStrategySetup,
+  type LiveStrategyStatus,
+} from "@/types/live-strategy";
 
 interface LiveStrategyWorkspaceProps {
   data: LiveStrategyResponse | null;
@@ -45,11 +51,18 @@ const reasonLabels: Record<string, string> = {
   blocked_data: "数据完整性 Gate 未通过",
   canonical_xauusd_5m_unavailable_or_stale: "等待新的 XAUUSD 5 分钟 K 线",
   no_directional_price_event: "等待关键位价格事件确认",
+  gold_direction_authority_unavailable: "等待已核验的 Gold 日结方向",
+  gold_daily_close_prebootstrap_hold: "尚无可用 Gold 日结基线（首个有效日结尚未建立）",
+  gold_direction_authority_invalid: "Gold 日结方向基线校验未通过",
+  gold_strategy_status_not_directional: "Gold 日结未给出可用方向",
 };
 
 const updateMessageLabels: Record<string, string> = {
   canonical_candle_stale: "XAUUSD 5 分钟 K 线缺失、过期或时间戳无效。",
   outside_approach_range: "当前价格距离最近关键位较远，尚未进入确定性观察区间。",
+  gold_daily_close_prebootstrap_hold: "尚未形成可核验的 Gold 日结方向；5m/15m 仅保留监控，不生成方向性策略。",
+  gold_direction_authority_invalid: "Gold 日结方向基线校验未通过；5m/15m 不生成方向性策略。",
+  gold_strategy_status_not_directional: "Gold 日结未给出可用方向；5m/15m 不生成方向性策略。",
 };
 
 function formatNumber(value: number | null | undefined, digits = 2) {
@@ -104,6 +117,13 @@ function reasonFor(data: LiveStrategyResponse, key: string, ready: boolean) {
 
 function readableReason(reason: string) {
   return reasonLabels[reason] ?? reason;
+}
+
+function goldBaselineLabel(baseline: LiveStrategyGoldBaseline) {
+  if (hasVerifiedGoldBaseline(baseline) && baseline.direction === "long") return baseline.gold_head_held ? "沿用已核验多头" : "已核验多头";
+  if (hasVerifiedGoldBaseline(baseline) && baseline.direction === "short") return baseline.gold_head_held ? "沿用已核验空头" : "已核验空头";
+  if (baseline.status === "invalid") return "日结基线无效";
+  return "日结方向待建立";
 }
 
 function marketStatusLabel(status: string | null) {
@@ -379,7 +399,15 @@ function CmePositioningMap({ data }: { data: LiveStrategyResponse }) {
   );
 }
 
-function TodayWatchlist({ data, action }: { data: LiveStrategyResponse; action: string }) {
+function TodayWatchlist({
+  data,
+  action,
+  strategyStatus,
+}: {
+  data: LiveStrategyResponse;
+  action: string;
+  strategyStatus: LiveStrategyStatus;
+}) {
   const waitingConditions = dedupeReasons(data.no_trade.waiting_conditions).slice(0, 2);
   const readiness = [
     ["data_ready", "行情"],
@@ -393,7 +421,7 @@ function TodayWatchlist({ data, action }: { data: LiveStrategyResponse; action: 
     <section className="live-strategy-watchlist" aria-label="今日观察清单">
       <header className="live-strategy-current-section-heading">
         <div><Activity size={15} aria-hidden="true" /><h2>今日观察清单</h2></div>
-        <FAStatusPill tone={liveStatusTone(data.strategy_status)}>{liveStatusLabel(data.strategy_status)}</FAStatusPill>
+        <FAStatusPill tone={liveStatusTone(strategyStatus)}>{liveStatusLabel(strategyStatus)}</FAStatusPill>
       </header>
       <div className="live-strategy-watchlist-grid">
         <div><span>基线判断</span><strong>{strategyLabel(data.baseline.bias)} · {strategyLabel(data.baseline.market_regime)}</strong><small>置信度 {formatPercent(data.baseline.confidence === null ? null : data.baseline.confidence * 100)}</small></div>
@@ -492,9 +520,17 @@ export function LiveStrategyDiagnostics({ data }: { data: LiveStrategyResponse |
 
 export function LiveStrategyWorkspace({ data, isLoading, error, tradeDate, dailyUpdatedAt, onRefresh }: LiveStrategyWorkspaceProps) {
   if (!data) return <LiveStrategyUnavailable isLoading={isLoading} error={error} />;
-  const copy = decisionCopy[data.strategy_status];
   const level = data.market_state.nearest_level;
-  const blocked = data.strategy_status === "SUSPENDED_DATA" || data.status !== "available";
+  const goldBaseline = data.data_quality.gold_baseline;
+  const goldAuthorityReady = hasVerifiedGoldBaseline(goldBaseline);
+  const strategyStatus = data.strategy_status === "SUSPENDED_DATA"
+    ? "SUSPENDED_DATA"
+    : goldAuthorityReady ? data.strategy_status : "WAITING";
+  const copy = decisionCopy[strategyStatus];
+  const updateMessage = !goldAuthorityReady
+    ? updateMessageLabels[goldBaseline.reason_code ?? ""] ?? "Gold 日结方向尚未通过核验；5m/15m 仅保留监控，不生成方向性策略。"
+    : updateMessageLabels[data.update_reason.reason_code ?? ""] ?? data.update_reason.message ?? "后端未提供状态说明。";
+  const blocked = strategyStatus === "SUSPENDED_DATA" || data.status !== "available" || !goldAuthorityReady;
 
   return (
     <section className="live-strategy-workspace live-strategy-workspace--focused" aria-label="XAUUSD 当前策略">
@@ -503,10 +539,10 @@ export function LiveStrategyWorkspace({ data, isLoading, error, tradeDate, daily
           <span className="fa-eyebrow">{data.asset} · 当前策略</span>
           <div className="live-strategy-focus-status">
             <h1>{copy.title}</h1>
-            <FAStatusPill tone={liveStatusTone(data.strategy_status)}>{liveStatusLabel(data.strategy_status)}</FAStatusPill>
+            <FAStatusPill tone={liveStatusTone(strategyStatus)}>{liveStatusLabel(strategyStatus)}</FAStatusPill>
             <FAStatusPill tone={availabilityTone(data.status)}>{availabilityLabel(data.status)}</FAStatusPill>
           </div>
-          <p>{updateMessageLabels[data.update_reason.reason_code ?? ""] ?? data.update_reason.message ?? "后端未提供状态说明。"}</p>
+          <p>{updateMessage}</p>
         </div>
         <div className="live-strategy-focus-time">
           <span>策略日期 <b className="fa-num">{tradeDate ?? "—"}</b></span>
@@ -520,13 +556,13 @@ export function LiveStrategyWorkspace({ data, isLoading, error, tradeDate, daily
       <div className="live-strategy-focus-grid">
         <div><span>最新价格</span><strong className="fa-price-num">{formatNumber(data.live_market.price)}</strong><small>{marketStatusLabel(data.live_market.status)} · {data.live_market.freshness_seconds === null ? "时间未知" : `${formatNumber(data.live_market.freshness_seconds, 0)} 秒前`}</small></div>
         <div><span>最近关键位</span><strong>{strategyLabel(level?.role)} <b className="fa-num">{formatNumber(level?.value)}</b></strong><small>距离 {formatPercent(level?.distance_pct)} · ATR {formatNumber(data.market_state.atr14)}</small></div>
-        <div><span>日度背景</span><strong>{strategyLabel(data.baseline.bias)} / {strategyLabel(data.baseline.market_regime)}</strong><small>置信度 {formatPercent(data.baseline.confidence === null ? null : data.baseline.confidence * 100)}</small></div>
+        <div><span>Gold 日结基线</span><strong>{goldBaselineLabel(goldBaseline)}</strong><small>{readableReason(goldBaseline.reason_code ?? "gold_direction_authority_unavailable")}</small></div>
         <div className="live-strategy-focus-action"><span>现在做什么</span><strong>{copy.action}</strong></div>
       </div>
 
       <div className="live-strategy-current-grid">
         <KeyLevelMap data={data} />
-        <TodayWatchlist data={data} action={copy.action} />
+        <TodayWatchlist data={data} action={copy.action} strategyStatus={strategyStatus} />
       </div>
 
       <CmePositioningMap data={data} />

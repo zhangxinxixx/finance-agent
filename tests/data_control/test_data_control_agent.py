@@ -12,6 +12,7 @@ from apps.data_control import data_control_agent
 from apps.data_control.data_control_agent import run_data_control_agent
 from apps.data_control.processing_planner import build_processing_plan
 from apps.runtime import task_recorder as task_recorder_module
+from database.models.analysis import AnalysisBase
 from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.task import ensure_task_tables
 
@@ -24,9 +25,21 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def _sqlite_session_factory():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    ensure_task_tables(engine)
+    AnalysisBase.metadata.create_all(engine)
+    ensure_execution_tables(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
 def _seed_storage(storage_root: Path) -> None:
-    _write_json(storage_root / "outputs" / "jin10" / "quotes_cache.json", {"updated_at": "2026-07-08T10:14:00+00:00"})
-    _write_json(storage_root / "outputs" / "jin10" / "flash_cache.json", {"updated_at": "2026-07-08T09:30:00+00:00"})
+    _write_json(storage_root / "outputs" / "jin10" / "quotes_cache.json", {"observed_at": "2026-07-08T10:14:00+00:00"})
+    _write_json(storage_root / "outputs" / "jin10" / "flash_cache.json", {"observed_at": "2026-07-08T09:30:00+00:00"})
     _write_json(storage_root / "raw" / "jin10" / "2026-07-08" / "index.json", {"items": ["223556"]})
     _write_json(storage_root / "parsed" / "jin10" / "2026-07-08" / "index.json", {"items": ["223556"]})
     _write_json(storage_root / "outputs" / "jin10" / "2026-07-08" / "analysis.json", {"status": "partial"})
@@ -60,12 +73,14 @@ def _seed_storage(storage_root: Path) -> None:
 def test_data_control_agent_writes_hourly_plans_and_notification_request(tmp_path) -> None:
     storage_root = tmp_path / "storage"
     _seed_storage(storage_root)
+    factory = _sqlite_session_factory()
 
     result = run_data_control_agent(
         storage_root=storage_root,
         trade_date="2026-07-08",
         observed_at=OBSERVED_AT,
         record_task_run=False,
+        session_factory=factory,
     )
 
     artifacts = result["artifacts"]
@@ -91,7 +106,7 @@ def test_data_control_agent_writes_hourly_plans_and_notification_request(tmp_pat
     assert "jin10_reports_raw_to_parsed" in processing_plan["ready_steps"]
     assert "jin10_reports_outputs_to_agent_outputs" in processing_plan["ready_steps"]
     assert any(item["reason_code"] == "downstream_quality_gate_blocked" for item in processing_plan["blocked_steps"])
-    assert processing_plan["quality_gate_evaluation"]["status"] == "current"
+    assert processing_plan["quality_gate_evaluation"]["status"] == "blocked"
 
     dispatch_plan = json.loads((storage_root / artifacts["dispatch_plan"]).read_text(encoding="utf-8"))
     assert dispatch_plan["auto_execute"] is False
@@ -122,6 +137,7 @@ def test_data_control_agent_writes_hourly_plans_and_notification_request(tmp_pat
 def test_data_control_agent_records_task_run_when_enabled(tmp_path, monkeypatch) -> None:
     storage_root = tmp_path / "storage"
     _seed_storage(storage_root)
+    factory = _sqlite_session_factory()
     calls: list[dict] = []
 
     class Recorder:
@@ -148,6 +164,7 @@ def test_data_control_agent_records_task_run_when_enabled(tmp_path, monkeypatch)
         trade_date="2026-07-08",
         observed_at=OBSERVED_AT,
         record_task_run=True,
+        session_factory=factory,
     )
 
     assert result["task_run_id"] == "dc-run-1"
@@ -155,20 +172,13 @@ def test_data_control_agent_records_task_run_when_enabled(tmp_path, monkeypatch)
     assert calls[1]["step_name"] == "write_data_control_artifacts"
     assert calls[1]["output_refs"][0]["artifact_type"] == "data_availability_snapshot"
     assert calls[1]["source_refs"][0]["source_ref"] == "data-control:2026-07-08"
-    assert calls[1]["source_refs"][1]["source_ref"] == "monitoring:2026-07-08:downstream_readiness"
+    assert calls[1]["source_refs"][1]["source_ref"] == "authority:successful_premarket_run_missing"
 
 
 def test_data_control_agent_registers_artifacts_with_traceable_source_refs(tmp_path, monkeypatch) -> None:
     storage_root = tmp_path / "storage"
     _seed_storage(storage_root)
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    ensure_task_tables(engine)
-    ensure_execution_tables(engine)
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    factory = _sqlite_session_factory()
     monkeypatch.setattr(task_recorder_module, "SessionLocal", factory)
 
     result = run_data_control_agent(
@@ -176,6 +186,7 @@ def test_data_control_agent_registers_artifacts_with_traceable_source_refs(tmp_p
         trade_date="2026-07-08",
         observed_at=OBSERVED_AT,
         record_task_run=True,
+        session_factory=factory,
     )
 
     assert result["task_run_id"] is not None
@@ -189,11 +200,13 @@ def test_data_control_agent_registers_artifacts_with_traceable_source_refs(tmp_p
             "source_ref": "data-control:2026-07-08",
             "data_date": "2026-07-08",
         },
-        {
-            "source": "data_quality_monitor",
-            "source_ref": "monitoring:2026-07-08:downstream_readiness",
-            "data_date": "2026-07-08",
-        },
+            {
+                "source": "gold_premarket_authority",
+                "source_ref": "authority:successful_premarket_run_missing",
+                "data_date": "2026-07-08",
+                "status": "blocked",
+                "reason_code": "successful_premarket_run_missing",
+            },
     ]
 
 

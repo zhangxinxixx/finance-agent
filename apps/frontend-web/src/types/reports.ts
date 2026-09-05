@@ -3,6 +3,7 @@ import type { DataStatus, ReportFormat, ReportMeta, SourceRef } from "@/types/co
 import type { SourceTracePayload } from "@/types/source-trace";
 
 import type { GoldMacroOverview } from "@/types/gold-mainlines";
+import type { ResultIdentity } from "@/types/result-identity";
 
 export type ReportType = "final_report" | "strategy_card" | "options_report" | "macro_report" | string;
 export type ReportFamily = "cme_options_visual" | "final_report_markdown" | "options_report_markdown" | "jin10_daily_visual" | "jin10_weekly_visual";
@@ -277,6 +278,8 @@ export interface ReportDetailResponse {
   input_snapshot_ids: string[];
   review_items: Array<Record<string, unknown>>;
   structured_payload?: Record<string, unknown> | null;
+  /** New Gold result identity; legacy report_identity remains separate. */
+  result_identity?: ResultIdentity | null;
   gold_macro_overview?: GoldMacroOverview | null;
   market_odds_evidence?: MarketOddsEvidenceViewModel | null;
 }
@@ -526,6 +529,7 @@ export interface ReportDetailView {
   tabs: Partial<Record<ReportArtifactTabKey, ReportArtifactContentView>>;
   available_tabs: ReportDetailTabKey[];
   structured_payload?: Record<string, unknown> | null;
+  result_identity: ResultIdentity | null;
   generation_trace?: ReportGenerationTrace | null;
   gold_macro_overview?: GoldMacroOverview | null;
   market_odds_evidence?: MarketOddsEvidenceViewModel | null;

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from apps.analysis.gold_policy.feature_snapshot import build_feature_snapshot
 from apps.analysis.gold_policy.daily_close_store import (
     load_gold_daily_close_head,
     verify_gold_daily_close_bundle,
 )
+from apps.runtime.premarket_snapshot_authority import PremarketSnapshotAuthority
 from scripts import run_gold_daily_report as report
 from tests.analysis.test_gold_strategy_policy import _snapshot
 from tests.analysis.test_gold_cme_options_regime import _options_output
@@ -22,8 +26,18 @@ def _write_snapshot(root: Path, trade_date: str) -> Path:
     return path
 
 
-def _runtime(current, previous):
-    return SimpleNamespace(current=current, previous=previous)
+def _runtime(
+    current,
+    previous,
+    *,
+    lookup_status: str = "found",
+    lookup_reason_code: str = "previous_feature_snapshot_found",
+):
+    return SimpleNamespace(
+        current=current,
+        previous=previous,
+        lookup=SimpleNamespace(status=lookup_status, reason_code=lookup_reason_code),
+    )
 
 
 def test_no_jin10_entrypoint_writes_complete_observe_package_idempotently(
@@ -274,6 +288,60 @@ def test_newer_same_session_snapshot_creates_linked_revision(tmp_path: Path, mon
     assert latest.latest_receipt.supersedes_receipt_id
 
 
+def test_explicit_run_id_does_not_reuse_a_bundle_for_a_different_feature(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    previous = _snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
+    first_feature = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    revised_payload = first_feature.model_dump(
+        mode="json",
+        exclude={"data_quality", "payload_hash", "snapshot_id"},
+    )
+    revised_as_of = first_feature.as_of + timedelta(hours=1)
+    revised_payload["as_of"] = revised_as_of.isoformat()
+    revised_payload["xauusd_spot"]["value"] += 1.0
+    revised_payload["xauusd_spot"]["as_of"] = revised_as_of.isoformat()
+    revised_feature = build_feature_snapshot(revised_payload)
+    _write_snapshot(tmp_path, "2025-01-21")
+    current = first_feature
+    monkeypatch.setattr(
+        report,
+        "prepare_gold_policy_runtime_inputs",
+        lambda **kwargs: _runtime(current, previous),
+    )
+
+    first = report.run_gold_daily_report(
+        trade_date="2025-01-21",
+        storage_root=tmp_path,
+        run_id="operator-selected-run",
+    )
+    current = revised_feature
+    second = report.run_gold_daily_report(
+        trade_date="2025-01-21",
+        storage_root=tmp_path,
+        run_id="operator-selected-run",
+    )
+
+    assert first["status"] == "completed"
+    assert second == {
+        "status": "blocked",
+        "reason": "existing_bundle_feature_snapshot_mismatch",
+        "trade_date": "2025-01-21",
+        "run_id": "operator-selected-run",
+        "snapshot_path": str(
+            tmp_path
+            / "features"
+            / "snapshots"
+            / "XAUUSD"
+            / "2025-01-21"
+            / "premarket"
+            / "premarket_snapshot.json"
+        ),
+        "jin10": "not_used",
+    }
+
+
 def test_snapshot_and_run_id_fail_closed(tmp_path: Path) -> None:
     missing = report.run_gold_daily_report(
         trade_date="2025-01-21",
@@ -287,3 +355,301 @@ def test_snapshot_and_run_id_fail_closed(tmp_path: Path) -> None:
 
     assert missing["reason"] == "premarket_snapshot_missing"
     assert outside["reason"] == "snapshot_path_outside_storage_root"
+
+
+@pytest.mark.parametrize(
+    ("lookup_status", "reason_code"),
+    [
+        ("ambiguous", "previous_feature_snapshot_latest_date_ambiguous"),
+        ("invalid", "previous_feature_snapshot_latest_date_invalid"),
+    ],
+)
+def test_previous_feature_lookup_ambiguity_or_invalidity_blocks_report_generation(
+    tmp_path: Path,
+    monkeypatch,
+    lookup_status: str,
+    reason_code: str,
+) -> None:
+    current = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    snapshot_path = _write_snapshot(tmp_path, "2025-01-21")
+    monkeypatch.setattr(
+        report,
+        "prepare_gold_policy_runtime_inputs",
+        lambda **kwargs: _runtime(
+            current,
+            None,
+            lookup_status=lookup_status,
+            lookup_reason_code=reason_code,
+        ),
+    )
+
+    result = report.run_gold_daily_report(
+        trade_date="2025-01-21",
+        storage_root=tmp_path,
+    )
+
+    assert result == {
+        "status": "blocked",
+        "reason": reason_code,
+        "trade_date": "2025-01-21",
+        "snapshot_path": str(snapshot_path),
+        "jin10": "not_used",
+    }
+    assert not (tmp_path / "analysis").exists()
+
+
+def test_write_path_binds_the_exact_db_authoritative_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    current = _snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
+    authoritative_path = (
+        tmp_path
+        / "features"
+        / "snapshots"
+        / "XAUUSD"
+        / "2025-01-21"
+        / "authoritative-run"
+        / "premarket_snapshot.json"
+    )
+    authoritative_path.parent.mkdir(parents=True)
+    authoritative_path.write_text(json.dumps({"trade_date": "2025-01-21"}), encoding="utf-8")
+    monkeypatch.setattr(
+        report,
+        "resolve_gold_daily_report_premarket_snapshot",
+        lambda *args, **kwargs: PremarketSnapshotAuthority(
+            status="found",
+            reason_code="authoritative_gold_daily_report_premarket_snapshot_found",
+            snapshot_path=authoritative_path,
+            run_id="authoritative-run",
+            snapshot_id="XAUUSD:2025-01-21:authoritative-run",
+            file_sha256=hashlib.sha256(authoritative_path.read_bytes()).hexdigest(),
+        ),
+    )
+    monkeypatch.setattr(
+        report,
+        "prepare_gold_policy_runtime_inputs",
+        lambda **kwargs: _runtime(
+            current,
+            None,
+            lookup_status="ambiguous",
+            lookup_reason_code="previous_feature_snapshot_latest_date_ambiguous",
+        ),
+    )
+
+    result = report.run_gold_daily_report(
+        trade_date="2025-01-21",
+        storage_root=tmp_path,
+        db=object(),
+    )
+
+    assert result["reason"] == "previous_feature_snapshot_latest_date_ambiguous"
+    assert result["snapshot_path"] == str(authoritative_path)
+    assert not (tmp_path / "analysis").exists()
+
+
+def test_write_path_requires_the_authority_verified_file_hash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    authoritative_path = (
+        tmp_path
+        / "features"
+        / "snapshots"
+        / "XAUUSD"
+        / "2025-01-21"
+        / "authoritative-run"
+        / "premarket_snapshot.json"
+    )
+    authoritative_path.parent.mkdir(parents=True)
+    authoritative_path.write_text(json.dumps({"trade_date": "2025-01-21"}), encoding="utf-8")
+    monkeypatch.setattr(
+        report,
+        "resolve_gold_daily_report_premarket_snapshot",
+        lambda *args, **kwargs: PremarketSnapshotAuthority(
+            status="found",
+            reason_code="authoritative_gold_daily_report_premarket_snapshot_found",
+            snapshot_path=authoritative_path,
+            run_id="authoritative-run",
+            snapshot_id="XAUUSD:2025-01-21:authoritative-run",
+        ),
+    )
+    monkeypatch.setattr(
+        report,
+        "prepare_gold_policy_runtime_inputs",
+        lambda **kwargs: pytest.fail("hashless authority must not prepare a report"),
+    )
+
+    result = report.run_gold_daily_report(
+        trade_date="2025-01-21",
+        storage_root=tmp_path,
+        db=object(),
+    )
+
+    assert result == {
+        "status": "blocked",
+        "reason": "authority_integrity_invalid",
+        "trade_date": "2025-01-21",
+        "authority": {
+            "status": "found",
+            "run_id": "authoritative-run",
+            "snapshot_id": "XAUUSD:2025-01-21:authoritative-run",
+        },
+        "jin10": "not_used",
+    }
+
+
+def test_write_path_blocks_snapshot_changed_after_authority_validation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    authoritative_path = (
+        tmp_path
+        / "features"
+        / "snapshots"
+        / "XAUUSD"
+        / "2025-01-21"
+        / "authoritative-run"
+        / "premarket_snapshot.json"
+    )
+    authoritative_path.parent.mkdir(parents=True)
+    original_bytes = json.dumps({"trade_date": "2025-01-21"}).encode("utf-8")
+    authoritative_path.write_bytes(original_bytes)
+    monkeypatch.setattr(
+        report,
+        "resolve_gold_daily_report_premarket_snapshot",
+        lambda *args, **kwargs: PremarketSnapshotAuthority(
+            status="found",
+            reason_code="authoritative_gold_daily_report_premarket_snapshot_found",
+            snapshot_path=authoritative_path,
+            run_id="authoritative-run",
+            snapshot_id="XAUUSD:2025-01-21:authoritative-run",
+            file_sha256=hashlib.sha256(original_bytes).hexdigest(),
+        ),
+    )
+    authoritative_path.write_bytes(b' { "trade_date": "2025-01-21" }\n')
+    monkeypatch.setattr(
+        report,
+        "prepare_gold_policy_runtime_inputs",
+        lambda **kwargs: pytest.fail("changed authority snapshot must not prepare a report"),
+    )
+
+    result = report.run_gold_daily_report(
+        trade_date="2025-01-21",
+        storage_root=tmp_path,
+        db=object(),
+    )
+
+    assert result == {
+        "status": "blocked",
+        "reason": "snapshot_authority_integrity_changed",
+        "trade_date": "2025-01-21",
+        "snapshot_path": str(authoritative_path),
+        "authority": {
+            "status": "found",
+            "run_id": "authoritative-run",
+            "snapshot_id": "XAUUSD:2025-01-21:authoritative-run",
+        },
+        "jin10": "not_used",
+    }
+
+
+def test_write_path_rejects_ambiguous_or_explicit_non_authoritative_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    requested_path = _write_snapshot(tmp_path, "2025-01-21")
+    authoritative_path = (
+        tmp_path
+        / "features"
+        / "snapshots"
+        / "XAUUSD"
+        / "2025-01-21"
+        / "authoritative-run"
+        / "premarket_snapshot.json"
+    )
+    authoritative_path.parent.mkdir(parents=True)
+    authoritative_path.write_text(json.dumps({"trade_date": "2025-01-21"}), encoding="utf-8")
+    monkeypatch.setattr(
+        report,
+        "resolve_gold_daily_report_premarket_snapshot",
+        lambda *args, **kwargs: PremarketSnapshotAuthority(
+            status="found",
+            reason_code="authoritative_gold_daily_report_premarket_snapshot_found",
+            snapshot_path=authoritative_path,
+            run_id="authoritative-run",
+            snapshot_id="XAUUSD:2025-01-21:authoritative-run",
+            file_sha256=hashlib.sha256(authoritative_path.read_bytes()).hexdigest(),
+        ),
+    )
+    monkeypatch.setattr(
+        report,
+        "prepare_gold_policy_runtime_inputs",
+        lambda **kwargs: pytest.fail("non-authoritative path must not prepare a report"),
+    )
+
+    result = report.run_gold_daily_report(
+        trade_date="2025-01-21",
+        storage_root=tmp_path,
+        snapshot_path=requested_path,
+        db=object(),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "snapshot_path_not_authoritative"
+    assert result["authority"] == {
+        "status": "found",
+        "run_id": "authoritative-run",
+        "snapshot_id": "XAUUSD:2025-01-21:authoritative-run",
+    }
+    assert not (tmp_path / "analysis").exists()
+
+
+@pytest.mark.parametrize(
+    ("authority_status", "reason_code"),
+    [
+        ("ambiguous", "multiple_successful_premarket_runs"),
+        ("missing", "successful_premarket_run_missing"),
+        ("unavailable", "authority_database_unavailable"),
+    ],
+)
+def test_write_path_blocks_non_found_db_authority_without_filesystem_fallback(
+    tmp_path: Path,
+    monkeypatch,
+    authority_status: str,
+    reason_code: str,
+) -> None:
+    _write_snapshot(tmp_path, "2025-01-21")
+    monkeypatch.setattr(
+        report,
+        "resolve_gold_daily_report_premarket_snapshot",
+        lambda *args, **kwargs: PremarketSnapshotAuthority(
+            status=authority_status,  # type: ignore[arg-type]
+            reason_code=reason_code,
+        ),
+    )
+    monkeypatch.setattr(
+        report,
+        "prepare_gold_policy_runtime_inputs",
+        lambda **kwargs: pytest.fail("non-found authority must not prepare a report"),
+    )
+    monkeypatch.setattr(
+        report,
+        "_existing_completed_result",
+        lambda **kwargs: pytest.fail("authority must be checked before completed-bundle reuse"),
+    )
+
+    result = report.run_gold_daily_report(
+        trade_date="2025-01-21",
+        storage_root=tmp_path,
+        db=object(),
+    )
+
+    assert result == {
+        "status": "blocked",
+        "reason": reason_code,
+        "trade_date": "2025-01-21",
+        "authority": {"status": authority_status, "run_id": None, "snapshot_id": None},
+        "jin10": "not_used",
+    }
+    assert not (tmp_path / "analysis").exists()

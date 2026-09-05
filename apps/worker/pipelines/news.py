@@ -50,6 +50,7 @@ from apps.features.news.report_event_extractor import (
     extract_jin10_report_events,
 )
 from apps.renderer.markdown.daily_brief import archive_daily_brief, render_daily_brief_payload
+from apps.runtime.source_controls import jin10_disabled
 
 NEWS_STEPS = {"news_collect", "news_feature", "news_brief"}
 _MARKET_REACTION_TIMEFRAME = "1m"
@@ -334,21 +335,25 @@ def _step_feature(
     feature_items = list(state.raw_items)
     feature_source_refs = list(state.source_refs)
 
-    try:
-        report_extraction = _extract_latest_jin10_report_events(storage_root=storage_root, fetched_at=as_of)
-    except Exception as exc:
-        warnings.append(f"report_event_extractor unavailable: {type(exc).__name__}: {exc}")
+    jin10_is_disabled = jin10_disabled()
+    if jin10_is_disabled:
+        warnings.append("jin10_inputs_skipped:disabled")
     else:
-        if report_extraction is not None:
-            feature_items.extend(report_extraction.items)
-            feature_source_refs.extend(report_extraction.source_refs)
-            report_events_path = archive_jin10_report_events(
-                storage_root=storage_root,
-                retrieved_date=state.retrieved_date,
-                run_id=run_key,
-                extraction=report_extraction,
-            )
-            warnings.extend(report_extraction.warnings)
+        try:
+            report_extraction = _extract_latest_jin10_report_events(storage_root=storage_root, fetched_at=as_of)
+        except Exception as exc:
+            warnings.append(f"report_event_extractor unavailable: {type(exc).__name__}: {exc}")
+        else:
+            if report_extraction is not None:
+                feature_items.extend(report_extraction.items)
+                feature_source_refs.extend(report_extraction.source_refs)
+                report_events_path = archive_jin10_report_events(
+                    storage_root=storage_root,
+                    retrieved_date=state.retrieved_date,
+                    run_id=run_key,
+                    extraction=report_extraction,
+                )
+                warnings.extend(report_extraction.warnings)
 
     bundle = build_event_candidates(
         feature_items,
@@ -413,12 +418,15 @@ def _step_feature(
         run_id=run_key,
         bundle=gold_event_mainlines,
     )
-    etf_holdings_context, etf_holdings_path, etf_report_count = _build_etf_holdings_feature(
-        state=state,
-        storage_root=storage_root,
-        retrieved_date=state.retrieved_date,
-        run_id=run_key,
-    )
+    if jin10_is_disabled:
+        etf_holdings_context, etf_holdings_path, etf_report_count = {}, None, 0
+    else:
+        etf_holdings_context, etf_holdings_path, etf_report_count = _build_etf_holdings_feature(
+            state=state,
+            storage_root=storage_root,
+            retrieved_date=state.retrieved_date,
+            run_id=run_key,
+        )
 
     state.event_bundle = bundle
     state.impact_assessments = assessments
@@ -480,12 +488,17 @@ def _step_brief(
     if not state.retrieved_date:
         state.retrieved_date = datetime.now(timezone.utc).date().isoformat()
     run_key = run_id or "manual"
-    report_input_artifacts = _load_report_input_artifacts(
-        storage_root=storage_root,
-        retrieved_date=state.retrieved_date,
-        run_id=run_key,
+    jin10_is_disabled = jin10_disabled()
+    report_input_artifacts = (
+        []
+        if jin10_is_disabled
+        else _load_report_input_artifacts(
+            storage_root=storage_root,
+            retrieved_date=state.retrieved_date,
+            run_id=run_key,
+        )
     )
-    if state.etf_holdings_context:
+    if not jin10_is_disabled and state.etf_holdings_context:
         report_input_artifacts.append({
             "source_key": "jin10_minipro_etf_reports",
             "source_kind": "etf_holdings",
@@ -766,12 +779,10 @@ def _load_report_input_artifacts(*, storage_root: Path, retrieved_date: str, run
 
 
 def _collectors() -> list[tuple[str, Callable[..., NewsCollectionResult]]]:
-    from apps.collectors.jin10.etf_reports import collect_jin10_etf_reports
     from apps.collectors.news.bea import collect_bea_schedule
     from apps.collectors.news.bls import collect_bls_calendar
     from apps.collectors.news.eia import collect_eia_energy_events
     from apps.collectors.news.fed_rss import collect_fed_rss
-    from apps.collectors.news.feishu_jin10 import collect_feishu_jin10_messages, is_feishu_jin10_enabled
     from apps.collectors.news.gdelt import GDELT_DOC_QUERIES, collect_gdelt_docs
     from apps.collectors.news.google_news_rss import GOOGLE_NEWS_QUERIES, collect_google_news_rss
     from apps.collectors.news.reuters_public import REUTERS_PUBLIC_QUERIES, collect_reuters_public_news
@@ -801,10 +812,14 @@ def _collectors() -> list[tuple[str, Callable[..., NewsCollectionResult]]]:
                 REUTERS_PUBLIC_QUERIES,
             ),
         ),
-        ("jin10_minipro_etf_reports", collect_jin10_etf_reports),
     ]
-    if is_feishu_jin10_enabled():
-        collectors.append(("jin10_feishu", collect_feishu_jin10_messages))
+    if not jin10_disabled():
+        from apps.collectors.jin10.etf_reports import collect_jin10_etf_reports
+        from apps.collectors.news.feishu_jin10 import collect_feishu_jin10_messages, is_feishu_jin10_enabled
+
+        collectors.append(("jin10_minipro_etf_reports", collect_jin10_etf_reports))
+        if is_feishu_jin10_enabled():
+            collectors.append(("jin10_feishu", collect_feishu_jin10_messages))
     return collectors
 
 

@@ -4,26 +4,50 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from apps.analysis.strategy.event_overlay import build_event_overlay
 from apps.analysis.strategy.live_schemas import LiveStrategyOutput
+from apps.analysis.strategy.live_input_gates import (
+    CANONICAL_CANDLE_DURATION_SECONDS,
+    CANONICAL_FRESHNESS_SECONDS,
+    evaluate_live_input_gates,
+)
 from apps.analysis.strategy.price_events import detect_latest_price_event, event_thresholds
 from apps.analysis.strategy.risk_plan import build_risk_plan
 
 
 SCHEMA_VERSION = "live_strategy.v1"
-CANONICAL_FRESHNESS_SECONDS = 600
 QUOTE_FRESHNESS_SECONDS = 120
 CLOCK_SKEW_TOLERANCE_SECONDS = 30
 ATR_PERIOD = 14
+_CONFIRMED_PRICE_EVENTS = frozenset({"accepted_break", "failed_break", "retest", "reclaim"})
+
+__all__ = [
+    "CANONICAL_CANDLE_DURATION_SECONDS",
+    "CANONICAL_FRESHNESS_SECONDS",
+    "build_live_strategy",
+]
+
+_GOLD_ID_PATTERNS = {
+    "receipt_id": r"gold_daily_close_canonical_receipt\.v1:[0-9a-f]{64}",
+    "result_id": r"gold_daily_close_loop_result\.v1:[0-9a-f]{64}",
+    "feature_snapshot_id": r"feature_snapshot\.v[12]:[0-9a-f]{64}",
+    "state_id": r"analysis_state\.v[12]:[0-9a-f]{64}",
+    "transition_decision_hash": r"[0-9a-f]{64}",
+    "strategy_id": r"strategy_decision\.v[12]:[0-9a-f]{64}",
+    "consistency_decision_id": r"analysis_strategy_consistency_decision\.v1:[0-9a-f]{64}",
+}
 
 
 def build_live_strategy(
     *,
     asset: str,
     baseline: Mapping[str, Any] | None,
+    gold_baseline: Mapping[str, Any] | None = None,
     canonical_market: Mapping[str, Any] | None,
     options_decision: Mapping[str, Any] | None,
     canonical_market_15m: Mapping[str, Any] | None = None,
@@ -39,26 +63,43 @@ def build_live_strategy(
     """
     current_time = _as_utc(now) or datetime.now(timezone.utc)
     normalized_asset = str(asset or "XAUUSD").upper()
+    if normalized_asset != "XAUUSD":
+        raise ValueError("live_strategy.v1 supports only XAUUSD")
     market = dict(canonical_market or {})
     market_15m = dict(canonical_market_15m or {})
-    baseline_summary = _baseline_summary(baseline)
-    latest_candle = _latest_candle(market)
-    candle_time = _as_utc(latest_candle.get("time")) if latest_candle else None
-    price = _number_or_none(latest_candle.get("close")) if latest_candle else None
-    freshness_seconds = _freshness_seconds(current_time, candle_time)
-    canonical_ready = (
-        price is not None
-        and freshness_seconds is not None
-        and -CLOCK_SKEW_TOLERANCE_SECONDS <= freshness_seconds <= CANONICAL_FRESHNESS_SECONDS
+    premarket_context = _premarket_context_summary(baseline)
+    baseline_summary = _gold_baseline_summary(gold_baseline, premarket_context, current_time=current_time)
+    gold_authority = baseline_summary["authority"]
+    effective_strategy_as_of = _timestamp_utc(gold_authority.get("strategy_decision_as_of"))
+    effective_trade_date = _trade_date(effective_strategy_as_of)
+    input_gates = evaluate_live_input_gates(
+        canonical_market=market,
+        canonical_market_15m=market_15m,
+        options_decision=options_decision,
+        effective_trade_date=effective_trade_date,
+        now=current_time,
     )
+    canonical_5m_gate = input_gates["canonical_5m"]
+    canonical_15m_gate = input_gates["canonical_15m"]
+    cme_gate = input_gates["cme"]
+    utc_scope_gate = input_gates["utc_scope"]
+    latest_candle = _latest_candle(market)
+    canonical_5m_rows = [item for item in market.get("candles") or [] if isinstance(item, Mapping)]
+    candle_closed_at = _timestamp_utc(canonical_5m_gate.get("closed_at"))
+    price = _number_or_none(latest_candle.get("close")) if latest_candle else None
+    freshness_seconds = canonical_5m_gate.get("freshness_seconds")
+    canonical_reason_code = canonical_5m_gate.get("reason_code")
+    canonical_ready = canonical_5m_gate.get("ready") is True
 
     warnings: list[str] = []
-    if price is None or candle_time is None:
-        warnings.append("canonical_candle_unavailable")
-    elif freshness_seconds is not None and freshness_seconds < -CLOCK_SKEW_TOLERANCE_SECONDS:
-        warnings.append("canonical_candle_future")
-    elif freshness_seconds is not None and freshness_seconds > CANONICAL_FRESHNESS_SECONDS:
-        warnings.append("canonical_candle_stale")
+    warnings.extend(
+        reason
+        for gate in input_gates.values()
+        for reason in gate.get("reasons", [])
+        if isinstance(reason, str)
+    )
+    if canonical_reason_code and canonical_reason_code not in warnings:
+        warnings.append(canonical_reason_code)
 
     quote = _fresh_quote(quote_cache, normalized_asset, current_time, warnings)
     atr14 = _atr14(market.get("candles"), warnings)
@@ -67,22 +108,31 @@ def build_live_strategy(
     gamma_regime = _nested(options_decision, "gamma_summary", "regime") or "unavailable"
     cme_positioning = _cme_positioning(options_decision, baseline_trade_date=baseline_summary.get("trade_date"))
 
-    has_baseline = baseline_summary["strategy_card_id"] is not None
-    level_ready = nearest_level is not None
+    has_baseline = gold_authority["authority_ready"] is True
+    authorized_direction = gold_authority["direction"] if has_baseline else None
+    baseline_reason_code = gold_authority["reason_code"]
+    level_gate_reasons = _level_gate_reasons(
+        cme_gate=cme_gate,
+        utc_scope_gate=utc_scope_gate,
+    )
+    level_ready = nearest_level is not None and not level_gate_reasons
+    level_reason_code = (
+        "option_key_levels_unavailable"
+        if nearest_level is None
+        else level_gate_reasons[0] if level_gate_reasons else None
+    )
     if not has_baseline:
-        warnings.append("baseline_unavailable")
+        warnings.append("gold_direction_authority_unavailable")
     if not level_ready:
-        warnings.append("option_key_levels_unavailable")
+        warnings.append(level_reason_code or "option_key_levels_unavailable")
 
     base_strategy_status, base_update_reason = _state(
         canonical_ready=canonical_ready,
-        canonical_reason_code=_canonical_reason_code(
-            price=price,
-            candle_time=candle_time,
-            freshness_seconds=freshness_seconds,
-        ),
+        canonical_reason_code=canonical_reason_code,
         has_baseline=has_baseline,
+        baseline_reason_code=baseline_reason_code,
         level_ready=level_ready,
+        level_reason_code=level_reason_code,
         atr14=atr14,
         nearest_level=nearest_level,
     )
@@ -92,19 +142,37 @@ def build_live_strategy(
     thresholds = event_thresholds(atr14)
     touch_threshold = thresholds["touch_threshold"]
     approach_threshold = thresholds["approach_threshold"]
-    market_status = "available" if canonical_ready else ("stale" if price is not None else "unavailable")
+    market_status = "available" if canonical_ready else (
+        "stale" if price is not None and canonical_5m_gate.get("status") == "stale" else "unavailable"
+    )
     data_ready = canonical_ready
-    source_refs = _source_refs(baseline, market, market_15m, options_decision, quote)
-    latest_price_event = (
+    source_refs = _source_refs(baseline_summary, market, market_15m, options_decision, quote)
+    has_directional_inputs = canonical_ready and has_baseline and cme_gate.get("ready") is True and utc_scope_gate.get("ready") is True
+    candidate_price_event = (
         detect_latest_price_event(
-            candles_5m=[item for item in market.get("candles") or [] if isinstance(item, Mapping)],
+            candles_5m=canonical_5m_rows[-15:],
             candles_15m=[item for item in market_15m.get("candles") or [] if isinstance(item, Mapping)],
             key_levels=levels,
             atr14=atr14,
             source_refs=source_refs,
         )
-        if canonical_ready
+        if has_directional_inputs
         else None
+    )
+    price_event_gate_reason = None
+    latest_price_event = candidate_price_event
+    if (
+        candidate_price_event
+        and candidate_price_event.get("event_type") in _CONFIRMED_PRICE_EVENTS
+        and canonical_15m_gate.get("ready") is not True
+    ):
+        price_event_gate_reason = canonical_15m_gate.get("reason_code") or "canonical_15m_unavailable"
+        latest_price_event = None
+        warnings.append(price_event_gate_reason)
+    directional_gate_reasons = _directional_gate_reasons(
+        cme_gate=cme_gate,
+        utc_scope_gate=utc_scope_gate,
+        price_event_gate_reason=price_event_gate_reason,
     )
     risk_plan = build_risk_plan(
         price=price,
@@ -114,14 +182,23 @@ def build_live_strategy(
         bid=quote.get("bid"),
         ask=quote.get("ask"),
         data_ready=canonical_ready,
-        prerequisites_ready=has_baseline and level_ready and atr14 is not None,
+        prerequisites_ready=level_ready and atr14 is not None,
+        allowed_directions=(authorized_direction,) if authorized_direction else (),
+        restricted_direction_reason=("gold_direction_mismatch" if authorized_direction else "gold_direction_authority_unavailable"),
     )
+    if not level_ready and nearest_level is not None:
+        risk_plan = _apply_level_gate_to_risk_plan(
+            risk_plan,
+            reason_code=level_reason_code or "live_input_gate_blocked",
+        )
     event_overlay = build_event_overlay(event_observation)
     strategy_status, update_reason = _event_state(
         base_status=base_strategy_status,
         base_reason=base_update_reason,
         canonical_ready=canonical_ready,
         has_baseline=has_baseline,
+        authorized_direction=authorized_direction,
+        input_gate_reasons=directional_gate_reasons,
         level_ready=level_ready,
         atr14=atr14,
         event=latest_price_event,
@@ -130,15 +207,39 @@ def build_live_strategy(
     feasibility_reasons = _feasibility_reasons(
         data_ready=data_ready,
         has_baseline=has_baseline,
+        baseline_reason_code=baseline_reason_code,
+        input_gate_reasons=directional_gate_reasons,
+        canonical_5m_gate=canonical_5m_gate,
+        canonical_15m_gate=canonical_15m_gate,
         level_ready=level_ready,
+        level_reason_code=level_reason_code,
         atr14=atr14,
         setups=risk_plan["setups"],
     )
     input_fingerprint = {
         "ruleset": "live_strategy.rules.v2",
         "asset": normalized_asset,
-        "baseline_strategy_id": baseline_summary["strategy_card_id"],
-        "baseline_version": baseline_summary["version"],
+        "effective_strategy_as_of": _iso(effective_strategy_as_of),
+        "input_gates": _semantic_input_gates(input_gates),
+        "price_event_gate_reason": price_event_gate_reason,
+        "gold_baseline": {
+            key: gold_authority.get(key)
+            for key in (
+                "status",
+                "reason_code",
+                "direction",
+                "receipt_id",
+                "result_id",
+                "feature_snapshot_id",
+                "state_id",
+                "transition_decision_hash",
+                "strategy_id",
+                "consistency_decision_id",
+                "gold_head_held",
+                "lineage_verified",
+            )
+        },
+        "premarket_context_strategy_card_id": premarket_context["strategy_card_id"],
         "canonical_candle": {
             "time": latest_candle.get("time") if latest_candle else None,
             "close": price,
@@ -159,7 +260,7 @@ def build_live_strategy(
     }
     strategy_id = f"live-strategy-{_stable_digest(input_fingerprint)[:16]}"
 
-    artifact_refs = _artifact_refs(baseline, market, options_decision, quote)
+    artifact_refs = _artifact_refs(baseline_summary, market, options_decision, quote)
     baseline_date = baseline_summary.get("trade_date")
     options_date = _nested(options_decision, "meta", "current_trade_date")
     if baseline_date and options_date and baseline_date != options_date:
@@ -184,6 +285,7 @@ def build_live_strategy(
             "provider": market.get("provider") or "unavailable",
             "timestamps": {
                 "canonical": latest_candle.get("time") if latest_candle else None,
+                "canonical_closed_at": _iso(candle_closed_at),
                 "quote_cache": quote.get("timestamp"),
             },
             "freshness_seconds": freshness_seconds,
@@ -203,13 +305,13 @@ def build_live_strategy(
             "break_buffer": thresholds["break_buffer"],
             "retest_threshold": thresholds["retest_threshold"],
             "latest_price_event": latest_price_event,
-            "confirmation_15m": _confirmation_15m(market_15m, latest_price_event),
+            "confirmation_15m": _confirmation_15m(market_15m, latest_price_event, gate=canonical_15m_gate),
         },
         cme_positioning=cme_positioning,
         feasibility={
             "data_ready": data_ready,
             "level_ready": level_ready,
-            "trigger_ready": latest_price_event is not None and latest_price_event.get("confirmed") is True,
+            "trigger_ready": any(setup.get("status") == "triggered" for setup in risk_plan["setups"]),
             "risk_ready": any(setup.get("reference_level") is not None for setup in risk_plan["setups"]),
             "rr_ready": any(setup.get("gate", {}).get("passed") is True for setup in risk_plan["setups"]),
             "execution_ready": False,
@@ -222,9 +324,26 @@ def build_live_strategy(
         source_refs=source_refs,
         artifact_refs=artifact_refs,
         data_quality={
+            "gold_baseline": {
+                key: gold_authority.get(key)
+                for key in (
+                    "status",
+                    "reason_code",
+                    "direction",
+                    "quality_status",
+                    "strategy_decision_as_of",
+                    "gold_head_held",
+                    "authority_ready",
+                    "lineage_verified",
+                    "receipt_id",
+                    "strategy_id",
+                )
+            },
             "canonical_candle": {
+                **canonical_5m_gate,
                 "status": market_status,
                 "timestamp": latest_candle.get("time") if latest_candle else None,
+                "closed_at": _iso(candle_closed_at),
                 "freshness_seconds": freshness_seconds,
                 "provider": market.get("provider") or "unavailable",
             },
@@ -234,9 +353,11 @@ def build_live_strategy(
                 "freshness_seconds": quote["freshness_seconds"],
             },
             "canonical_15m": {
-                "status": "available" if _latest_candle(market_15m) else "unavailable",
+                **canonical_15m_gate,
                 "timestamp": _latest_candle(market_15m).get("time") if _latest_candle(market_15m) else None,
             },
+            "input_gates": input_gates,
+            "effective_strategy_as_of": _iso(effective_strategy_as_of),
             "baseline_trade_date": baseline_date,
             "options_trade_date": options_date,
             "baseline_options_same_trade_date": baseline_date == options_date if baseline_date and options_date else None,
@@ -251,7 +372,9 @@ def _state(
     canonical_ready: bool,
     canonical_reason_code: str | None,
     has_baseline: bool,
+    baseline_reason_code: str | None,
     level_ready: bool,
+    level_reason_code: str | None,
     atr14: float | None,
     nearest_level: dict[str, Any] | None,
 ) -> tuple[str, dict[str, Any]]:
@@ -263,14 +386,14 @@ def _state(
         }
     if not has_baseline:
         return "WAITING", {
-            "reason_code": "baseline_unavailable",
-            "message": "A baseline StrategyCard is required before live monitoring can proceed.",
+            "reason_code": baseline_reason_code or "gold_direction_authority_unavailable",
+            "message": "A verified directional Gold daily-close baseline is required before live monitoring can proceed.",
             "related_level": None,
         }
     if not level_ready:
         return "WAITING", {
-            "reason_code": "option_key_levels_unavailable",
-            "message": "Options decision key levels are unavailable.",
+            "reason_code": level_reason_code or "option_key_levels_unavailable",
+            "message": "Live key-level input is blocked by a deterministic input gate.",
             "related_level": None,
         }
     if atr14 is None:
@@ -305,6 +428,8 @@ def _event_state(
     base_reason: dict[str, Any],
     canonical_ready: bool,
     has_baseline: bool,
+    authorized_direction: str | None,
+    input_gate_reasons: list[str],
     level_ready: bool,
     atr14: float | None,
     event: Mapping[str, Any] | None,
@@ -313,8 +438,20 @@ def _event_state(
     """Apply 63-B event/risk transitions without bypassing data prerequisites."""
     if not canonical_ready or not has_baseline or not level_ready or atr14 is None:
         return base_status, base_reason
+    if input_gate_reasons:
+        return "WAITING", {
+            "reason_code": input_gate_reasons[0],
+            "message": "Live directional inputs are blocked by a deterministic input gate.",
+            "related_level": None,
+        }
     if not event:
         return base_status, base_reason
+    if not _event_matches_direction(event, authorized_direction):
+        return "WAITING", {
+            "reason_code": "gold_direction_mismatch",
+            "message": "Canonical price event conflicts with the verified Gold daily-close direction.",
+            "related_level": event.get("related_level"),
+        }
     event_type = str(event.get("event_type"))
     matching = [item for item in setups if item.get("status") in {"triggered", "blocked_rr"}]
     if event.get("confirmed") is True and any(item.get("status") == "triggered" for item in matching):
@@ -328,6 +465,116 @@ def _event_state(
     return base_status, base_reason
 
 
+def _event_matches_direction(event: Mapping[str, Any], direction: str | None) -> bool:
+    if direction not in {"long", "short"}:
+        return False
+    event_type = event.get("event_type")
+    event_direction = event.get("direction")
+    if event_type == "failed_break":
+        return (event_direction == "below") if direction == "long" else (event_direction == "above")
+    return (event_direction == "above") if direction == "long" else (event_direction == "below")
+
+
+def _directional_gate_reasons(
+    *,
+    cme_gate: Mapping[str, Any],
+    utc_scope_gate: Mapping[str, Any],
+    price_event_gate_reason: str | None,
+) -> list[str]:
+    reasons: list[str] = []
+    for gate in (cme_gate, utc_scope_gate):
+        for reason in gate.get("reasons", []):
+            if isinstance(reason, str) and reason not in reasons:
+                reasons.append(reason)
+    if price_event_gate_reason and price_event_gate_reason not in reasons:
+        reasons.append(price_event_gate_reason)
+    return reasons
+
+
+def _level_gate_reasons(
+    *,
+    cme_gate: Mapping[str, Any],
+    utc_scope_gate: Mapping[str, Any],
+) -> list[str]:
+    return _directional_gate_reasons(
+        cme_gate=cme_gate,
+        utc_scope_gate=utc_scope_gate,
+        price_event_gate_reason=None,
+    )
+
+
+def _semantic_input_gates(gates: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Keep qualification identity stable while ages remain display-only."""
+    fields = {
+        "canonical_5m": (
+            "ready",
+            "status",
+            "reason_code",
+            "timestamp",
+            "closed_at",
+            "expected_closed_at",
+        ),
+        "canonical_15m": (
+            "ready",
+            "status",
+            "reason_code",
+            "timestamp",
+            "closed_at",
+            "expected_closed_at",
+        ),
+        "cme": (
+            "ready",
+            "status",
+            "reason_code",
+            "reasons",
+            "options_status",
+            "source_status",
+            "trade_date",
+            "expected_trade_date",
+        ),
+        "utc_scope": (
+            "ready",
+            "status",
+            "reason_code",
+            "reasons",
+            "effective_trade_date",
+            "cme_trade_date",
+            "canonical_5m_trade_date",
+        ),
+    }
+    return {
+        name: {key: dict(gates.get(name) or {}).get(key) for key in keys}
+        for name, keys in fields.items()
+    }
+
+
+def _apply_level_gate_to_risk_plan(
+    risk_plan: Mapping[str, Any],
+    *,
+    reason_code: str,
+) -> dict[str, Any]:
+    """Reflect the level gate in child setup fields without changing risk_plan."""
+    setups: list[dict[str, Any]] = []
+    for setup in risk_plan.get("setups", []):
+        item = dict(setup)
+        gate = dict(item.get("gate") or {})
+        gate["passed"] = False
+        gate["reasons"] = [reason_code]
+        item["gate"] = gate
+        setups.append(item)
+    no_trade = dict(risk_plan.get("no_trade") or {})
+    no_trade["reasons"] = [reason_code]
+    waiting = list(no_trade.get("waiting_conditions") or [])
+    if "live_input_gate_required" not in waiting:
+        waiting.append("live_input_gate_required")
+    no_trade["waiting_conditions"] = waiting
+    return {
+        "setups": setups,
+        "active_scenario": None,
+        "no_trade": no_trade,
+    }
+
+
 def _event_reason(event: Mapping[str, Any], reason_code: str) -> dict[str, Any]:
     return {
         "reason_code": reason_code,
@@ -336,16 +583,23 @@ def _event_reason(event: Mapping[str, Any], reason_code: str) -> dict[str, Any]:
     }
 
 
-def _confirmation_15m(market: Mapping[str, Any], event: Mapping[str, Any] | None) -> dict[str, Any]:
+def _confirmation_15m(
+    market: Mapping[str, Any],
+    event: Mapping[str, Any] | None,
+    *,
+    gate: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     latest = _latest_candle(market)
+    gate_ready = gate is None or gate.get("ready") is True
     return {
-        "confirmed": event is not None and event.get("event_type") == "accepted_break" and event.get("confirmed") is True,
-        "close": _number_or_none(latest.get("close")) if latest and latest.get("partial") is not True else None,
+        "confirmed": gate_ready and event is not None and event.get("event_type") == "accepted_break" and event.get("confirmed") is True,
+        "close": _number_or_none(latest.get("close")) if gate_ready and latest and latest.get("partial") is not True else None,
         "timestamp": latest.get("time") if latest else None,
     }
 
 
-def _baseline_summary(baseline: Mapping[str, Any] | None) -> dict[str, Any]:
+def _premarket_context_summary(baseline: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Project the legacy StrategyCard as supplemental, never directional authority."""
     raw = dict(baseline or {})
     card = raw.get("json") if isinstance(raw.get("json"), Mapping) else {}
     strategy_card_id = raw.get("strategy_card_id") or raw.get("run_id")
@@ -363,6 +617,106 @@ def _baseline_summary(baseline: Mapping[str, Any] | None) -> dict[str, Any]:
         "source_refs": list(raw.get("source_refs") or []),
         "artifact_refs": list(raw.get("artifact_refs") or raw.get("paths", {}).values()),
     }
+
+
+def _gold_baseline_summary(
+    gold_baseline: Mapping[str, Any] | None,
+    premarket_context: Mapping[str, Any],
+    *,
+    current_time: datetime,
+) -> dict[str, Any]:
+    """Normalize the verified Gold adapter response into the stable baseline view."""
+    authority = dict(gold_baseline or {})
+    raw_direction = authority.get("direction")
+    direction = raw_direction if isinstance(raw_direction, str) and raw_direction in {"long", "short"} else "none"
+    authority_ready = _gold_authority_ready(authority, direction=direction, current_time=current_time)
+    authority.setdefault("status", "unavailable")
+    authority.setdefault("reason_code", "gold_direction_authority_unavailable")
+    if not authority_ready:
+        direction = "none"
+        status = authority.get("status")
+        if not isinstance(status, str) or status not in {"unavailable", "invalid"}:
+            authority["status"] = "invalid"
+            authority["reason_code"] = "gold_direction_authority_invalid"
+    authority["direction"] = direction
+    authority["authority_ready"] = authority_ready
+    decision_as_of = authority.get("decision_as_of")
+    effective_strategy_as_of = authority.get("strategy_decision_as_of")
+    return {
+        "strategy_card_id": authority.get("strategy_id"),
+        "asset": authority.get("asset") or "XAUUSD",
+        "trade_date": _trade_date(effective_strategy_as_of),
+        "run_id": authority.get("result_id"),
+        "snapshot_id": authority.get("feature_snapshot_id"),
+        "version": authority.get("strategy_policy_version"),
+        "bias": {"long": "bullish", "short": "bearish"}.get(direction, "unavailable"),
+        "confidence": _number_or_none(authority.get("confidence")),
+        "market_regime": authority.get("market_regime") or "unavailable",
+        "updated_at": effective_strategy_as_of or decision_as_of,
+        "effective_strategy_as_of": effective_strategy_as_of,
+        "source_refs": [dict(item) for item in authority.get("source_refs") or [] if isinstance(item, Mapping)],
+        "artifact_refs": list(authority.get("artifact_refs") or []),
+        "authority": authority,
+        "premarket_context": dict(premarket_context),
+    }
+
+
+def _trade_date(value: Any) -> str | None:
+    timestamp = _timestamp_utc(value)
+    return timestamp.date().isoformat() if timestamp else None
+
+
+def _gold_authority_ready(
+    authority: Mapping[str, Any],
+    *,
+    direction: str,
+    current_time: datetime,
+) -> bool:
+    decision_as_of = _timestamp_utc(authority.get("decision_as_of"))
+    strategy_decision_as_of = _timestamp_utc(authority.get("strategy_decision_as_of"))
+    state_as_of = _timestamp_utc(authority.get("state_as_of"))
+    status = authority.get("status")
+    asset = authority.get("asset")
+    scope = authority.get("scope")
+    quality_status = authority.get("quality_status")
+    strategy_status = authority.get("strategy_status")
+    expected_statuses = {
+        "long": {"LONG_WATCH", "LONG_RESEARCH_TRIGGERED"},
+        "short": {"SHORT_WATCH", "SHORT_RESEARCH_TRIGGERED"},
+    }
+    return (
+        isinstance(direction, str)
+        and isinstance(status, str)
+        and isinstance(asset, str)
+        and isinstance(scope, str)
+        and isinstance(quality_status, str)
+        and isinstance(strategy_status, str)
+        and authority.get("authority_ready") is True
+        and authority.get("lineage_verified") is True
+        and status in {"accepted", "held"}
+        and asset == "XAUUSD"
+        and scope == "daily_close"
+        and quality_status == "accepted"
+        and strategy_status in expected_statuses.get(direction, set())
+        and decision_as_of is not None
+        and strategy_decision_as_of is not None
+        and state_as_of is not None
+        and decision_as_of <= current_time
+        and strategy_decision_as_of <= current_time
+        and state_as_of <= current_time
+        and authority.get("is_trade_instruction") is False
+        and _gold_authority_identity_is_well_formed(authority)
+    )
+
+
+def _gold_authority_identity_is_well_formed(authority: Mapping[str, Any]) -> bool:
+    for key, pattern in _GOLD_ID_PATTERNS.items():
+        value = authority.get(key)
+        if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
+            return False
+    strategy_id = str(authority["strategy_id"])
+    strategy_version = strategy_id.split(":", 1)[0].removeprefix("strategy_decision.")
+    return authority.get("strategy_policy_version") == f"gold_strategy_policy.{strategy_version}"
 
 
 def _latest_candle(market: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -509,6 +863,9 @@ def _source_refs(
     trace_15m = market_15m.get("source_trace") if isinstance(market_15m.get("source_trace"), Mapping) else {}
     refs.append({"name": "canonical_xauusd_15m", "source_ref": trace_15m.get("primary_source"), "status": "ok" if market_15m.get("candles") else "unavailable"})
     refs.extend(item for item in (baseline or {}).get("source_refs") or [] if isinstance(item, Mapping))
+    premarket_context = (baseline or {}).get("premarket_context")
+    if isinstance(premarket_context, Mapping):
+        refs.extend(item for item in premarket_context.get("source_refs") or [] if isinstance(item, Mapping))
     refs.extend(item for item in (options_decision or {}).get("source_refs") or [] if isinstance(item, Mapping))
     if quote.get("status") == "fresh":
         refs.append({"name": "jin10_quote_cache", "source_ref": quote.get("artifact_ref"), "status": "supplemental"})
@@ -523,6 +880,9 @@ def _artifact_refs(
 ) -> list[Any]:
     refs: list[Any] = []
     refs.extend((baseline or {}).get("artifact_refs") or (baseline or {}).get("paths", {}).values())
+    premarket_context = (baseline or {}).get("premarket_context")
+    if isinstance(premarket_context, Mapping):
+        refs.extend(premarket_context.get("artifact_refs") or premarket_context.get("paths", {}).values())
     refs.extend((options_decision or {}).get("artifact_refs") or [])
     trace = market.get("source_trace") if isinstance(market.get("source_trace"), Mapping) else {}
     if trace.get("latest_raw_path"):
@@ -536,29 +896,61 @@ def _feasibility_reasons(
     *,
     data_ready: bool,
     has_baseline: bool,
+    baseline_reason_code: str | None,
+    input_gate_reasons: list[str],
+    canonical_5m_gate: Mapping[str, Any],
+    canonical_15m_gate: Mapping[str, Any],
     level_ready: bool,
+    level_reason_code: str | None,
     atr14: float | None,
     setups: list[Mapping[str, Any]],
 ) -> dict[str, list[str]]:
-    data_reasons: list[str] = [] if data_ready else ["canonical_xauusd_5m_unavailable_or_stale"]
+    data_reasons: list[str] = []
+    if not data_ready:
+        data_reasons.append(canonical_5m_gate.get("reason_code") or "canonical_xauusd_5m_unavailable_or_stale")
+    for reason in input_gate_reasons:
+        if reason not in data_reasons:
+            data_reasons.append(reason)
     level_reasons: list[str] = []
     if not level_ready:
-        level_reasons.append("options_key_levels_unavailable")
+        level_reasons.append(level_reason_code or "options_key_levels_unavailable")
     trigger_reasons: list[str] = []
     if atr14 is None:
         trigger_reasons.append("atr14_unavailable")
     if not any(item.get("status") in {"armed", "triggered", "blocked_rr"} for item in setups):
         trigger_reasons.append("no_directional_price_event")
+    if canonical_15m_gate.get("ready") is not True:
+        confirmation_reason = canonical_15m_gate.get("reason_code") or "canonical_15m_unavailable"
+        if confirmation_reason not in trigger_reasons:
+            trigger_reasons.append(confirmation_reason)
+    for reason in input_gate_reasons:
+        if reason not in trigger_reasons:
+            trigger_reasons.append(reason)
     risk_reasons = ["reference_level_unavailable"] if not any(item.get("reference_level") is not None for item in setups) else []
     rr_reasons = ["risk_reward_insufficient"] if not any(item.get("gate", {}).get("passed") is True for item in setups) else []
     return {
         "data_ready": data_reasons,
         "level_ready": level_reasons,
-        "baseline": [] if has_baseline else ["baseline_strategy_card_unavailable"],
+        "baseline": [] if has_baseline else [baseline_reason_code or "gold_direction_authority_unavailable"],
         "trigger_ready": trigger_reasons,
         "risk_ready": risk_reasons,
         "rr_ready": rr_reasons,
         "execution_ready": ["execution_intentionally_not_supported"],
+        "input_gates": _unique(
+            [
+                *input_gate_reasons,
+                *(
+                    [canonical_5m_gate.get("reason_code")]
+                    if not data_ready and canonical_5m_gate.get("reason_code")
+                    else []
+                ),
+                *(
+                    [canonical_15m_gate.get("reason_code")]
+                    if canonical_15m_gate.get("ready") is not True and canonical_15m_gate.get("reason_code")
+                    else []
+                ),
+            ]
+        ),
     }
 
 
@@ -568,21 +960,6 @@ def _response_status(*, canonical_present: bool, canonical_ready: bool, has_base
     if canonical_ready and has_baseline and level_ready and atr14 is not None:
         return "available"
     return "partial"
-
-
-def _canonical_reason_code(
-    *,
-    price: float | None,
-    candle_time: datetime | None,
-    freshness_seconds: int | None,
-) -> str | None:
-    if price is None or candle_time is None or freshness_seconds is None:
-        return "canonical_candle_unavailable"
-    if freshness_seconds < -CLOCK_SKEW_TOLERANCE_SECONDS:
-        return "canonical_candle_future"
-    if freshness_seconds > CANONICAL_FRESHNESS_SECONDS:
-        return "canonical_candle_stale"
-    return None
 
 
 def _touch_threshold(atr14: float | None) -> float | None:
@@ -611,6 +988,19 @@ def _as_utc(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _timestamp_utc(value: Any) -> datetime | None:
+    """Parse a formal timestamp only when an explicit timezone is present."""
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else None
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else None
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
@@ -619,9 +1009,10 @@ def _number_or_none(value: Any) -> float | None:
     if value in (None, "") or isinstance(value, bool):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _nested(payload: Mapping[str, Any] | None, *keys: str) -> Any:
