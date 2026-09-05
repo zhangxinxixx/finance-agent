@@ -37,6 +37,12 @@ def build_dispatch_plan(
                 "input_refs": [],
             }
         )
+    gold_actions = [
+        item
+        for item in processing_plan.get("gold_processing_actions", [])
+        if isinstance(item, dict)
+    ]
+    requests.extend(_gold_action_requests(gold_actions))
     counts = {
         status: sum(1 for request in requests if request["status"] == status)
         for status in ("ready", "planned", "waiting", "skipped", "manual_required", "unsupported")
@@ -51,6 +57,7 @@ def build_dispatch_plan(
         "requests": requests,
         "summary": {**counts, "request_count": len(requests)},
         "blocked_steps": _compact_blocked_steps(processing_plan.get("blocked_steps") or []),
+        "gold_gap_actions": gold_actions,
     }
 
 
@@ -99,6 +106,56 @@ def _collection_request(
 
 def _request_id(trade_date: str, hour: str, source_key: str, task_key: str) -> str:
     return f"data-control:{trade_date}:{hour}:{source_key}:{task_key}"
+
+
+def _gold_action_requests(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project Gold suggestions into review requests without worker execution."""
+
+    requests: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for action in actions:
+        request_id = str(action.get("request_id") or "")
+        if not request_id or request_id in seen:
+            continue
+        seen.add(request_id)
+        status = "unsupported" if str(action.get("status") or "").strip().lower() == "unsupported" else "manual_required"
+        steps = action.get("task_keys") or action.get("steps") or []
+        if not isinstance(steps, list):
+            steps = list(steps) if isinstance(steps, tuple) else []
+        task_keys = [str(step) for step in steps if str(step).strip()]
+        lineage = action.get("lineage")
+        lineage_refs = lineage.get("source_refs") if isinstance(lineage, dict) else []
+        refs = action.get("input_refs") or action.get("source_refs") or lineage_refs or []
+        if not isinstance(refs, list):
+            refs = list(refs) if isinstance(refs, tuple) else []
+        projected_action = dict(action)
+        projected_action.update(
+            {
+                "status": status,
+                "dispatchable": False,
+                "auto_execute": False,
+            }
+        )
+        requests.append(
+            {
+                "request_id": request_id,
+                "owner": "manual_review",
+                "dispatch_mode": "manual_review",
+                "status": status,
+                "task_key": task_keys[0] if task_keys else None,
+                "task_keys": task_keys,
+                "source_key": "gold_processing",
+                "action": action.get("action") or "diagnose",
+                "reason_code": action.get("reason_code"),
+                "action_reason_code": action.get("action_reason_code"),
+                "input_refs": [ref for ref in refs if isinstance(ref, dict)],
+                "required_for": action.get("gap_labels") or [],
+                "dispatchable": False,
+                "auto_execute": False,
+                "gold_gap_action": projected_action,
+            }
+        )
+    return requests
 
 
 def _dispatch_status(

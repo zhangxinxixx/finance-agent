@@ -12,6 +12,7 @@ import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { ReportAnalysisInputsPanel } from "@/components/reports/ReportAnalysisInputsPanel";
 import { ReportMarketOddsMatrix } from "@/components/reports/ReportMarketOddsMatrix";
 import { ReportArtifactPanel } from "@/components/reports/ReportArtifactPanel";
+import { ResultIdentityBar } from "@/components/shared/ResultIdentityBar";
 import { shortId } from "@/components/reports/reportDetailMeta";
 import { useReportDetail } from "@/hooks/useReportDetail";
 import type { ReportDetailTabKey } from "@/types/reports";
@@ -122,6 +123,12 @@ export function ReportDetailPage() {
           activeTab={activeTab}
           onTabChange={setActiveTab}
           summaryChips={summaryChips}
+        />
+
+        <ResultIdentityBar
+          identity={data.result_identity}
+          subjectLabel="报告自身"
+          baselineLabel="当前有效 Gold 基线"
         />
 
         {!qualityBlocked ? <ReportGoldMacroOverviewCard data={data} /> : null}

@@ -198,6 +198,95 @@ def _completed_analysis_snapshot() -> dict[str, object]:
     }
 
 
+def _formal_market_observation(
+    *,
+    series_id: str,
+    asset: str,
+    market_role: str,
+    timeframe: str,
+    value: float,
+    reference: str,
+) -> dict[str, object]:
+    return {
+        "series_id": series_id,
+        "asset": asset,
+        "market_role": market_role,
+        "timeframe": timeframe,
+        "value": value,
+        "open": value - 1.0,
+        "high": value + 1.0,
+        "low": value - 2.0,
+        "close": value,
+        "bar_open_time": "2026-07-20T04:50:00+00:00",
+        "bar_close_time": "2026-07-21T04:50:00+00:00",
+        "expected_frequency": timeframe,
+        "freshness_status": "fresh",
+        "quality_status": "accepted",
+        "alignment_status": "aligned",
+        "source_refs": [
+            {
+                "source": "formal_market",
+                "reference": reference,
+                "retrieved_at": "2026-07-21T04:51:00+00:00",
+                "qualification_reason": "formal_test_source",
+                "normalized_role": market_role,
+            }
+        ],
+    }
+
+
+def _with_formal_market_prices_and_oil(snapshot: dict[str, object]) -> dict[str, object]:
+    snapshot["market_prices"] = {
+        "status": "available",
+        "data": {
+            "schema_version": "market_price_snapshot.v1",
+            "as_of": "2026-07-21T04:54:22+00:00",
+            "readiness": "ready",
+            "xauusd_spot": _formal_market_observation(
+                series_id="XAUUSD_SPOT",
+                asset="XAUUSD",
+                market_role="spot",
+                timeframe="5m",
+                value=4045.9,
+                reference="formal://XAUUSD_SPOT",
+            ),
+            "gc_futures": _formal_market_observation(
+                series_id="GC_FUTURES",
+                asset="GC",
+                market_role="futures",
+                timeframe="1d",
+                value=4050.0,
+                reference="formal://GC_FUTURES",
+            ),
+        },
+    }
+    snapshot["oil"] = {
+        "status": "available",
+        "data": {
+            "schema_version": "oil_snapshot.v1",
+            "as_of": "2026-07-21T04:54:22+00:00",
+            "readiness": "ready",
+            "wti": _formal_market_observation(
+                series_id="WTI",
+                asset="WTI",
+                market_role="oil",
+                timeframe="1d",
+                value=74.0,
+                reference="formal://WTI",
+            ),
+            "brent": _formal_market_observation(
+                series_id="BRENT",
+                asset="BRENT",
+                market_role="oil",
+                timeframe="1d",
+                value=77.0,
+                reference="formal://BRENT",
+            ),
+        },
+    }
+    return snapshot
+
+
 def test_completed_snapshot_rebuilds_p0_health_from_unified_evidence() -> None:
     snapshot = _completed_analysis_snapshot()
 
@@ -229,3 +318,56 @@ def test_completed_snapshot_keeps_missing_price_fail_closed_without_lineage_ref(
 
     assert "xauusd_price" in health["p0_missing"]
     assert "global P0 source unavailable: xauusd_price" in health["blocking_reasons"]
+
+
+def test_completed_snapshot_uses_formal_price_and_oil_when_legacy_rows_are_absent() -> None:
+    snapshot = _with_formal_market_prices_and_oil(_completed_analysis_snapshot())
+    snapshot["technical"] = {"status": "unavailable"}
+    snapshot["source_refs"] = [
+        ref
+        for ref in snapshot["source_refs"]
+        if not (
+            isinstance(ref, dict)
+            and (
+                ref.get("symbol") == "XAUUSD"
+                or str(ref.get("method") or "").upper() == "GET_QUOTE:USOIL"
+            )
+        )
+    ]
+
+    statuses = source_statuses_from_analysis_snapshot(snapshot)
+    health = build_gold_v3_source_health(
+        statuses,
+        as_of=str(snapshot["snapshot_time"]),
+    ).to_dict()
+
+    assert health["p0_missing"] == ["technical_levels"]
+    assert health["source_freshness"]["xauusd_price"]["source_ref"] == "formal://XAUUSD_SPOT"
+    assert health["source_freshness"]["brent_wti"]["source_ref"] == "formal://BRENT"
+
+
+def test_completed_snapshot_keeps_legacy_price_and_oil_rows_when_present() -> None:
+    snapshot = _with_formal_market_prices_and_oil(_completed_analysis_snapshot())
+
+    statuses = source_statuses_from_analysis_snapshot(snapshot)
+    health = build_gold_v3_source_health(
+        statuses,
+        as_of=str(snapshot["snapshot_time"]),
+    ).to_dict()
+
+    assert health["source_freshness"]["xauusd_price"]["source_ref"] == "raw/technical/XAUUSD.json"
+    assert health["source_freshness"]["brent_wti"]["source_ref"] == "raw/USOIL.json"
+
+
+def test_completed_snapshot_rejects_malformed_formal_price_and_oil() -> None:
+    snapshot = _with_formal_market_prices_and_oil(_completed_analysis_snapshot())
+    snapshot["technical"] = {"status": "unavailable"}
+    snapshot["source_refs"] = []
+    snapshot["market_prices"]["data"]["schema_version"] = "market_price_snapshot.v0"
+    snapshot["oil"]["data"]["schema_version"] = "oil_snapshot.v0"
+
+    statuses = source_statuses_from_analysis_snapshot(snapshot)
+    source_keys = {row["source_key"] for row in statuses}
+
+    assert "xauusd_price" not in source_keys
+    assert "brent_wti" not in source_keys

@@ -275,11 +275,17 @@ class DailyCloseBundleVerification(_FrozenContract):
     bundle_path: Path
     receipt: DailyCloseCanonicalReceipt | None = None
     head: DailyCloseCanonicalHead | None = None
+    current_feature_id: str | None = Field(
+        default=None,
+        pattern=r"^feature_snapshot\.v[12]:[0-9a-f]{64}$",
+    )
 
     @model_validator(mode="after")
     def _verification_shape(self) -> "DailyCloseBundleVerification":
-        if (self.status == "valid") != (self.receipt is not None):
-            raise ValueError("only valid verification may contain a receipt")
+        if self.status == "valid" and (self.receipt is None or self.current_feature_id is None):
+            raise ValueError("valid verification must contain a receipt and current feature identity")
+        if self.status == "invalid" and (self.receipt is not None or self.current_feature_id is not None):
+            raise ValueError("only valid verification may contain verified bundle identities")
         return self
 
 
@@ -434,6 +440,7 @@ def verify_gold_daily_close_bundle(
         bundle_path=resolved,
         receipt=verified.receipt,
         head=verified.head,
+        current_feature_id=verified.result.current_feature_id,
     )
 
 

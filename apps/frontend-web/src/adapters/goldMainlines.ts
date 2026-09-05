@@ -1,7 +1,9 @@
 import { fetchJson } from "@/adapters/apiClient";
+import { normalizeResultIdentity } from "@/adapters/resultIdentity";
 import { GOLD_MAINLINE_IDS, GOLD_TRANSMISSION_PATH_IDS } from "@/generated/gold-contract";
 import type { ArtifactRef } from "@/types/artifact";
 import type { SourceRef } from "@/types/common";
+import type { ResultIdentity } from "@/types/result-identity";
 import type { ProcessingStageStatus, ProcessingTrace, ProcessingTraceEntityType } from "@/types/processing-monitor";
 import type {
   AnalysisReadiness,
@@ -92,6 +94,7 @@ export interface GoldMainlinesResponse {
   gold_mainlines: GoldMainlinesViewModel;
   source_refs: SourceRef[];
   warnings: string[];
+  result_identity: ResultIdentity | null;
 }
 
 interface RawGoldMainlinesResponse {
@@ -105,6 +108,7 @@ interface RawGoldMainlinesResponse {
   gold_mainlines?: unknown;
   source_refs?: SourceRef[];
   warnings?: string[];
+  result_identity?: unknown;
 }
 
 type RawRecord = Record<string, unknown>;
@@ -441,6 +445,7 @@ function normalizeGoldMainlinesResponse(raw: RawGoldMainlinesResponse): GoldMain
     gold_mainlines: normalizeGoldMainlinesViewModel(raw.gold_mainlines),
     source_refs: normalizeSourceRefs(raw.source_refs),
     warnings: normalizeStringList(raw.warnings),
+    result_identity: normalizeResultIdentity(raw.result_identity),
   };
 }
 

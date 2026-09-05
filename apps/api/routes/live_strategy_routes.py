@@ -7,8 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from apps.analysis.strategy.live_schemas import LiveStrategyOutput
-from apps.api.schemas.strategy import LiveStrategyRecomputePreviewResponse
+from apps.api.schemas.strategy import LiveStrategyLatestResponse, LiveStrategyRecomputePreviewResponse
 from apps.api.services.live_strategy_recompute_service import (
     LiveStrategyRecomputePreviewQueryError,
     preview_live_strategy_recompute,
@@ -25,13 +24,13 @@ from database.models.engine import get_db
 router = APIRouter()
 
 
-@router.get("/api/live-strategy/latest", response_model=LiveStrategyOutput)
+@router.get("/api/live-strategy/latest", response_model=LiveStrategyLatestResponse)
 def api_live_strategy_latest(
     asset: Literal["XAUUSD"] = Query(default="XAUUSD"),
     db: Session = Depends(get_db),
 ):
     """Return the deterministic, read-only XAUUSD live strategy ViewModel."""
-    return get_live_strategy_latest(asset=asset, db=db)
+    return get_live_strategy_latest(asset=asset, db=db, include_result_identity=True)
 
 
 @router.get("/api/live-strategy/history")

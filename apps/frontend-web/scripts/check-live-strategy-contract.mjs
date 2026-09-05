@@ -14,6 +14,9 @@ const scenarios = source("src/components/strategy/LiveStrategyScenarios.tsx");
 const types = source("src/types/live-strategy.ts");
 
 assert.match(types, /schema_version: "live_strategy\.v1"/, "live strategy view model must pin the frozen schema version");
+assert.match(types, /gold_baseline: LiveStrategyGoldBaseline/, "live strategy view model must preserve the backend Gold baseline authority summary");
+assert.match(types, /export function hasVerifiedGoldBaseline/, "live strategy view model must expose one fail-closed Gold authority display gate");
+assert.match(types, /baseline\.status === "accepted" \|\| baseline\.status === "held"/, "Gold authority display gate must require an accepted or held daily-close head");
 assert.match(adapter, /LIVE_STRATEGY_LATEST_PATH = "\/api\/live-strategy\/latest"/, "adapter must use the stable live strategy endpoint");
 assert.match(adapter, /raw\.schema_version !== "live_strategy\.v1"/, "adapter must reject incompatible live strategy schemas");
 assert.match(adapter, /export async function fetchLiveStrategy/, "adapter must export a dedicated live strategy fetcher");
@@ -36,6 +39,11 @@ assert.match(workspace, /data\.market_state\.level_event/, "workspace must rende
 assert.match(workspace, /data\.market_state\.latest_price_event/, "workspace must render the backend latest price event");
 assert.match(workspace, /data\.market_state\.confirmation_15m/, "workspace must render the backend 15m confirmation");
 assert.match(workspace, /data\.feasibility\[key\]/, "workspace must render backend feasibility flags");
+assert.match(workspace, /Gold 日结基线/, "workspace must show the verified Gold baseline state without inferring a direction");
+assert.match(workspace, /goldBaseline\.reason_code/, "workspace must render the backend Gold baseline fail-closed reason");
+assert.match(workspace, /!goldAuthorityReady/, "workspace must suppress directional display when Gold authority is not verified");
+assert.match(workspace, /hasVerifiedGoldBaseline\(goldBaseline\)/, "workspace must use the shared fail-closed Gold authority display gate");
+assert.match(page, /hasVerifiedGoldBaseline\(liveStrategy\.data\.data_quality\.gold_baseline\)/, "daily scenario cards must require the verified Gold authority display gate");
 assert.match(page, /<LiveStrategyScenarios/, "daily strategy page must retain the read-only strategy scenarios when live data is available");
 assert.match(scenarios, /setup\.entry_zone/, "scenario cards must display backend entry zones");
 assert.match(scenarios, /setup\.stop_reference/, "scenario cards must display backend stops");
@@ -48,6 +56,7 @@ assert.match(types, /stop_reference/, "live strategy view model must retain back
 assert.match(types, /risk_reward/, "live strategy view model must retain backend risk reward");
 assert.match(types, /waiting_conditions/, "live strategy view model must retain backend no-trade waiting conditions");
 assert.match(adapter, /latest_price_event: normalizePriceEvent\(raw\.latest_price_event\)/, "adapter must preserve backend price event");
+assert.match(adapter, /gold_baseline: normalizeGoldBaseline\(quality\.gold_baseline\)/, "adapter must preserve the backend Gold baseline authority summary");
 assert.match(adapter, /evidence: asEvidence\(raw\.evidence\)/, "adapter must preserve structured backend event evidence");
 assert.match(adapter, /setups: Array\.isArray\(raw\.setups\)/, "adapter must preserve backend setups");
 assert.match(adapter, /no_trade: normalizeNoTrade\(raw\.no_trade\)/, "adapter must preserve backend no-trade fields");

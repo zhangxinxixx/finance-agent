@@ -10,6 +10,7 @@ from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from apps.runtime.source_controls import jin10_disabled
 from apps.scheduler.jin10_refresh import (
     refresh_jin10_calendar_cache,
     refresh_jin10_flash_cache,
@@ -97,24 +98,26 @@ def start_jin10_cache_refresh_scheduler() -> BackgroundScheduler:
     """Register periodic refreshes and run the existing eager refreshes asynchronously."""
     scheduler = BackgroundScheduler(daemon=True)
     configured_jobs = _configured_refresh_jobs()
+    jin10_is_disabled = jin10_disabled()
     scheduled_jobs = 0
     refresh_jobs = _refresh_jobs()
-    for task_type, task_name, refresher, minutes, job_id, startup_thread_name in refresh_jobs:
-        if not _job_is_enabled(task_type, configured_jobs):
-            continue
-        scheduler.add_job(
-            partial(record_jin10_refresh, task_type, task_name, refresher),
-            "interval",
-            minutes=minutes,
-            id=job_id,
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-            misfire_grace_time=30,
-        )
-        scheduled_jobs += 1
-        if startup_thread_name is not None:
-            Thread(target=refresher, daemon=True, name=startup_thread_name).start()
+    if not jin10_is_disabled:
+        for task_type, task_name, refresher, minutes, job_id, startup_thread_name in refresh_jobs:
+            if not _job_is_enabled(task_type, configured_jobs):
+                continue
+            scheduler.add_job(
+                partial(record_jin10_refresh, task_type, task_name, refresher),
+                "interval",
+                minutes=minutes,
+                id=job_id,
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=30,
+            )
+            scheduled_jobs += 1
+            if startup_thread_name is not None:
+                Thread(target=refresher, daemon=True, name=startup_thread_name).start()
 
     for task_type, task_name, job_id, cron_kwargs in _twelvedata_jobs():
         if not _twelvedata_dispatch_is_enabled(configured_jobs):

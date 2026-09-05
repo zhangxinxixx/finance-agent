@@ -245,11 +245,22 @@ listening_pid_for_port() {
   ss -ltnp 2>/dev/null | sed -nE "s/.*:${port} .*pid=([0-9]+).*/\\1/p" | head -n 1
 }
 
+jin10_is_disabled_value() {
+  local value="${1:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  case "${value,,}" in
+    1|true|yes|on) return 0 ;;
+  esac
+  return 1
+}
+
 api_has_required_background_refresh() {
   local pid="$1"
   local proc_environ="/proc/$pid/environ"
   local environment
   local configured_jobs
+  local disable_jin10
   local required_job
   [[ -r "$proc_environ" ]] || return 1
 
@@ -258,8 +269,18 @@ api_has_required_background_refresh() {
 
   configured_jobs="$(sed -n 's/^FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS=//p' <<<"$environment" | tail -n 1)"
   configured_jobs="${configured_jobs//[[:space:]]/}"
+  disable_jin10="$(sed -n 's/^FINANCE_AGENT_DISABLE_JIN10=//p' <<<"$environment" | tail -n 1)"
   # An empty value or "*" enables all scheduler jobs.
   if [[ -z "$configured_jobs" || "$configured_jobs" == "*" ]]; then
+    return 0
+  fi
+  if jin10_is_disabled_value "$disable_jin10"; then
+    for required_job in twelvedata_xauusd_dispatch market_candles_daily; do
+      case ",$configured_jobs," in
+        *",$required_job,"*) ;;
+        *) return 1 ;;
+      esac
+    done
     return 0
   fi
   for required_job in jin10_kline twelvedata_xauusd_dispatch market_candles_daily; do
@@ -448,7 +469,15 @@ start_api() {
     export FRONTEND_WEB_URL="${FRONTEND_WEB_URL:-$FRONTEND_URL}"
     export DAGSTER_GRAPHQL_URL="${DAGSTER_GRAPHQL_URL:-$DAGSTER_GRAPHQL_URL_DEFAULT}"
     export FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH="${FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH:-1}"
-    export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS:-jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily}"
+    if [[ -z "${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS+x}" ]]; then
+      if jin10_is_disabled_value "${FINANCE_AGENT_DISABLE_JIN10:-}"; then
+        export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="twelvedata_xauusd_dispatch,market_candles_daily"
+      else
+        export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily"
+      fi
+    else
+      export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS
+    fi
     local -a api_env
     api_env=()
     if [[ -n "${EVENT_FLOW_TRANSLATION_PROVIDER_DEFAULT}" ]]; then

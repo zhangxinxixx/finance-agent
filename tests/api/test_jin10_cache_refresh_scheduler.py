@@ -6,6 +6,8 @@ import pytest
 def test_jin10_cache_refresh_scheduler_preserves_registered_jobs_and_startup_refreshes(monkeypatch) -> None:
     from apps.api.services import jin10_cache_refresh_scheduler as service
 
+    monkeypatch.delenv("FINANCE_AGENT_DISABLE_JIN10", raising=False)
+    monkeypatch.delenv("FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS", raising=False)
     jobs: list[dict[str, object]] = []
     started_threads: list[tuple[str, object]] = []
     recorded: list[tuple[str, str, object]] = []
@@ -123,6 +125,7 @@ def test_stop_jin10_cache_refresh_scheduler_uses_non_blocking_shutdown() -> None
 def test_jin10_cache_refresh_scheduler_can_limit_jobs_to_kline(monkeypatch) -> None:
     from apps.api.services import jin10_cache_refresh_scheduler as service
 
+    monkeypatch.delenv("FINANCE_AGENT_DISABLE_JIN10", raising=False)
     jobs: list[str] = []
     threads: list[str] = []
 
@@ -153,6 +156,44 @@ def test_jin10_cache_refresh_scheduler_can_limit_jobs_to_kline(monkeypatch) -> N
 
     assert jobs == ["jin10_kline_refresh"]
     assert threads == ["startup-kline"]
+
+
+def test_jin10_cache_refresh_scheduler_keeps_non_jin10_market_jobs_when_jin10_is_disabled(monkeypatch) -> None:
+    from apps.api.services import jin10_cache_refresh_scheduler as service
+
+    jobs: list[str] = []
+    started_threads: list[tuple[str, object]] = []
+
+    class FakeScheduler:
+        def __init__(self, *, daemon: bool) -> None:
+            assert daemon is True
+
+        def add_job(self, _func, _trigger, **kwargs) -> None:
+            jobs.append(kwargs["id"])
+
+        def start(self) -> None:
+            return None
+
+    class FakeThread:
+        def __init__(self, *, target, daemon: bool, name: str) -> None:
+            assert daemon is True
+            started_threads.append((name, target))
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", " yes ")
+    monkeypatch.setenv(
+        "FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS",
+        "jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily",
+    )
+    monkeypatch.setattr(service, "BackgroundScheduler", FakeScheduler)
+    monkeypatch.setattr(service, "Thread", FakeThread)
+
+    service.start_jin10_cache_refresh_scheduler()
+
+    assert jobs == ["twelvedata_xauusd_dispatch_refresh", "market_candles_daily_refresh"]
+    assert started_threads == [("startup-market-daily", service.refresh_market_candle_daily_cache)]
 
 
 @pytest.mark.anyio

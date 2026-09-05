@@ -187,6 +187,10 @@ export function ReportsPage() {
             onViewModeChange={setViewMode}
           />
 
+          <div className="mb-1.5 border-b border-[var(--border-faint)] px-1 pb-1.5 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
+            报告列表展示索引信息；请进入报告详情查看正式结果身份与当前有效 Gold 基线。
+          </div>
+
           <ReportsSummaryBar
             hasFilteredResults={filteredReports.length !== allReports.length}
             onResetFilters={resetFilters}

@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from apps.data_control.schemas import AvailabilityItem, AvailabilityRule
+
+
+_PRIMARY_EVIDENCE_KEYS = ("observed_at", "as_of", "published_at")
+_SECONDARY_EVIDENCE_KEYS = ("generated_at", "updated_at")
+_METADATA_TIME_UNKNOWN = "metadata_time_unknown"
+_PAYLOAD_UNREADABLE = "payload_unreadable"
+
+
+@dataclass(frozen=True)
+class _ArtifactCandidate:
+    path: Path
+    observed_at: datetime | None
+    freshness_basis: str
 
 DEFAULT_AVAILABILITY_RULES: tuple[AvailabilityRule, ...] = (
     AvailabilityRule(
@@ -91,16 +105,54 @@ def build_data_availability_snapshot(
 
 
 def _evaluate_rule(*, storage_root: Path, trade_date: str, observed_at: datetime, rule: AvailabilityRule) -> AvailabilityItem:
-    artifact = _latest_artifact(storage_root=storage_root, trade_date=trade_date, rule=rule)
+    candidates = _artifact_candidates(storage_root=storage_root, trade_date=trade_date, rule=rule)
+    candidate = _select_latest_candidate(candidates, observed_at=observed_at)
+    artifact = candidate.path if candidate else None
     expected_at = _expected_at(trade_date=trade_date, due_time_utc=rule.due_time_utc)
     due = expected_at is None or observed_at >= expected_at
-    latest_observed_at = _artifact_observed_at(artifact) if artifact else None
+    latest_observed_at = (
+        candidate.observed_at
+        if candidate and candidate.freshness_basis in _PRIMARY_EVIDENCE_KEYS
+        else None
+    )
     lag_minutes = int((observed_at - latest_observed_at).total_seconds() // 60) if latest_observed_at else None
+    future_candidates = [item for item in candidates if item.observed_at is not None and item.observed_at > observed_at]
+    metadata: dict[str, Any] = {"freshness_threshold_minutes": rule.freshness_threshold_minutes}
+    if candidate is not None:
+        metadata["freshness_basis"] = candidate.freshness_basis
+        if candidate.freshness_basis == _METADATA_TIME_UNKNOWN:
+            metadata["metadata_time_unknown"] = True
+        if candidate.freshness_basis == _PAYLOAD_UNREADABLE:
+            metadata["payload_unreadable"] = True
+    if future_candidates:
+        metadata["ignored_future_artifact_refs"] = [_rel(item.path, storage_root) for item in future_candidates]
 
-    if artifact and _is_blocked_report(artifact):
+    if future_candidates and artifact is None:
+        state = "blocked"
+        reason_code = "evidence_time_future"
+        message = f"{rule.source_key} has no current artifact; future evidence was ignored"
+    elif artifact and candidate and candidate.freshness_basis == _PAYLOAD_UNREADABLE:
+        state = "blocked"
+        reason_code = "artifact_payload_unreadable"
+        message = f"{rule.source_key} artifact payload could not be read"
+    elif artifact and _is_blocked_report(artifact):
         state = "blocked"
         reason_code = "content_access_blocked"
         message = f"{rule.source_key} artifact is preview, VIP locked, or incomplete"
+    elif (
+        artifact
+        and candidate
+        and candidate.freshness_basis not in _PRIMARY_EVIDENCE_KEYS
+        and rule.freshness_threshold_minutes is not None
+    ):
+        state = "blocked"
+        reason_code = "evidence_time_missing"
+        message = f"{rule.source_key} has no trusted payload observation time"
+    elif artifact and candidate and candidate.freshness_basis not in _PRIMARY_EVIDENCE_KEYS:
+        state = "available"
+        reason_code = None
+        message = f"{rule.source_key} artifact is present; freshness cannot be assessed"
+        metadata["artifact_presence_only"] = True
     elif artifact and rule.freshness_threshold_minutes is not None and lag_minutes is not None and lag_minutes > rule.freshness_threshold_minutes:
         state = "stale"
         reason_code = "freshness_stale"
@@ -132,40 +184,88 @@ def _evaluate_rule(*, storage_root: Path, trade_date: str, observed_at: datetime
         message=message,
         required_for=rule.required_for,
         missing_policy=rule.missing_policy,
-        metadata={"freshness_threshold_minutes": rule.freshness_threshold_minutes},
+        metadata=metadata,
     )
 
 
-def _latest_artifact(*, storage_root: Path, trade_date: str, rule: AvailabilityRule) -> Path | None:
+def _artifact_candidates(*, storage_root: Path, trade_date: str, rule: AvailabilityRule) -> list[_ArtifactCandidate]:
     candidates: list[Path] = []
+    seen: set[Path] = set()
     for pattern in rule.artifact_globs:
         rendered = pattern.format(trade_date=trade_date)
-        candidates.extend(path for path in storage_root.glob(rendered) if path.is_file())
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item.stat().st_mtime)
+        for path in storage_root.glob(rendered):
+            if not path.is_file() or path in seen:
+                continue
+            seen.add(path)
+            candidates.append(path)
+    return [_artifact_candidate(path) for path in sorted(candidates, key=lambda item: item.as_posix())]
 
 
-def _artifact_observed_at(path: Path) -> datetime:
+def _select_latest_candidate(
+    candidates: list[_ArtifactCandidate], *, observed_at: datetime | None = None
+) -> _ArtifactCandidate | None:
+    current = [
+        candidate
+        for candidate in candidates
+        if candidate.observed_at is None or observed_at is None or candidate.observed_at <= observed_at
+    ]
+    known = [candidate for candidate in current if candidate.observed_at is not None]
+    primary = [candidate for candidate in known if candidate.freshness_basis in _PRIMARY_EVIDENCE_KEYS]
+    if primary:
+        known = primary
+    if known:
+        return max(known, key=lambda item: (item.observed_at, item.path.as_posix()))
+    unknown = [candidate for candidate in current if candidate.observed_at is None]
+    return max(unknown, key=lambda item: item.path.as_posix()) if unknown else None
+
+
+def _artifact_candidate(path: Path) -> _ArtifactCandidate:
+    if path.suffix.lower() == ".pdf":
+        return _ArtifactCandidate(path=path, observed_at=None, freshness_basis=_METADATA_TIME_UNKNOWN)
+    if path.suffix.lower() != ".json":
+        return _ArtifactCandidate(path=path, observed_at=None, freshness_basis=_METADATA_TIME_UNKNOWN)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        payload = {}
-    if isinstance(payload, dict):
-        for key in ("updated_at", "observed_at", "as_of", "generated_at"):
-            parsed = _parse_datetime(payload.get(key))
-            if parsed is not None:
-                return parsed
-    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return _ArtifactCandidate(path=path, observed_at=None, freshness_basis=_PAYLOAD_UNREADABLE)
+    evidence = _payload_evidence_time(payload)
+    if evidence is None:
+        return _ArtifactCandidate(path=path, observed_at=None, freshness_basis=_METADATA_TIME_UNKNOWN)
+    observed_at, freshness_basis = evidence
+    return _ArtifactCandidate(path=path, observed_at=observed_at, freshness_basis=freshness_basis)
+
+
+def _payload_evidence_time(payload: Any) -> tuple[datetime, str] | None:
+    if not isinstance(payload, dict):
+        return None
+    mappings = [payload]
+    for key in ("metadata", "meta", "source_metadata"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            mappings.append(value)
+    for keys in (_PRIMARY_EVIDENCE_KEYS, _SECONDARY_EVIDENCE_KEYS):
+        for key in keys:
+            for mapping in mappings:
+                parsed = _parse_datetime(mapping.get(key))
+                if parsed is not None:
+                    return parsed, key
+    return None
+
+
+def _read_json_payload(path: Path) -> Any:
+    if path.suffix.lower() != ".json":
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload
 
 
 def _is_blocked_report(path: Path) -> bool:
     if path.name != "agent_analysis_report.json":
         return False
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
+    payload = _read_json_payload(path)
     if not isinstance(payload, dict) or not isinstance(payload.get("content_access"), dict):
         return False
     content_access = payload["content_access"]

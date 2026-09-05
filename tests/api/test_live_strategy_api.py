@@ -71,6 +71,7 @@ def test_live_strategy_service_rejects_non_xauusd_direct_calls() -> None:
 
 def test_live_strategy_service_reads_local_5m_and_15m_windows(monkeypatch) -> None:
     calls: list[tuple[str, int]] = []
+    gold_baseline = {"authority_ready": True, "direction": "long"}
 
     def fake_candles(*, timeframe: str, limit: int, **_: object) -> dict:
         calls.append((timeframe, limit))
@@ -80,6 +81,10 @@ def test_live_strategy_service_reads_local_5m_and_15m_windows(monkeypatch) -> No
     monkeypatch.setattr("apps.api.services.live_strategy_service.get_market_candles", fake_candles)
     monkeypatch.setattr("apps.api.services.live_strategy_service.get_options_decision", lambda **_: {})
     monkeypatch.setattr("apps.api.services.live_strategy_service._load_quote_cache", lambda *_: None)
+    monkeypatch.setattr(
+        "apps.api.services.live_strategy_service.resolve_verified_gold_baseline",
+        lambda **_: gold_baseline,
+    )
     monkeypatch.setattr("apps.api.services.live_strategy_service.build_live_strategy", lambda **kwargs: kwargs)
 
     payload = get_live_strategy_latest(asset="XAUUSD", db=object())
@@ -87,6 +92,7 @@ def test_live_strategy_service_reads_local_5m_and_15m_windows(monkeypatch) -> No
     assert calls == [("5m", 30), ("15m", 5)]
     assert payload["canonical_market"]["timeframe"] == "5m"
     assert payload["canonical_market_15m"]["timeframe"] == "15m"
+    assert payload["gold_baseline"] is gold_baseline
     assert payload["event_observation"] is None
 
 
@@ -103,6 +109,10 @@ def test_live_strategy_service_forwards_optional_event_observation(monkeypatch) 
     )
     monkeypatch.setattr("apps.api.services.live_strategy_service.get_options_decision", lambda **_: {})
     monkeypatch.setattr("apps.api.services.live_strategy_service._load_quote_cache", lambda *_: None)
+    monkeypatch.setattr(
+        "apps.api.services.live_strategy_service.resolve_verified_gold_baseline",
+        lambda **_: {"authority_ready": False, "direction": "none"},
+    )
     monkeypatch.setattr("apps.api.services.live_strategy_service.build_live_strategy", lambda **kwargs: kwargs)
 
     payload = get_live_strategy_latest(event_observation=observation)

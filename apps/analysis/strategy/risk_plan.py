@@ -17,6 +17,8 @@ def build_risk_plan(
     ask: float | None = None,
     data_ready: bool = True,
     prerequisites_ready: bool = True,
+    allowed_directions: tuple[str, ...] | None = None,
+    restricted_direction_reason: str = "direction_not_authorized",
 ) -> dict[str, Any]:
     """Build two deterministic setups plus a no-trade explanation without I/O."""
     levels = [dict(item) for item in key_levels or [] if _number(item.get("reference_price")) is not None]
@@ -24,6 +26,7 @@ def build_risk_plan(
     event = dict(latest_price_event or {})
     spread = _fresh_spread(bid, ask)
     spread_buffer = 2 * spread if spread is not None else 0.0
+    directions = set(allowed_directions) if allowed_directions is not None else {"long", "short"}
     if not data_ready or not prerequisites_ready or atr14 is None or normalized_price is None:
         status = "blocked_data" if not data_ready else "unavailable"
         reason = "blocked_data" if not data_ready else "strategy_prerequisites_unavailable"
@@ -38,21 +41,26 @@ def build_risk_plan(
     volatility_buffer = max(0.15 * atr14, 0.5)
     stop_buffer = max(volatility_buffer, spread_buffer)
     setups = [
-        _setup(
-            direction=direction,
-            price=normalized_price,
-            levels=levels,
-            event=event,
-            entry_buffer=entry_buffer,
-            volatility_buffer=volatility_buffer,
-            stop_buffer=stop_buffer,
-            spread_buffer=spread_buffer,
-            data_ready=data_ready,
+        (
+            _setup(
+                direction=direction,
+                price=normalized_price,
+                levels=levels,
+                event=event,
+                entry_buffer=entry_buffer,
+                volatility_buffer=volatility_buffer,
+                stop_buffer=stop_buffer,
+                spread_buffer=spread_buffer,
+                data_ready=data_ready,
+            )
+            if direction in directions
+            else _blocked_setup(direction, "unavailable", reason=restricted_direction_reason)
         )
         for direction in ("long", "short")
     ]
     triggered = next((setup for setup in setups if setup["status"] == "triggered"), None)
-    active_scenario = triggered["direction"] if triggered else ("no_trade" if event.get("confirmed") is True else None)
+    blocked_rr = any(setup["status"] == "blocked_rr" for setup in setups)
+    active_scenario = triggered["direction"] if triggered else ("no_trade" if blocked_rr else None)
     return {
         "setups": setups,
         "active_scenario": active_scenario,
@@ -208,6 +216,8 @@ def _no_trade(
         waiting_conditions.append("directional_reference_level_required")
     if "strategy_prerequisites_unavailable" in reasons:
         waiting_conditions.append("strategy_prerequisites_required")
+    if "gold_direction_authority_unavailable" in reasons:
+        waiting_conditions.append("verified_gold_direction_required")
     if "targets_unavailable" in reasons:
         waiting_conditions.append("structural_targets_required")
     if "risk_reward_insufficient" in reasons:

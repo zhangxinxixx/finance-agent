@@ -30,6 +30,7 @@ import type {
   VisualReportView,
 } from "@/types/reports";
 import { normalizeDataStatus } from "@/lib/status";
+import { normalizeResultIdentity } from "@/adapters/resultIdentity";
 
 const REPORTS_INDEX_PATH = "/api/reports/index";
 const REPORTS_DATES_PATH = "/api/reports/dates";
@@ -474,6 +475,7 @@ export async function fetchReportDetailView(reportId: string, signal?: AbortSign
     tabs,
     available_tabs: availableTabs,
     structured_payload: detail.structured_payload ?? null,
+    result_identity: normalizeResultIdentity(detail.result_identity),
     generation_trace: extractGenerationTrace(detail.structured_payload),
     gold_macro_overview: detail.gold_macro_overview ?? null,
     market_odds_evidence: detail.market_odds_evidence ?? null,

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -16,13 +17,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.analysis.gold_policy.daily_close_store import verify_gold_daily_close_bundle
+from apps.runtime.premarket_snapshot_authority import stage_premarket_snapshot_authority
 from database.models.analysis import ensure_analysis_tables
+from database.models.execution import ExecutionBase
 from database.models.report import ReportArtifact, ReportItem, ensure_report_tables
+from database.models.task import Base, TaskRun, TaskStatus
 from scripts import run_gold_daily_report as report
 
 
 _FIXTURE_PATH = Path(__file__).parents[1] / "fixtures" / "gold_daily_report" / "premarket_snapshot_2026-07-07.json"
 _FIXTURE_SHA256 = "85dd2f24075812d62206ee12d1e5fea37d892e3cb2c9360a3c73d0a3e07a4d97"
+_AUTHORITY_RUN_ID = "8a899bc9-aa7b-4426-b0d3-4f6e35a2d5c2"
 
 
 def _make_session_factory() -> sessionmaker:
@@ -31,7 +36,9 @@ def _make_session_factory() -> sessionmaker:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    Base.metadata.create_all(engine)
     ensure_analysis_tables(engine)
+    ExecutionBase.metadata.create_all(engine)
     ensure_report_tables(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -41,12 +48,46 @@ def _materialize_snapshot(storage_root: Path) -> str:
     assert hashlib.sha256(fixture_bytes).hexdigest() == _FIXTURE_SHA256
     payload = json.loads(fixture_bytes.decode("utf-8"))
     trade_date = payload["trade_date"]
+    payload["run_id"] = _AUTHORITY_RUN_ID
+    payload["snapshot_id"] = f"XAUUSD:{trade_date}:{_AUTHORITY_RUN_ID}"
     target = (
         storage_root / "features" / "snapshots" / "XAUUSD" / trade_date / payload["run_id"] / "premarket_snapshot.json"
     )
     target.parent.mkdir(parents=True)
-    target.write_bytes(fixture_bytes)
+    target.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     return trade_date
+
+
+def _stage_authoritative_snapshot(factory: sessionmaker, storage_root: Path) -> None:
+    path = (
+        storage_root
+        / "features"
+        / "snapshots"
+        / "XAUUSD"
+        / "2026-07-07"
+        / _AUTHORITY_RUN_ID
+        / "premarket_snapshot.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    with factory() as db:
+        run = TaskRun(
+            id=uuid.UUID(_AUTHORITY_RUN_ID),
+            name="premarket",
+            task_type="premarket",
+            status=TaskStatus.running,
+            trade_date=payload["trade_date"],
+        )
+        db.add(run)
+        db.flush()
+        stage_premarket_snapshot_authority(
+            db,
+            run_id=str(run.id),
+            snapshot=payload,
+            snapshot_path=path,
+            storage_root=storage_root,
+        )
+        run.status = TaskStatus.success
+        db.commit()
 
 
 def _generate_bundle(storage_root: Path) -> dict[str, Any]:
@@ -123,8 +164,9 @@ def test_fresh_cli_registers_real_bundle_and_commits(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     storage_root = tmp_path / "storage"
-    _materialize_snapshot(storage_root)
     factory = _make_session_factory()
+    _materialize_snapshot(storage_root)
+    _stage_authoritative_snapshot(factory, storage_root)
 
     exit_code, result = _invoke_main(
         storage_root=storage_root,
@@ -149,6 +191,7 @@ def test_existing_valid_bundle_recovers_into_empty_registry(
 ) -> None:
     storage_root = _copy_existing_bundle(existing_bundle_template, tmp_path)
     factory = _make_session_factory()
+    _stage_authoritative_snapshot(factory, storage_root)
 
     exit_code, result = _invoke_main(
         storage_root=storage_root,
@@ -171,6 +214,7 @@ def test_repeated_cli_registration_is_idempotent(
 ) -> None:
     storage_root = _copy_existing_bundle(existing_bundle_template, tmp_path)
     factory = _make_session_factory()
+    _stage_authoritative_snapshot(factory, storage_root)
 
     first_code, first = _invoke_main(
         storage_root=storage_root,
@@ -225,6 +269,7 @@ def test_registry_failure_blocks_delivery_but_preserves_valid_bundle(
 ) -> None:
     storage_root = _copy_existing_bundle(existing_bundle_template, tmp_path)
     factory = _make_session_factory()
+    _stage_authoritative_snapshot(factory, storage_root)
 
     def fail_registry(*args: Any, **kwargs: Any) -> str:
         raise RuntimeError("injected registry failure")
@@ -273,6 +318,7 @@ def test_commit_failure_rolls_back_and_never_claims_registered(
 ) -> None:
     storage_root = _copy_existing_bundle(existing_bundle_template, tmp_path)
     factory = _make_session_factory()
+    _stage_authoritative_snapshot(factory, storage_root)
     sessions: list[_CommitFailSession] = []
 
     def failing_commit_factory() -> _CommitFailSession:

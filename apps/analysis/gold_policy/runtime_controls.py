@@ -13,7 +13,13 @@ from apps.analysis.gold_policy.key_level_controls import (
     KeyLevelControlsBuilder,
     KeyLevelControlsInput,
 )
-from apps.analysis.gold_policy.schemas import FeatureSnapshotContract, SourceReference
+from apps.analysis.gold_policy.readiness_policy import _event_readiness
+from apps.analysis.gold_policy.schemas import (
+    FeatureSnapshotContract,
+    FeatureSnapshotV2,
+    OfficialEventSnapshot,
+    SourceReference,
+)
 from apps.analysis.gold_policy.state_schemas import (
     EvidenceCategory,
     EvidenceDeltaKind,
@@ -189,26 +195,99 @@ def _options_regime(current: FeatureSnapshotContract, decision_as_of: datetime):
 
 def _event_risk(current: FeatureSnapshotContract, decision_as_of: datetime):
     events = current.official_events
-    if events.quality_status == "blocked" or events.freshness_status == "missing":
+    # The feature snapshot is the authority boundary for this control.  A
+    # later runtime decision timestamp must not make a post-snapshot event or
+    # lineage reference appear eligible.
+    readiness_cutoff = current.as_of if isinstance(current, FeatureSnapshotV2) else decision_as_of
+    event_readiness, _ = _event_readiness(events, readiness_cutoff)
+    if _has_future_event_observation(events, readiness_cutoff):
+        event_readiness = "blocked"
+    snapshot_is_accepted = (
+        events.freshness_status == "fresh"
+        and events.quality_status == "accepted"
+        and events.alignment_status == "aligned"
+    )
+    if event_readiness == "blocked":
         risk_status = "unavailable"
+        quality_status = "blocked"
         active_ids: tuple[str, ...] = ()
+    elif not snapshot_is_accepted:
+        risk_status = "unavailable"
+        quality_status = "observe"
+        active_ids = ()
     else:
         active_ids = tuple(
             sorted(
                 event.event_id
                 for event in events.events
-                if event.occurred_at <= decision_as_of and event.reaction_status != "confirmed"
+                if event.occurred_at <= readiness_cutoff and event.reaction_status != "confirmed"
             )
         )
         risk_status = "watch" if active_ids else "clear"
+        quality_status = "accepted"
+    source_refs = _event_risk_source_refs(
+        current=current,
+        events=events,
+        cutoff=readiness_cutoff,
+    )
     return build_strategy_event_risk(
         {
             "as_of": decision_as_of,
             "risk_status": risk_status,
             "active_event_ids": active_ids,
-            "quality_status": events.quality_status,
-            "source_refs": _refs(decision_as_of, *events.source_refs),
+            "quality_status": quality_status,
+            "source_refs": source_refs,
         }
+    )
+
+
+def _event_risk_source_refs(
+    *,
+    current: FeatureSnapshotContract,
+    events: OfficialEventSnapshot,
+    cutoff: datetime,
+) -> tuple[SourceReference, ...]:
+    """Return eligible event lineage, with an explicit rejected-input passport."""
+
+    typed_event_refs = tuple(
+        ref
+        for event in events.events
+        for ref in (*event.source_refs, *event.reaction_source_refs)
+    )
+    eligible_refs = _refs_at_or_before(cutoff, *events.source_refs, *typed_event_refs)
+    if eligible_refs:
+        return eligible_refs
+    # This reference records which feature snapshot supplied the rejected
+    # event input.  It is not an official event reference and does not mean
+    # that the official calendar was empty.
+    return (
+        SourceReference(
+            source="input_snapshot",
+            reference=current.snapshot_id,
+            retrieved_at=current.as_of,
+        ),
+    )
+
+
+def _refs_at_or_before(as_of: datetime, *refs: SourceReference) -> tuple[SourceReference, ...]:
+    eligible = tuple(
+        ref
+        for ref in refs
+        if ref.retrieved_at.tzinfo is not None
+        and ref.retrieved_at.utcoffset() is not None
+        and ref.retrieved_at.astimezone(UTC) <= as_of
+    )
+    return _refs(as_of, *eligible) if eligible else ()
+
+
+def _has_future_event_observation(events: OfficialEventSnapshot, cutoff: datetime) -> bool:
+    return events.as_of > cutoff or any(
+        event.occurred_at > cutoff
+        or (
+            event.reaction_window_end is not None
+            and event.reaction_window_end > cutoff
+        )
+        for event in events.events
     )
 
 

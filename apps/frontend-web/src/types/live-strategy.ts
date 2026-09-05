@@ -1,5 +1,6 @@
 import type { ArtifactRef } from "@/types/artifact";
 import type { SourceRef } from "@/types/common";
+import type { ResultIdentity } from "@/types/result-identity";
 
 export type LiveStrategyAvailability = "available" | "partial" | "unavailable";
 export type LiveStrategyStatus = "WAITING" | "WATCHING" | "ARMED" | "TRIGGERED" | "SUSPENDED_DATA";
@@ -204,8 +205,32 @@ export interface LiveStrategyUpdateReason {
   related_level: LiveStrategyNearestLevel | null;
 }
 
+export interface LiveStrategyGoldBaseline {
+  status: string;
+  reason_code: string | null;
+  direction: "long" | "short" | "none" | null;
+  authority_ready: boolean;
+  lineage_verified: boolean;
+  gold_head_held: boolean;
+}
+
+/**
+ * Directional live-strategy UI may only use a verified effective Gold
+ * daily-close head. This is a display gate, not a frontend strategy
+ * calculation: the backend remains the only source of the direction.
+ */
+export function hasVerifiedGoldBaseline(baseline: LiveStrategyGoldBaseline): boolean {
+  return (
+    (baseline.status === "accepted" || baseline.status === "held")
+    && baseline.authority_ready
+    && baseline.lineage_verified
+    && (baseline.direction === "long" || baseline.direction === "short")
+  );
+}
+
 export interface LiveStrategyDataQuality {
   warnings: string[];
+  gold_baseline: LiveStrategyGoldBaseline;
   [key: string]: unknown;
 }
 
@@ -230,4 +255,5 @@ export interface LiveStrategyResponse {
   source_refs: SourceRef[];
   artifact_refs: Array<ArtifactRef | string>;
   data_quality: LiveStrategyDataQuality;
+  result_identity: ResultIdentity | null;
 }

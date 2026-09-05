@@ -48,6 +48,27 @@ def test_readiness_gate_allows_current_ready_artifact(tmp_path) -> None:
     assert result["source_ref"] == f"monitoring/{TRADE_DATE}/downstream_readiness.json"
 
 
+def test_readiness_gate_allows_partial_degraded_analysis_contract(tmp_path) -> None:
+    _write_readiness(
+        tmp_path,
+        readiness="partial",
+        can_run_full_analysis=True,
+        capabilities={"full_daily_analysis": "degraded"},
+        blocked_outputs=["knowledge distillation"],
+        jin10_disabled=True,
+    )
+
+    result = evaluate_premarket_readiness(
+        storage_root=tmp_path,
+        trade_date=TRADE_DATE,
+        observed_at=NOW,
+    )
+
+    assert result["decision"] == "allow"
+    assert result["readiness"] == "partial"
+    assert result["capabilities"]["full_daily_analysis"] == "degraded"
+
+
 def test_readiness_gate_blocks_missing_stale_and_mismatched_artifacts(tmp_path) -> None:
     missing = evaluate_premarket_readiness(
         storage_root=tmp_path,

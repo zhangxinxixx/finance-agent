@@ -30,6 +30,7 @@ from apps.api.services._trace_refs import (
 from apps.api.services.agent_output_service import build_agent_output_summary
 from apps.api.services.llm_audit_service import audit_summary, build_report_llm_audit_view
 from apps.api.services.gold_mainline_service import get_gold_mainlines_latest
+from apps.api.services.gold_result_identity import build_report_result_identity
 from apps.api.services.report_market_odds_service import load_report_market_odds_view
 from apps.analysis.macro.regime import classify_macro_regime
 from apps.renderer.contracts import MacroEventFollowupStructuredPayload, WeeklyContextRevisionPayload
@@ -90,7 +91,9 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
             detail = _enforce_task_run_report_authority(db, detail)
             detail = _enrich_report_detail_with_lineage_warnings(db, detail)
             detail = _enrich_report_detail_with_llm_audits(db, detail)
-            return _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
+            return _with_result_identity(
+                _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
+            )
     except (OperationalError, ProgrammingError):
         pass
     detail = _build_legacy_report_detail(db, report_id)
@@ -99,7 +102,21 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
     detail = _enrich_macro_report_lineage(detail)
     detail = _enforce_task_run_report_authority(db, detail)
     detail = _enrich_report_detail_with_llm_audits(db, detail)
-    return _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
+    return _with_result_identity(
+        _enrich_report_detail_with_market_odds(_enrich_report_detail_with_gold_macro_context(detail))
+    )
+
+
+def _with_result_identity(detail: ReportDetail) -> ReportDetail:
+    identity = build_report_result_identity(
+        storage_root=_PROJECT_ROOT / "storage",
+        run_id=detail.run_id,
+        trade_date=detail.trade_date,
+        report_family=detail.family,
+        report_snapshot_id=detail.snapshot_id,
+        report_identity=detail.report_identity,
+    )
+    return detail.model_copy(update={"result_identity": identity})
 
 
 def _non_authoritative_premarket_run_ids(db: Session, run_ids: Iterable[str | None]) -> set[str]:
@@ -454,6 +471,10 @@ def _enrich_report_detail_with_lineage_warnings(db: Session, detail: ReportDetai
 
 
 def _enrich_report_detail_with_gold_macro_context(detail: ReportDetail) -> ReportDetail:
+    # A verified daily-close report explains its frozen bundle. The latest
+    # independent mainline artifact is not evidence for this report's run.
+    if detail.family == "gold_policy_daily_report":
+        return detail
     if detail.asset and str(detail.asset).upper() not in {"XAUUSD", "GC", "GOLD"}:
         return detail
     try:

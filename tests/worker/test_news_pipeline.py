@@ -104,6 +104,50 @@ def _fake_collectors():
     return [("fed_rss", official_collector), ("gdelt_news", candidate_collector)]
 
 
+def test_news_collectors_skip_jin10_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+
+    collector_names = [name for name, _collector in news_pipeline._collectors()]
+
+    assert collector_names == [
+        "fed_rss",
+        "bls_calendar",
+        "bea_calendar",
+        "eia_energy",
+        "gdelt_news",
+        "google_news_rss",
+        "reuters_public_news",
+    ]
+
+
+def test_news_feature_skips_jin10_legacy_inputs_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+    state = NewsPipelineState()
+
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=_fake_collectors()),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+        patch(
+            "apps.worker.pipelines.news._extract_latest_jin10_report_events",
+            side_effect=AssertionError("disabled Jin10 report extraction must not run"),
+        ),
+        patch(
+            "apps.worker.pipelines.news._build_etf_holdings_feature",
+            side_effect=AssertionError("disabled Jin10 ETF feature must not run"),
+        ),
+    ):
+        run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-news")
+        feature_summary = run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-news")
+
+    assert "jin10_inputs_skipped:disabled" in feature_summary["warnings"]
+    assert feature_summary["report_event_count"] == 0
+    assert feature_summary["etf_report_count"] == 0
+    assert state.report_event_extraction is None
+    assert state.etf_holdings_context == {}
+
+
 def test_news_pipeline_writes_event_and_brief_artifacts(tmp_path: Path) -> None:
     state = NewsPipelineState()
 
@@ -759,3 +803,43 @@ def test_news_brief_step_loads_jin10_report_input_artifacts(tmp_path: Path) -> N
     assert report_inputs["market_observations"][0]["topic"] == "market_odds"
     assert state.snapshot_dict is not None
     assert state.snapshot_dict["daily_market_brief"]["report_inputs"]["positioning"][0]["provider_role"] == "supplemental_source"
+
+
+def test_news_brief_step_skips_jin10_report_input_artifacts_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+    state = NewsPipelineState(retrieved_date="2026-06-10")
+    state.event_bundle = build_event_candidates([], as_of="2026-06-10T10:00:00+00:00")
+    feature_dir = tmp_path / "features" / "news" / "2026-06-10" / "run-news"
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    for filename, source_key in (
+        ("positioning.json", "jin10_positioning"),
+        ("technical_levels.json", "jin10_technical_levels"),
+        ("market_observations.json", "jin10_market_observation"),
+        ("market_odds_evidence.json", "jin10_market_observation_odds"),
+    ):
+        (feature_dir / filename).write_text(
+            json.dumps({
+                "source_key": source_key,
+                "items": [{"value": "must-not-load", "source_refs": [{"source_ref": "jin10:test"}]}],
+                "source_refs": [{"source_ref": f"{source_key}:test"}],
+            }),
+            encoding="utf-8",
+        )
+
+    run_news_step("news_brief", state, storage_root=tmp_path, run_id="run-news")
+
+    payload = json.loads(
+        (
+            feature_dir / "daily_market_brief.json"
+        ).read_text(encoding="utf-8")
+    )
+    brief = payload["daily_market_brief"]
+    assert not {
+        "positioning",
+        "technical_levels",
+        "market_observations",
+        "etf_holdings",
+    }.intersection(brief["report_inputs"])
+    assert "jin10" not in json.dumps(brief["source_refs"], ensure_ascii=False).lower()

@@ -1,4 +1,5 @@
 import { ApiError, fetchJson } from "@/adapters/apiClient";
+import { normalizeResultIdentity } from "@/adapters/resultIdentity";
 import type {
   LiveStrategyAvailability,
   LiveStrategyCmeOiChange,
@@ -7,6 +8,7 @@ import type {
   LiveStrategyDataQuality,
   LiveStrategyFeasibility,
   LiveStrategyFifteenMinuteConfirmation,
+  LiveStrategyGoldBaseline,
   LiveStrategyMarket,
   LiveStrategyMarketState,
   LiveStrategyNearestLevel,
@@ -184,6 +186,21 @@ function asReasons(value: unknown): Record<string, string[]> {
   return Object.fromEntries(
     Object.entries(asRecord(value)).map(([key, reason]) => [key, asStringArray(reason)]),
   );
+}
+
+function normalizeGoldBaseline(value: unknown): LiveStrategyGoldBaseline {
+  const raw = asRecord(value);
+  const direction = raw.direction === "long" || raw.direction === "short" || raw.direction === "none"
+    ? raw.direction
+    : null;
+  return {
+    status: asString(raw.status) ?? "unavailable",
+    reason_code: asString(raw.reason_code),
+    direction,
+    authority_ready: asBoolean(raw.authority_ready),
+    lineage_verified: asBoolean(raw.lineage_verified),
+    gold_head_held: asBoolean(raw.gold_head_held),
+  };
 }
 
 function normalizeLiveMarket(value: unknown): LiveStrategyMarket {
@@ -367,7 +384,9 @@ function normalizeLiveStrategy(payload: unknown): LiveStrategyResponse {
     data_quality: {
       ...quality,
       warnings: asStringArray(quality.warnings),
+      gold_baseline: normalizeGoldBaseline(quality.gold_baseline),
     } as LiveStrategyDataQuality,
+    result_identity: normalizeResultIdentity(raw.result_identity),
   };
 }
 

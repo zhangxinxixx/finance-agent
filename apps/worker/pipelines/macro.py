@@ -42,6 +42,7 @@ from apps.output.artifacts import artifact_run_dir
 from apps.parsers.macro.models import MacroPoint
 from apps.runtime.artifact_registry import register_artifact
 from apps.runtime.artifact_storage import LocalFileSystemArtifactStorage
+from apps.runtime.source_controls import jin10_disabled
 from database.queries.data_source_status import upsert_data_source_status
 from database.queries.feature_snapshots import upsert_feature_snapshots as upsert_feature_snapshot_rows
 from database.queries.macro_observations import upsert_macro_observations as upsert_macro_observation_rows
@@ -54,6 +55,10 @@ from database.queries.report import upsert_report_artifact, upsert_report_item
 MACRO_STEPS = {"macro_collect", "macro_feature", "report_render"}
 
 logger = logging.getLogger(__name__)
+
+
+class _Jin10Disabled(Exception):
+    """Internal control flow marker for the explicit No-Jin10 mode."""
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +143,7 @@ def _step_collect(
     all_refs: list[dict[str, str]] = []
     collector_statuses: list[dict[str, Any]] = []
     fred_fallback_symbols: tuple[str, ...] = DEFAULT_FRED_RATE_SYMBOLS
+    jin10_is_disabled = jin10_disabled()
 
     # --- FRED ---
     try:
@@ -242,6 +248,8 @@ def _step_collect(
 
     # --- Technical / XAUUSD price ---
     try:
+        if jin10_is_disabled:
+            raise _Jin10Disabled
         from apps.collectors.technical.collector import collect_technical
 
         tech_result = collect_technical(
@@ -257,6 +265,8 @@ def _step_collect(
             "points": len(tech_result.points),
             "unavailable": len(tech_result.unavailable_symbols),
         })
+    except _Jin10Disabled:
+        collector_statuses.append({"collector": "technical", "status": "skipped", "reason": "jin10_disabled"})
     except Exception as exc:
         collector_statuses.append({
             "collector": "technical",
@@ -290,6 +300,8 @@ def _step_collect(
 
     # --- News / Jin10 MCP ---
     try:
+        if jin10_is_disabled:
+            raise _Jin10Disabled
         from apps.collectors.news.collector import collect_news
 
         news_result = collect_news(
@@ -305,6 +317,8 @@ def _step_collect(
             "points": len(news_result.points),
             "unavailable": len(news_result.unavailable_symbols),
         })
+    except _Jin10Disabled:
+        collector_statuses.append({"collector": "news", "status": "skipped", "reason": "jin10_disabled"})
     except Exception as exc:
         collector_statuses.append({
             "collector": "news",
@@ -314,6 +328,8 @@ def _step_collect(
 
     # --- Jin10 Quotes / MCP (real-time prices) ---
     try:
+        if jin10_is_disabled:
+            raise _Jin10Disabled
         from apps.collectors.jin10.quotes import collect_quotes
 
         quotes_result = collect_quotes(
@@ -329,6 +345,8 @@ def _step_collect(
             "points": len(quotes_result.points),
             "unavailable": len(quotes_result.unavailable_symbols),
         })
+    except _Jin10Disabled:
+        collector_statuses.append({"collector": "jin10_quotes", "status": "skipped", "reason": "jin10_disabled"})
     except Exception as exc:
         collector_statuses.append({
             "collector": "jin10_quotes",
@@ -338,6 +356,8 @@ def _step_collect(
 
     # --- Jin10 K-line / MCP ---
     try:
+        if jin10_is_disabled:
+            raise _Jin10Disabled
         from apps.collectors.jin10.kline import collect_kline
 
         kline_result = collect_kline(
@@ -363,6 +383,8 @@ def _step_collect(
             "unavailable": len(kline_result.unavailable_symbols),
             "dxy_fallback_promoted": dxy_kline_fallback is not None,
         })
+    except _Jin10Disabled:
+        collector_statuses.append({"collector": "jin10_kline", "status": "skipped", "reason": "jin10_disabled"})
     except Exception as exc:
         collector_statuses.append({
             "collector": "jin10_kline",
@@ -372,6 +394,8 @@ def _step_collect(
 
     # --- Jin10 Articles / MCP ---
     try:
+        if jin10_is_disabled:
+            raise _Jin10Disabled
         from apps.collectors.jin10.articles import collect_articles
 
         articles_result = collect_articles(
@@ -387,6 +411,8 @@ def _step_collect(
             "points": len(articles_result.points),
             "unavailable": len(articles_result.unavailable_symbols),
         })
+    except _Jin10Disabled:
+        collector_statuses.append({"collector": "jin10_articles", "status": "skipped", "reason": "jin10_disabled"})
     except Exception as exc:
         collector_statuses.append({
             "collector": "jin10_articles",

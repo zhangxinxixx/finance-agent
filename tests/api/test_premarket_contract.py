@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.main import app
@@ -18,6 +19,11 @@ from apps.premarket import (
 )
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _jin10_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FINANCE_AGENT_DISABLE_JIN10", raising=False)
 
 
 def _make_step_contract(
@@ -307,6 +313,59 @@ def test_premarket_source_readiness_build_returns_summary_without_contract_group
     assert step_by_name["option_wall"]["source_readiness"]["decision"] == "degraded_allowed"
     assert readiness["source_readiness_summary"]["decision_counts"]["blocked"] == 0
     assert "fred" in readiness["source_readiness_summary"]["degraded_sources"]
+    assert readiness["source_readiness_summary"]["jin10_disabled"] is False
+    assert readiness["source_readiness_summary"]["disabled_sources"] == []
+
+
+def test_premarket_source_readiness_separates_disabled_jin10_from_source_health(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+    source_status_index = {
+        "fred": {"readiness_state": "ready", "raw_ingested": True},
+        "fed": {"readiness_state": "ready", "raw_ingested": True},
+        "treasury": {"readiness_state": "ready", "raw_ingested": True},
+        "dxy": {"readiness_state": "ready", "raw_ingested": True},
+        "cme_daily_bulletin": {"readiness_state": "ready", "raw_ingested": True},
+        "cme_options": {"readiness_state": "ready", "analysis_ready": True},
+        "jin10_news": {"readiness_state": "blocked", "error_message": "disabled runtime"},
+        "jin10_flash": {"readiness_state": "degraded", "raw_ingested": True},
+        "jin10_mcp_calendar": {"readiness_state": "not_configured"},
+    }
+
+    with patch(
+        "apps.api.services.pipeline_contract_service.get_data_source_status_index",
+        return_value=source_status_index,
+    ):
+        readiness = build_premarket_pipeline_source_readiness()
+
+    step_by_name = {step["name"]: step for step in readiness["steps"]}
+    expected_disabled_sources = ["jin10_flash", "jin10_mcp_calendar", "jin10_news"]
+    for step_name in ("news_collect", "news_feature", "news_brief"):
+        source_readiness = step_by_name[step_name]["source_readiness"]
+        assert source_readiness["decision"] == "degraded_allowed"
+        assert source_readiness["gating_reason"] == "required_source_disabled_allowed"
+        assert source_readiness["effective_required_sources"] == []
+        assert source_readiness["degraded_sources"] == []
+        assert source_readiness["blocked_sources"] == []
+
+    assert step_by_name["news_collect"]["required_sources"] == [
+        "jin10_news",
+        "jin10_flash",
+        "jin10_mcp_calendar",
+    ]
+    assert step_by_name["news_collect"]["source_readiness"]["disabled_sources"] == [
+        "jin10_news",
+        "jin10_flash",
+        "jin10_mcp_calendar",
+    ]
+    summary = readiness["source_readiness_summary"]
+    assert summary["decision_counts"] == {"ready": 8, "degraded_allowed": 3, "blocked": 0}
+    assert summary["degraded_steps"] == ["news_collect", "news_feature", "news_brief"]
+    assert summary["blocked_sources"] == []
+    assert summary["degraded_sources"] == []
+    assert summary["jin10_disabled"] is True
+    assert summary["disabled_sources"] == expected_disabled_sources
 
 
 def test_premarket_contract_api_exposes_canonical_contract() -> None:
