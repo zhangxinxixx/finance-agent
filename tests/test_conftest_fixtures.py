@@ -15,7 +15,7 @@ import pytest
 class TestEnvFixtures:
     def test_project_root_is_finance_agent(self, project_root: Path) -> None:
         assert (project_root / "pyproject.toml").exists()
-        assert (project_root / "AGENTS.md").exists()
+        assert (project_root / "README.md").exists()
         assert (project_root / "apps").is_dir()
 
     def test_tmp_workspace_has_expected_dirs(self, tmp_workspace: Path) -> None:

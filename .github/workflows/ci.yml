@@ -74,6 +74,9 @@ jobs:
           tests/scripts/test_prune_unqualified_outputs.py
           tests/scripts/test_backfill_data_warehouse.py
           tests/scripts/test_benchmark_jin10_vlm.py
+          tests/scripts/test_run_report_window_scan.py
+          tests/test_conftest_fixtures.py
+          tests/worker/test_dagster_agent_ops.py
 
   gold-policy-core:
     name: Gold Policy core

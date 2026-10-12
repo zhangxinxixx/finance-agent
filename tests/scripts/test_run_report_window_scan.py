@@ -830,8 +830,10 @@ def test_scan_cme_keeps_transient_download_failure_as_waiting(tmp_path, monkeypa
     }
 
 
-def test_systemd_service_pins_api_database_after_environment_file() -> None:
+def test_systemd_service_uses_database_from_environment_file() -> None:
     project_root = Path(__file__).resolve().parents[2]
     service = (project_root / "deploy/systemd/report-window-scanner.service").read_text(encoding="utf-8")
 
-    assert "ExecStart=/usr/bin/env DATABASE_URL=postgresql://finance_agent:CHANGE_ME@127.0.0.1:55432/" in service
+    assert "EnvironmentFile=-%h/workspace/finance-agent/.env" in service
+    assert "ExecStart=%h/.local/bin/uv run python scripts/run_report_window_scan.py" in service
+    assert "DATABASE_URL=" not in service
