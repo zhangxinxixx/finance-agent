@@ -504,7 +504,7 @@ def recognize_pages_unified(
         page_no = int(page["page_no"])
         image_path = Path(str(page["image_path"]))
         payload_hint = {
-            "prompt_version": "unified-v6-resized-recognition-crop-only",
+            "prompt_version": "unified-v7-positioning-paired-panels",
             "prompt_profile": prompt_profile,
             "report_type": _normalize_report_type(report_type),
             "page_width": int(page.get("width") or 0),
@@ -895,6 +895,13 @@ def _build_page_unified_prompt(
         cover_rule = "忽略页眉、页脚、联系方式、网址、广告和免责声明。"
         if prompt_profile == "market_odds":
             cover_rule += " 这是市场赔率数据表主内容页，不是封面；整页赔率面板应作为一个完整 table/image bbox，并逐字保留品种、目标价位、向上/向下触及概率、月份和统计时间。"
+        elif prompt_profile == "positioning":
+            cover_rule += (
+                " 新版持仓报告以资产分隔页、左右两栏期权图页、文字总结页交替出现。"
+                "资产分隔页中的黄金/白银/欧元/英镑/澳元持仓报告是资产身份，不要误标成其他品种；"
+                "左右图页必须分别返回看涨期权和看跌期权两个 chart block，不能把右栏标成图例或重复标成看涨期权；"
+                "文字总结页必须逐字保留期货持仓量、成交量、对应合约月份、各行权价 Call/Put 增减、期现价差和总结。"
+            )
 
     return f"""你是页面识别与裁剪定位器。唯一任务是 OCR 和 bbox 定位。
 

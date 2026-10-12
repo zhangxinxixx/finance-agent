@@ -1,3 +1,4 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { ShieldAlert } from "lucide-react";
 
 import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPill";
@@ -40,6 +41,7 @@ function chainValue(event: EventFlowTimelineItem, key: string): unknown {
 
 function chainNumber(event: EventFlowTimelineItem, key: string): number | null {
   const value = chainValue(event, key);
+  if ((typeof value !== "number" && typeof value !== "string") || (typeof value === "string" && !value.trim())) return null;
   const numeric = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
@@ -82,7 +84,7 @@ export function EventGoldMainlineTrace({ event, density = "normal" }: EventGoldM
         <MainlineTagGroup event={event} density={density} />
         <TransmissionChainTagGroup event={event} density={density} />
         <MixedDriverSplitCard event={event} density={density} />
-        <ProcessingTraceLink event={event} density={density} />
+        <ResearchDetails label="查看处理记录"><ProcessingTraceLink event={event} density={density} /></ResearchDetails>
       </div>
 
       {!compact && event.verification_chain ? (
@@ -113,7 +115,7 @@ export function EventGoldMainlineTrace({ event, density = "normal" }: EventGoldM
           </div>
           {verificationChainMissing.length ? (
             <div className="mt-1.5 flex flex-wrap gap-1">
-              {verificationChainMissing.slice(0, 5).map((item) => (
+              {verificationChainMissing.map((item) => (
                 <FAStatusPill key={`${event.id}-chain-${item}`} tone="warn" dot={false} className="px-[5px] py-[1px] text-[9px]">
                   {formatGoldDriverLabel(item)}
                 </FAStatusPill>

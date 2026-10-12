@@ -3,7 +3,6 @@ import type { ArtifactRef } from "@/types/artifact";
 import type { SourceRef, DataStatus } from "@/types/common";
 import type {
   AgentInspectionViewModel,
-  AgentTasksMockFile,
   AgentTasksViewModel,
   ApiReviewItem,
   ApiReviewsResponse,
@@ -25,11 +24,11 @@ import type {
 } from "@/types/agent-task";
 import { formatDateTime } from "@/lib/date";
 import { mergeDataStatus, normalizeDataStatus } from "@/lib/status";
+import { operationStageLabel, operationStatusLabel, operationReadableLabel } from "@/components/operations/operationsLabels";
 
 const AGENT_RUNS_PATH = "/api/runs";
 const REVIEWS_PATH = "/api/reviews";
 const AGENT_ANALYSIS_INSPECT_PATH = "/api/agent-analysis/inspect";
-const AGENT_TASKS_MOCK_URL = new URL("../mocks/agent-runs.json", import.meta.url);
 
 export type ReviewActionKind = "approve" | "reject" | "rerun" | "use-fallback";
 
@@ -67,6 +66,23 @@ function mapArtifactRef(artifact: ApiTaskArtifactRef): ArtifactRef {
   };
 }
 
+function taskStepDisplayLabel(taskName: string, stage?: string | null): string {
+  const value = taskName.trim();
+  if (/[㐀-鿿]/.test(value)) return value;
+
+  const key = value.toLowerCase();
+  if (key.includes("macro")) return "宏观数据步骤";
+  if (key.includes("cme") || key.includes("option")) return "CME 结构步骤";
+  if (key.includes("news") || key.includes("event")) return "事件数据步骤";
+  if (key.includes("report") || key.includes("render")) return "报告输出步骤";
+  if (key.includes("collect") || key.includes("ingest")) return "数据采集步骤";
+  if (key.includes("parse")) return "数据解析步骤";
+
+  const translatedStage = operationStageLabel(stage);
+  if (translatedStage !== "阶段尚未说明") return `${translatedStage}步骤`;
+  return operationReadableLabel(value, "运行步骤");
+}
+
 function mapReviewSourceRef(source: ApiTaskSourceRef | SourceRef): SourceRef {
   if ("source_id" in source || "source_name" in source || "source_type" in source) {
     return mapSourceRef(source as ApiTaskSourceRef);
@@ -95,7 +111,7 @@ function mapTaskStep(step: ApiTaskStepResponse): TaskStepViewModel {
   const artifactRefs = (step.artifact_refs ?? []).map(mapArtifactRef);
   return {
     id: step.step_id,
-    label: step.task_name,
+    label: taskStepDisplayLabel(step.task_name, step.stage),
     stage: step.stage ?? null,
     task_kind: step.task_kind ?? null,
     status: step.status,
@@ -111,24 +127,28 @@ function mapTaskStep(step: ApiTaskStepResponse): TaskStepViewModel {
     artifact_refs: artifactRefs,
     input_refs: (step.input_refs ?? []).map(mapArtifactRef),
     output_refs: outputRefs,
+    source_record: step,
   };
 }
 
 function mapTaskLogs(runId: string, logs: ApiTaskStepResponse[]): TaskLogViewModel[] {
   return (logs ?? []).map((step) => {
     const lines = [
-      `${step.task_name}${step.stage ? ` · ${step.stage}` : ""} · ${step.status}`,
-      step.started_at ? `started_at ${formatDateTime(step.started_at)}` : null,
-      step.ended_at ? `ended_at ${formatDateTime(step.ended_at)}` : null,
-      step.retry_count ? `retry_count ${step.retry_count}` : null,
-      step.error_message ? `error ${step.error_message}` : null,
+      `${taskStepDisplayLabel(step.task_name, step.stage)} · ${operationStatusLabel(step.status)}`,
+      step.started_at ? `开始时间：${formatDateTime(step.started_at)}` : null,
+      step.ended_at ? `结束时间：${formatDateTime(step.ended_at)}` : null,
+      step.retry_count ? `重试次数：${step.retry_count}` : null,
+      step.error_message ? "失败说明已登记，可复制依据记录。" : null,
     ].filter((value): value is string => Boolean(value));
 
     return {
       task_id: runId,
       step_id: step.step_id,
+      started_at: step.started_at ?? null,
+      ended_at: step.ended_at ?? null,
       lines,
       status: taskStatusToDataStatus(step.status),
+      source_record: step,
     };
   });
 }
@@ -140,6 +160,7 @@ function mapTaskEvent(event: ApiTaskRunEventsResponse["events"][number]): TaskRu
     event_type: event.event_type,
     task_id: event.task_id ?? null,
     payload: event.payload ?? {},
+    source_record: event,
   };
 }
 
@@ -219,14 +240,6 @@ function mapReview(item: ApiReviewItem): TaskReviewViewModel {
   };
 }
 
-async function fetchMockFile(): Promise<AgentTasksMockFile> {
-  const response = await fetch(AGENT_TASKS_MOCK_URL);
-  if (!response.ok) {
-    throw new Error(`加载 Agent Tasks mock 失败 (${response.status})`);
-  }
-  return response.json() as Promise<AgentTasksMockFile>;
-}
-
 async function fetchOptionalJson<T>(path: string): Promise<T | null> {
   try {
     return await fetchJson<T>(path);
@@ -239,7 +252,7 @@ async function fetchOptionalJson<T>(path: string): Promise<T | null> {
 }
 
 async function fetchRunList(): Promise<ApiTaskRunResponse[]> {
-  const payload = await fetchJson<ApiTaskRunsResponse>(`${AGENT_RUNS_PATH}?limit=20`);
+  const payload = await fetchJson<ApiTaskRunsResponse>(`${AGENT_RUNS_PATH}?view=ads&limit=20`);
   return payload.runs ?? [];
 }
 
@@ -268,19 +281,7 @@ function isTraceableRun(run: ApiTaskRunResponse): boolean {
 }
 
 async function fetchRunDetail(runId: string): Promise<ApiTaskRunResponse | null> {
-  return fetchOptionalJson<ApiTaskRunResponse>(`${AGENT_RUNS_PATH}/${runId}`);
-}
-
-async function fetchRunArtifacts(runId: string): Promise<ApiTaskRunArtifactsResponse | null> {
-  return fetchOptionalJson<ApiTaskRunArtifactsResponse>(`${AGENT_RUNS_PATH}/${runId}/artifacts`);
-}
-
-async function fetchRunLogs(runId: string): Promise<ApiTaskRunLogsResponse | null> {
-  return fetchOptionalJson<ApiTaskRunLogsResponse>(`${AGENT_RUNS_PATH}/${runId}/logs`);
-}
-
-async function fetchRunEvents(runId: string): Promise<ApiTaskRunEventsResponse | null> {
-  return fetchOptionalJson<ApiTaskRunEventsResponse>(`${AGENT_RUNS_PATH}/${runId}/events`);
+  return fetchOptionalJson<ApiTaskRunResponse>(`${AGENT_RUNS_PATH}/${runId}?view=ads`);
 }
 
 async function fetchReviews(runId?: string | null): Promise<ApiReviewsResponse | null> {
@@ -424,24 +425,16 @@ export async function fetchAgentTasksView(selectedRunId?: string | null): Promis
     const requestedRunId = selectedRunId?.trim() ? selectedRunId.trim() : null;
     const fallbackRunId = runs[0]?.run_id ?? runs[0]?.task_id ?? null;
     const effectiveRunId = requestedRunId ?? fallbackRunId;
-    const [reviews, agentInspection] = await Promise.all([
-      fetchReviews(effectiveRunId),
-      fetchAgentInspection(effectiveRunId),
-    ]);
+    const reviews = await fetchReviews(effectiveRunId);
 
     let selectedRun: TaskRunViewModel | null = null;
     let detailError: string | null = null;
 
     if (effectiveRunId) {
-      const [detail, artifacts, logs, events] = await Promise.all([
-        fetchRunDetail(effectiveRunId),
-        fetchRunArtifacts(effectiveRunId),
-        fetchRunLogs(effectiveRunId),
-        fetchRunEvents(effectiveRunId),
-      ]);
+      const detail = await fetchRunDetail(effectiveRunId);
       const baseRun = detail ?? runs.find((run) => (run.run_id ?? run.task_id) === effectiveRunId) ?? null;
       if (baseRun) {
-        selectedRun = mapTaskRunDetail(baseRun, artifacts, logs, events);
+        selectedRun = mapTaskRunDetail(baseRun, null, null, null);
       } else {
         detailError = `run ${effectiveRunId} 不存在`;
       }
@@ -455,36 +448,12 @@ export async function fetchAgentTasksView(selectedRunId?: string | null): Promis
       selectedRun,
       selectedRunId: resolvedRunId,
       reviews,
-      agentInspection,
+      agentInspection: null,
       detailError,
     });
   } catch (cause) {
-    const mock = await fetchMockFile();
-    const runs = (mock.runs ?? []).filter(isTraceableRun);
-    const requestedRunId = selectedRunId?.trim() ? selectedRunId.trim() : null;
-    const fallbackRunId = runs[0]?.run_id ?? runs[0]?.task_id ?? null;
-    const effectiveRunId = requestedRunId ?? fallbackRunId;
-    const baseRun = effectiveRunId
-      ? runs.find((run) => (run.run_id ?? run.task_id) === effectiveRunId) ?? null
-      : null;
-    const selectedRun = baseRun
-      ? mapTaskRunDetail(
-          baseRun,
-          effectiveRunId ? mock.run_artifacts?.[effectiveRunId] ?? null : null,
-          effectiveRunId ? mock.run_logs?.[effectiveRunId] ?? null : null,
-          effectiveRunId ? mock.run_events?.[effectiveRunId] ?? null : null,
-        )
-      : null;
-    const resolvedRunId = selectedRun?.run_id ?? (requestedRunId ? requestedRunId : fallbackRunId);
-
-    return buildViewModel({
-      source: "mock",
-      runs,
-      selectedRun,
-      selectedRunId: resolvedRunId,
-      reviews: mock.reviews ?? { reviews: [], total: 0 },
-      agentInspection: null,
-      detailError: cause instanceof Error ? cause.message : "Agent Tasks API 不可用，已回退 mock",
-    });
+    // A failed task read must remain unavailable.  The local fixture is for
+    // isolated browser/test fixtures only and must never impersonate API data.
+    throw cause instanceof Error ? cause : new Error("任务运行状态暂时无法读取");
   }
 }

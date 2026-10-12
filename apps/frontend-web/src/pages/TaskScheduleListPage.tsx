@@ -7,6 +7,8 @@ import {
 } from "@/adapters/scheduler";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { operationReadableLabel, operationStatusLabel, evidenceLabel } from "@/components/operations/operationsLabels";
 import {
   CheckCircle, XCircle, RefreshCw, Search, ChevronUp, ChevronDown,
   ArrowLeft, GitBranch, ExternalLink, Dot,
@@ -31,6 +33,25 @@ function statusFilterOptions(): { value: StatusFilter; label: string }[] {
 function formatTime(iso: string | null): string {
   if (!iso) return "—";
   return iso.replace("T", " ").slice(0, 19);
+}
+
+function taskTypeLabel(value: string): string {
+  const labels: Record<string, string> = {
+    macro_collect: "宏观采集",
+    macro_feature: "宏观特征",
+    report_render: "报告输出",
+    cme_download: "CME 下载",
+    cme_parse: "CME 解析",
+    cme_ingest: "CME 入库",
+    option_wall: "期权墙计算",
+    options_analysis: "期权分析",
+    technical: "技术行情处理",
+    positioning: "持仓处理",
+    news_collect: "新闻采集",
+    news_feature: "新闻特征",
+    report_analysis: "报告分析",
+  };
+  return labels[value] ?? operationReadableLabel(value, "任务类型尚未说明");
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -152,22 +173,22 @@ function TaskTable({
                   <div className="flex items-center gap-2">
                     <div className="w-0.5 h-4 rounded-full shrink-0" style={{ background: color }} />
                     <div>
-                      <div className="text-[9px] font-medium text-[var(--fg-2)] truncate max-w-[200px]">{run.task_name}</div>
-                      <div className="text-[7px] font-mono text-[var(--fg-6)]">{run.run_id.slice(0, 8)}</div>
+                      <div className="text-[9px] font-medium text-[var(--fg-2)] truncate max-w-[200px]">{taskTypeLabel(run.task_name)}</div>
+                      <div className="text-[7px] text-[var(--fg-6)]">运行记录 {evidenceLabel(run.run_id)}</div>
                     </div>
                   </div>
                 </td>
                 <td className="px-3 py-2">
                   <span className="rounded px-1.5 py-px text-[8px] font-semibold" style={{ background: `${color}18`, color }}>
-                    {CATEGORY_LABELS[run.category] ?? run.category}
+                    {CATEGORY_LABELS[run.category] ?? "分类待确认"}
                   </span>
-                  <div className="text-[7px] font-mono text-[var(--fg-6)] mt-0.5">{run.task_type}</div>
+                  <div className="text-[7px] text-[var(--fg-6)] mt-0.5">{taskTypeLabel(run.task_type)}</div>
                 </td>
                 <td className="px-3 py-2">
                   <span className="text-[9px] font-mono text-[var(--fg-3)]">{run.trade_date || "—"}</span>
                 </td>
                 <td className="px-3 py-2">
-                  <FAStatusPill tone={tone}>{formatStatus(run.status)}</FAStatusPill>
+                  <FAStatusPill tone={tone}>{operationStatusLabel(run.status) || formatStatus(run.status)}</FAStatusPill>
                 </td>
                 <td className="px-3 py-2">
                   <div className="text-[8px] font-mono text-[var(--fg-4)]">{time}</div>
@@ -178,7 +199,7 @@ function TaskTable({
                   )}
                 </td>
                 <td className="px-3 py-2 text-right">
-                  <span className="text-[9px] font-mono text-[var(--fg-3)]">{run.step_count || 0}</span>
+                  <span className="text-[9px] font-mono text-[var(--fg-3)]">{run.step_count == null ? "—" : run.step_count}</span>
                 </td>
                 <td className="px-2 py-2">
                   <Link
@@ -258,7 +279,7 @@ export function TaskScheduleListPage() {
   if (isLoading)
     return <PageShell><div className="flex justify-center py-20"><RefreshCw size={20} className="animate-spin text-[var(--fg-5)]" /></div></PageShell>;
   if (isError)
-    return <PageShell><div className="flex flex-col items-center py-20"><XCircle size={28} className="text-[var(--down)] mb-2" /><span className="text-sm text-[var(--fg-3)]">{error?.message ?? "加载失败"}</span><button onClick={refresh} className="mt-2 rounded border px-3 py-1 text-xs">重试</button></div></PageShell>;
+    return <PageShell><div className="flex flex-col items-center py-20"><XCircle size={28} className="mb-2 text-[var(--down)]" /><span className="text-sm text-[var(--fg-3)]">任务清单读取失败。</span>{error ? <div className="mt-3"><EvidenceRecordActions record={error.message} label="读取错误依据" /></div> : null}<button onClick={refresh} className="mt-2 rounded border px-3 py-1 text-xs">重试</button></div></PageShell>;
   if (!data) return null;
 
   const stats = {

@@ -12,9 +12,12 @@ const viewLabels: Record<string, string> = {
   "/rates-dollar": "利率与美元",
   "/oil-geopolitics": "石油与地缘",
   "/data-ingestion": "数据接入",
+  "/data-sources/": "数据来源详情",
+  "/processing-monitor": "加工监控",
   "/event-flow": "事件流",
   "/event-flow/": "事件详情",
   "/feishu-monitor": "飞书监控",
+  "/market-monitor/odds": "市场预期",
   "/market-monitor": "市场监控",
   "/cme-options": "期权结构",
   "/reports": "报告中心",
@@ -30,14 +33,14 @@ const viewLabels: Record<string, string> = {
   "/strategy": "策略决策台",
   "/settings": "系统设置",
   "/settings/audit": "审计日志",
-  "/settings/llm-audit": "LLM 调用审计",
+  "/settings/llm-audit": "模型调用审计",
 };
 
 function getViewLabel(pathname: string): string {
   const match = Object.entries(viewLabels)
     .sort((left, right) => right[0].length - left[0].length)
     .find(([prefix]) => pathname === prefix || pathname.startsWith(prefix));
-  return match?.[1] || pathname;
+  return match?.[1] || "研究工作台";
 }
 
 function formatLocalClock(value: Date): { date: string; time: string } {
@@ -90,8 +93,9 @@ export function AppHeader({ theme, onToggleTheme, headerContent }: AppHeaderProp
           <span className="text-finance-accent-soft">{timeStr} 本地</span>
         </div>
 
-        <button className="rounded-full border border-transparent p-2.5 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]" title="刷新" onClick={() => refetch()}>
+        <button className="inline-flex items-center gap-1.5 rounded-full border border-transparent px-2 py-2 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]" title="刷新数据源状态，不刷新当前分析结果" aria-label="刷新数据状态" onClick={() => refetch()}>
           <RefreshCw size={14} className="text-finance-text-muted" />
+          <span className="hidden sm:inline fa-label whitespace-nowrap">数据状态</span>
         </button>
         <button
           className="rounded-full border border-transparent p-2.5 transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-hover)]"
@@ -111,9 +115,9 @@ export function AppHeader({ theme, onToggleTheme, headerContent }: AppHeaderProp
             className="flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-bold text-white"
             style={{ background: "var(--brand-gradient)" }}
           >
-            T
+            研
           </div>
-          <span className="hidden text-[12px] text-finance-text-secondary md:block">研究员</span>
+          <span className="hidden text-[12px] text-finance-text-secondary md:block whitespace-nowrap">研究员</span>
         </div>
       </div>
     </header>

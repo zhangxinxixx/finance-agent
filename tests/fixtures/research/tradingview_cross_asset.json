@@ -1,0 +1,13 @@
+{
+  "totalCount": 8,
+  "data": [
+    {"s":"NYMEX:CL1!","d":[100.68,1788991200,"delayed_streaming_600","futures","NYMEX","USD","Crude Oil Futures",4.82,4.63,null,null,"market"]},
+    {"s":"ICEEUR:BRN1!","d":[106.25,1788998400,"delayed_streaming_600","futures","ICEEUR","USD","Brent Crude Futures",4.97,5.04,null,null,"market"]},
+    {"s":"TVC:DXY","d":[98.912,1788994800,"streaming","index","TVC","USD","U.S. Dollar Currency Index",0.13,0.13,98.912,1789055520,"market"]},
+    {"s":"TVC:US02Y","d":[4.533,1788994800,"streaming","bond","TVC",null,"United States 2 Year Government Bonds Yield",2.18,0.097,4.533,1789055520,"market"]},
+    {"s":"TVC:US03MY","d":[3.939002,1788994800,"streaming","bond","TVC",null,"United States 3 Month Government Bonds Yield",1.0,0.039,3.939002,1789053600,"market"]},
+    {"s":"TVC:US10Y","d":[4.922,1788994800,"streaming","bond","TVC",null,"United States 10 Year Government Bonds Yield",1.59,0.077,4.922,1789055520,"market"]},
+    {"s":"TVC:US30Y","d":[5.347,1788994800,"streaming","bond","TVC",null,"United States 30 Year Government Bonds Yield",1.02,0.054,5.347,1789055460,"market"]},
+    {"s":"OANDA:XAUUSD","d":[4368.87,1788987600,"streaming","commodity","OANDA","USD","Gold",-0.75,-33.24,4368.505,1789055520,"market"]}
+  ]
+}

@@ -39,8 +39,12 @@ require_exec "${PG_BIN}/pg_ctl"
 require_exec "${PG_BIN}/pg_isready"
 require_exec "${PG_BIN}/psql"
 require_dir "${PG_DATA}"
-require_exec "${REDIS_BIN}"
-require_exec "${REDIS_CLI}"
+REDIS_ENABLED="${FINANCE_AGENT_ENABLE_REDIS:-0}"
+case "${REDIS_ENABLED,,}" in
+  1|true|yes|on) REDIS_ENABLED=1; require_exec "${REDIS_BIN}"; require_exec "${REDIS_CLI}" ;;
+  0|false|no|off) REDIS_ENABLED=0 ;;
+  *) echo "Invalid FINANCE_AGENT_ENABLE_REDIS (expected boolean)" >&2; exit 1 ;;
+esac
 
 mkdir -p "${PG_SOCKET_DIR}"
 
@@ -60,7 +64,9 @@ else
     start
 fi
 
-if "${REDIS_CLI}" ping >/dev/null 2>&1; then
+if [[ "$REDIS_ENABLED" == "0" ]]; then
+  echo "Redis is optional and disabled (FINANCE_AGENT_ENABLE_REDIS=1 to enable)."
+elif "${REDIS_CLI}" ping >/dev/null 2>&1; then
   echo "Redis already running."
 else
   echo "Starting Redis..."
@@ -69,8 +75,10 @@ fi
 
 "${PG_BIN}/pg_isready" -h 127.0.0.1 -p "${PG_PORT}"
 "${PG_BIN}/psql" -h 127.0.0.1 -p "${PG_PORT}" -U finance_agent -d finance_agent -Atqc "select current_user || '@' || current_database();"
-"${REDIS_CLI}" ping
+if [[ "$REDIS_ENABLED" == "1" ]]; then
+  "${REDIS_CLI}" ping
+fi
 
 echo ""
 echo "Use this for finance-agent:"
-echo "export DATABASE_URL=postgresql://finance_agent:finance_agent@127.0.0.1:${PG_PORT}/finance_agent"
+echo "export DATABASE_URL=postgresql://finance_agent:CHANGE_ME@127.0.0.1:${PG_PORT}/finance_agent"

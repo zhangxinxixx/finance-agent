@@ -17,6 +17,7 @@ from apps.api.data_service import (
     get_macro_latest,
     get_macro_report_md,
 )
+from apps.api.services.macro_service import get_market_macro_latest
 from database.models.analysis import ensure_analysis_tables
 from database.queries.feature_snapshots import upsert_feature_snapshot
 
@@ -32,6 +33,24 @@ def _isolate_macro_api_from_runtime_db(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep filesystem discovery tests independent from the developer database."""
 
     monkeypatch.setattr(_TRY_DB_SESSION_PATCH, lambda: None)
+    monkeypatch.setattr("apps.api.services.macro_service.get_dashboard_research_context", lambda: None)
+
+
+def test_macro_latest_uses_registered_research_facts(monkeypatch):
+    monkeypatch.setattr("apps.api.services.macro_service.get_dashboard_research_context", lambda: {
+        "status": "available", "run_id": "new", "snapshot_id": "snap-new",
+        "macro": {"as_of": "2026-09-17", "indicators": {"REAL10Y": {"value": 2.68}}},
+    })
+    result = get_macro_latest()
+    assert result["as_of"] == "2026-09-17"
+    assert result["snapshot_id"] == "snap-new"
+    assert result["indicators"]["REAL10Y"]["value"] == 2.68
+
+
+def test_macro_latest_does_not_fallback_when_registered_research_invalid(monkeypatch):
+    monkeypatch.setattr("apps.api.services.macro_service.get_dashboard_research_context", lambda: {"status": "unavailable"})
+    monkeypatch.setattr("apps.api.services.macro_service._get_macro_latest_from_db", lambda: pytest.fail("old macro fallback"))
+    assert get_macro_latest() is None
 
 
 def _make_tree(root: Path, files: dict[str, str | None]) -> None:
@@ -190,6 +209,133 @@ def test_get_macro_latest_bad_json_raises(tmp_path: Path):
     with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
         with pytest.raises(json.JSONDecodeError):
             get_macro_latest()
+
+
+def test_get_market_macro_latest_returns_verified_registered_snapshot(tmp_path: Path):
+    db = _make_db_session()
+    payload = {
+        "as_of": "2026-09-28",
+        "indicators": {"US10Y": {"value": 4.12, "unit": "%"}},
+        "unavailable_symbols": [],
+    }
+    artifact = tmp_path / "storage/features/macro/2026-09-28/run-live/macro_snapshot.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    upsert_feature_snapshot(
+        db,
+        {
+            "snapshot_id": "feature:macro:macro_snapshot:2026-09-28:run-live",
+            "domain": "macro",
+            "snapshot_kind": "macro_snapshot",
+            "asset": "XAUUSD",
+            "trade_date": "2026-09-28",
+            "run_id": "run-live",
+            "status": "partial",
+            "payload": payload,
+            "artifact_path": str(artifact),
+            "source_refs": [{"source": "fred", "symbol": "DGS10"}],
+        },
+    )
+    db.commit()
+
+    with mock.patch("apps.api.services.macro_service._PROJECT_ROOT", tmp_path), mock.patch(
+        "apps.api.services.macro_service._try_db_session", return_value=db
+    ):
+        result = get_market_macro_latest()
+
+    assert result is not None
+    assert result["source"] == "registered_macro_feature_snapshot"
+    assert result["status"] == "partial"
+    assert result["run_id"] == "run-live"
+    assert result["snapshot_id"] == "feature:macro:macro_snapshot:2026-09-28:run-live"
+    assert result["artifact_path"] == str(artifact.resolve())
+    assert result["source_refs"] == [{"source": "fred", "symbol": "DGS10"}]
+    assert result["indicators"]["US10Y"]["value"] == 4.12
+
+
+def test_get_market_macro_latest_fails_closed_on_artifact_mismatch(tmp_path: Path):
+    db = _make_db_session()
+    payload = {"as_of": "2026-09-28", "indicators": {"US10Y": {"value": 4.12}}}
+    artifact = tmp_path / "storage/features/macro/2026-09-28/run-tampered/macro_snapshot.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(json.dumps({**payload, "indicators": {} }), encoding="utf-8")
+    upsert_feature_snapshot(
+        db,
+        {
+            "snapshot_id": "feature:macro:macro_snapshot:2026-09-28:run-tampered",
+            "domain": "macro",
+            "snapshot_kind": "macro_snapshot",
+            "asset": "XAUUSD",
+            "trade_date": "2026-09-28",
+            "run_id": "run-tampered",
+            "status": "success",
+            "payload": payload,
+            "artifact_path": str(artifact),
+        },
+    )
+    db.commit()
+
+    with mock.patch("apps.api.services.macro_service._PROJECT_ROOT", tmp_path), mock.patch(
+        "apps.api.services.macro_service._try_db_session", return_value=db
+    ):
+        assert get_market_macro_latest() is None
+
+
+def test_get_market_macro_latest_fails_closed_without_payload_hash(tmp_path: Path):
+    db = _make_db_session()
+    payload = {"as_of": "2026-09-28", "indicators": {"US10Y": {"value": 4.12}}}
+    artifact = tmp_path / "storage/features/macro/2026-09-28/run-no-hash/macro_snapshot.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    row = upsert_feature_snapshot(
+        db,
+        {
+            "snapshot_id": "feature:macro:macro_snapshot:2026-09-28:run-no-hash",
+            "domain": "macro",
+            "snapshot_kind": "macro_snapshot",
+            "asset": "XAUUSD",
+            "trade_date": "2026-09-28",
+            "run_id": "run-no-hash",
+            "status": "success",
+            "payload": payload,
+            "artifact_path": str(artifact),
+        },
+    )
+    row.payload_sha256 = ""
+    db.commit()
+
+    with mock.patch("apps.api.services.macro_service._PROJECT_ROOT", tmp_path), mock.patch(
+        "apps.api.services.macro_service._try_db_session", return_value=db
+    ):
+        assert get_market_macro_latest() is None
+
+
+def test_get_market_macro_latest_fails_closed_on_as_of_mismatch(tmp_path: Path):
+    db = _make_db_session()
+    payload = {"as_of": "2026-09-27", "indicators": {"US10Y": {"value": 4.12}}}
+    artifact = tmp_path / "storage/features/macro/2026-09-28/run-date-mismatch/macro_snapshot.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    upsert_feature_snapshot(
+        db,
+        {
+            "snapshot_id": "feature:macro:macro_snapshot:2026-09-28:run-date-mismatch",
+            "domain": "macro",
+            "snapshot_kind": "macro_snapshot",
+            "asset": "XAUUSD",
+            "trade_date": "2026-09-28",
+            "run_id": "run-date-mismatch",
+            "status": "success",
+            "payload": payload,
+            "artifact_path": str(artifact),
+        },
+    )
+    db.commit()
+
+    with mock.patch("apps.api.services.macro_service._PROJECT_ROOT", tmp_path), mock.patch(
+        "apps.api.services.macro_service._try_db_session", return_value=db
+    ):
+        assert get_market_macro_latest() is None
 
 
 # ── get_macro_report_md ──

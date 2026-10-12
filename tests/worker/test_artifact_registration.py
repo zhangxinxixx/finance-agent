@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -78,3 +79,28 @@ def test_registers_gold_policy_shadow_artifacts_with_observe_lineage(
         "gold_policy_feature_snapshot": f"feature_snapshot.{version}:test",
         "gold_policy_previous_feature_snapshot": f"feature_snapshot.{version}:previous",
     }
+
+
+def test_registers_composite_artifacts_under_strategy_step_when_report_step_is_absent(monkeypatch) -> None:
+    captured: dict = {}
+
+    def capture(*args, **kwargs):
+        captured["args"] = args
+        captured.update(kwargs)
+
+    monkeypatch.setattr("apps.worker.artifact_registration.register_step_artifacts", capture)
+    register_composite_output_artifacts(
+        object(),
+        run_id="run-canonical",
+        steps=[_Step("strategy_card")],
+        composite_outputs={
+            "agent_loop_decision": SimpleNamespace(publish_allowed=True),
+            "report_result": {"paths": ["storage/outputs/final_report/run-canonical/final_report.md"]},
+            "card_result": {"paths": ["storage/outputs/strategy_card/run-canonical/strategy_card.json"]},
+            "strategy_card": SimpleNamespace(source_refs=[], input_snapshot_ids={}),
+        },
+        analysis_snapshot={"source_refs": [], "input_snapshot_ids": {}},
+    )
+
+    assert captured["step"].name == "strategy_card"
+    assert captured["output_refs"]

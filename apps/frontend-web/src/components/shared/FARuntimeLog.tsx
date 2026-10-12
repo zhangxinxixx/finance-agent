@@ -1,3 +1,4 @@
+import { ResearchDetails } from "./ResearchDetails";
 import type { ReactNode } from "react";
 
 export type FARuntimeLogLevel = "debug" | "info" | "warn" | "error" | "success";
@@ -24,9 +25,17 @@ const levelClass: Record<FARuntimeLogLevel, string> = {
   success: "text-[var(--up)]",
 };
 
+const levelLabel: Record<FARuntimeLogLevel, string> = {
+  debug: "调试",
+  info: "信息",
+  warn: "警告",
+  error: "错误",
+  success: "成功",
+};
+
 export function FARuntimeLog({ entries, emptyText = "暂无运行日志", className = "" }: FARuntimeLogProps) {
   return (
-    <div
+    <ResearchDetails label="查看运行日志"><div
       className={`rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-terminal)] p-2 font-mono text-[10px] leading-relaxed shadow-[inset_0_1px_0_var(--border-faint)] ${className}`}
     >
       {entries.length === 0 ? (
@@ -38,7 +47,7 @@ export function FARuntimeLog({ entries, emptyText = "暂无运行日志", classN
             return (
               <div key={entry.id} className="grid grid-cols-[72px_54px_minmax(0,1fr)] gap-2 rounded-[var(--radius-sm)] px-2 py-1 hover:bg-[var(--bg-hover)]">
                 <span className="text-[var(--fg-5)]">{entry.time ?? "--:--:--"}</span>
-                <span className={`font-semibold uppercase ${levelClass[level]}`}>{level}</span>
+                <span className={`font-semibold ${levelClass[level]}`}>{levelLabel[level]}</span>
                 <span className="min-w-0 truncate text-[var(--fg-3)]">
                   {entry.source ? <span className="mr-2 text-[var(--fg-5)]">[{entry.source}]</span> : null}
                   {entry.message}
@@ -48,6 +57,6 @@ export function FARuntimeLog({ entries, emptyText = "暂无运行日志", classN
           })}
         </div>
       )}
-    </div>
+    </div></ResearchDetails>
   );
 }

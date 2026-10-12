@@ -35,26 +35,22 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Storage raw data (large files)
-storage/raw/*
-!storage/raw/.gitkeep
-storage/parsed/*
-!storage/parsed/.gitkeep
-storage/features/*
-!storage/features/.gitkeep
-storage/outputs/*
-!storage/outputs/.gitkeep
-storage/logs/*
-!storage/logs/.gitkeep
+# Runtime data stays local, including newly introduced storage domains.
+# Versioned regression samples belong in tests/fixtures/, not storage/.
+/storage/**
+!/storage/raw/
+!/storage/raw/.gitkeep
+!/storage/parsed/
+!/storage/parsed/.gitkeep
+!/storage/features/
+!/storage/features/.gitkeep
+!/storage/outputs/
+!/storage/outputs/.gitkeep
 logs/
 
-# Local generated analysis, monitoring, and orchestration artifacts
-/storage/analysis/
-/storage/data_control/
-/storage/event_sla/
-/storage/monitoring/
-/storage/orchestration/
-/storage/probes/
+# Local architecture analysis and language-server output.
+# Keep reviewed documentation in docs/ and generation evidence in workbench.
+/.codeboarding/
 
 # Test fixtures can be committed, but not large PDFs over 5MB
 tests/fixtures/**/*.pdf
@@ -78,10 +74,6 @@ output/playwright-mcp/
 # Legacy root-level parsed scratch dir (canonical path is storage/parsed/)
 /parsed/
 
-# Local worker checkpoint state
-/storage/state/*
-!/storage/state/.gitkeep
-
 # Codex
 .codex/context/
 .codex/plans/
@@ -92,6 +84,17 @@ output/playwright-mcp/
 
 # Local agent / Claude skill bundles
 .agents/
+# Keep only the reviewed gold research skills in the project. Other local
+# agent bundles remain ignored.
+!/.agents/
+/.agents/*
+!/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/gold-market-analysis/
+!/.agents/skills/macro-rates-analysis/
+!/.agents/skills/liquidity-analysis/
+!/.agents/skills/gold-flow-analysis/
+!/.agents/skills/cme-gold-options-analysis/
 .claude/
 .codex/
 
@@ -103,7 +106,6 @@ output/playwright-mcp/
 
 # Local generated market/archive artifacts
 /raw/
-storage/archive/
 
 # Local Hermes run staging and spike scripts
 .hermes/

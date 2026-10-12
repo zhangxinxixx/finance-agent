@@ -33,25 +33,19 @@ def test_jin10_cache_refresh_scheduler_preserves_registered_jobs_and_startup_ref
             started_threads.append((self.name, self.target))
 
     refreshers = {
-        "quotes": object(),
-        "kline": object(),
         "calendar": object(),
         "flash": object(),
         "web_flash": object(),
         "web_article_analysis": object(),
         "twelvedata": object(),
-        "market_candles_daily": object(),
     }
     monkeypatch.setattr(service, "BackgroundScheduler", FakeScheduler)
     monkeypatch.setattr(service, "Thread", FakeThread)
-    monkeypatch.setattr(service, "refresh_jin10_quotes_cache", refreshers["quotes"])
-    monkeypatch.setattr(service, "refresh_jin10_kline_cache", refreshers["kline"])
     monkeypatch.setattr(service, "refresh_jin10_calendar_cache", refreshers["calendar"])
     monkeypatch.setattr(service, "refresh_jin10_flash_cache", refreshers["flash"])
     monkeypatch.setattr(service, "refresh_jin10_web_flash_briefs", refreshers["web_flash"])
     monkeypatch.setattr(service, "refresh_jin10_web_article_analysis", refreshers["web_article_analysis"])
     monkeypatch.setattr(service, "refresh_due_twelvedata_xauusd", refreshers["twelvedata"])
-    monkeypatch.setattr(service, "refresh_market_candle_daily_cache", refreshers["market_candles_daily"])
     monkeypatch.setattr(
         service,
         "record_jin10_refresh",
@@ -64,8 +58,6 @@ def test_jin10_cache_refresh_scheduler_preserves_registered_jobs_and_startup_ref
     interval_jobs = [job for job in jobs if job["trigger"] == "interval"]
     cron_jobs = [job for job in jobs if job["trigger"] == "cron"]
     assert [(job["id"], job["minutes"]) for job in interval_jobs] == [
-        ("jin10_quotes_refresh", 15),
-        ("jin10_kline_refresh", 1),
         ("jin10_calendar_refresh", 60),
         ("jin10_flash_refresh", 15),
         ("jin10_web_flash_refresh", 5),
@@ -76,36 +68,21 @@ def test_jin10_cache_refresh_scheduler_preserves_registered_jobs_and_startup_ref
         job["coalesce"] is True and job["max_instances"] == 1 and job["misfire_grace_time"] == 30
         for job in interval_jobs
     )
-    assert [job["id"] for job in cron_jobs] == [
-        "twelvedata_xauusd_dispatch_refresh",
-        "market_candles_daily_refresh",
-    ]
-    assert cron_jobs[0]["minute"] == "1,6,11,16,21,26,31,36,41,46,51,56"
-    assert cron_jobs[0]["second"] == 30
-    assert (cron_jobs[1]["hour"], cron_jobs[1]["minute"], cron_jobs[1]["second"]) == (13, 10, 0)
-    assert all(job["timezone"] == "UTC" for job in cron_jobs)
-    assert all(job["coalesce"] is True and job["max_instances"] == 1 for job in cron_jobs)
+    assert cron_jobs == []
 
     for job in jobs:
         job["func"]()
     assert [item[0] for item in recorded] == [
-        "jin10_quotes",
-        "jin10_kline",
         "jin10_calendar",
         "jin10_flash",
         "jin10_web_flash",
         "jin10_web_article_analysis",
-        "twelvedata_xauusd_dispatch",
-        "market_candles_daily",
     ]
-    assert started_threads == [
-        ("startup-quotes", refreshers["quotes"]),
-        ("startup-kline", refreshers["kline"]),
-        ("startup-flash", refreshers["flash"]),
-        ("startup-web-flash", refreshers["web_flash"]),
-        ("startup-web-article-analysis", refreshers["web_article_analysis"]),
-        ("startup-market-daily", refreshers["market_candles_daily"]),
-    ]
+    assert [name for name, _ in started_threads] == ["startup-flash", "startup-web-flash", "startup-web-article-analysis"]
+    for _, target in started_threads:
+        target()
+    assert [item[0] for item in recorded[4:]] == ["jin10_flash", "jin10_web_flash", "jin10_web_article_analysis"]
+    assert [item[2] for item in recorded[4:]] == [refreshers[key] for key in ("flash", "web_flash", "web_article_analysis")]
 
 
 def test_stop_jin10_cache_refresh_scheduler_uses_non_blocking_shutdown() -> None:
@@ -122,7 +99,98 @@ def test_stop_jin10_cache_refresh_scheduler_uses_non_blocking_shutdown() -> None
     assert calls == [False]
 
 
-def test_jin10_cache_refresh_scheduler_can_limit_jobs_to_kline(monkeypatch) -> None:
+@pytest.mark.parametrize("configured", [None, "", "*", "market_candles_daily"])
+def test_default_or_wildcard_does_not_schedule_local_candle_collection(monkeypatch, configured):
+    from apps.api.services import jin10_cache_refresh_scheduler as service
+
+    jobs = []
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+    if configured is None:
+        monkeypatch.delenv("FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS", raising=False)
+    else:
+        monkeypatch.setenv("FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS", configured)
+
+    class Scheduler:
+        def __init__(self, **kwargs):
+            pass
+
+        def add_job(self, func, trigger, **kwargs):
+            jobs.append(kwargs["id"])
+
+        def start(self):
+            pass
+
+    class Thread:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(service, "BackgroundScheduler", Scheduler)
+    monkeypatch.setattr(service, "Thread", Thread)
+    service.start_jin10_cache_refresh_scheduler()
+    assert jobs == []
+
+
+def test_retired_daily_refresh_is_ignored_with_clear_log(monkeypatch, caplog) -> None:
+    from apps.api.services import jin10_cache_refresh_scheduler as service
+
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+    monkeypatch.setenv("FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS", "market_candles_daily")
+
+    class Scheduler:
+        def __init__(self, **kwargs):
+            pass
+
+        def add_job(self, *args, **kwargs):
+            raise AssertionError("retired market-candle refresh must not be registered")
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(service, "BackgroundScheduler", Scheduler)
+    service.start_jin10_cache_refresh_scheduler()
+
+    assert "Ignoring retired API background refresh jobs market_candles_daily" in caplog.text
+    assert "TradingView" in caplog.text
+
+
+@pytest.mark.parametrize("configured", ["twelvedata_xauusd_dispatch", "twelvedata_xauusd_5m"])
+def test_explicit_intraday_validation_keeps_audited_serial_dispatch(monkeypatch, configured):
+    from apps.api.services import jin10_cache_refresh_scheduler as service
+
+    jobs, calls = [], []
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+    monkeypatch.setenv("FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS", configured)
+
+    class Scheduler:
+        def __init__(self, **kwargs):
+            pass
+
+        def add_job(self, func, trigger, **kwargs):
+            jobs.append({"func": func, "trigger": trigger, **kwargs})
+
+        def start(self):
+            pass
+
+    def audited(task_type, task_name, refresher):
+        calls.append((task_type, refresher))
+
+    monkeypatch.setattr(service, "BackgroundScheduler", Scheduler)
+    monkeypatch.setattr(service, "record_jin10_refresh", audited)
+    service.start_jin10_cache_refresh_scheduler()
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job["id"] == "twelvedata_xauusd_dispatch_refresh"
+    assert job["minute"] == "1,6,11,16,21,26,31,36,41,46,51,56"
+    assert job["second"] == 30 and job["timezone"] == "UTC"
+    assert job["max_instances"] == 1 and job["coalesce"] is True
+    job["func"]()
+    assert calls == [("twelvedata_xauusd_dispatch", service.refresh_due_twelvedata_xauusd)]
+
+
+def test_jin10_cache_refresh_scheduler_cannot_reenable_retired_numeric_jobs(monkeypatch) -> None:
     from apps.api.services import jin10_cache_refresh_scheduler as service
 
     monkeypatch.delenv("FINANCE_AGENT_DISABLE_JIN10", raising=False)
@@ -141,7 +209,7 @@ def test_jin10_cache_refresh_scheduler_can_limit_jobs_to_kline(monkeypatch) -> N
 
     class FakeThread:
         def __init__(self, *, target, daemon: bool, name: str) -> None:
-            assert target is service.refresh_jin10_kline_cache
+            raise AssertionError("retired numeric job must not start")
             assert daemon is True
             self.name = name
 
@@ -154,11 +222,11 @@ def test_jin10_cache_refresh_scheduler_can_limit_jobs_to_kline(monkeypatch) -> N
 
     service.start_jin10_cache_refresh_scheduler()
 
-    assert jobs == ["jin10_kline_refresh"]
-    assert threads == ["startup-kline"]
+    assert jobs == []
+    assert threads == []
 
 
-def test_jin10_cache_refresh_scheduler_keeps_non_jin10_market_jobs_when_jin10_is_disabled(monkeypatch) -> None:
+def test_jin10_cache_refresh_scheduler_keeps_explicit_intraday_validation_when_jin10_is_disabled(monkeypatch) -> None:
     from apps.api.services import jin10_cache_refresh_scheduler as service
 
     jobs: list[str] = []
@@ -192,8 +260,8 @@ def test_jin10_cache_refresh_scheduler_keeps_non_jin10_market_jobs_when_jin10_is
 
     service.start_jin10_cache_refresh_scheduler()
 
-    assert jobs == ["twelvedata_xauusd_dispatch_refresh", "market_candles_daily_refresh"]
-    assert started_threads == [("startup-market-daily", service.refresh_market_candle_daily_cache)]
+    assert jobs == ["twelvedata_xauusd_dispatch_refresh"]
+    assert started_threads == []
 
 
 @pytest.mark.anyio

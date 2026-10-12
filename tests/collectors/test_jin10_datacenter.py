@@ -137,6 +137,7 @@ def test_parse_datacenter_js_normalizes_nonfarm_payrolls_rows() -> None:
         NONFARM_JS,
         slug="dc_nonfarm_payrolls",
         report_name="美国非农就业报告",
+        reference_date="2026-06-07",
     )
 
     data = parsed.to_dict()

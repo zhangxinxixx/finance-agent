@@ -4,6 +4,7 @@ import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { resetSettingsSecret, updateSettingsSecret } from "@/adapters/settings";
 import type { SettingsDataSource } from "@/adapters/settings";
 import { formatSettingsTime } from "./settingsFormat";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 function SecretRow({
   source,
@@ -33,7 +34,7 @@ function SecretRow({
       setMessage("已保存");
       onSaved(`${source.name} 密钥已保存`);
     } catch (cause) {
-      const description = cause instanceof Error ? cause.message : "保存失败";
+      const description = readingErrorMessage(cause, "保存失败，请稍后重试。" );
       setMessage(description);
       onError(`${source.name} 保存失败`, description);
     } finally {
@@ -54,7 +55,7 @@ function SecretRow({
       setMessage("已清除");
       onSaved(`${source.name} 密钥已清除`);
     } catch (cause) {
-      const description = cause instanceof Error ? cause.message : "清除失败";
+      const description = readingErrorMessage(cause, "清除失败，请稍后重试。" );
       setMessage(description);
       onError(`${source.name} 清除失败`, description);
     } finally {
@@ -72,7 +73,7 @@ function SecretRow({
         <div className="flex items-center gap-2">
           <span className="fa-num text-[10px] text-[var(--fg-3)]">{source.apiKeyMasked ?? "未配置"}</span>
           <FAStatusPill tone={source.secretConfigured ? "info" : "dim"}>
-            {source.secretConfigured ? "CONFIGURED" : "UNCONFIGURED"}
+            {source.secretConfigured ? "已配置" : "未配置"}
           </FAStatusPill>
         </div>
       </div>
@@ -82,7 +83,7 @@ function SecretRow({
             type="password"
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            placeholder="输入新的 API Key"
+            placeholder="输入新的访问密钥"
             className="h-8 flex-1 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 text-[11px] text-[var(--fg-2)] outline-none placeholder:text-[var(--fg-5)]"
           />
           <button
@@ -119,7 +120,7 @@ interface SecretSettingsPanelProps {
 
 export function SecretSettingsPanel({ sources, onSaved, onError }: SecretSettingsPanelProps) {
   return (
-    <FACard title="密钥状态" eyebrow="Encrypted Secret Storage" accent="warn" bodyClassName="space-y-2">
+    <FACard title="密钥状态" eyebrow="加密存储" accent="warn" bodyClassName="space-y-2">
       {sources.map((source) => (
         <SecretRow key={source.id} source={source} onSaved={onSaved} onError={onError} />
       ))}

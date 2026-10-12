@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from apps.runtime.storage_paths import configured_storage_root, remap_storage_path
 
 LOCAL_FS_STORAGE_BACKEND = "local_fs"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -18,9 +19,12 @@ class LocalFileSystemArtifactStorage:
     backend_name: str = LOCAL_FS_STORAGE_BACKEND
 
     def resolve(self, file_path: str) -> Path:
-        path = Path(file_path)
+        storage_root = configured_storage_root() if self.root == _PROJECT_ROOT else None
+        path = remap_storage_path(file_path, storage_root=storage_root or self.root / "storage")
         if path.is_absolute():
             return path
+        if storage_root and path.parts[:1] == ("storage",):
+            return storage_root.joinpath(*path.parts[1:])
         return self.root / path
 
     def exists(self, file_path: str) -> bool:

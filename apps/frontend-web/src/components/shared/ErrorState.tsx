@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import type { ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 
@@ -22,7 +23,7 @@ export function ErrorState({
     <div className={`finance-panel flex flex-col items-center justify-center gap-2 border-[var(--down-border)] bg-[var(--down-soft)] p-6 text-center ${className}`}>
       <AlertTriangle size={20} className="text-finance-bearish" />
       <div className="text-sm font-semibold text-finance-text-primary">{title}</div>
-      <div className="max-w-md text-xs leading-relaxed text-finance-text-secondary">{message}</div>
+      <div className="max-w-md text-xs leading-relaxed text-finance-text-secondary">{readableWarning(message)}</div>
       {onRetry ? (
         <button
           type="button"

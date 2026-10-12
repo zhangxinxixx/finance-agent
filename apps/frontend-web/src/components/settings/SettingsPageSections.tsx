@@ -13,12 +13,13 @@ import type { SettingsDataSource } from "@/adapters/settings";
 import type { SettingsTab, SettingsBannerState } from "@/hooks/useSettingsPage";
 import type { useAgentRegistry } from "@/hooks/useAgentRegistry";
 import type { useSettings } from "@/hooks/useSettings";
+import { readerSource } from "@/lib/readerLabels";
 
 export const SETTINGS_TABS: FATabOption<SettingsTab>[] = [
   { value: "general", label: "通用设置" },
   { value: "datasource", label: "数据源接入" },
   { value: "api-key", label: "API 密钥" },
-  { value: "agents", label: "Agent 管理" },
+  { value: "agents", label: "智能体管理" },
 ];
 
 export function SettingsPageHeader({
@@ -33,9 +34,9 @@ export function SettingsPageHeader({
   return (
     <FACard
       title="设置"
-      eyebrow="FinAnalytics Pro"
+      eyebrow="系统设置"
       accent="brand"
-      action={<FAStatusPill tone="info">{source}</FAStatusPill>}
+      action={<FAStatusPill tone="info">配置来源：{readerSource(source, "配置接口")}</FAStatusPill>}
       bodyClassName="space-y-3"
     >
       <FASectionHeader title="配置与接入" />

@@ -11,6 +11,13 @@ import { LoadingSkeleton } from "@/components/shared/LoadingSkeleton";
 import { buildMarketMonitorTabOptions, type MarketMonitorTab } from "@/components/market-monitor/marketMonitorPageModel";
 import type { MarketOddsEvidenceViewModel } from "@/types/reports";
 
+function sourceVerificationLabel(value: string | null | undefined): string {
+  if (value === "verified" || value === "accepted") return "来源已核验";
+  if (value === "needs_review" || value === "pending") return "来源待复核";
+  if (!value) return "来源状态未提供";
+  return "来源核验状态待确认";
+}
+
 export function MarketOddsPage() {
   const navigate = useNavigate();
   const [evidence, setEvidence] = useState<MarketOddsEvidenceViewModel | null>(null);
@@ -44,7 +51,7 @@ export function MarketOddsPage() {
   }, [reloadToken]);
 
   const itemCount = evidence?.groups.reduce((count, group) => count + group.items.length, 0) ?? 0;
-  const dataDate = evidence?.trade_date ?? evidence?.as_of.slice(0, 10) ?? "—";
+  const dataDate = evidence?.trade_date || (evidence?.as_of ? evidence.as_of.slice(0, 10) : "—");
 
   function handleTabChange(tab: MarketMonitorTab) {
     if (tab === "odds") return;
@@ -71,9 +78,10 @@ export function MarketOddsPage() {
           primaryLabel="数据状态"
           primaryItems={evidence ? [
             { label: "日期", value: dataDate },
-            { label: "面板", value: evidence.panel_count },
+            { label: "面板", value: String(evidence.panel_count ?? "—") },
             { label: "赔率项", value: itemCount },
             { label: "识别", value: evidence.extraction_status === "accepted" ? "通过" : "待复核" },
+            { label: "来源", value: sourceVerificationLabel(evidence.source_verification_status) },
           ] : []}
           secondaryLabel="用途"
           secondaryItems={[{ label: "定位", value: "单源辅助证据" }]}
@@ -105,7 +113,8 @@ export function MarketOddsPage() {
             <div className="min-w-0">
               <h1 className="fa-section-title">外部事件定价</h1>
               <p className="mt-0.5 fa-muted-text">
-                赔率反映外部市场对事件结果的定价，只作为研究辅助证据；点击任一条目可核对原图、OCR 和来源锚点。
+                赔率反映外部市场对事件结果的定价，只作为研究辅助证据；点击条目可核对详细证据。
+                {evidence.analysis_context ? " 页面仅展示后端已返回的解释，不补写影响结论。" : " 当前未提供中文影响解释，请以原始条目和报告为准。"}
               </p>
             </div>
           </section>

@@ -15,6 +15,11 @@ from apps.features.options.black76 import sort_expiry_codes
 SCHEMA_VERSION = "cme_options_decision.v1"
 _MODEL_GEX_NOTICE = "Model GEX is a Black-76/proxy estimate, not real dealer inventory."
 _NEARBY_OI_DISTANCE_PCT = 6.0
+_GC_COORDINATE_SPACE = "GC futures"
+_SPOT_COORDINATE_SPACE = "XAUUSD spot"
+_BASIS_UNVALIDATED_REASON = (
+    "XAUUSD spot→GC futures basis is unvalidated; live spot cannot drive the GC gamma regime or intraday levels."
+)
 
 
 def build_options_decision(
@@ -60,7 +65,12 @@ def build_options_decision(
     if trade_date and current and trade_date not in history:
         history_count += 1
 
-    intraday = _intraday_strategy(gamma, key_levels, usable_live_p0)
+    intraday = _intraday_strategy(
+        gamma,
+        key_levels,
+        usable_live_p0,
+        live_price_reason=prices.get("live_price_unavailable_reason"),
+    )
     swing = _swing_strategy(history, current, roll, key_levels)
     intent_summary = _intent_summary(snapshot)
     structure_summary = _structure_summary(
@@ -76,7 +86,10 @@ def build_options_decision(
     if previous is None:
         warnings.append("Previous-trade-date CME rows are unavailable; 1d comparisons are null.")
     if usable_live_p0 is None:
-        warnings.append("Canonical XAUUSD 5m live price is unavailable; intraday strategy is disabled.")
+        if prices.get("basis_status") != "validated":
+            warnings.append(str(prices.get("live_price_unavailable_reason") or _BASIS_UNVALIDATED_REASON))
+        else:
+            warnings.append("Canonical XAUUSD 5m live price is unavailable; intraday strategy is disabled.")
         if prices.get("live_price_status") not in {None, "fresh", "unavailable"}:
             warnings.append(f"Canonical XAUUSD 5m live price is {prices['live_price_status']}.")
         if prices.get("live_price_coverage_status") == "degraded":
@@ -97,6 +110,7 @@ def build_options_decision(
         "status": status,
         "meta": {
             "current_trade_date": trade_date or None,
+            "generated_at": snapshot.get("generated_at"),
             "previous_trade_date": previous_trade_date,
             "product": _nested(snapshot, "data_source", "product") or _first(current, "product_code") or "OG",
             "lookback_days": lookback_days,
@@ -133,6 +147,9 @@ def build_options_decision(
                 "source": prices.get("live_p0_source"),
                 "freshness_seconds": prices.get("live_price_freshness_seconds"),
                 "coverage_status": prices.get("live_price_coverage_status"),
+                "coordinate_space": prices.get("live_coordinate_space"),
+                "basis_status": prices.get("basis_status"),
+                "basis_reason": prices.get("basis_reason"),
             },
             "gamma_zero_method": gamma.get("method"),
             "position_reference_price": position_reference,
@@ -364,19 +381,78 @@ def _pnt_summary(current: list[dict[str, Any]], *, limit: int = 10) -> dict[str,
 def _intent_summary(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     intent = _nested(snapshot, "intent") or {}
     audit = _nested(snapshot, "audit", "intent_audit") or {}
+    intent_type = intent.get("type") or audit.get("intent_label")
+    score = _number_or_none(intent.get("score"))
+    confidence = _number_or_none(intent.get("confidence"))
+    audit_confidence = _number_or_none(audit.get("intent_confidence"))
+    score = score if score is not None else audit_confidence
+    confidence = confidence if confidence is not None else audit_confidence
+    scores = {
+        "I1_defensive": _number_or_none(audit.get("defense_score")),
+        "I2_structured_rebalance": _number_or_none(audit.get("rebalance_score")),
+        "I3_trap": _number_or_none(audit.get("trap_score")),
+        "I4_trend_launch": _number_or_none(audit.get("trend_score")),
+    }
+    wording = audit.get("wording")
+    if _intent_code(wording) != _intent_code(intent_type):
+        wording = _consistent_intent_wording(
+            intent_type,
+            score=score,
+            confidence=confidence,
+            scores=scores,
+        )
     return {
-        "type": intent.get("type") or audit.get("intent_label"),
-        "score": _number_or_none(intent.get("score")),
-        "confidence": _number_or_none(intent.get("confidence")),
-        "wording": audit.get("wording"),
-        "scores": {
-            "I1_defensive": _number_or_none(audit.get("defense_score")),
-            "I2_structured_rebalance": _number_or_none(audit.get("rebalance_score")),
-            "I3_trap": _number_or_none(audit.get("trap_score")),
-            "I4_trend_launch": _number_or_none(audit.get("trend_score")),
-        },
+        "type": intent_type,
+        "score": score,
+        "confidence": confidence,
+        "wording": wording,
+        "scores": scores,
         "evidence": [str(item) for item in intent.get("evidence") or []],
     }
+
+
+def _intent_code(value: Any) -> str | None:
+    """Return the canonical I1-I4 code from an intent label or wording."""
+    text = str(value or "").strip().lower()
+    for code in ("i1", "i2", "i3", "i4", "l1", "l2", "l3", "l4"):
+        if text.startswith(code):
+            return f"I{code[-1]}"
+    return None
+
+
+def _consistent_intent_wording(
+    intent_type: Any,
+    *,
+    score: float | None,
+    confidence: float | None,
+    scores: Mapping[str, float | None],
+) -> str | None:
+    """Build a type-consistent, non-confirmatory fallback for stale audit text."""
+    code = _intent_code(intent_type)
+    if code is None:
+        return None
+    labels = {
+        "I1": "I1 防守型",
+        "I2": "I2 结构化再平衡",
+        "I3": "I3 诱多/诱空",
+        "I4": "I4 趋势启动",
+    }
+    score_value = score if score is not None else scores.get({
+        "I1": "I1_defensive",
+        "I2": "I2_structured_rebalance",
+        "I3": "I3_trap",
+        "I4": "I4_trend_launch",
+    }[code])
+    parts = [labels[code]]
+    if score_value is not None:
+        parts.append(f"评分 {score_value:.2f}")
+    if code == "I4":
+        parts.extend(("尚未构成趋势确认", "待价格与后续 OI 验证"))
+    elif code == "I3":
+        parts.append("待价格确认")
+    if confidence is not None and confidence < 0.6:
+        parts.append("置信度中低")
+    return "，".join(parts)
 
 
 def _structure_summary(
@@ -390,16 +466,46 @@ def _structure_summary(
     net_gex = _number_or_none(gamma.get("net_gex"))
     net_gex_change = _number_or_none(gamma_changes.get("net_gex_change_1d"))
     gamma_zero = _number_or_none(gamma.get("gamma_zero"))
-    reference_price = _number_or_none(prices.get("live_p0")) or _number_or_none(prices.get("report_p0"))
+    # Gamma Zero and wall strikes are GC futures coordinates.  Keep the
+    # structural comparison on the report anchor unless a validated GC
+    # equivalent live price was explicitly supplied.
+    reference_price = _number_or_none(prices.get("report_p0"))
+    reference_price_source = "report_p0" if reference_price is not None else None
+    if reference_price is None:
+        reference_price = _usable_live_p0(prices)
+        reference_price_source = "gc_equivalent_live_p0" if reference_price is not None else None
     below_zero = reference_price is not None and gamma_zero is not None and reference_price < gamma_zero
+    gamma_zero_relation = (
+        "below"
+        if below_zero
+        else "at"
+        if reference_price is not None and gamma_zero is not None and reference_price == gamma_zero
+        else "above"
+        if reference_price is not None and gamma_zero is not None
+        else "unavailable"
+    )
     repair = net_gex is not None and net_gex < 0 and net_gex_change is not None and net_gex_change > 0
     call_change = _number_or_none(swing.get("call_oi_change"))
     put_change = _number_or_none(swing.get("put_oi_change"))
     trend_watch = repair and call_change is not None and call_change > max(put_change or 0.0, 0.0)
-    trend_confirmed = net_gex is not None and net_gex >= 0 and not below_zero
+    execution_scope = "gc_report_only" if prices.get("basis_status") != "validated" else "gc_live_basis_validated"
+    trend_confirmed = (
+        net_gex is not None
+        and net_gex >= 0
+        and gamma_zero_relation == "above"
+        and execution_scope == "gc_live_basis_validated"
+    )
+    report_trend_signal = (
+        execution_scope == "gc_report_only"
+        and net_gex is not None
+        and net_gex >= 0
+        and gamma_zero_relation == "above"
+    )
     state = (
         "trend_confirmed"
         if trend_confirmed
+        else "gc_report_trend"
+        if report_trend_signal
         else "negative_gamma_repair"
         if repair
         else "negative_gamma_defensive"
@@ -413,24 +519,42 @@ def _structure_summary(
         "negative_gamma_repair": "负 Gamma 区内结构修复",
         "negative_gamma_defensive": "负 Gamma 防守结构",
         "balanced": "结构接近平衡",
+        "gc_report_trend": "GC报告正 Gamma 结构",
         "unavailable": "结构不可用",
     }
     return {
         "state": state,
         "label": labels[state],
         "reference_price": reference_price,
+        "reference_price_source": reference_price_source,
+        "reference_coordinate_space": _GC_COORDINATE_SPACE,
         "gamma_zero": gamma_zero,
         "below_gamma_zero": below_zero,
+        "gamma_zero_relation": gamma_zero_relation,
         "net_gex": net_gex,
         "net_gex_change": net_gex_change,
         "repair_detected": repair,
         "trend_launch_watch": trend_watch,
         "trend_confirmed": trend_confirmed,
+        "execution_scope": execution_scope,
+        "execution_note": (
+            _BASIS_UNVALIDATED_REASON
+            if prices.get("basis_status") != "validated"
+            else "GC futures structure may be compared with the validated GC-equivalent live price."
+        ),
         "intent_type": intent.get("type"),
         "intent_wording": intent.get("wording"),
         "summary": (
             f"{labels[state]}；"
-            + ("当前仍在 Gamma Zero 下方，转强尚未确认。" if below_zero else "当前价格已不在 Gamma Zero 下方。")
+            + (
+                "GC 报告锚点仍在 Gamma Zero 下方，转强尚未确认。"
+                if gamma_zero_relation == "below"
+                else "GC 报告锚点位于 Gamma Zero 附近。"
+                if gamma_zero_relation == "at"
+                else "GC 报告锚点位于 Gamma Zero 上方。"
+                if gamma_zero_relation == "above"
+                else "GC 报告锚点与 Gamma Zero 的关系不可用。"
+            )
         ),
     }
 
@@ -472,6 +596,7 @@ def _scenario_paths(
     short_invalidation = [str(item) for item in short_setup.get("invalidation") or []] or [
         f"broken support {supports[0]:g} is reclaimed and held" if supports else "broken support is reclaimed and held",
     ]
+    execution_scope = str(structure.get("execution_scope") or ("gc_report_only" if intraday.get("status") != "available" else "gc_live_basis_validated"))
     return [
         {
             "path_id": "base_repair_range",
@@ -481,6 +606,8 @@ def _scenario_paths(
                 "primary support remains defended while price rotates toward the Gamma Flip band",
             ],
             "targets": base_targets,
+            "coordinate_space": _GC_COORDINATE_SPACE,
+            "execution_scope": execution_scope,
             "invalidation": [
                 f"primary support {supports[0]:g} breaks with acceptance" if supports else "structural support evidence becomes unavailable",
             ],
@@ -488,9 +615,11 @@ def _scenario_paths(
         {
             "path_id": "bullish_acceptance",
             "label": "转强路径：接受 Gamma 翻转带",
-            "status": "confirmed" if structure.get("trend_confirmed") else "watch",
+            "status": "confirmed" if structure.get("trend_confirmed") and execution_scope == "gc_live_basis_validated" else "watch",
             "triggers": long_triggers,
             "targets": long_targets,
+            "coordinate_space": _GC_COORDINATE_SPACE,
+            "execution_scope": execution_scope,
             "invalidation": long_invalidation,
         },
         {
@@ -499,6 +628,8 @@ def _scenario_paths(
             "status": "watch",
             "triggers": short_triggers,
             "targets": short_targets,
+            "coordinate_space": _GC_COORDINATE_SPACE,
+            "execution_scope": execution_scope,
             "invalidation": short_invalidation,
         },
     ]
@@ -529,6 +660,7 @@ def _gamma_summary(snapshot: Mapping[str, Any], live_p0: float | None) -> dict[s
         "method": _nested(aggregate, "gamma_zero", "method"),
         "flip_band": band,
         "live_price": live_p0,
+        "coordinate_space": _GC_COORDINATE_SPACE,
     }
 
 
@@ -537,6 +669,16 @@ def _price_context(snapshot: Mapping[str, Any], live: Mapping[str, Any]) -> dict
     report = _number_or_none(params.get("report_p0", params.get("p0")))
     live_p0 = _number_or_none(live.get("price", live.get("close")))
     live_status = str(live.get("status") or ("fresh" if live_p0 is not None else "unavailable"))
+    live_coordinate_space = str(live.get("coordinate_space") or (_SPOT_COORDINATE_SPACE if live_p0 is not None else "unknown"))
+    basis_status = str(live.get("basis_status") or ("unavailable" if live_p0 is None else "unvalidated"))
+    basis_reason = str(live.get("basis_reason") or "")
+    gc_equivalent_p0 = _number_or_none(live.get("gc_equivalent_price")) if basis_status == "validated" else None
+    if basis_status == "validated" and gc_equivalent_p0 is None and live_coordinate_space == _GC_COORDINATE_SPACE:
+        gc_equivalent_p0 = live_p0
+    if basis_status != "validated":
+        basis_reason = basis_reason or (_BASIS_UNVALIDATED_REASON if live_p0 is not None else "Canonical XAUUSD 5m live price is unavailable.")
+    elif gc_equivalent_p0 is None:
+        basis_reason = basis_reason or "Validated basis did not provide a GC-equivalent live price."
     return {
         "report_p0": report,
         "report_p0_source": params.get("report_p0_source", params.get("p0_source")),
@@ -547,6 +689,12 @@ def _price_context(snapshot: Mapping[str, Any], live: Mapping[str, Any]) -> dict
         "live_price_status": live_status,
         "live_price_freshness_seconds": live.get("freshness_seconds"),
         "live_price_coverage_status": live.get("coverage_status") or ("complete" if live_p0 is not None else "unavailable"),
+        "live_coordinate_space": live_coordinate_space,
+        "basis_status": basis_status,
+        "basis_reason": basis_reason or None,
+        "gc_equivalent_p0": gc_equivalent_p0,
+        "live_price_unavailable_reason": basis_reason or None,
+        "structure_coordinate_space": _GC_COORDINATE_SPACE,
         "model_f": dict(params.get("model_f") or params.get("forward_by_expiry") or {}),
         "price_anchor_rule": params.get("price_anchor_rule"),
     }
@@ -557,7 +705,9 @@ def _usable_live_p0(prices: Mapping[str, Any]) -> float | None:
         return None
     if prices.get("live_price_coverage_status") != "complete":
         return None
-    return _number_or_none(prices.get("live_p0"))
+    if prices.get("basis_status") != "validated":
+        return None
+    return _number_or_none(prices.get("gc_equivalent_p0"))
 
 
 def _key_levels(
@@ -741,6 +891,7 @@ def _level(
         "evidence": evidence,
         "invalidation": invalidation,
         "expiry_scope": expiry_scope,
+        "coordinate_space": _GC_COORDINATE_SPACE,
         "distance_pct": distance,
         "structural_role_at_report": structural_role,
         "current_relation": current_relation,
@@ -780,16 +931,26 @@ def _roll_summary(expiries: list[dict[str, Any]]) -> dict[str, Any]:
     return {"status": "available", "items": items}
 
 
-def _intraday_strategy(gamma: Mapping[str, Any], levels: list[dict[str, Any]], live_p0: float | None) -> dict[str, Any]:
+def _intraday_strategy(
+    gamma: Mapping[str, Any],
+    levels: list[dict[str, Any]],
+    live_p0: float | None,
+    *,
+    live_price_reason: Any = None,
+) -> dict[str, Any]:
     if live_p0 is None or gamma.get("regime") == "unavailable":
-        reason = "live_p0 unavailable" if live_p0 is None else "Gamma Zero unavailable"
+        reason = str(live_price_reason or "live_p0 unavailable") if live_p0 is None else "Gamma Zero unavailable"
         return {
             "status": "unavailable",
             "horizon": "intraday",
             "reason": reason,
+            "coordinate_space": _GC_COORDINATE_SPACE,
+            "execution_scope": "gc_report_only",
             "long_setup": None,
             "short_setup": None,
-            "risk_notes": ["Do not fabricate an intraday decision without canonical live price and gamma regime."],
+            "risk_notes": [
+                "Do not fabricate an intraday decision without a validated GC-equivalent live price and gamma regime."
+            ],
         }
     band = gamma.get("flip_band")
     downside = gamma["regime"] == "negative_gamma"
@@ -816,6 +977,8 @@ def _intraday_strategy(gamma: Mapping[str, Any], levels: list[dict[str, Any]], l
     return {
         "status": "available",
         "horizon": "intraday",
+        "coordinate_space": _GC_COORDINATE_SPACE,
+        "execution_scope": "gc_live_basis_validated",
         "regime": gamma["regime"],
         "bias": "defensive_repair" if downside else "flip_watch" if flip_zone else "mean_reversion",
         "summary": (

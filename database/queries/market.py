@@ -8,6 +8,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from database.models.analysis import MarketCandle
+from database.numeric_source_policy import is_formal_numeric_source, require_formal_numeric_source
 from database.market_identity import normalize_market_candle_identity
 
 
@@ -26,6 +27,7 @@ def upsert_market_candle(
     source_ref: dict | None = None,
     raw_path: str | None = None,
 ) -> MarketCandle:
+    require_formal_numeric_source(source, source_ref, raw_path)
     identity = normalize_market_candle_identity(asset=asset, source=source, source_ref=source_ref)
     existing = session.scalar(
         select(MarketCandle).where(
@@ -82,8 +84,8 @@ def list_market_candles(
     )
     if source:
         stmt = stmt.where(MarketCandle.source == source)
-    stmt = stmt.order_by(MarketCandle.open_time.desc(), MarketCandle.id.desc()).limit(limit)
-    return list(reversed(list(session.scalars(stmt).all())))
+    stmt = stmt.order_by(MarketCandle.open_time.desc(), MarketCandle.id.desc())
+    return _eligible_rows(session, stmt, limit)
 
 
 def list_completed_market_candles(
@@ -119,8 +121,8 @@ def list_completed_market_candles(
     )
     if source is not None:
         stmt = stmt.where(MarketCandle.source == source)
-    stmt = stmt.order_by(MarketCandle.open_time.desc(), MarketCandle.id.desc()).limit(limit)
-    return list(reversed(list(session.scalars(stmt).all())))
+    stmt = stmt.order_by(MarketCandle.open_time.desc(), MarketCandle.id.desc())
+    return _eligible_rows(session, stmt, limit)
 
 
 def list_market_candles_by_assets(
@@ -139,9 +141,8 @@ def list_market_candles_by_assets(
             MarketCandle.timeframe == timeframe,
         )
         .order_by(MarketCandle.open_time.desc(), MarketCandle.id.desc())
-        .limit(limit * max(len(assets), 1))
     )
-    return list(reversed(list(session.scalars(stmt).all())))
+    return _eligible_rows(session, stmt, limit * len(assets))
 
 
 def delete_market_candles_before(
@@ -164,3 +165,16 @@ def delete_market_candles_before(
     )
     result = session.execute(stmt)
     return int(result.rowcount or 0)
+
+
+def _eligible_rows(session: Session, stmt, limit: int) -> list[MarketCandle]:
+    """Filter old contaminated rows before limiting, without loading all history."""
+    selected = []
+    if limit <= 0:
+        return selected
+    for row in session.scalars(stmt.execution_options(yield_per=100)):
+        if is_formal_numeric_source(row.source, row.source_ref, row.raw_path):
+            selected.append(row)
+            if len(selected) >= limit:
+                break
+    return list(reversed(selected))

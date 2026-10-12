@@ -73,6 +73,8 @@ def test_google_news_rss_maps_items_to_candidate_raw_news_items(tmp_path: Path) 
     assert item.duplicate_key.startswith("news:google_news_rss:")
     assert item.raw_payload["publisher"] == "Reuters"
     assert item.raw_payload["publisher_url"] == "https://www.reuters.com/markets/commodities/gold-fed"
+    assert item.raw_payload["content_scope"] == "headline_summary_only"
+    assert item.raw_payload["full_text_available"] is False
     assert item.raw_path.startswith("raw/news/google_news_rss/2026-06-10/gold_macro-")
     assert item.parsed_path.startswith("parsed/news/google_news_rss/2026-06-10/gold_macro-")
     assert (tmp_path / item.raw_path).exists()

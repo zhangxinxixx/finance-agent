@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from database.numeric_source_policy import is_formal_numeric_source
 from database.market_identity import is_xauusd_spot_identity
 
 
@@ -35,6 +36,8 @@ def qualify_market_source(
     normalized_source = str(source).strip().lower()
     ref = dict(source_ref)
     role = _normalized_role(ref, normalized_source)
+    if not is_formal_numeric_source(source, ref):
+        return _blocked("jin10_numeric_source_forbidden", role)
     instrument_type = str(ref.get("instrument_type") or "").strip().lower()
     provider_symbol = str(
         ref.get("provider_symbol") or ref.get("symbol") or ref.get("ticker") or ""

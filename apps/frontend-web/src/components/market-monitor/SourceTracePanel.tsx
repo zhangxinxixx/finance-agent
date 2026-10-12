@@ -11,12 +11,12 @@ export function SourceTracePanel({ sourceTrace = [], sourceRefs = [] }: SourceTr
   return (
     <SourceTracePanelFrame
       title="分析结果与溯源"
-      eyebrow="Evidence Trail"
+      eyebrow="证据链"
       accent="brand"
       sourceTrace={sourceTrace}
       sourceRefs={sourceRefs}
       compact
-      emptyDescription="当前监控页没有返回 source trace 或 source refs。"
+      emptyDescription="当前监控页没有返回来源记录。"
     />
   );
 }

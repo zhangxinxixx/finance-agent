@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -12,10 +13,49 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.api.main import api_create_daily_analysis_followup_tasks, api_run_detail
+from apps.api.services.daily_analysis_followup_task_service import (
+    DailyAnalysisFollowupDispatchError,
+    launch_daily_analysis_followup_job,
+)
 from database.models.task import TaskRun, TaskStep, ensure_task_tables
 
 _TRIGGER_ROOT_PATCH = "apps.api.services.daily_analysis_trigger_service._PROJECT_ROOT"
 _ARTICLE_ROOT_PATCH = "apps.api.services.jin10_article_brief_service._PROJECT_ROOT"
+
+
+@pytest.mark.parametrize("date,run_id", [("2026-10-11", None), (None, "selected"), ("", "selected"), ("2026-10-11", " ")])
+def test_partial_selector_cannot_create_or_dispatch_a_different_latest_queue(date, run_id):
+    with (
+        mock.patch("apps.api.routes.news_routes.create_daily_analysis_followup_tasks") as create,
+        mock.patch("apps.api.routes.news_routes.dispatch_daily_analysis_followup_tasks") as dispatch,
+        pytest.raises(HTTPException) as error,
+    ):
+        api_create_daily_analysis_followup_tasks(date=date, run_id=run_id, db=mock.Mock())
+    assert error.value.status_code == 422
+    create.assert_not_called()
+    dispatch.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def _stub_followup_dagster_dispatch(monkeypatch: pytest.MonkeyPatch):
+    calls: list[list[str]] = []
+
+    def _fake_dispatch(task_ids):
+        normalized = [str(task_id) for task_id in task_ids]
+        calls.append(normalized)
+        return {
+            "dispatch_status": "dispatched",
+            "task_ids": normalized,
+            "dagster_run_id": f"test-followup-run-{len(calls)}",
+            "dagster_status": "QUEUED",
+            "dagster_job_name": "daily_analysis_followup_job",
+        }
+
+    monkeypatch.setattr(
+        "apps.api.services.daily_analysis_followup_task_service.launch_daily_analysis_followup_job",
+        _fake_dispatch,
+    )
+    return calls
 
 
 def _make_session() -> Session:
@@ -113,6 +153,9 @@ def test_create_daily_analysis_followup_tasks_from_trigger(tmp_path: Path) -> No
     assert response["status"] == "accepted"
     assert response["queue_count"] == 1
     assert response["created_task_count"] == 1
+    assert response["dispatch_status"] == "dispatched"
+    assert response["task_ids"] == response["created_run_ids"]
+    assert response["dagster_job_name"] == "daily_analysis_followup_job"
     assert response["skipped_existing_count"] == 0
 
     run = api_run_detail(response["created_run_ids"][0], db=session).model_dump(mode="json")
@@ -162,6 +205,7 @@ def test_create_daily_analysis_followup_tasks_is_idempotent_for_active_runs(tmp_
     assert second["created_task_count"] == 0
     assert second["skipped_existing_count"] == 1
     assert second["existing_run_ids"] == first["created_run_ids"]
+    assert second["task_ids"] == first["created_run_ids"]
     assert session.query(TaskRun).filter(TaskRun.task_type == "daily_analysis_followup").count() == 1
 
 
@@ -181,6 +225,8 @@ def test_create_daily_analysis_followup_tasks_returns_empty_when_no_actionable_f
     assert response["status"] == "empty"
     assert response["queue_count"] == 0
     assert response["created_task_count"] == 0
+    assert response["dispatch_status"] == "not_dispatched"
+    assert response["task_ids"] == []
     assert session.query(TaskRun).filter(TaskRun.task_type == "daily_analysis_followup").count() == 0
 
 
@@ -195,3 +241,172 @@ def test_create_daily_analysis_followup_tasks_exact_missing_raises_404(tmp_path:
         api_create_daily_analysis_followup_tasks(date="2099-01-01", run_id="missing", db=session)
 
     assert exc_info.value.status_code == 404
+
+
+def test_followup_dispatch_failure_preserves_committed_task_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _make_session()
+    _write_triggers(tmp_path, date="2026-06-11", run_id="run-news", title="派发失败")
+
+    def _fail_dispatch(task_ids):
+        raise DailyAnalysisFollowupDispatchError(
+            status_code=502,
+            reason="dagster_unavailable",
+            message="Dagster unavailable: connection refused",
+            cause="connection refused",
+        )
+
+    monkeypatch.setattr(
+        "apps.api.services.daily_analysis_followup_task_service.launch_daily_analysis_followup_job",
+        _fail_dispatch,
+    )
+    with (
+        mock.patch(_TRIGGER_ROOT_PATCH, tmp_path),
+        mock.patch(_ARTICLE_ROOT_PATCH, tmp_path),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        api_create_daily_analysis_followup_tasks(date="2026-06-11", run_id="run-news", db=session)
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail["reason"] == "dagster_unavailable"
+    assert exc_info.value.detail["dispatch_status"] == "unavailable"
+    assert exc_info.value.detail["task_rows_preserved"] is True
+    assert session.query(TaskRun).filter(TaskRun.task_type == "daily_analysis_followup").count() == 1
+    assert session.query(TaskRun).one().status.value == "pending"
+
+
+def test_launch_daily_analysis_followup_job_sends_explicit_ids_and_bounded_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_id = str(uuid.uuid4())
+    response = mock.Mock()
+    response.json.return_value = {
+        "data": {
+            "launchPipelineExecution": {
+                "run": {"runId": "dagster-followup-001", "status": "QUEUED"}
+            }
+        }
+    }
+    response.raise_for_status.return_value = None
+    calls: list[dict] = []
+
+    def _post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return response
+
+    monkeypatch.setattr(httpx, "post", _post)
+    result = launch_daily_analysis_followup_job(
+        [task_id, task_id],
+        dagster_url="http://dagster.test/graphql",
+        storage_root="/tmp/followup-storage",
+        max_stage_steps=99,
+    )
+
+    assert result["dispatch_status"] == "dispatched"
+    assert result["task_ids"] == [task_id]
+    request = calls[0]["json"]
+    assert request["variables"]["runConfigData"] == {
+        "ops": {
+            "daily_analysis_followup_op": {
+                "config": {
+                    "task_ids": [task_id],
+                    "storage_root": "/tmp/followup-storage",
+                    "max_stage_steps": 4,
+                }
+            }
+        }
+    }
+    assert "$taskSetHash: String!" in request["query"]
+    assert "task_scope" in request["query"]
+
+
+def test_launch_daily_analysis_followup_job_reports_dagster_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(httpx, "post", mock.Mock(side_effect=httpx.ConnectError("connection refused")))
+
+    with pytest.raises(DailyAnalysisFollowupDispatchError) as exc_info:
+        launch_daily_analysis_followup_job([str(uuid.uuid4())], dagster_url="http://dagster.test/graphql")
+
+    error = exc_info.value
+    assert error.status_code == 502
+    assert error.reason == "dagster_unavailable"
+    assert "connection refused" in error.message
+    assert error.detail(task_ids=["selected-task"])["task_rows_preserved"] is True
+
+
+def test_followup_api_chunks_more_than_fifty_explicit_task_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_followup_dagster_dispatch,
+) -> None:
+    task_ids = [str(uuid.uuid4()) for _ in range(51)]
+    monkeypatch.setattr(
+        "apps.api.routes.news_routes.create_daily_analysis_followup_tasks",
+        lambda *_args, **_kwargs: {
+            "status": "accepted",
+            "queue_count": len(task_ids),
+            "created_task_count": len(task_ids),
+            "skipped_existing_count": 0,
+            "created_run_ids": task_ids,
+            "existing_run_ids": [],
+        },
+    )
+
+    response = api_create_daily_analysis_followup_tasks(db=object())
+
+    assert response["dispatch_status"] == "dispatched"
+    assert response["task_ids"] == task_ids
+    assert len(response["dagster_run_ids"]) == 2
+    assert [len(item) for item in _stub_followup_dagster_dispatch] == [50, 1]
+
+
+def test_followup_api_reports_partial_chunk_failure_and_preserves_remaining_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_ids = [str(uuid.uuid4()) for _ in range(51)]
+    monkeypatch.setattr(
+        "apps.api.routes.news_routes.create_daily_analysis_followup_tasks",
+        lambda *_args, **_kwargs: {
+            "status": "accepted",
+            "queue_count": len(task_ids),
+            "created_task_count": len(task_ids),
+            "skipped_existing_count": 0,
+            "created_run_ids": task_ids,
+            "existing_run_ids": [],
+        },
+    )
+    calls = 0
+
+    def _dispatch(chunk):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "dispatch_status": "dispatched",
+                "task_ids": list(chunk),
+                "dagster_run_id": "first-run",
+                "dagster_status": "QUEUED",
+            }
+        raise DailyAnalysisFollowupDispatchError(
+            status_code=502,
+            reason="dagster_unavailable",
+            message="Dagster unavailable: second batch",
+            cause="second batch",
+        )
+
+    monkeypatch.setattr(
+        "apps.api.services.daily_analysis_followup_task_service.launch_daily_analysis_followup_job",
+        _dispatch,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        api_create_daily_analysis_followup_tasks(db=object())
+
+    assert exc_info.value.status_code == 502
+    detail = exc_info.value.detail
+    assert detail["dispatch_status"] == "partial_failure"
+    assert detail["dispatched_task_ids"] == task_ids[:50]
+    assert detail["remaining_task_ids"] == task_ids[50:]
+    assert detail["dagster_run_ids"] == ["first-run"]
+    assert detail["task_rows_preserved"] is True

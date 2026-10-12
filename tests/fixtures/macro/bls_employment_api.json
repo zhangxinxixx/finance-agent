@@ -1,0 +1,47 @@
+{
+  "status": "REQUEST_SUCCEEDED",
+  "responseTime": 4,
+  "message": [],
+  "Results": {
+    "series": [
+      {
+        "seriesID": "CES0000000001",
+        "data": [
+          {"year": "2026", "period": "M10", "periodName": "October", "value": "160000"},
+          {"year": "2026", "period": "M08", "periodName": "August", "latest": "true", "value": "159075", "footnotes": [{"code": "P", "text": "preliminary"}]},
+          {"year": "2026", "period": "M07", "periodName": "July", "value": "158900"},
+          {"year": "2026", "period": "M06", "periodName": "June", "value": "158800"},
+          {"year": "2025", "period": "M09", "periodName": "September", "value": "156100"},
+          {"year": "2025", "period": "M08", "periodName": "August", "value": "156000"},
+          {"year": "2025", "period": "M13", "periodName": "Annual", "value": "156050"}
+        ]
+      },
+      {
+        "seriesID": "CES0500000003",
+        "data": [
+          {"year": "2026", "period": "M10", "periodName": "October", "value": "33.90"},
+          {"year": "2026", "period": "M08", "periodName": "August", "latest": "true", "value": "33.43", "footnotes": [{"code": "P", "text": "preliminary"}]},
+          {"year": "2026", "period": "M07", "periodName": "July", "value": "32.90"},
+          {"year": "2026", "period": "M06", "periodName": "June", "value": "32.80"},
+          {"year": "2025", "period": "M08", "periodName": "August", "value": "31.50"}
+        ]
+      },
+      {
+        "seriesID": "LNS14000000",
+        "data": [
+          {"year": "2026", "period": "M08", "periodName": "August", "latest": "true", "value": "4.4", "footnotes": [{"code": "P", "text": "preliminary"}]},
+          {"year": "2026", "period": "M07", "periodName": "July", "value": "4.3"},
+          {"year": "2025", "period": "M08", "periodName": "August", "value": "4.2"}
+        ]
+      },
+      {
+        "seriesID": "LNS11300000",
+        "data": [
+          {"year": "2026", "period": "M08", "periodName": "August", "latest": "true", "value": "62.2", "footnotes": [{"code": "P", "text": "preliminary"}]},
+          {"year": "2026", "period": "M07", "periodName": "July", "value": "62.1"},
+          {"year": "2025", "period": "M08", "periodName": "August", "value": "62.0"}
+        ]
+      }
+    ]
+  }
+}

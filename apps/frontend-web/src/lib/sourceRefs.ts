@@ -33,12 +33,17 @@ function readStatus(value: unknown): SourceRef["status"] | null {
   return TRACEABLE_STATUSES.has(normalized) ? (normalized as SourceRef["status"]) : null;
 }
 
+function isLowerLayerReference(value: string | null): boolean {
+  if (!value) return false;
+  return /(?:^|\/)(?:raw|parsed|ods|dwd|artifacts?)(?:\/|$)|\.(?:json|jsonl|parquet|csv|pdf)$/i.test(value);
+}
+
 function mergeSourceRef(base: SourceRef, fallback: SourceRef): SourceRef {
   return {
     ...fallback,
     ...base,
-    endpoint: base.endpoint ?? fallback.endpoint ?? null,
-    artifact_path: base.artifact_path ?? fallback.artifact_path ?? null,
+    endpoint: null,
+    artifact_path: null,
     snapshot_id: base.snapshot_id ?? fallback.snapshot_id ?? null,
     input_snapshot_ids: base.input_snapshot_ids ?? fallback.input_snapshot_ids ?? null,
     trade_date: base.trade_date ?? fallback.trade_date ?? fallback.dataDate ?? null,
@@ -66,22 +71,25 @@ export function normalizeSourceRefs(input: unknown): SourceRef[] {
     if (!item || typeof item !== "object") return [];
 
     const record = item as Record<string, unknown>;
-    const sourceRef = readString(record.source_ref) ?? readString(record.ref) ?? readString(record.endpoint) ?? readString(record.artifact_path);
+    const rawSourceRef = readString(record.source_ref) ?? readString(record.ref);
+    const sourceRef = !isLowerLayerReference(rawSourceRef)
+      ? rawSourceRef
+      : readString(record.label) ?? readString(record.name) ?? readString(record.provider);
 
     if (!sourceRef) return [];
 
     return [
       {
         source_ref: sourceRef,
-        endpoint: readString(record.endpoint),
-        artifact_path: readString(record.artifact_path) ?? readString(record.file) ?? readString(record.path),
+        endpoint: null,
+        artifact_path: null,
         snapshot_id: readString(record.snapshot_id),
         input_snapshot_ids: readStringArray(record.input_snapshot_ids),
         trade_date: readString(record.trade_date) ?? readString(record.data_date),
         dataDate: readString(record.dataDate) ?? readString(record.data_date) ?? readString(record.trade_date),
-        asOf: readString(record.asOf) ?? readString(record.as_of) ?? readString(record.generated_at) ?? readString(record.updated_at) ?? readString(record.latest_parsed_time) ?? readString(record.latest_raw_time),
+        asOf: readString(record.asOf) ?? readString(record.as_of) ?? readString(record.generated_at) ?? readString(record.updated_at),
         run_id: readString(record.run_id),
-        generated_at: readString(record.generated_at) ?? readString(record.updated_at) ?? readString(record.latest_parsed_time) ?? readString(record.latest_raw_time),
+        generated_at: readString(record.generated_at) ?? readString(record.updated_at),
         provider: readString(record.provider) ?? readString(record.source) ?? readString(record.model_version),
         label: readString(record.label) ?? readString(record.name),
         status: readStatus(record.status),
@@ -137,8 +145,6 @@ export function dedupeSourceRefs(sourceRefs: SourceRef[]): SourceRef[] {
   for (const source of sourceRefs) {
     const key = [
       source.source_ref,
-      source.endpoint ?? "",
-      source.artifact_path ?? "",
       source.snapshot_id ?? "",
       source.trade_date ?? "",
       source.run_id ?? "",
@@ -156,8 +162,6 @@ export function compactSourceLabel(source: SourceRef): string {
   return (
     source.label ??
     source.provider ??
-    source.endpoint ??
-    source.artifact_path ??
     source.snapshot_id ??
     source.source_ref
   );
@@ -166,8 +170,6 @@ export function compactSourceLabel(source: SourceRef): string {
 export function sourceRefPairs(source: SourceRef): Array<{ label: string; value: string }> {
   return [
     { label: "source_ref", value: source.source_ref },
-    { label: "endpoint", value: source.endpoint ?? "" },
-    { label: "artifact", value: source.artifact_path ?? "" },
     { label: "snapshot_id", value: source.snapshot_id ?? "" },
     { label: "trade_date", value: source.trade_date ?? "" },
     { label: "dataDate", value: source.dataDate ?? "" },

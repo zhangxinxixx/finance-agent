@@ -91,6 +91,7 @@ def test_weekly_revision_agent_explicitly_uses_sol_high(monkeypatch) -> None:
     result = invoke_weekly_context_revision_llm(payload)
     refined = apply_weekly_context_revision_llm(payload, result)
 
+    assert captured["provider"] == "cockpit"
     assert captured["model"] == "gpt-5.6-sol"
     assert captured["reasoning_effort"] == "high"
     assert captured["json_mode"] is True

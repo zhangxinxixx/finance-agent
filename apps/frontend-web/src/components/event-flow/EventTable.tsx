@@ -1,3 +1,4 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { List } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
@@ -71,7 +72,7 @@ export function EventTable({ table }: EventTableProps) {
                 );
               })()}
               <FAStatusPill status={row.type} domain="event" dot={false} className={STATUS_PILL_CLASS_NAME}>{translateEventFlowValue(row.type)}</FAStatusPill>
-              <span className="truncate text-[10px] text-[var(--fg-4)]" title={row.source}>{formatEventFlowSourceLabel(row.source, 12).text}</span>
+              <ResearchDetails label="查看依据">{formatEventFlowSourceLabel(row.source, 12).text}</ResearchDetails>
               <span className="fa-num truncate text-[10px] text-[var(--fg-4)]" title={row.assets}>{row.assets}</span>
               <FAStatusPill status={row.impact} domain="event" dot={false} className={STATUS_PILL_CLASS_NAME}>{getImpactLabel(row.impact)}</FAStatusPill>
               <FAStatusPill status={row.pricing} domain="event" dot={false} className={STATUS_PILL_CLASS_NAME}>{translateEventFlowValue(row.pricing)}</FAStatusPill>
@@ -80,14 +81,6 @@ export function EventTable({ table }: EventTableProps) {
             </div>
           ))}
 
-      <div className="flex justify-center py-2">
-        <button
-          type="button"
-          className="flex items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--border)] bg-transparent px-[18px] py-[5px] text-[11px] text-[var(--fg-4)] transition-colors hover:bg-[var(--bg-hover)]"
-        >
-          查看更多事件
-        </button>
-      </div>
         </div>
       )}
     </FACard>

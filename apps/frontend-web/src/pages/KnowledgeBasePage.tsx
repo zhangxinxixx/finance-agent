@@ -1,3 +1,4 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { BookOpen, RefreshCw } from "lucide-react";
 import {
   KnowledgeBaseErrorState,
@@ -13,6 +14,7 @@ import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { FAWorkspaceHeader } from "@/components/shared/FAWorkspaceHeader";
 import { useKnowledge } from "@/hooks/useKnowledge";
 import { useKnowledgePageState, useKnowledgeSelectionSync } from "@/hooks/useKnowledgePageState";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 export function KnowledgeBasePage() {
   const {
@@ -46,7 +48,7 @@ export function KnowledgeBasePage() {
   }
 
   if (knowledge.isError || !knowledge.data) {
-    return <KnowledgeBaseErrorState message={knowledge.error?.message ?? "未知错误"} onRetry={knowledge.refetch} />;
+    return <KnowledgeBaseErrorState message={readingErrorMessage(knowledge.error, "知识库加载失败，请稍后重试。")} onRetry={knowledge.refetch} />;
   }
 
   const { items, selectedItem, stats } = knowledge.data;
@@ -99,13 +101,13 @@ export function KnowledgeBasePage() {
       <div className="fa-page-grid knowledge-page-grid flex-1">
         <KnowledgeListPane items={items} selectedId={selectedId} onSelect={handleSelectItem} />
         <KnowledgeDetailPane item={selectedItem} activeTab={detailTab} onTabChange={setDetailTab} />
-        <KnowledgeOpsPane
+        <ResearchDetails label="查看知识管理"><KnowledgeOpsPane
           stats={stats}
           selectedItem={selectedItem}
           items={items}
           activeTab={opsTab}
           onTabChange={setOpsTab}
-        />
+        /></ResearchDetails>
       </div>
 
       {typeTab === "playbook" ? <KnowledgePlaybookSection /> : null}

@@ -13,7 +13,6 @@ apps/analysis/
   jin10/          # 金十日报分析（agent_analysis, visual_report, daily_report）
   strategy/       # 策略卡片（card, schemas）
   snapshots/      # 分析快照构建
-  memory/         # 记忆系统（Mem0 客户端/路由/策略）
   prompts/        # LLM prompt 模板
 ```
 
@@ -62,10 +61,11 @@ class AgentOutput(BaseModel):
 
 ### 计算优先级
 
-1. **Black-76 真实 Gamma / GEX**（需要 IV、settlement、T、F 完整）
+1. **Black-76 模型 Gamma / OI-Signed GEX Proxy**（需要 IV、settlement、T、F 完整）
    - `GEX = Gamma × OI × 100 × F² × 0.01`
-   - Call GEX 为正，Put GEX 为负
-   - `NetGEX = CallGEX - PutGEX`
+   - Call 正、Put 负是持仓方向假设；买入 Call/Put 的 Gamma 本身都非负，不能据此声称已知做市商仓位。
+   - 使用带符号 Put GEX 时 `NetGEX = CallGEX + PutGEX`；仅在 Put 为绝对值时相减。
+   - 结算反推 IV 的 Black-76 为模型 Gamma；OI 方向未知时只输出 OI-Signed GEX Proxy，保留 IV、远期锚与到期日的来源/估算状态。Gamma Zero 展示为 Selected Expiry Window Proxy Gamma Flip，Pin 展示为 OI/Gamma Concentration Zone。
 2. **Gamma Proxy**（仅字段缺失时）
    - `Gamma Proxy = OI × |Delta| × (1 - |Delta|)`
    - 必须标注「使用 Proxy，非真实 Gamma」
@@ -99,7 +99,7 @@ class AgentOutput(BaseModel):
 
 ### 分析框架
 
-1. **实际利率** = DGS10 - T10YIE（核心驱动，与金价反向）
+1. 新版 `gold_workflow.v2` 研究优先官方 DFII10/TIPS；缺失时才用同期 DGS10 − T10YIE 并标 Estimated。既有正式 Gold Policy 版本仍按各自已版本化契约计算，不能悄悄改变历史重放。
 2. **美元** = DXY（主定价货币）
 3. **流动性** = TGA + RRP + 准备金（资金环境）
 4. **利率走廊** = SOFR / EFFR / IORB（政策姿态）

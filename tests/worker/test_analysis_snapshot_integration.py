@@ -66,7 +66,7 @@ def test_run_premarket_writes_analysis_snapshot_after_macro_and_options(tmp_path
 
         result = run_premarket(db, task.id, storage_root=tmp_path)
 
-    assert result == TaskStatus.success
+    assert result == TaskStatus.blocked
     snapshot_path = (
         tmp_path
         / "features"
@@ -79,8 +79,9 @@ def test_run_premarket_writes_analysis_snapshot_after_macro_and_options(tmp_path
     assert snapshot_path.exists()
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
     assert snapshot["snapshot_id"] == f"XAUUSD:2026-05-14:{task.id}"
+    assert snapshot["input_validation"]["can_analyze"] is False
     assert snapshot["macro"]["status"] == "available"
-    assert snapshot["options"]["status"] == "available"
+    assert snapshot["options"]["status"] == "unavailable"
     assert snapshot["positioning"]["status"] == "unavailable"
     assert snapshot["input_snapshot_ids"]["options_detail"] == {"raw_file_sha256": "abc123"}
 
@@ -142,7 +143,7 @@ def test_run_premarket_uses_task_trade_date_as_analysis_context(tmp_path: Path):
 
         result = run_premarket(db, task.id, storage_root=tmp_path)
 
-    assert result == TaskStatus.success
+    assert result == TaskStatus.blocked
     snapshot_path = (
         tmp_path
         / "features"
@@ -154,8 +155,9 @@ def test_run_premarket_uses_task_trade_date_as_analysis_context(tmp_path: Path):
     )
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
     assert snapshot["trade_date"] == "2026-05-15"
+    assert snapshot["input_validation"]["can_analyze"] is False
     assert snapshot["macro"]["status"] == "available"
-    assert snapshot["options"]["status"] == "available"
+    assert snapshot["options"]["status"] == "unavailable"
     assert snapshot["news"]["status"] == "available"
 
 
@@ -194,7 +196,7 @@ def test_run_premarket_includes_cme_source_refs(tmp_path: Path):
 
         result = run_premarket(db, task.id, storage_root=tmp_path)
 
-    assert result == TaskStatus.success
+    assert result == TaskStatus.blocked
     snapshot_path = (
         tmp_path
         / "features"

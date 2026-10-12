@@ -4,12 +4,14 @@ import {
   canOpenReport,
   CATEGORY_MAP,
   formatGeneratedAt,
+  getReportListStatus,
   getMarketObservationSubtype,
   getReportTitle,
   inferAssetLabel,
   marketObservationSubtypeLabel,
+  reportAssetLabel,
+  reportTypeLabel,
   matchesReportSearch,
-  shortRunId,
 } from "@/components/reports/reportListMeta";
 import { handleSelectKeyDown } from "@/components/reports/reportLibraryViewCommon";
 
@@ -33,10 +35,10 @@ export function ListView({
         overflow: "hidden",
       }}
     >
-      <div
+      <div className="reports-table-header"
         style={{
           display: "grid",
-          gridTemplateColumns: "96px minmax(0,2.3fr) 102px 146px 78px 78px 104px 56px",
+          gridTemplateColumns: "96px minmax(0,2.3fr) 102px 146px 78px 78px 56px",
           padding: "8px 10px",
           background: "color-mix(in srgb, var(--bg-panel) 88%, transparent)",
           borderBottom: "1px solid var(--border)",
@@ -54,28 +56,28 @@ export function ListView({
         <span>生成</span>
         <span>资产</span>
         <span>状态</span>
-        <span>Run</span>
         <span>查看</span>
       </div>
       {filtered.map((item, idx) => {
         const cat = CATEGORY_MAP[item.type] ?? {
-          label: item.type,
+          label: reportTypeLabel(item.type),
           color: "#94a3b8",
         };
         const isOpenable = canOpenReport(item);
         const assetLabel = inferAssetLabel(item);
         const title = getReportTitle(item);
         const generatedAtLabel = formatGeneratedAt(item.generated_at);
+        const status = getReportListStatus(item);
         const marketObservationSubtype = getMarketObservationSubtype(item);
         return (
-          <div
+          <div className="reports-list-row"
             key={`${item.type}-${item.trade_date}-${item.run_id ?? idx}`}
             role={isOpenable ? "button" : undefined}
             tabIndex={isOpenable ? 0 : undefined}
             aria-label={isOpenable ? `查看${cat.label} ${item.trade_date || "未知日期"}报告` : undefined}
             style={{
               display: "grid",
-              gridTemplateColumns: "96px minmax(0,2.3fr) 102px 146px 78px 78px 104px 56px",
+              gridTemplateColumns: "96px minmax(0,2.3fr) 102px 146px 78px 78px 56px",
               padding: "9px 10px",
               borderBottom: "1px solid var(--border-faint)",
               alignItems: "center",
@@ -100,7 +102,7 @@ export function ListView({
               <span
                 style={{
                   padding: "1px 5px",
-                  background: `${cat.color}1f`,
+                  background: cat.softColor ?? `color-mix(in srgb, ${cat.color} 12%, transparent)`,
                   color: cat.color,
                   borderRadius: 2,
                   fontSize: "var(--text-10)",
@@ -134,7 +136,7 @@ export function ListView({
                 {title}
               </span>
               <span style={{ display: "block", marginTop: 2, fontSize: "var(--text-10)", color: "var(--fg-5)" }}>
-                {item.format}
+                {""}
               </span>
             </span>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-11)" }}>
@@ -149,25 +151,17 @@ export function ListView({
                 color: "var(--fg-4)",
               }}
             >
-              {assetLabel}
+              {reportAssetLabel(assetLabel)}
             </span>
             <span
               style={{
                 fontSize: "var(--text-11)",
-                color: item.available ? "#10b981" : "#f59e0b",
+                color: status.color,
               }}
             >
-              {item.available ? "已发布" : "草稿"}
+              {status.label}
             </span>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "var(--text-10)",
-                color: "var(--fg-5)",
-              }}
-            >
-              {shortRunId(item.run_id)}
-            </span>
+
             <span style={{ fontSize: "var(--text-11)", color: "var(--fg-4)" }}>
               {isOpenable ? "进入" : "-"}
             </span>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -220,7 +221,7 @@ def test_generate_sample_refuses_to_overwrite_existing_artifact(tmp_path: Path) 
 def test_cli_dry_run_can_be_executed_as_script(tmp_path: Path) -> None:
     result = subprocess.run(
         [
-            "python",
+            sys.executable,
             "scripts/generate_jin10_web_flash_sample.py",
             "--html-file",
             FIXTURE_HTML.as_posix(),
@@ -247,7 +248,7 @@ def test_cli_dry_run_can_be_executed_as_script(tmp_path: Path) -> None:
 def test_cli_browser_profile_dry_run_can_be_executed_without_browser(tmp_path: Path) -> None:
     result = subprocess.run(
         [
-            "python",
+            sys.executable,
             "scripts/generate_jin10_web_flash_sample.py",
             "--browser-profile",
             (tmp_path / "profile").as_posix(),

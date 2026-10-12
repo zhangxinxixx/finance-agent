@@ -12,6 +12,7 @@ from apps.features.market_data.formal_snapshot_loader import (
 )
 from database.models.analysis import ensure_analysis_tables
 from database.queries.market import upsert_market_candle
+from tests.helpers.warehouse import materialize_candles
 
 
 def _session():
@@ -31,7 +32,7 @@ def _source_ref(*, provider_symbol: str, instrument_type: str, source_role: str,
 
 
 def _upsert_bar(session, *, asset: str, timeframe: str, open_time: datetime, source: str, source_ref: dict) -> None:
-    upsert_market_candle(
+    row = upsert_market_candle(
         session,
         asset=asset,
         timeframe=timeframe,
@@ -44,6 +45,8 @@ def _upsert_bar(session, *, asset: str, timeframe: str, open_time: datetime, sou
         source_ref=source_ref,
         raw_path=f"raw/{asset}/{source}.json",
     )
+    row.created_at = datetime.fromisoformat(source_ref["retrieved_at"])
+    row.updated_at = row.created_at
 
 
 def test_resolve_formal_snapshot_as_of_uses_shanghai_daily_close_and_run_time() -> None:
@@ -104,7 +107,7 @@ def test_loader_normalizes_sqlite_orm_rows_and_selects_xau_primary() -> None:
         asset="XAUUSD",
         timeframe="5m",
         open_time=spot_open,
-        source="jin10_mcp_derived_5m",
+        source="canonical_xauusd_5m",
         source_ref=_source_ref(
             provider_symbol="XAUUSD",
             instrument_type="otc_spot_quote_proxy",
@@ -140,12 +143,13 @@ def test_loader_normalizes_sqlite_orm_rows_and_selects_xau_primary() -> None:
         ),
     )
     session.commit()
+    materialize_candles(session)
 
     bundle = load_formal_market_snapshots(session, as_of=as_of)
 
     assert bundle.market_prices.readiness == "ready"
-    assert bundle.market_prices.xauusd_spot.source_refs[0].source == "jin10_mcp_derived_5m"
-    assert bundle.market_prices.xauusd_spot.source_refs[0].raw_path.endswith("jin10_mcp_derived_5m.json")
+    assert bundle.market_prices.xauusd_spot.source_refs[0].source == "canonical_xauusd_5m"
+    assert bundle.market_prices.xauusd_spot.source_refs[0].raw_path.endswith("canonical_xauusd_5m.json")
     assert bundle.market_prices.xauusd_spot.bar_open_time.tzinfo is not None
     assert bundle.market_prices.gc_futures.quality_status == "accepted"
     assert bundle.oil.readiness == "blocked"
@@ -176,7 +180,7 @@ def test_loader_is_stable_for_repeated_completed_queries() -> None:
         asset="XAUUSD",
         timeframe="5m",
         open_time=spot_open,
-        source="jin10_mcp_derived_5m",
+        source="canonical_xauusd_5m",
         source_ref=_source_ref(
             provider_symbol="XAUUSD",
             instrument_type="otc_spot_quote_proxy",
@@ -199,6 +203,7 @@ def test_loader_is_stable_for_repeated_completed_queries() -> None:
         ),
     )
     session.commit()
+    materialize_candles(session)
 
     results = [load_formal_market_snapshots(session, as_of=as_of) for _ in range(100)]
 

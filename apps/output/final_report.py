@@ -58,6 +58,7 @@ def write_final_report(
     overwrite: bool = False,
     structured_report: Any | None = None,  # P4-04: StructuredReportOutput dict
     artifact_type: str = "final_report",
+    audit_markdown: str | None = None,
 ) -> dict:
     """Write ``final_report.md`` to the artifact directory.
 
@@ -93,6 +94,10 @@ def write_final_report(
     if overwrite:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         target_path.write_text(markdown, encoding="utf-8")
+        if audit_markdown is not None:
+            audit_path = artifact_dir / 'audit_report.md'
+            audit_path.write_text(audit_markdown, encoding='utf-8')
+            paths.append(str(audit_path))
         if structured_payload is not None:
             json_path = artifact_dir / "structured_report.json"
             json_path.write_text(
@@ -103,6 +108,10 @@ def write_final_report(
         skipped = False
     else:
         items = [immutable_text_item(target_path, markdown)]
+        if audit_markdown is not None:
+            audit_path = artifact_dir / 'audit_report.md'
+            items.append(immutable_text_item(audit_path, audit_markdown))
+            paths.append(str(audit_path))
         if structured_payload is not None:
             json_path = artifact_dir / "structured_report.json"
             items.append(immutable_json_item(json_path, structured_payload))

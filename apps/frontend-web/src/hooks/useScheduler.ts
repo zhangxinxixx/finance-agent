@@ -11,28 +11,26 @@ interface UseSchedulerState {
   refresh: () => void;
 }
 
-// Build a SchedulerOverviewResponse-compatible object from Dagster data
-async function fetchFromDagster(days: number): Promise<SchedulerOverviewResponse | null> {
-  try {
-    const [runs, schedules] = await Promise.all([
-      fetchDagsterRuns("premarket_job", 100),
-      fetchDagsterSchedules().catch(() => []),
-    ]);
+// Build a SchedulerOverviewResponse-compatible object from Dagster data.
+// Errors intentionally propagate so the page never silently presents stale data.
+async function fetchFromDagster(days: number): Promise<SchedulerOverviewResponse> {
+  const [runs, schedules] = await Promise.all([
+    fetchDagsterRuns("premarket_job", 100),
+    fetchDagsterSchedules(),
+  ]);
 
-    if (runs.length === 0) return null;
+  const cutoff = Date.now() - days * 86400_000;
+  const recentRuns = runs.filter((r) => new Date(r.createdAt).getTime() >= cutoff);
 
-    const cutoff = Date.now() - days * 86400_000;
-    const recentRuns = runs.filter((r) => new Date(r.createdAt).getTime() >= cutoff);
+  const successCount = recentRuns.filter((r) => r.status === "success").length;
+  const failedCount = recentRuns.filter((r) => r.status === "failed").length;
+  const runningCount = recentRuns.filter((r) => r.status === "running").length;
+  const pendingCount = recentRuns.filter((r) => r.status === "pending" || r.status === "queued").length;
 
-    const successCount = recentRuns.filter((r) => r.status === "success").length;
-    const failedCount = recentRuns.filter((r) => r.status === "failed").length;
-    const runningCount = recentRuns.filter((r) => r.status === "running").length;
-    const pendingCount = recentRuns.filter((r) => r.status === "pending" || r.status === "queued").length;
+  const today = new Date().toISOString().slice(0, 10);
+  const todayRuns = recentRuns.filter((r) => r.createdAt.slice(0, 10) === today);
 
-    const today = new Date().toISOString().slice(0, 10);
-    const todayRuns = recentRuns.filter((r) => r.createdAt.slice(0, 10) === today);
-
-    return {
+  return {
       generated_at: new Date().toISOString(),
       period_days: days,
       summary: {
@@ -74,15 +72,19 @@ async function fetchFromDagster(days: number): Promise<SchedulerOverviewResponse
         enabled: s.status === "RUNNING",
         last_run_at: s.lastRunAt,
         last_status: s.lastRunStatus ? mapDagsterStatus(s.lastRunStatus) : null,
-        next_run_at: null,
+        next_run_at: s.status === "RUNNING" ? s.nextTickAt : null,
+        source: "dagster",
+        status: s.status,
+        pipeline_name: s.pipelineName,
+        execution_timezone: s.executionTimezone,
+        next_tick_at: s.nextTickAt,
       })),
+      cron_jobs_source: "dagster",
+      cron_jobs_error: null,
       artifacts_summary: { today_count: 0, recent_outputs: [] },
       input_source_summary: { total: 0, connected: 0, data_only: 0, waiting: 0 },
       input_source_matrix: [],
-    };
-  } catch {
-    return null;
-  }
+  };
 }
 
 export function useSchedulerOverview(days: number = 7): UseSchedulerState {
@@ -102,12 +104,18 @@ export function useSchedulerOverview(days: number = 7): UseSchedulerState {
         setData(result);
       } catch (cause) {
         if (cancelled) return;
-        const dagsterData = await fetchFromDagster(days);
-        if (dagsterData) {
+        try {
+          const dagsterData = await fetchFromDagster(days);
+          if (cancelled) return;
           setData(dagsterData);
-        } else if (!cancelled) {
+        } catch (fallbackCause) {
+          if (cancelled) return;
+          const apiMessage = cause instanceof Error ? cause.message : "调度中心 API 加载失败";
+          const dagsterMessage = fallbackCause instanceof Error
+            ? fallbackCause.message
+            : "Dagster fallback 加载失败";
           setData(null);
-          setError(cause instanceof Error ? cause : new Error("加载调度中心数据失败"));
+          setError(new Error(`${apiMessage}；${dagsterMessage}`));
         }
       } finally {
         if (!cancelled) setIsLoading(false);

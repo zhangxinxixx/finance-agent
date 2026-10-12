@@ -65,6 +65,13 @@ class RunArtifact(ExecutionBase):
         Index("ix_run_artifacts_task_created", "task_id", "created_at"),
         Index("ix_run_artifacts_type", "artifact_type"),
         Index("ix_run_artifacts_path", "file_path"),
+        Index(
+            "ix_run_artifacts_structured_coverage",
+            "run_id",
+            "structured_layer",
+            "structured_status",
+        ),
+        Index("ix_run_artifacts_structured_schema", "structured_schema_version"),
     )
 
     artifact_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -81,6 +88,12 @@ class RunArtifact(ExecutionBase):
     artifact_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB_COMPAT, nullable=True)
     source_refs: Mapped[str | None] = mapped_column(Text, nullable=True, doc="JSON-encoded source refs")
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True, doc="JSON-encoded artifact metadata")
+    structured_payload: Mapped[dict | list | None] = mapped_column(JSONB_COMPAT, nullable=True, deferred=True)
+    structured_payload_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    structured_schema_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    structured_layer: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    structured_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    structured_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -133,17 +146,42 @@ def _ensure_execution_columns(bind: Engine | Connection) -> None:
             ddl.append("ALTER TABLE run_artifacts ADD COLUMN source_refs TEXT")
         if "metadata_json" not in columns:
             ddl.append("ALTER TABLE run_artifacts ADD COLUMN metadata_json TEXT")
+        if "structured_payload" not in columns:
+            ddl.append(f"ALTER TABLE run_artifacts ADD COLUMN structured_payload {json_type}")
+        if "structured_payload_sha256" not in columns:
+            ddl.append("ALTER TABLE run_artifacts ADD COLUMN structured_payload_sha256 VARCHAR(64)")
+        if "structured_schema_version" not in columns:
+            ddl.append("ALTER TABLE run_artifacts ADD COLUMN structured_schema_version VARCHAR(128)")
+        if "structured_layer" not in columns:
+            ddl.append("ALTER TABLE run_artifacts ADD COLUMN structured_layer VARCHAR(32)")
+        if "structured_status" not in columns:
+            ddl.append("ALTER TABLE run_artifacts ADD COLUMN structured_status VARCHAR(32)")
+        if "structured_error" not in columns:
+            ddl.append("ALTER TABLE run_artifacts ADD COLUMN structured_error VARCHAR(64)")
         if "created_at" not in columns:
             ddl.append("ALTER TABLE run_artifacts ADD COLUMN created_at TIMESTAMP")
-
-    if not ddl:
-        return
 
     if isinstance(bind, Engine):
         with bind.begin() as conn:
             for statement in ddl:
                 conn.execute(text(statement))
+            _ensure_execution_indexes(conn)
         return
 
     for statement in ddl:
         bind.execute(text(statement))
+    _ensure_execution_indexes(bind)
+
+
+def _ensure_execution_indexes(bind: Engine | Connection) -> None:
+    """Create additive query indexes after legacy columns have been added."""
+    inspector = inspect(bind)
+    if not inspector.has_table("run_artifacts"):
+        return
+    existing = {index["name"] for index in inspector.get_indexes("run_artifacts")}
+    for name in ("ix_run_artifacts_structured_coverage", "ix_run_artifacts_structured_schema"):
+        if name not in existing:
+            next(index for index in RunArtifact.__table__.indexes if index.name == name).create(
+                bind=bind,
+                checkfirst=True,
+            )

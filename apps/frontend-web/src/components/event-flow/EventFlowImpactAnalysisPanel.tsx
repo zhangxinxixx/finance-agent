@@ -2,6 +2,8 @@ import { Activity, AlertTriangle, GitBranch, ShieldAlert, Target, Waves } from "
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import type {
   EventFlowChainStep,
   EventFlowRadarAxis,
@@ -17,10 +19,11 @@ import {
 } from "@/components/shared/goldMainlineFormat";
 import { EventChainAnalysis } from "./EventChainAnalysis";
 import { EventGoldMainlineTrace } from "./EventGoldMainlineTrace";
-import { translateEventFlowValue } from "./eventFlowFormat";
+import { formatEventFlowHeadlineSummary, translateEventFlowValue } from "./eventFlowFormat";
 import { ImpactAssets } from "./ImpactAssets";
 import { RiskRadar } from "./RiskRadar";
 import { SentimentMetrics } from "./SentimentMetrics";
+import { extractObservedEventWindowRows, resolveEventPricingStatus } from "./eventEvidenceFormat";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -33,6 +36,10 @@ function stringifyValue(value: unknown): string {
   return "";
 }
 
+function displayObservedCount(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
+}
+
 function toRows(timeline: EventFlowTimelineItem[]): EventFlowTableRow[] {
   return timeline.map((event) => ({
     id: event.id,
@@ -42,7 +49,7 @@ function toRows(timeline: EventFlowTimelineItem[]): EventFlowTableRow[] {
     source: event.source ?? "事件流",
     assets: event.assets ?? event.affected_assets?.join(", ") ?? "—",
     impact: event.impact,
-    pricing: event.pricing ?? "未定价",
+    pricing: event.pricing ?? "未核验",
     period: event.period ?? "主线",
     stars: event.importance === "高" ? 5 : event.importance === "中" ? 3 : 1,
     verification_status: event.verification_status,
@@ -58,7 +65,14 @@ function marketValidationRows(events: EventFlowTimelineItem[]) {
     const snapshot = asRecord(event.market_snapshot ?? validation.market_snapshot);
     const confirmation = asRecord(validation.confirmation_summary);
     const primaryWindow = stringifyValue(snapshot.primary_window) || "未返回";
-    const pricing = event.pricing ?? (stringifyValue(validation.pricing_status) || "未标注");
+    const observedWindowRows = extractObservedEventWindowRows(validation);
+    const hasObservedWindows = observedWindowRows.length > 0;
+    const validationStatus = stringifyValue(validation.status);
+    const pricing = resolveEventPricingStatus({
+      status: validationStatus,
+      rawPricingStatus: stringifyValue(validation.pricing_status),
+      hasObservedWindows,
+    });
     const observedAssets = Array.isArray(snapshot.observed_assets) ? snapshot.observed_assets.map(String) : [];
     const missingAssets = Array.isArray(snapshot.missing_assets) ? snapshot.missing_assets.map(String) : [];
     const hasValidation = Object.keys(validation).length > 0 || Object.keys(snapshot).length > 0;
@@ -72,6 +86,7 @@ function marketValidationRows(events: EventFlowTimelineItem[]) {
       observedAssets,
       missingAssets,
       hasValidation,
+      record: { event, validation, snapshot },
       verificationStatus: translateEventFlowValue(event.verification_status ?? "unavailable"),
     }];
   });
@@ -101,12 +116,13 @@ function MarketValidationSummary({ events }: { events: EventFlowTimelineItem[] }
             当前没有真实的行情验证或行情快照数据。这里明确保留未返回占位，不把缺失字段包装成市场结论。
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
-            {rows.slice(0, 3).map((row) => (
+            {rows.map((row) => (
               <div key={row.id} className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-                <div className="text-[11px] font-semibold text-[var(--fg-2)]">{row.title}</div>
+                <div className="text-[11px] font-semibold text-[var(--fg-2)]">{formatEventFlowHeadlineSummary(row.title).lead}</div>
                 <div className="mt-2 text-[10px] text-[var(--fg-4)]">定价状态：{row.pricing}</div>
                 <div className="mt-1 text-[10px] text-[var(--fg-4)]">验证状态：{row.verificationStatus}</div>
                 <div className="mt-1 text-[10px] text-[var(--warn)]">行情验证数据未返回</div>
+                <ResearchDetails label="查看本事件验证记录"><EvidenceRecordActions record={row.record} label="事件及行情验证记录" /></ResearchDetails>
               </div>
             ))}
           </div>
@@ -114,9 +130,9 @@ function MarketValidationSummary({ events }: { events: EventFlowTimelineItem[] }
       ) : (
         <div className="space-y-2">
           {availableRows.map((row) => {
-            const confirmed = typeof row.confirmation.confirmed_count === "number" ? row.confirmation.confirmed_count : 0;
-            const contradicted = typeof row.confirmation.contradicted_count === "number" ? row.confirmation.contradicted_count : 0;
-            const observed = typeof row.confirmation.observed_count === "number" ? row.confirmation.observed_count : 0;
+            const confirmed = displayObservedCount(row.confirmation.confirmed_count);
+            const contradicted = displayObservedCount(row.confirmation.contradicted_count);
+            const observed = displayObservedCount(row.confirmation.observed_count);
 
             return (
               <article
@@ -125,7 +141,7 @@ function MarketValidationSummary({ events }: { events: EventFlowTimelineItem[] }
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="text-[11px] font-semibold text-[var(--fg-2)]">{row.title}</div>
+                    <div className="text-[11px] font-semibold text-[var(--fg-2)]">{formatEventFlowHeadlineSummary(row.title).lead}</div>
                     <div className="mt-1 text-[10px] text-[var(--fg-4)]">主窗口：{row.primaryWindow}</div>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
@@ -149,6 +165,7 @@ function MarketValidationSummary({ events }: { events: EventFlowTimelineItem[] }
                   <div>已观测资产：{row.observedAssets.length > 0 ? row.observedAssets.join(" / ") : "未返回"}</div>
                   <div>缺失资产：{row.missingAssets.length > 0 ? row.missingAssets.join(" / ") : "未返回"}</div>
                 </div>
+                <ResearchDetails label="查看本事件验证记录"><EvidenceRecordActions record={row.record} label="事件及行情验证记录" /></ResearchDetails>
               </article>
             );
           })}
@@ -255,13 +272,13 @@ function MainlineAttributionSummary({ timeline }: { timeline: EventFlowTimelineI
       bodyClassName="space-y-3"
     >
       {attributed.length === 0 ? (
-        <FAEmptyState title="暂无主线归因" description="当前事件流没有返回 mainlines / transmission_chains 字段。" className="py-6" />
+        <FAEmptyState title="暂无主线归因" description="当前事件流未提供主线标签与传导证据。" className="py-6" />
       ) : (
         <>
           <div className="grid gap-2 sm:grid-cols-4">
             {[
               { label: "已归因事件", value: `${attributed.length}/${timeline.length}` },
-              { label: "Mixed", value: String(mixedCount) },
+              { label: "多空混合", value: String(mixedCount) },
               { label: "改变主导因素", value: String(changedCount) },
               { label: "待验证事件", value: String(verificationCount) },
             ].map((item) => (
@@ -298,7 +315,7 @@ function MainlineAttributionSummary({ timeline }: { timeline: EventFlowTimelineI
               {featuredEvents.length ? featuredEvents.map((event) => (
                 <div key={event.id} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
                   <div className="mb-1.5 flex items-start justify-between gap-2">
-                    <div className="line-clamp-1 text-[11px] font-semibold text-[var(--fg-2)]">{event.title}</div>
+                    <div className="line-clamp-1 text-[11px] font-semibold text-[var(--fg-2)]">{formatEventFlowHeadlineSummary(event.title).lead}</div>
                     {event.net_effect ? (
                       <FAStatusPill tone={goldNetBiasTone(event.net_effect)} dot={false}>{formatGoldNetBiasLabel(event.net_effect)}</FAStatusPill>
                     ) : null}
@@ -306,7 +323,7 @@ function MainlineAttributionSummary({ timeline }: { timeline: EventFlowTimelineI
                   <EventGoldMainlineTrace event={event} density="compact" />
                 </div>
               )) : (
-                <div className="text-[11px] leading-5 text-[var(--fg-4)]">当前没有 mixed、改变主导因素或待验证事件。</div>
+                <div className="text-[11px] leading-5 text-[var(--fg-4)]">当前没有多空混合、改变主导因素或待验证事件。</div>
               )}
             </div>
           </div>

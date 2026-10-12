@@ -54,6 +54,7 @@ def build_positioning_snapshot(
             "source": str(point["source"]),
             "source_url": str(point["source_url"]),
             "raw_path": str(point["raw_path"]),
+            "retrieved_at": str(point.get("retrieved_at") or ""),
         })
 
     def _get(suffix: str) -> float | None:

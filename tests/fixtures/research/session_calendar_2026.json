@@ -1,0 +1,41 @@
+{
+  "schema_version": "cme_otc_session_calendar.v1",
+  "version": "cme_otc_session_calendar.2026.fixture",
+  "source_refs": [
+    {
+      "source": "CME holiday calendar 2026",
+      "reference": "https://www.cmegroup.com/tools-information/holiday-calendar/files/2026/labor-day-holiday-settlement-times-2026.pdf"
+    }
+  ],
+  "entries": [
+    {
+      "date": "2026-09-07",
+      "session_class": "HOLIDAY",
+      "holiday_name": "Labor Day",
+      "cme_settlement_status": "unavailable",
+      "otc_quote_expected": true,
+      "reason": "CME Labor Day settlement is not published",
+      "source_refs": [
+        {
+          "source": "CME holiday calendar 2026",
+          "reference": "https://www.cmegroup.com/tools-information/holiday-calendar/files/2026/labor-day-holiday-settlement-times-2026.pdf"
+        }
+      ]
+    },
+    {
+      "date": "2026-11-27",
+      "session_class": "EARLY_CLOSE",
+      "holiday_name": "Day after Thanksgiving",
+      "cme_settlement_status": "early_close",
+      "otc_quote_expected": true,
+      "reason": "provided early-close calendar entry"
+    },
+    {
+      "date": "2026-09-08",
+      "session_class": "NORMAL",
+      "cme_settlement_status": "scheduled",
+      "otc_quote_expected": true,
+      "reason": "provided ordinary trading-day entry"
+    }
+  ]
+}

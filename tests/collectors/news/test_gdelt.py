@@ -70,6 +70,8 @@ def test_gdelt_doc_items_map_to_candidate_raw_news_items(tmp_path: Path) -> None
     assert item.duplicate_key.startswith("news:gdelt_news:")
     assert item.raw_payload["query_group"] == "middle_east_hormuz"
     assert item.raw_payload["image_url"] == "https://example.com/image.jpg"
+    assert item.raw_payload["content_scope"] == "headline_snippet_only"
+    assert item.raw_payload["full_text_available"] is False
     assert item.raw_path.startswith("raw/news/gdelt/2026-06-10/middle_east_hormuz-")
     assert item.parsed_path.startswith("parsed/news/gdelt/2026-06-10/middle_east_hormuz-")
     assert (tmp_path / item.raw_path).exists()

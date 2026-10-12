@@ -24,7 +24,7 @@ export function CMEOptionsKpiStrip({ snapshot, decision }: CMEOptionsKpiStripPro
   const gex = snapshot.gex?.netgex_aggregate;
   const decisionGamma = decision?.gamma_summary;
   const gammaZero = gex?.gamma_zero?.price ?? decisionGamma?.gamma_zero;
-  const forwardPrice = snapshot.parameters?.f_value ?? decision?.price_context.report_p0 ?? gammaZero;
+  const forwardPrice = snapshot.parameters?.f_value;
   const netGex = gex?.net_gex ?? decisionGamma?.net_gex;
   const decisionDirection = decisionGamma?.regime === "negative_gamma"
     ? "negative"
@@ -37,16 +37,18 @@ export function CMEOptionsKpiStrip({ snapshot, decision }: CMEOptionsKpiStripPro
     ? gex.net_gex_direction
     : null;
   const direction = snapshotDirection ?? decisionDirection;
-  const resolvedDirection = direction ?? (netGex === undefined || netGex === null ? null : netGex < 0 ? "negative" : netGex > 0 ? "positive" : "neutral");
-  const expiryCount = snapshot.data_source?.expiries?.length ?? 0;
-  const rowCount = snapshot.data_source?.row_count ?? 0;
+  // Net GEX is an exposure value, not a substitute for the backend's
+  // coordinate- and freshness-aware gamma regime.
+  const resolvedDirection = direction;
+  const expiryCount = snapshot.data_source?.expiries?.length ?? null;
+  const rowCount = snapshot.data_source?.row_count;
 
   const structure = resolvedDirection === "negative" ? "负伽马" : resolvedDirection === "positive" ? "正伽马" : resolvedDirection === "neutral" ? "中性" : "未提供";
   const kpis: KpiItem[] = [
     { label: "聚合净伽马", value: formatCompactNumber(netGex) },
     { label: "伽马零点", value: `${formatNumber(gammaZero, 1)} 点` },
     { label: "远期价", value: `${formatNumber(forwardPrice, 1)} 点` },
-    { label: "到期月", value: `${formatNumber(expiryCount)} 个` },
+    { label: "到期月", value: expiryCount == null ? "—" : `${formatNumber(expiryCount)} 个` },
     { label: "样本", value: `${formatNumber(rowCount)} 行` },
   ];
 

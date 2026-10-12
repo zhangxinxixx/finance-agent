@@ -77,7 +77,7 @@ export function SettingsAuditFilters({
             <input
               value={query}
               onChange={(event) => onQueryChange(event.target.value)}
-              placeholder="搜索原因 / audit_id / request_id"
+              placeholder="搜索原因或技术标识"
               className="w-[220px] bg-transparent text-[11px] text-[var(--fg-2)] outline-none placeholder:text-[var(--fg-5)]"
             />
           </label>
@@ -91,7 +91,7 @@ export function SettingsAuditFilters({
             />
           </label>
           <label className="inline-flex h-8 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-card)] px-3 text-[11px] text-[var(--fg-4)]">
-            <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--fg-5)]">Actor</span>
+            <span className="text-[9px] font-semibold tracking-[0.12em] text-[var(--fg-5)]">操作者</span>
             <input
               value={actor}
               onChange={(event) => onActorChange(event.target.value)}

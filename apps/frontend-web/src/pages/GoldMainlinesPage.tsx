@@ -1,3 +1,4 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { useEffect } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import { ArrowRight, RefreshCw } from "lucide-react";
@@ -10,7 +11,13 @@ import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
 import { ResultIdentityBar } from "@/components/shared/ResultIdentityBar";
 import { GoldMainlineRequirementArchitecturePanel } from "@/components/gold-mainlines/GoldMainlineRequirementArchitecturePanel";
-import { GoldTopicOverviewCard, GoldTopicStatusBar } from "@/components/gold-mainlines/GoldMainlinePageFrame";
+import {
+  GoldReadTimeSourceHealthBanner,
+  GoldTopicOverviewCard,
+  GoldTopicStatusBar,
+  goldDecisionTrustLabel,
+  goldDecisionTrustNote,
+} from "@/components/gold-mainlines/GoldMainlinePageFrame";
 import { MainlineDetailDrawer } from "@/components/gold-mainlines/MainlineDetailDrawer";
 import { MainlineEvidenceList } from "@/components/gold-mainlines/MainlineEvidenceList";
 import { MainlineRankingTable } from "@/components/gold-mainlines/MainlineRankingTable";
@@ -36,36 +43,57 @@ function warningText(values: string[]): string {
   return values.map(warningLabel).join("；");
 }
 
-function GoldMainlineHero({ overview, rows }: { overview: GoldMacroOverview; rows: MainlineCoverageRow[] }) {
+function GoldMainlineHero({
+  overview,
+  rows,
+  decisionTrustLabel,
+  decisionTrustNote,
+}: {
+  overview: GoldMacroOverview;
+  rows: MainlineCoverageRow[];
+  decisionTrustLabel: string;
+  decisionTrustNote: string | null;
+}) {
   const conflict = overview.driver_conflict;
   const covered = rows.filter((row) => row.ranking).length;
   const pending = rows.filter((row) => row.status === "pending").length;
   const missing = rows.filter((row) => row.status === "missing").length;
+  const verified = rows.filter((row) => row.ranking && ["official_confirmed", "multi_source"].includes(row.ranking.verification_status)).length;
   const eventCount = new Set(rows.flatMap((row) => row.eventIds)).size || overview.key_events.length;
 
   return (
     <GoldTopicOverviewCard
       title="黄金主线归因"
-      eyebrow="Attribution Layer"
+      eyebrow="研究归因"
       accent="emphasis"
+      decisionTrustLabel={decisionTrustLabel}
+      decisionTrustNote={decisionTrustNote}
       description={formatGoldNarrativeText(overview.one_line_conclusion || conflict?.explanation) || "主线引擎暂未返回摘要。"}
       metrics={[
         {
           label: "主导主线",
           value: formatGoldMainlineLabel(overview.dominant_mainline),
-          meta: conflict?.dominant_driver ? formatGoldDriverLabel(conflict.dominant_driver) : "dominant",
+          meta: conflict?.dominant_driver ? formatGoldDriverLabel(conflict.dominant_driver) : "主导线索",
           tone: conflict?.status === "conflicted" || conflict?.status === "mixed" ? "warn" : "info",
         },
-        { label: "覆盖", value: `${covered}/9`, meta: `待接入 ${missing}` },
-        { label: "待验证", value: pending, meta: "单源 / 缺关键数据", tone: pending ? "warn" : "up" },
-        { label: "事件 / 验证", value: `${eventCount}E / ${overview.verification_matrix.length}V`, meta: overview.asset || "XAUUSD" },
+        { label: "已登记主线", value: `${covered}/9`, meta: "有排序记录，不等同可靠覆盖", tone: covered ? "info" : "dim" },
+        { label: "已验证", value: verified, meta: `待验证 ${pending} · 待登记 ${missing}`, tone: verified ? "up" : "warn" },
+        { label: "事件 / 验证", value: `${eventCount} 条 / ${overview.verification_matrix.length} 项`, meta: overview.asset === "XAUUSD" ? "黄金现货" : "研究资产" },
       ]}
     />
   );
 }
 
 export function GoldMainlinesPage() {
-  const { data, isLoading, isError, error, refetch } = useGoldMainlines();
+  const {
+    data,
+    isLoading,
+    isRefreshing,
+    isError,
+    error,
+    lastSuccessfulAt,
+    refetch,
+  } = useGoldMainlines();
   const shell = useOutletContext<AppShellOutletContext | null>() ?? { setHeaderContent: () => undefined };
 
   useEffect(() => {
@@ -85,7 +113,7 @@ export function GoldMainlinesPage() {
     return () => shell.setHeaderContent(null);
   }, [shell]);
 
-  if (isLoading) {
+  if (isLoading && !data) {
     return (
       <div className="finance-page-shell">
         <LoadingSkeleton variant="page" />
@@ -93,13 +121,15 @@ export function GoldMainlinesPage() {
     );
   }
 
-  if (isError || !data) {
+  if (isError && !data) {
     return (
       <div className="finance-page-shell">
         <ErrorState message={error?.message ?? "黄金主线数据加载失败"} onRetry={refetch} />
       </div>
     );
   }
+
+  if (!data) return null;
 
   const overview = data.gold_macro_overview;
 
@@ -109,7 +139,7 @@ export function GoldMainlinesPage() {
         <ResultIdentityBar
           identity={data.result_identity}
           subjectLabel="黄金主线结果"
-          baselineLabel="当前有效 Gold 基线"
+          baselineLabel="当前有效的黄金研究基线"
         />
         <FAEmptyState
           title="黄金主线总览未生成"
@@ -135,31 +165,56 @@ export function GoldMainlinesPage() {
   }
 
   const coverageRows = mainlineCoverageRows(overview);
+  const refreshError = isError ? error?.message : null;
+  const decisionTrustLabel = goldDecisionTrustLabel(data.read_time_source_health, { isRefreshing, refreshError });
+  const decisionTrustNote = goldDecisionTrustNote(data.read_time_source_health, { isRefreshing, refreshError });
 
   return (
     <FAPageScaffold
       toolbar={(
-        <GoldTopicStatusBar status={data.status} date={data.date || overview.as_of?.slice(0, 10)} runId={data.run_id} netBias={overview.net_bias} phase={overview.phase} riskScore={overview.risk_score} onRefresh={refetch} />
+        <GoldTopicStatusBar
+          status={data.status}
+          date={data.date || overview.as_of?.slice(0, 10)}
+          runId={data.run_id}
+          netBias={overview.net_bias}
+          phase={overview.phase}
+          riskScore={overview.risk_score}
+          sourceHealth={data.read_time_source_health}
+          isRefreshing={isRefreshing}
+          refreshError={refreshError}
+          lastSuccessfulAt={lastSuccessfulAt}
+          onRefresh={refetch}
+        />
       )}
     >
       {data.warnings.length ? (
         <FAWarningBanner title="降级提示" description={warningText(data.warnings)} tone="info" />
       ) : null}
 
+      <GoldReadTimeSourceHealthBanner
+        health={data.read_time_source_health}
+        warnings={data.read_time_warnings}
+      />
+
       <ResultIdentityBar
         identity={data.result_identity}
         subjectLabel="黄金主线结果"
-        baselineLabel="当前有效 Gold 基线"
+        baselineLabel="当前有效的黄金研究基线"
       />
 
-      <GoldMainlineHero overview={overview} rows={coverageRows} />
+      <GoldMainlineHero
+        overview={overview}
+        rows={coverageRows}
+        decisionTrustLabel={decisionTrustLabel}
+        decisionTrustNote={decisionTrustNote}
+      />
       <MainlineRankingTable rows={coverageRows} />
-      <GoldMainlineRequirementArchitecturePanel overview={overview} />
 
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.42fr)]">
         <MainlineDetailDrawer overview={overview} rows={coverageRows} />
         <MainlineEvidenceList overview={overview} rows={coverageRows} />
       </div>
+      <ResearchDetails label="查看研究框架"><GoldMainlineRequirementArchitecturePanel overview={overview} /></ResearchDetails>
     </FAPageScaffold>
   );
 }

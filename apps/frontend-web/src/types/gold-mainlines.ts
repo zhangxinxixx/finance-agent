@@ -173,6 +173,25 @@ export interface AnalysisReadiness {
   next_gaps: string[];
 }
 
+/** Read-time source gate returned alongside the historical Gold result. */
+export interface GoldReadTimeSourceHealth {
+  overall_status: string;
+  as_of: string | null;
+  p0_missing: string[];
+  p1_missing: string[];
+  p2_missing: string[];
+  stale_sources: string[];
+  fresh_sources: string[];
+  source_freshness: Record<string, unknown>;
+  mainline_impact: Record<string, unknown>;
+  can_build_gold_macro_overview: boolean | null;
+  can_emit_strong_conclusion: boolean | null;
+  blocked_mainlines: string[];
+  degraded_mainlines: string[];
+  blocking_reasons: string[];
+  warnings: string[];
+}
+
 export interface GoldMainlineEventLink {
   event_id: string;
   mainline_ids: GoldMainline[];

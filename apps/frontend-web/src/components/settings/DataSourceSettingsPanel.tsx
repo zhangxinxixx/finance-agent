@@ -4,6 +4,7 @@ import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { sourceStatusTone } from "@/adapters/settings";
 import type { SettingsDataSource } from "@/adapters/settings";
+import { settingsSourceStatusLabel } from "./settingsFormat";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   BarChart3,
@@ -78,14 +79,14 @@ function SourceCard({
       </div>
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-[var(--border)] pt-2">
         <span className="text-[10px] text-[var(--fg-5)]">请求状态</span>
-        <FAStatusPill tone={source.enabled ? "info" : "dim"}>{source.enabled ? "ENABLED" : "DISABLED"}</FAStatusPill>
+        <FAStatusPill tone={source.enabled ? "info" : "dim"}>{source.enabled ? "已启用" : "未启用"}</FAStatusPill>
       </div>
       <div className="mt-1 flex items-center justify-between gap-2">
         <span className="text-[10px] text-[var(--fg-5)]">运行状态</span>
-        <FAStatusPill tone={sourceStatusTone(source)}>{source.status}</FAStatusPill>
+        <FAStatusPill tone={sourceStatusTone(source)}>{settingsSourceStatusLabel(source.status)}</FAStatusPill>
       </div>
       <div className="mt-1 flex items-center justify-between gap-2">
-        <span className="text-[10px] text-[var(--fg-5)]">API Key</span>
+        <span className="text-[10px] text-[var(--fg-5)]">访问密钥</span>
         <span className="fa-num text-[10px] text-[var(--fg-3)]">{source.apiKeyMasked ?? "未配置"}</span>
       </div>
       {source.isOverridden ? (

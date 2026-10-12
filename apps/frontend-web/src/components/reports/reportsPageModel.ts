@@ -1,4 +1,4 @@
-import { CATEGORY_MAP, isSupportedReportType, reportMatchesAsset } from "@/components/reports/reportListMeta";
+import { getReportListStatus, isSupportedReportType, reportMatchesAsset, reportSearchText } from "@/components/reports/reportListMeta";
 import type { ReportFilters } from "@/components/reports/reportsRailOptions";
 import type { ReportDateItem, ReportIndexItem } from "@/types/reports";
 
@@ -14,7 +14,7 @@ export function dedupeSupportedReports(indexItems: ReportIndexItem[]): ReportInd
   for (const item of indexItems) {
     if (!isSupportedReportType(item.type)) continue;
     const key =
-      item.type === "jin10_market_observation_report"
+      item.type === "jin10_market_observation_report" || item.type === "final_report"
         ? `${item.type}|${item.trade_date}|${item.run_id ?? item.report_id ?? ""}`
         : `${item.type}|${item.trade_date}`;
     const existing = seen.get(key);
@@ -46,12 +46,7 @@ export function filterReports(
 
   return allReports.filter((item) => {
     if (searchNeedle) {
-      const categoryLabel = CATEGORY_MAP[item.type]?.label ?? item.type;
-      const matchesSearch =
-        categoryLabel.toLowerCase().includes(searchNeedle) ||
-        (item.title ?? "").toLowerCase().includes(searchNeedle) ||
-        item.trade_date.toLowerCase().includes(searchNeedle) ||
-        item.type.toLowerCase().includes(searchNeedle);
+      const matchesSearch = reportSearchText(item).includes(searchNeedle);
       if (!matchesSearch) return false;
     }
 
@@ -66,8 +61,7 @@ export function filterReports(
     }
 
     if (filters.status) {
-      if (filters.status === "published" && !item.available) return false;
-      if (filters.status === "draft" && item.available) return false;
+      if (getReportListStatus(item).key !== filters.status) return false;
     }
 
     if (dateCutoff && item.trade_date < dateCutoff) {

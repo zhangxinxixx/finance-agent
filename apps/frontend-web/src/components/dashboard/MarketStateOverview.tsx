@@ -2,7 +2,7 @@ import type { DashboardSummary, DashboardViewModel, SignalDirection } from "@/ty
 import { ShieldAlert } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { formatDateTime } from "@/lib/date";
-import { buildIntegratedMacroSummary, buildOptionsEvidenceSummary } from "./DashboardIntegratedMacroModel";
+import { buildIntegratedMacroSummary, buildOptionsEvidenceSummary, dashboardResearchAsOf } from "./DashboardIntegratedMacroModel";
 import { translateText } from "./judgmentFormat";
 
 interface MarketStateOverviewProps {
@@ -10,10 +10,10 @@ interface MarketStateOverviewProps {
   viewModel?: DashboardViewModel | null;
 }
 
-function directionLabel(direction: SignalDirection) {
+function directionLabel(direction: SignalDirection | "unknown") {
   if (direction === "bullish") return "偏多";
   if (direction === "bearish") return "偏空";
-  return "中性";
+  return direction === "neutral" ? "中性" : "方向未提供";
 }
 
 function normalizeText(value: string): string {
@@ -49,13 +49,6 @@ function uniqueLevels(levels: number[]): number[] {
   });
 }
 
-function metricNumber(value: string | number | null | undefined): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value !== "string" || !value.trim()) return null;
-  const parsed = Number(value.replace(/,/g, ""));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function compactDate(value: string | null): string {
   const match = value?.match(/^\d{4}-(\d{2})-(\d{2})/);
   return match ? `${match[1]}-${match[2]}` : "日期待确认";
@@ -69,47 +62,71 @@ function quickSupportLabel(
   return `${support.source_label}${timeframe} · ${compactDate(support.trade_date)} · ${state}`;
 }
 
+type LevelCoordinate = "spot" | "gc_futures" | "unknown";
+
+function levelGroupTitle(resistance: LevelCoordinate, support: LevelCoordinate): string {
+  if (resistance === "spot" && support === "spot") return "现货执行区";
+  if (resistance === "gc_futures" && support === "gc_futures") return "GC 期货观察区";
+  if (resistance === "unknown" && support === "unknown") return "来源待确认价位";
+  return "多坐标价位观察";
+}
+
+function resistanceLabel(coordinate: LevelCoordinate): string {
+  if (coordinate === "spot") return "现货上方确认区";
+  if (coordinate === "gc_futures") return "GC 期货阻力观察";
+  return "阻力观察（来源待确认）";
+}
+
+function supportLabel(coordinate: LevelCoordinate, index: number, supportBroken: boolean): string {
+  if (coordinate === "gc_futures") return index === 0 ? "GC 期货支撑观察" : "GC 期货次级支撑观察";
+  if (coordinate === "unknown") return index === 0 ? "支撑观察（来源待确认）" : "次级支撑观察（来源待确认）";
+  if (supportBroken) return index === 0 ? "现货待收复区" : "现货已失效线";
+  return index === 0 ? "现货下方观察区" : "现货下方失效区";
+}
+
+function compactLevelLabel(coordinate: LevelCoordinate, kind: "resistance" | "support", supportBroken = false): string {
+  if (coordinate === "gc_futures") return kind === "resistance" ? "GC 阻力观察" : "GC 支撑观察";
+  if (coordinate === "unknown") return kind === "resistance" ? "阻力（来源待确认）" : "支撑（来源待确认）";
+  if (kind === "resistance") return "现货确认";
+  return supportBroken ? "现货待收复" : "现货观察";
+}
+
 export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewProps) {
+  const observationOnly = summary.integrated_macro?.authority === "observation_only"
+    || summary.integrated_macro?.publish_allowed === false;
   const integrated = buildIntegratedMacroSummary(summary, viewModel);
   const optionsEvidence = buildOptionsEvidenceSummary(summary);
   const integratedConfidence = integrated.confidence == null ? null : Math.round(Math.max(0, Math.min(1, integrated.confidence)) * 100);
   const dataPct = integrated.dataCompleteness.pct;
   const macroResistance = uniqueLevels(integrated.macroLevels.resistance).slice(0, 1);
   const macroSupport = uniqueLevels(integrated.macroLevels.support).slice(0, 2);
-  const currentPrice = metricNumber(summary.market_summary.XAUUSD.value);
-  const supportBroken = currentPrice != null && macroSupport.length > 0 && currentPrice < Math.min(...macroSupport);
-  const directionText = integrated.overallBias || directionLabel(integrated.direction);
+  // Current invalidation is a backend decision; comparing a quote here cannot verify it.
+  const supportBroken = false;
+  const directionText = integrated.overallBias || (integrated.direction === "unknown" ? "方向待确认" : directionLabel(integrated.direction));
   const confirmationText = normalizeText(integrated.tradeImplication);
   const riskText = normalizeText(integrated.riskNote);
   const keyLevelText = [
-    macroResistance[0] == null ? null : `确认 ${formatLevel(macroResistance[0])}`,
-    macroSupport[0] == null ? null : `${supportBroken ? "待收复" : "观察"} ${formatLevel(macroSupport[0])}`,
-    optionsEvidence.pin === "—" ? null : `Pin ${optionsEvidence.pin}`,
+    macroResistance[0] == null ? null : `${compactLevelLabel(integrated.macroLevels.resistanceCoordinate, "resistance")} ${formatLevel(macroResistance[0])}`,
+    macroSupport[0] == null ? null : `${compactLevelLabel(integrated.macroLevels.supportCoordinate, "support", supportBroken)} ${formatLevel(macroSupport[0])}`,
+    optionsEvidence.pin === "—" ? null : `持仓伽马集中位（黄金期货估计）${optionsEvidence.pin}`,
   ].filter(Boolean).join(" / ") || "等待关键价位确认";
   const dataQualityText = dataPct == null
     ? integrated.dataCompleteness.label
     : `${dataPct}% · ${integrated.dataCompleteness.label}`;
-  const primaryReport = summary.latest_reports.find(
-    (report) => report.status === "ready" && report.type === "final_report" && report.generated_at,
-  ) ?? summary.latest_reports.find(
-    (report) => report.status === "ready" && report.type === "macro_report" && report.generated_at,
-  );
-  const reportUpdatedAt = primaryReport?.generated_at ?? summary.latest_reports.find(
-    (report) => report.status === "ready" && report.generated_at,
-  )?.generated_at;
+  const conclusionAsOf = dashboardResearchAsOf(summary, viewModel);
 
   return (
     <FACard
-      title="今日综合判断"
+      title={observationOnly ? "当前研究观察" : "已有综合判断"}
       accent="emphasis"
       density="compact"
       className="dashboard-decision-panel"
       bodyClassName="dashboard-decision-body"
       action={
-        reportUpdatedAt ? (
+        conclusionAsOf ? (
           <div className="flex items-baseline gap-1.5">
-            <span className="fa-label">报告更新</span>
-            <time className="fa-num text-[length:var(--type-label)] text-[var(--fg-3)]">{formatDateTime(reportUpdatedAt)}</time>
+            <span className="fa-label">结论时间</span>
+            <time className="fa-num text-[length:var(--type-label)] text-[var(--fg-3)]">{formatDateTime(conclusionAsOf)}</time>
           </div>
         ) : null
       }
@@ -118,7 +135,7 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
         <div className="dashboard-decision-memo">
           <div className="dashboard-decision-memo-rule" aria-hidden="true" />
           <div className="dashboard-decision-text-block">
-            <div className="dashboard-section-label">操作框架</div>
+            <div className="dashboard-section-label">{observationOnly ? "研究结论 · 不代表正式策略" : "研究框架"}</div>
             <div className={`dashboard-decision-headline dashboard-decision-headline--${integrated.direction}`}>
               <span>{directionText}</span>
               <strong>{translateText(integrated.decisionSummary)}</strong>
@@ -127,7 +144,7 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
 
           <div className="dashboard-decision-focus-grid">
             <div className="dashboard-decision-focus-card dashboard-decision-focus-card--primary">
-              <span>交易条件</span>
+              <span>{observationOnly ? "待验证条件" : "交易条件"}</span>
               <strong>{confirmationText}</strong>
             </div>
             <div className="dashboard-decision-focus-card">
@@ -146,15 +163,17 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
 
         <div className="dashboard-decision-section dashboard-decision-side">
           <LevelRows
-            title="综合交易价位"
+            title={levelGroupTitle(integrated.macroLevels.resistanceCoordinate, integrated.macroLevels.supportCoordinate)}
             rows={[
-              ...macroResistance.map((level) => ({ label: "上方确认区", value: formatLevel(level), tone: "down" as const })),
-              ...macroSupport.map((level, index) => ({
-                label: supportBroken
-                  ? index === 0 ? "待收复区" : "已失效线"
-                  : index === 0 ? "下方观察区" : "下方失效区",
+              ...macroResistance.map((level) => ({
+                label: resistanceLabel(integrated.macroLevels.resistanceCoordinate),
                 value: formatLevel(level),
-                tone: supportBroken ? "down" as const : "up" as const,
+                tone: "down" as const,
+              })),
+              ...macroSupport.map((level, index) => ({
+                label: supportLabel(integrated.macroLevels.supportCoordinate, index, supportBroken),
+                value: formatLevel(level),
+                tone: integrated.macroLevels.supportCoordinate === "spot" && supportBroken ? "down" as const : "up" as const,
               })),
               ...integrated.quickSupports.map((support) => ({
                 label: quickSupportLabel(support),
@@ -164,12 +183,12 @@ export function MarketStateOverview({ summary, viewModel }: MarketStateOverviewP
             ]}
           />
           <LevelRows
-            title="期权结构价位"
+            title={`期权结构价位 · GC · ${summary.cme_options.trade_date || "交易日未知"}`}
             rows={[
-              { label: "Gamma Zero", value: optionsEvidence.gammaZero, tone: "neutral" },
-              { label: "Pin", value: optionsEvidence.pin, tone: "neutral" },
-              { label: "Call Wall", value: optionsEvidence.callWall, tone: "down" },
-              { label: "Put Wall", value: optionsEvidence.putWall, tone: "up" },
+              { label: "伽马翻转估计位（黄金期货）", value: optionsEvidence.gammaZero, tone: "neutral" },
+              { label: "持仓与伽马集中位（估计）", value: optionsEvidence.pin, tone: "neutral" },
+              { label: "看涨持仓墙", value: optionsEvidence.callWall, tone: "down" },
+              { label: "看跌持仓墙", value: optionsEvidence.putWall, tone: "up" },
             ]}
           />
         </div>

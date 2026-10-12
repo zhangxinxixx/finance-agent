@@ -1,6 +1,6 @@
 # 前端字体与视觉风格开发规范
 
-版本：2026-07-04  
+版本：2026-10-07
 适用范围：`apps/frontend-web/src` 当前 Vite + React 前端主线
 
 本规范用于后续页面开发、组件改造和视觉修正。所有字体、字号、文字颜色、状态色和信息密度默认遵守这里，不再在页面里临时发明一套样式。
@@ -50,13 +50,15 @@
 
 | Token | 字体栈 | 用途 |
 |---|---|---|
-| `--font-ui` | `"Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif` | 全局中文 UI、正文、标题 |
+| `--font-ui` | `"IBM Plex Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif` | 全局中文 UI、正文、标题 |
 | `--font-sans` | `var(--font-ui)` | Tailwind `font-sans` |
 | `--font-display` | `var(--font-ui)` | 标题、标签、模块名 |
 | `--font-market` | `var(--font-ui)` | 行情价格、KPI 数字 |
 | `--font-mono` | `"JetBrains Mono", Consolas, monospace` | run id、hash、代码、需要等宽比较的机器字段 |
 
 使用规则：
+
+- 主字体由`finanalytics-fonts.css`在本地加载Regular/SemiBold，OFL资源、license与hash保存在`public/fonts/ibm-plex-sans-sc/`。无需访问字体CDN或依赖用户本机安装。
 
 - 中文标题、中文标签、中文正文不要使用 `font-mono`。
 - 价格、点位、百分比默认使用 `--font-market` + `tabular-nums`，不要随意换 DIN/Inter。
@@ -72,9 +74,9 @@
 | `--type-page-title` | `16px` | 页面标题、全局主标题 |
 | `--type-section-title` | `15px` | 页面 section 标题、模块标题 |
 | `--type-card-title` | `14px` | 卡片标题、价位组标题、小模块标题 |
-| `--type-subtitle` | `13px` | 强调正文、二级标题 |
-| `--type-body` / `--text-body` | `13px` | 普通正文、报告摘要、列表正文 |
-| `--type-body-sm` | `12.5px` | 次级正文、密集列表说明 |
+| `--type-subtitle` | `14px` | 强调正文、二级标题 |
+| `--type-body` / `--text-body` | `14px` | 普通正文、报告摘要、列表正文 |
+| `--type-body-sm` | `13px` | 次级正文、密集列表说明 |
 | `--type-label` | `12px` | 标签、表头、meta label、按钮文字 |
 | `--type-caption` | `11px` | caption、弱提示、机器字段摘要 |
 | `--type-kpi` | `18px` | KPI 数字、关键小指标 |
@@ -83,7 +85,7 @@
 
 原则：
 
-- 正文默认 `13px`，不要压到 `10px` 以下。
+- 正文默认 `14px`，次级正文`13px`，不要压到 `10px` 以下。
 - 标签最小 `11px`，业务标签推荐 `12px`。
 - 页面里普通标题不超过 `16px`，卡片标题常用 `14px`。
 - KPI 大数字常用 `18px` 到 `20px`，不要默认 `24px+`。

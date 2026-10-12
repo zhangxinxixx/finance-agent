@@ -1,6 +1,8 @@
 import type { MarketMonitorHistoryResponse } from "@/adapters/marketMonitor";
 import type { MarketMonitorHistoryTimeframe } from "@/hooks/useMarketMonitor";
 import type { MarketMonitorMetric } from "@/types/market-monitor";
+import { readableWarning } from "@/lib/researchReading";
+import { formatHistoryTimeframe } from "./format";
 
 export type ChartSeriesData = {
   key: string;
@@ -14,10 +16,10 @@ export type ChartSeriesData = {
 export const TIMEFRAMES: MarketMonitorHistoryTimeframe[] = ["15M", "30M", "1H", "4H", "1D", "1W", "1M", "3M", "6M", "1Y"];
 
 export const CHART_SERIES: Array<{ key: string; color: string; label: string; dashed?: boolean }> = [
-  { key: "XAUUSD", color: "#fbbf24", label: "XAUUSD" },
-  { key: "DXY", color: "#60a5fa", label: "DXY", dashed: true },
-  { key: "REAL_10Y", color: "#f05252", label: "10Y Real" },
-  { key: "T10YIE", color: "#34d399", label: "T10YIE" },
+  { key: "XAUUSD", color: "#fbbf24", label: "现货黄金（XAUUSD）" },
+  { key: "DXY", color: "#60a5fa", label: "美元指数（DXY）", dashed: true },
+  { key: "REAL_10Y", color: "#f05252", label: "10年实际利率" },
+  { key: "T10YIE", color: "#34d399", label: "10年通胀预期" },
 ];
 
 export const TIMEFRAME_POINTS: Record<MarketMonitorHistoryTimeframe, number> = {
@@ -84,15 +86,16 @@ export function buildChartSeriesData({
 
 export function chartStatusText(history: MarketMonitorHistoryResponse | null | undefined) {
   if (!history) {
-    return "history unavailable";
+    return "历史序列不可用";
   }
 
-  return `${history.available_points} 个点 · ${history.source_timeframe ?? "unknown"} source${history.degraded ? " · degraded" : ""}${history.coverage_note ? ` · ${history.coverage_note}` : ""}`;
+  const coverage = history.coverage_note ? readableWarning(history.coverage_note) : "";
+  return `${history.available_points} 个点 · ${formatHistoryTimeframe(history.source_timeframe)}${history.degraded ? " · 数据降级" : ""}${coverage ? ` · ${coverage}` : ""}`;
 }
 
 export function xauPricePoints(seriesData: ChartSeriesData[]) {
   return (seriesData.find((item) => item.key === "XAUUSD")?.values ?? []).map((value, index, arr) => ({
-    label: index === 0 ? "start" : index === arr.length - 1 ? "latest" : "",
+    label: index === 0 ? "起点" : index === arr.length - 1 ? "最新" : "",
     value,
   }));
 }
@@ -127,7 +130,7 @@ function buildFallbackSeries(value: number | null): ChartSeriesData | null {
   return {
     key: "XAUUSD",
     color: "#fbbf24",
-    label: "XAUUSD",
+    label: "现货黄金（XAUUSD）",
     values: [value * 0.996, value * 0.999, value * 0.9975, value * 1.0015, value],
     dashed: false,
     synthetic: true,

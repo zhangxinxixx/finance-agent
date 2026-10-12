@@ -1,7 +1,7 @@
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { MarketMonitorMetric } from "@/types/market-monitor";
-import { findMetric, formatMetricChange, formatMetricValue } from "./format";
+import { findMetric, formatMetricChange, formatMetricValue, marketMonitorMetricLabel, marketMonitorStatusLabel, marketMonitorUnitLabel } from "./format";
 
 export interface LiquidityPricePanelProps {
   metrics: MarketMonitorMetric[];
@@ -13,19 +13,19 @@ export function LiquidityPricePanel({ metrics = [] }: LiquidityPricePanelProps) 
   return (
     <FACard
       title="跨资产联动表"
-      eyebrow="Cross-Asset Matrix"
+      eyebrow="跨资产读数"
       accent="info"
       bodyClassName="p-0"
     >
       <table className="fa-table">
         <thead>
           <tr>
-            <th>Metric</th>
-            <th>Latest</th>
-            <th>1W</th>
-            <th>1M</th>
-            <th>Status</th>
-            <th>Impact</th>
+            <th>指标</th>
+            <th>最新值</th>
+            <th>周变化</th>
+            <th>月变化</th>
+            <th>状态</th>
+            <th>解释</th>
           </tr>
         </thead>
         <tbody>
@@ -36,13 +36,13 @@ export function LiquidityPricePanel({ metrics = [] }: LiquidityPricePanelProps) 
               <tr key={key}>
                 <td>
                   <div className="flex flex-col gap-0.5">
-                    <span className="font-semibold text-[var(--fg-2)]">{metric?.label ?? key}</span>
-                    <span className="font-mono text-[10px] text-[var(--fg-5)]">{metric?.latest_date ?? "unavailable"}</span>
+                    <span className="font-semibold text-[var(--fg-2)]">{marketMonitorMetricLabel(key, metric?.label)}</span>
+                    <span className="font-mono text-[10px] text-[var(--fg-5)]">{metric?.latest_date ?? "未提供"}</span>
                   </div>
                 </td>
                 <td className="font-mono text-[var(--fg-2)]">
                   {metric ? formatMetricValue(metric.latest_value, 4) : "—"}
-                  {metric?.unit ? <span className="ml-1 text-[10px] text-[var(--fg-5)]">{metric.unit}</span> : null}
+                  {metric?.unit ? <span className="ml-1 text-[10px] text-[var(--fg-5)]">{marketMonitorUnitLabel(metric.unit)}</span> : null}
                 </td>
                 <td className="font-mono">{metric ? formatMetricChange(metric.one_week_change) : "—"}</td>
                 <td className="font-mono">{metric ? formatMetricChange(metric.one_month_change) : "—"}</td>
@@ -58,7 +58,7 @@ export function LiquidityPricePanel({ metrics = [] }: LiquidityPricePanelProps) 
                             : "neutral"
                     }
                   >
-                    {metric?.status ?? "unavailable"}
+                    {marketMonitorStatusLabel(metric?.status)}
                   </FAStatusPill>
                 </td>
                 <td className="max-w-[18rem]">

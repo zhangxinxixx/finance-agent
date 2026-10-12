@@ -248,11 +248,61 @@ def test_execute_conservative_synthesis_fallback_uses_explicit_coordinator_outpu
     assert fallback.bias is AgentBias.NEUTRAL
     assert fallback.status is AgentStatus.PARTIAL
     assert fallback.confidence == 0.55
-    assert fallback.accepted_state_conclusion is not None
-    assert fallback.accepted_state_conclusion.direction is AgentBias.NEUTRAL
-    assert fallback.accepted_state_conclusion.state_bias == "neutral"
     assert fallback.input_payload["fallback_of"]["agent_name"] == "coordinator_agent"
     assert execution.fallback_quality_gate_decision is not None
+
+
+def test_fallback_outputs_keep_primary_snapshot_lineage_and_use_payload_identity() -> None:
+    from apps.analysis.agents.fallback_executor import (
+        AgentLoopFallbackTask,
+        _conservative_fallback_output,
+        _fallback_cross_check_output,
+        _fallback_reanalysis_output,
+    )
+
+    primary = _output(agent_name="coordinator_agent", snapshot_id="run-snapshot")
+    cross_check_task = AgentLoopFallbackTask(task_type="fallback_cross_check", reason="test")
+    reanalysis_task = AgentLoopFallbackTask(task_type="fallback_reanalyze", reason="test")
+    fallback_outputs = [
+        _fallback_cross_check_output(
+            agent_outputs=[primary],
+            task=cross_check_task,
+            created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+        ),
+        _fallback_reanalysis_output(
+            agent_outputs=[primary],
+            task=reanalysis_task,
+            created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+        ),
+        _conservative_fallback_output(
+            primary=primary,
+            tasks=[reanalysis_task],
+            primary_quality_gate_decision=_decision(QualityGateAction.FALLBACK),
+            task_results=[],
+            unresolved_reason_codes=["test_reason"],
+            created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+        ),
+    ]
+
+    for fallback in fallback_outputs:
+        assert fallback.snapshot_id == primary.snapshot_id
+        assert fallback.input_snapshot_ids == primary.input_snapshot_ids
+        assert fallback.input_payload["fallback_of"]["agent_name"] == primary.agent_name
+        assert fallback.input_payload["fallback_of"]["snapshot_id"] == primary.snapshot_id
+
+    from apps.analysis.strategy.card import build_strategy_card
+
+    card = build_strategy_card(
+        snapshot={
+            "snapshot_id": primary.snapshot_id,
+            "run_id": "run-id",
+            "trade_date": "2026-07-06",
+            "metadata": {"symbol": "XAUUSD"},
+        },
+        coordinator_output=fallback_outputs[-1],
+        created_at=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+    )
+    assert card.input_snapshot_ids["coordinator"] == primary.snapshot_id
 
 
 def test_execute_agent_loop_fallback_tasks_runs_independent_source_cross_check() -> None:
@@ -608,6 +658,8 @@ def test_execute_agent_loop_fallback_tasks_runs_cme_options_reparse_when_snapsho
     assert "cme_options_reparse_agent" in execution.fallback_agent_outputs
     reparse = execution.fallback_agent_outputs["cme_options_reparse_agent"]
     assert reparse.agent_name == "cme_options_reparse_agent"
+    assert reparse.snapshot_id == primary.snapshot_id
+    assert reparse.input_snapshot_ids == primary.input_snapshot_ids
     assert reparse.input_payload["fallback_of"]["agent_name"] == "cme_options_agent"
     assert reparse.input_payload["fallback_task"] == "fallback_reparse"
     assert len(execution.task_results) == 1
@@ -703,7 +755,8 @@ def test_execute_agent_loop_fallback_tasks_runs_jin10_report_reparse_from_archiv
     reparse = execution.fallback_agent_outputs["jin10_report_reparse_agent"]
     assert reparse.agent_name == "jin10_report_reparse_agent"
     assert reparse.module == "agent_loop_fallback_jin10_reparse"
-    assert reparse.snapshot_id == "jin10:2026-05-06:218330:agent_analysis:fallback_reparse"
+    assert reparse.snapshot_id == primary.snapshot_id
+    assert reparse.input_snapshot_ids == primary.input_snapshot_ids
     assert reparse.input_payload["fallback_task"] == "fallback_reparse"
     assert reparse.input_payload["fallback_of"]["agent_name"] == "jin10_report_analysis_agent"
     assert reparse.input_payload["raw_report"]["article_id"] == "218330"
@@ -804,6 +857,8 @@ def test_execute_agent_loop_fallback_tasks_runs_jin10_vlm_reparse_from_image_inp
     reparse = execution.fallback_agent_outputs["jin10_vlm_reparse_agent"]
     assert reparse.agent_name == "jin10_vlm_reparse_agent"
     assert reparse.module == "agent_loop_fallback_jin10_vlm_reparse"
+    assert reparse.snapshot_id == primary.snapshot_id
+    assert reparse.input_snapshot_ids == primary.input_snapshot_ids
     assert reparse.input_payload["parse_status"]["recognition_mode"] == "vlm"
     assert reparse.input_payload["parse_status"]["pages_total"] == 1
     assert reparse.input_payload["vlm_reparse_input"]["image_entries"][0]["path"] == str(image_path)

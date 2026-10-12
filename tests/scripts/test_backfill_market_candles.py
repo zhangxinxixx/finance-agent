@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+import pytest
 
 from scripts.backfill_market_candles import (
     DAILY_MARKET_INSTRUMENTS,
@@ -346,7 +347,7 @@ def test_backfill_market_candles_repair_gaps_dry_run_reads_existing_db_only(tmp_
                 high=3301.0 + minute,
                 low=3299.0 + minute,
                 close=3300.5 + minute,
-                source="jin10_mcp_kline_1m",
+                source="twelvedata_xauusd_1m",
             )
         session.commit()
 
@@ -540,7 +541,7 @@ def test_parse_openbb_intraday_payload_preserves_full_hourly_history() -> None:
     assert candles[1]["close"] == 3348.0
 
 
-def test_backfill_market_candles_supports_jin10_1m_payload(tmp_path: Path) -> None:
+def test_backfill_market_candles_rejects_jin10_1m_write_before_opening_database(tmp_path: Path) -> None:
     payload = {
         "data": {
             "code": "XAUUSD",
@@ -574,19 +575,10 @@ def test_backfill_market_candles_supports_jin10_1m_payload(tmp_path: Path) -> No
             "--input-json",
             str(input_json),
         ]
-        main()
+        with pytest.raises(SystemExit, match="jin10_numeric_source_forbidden"):
+            main()
     finally:
         sys.argv = argv
 
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from database.models.analysis import MarketCandle, ensure_analysis_tables
-
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
-    ensure_analysis_tables(engine)
-    session = sessionmaker(bind=engine, expire_on_commit=False)()
-    rows = session.query(MarketCandle).order_by(MarketCandle.open_time.asc()).all()
-    assert len(rows) == 2
-    assert rows[0].asset == "XAUUSD"
-    assert rows[0].timeframe == "1m"
-    assert rows[1].close == 3363.0
+    assert not db_path.exists()
+    assert json.loads(input_json.read_text()) == payload

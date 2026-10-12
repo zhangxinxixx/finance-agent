@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import { useState } from "react";
 import { CheckCircle2, ExternalLink, FileSearch, Layers3, SearchCheck, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -64,17 +65,17 @@ export function MarketOddsMatrix({ evidence, reportDetailPath }: { evidence: Mar
                 <SearchCheck size={14} className="text-[var(--brand-hover)]" />
                 <h3 className="fa-card-title">赔率结构解读</h3>
                 <FAStatusPill tone={analysisContext.quality_status === "accepted" ? "up" : "warn"} dot={false}>
-                  {analysisContext.quality_status === "accepted" ? "分析已验收" : "确定性降级"}
+                  {analysisContext.quality_status === "accepted" ? "分析已验收" : "部分分析，需复核"}
                 </FAStatusPill>
               </div>
-              <p className="mt-2 fa-body-text">{analysisContext.structure_summary}</p>
+              <p className="mt-2 fa-body-text">{readableWarning(analysisContext.structure_summary)}</p>
             </section>
             <section className="px-3 py-3">
               <div className="flex items-center gap-2">
                 <Sparkles size={14} className="text-[var(--warn)]" />
                 <h3 className="fa-card-title">对黄金的辅助含义</h3>
               </div>
-              <p className="mt-2 fa-body-text">{analysisContext.gold_implication}</p>
+              <p className="mt-2 fa-body-text">{readableWarning(analysisContext.gold_implication)}</p>
             </section>
           </div>
           <section className="border-t border-[var(--border-faint)] px-3 py-3">
@@ -87,7 +88,7 @@ export function MarketOddsMatrix({ evidence, reportDetailPath }: { evidence: Mar
               {analysisContext.confirmation_variables.map((item, index) => (
                 <div key={`${index}:${item}`} className="flex items-start gap-2 text-[length:var(--type-body-sm)] leading-5 text-[var(--fg-3)]">
                   <span className="fa-num mt-0.5 shrink-0 text-[var(--fg-5)]">{String(index + 1).padStart(2, "0")}</span>
-                  <span>{item}</span>
+                  <span>{readableWarning(item)}</span>
                 </div>
               ))}
             </div>
@@ -97,7 +98,7 @@ export function MarketOddsMatrix({ evidence, reportDetailPath }: { evidence: Mar
       {itemCount === 0 ? (
         <div className="border-b border-[var(--border-faint)] px-3 py-5 text-center">
           <p className="fa-card-title">暂无可展示的赔率条目</p>
-          <p className="mt-1 fa-muted-text">当前报告尚未形成可追溯的 figure 锚点，保持待复核状态，不补造概率。</p>
+          <p className="mt-1 fa-muted-text">图片证据尚不完整，赔率内容仍需复核。</p>
         </div>
       ) : null}
       <div className="columns-1 gap-3 p-3 xl:columns-2">

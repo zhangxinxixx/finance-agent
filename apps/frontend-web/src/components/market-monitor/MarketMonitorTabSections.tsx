@@ -1,4 +1,6 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { useState } from "react";
+import { FedWatchPanel } from "./FedWatchPanel";
 import { Activity, Calendar, Layers3 } from "lucide-react";
 import { AssetTable } from "@/components/market-monitor/AssetTable";
 import { CorrelationMatrix } from "@/components/market-monitor/CorrelationMatrix";
@@ -35,6 +37,7 @@ export function MarketMonitorOverviewSection({
   onTimeframeChange,
   marketRegimes,
   agentMarketRegime,
+  realtimeRegime,
   overviewTitle,
   sourceLabel,
   latestDate,
@@ -46,6 +49,7 @@ export function MarketMonitorOverviewSection({
   onTimeframeChange: (timeframe: MarketMonitorHistoryTimeframe) => void;
   marketRegimes: MarketMonitorMockFile["market_regimes"];
   agentMarketRegime: MarketMonitorMockFile["agent_market_regime"] | null | undefined;
+  realtimeRegime: MarketMonitorMockFile["realtime_regime"];
   overviewTitle: string;
   sourceLabel: string;
   latestDate: string;
@@ -55,18 +59,22 @@ export function MarketMonitorOverviewSection({
     <>
       <OverviewHero
         title={overviewTitle}
-        meta={`source ${sourceLabel} · latest ${latestDate}`}
+        meta={`来源：${sourceLabel} · 最新观测：${latestDate}`}
         summary={overviewSummary}
       />
       <MarketPriceCards metrics={metrics} />
+      <FedWatchPanel />
       <div className="market-monitor-main-grid">
         <MultiLineChart
           metrics={metrics}
           history={history}
+          activeTimeframe={activeTimeframe}
+          onTimeframeChange={onTimeframeChange}
         />
         <RightPanel
           marketRegimes={marketRegimes}
           agentMarketRegime={agentMarketRegime}
+          currentRegimeAvailable={realtimeRegime?.available === true}
         />
       </div>
     </>
@@ -76,9 +84,13 @@ export function MarketMonitorOverviewSection({
 export function MarketMonitorPricingChainSection({
   metrics,
   history,
+  activeTimeframe,
+  onTimeframeChange,
 }: {
   metrics: MarketMonitorMetric[];
   history: MarketMonitorHistoryResponse | null;
+  activeTimeframe: MarketMonitorHistoryTimeframe;
+  onTimeframeChange: (timeframe: MarketMonitorHistoryTimeframe) => void;
 }) {
   return (
     <>
@@ -88,13 +100,15 @@ export function MarketMonitorPricingChainSection({
           <div className="market-monitor-tab-section-title">黄金定价链</div>
         </div>
         <div className="market-monitor-tab-section-summary">
-          XAUUSD / DXY / US10Y / REAL_10Y / T10YIE · Jin10 实时
+          现货黄金（XAUUSD）/ 美元指数（DXY）/ 10年名义利率（US10Y）/ 10年实际利率（REAL_10Y）/ 10年通胀预期（T10YIE）· 接口聚合，按各指标观测日期
         </div>
       </div>
       <div className="market-monitor-pricing-chain-grid">
         <MultiLineChart
           metrics={metrics}
           history={history}
+          activeTimeframe={activeTimeframe}
+          onTimeframeChange={onTimeframeChange}
         />
         <div className="market-monitor-pricing-chain-rail">
           <FactorPanel metrics={metrics} />
@@ -113,7 +127,7 @@ export function MarketMonitorCrossAssetSection({ metrics }: { metrics: MarketMon
           <Layers3 size={12} className="market-monitor-tab-section-icon" />
           <div className="market-monitor-tab-section-title">跨资产观察</div>
         </div>
-        <div className="market-monitor-tab-section-summary">资产分组、热力图与联动矩阵</div>
+        <div className="market-monitor-tab-section-summary">资产分组、热力图与已有周/月变化对照</div>
       </div>
       <div className="market-monitor-cross-asset-grid">
         <AssetTable metrics={metrics} />
@@ -185,8 +199,9 @@ export function MarketMonitorCalendarSection({
           <RightPanel
             marketRegimes={marketRegimes}
             agentMarketRegime={agentMarketRegime}
+            currentRegimeAvailable={realtimeRegime?.available === true}
           />
-          <SourceTracePanel sourceTrace={sourceTrace} />
+          <ResearchDetails label="查看数据记录"><SourceTracePanel sourceTrace={sourceTrace} /></ResearchDetails>
         </div>
       </div>
     </>
@@ -211,7 +226,7 @@ function MarketMonitorCalendarEventsPanel({
   isError: boolean;
 }) {
   const upcomingEvents = events.filter((event) => event.release_state === "upcoming");
-  const releasedEvents = events.filter((event) => event.release_state !== "upcoming");
+  const releasedEvents = events.filter((event) => event.release_state === "released");
   const priorityEvents = events.filter((event) => event.is_high_impact || (event.star ?? 0) >= 4);
   const [activeView, setActiveView] = useState<CalendarEventView>("priority");
   const [priorityPage, setPriorityPage] = useState(1);
@@ -219,8 +234,9 @@ function MarketMonitorCalendarEventsPanel({
   const upcomingCount = calendarStats?.upcoming ?? upcomingEvents.length;
   const releasedCount = calendarStats?.released ?? releasedEvents.length;
   const isStale = calendarFreshness?.is_stale || calendarStatus === "stale";
-  const statusTone = isStale ? "warn" : calendarStatus === "ok" ? "info" : "dim";
-  const statusLabel = isStale ? "窗口偏旧" : "实时窗口";
+  const available = calendarStatus === "available" || calendarStatus === "ok";
+  const statusTone = isStale ? "warn" : available ? "info" : "dim";
+  const statusLabel = calendarStatus === "unavailable" ? "当前不可用" : isStale ? "窗口偏旧" : available ? "当前窗口" : "待核验";
   const windowLabel = formatCalendarWindowLabel(calendarStats);
   const activeEvents = activeView === "priority" ? priorityEvents : events;
   const activePage = activeView === "priority" ? priorityPage : calendarPage;
@@ -248,7 +264,7 @@ function MarketMonitorCalendarEventsPanel({
   return (
     <FACard
       title={activeView === "priority" ? "重点事件" : "财经日历"}
-      eyebrow={activeView === "priority" ? "High Impact" : "Calendar Window"}
+      eyebrow={activeView === "priority" ? "重点影响" : "日历窗口"}
       accent={activeView === "priority" ? "warn" : "brand"}
       action={(
         <FAStatusPill tone={events.length > 0 ? statusTone : "dim"} dot={false}>
@@ -283,7 +299,7 @@ function MarketMonitorCalendarEventsPanel({
       ) : null}
 
       {isError ? (
-        <FAEmptyState title="日历加载失败" description="`/api/jin10/calendar` 当前不可用，稍后重试。" className="py-6" />
+        <FAEmptyState title="日历加载失败" description="当前财经日历服务不可用，稍后重试。" className="py-6" />
       ) : isLoading ? (
         <CalendarEventLoadingList />
       ) : activeEvents.length === 0 ? (
@@ -428,7 +444,7 @@ function CalendarEventLoadingList() {
 function CalendarEventCard({ event }: { event: Jin10CalendarEvent }) {
   const isFuture = event.release_state === "upcoming";
   const stars = "★".repeat(Math.min(event.star ?? 0, 4));
-  const statusLabel = isFuture ? "未公布" : (event.affect_txt || "已公布");
+  const statusLabel = isFuture ? "未公布" : event.release_state === "released" ? (event.affect_txt || "已公布") : "结果待确认";
   const impactTone = event.affect_txt === "利多"
     ? "var(--up)"
     : event.affect_txt === "利空"

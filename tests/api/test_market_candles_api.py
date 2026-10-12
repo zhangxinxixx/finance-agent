@@ -13,6 +13,7 @@ from apps.api.main import app
 from apps.api.services.market_candle_service import get_market_candles
 from database.models.analysis import ensure_analysis_tables
 from database.queries.market import upsert_market_candle
+from tests.helpers.warehouse import materialize_candles
 
 
 def _session_factory():
@@ -61,7 +62,7 @@ def test_market_candles_service_excludes_gc_f_rows_from_xauusd(monkeypatch):
             source="yahoo_finance_gc_f",
             raw_path="raw/technical/yahoo/GC=F.json",
         )
-        session.commit()
+        materialize_candles(session)
 
     monkeypatch.setattr("apps.api.services.market_candle_service._market_session_factory", lambda: factory)
     payload = get_market_candles(asset="XAUUSD", timeframe="1D", limit=1)
@@ -87,10 +88,10 @@ def test_market_candles_service_accepts_injected_session(monkeypatch):
             high=3350.0,
             low=3320.0,
             close=3345.0,
-            source="jin10_mcp_derived_5m",
-            raw_path="raw/macro/jin10_mcp/XAUUSD-20260702.json",
+            source="twelvedata_xauusd_5m",
+            raw_path="raw/macro/twelvedata/XAUUSD-20260702.json",
         )
-        session.commit()
+        materialize_candles(session)
 
         def fail_factory():
             raise AssertionError("session factory should not be used when a session is injected")
@@ -100,9 +101,9 @@ def test_market_candles_service_accepts_injected_session(monkeypatch):
         payload = get_market_candles(asset="XAUUSD", timeframe="5m", limit=1, session=session)
 
     assert payload["source_timeframe"] == "5m"
-    assert payload["provider"] == "jin10_mcp"
+    assert payload["provider"] == "twelve_data"
     assert payload["candles"][0]["close"] == 3345.0
-    assert payload["source_trace"]["latest_raw_path"] == "raw/macro/jin10_mcp/XAUUSD-20260702.json"
+    assert payload["source_trace"]["latest_raw_path"] == "raw/macro/twelvedata/XAUUSD-20260702.json"
 
 
 def test_market_candles_aggregates_15m_from_canonical_five_minute_rows(monkeypatch):
@@ -120,15 +121,15 @@ def test_market_candles_aggregates_15m_from_canonical_five_minute_rows(monkeypat
                 high=price + 2,
                 low=price - 1,
                 close=price + 0.5,
-                source="jin10_mcp_derived_5m",
+                source="twelvedata_xauusd_5m",
             )
-        session.commit()
+        materialize_candles(session)
 
     monkeypatch.setattr("apps.api.services.market_candle_service._market_session_factory", lambda: factory)
     payload = get_market_candles(asset="XAUUSD", timeframe="15m", limit=10)
 
     assert payload["source_timeframe"] == "5m"
-    assert payload["provider"] == "jin10_mcp"
+    assert payload["provider"] == "twelve_data"
     assert len(payload["candles"]) == 1
     assert payload["candles"][0]["open"] == 3300.0
     assert payload["candles"][0]["high"] == 3312.0
@@ -152,9 +153,9 @@ def test_market_candles_detects_gaps_and_degraded_coverage(monkeypatch):
                 high=price + 1,
                 low=price - 1,
                 close=price,
-                source="jin10_mcp_kline_1m",
+                source="twelvedata_xauusd_1m",
             )
-        session.commit()
+        materialize_candles(session)
 
     monkeypatch.setattr("apps.api.services.market_candle_service._market_session_factory", lambda: factory)
     payload = get_market_candles(asset="XAUUSD", timeframe="1m", limit=3)
@@ -195,7 +196,7 @@ def test_market_candles_uses_whole_twelve_bar_when_local_15m_is_incomplete(monke
                 high=3302.0 + index,
                 low=3299.0 + index,
                 close=3301.0 + index,
-                source="jin10_mcp_derived_5m",
+                source="twelvedata_xauusd_5m",
             )
         upsert_market_candle(
             session,
@@ -209,7 +210,7 @@ def test_market_candles_uses_whole_twelve_bar_when_local_15m_is_incomplete(monke
             source="twelvedata_xauusd_15m",
             source_ref={"provider_symbol": "XAU/USD", "quality_status": "accepted_fallback"},
         )
-        session.commit()
+        materialize_candles(session)
 
     monkeypatch.setattr("apps.api.services.market_candle_service._market_session_factory", lambda: factory)
     payload = get_market_candles(asset="XAUUSD", timeframe="15m", limit=1)
@@ -257,7 +258,7 @@ def test_market_candles_returns_gc_under_its_own_asset_identity():
                 "instrument_type": "futures_continuous_proxy",
             },
         )
-        session.commit()
+        materialize_candles(session)
         payload = get_market_candles(asset="GC", timeframe="1D", limit=1, session=session)
 
     assert payload["asset"] == "GC"

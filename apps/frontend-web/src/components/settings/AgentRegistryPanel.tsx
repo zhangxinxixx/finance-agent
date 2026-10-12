@@ -4,6 +4,7 @@ import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { LoadingSkeleton } from "@/components/shared/LoadingSkeleton";
 import type { AgentRegistryItem } from "@/types/agent-registry";
 import { AgentRegistryTable } from "./AgentRegistryTable";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 interface AgentRegistryPanelProps {
   agents: AgentRegistryItem[];
@@ -23,20 +24,20 @@ export function AgentRegistryPanel({
   onSelectAgent,
 }: AgentRegistryPanelProps) {
   return (
-    <FACard title="Agent 配置" eyebrow="Agent Registry" accent="brand" bodyClassName="space-y-3">
+    <FACard title="智能体配置" eyebrow="智能体注册表" accent="brand" bodyClassName="space-y-3">
       <FASectionHeader
-        title="Agent 注册表"
-        description="这里仅管理可配置的 Agent 对象；每日运行的 Prompt、输入、输出统一进入 Agent Tasks。"
+        title="智能体注册表"
+        description="这里仅管理可配置的智能体对象；每日运行的提示词、输入、输出统一进入运行任务。"
       />
       <FAWarningBanner
-        title="运行输出已从 Settings 移除"
-        description="Settings 不再展示 bias、summary、findings 等每日结果，避免把配置治理页变成历史输出墙。"
+        title="运行输出已从设置页移除"
+        description="设置页不再展示方向、摘要、关键发现等每日结果，避免把配置治理页变成历史输出墙。"
         tone="info"
       />
       {isError ? (
         <FAWarningBanner
-          title="Agent 注册表加载失败"
-          description={errorMessage ?? "无法读取 /api/agents/registry"}
+          title="智能体注册表加载失败"
+          description={readingErrorMessage(errorMessage, "无法读取智能体注册信息。")}
           tone="down"
         />
       ) : null}

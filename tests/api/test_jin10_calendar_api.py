@@ -1,195 +1,78 @@
+"""The compatibility URL serves official DWS calendar data, never collector cache."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+
+import pytest
 
 from apps.api import main
-from apps.api.services import jin10_market_service
+from apps.api.routes import jin10_market_routes
+from apps.api.services.page_calendar_read_model_service import get_calendar_summary
 
 
-def test_jin10_calendar_api_normalizes_and_sorts_payload(monkeypatch, tmp_path):
-    cache_path = tmp_path / "calendar_cache.json"
-    cache_path.write_text(
-        json.dumps(
-            {
-                "generated_at": "2026-06-22T01:00:00+00:00",
-                "events": [
-                    {
-                        "title": "美国6月零售销售月率",
-                        "pub_time": "2026-06-20 20:30",
-                        "star": 4,
-                        "actual": "0.3",
-                        "consensus": "0.2",
-                        "previous": "0.1",
-                        "affect_txt": "利多",
-                    },
-                    {
-                        "title": "美国6月FOMC利率决定",
-                        "pub_time": "2026-06-24 02:00",
-                        "star": 5,
-                        "actual": None,
-                        "consensus": "4.50",
-                        "previous": "4.50",
-                        "affect_txt": "",
-                    },
-                    {
-                        "title": "美国6月初请失业金人数",
-                        "pub_time": "2026-06-23 20:30",
-                        "star": 3,
-                        "actual": None,
-                        "consensus": "22.5",
-                        "previous": "23.1",
-                        "affect_txt": "",
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
+@pytest.fixture
+def calendar_env(monkeypatch, tmp_path):
+    artifact = tmp_path / "storage/features/news/2026-06-22/run-1/official_calendar.json"
+    artifact.parent.mkdir(parents=True)
+    monkeypatch.setattr(jin10_market_routes, "get_calendar_summary", lambda: get_calendar_summary(
+        project_root=tmp_path, now=datetime(2026, 6, 22, 2, tzinfo=UTC),
+    ))
+    monkeypatch.setattr(
+        "apps.scheduler.jin10_refresh.refresh_jin10_calendar_cache",
+        lambda: pytest.fail("page reads must never collect or refresh raw cache"),
     )
+    return artifact
 
-    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_PATH", cache_path)
-    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
-    monkeypatch.setattr(jin10_market_service, "_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
 
+def test_calendar_is_independent_of_optional_jin10_and_requires_dws(calendar_env, monkeypatch):
+    monkeypatch.setattr(jin10_market_routes, "jin10_disabled", lambda: True)
     result = main.api_jin10_calendar()
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "dws_calendar_unavailable"
+    assert result["events"] == []
 
-    assert result["status"] == "ok"
+
+def test_calendar_projects_saved_values_and_sorts_upcoming_before_released(calendar_env):
+    calendar_env.write_text(json.dumps({
+        "as_of": "2026-06-22T01:00:00Z", "status": "available",
+        "window_start_date": "2026-06-17", "window_end_date": "2026-07-06",
+        "events": [
+            {"title": "美国零售销售", "pub_time": "2026-06-20T20:30:00Z", "star": 4,
+             "actual": "0.3", "consensus": "0.2", "previous": "0.1", "affect_txt": "利多"},
+            {"title": "FOMC利率决定", "pub_time": "2026-06-24T02:00:00Z", "star": 5, "actual": None},
+            {"title": "初请失业金", "pub_time": "2026-06-23T20:30:00Z", "star": 3, "actual": None},
+        ],
+    }))
+    result = main.api_jin10_calendar()
+    assert result["status"] == "available"
     assert result["stats"] == {
-        "total": 3,
-        "upcoming": 2,
-        "released": 1,
-        "high_impact": 2,
-        "earliest_event_date": "2026-06-20",
-        "latest_event_date": "2026-06-24",
-        "window_start_date": "2026-06-17",
-        "window_end_date": "2026-07-06",
+        "total": 3, "upcoming": 2, "released": 1, "pending": 0, "high_impact": 2,
+        "earliest_event_date": "2026-06-20", "latest_event_date": "2026-06-24",
+        "window_start_date": "2026-06-17", "window_end_date": "2026-07-06",
     }
-    assert [event["title"] for event in result["events"]] == [
-        "美国6月初请失业金人数",
-        "美国6月FOMC利率决定",
-        "美国6月零售销售月率",
-    ]
-    assert result["events"][0]["release_state"] == "upcoming"
-    assert result["events"][0]["pub_time"] == "2026-06-23T20:30+00:00"
-    assert result["events"][1]["is_high_impact"] is True
+    assert [event["title"] for event in result["events"]] == ["初请失业金", "FOMC利率决定", "美国零售销售"]
+    assert result["events"][2]["actual"] == "0.3"
+    assert result["events"][2]["consensus"] == "0.2"
+    assert result["events"][2]["previous"] == "0.1"
+    assert result["events"][1]["actual"] is None
     assert result["freshness"]["is_stale"] is False
 
 
-def test_jin10_calendar_api_marks_past_only_window_as_stale(monkeypatch, tmp_path):
-    cache_path = tmp_path / "calendar_cache.json"
-    cache_path.write_text(
-        json.dumps(
-            {
-                "generated_at": "2026-06-22T01:00:00+00:00",
-                "events": [
-                    {
-                        "title": "美国5月工业产出月率",
-                        "pub_time": "2026-06-18 21:15",
-                        "star": 3,
-                        "actual": "0.1",
-                        "consensus": "0.3",
-                        "previous": "0.7",
-                        "affect_txt": "利多",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_PATH", cache_path)
-    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
-    monkeypatch.setattr(jin10_market_service, "_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
-
+def test_calendar_stale_feature_does_not_refresh_collection(calendar_env):
+    calendar_env.write_text(json.dumps({"as_of": "2026-06-18T01:00:00Z", "status": "available",
+        "events": [{"title": "Past release", "pub_time": "2026-06-18T20:00:00Z", "actual": "0.1"}]}))
     result = main.api_jin10_calendar()
-
     assert result["status"] == "stale"
-    assert result["stats"]["upcoming"] == 0
     assert result["stats"]["released"] == 1
     assert result["freshness"]["is_stale"] is True
-    assert result["freshness"]["reason"] == "no_upcoming_events"
 
 
-def test_jin10_calendar_api_refreshes_past_only_window(monkeypatch, tmp_path):
-    cache_path = tmp_path / "calendar_cache.json"
-    cache_path.write_text(
-        json.dumps(
-            {
-                "generated_at": "2026-06-22T01:00:00+00:00",
-                "events": [
-                    {
-                        "title": "美国5月工业产出月率",
-                        "pub_time": "2026-06-18 21:15",
-                        "star": 3,
-                        "actual": "0.1",
-                        "consensus": "0.3",
-                        "previous": "0.7",
-                        "affect_txt": "利多",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_PATH", cache_path)
-    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
-    monkeypatch.setattr(jin10_market_service, "_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
-
-    def refresh() -> None:
-        cache_path.write_text(
-            json.dumps(
-                {
-                    "generated_at": "2026-06-22T03:00:00+00:00",
-                    "events": [
-                        {
-                            "title": "美国6月FOMC利率决定",
-                            "pub_time": "2026-06-24 02:00",
-                            "star": 5,
-                            "actual": None,
-                            "consensus": "4.50",
-                            "previous": "4.50",
-                            "affect_txt": "",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-
-    monkeypatch.setattr("apps.scheduler.jin10_refresh.refresh_jin10_calendar_cache", refresh)
-
+def test_calendar_raw_cache_cannot_fill_missing_dws(calendar_env, monkeypatch, tmp_path):
+    cache = tmp_path / "storage" / "outputs" / "jin10" / "calendar_cache.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"generated_at": "2026-06-22T01:00:00Z",
+                              "events": [{"title": "Unprocessed", "actual": "999"}]}))
     result = main.api_jin10_calendar()
-
-    assert result["status"] == "ok"
-    assert result["generated_at"] == "2026-06-22T03:00:00+00:00"
-    assert result["stats"]["upcoming"] == 1
-    assert result["events"][0]["title"] == "美国6月FOMC利率决定"
-    assert result["freshness"]["reason"] == "fresh"
-
-
-def test_jin10_calendar_api_filters_events_outside_display_window(monkeypatch, tmp_path):
-    cache_path = tmp_path / "calendar_cache.json"
-    cache_path.write_text(
-        json.dumps(
-            {
-                "generated_at": "2026-06-22T01:00:00+00:00",
-                "events": [
-                    {"title": "窗口前事件", "pub_time": "2026-06-16 20:30", "star": 5, "actual": None},
-                    {"title": "窗口内事件", "pub_time": "2026-06-24 02:00", "star": 5, "actual": None},
-                    {"title": "窗口后事件", "pub_time": "2026-07-07 20:30", "star": 5, "actual": None},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_PATH", cache_path)
-    monkeypatch.setattr(jin10_market_service, "JIN10_CALENDAR_CACHE_MAX_AGE_SECONDS", 10**9)
-    monkeypatch.setattr(jin10_market_service, "_calendar_window", lambda now=None: ("2026-06-17", "2026-07-06"))
-
-    result = main.api_jin10_calendar()
-
-    assert result["stats"]["total"] == 1
-    assert result["stats"]["window_start_date"] == "2026-06-17"
-    assert result["stats"]["window_end_date"] == "2026-07-06"
-    assert [event["title"] for event in result["events"]] == ["窗口内事件"]
+    assert result["events"] == []
+    assert result["status"] == "unavailable"

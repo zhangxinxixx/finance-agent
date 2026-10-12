@@ -231,7 +231,7 @@ def test_report_analysis_inputs_returns_snapshot_and_agent_outputs(tmp_path: Pat
             "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")
@@ -276,7 +276,7 @@ def test_report_analysis_inputs_groups_fact_review_outputs_separately(tmp_path: 
             "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")
@@ -325,7 +325,7 @@ def test_report_analysis_inputs_groups_synthesis_outputs_separately(tmp_path: Pa
             "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")
@@ -386,7 +386,7 @@ def test_report_analysis_inputs_falls_back_to_agent_inputs_for_legacy_cme_report
             "storage/outputs/cme/2026-05-06/options-sample/options_analysis.json": json.dumps({"intent": {"type": "call_buying"}}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_analysis_inputs("options-sample", db=db).model_dump(mode="json")
@@ -421,7 +421,7 @@ def test_report_analysis_inputs_marks_missing_agent_outputs_as_partial(tmp_path:
             "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")
@@ -449,7 +449,7 @@ def test_report_analysis_inputs_uses_detail_lineage_when_snapshot_row_is_missing
             "storage/outputs/run/2026-05-26/run-legacy-001/step_summaries.json": json.dumps({"steps": []}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_analysis_inputs("run-legacy-001", db=db).model_dump(mode="json")
@@ -508,7 +508,7 @@ def test_report_analysis_inputs_prefers_snapshot_matched_agent_output_over_same_
             "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")
@@ -567,7 +567,7 @@ def test_report_analysis_inputs_warns_when_agent_output_uses_run_id_lineage_fall
             "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")
@@ -601,7 +601,7 @@ def test_report_analysis_inputs_warns_when_report_declared_snapshot_drifted(tmp_
             "storage/features/2026-05-26/snap-std-001/analysis_snapshot.json": json.dumps({"snapshot_id": "snap-std-001"}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_analysis_inputs("report-std-001", db=db).model_dump(mode="json")

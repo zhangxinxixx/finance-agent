@@ -20,7 +20,7 @@ from database.models.analysis import ensure_analysis_tables
 
 _PROJECT_ROOT_PATCH = "apps.api.data_service._PROJECT_ROOT"
 _SESSION_REF = "apps.api.data_service._try_db_session"
-_JIN10_EXTERNAL_ROOT_PATCH = "apps.api.services.report_service._JIN10_EXTERNAL_ROOT"
+_JIN10_EXTERNAL_ROOT_PATCH = "apps.api.services.report_jin10_service._JIN10_EXTERNAL_ROOT"
 
 
 def _make_inmem_session():
@@ -183,8 +183,8 @@ def test_get_final_report_latest_db_no_record_falls_back_to_fs(tmp_path: Path):
     assert data["content"] == md
 
 
-def test_get_final_report_latest_db_unavailable_falls_back_to_fs(tmp_path: Path):
-    """DB unavailable → filesystem fallback succeeds."""
+def test_get_final_report_latest_db_unavailable_returns_none(tmp_path: Path):
+    """Current latest fails closed when the database is unavailable."""
     from apps.api.data_service import get_final_report_latest
 
     md = "# Filesystem only"
@@ -201,8 +201,7 @@ def test_get_final_report_latest_db_unavailable_falls_back_to_fs(tmp_path: Path)
     ):
         data = get_final_report_latest()
 
-    assert data is not None
-    assert data["content"] == md
+    assert data is None
 
 
 def test_get_final_report_latest_db_file_missing_falls_back_to_fs(tmp_path: Path):
@@ -428,8 +427,8 @@ def test_get_strategy_card_latest_db_no_record_falls_back_to_fs(tmp_path: Path):
     assert data["json"]["bias"] == "bearish"
 
 
-def test_get_strategy_card_latest_db_unavailable_falls_back_to_fs(tmp_path: Path):
-    """DB unavailable → filesystem fallback succeeds."""
+def test_get_strategy_card_latest_db_unavailable_returns_none(tmp_path: Path):
+    """Current latest fails closed when the database is unavailable."""
     from apps.api.data_service import get_strategy_card_latest
 
     sc_json = json.dumps({"bias": "neutral", "confidence": 0.5})
@@ -446,8 +445,7 @@ def test_get_strategy_card_latest_db_unavailable_falls_back_to_fs(tmp_path: Path
     ):
         data = get_strategy_card_latest()
 
-    assert data is not None
-    assert data["json"]["bias"] == "neutral"
+    assert data is None
 
 
 def test_get_strategy_card_latest_prefers_newer_filesystem_artifact_over_older_db(tmp_path: Path):
@@ -882,7 +880,7 @@ def test_fs_strategy_card_limit_is_applied_after_same_day_timestamp_sort(tmp_pat
         },
     )
 
-    with mock.patch("apps.api.services.report_service._PROJECT_ROOT", tmp_path):
+    with mock.patch("apps.api.services._storage._PROJECT_ROOT", tmp_path):
         items = _collect_fs_strategy_cards(tmp_path, "XAUUSD", limit=1)
 
     assert [item["strategy_card_id"] for item in items] == ["new-card"]

@@ -29,7 +29,7 @@ def serve_frontend_entry(request_path: str) -> FileResponse | RedirectResponse:
 def resolve_frontend_asset(asset_path: str) -> Path | None:
     assets_root = (_FRONTEND_DIST_DIR / "assets").resolve()
     candidate = (assets_root / asset_path).resolve()
-    if not str(candidate).startswith(str(assets_root)):
+    if not candidate.is_relative_to(assets_root):
         return None
     if not candidate.is_file():
         return None
@@ -40,7 +40,7 @@ def resolve_frontend_root_asset(asset_name: str) -> Path | None:
     for root in (_FRONTEND_DIST_DIR, _FRONTEND_PUBLIC_DIR):
         root_resolved = root.resolve()
         candidate = (root_resolved / asset_name).resolve()
-        if not str(candidate).startswith(str(root_resolved)):
+        if not candidate.is_relative_to(root_resolved):
             continue
         if candidate.is_file():
             return candidate

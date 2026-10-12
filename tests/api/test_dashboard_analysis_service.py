@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
+import pytest
+
+from apps.api.services import dashboard_analysis_service as service
 from apps.api.services.dashboard_analysis_service import build_dashboard_integrated_analysis
 
 
@@ -97,6 +102,74 @@ def test_integrated_analysis_keeps_missing_inputs_explicit() -> None:
     assert payload["options_alignment"] == "CME 期权结构不可用，当前综合判断不使用期权确认。"
 
 
+def _rate_analysis(macro_snapshot):
+    return build_dashboard_integrated_analysis(
+        macro_snapshot=macro_snapshot, options_snapshot=None, market_tickers={},
+        gold_macro_overview=None, agent_summary={}, composite_analysis={}, source_trace=[],
+    )
+
+
+def test_archived_rate_aliases_preserve_facts_and_match_canonical_analysis():
+    indicators = {
+        "US10Y": _indicator("US10Y", 4.56, weekly_change=0.07, unit="%"),
+        "REAL10Y": {**_indicator("REAL10Y", 2.68, weekly_change=0.06, monthly_change=0.11, unit="%"),
+                    "date": "2026-07-13", "daily_change": 0.01, "source": "official_treasury",
+                    "source_url": "https://treasury.test/real-yields"},
+        "T10YIE": {**_indicator("T10YIE", 2.26, weekly_change=0.02, unit="%"),
+                   "date": "2026-07-10", "daily_change": -0.01, "source": "FRED"},
+    }
+    snapshot = {"as_of": "2026-07-14", "indicators": indicators,
+                "source_refs": {"REAL10Y": {"source": "official_treasury", "date": "2026-07-13"}}}
+    original = deepcopy(snapshot)
+    canonical = deepcopy(snapshot)
+    canonical["indicators"]["REAL_10Y"] = canonical["indicators"].pop("REAL10Y")
+    canonical["indicators"]["BREAKEVEN_10Y"] = canonical["indicators"].pop("T10YIE")
+    result = _rate_analysis(snapshot)
+    assert result == _rate_analysis(canonical)
+    assert "10Y 实际利率 2.68%（2026-07-13，周+0.06%）" in result["rates_state"]
+    assert "10Y 盈亏平衡通胀 2.26%（周+0.02%）" in result["rates_state"]
+    assert "实际利率抬升会提高持有黄金的机会成本" in result["rates_state"]
+    conclusion = service._macro_conclusion(snapshot)
+    assert "高位压制" in conclusion.reasoning
+    assert "REAL_10Y" not in conclusion.missing_inputs
+    assert "BREAKEVEN_10Y" not in conclusion.missing_inputs
+    normalized = service._normalize_rate_aliases(indicators)
+    assert normalized["REAL_10Y"] == indicators["REAL10Y"]
+    assert normalized["BREAKEVEN_10Y"] == indicators["T10YIE"]
+    assert snapshot == original
+
+
+@pytest.mark.parametrize("canonical_value", [None, {}, {"value": None, "status": "unavailable"},
+                                            {"value": 1.81, "date": "2026-07-09", "weekly_change": -0.08,
+                                             "daily_change": -0.02, "monthly_change": -0.1,
+                                             "unit": "%", "source": "canonical_source"}])
+def test_rate_canonical_values_including_unavailable_block_aliases(canonical_value):
+    indicators = {
+        "US10Y": _indicator("US10Y", 4.56, weekly_change=0.07, unit="%"),
+        "REAL_10Y": deepcopy(canonical_value), "BREAKEVEN_10Y": deepcopy(canonical_value),
+        "REAL10Y": _indicator("REAL10Y", 2.68, weekly_change=0.06, unit="%"),
+        "T10YIE": _indicator("T10YIE", 2.26, weekly_change=0.02, unit="%"),
+    }
+    snapshot = {"as_of": "2026-07-14", "indicators": indicators}
+    original = deepcopy(snapshot)
+    without_aliases = deepcopy(snapshot)
+    without_aliases["indicators"].pop("REAL10Y")
+    without_aliases["indicators"].pop("T10YIE")
+    result = _rate_analysis(snapshot)
+    assert result == _rate_analysis(without_aliases)
+    assert service._macro_conclusion(snapshot) == service._macro_conclusion(without_aliases)
+    normalized = service._normalize_rate_aliases(indicators)
+    assert normalized["REAL_10Y"] == canonical_value
+    assert normalized["BREAKEVEN_10Y"] == canonical_value
+    if not canonical_value or canonical_value.get("value") is None:
+        assert "10Y 实际利率 暂无%" in result["rates_state"]
+        assert "10Y 盈亏平衡通胀 暂无%" in result["rates_state"]
+    else:
+        assert "10Y 实际利率 1.81%（2026-07-09，周-0.08%）" in result["rates_state"]
+        assert "中期缓和" in service._macro_conclusion(snapshot).reasoning
+    assert snapshot == original
+
+
 def test_integrated_analysis_ignores_malformed_option_levels() -> None:
     payload = build_dashboard_integrated_analysis(
         macro_snapshot=None,
@@ -120,10 +193,12 @@ def test_integrated_analysis_ignores_malformed_option_levels() -> None:
     assert payload is not None
     assert "3,985" in payload["options_alignment"]
     assert "3,995" not in payload["options_alignment"]
-    assert "Gamma Zero 暂无" in payload["options_alignment"]
+    assert "Selected Expiry Window Proxy Gamma Flip 暂无" in payload["options_alignment"]
+    assert "GC-XAUUSD 基差" in payload["options_alignment"]
+    assert "Gamma Zero" not in payload["options_alignment"]
 
 
-def test_integrated_analysis_orders_confirmation_levels_from_near_to_far() -> None:
+def test_integrated_analysis_keeps_proxy_flip_out_of_mandatory_confirmation_levels() -> None:
     payload = build_dashboard_integrated_analysis(
         macro_snapshot=None,
         options_snapshot={
@@ -135,7 +210,7 @@ def test_integrated_analysis_orders_confirmation_levels_from_near_to_far() -> No
                 "resistance": [{"strike": 4265}],
             },
         },
-        market_tickers={"tickers": {"xauusd": {"price": 4033.0}}},
+        market_tickers={"tickers": {"xauusd": {"price": 4033.0, "source": "cme_gc_futures"}}},
         gold_macro_overview=None,
         agent_summary={},
         composite_analysis={"status": "partial", "trade_date": "2026-07-16"},
@@ -143,9 +218,11 @@ def test_integrated_analysis_orders_confirmation_levels_from_near_to_far() -> No
     )
 
     assert payload is not None
-    assert "以 4,144.6/4,265 作为修复升级确认" in payload["trade_implication"]
-    assert any("4,144.6/4,265 确认区" in item for item in payload["trigger_upgrade"])
-    assert any("4,144.6/4,265" in item for item in payload["invalidation"])
+    assert "4,265 作为 GC 阻力观察" in payload["trade_implication"]
+    assert "Proxy Flip 不单独构成趋势闸门" in payload["trade_implication"]
+    assert any("4,265 阻力" in item for item in payload["trigger_upgrade"])
+    assert all("4,144.6/4,265" not in item for item in payload["trigger_upgrade"])
+    assert all("4,144.6/4,265" not in item for item in payload["invalidation"])
 
 
 def test_integrated_analysis_marks_support_as_broken_when_live_price_is_below_band() -> None:
@@ -160,7 +237,7 @@ def test_integrated_analysis_marks_support_as_broken_when_live_price_is_below_ba
                 "resistance": [{"strike": 4265}],
             },
         },
-        market_tickers={"tickers": {"xauusd": {"price": 3980.2}}},
+        market_tickers={"tickers": {"xauusd": {"price": 3980.2, "source": "cme_gc_futures"}}},
         gold_macro_overview=None,
         agent_summary={},
         composite_analysis={"status": "stale", "trade_date": "2026-07-16"},
@@ -181,36 +258,124 @@ def test_integrated_analysis_marks_support_as_broken_when_live_price_is_below_ba
 
     assert payload is not None
     assert "已跌破 4,015/4,010 支撑带" in payload["options_alignment"]
-    assert "短线承接验证失败" in payload["options_alignment"]
-    assert "区间修复条件失效" in payload["trade_implication"]
-    assert "守住支撑但" not in payload["trade_implication"]
-    assert any("重新收复 4,015/4,010" in item for item in payload["trigger_upgrade"])
-    assert any("维持在 4,015/4,010 支撑带下方" in item for item in payload["trigger_downgrade"])
-    assert any("已有效跌破 4,010" in item for item in payload["invalidation"])
+    assert "GC 期货结构承接转弱" in payload["options_alignment"]
+    assert "GC 结构转弱" in payload["trade_implication"]
+    assert any("GC 期货代理价重新收复 4,015/4,010" in item for item in payload["trigger_upgrade"])
+    assert any("GC 期货代理价维持在 4,015/4,010 支撑带下方" in item for item in payload["trigger_downgrade"])
+    assert any("GC 期货参考价低于 4,010" in item for item in payload["invalidation"])
+    assert any("破位仍需收盘与回测确认" in item for item in payload["invalidation"])
+    assert all("已有效跌破" not in item for item in payload["invalidation"])
+    assert all("结构已失效" not in item for item in payload["invalidation"])
     assert payload["quick_supports"] == [
         {
             "level": 3990.0,
-            "label": "CME 快支撑",
+            "label": "CME GC 期货快支撑",
             "source": "cme_options",
             "source_label": "CME",
             "trade_date": "2026-07-15",
             "timeframe": None,
-            "basis": "CME 期权快照第三档支撑",
+            "basis": "CME 期权快照第三档支撑（GC 期货坐标）",
             "status": "broken",
             "source_ref": "GET /api/options/snapshot",
         },
-        {
-            "level": 3944.71,
-            "label": "Jin10 近端防线",
-            "source": "jin10_daily_report",
-            "source_label": "Jin10",
-            "trade_date": "2026-07-17",
-            "timeframe": "4H",
-            "basis": "4小时图年内低点，是4000美元失守后的近端保卫位。",
-            "status": "active",
-            "source_ref": "storage/outputs/jin10/2026-07-17/224807/agent_analysis_report.json",
-        },
     ]
+
+
+def test_jin10_chart_levels_cannot_become_current_support_with_any_quote() -> None:
+    kwargs = {
+        "macro_snapshot": None,
+        "options_snapshot": {
+            "trade_date": "2026-07-15",
+            "data_source": {"status": "FINAL"},
+            "support_resistance": {
+                "support": [{"strike": 4015}, {"strike": 4010}],
+                "resistance": [],
+            },
+        },
+        "gold_macro_overview": None,
+        "agent_summary": {},
+        "composite_analysis": {"status": "partial", "trade_date": "2026-07-16"},
+        "source_trace": [],
+        "jin10_analysis": {
+            "trade_date": "2026-07-16",
+            "run_id": "spot-source-test",
+            "key_levels": [
+                {
+                    "asset": "黄金｜短中线交易位",
+                    "meaning": "4小时图近端防线。",
+                    "source_category": "图表事实",
+                    "value": "4000美元",
+                },
+            ],
+        },
+    }
+
+    unknown = build_dashboard_integrated_analysis(
+        **kwargs,
+        market_tickers={"tickers": {"xauusd": {"price": 4019.0}}},
+    )
+    explicit_spot = build_dashboard_integrated_analysis(
+        **kwargs,
+        market_tickers={
+            "tickers": {
+                "xauusd": {"price": 4019.0, "source": "twelvedata_xauusd_quote"},
+            },
+        },
+    )
+
+    assert unknown is not None and explicit_spot is not None
+    assert unknown["quick_supports"] == []
+    assert explicit_spot["quick_supports"] == []
+
+
+def test_integrated_analysis_uses_relative_real_rate_condition_and_does_not_map_gc_to_spot() -> None:
+    payload = build_dashboard_integrated_analysis(
+        macro_snapshot={
+            "as_of": "2026-09-17",
+            "indicators": {
+                "REAL_10Y": _indicator("REAL_10Y", 2.41, weekly_change=0.03, unit="%"),
+            },
+            "unavailable_symbols": [],
+            "source_refs": {},
+        },
+        options_snapshot={
+            "trade_date": "2026-09-16",
+            "data_source": {"status": "PRELIM"},
+            "parameters": {"f_value": 4353.4},
+            "gex": {"gamma_flip": {"price": 4390.0}},
+            "support_resistance": {
+                "support": [{"strike": 4300}],
+                "resistance": [{"strike": 4400}],
+            },
+        },
+        market_tickers={
+            "tickers": {
+                "xauusd": {"price": 4353.4, "source": "cme_gc_futures"},
+            },
+        },
+        gold_macro_overview=None,
+        agent_summary={},
+        composite_analysis={"status": "partial", "trade_date": "2026-09-17"},
+        source_trace=[],
+    )
+
+    assert payload is not None
+    rendered = " ".join(
+        [
+            payload["options_alignment"],
+            payload["trade_implication"],
+            *payload["trigger_upgrade"],
+            *payload["trigger_downgrade"],
+            *payload["invalidation"],
+        ]
+    )
+    assert "由当前 2.41% 继续上行" in rendered
+    assert "向 2.40%" not in rendered
+    assert "Gamma Zero" not in rendered
+    assert "Proxy Flip 不单独构成趋势闸门" in rendered
+    assert "不能映射为 XAUUSD 现货确认" in rendered
+    assert "XAUUSD 重新" not in rendered
+    assert "出现现货确认" not in rendered
 
 
 def _indicator(

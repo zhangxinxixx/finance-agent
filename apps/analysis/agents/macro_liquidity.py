@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from copy import deepcopy
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
 from apps.analysis.agents.macro_liquidity_prompt import build_macro_liquidity_prompt_template
@@ -36,33 +36,19 @@ _LIQUIDITY_GROUPS = {
     "IORB": ("IORB",),
 }
 
-if TYPE_CHECKING:
-    from apps.analysis.context_bundle import ConsumerProjection
 
-
-def analyze_macro_liquidity(
-    snapshot: dict[str, Any],
-    *,
-    created_at: datetime | None = None,
-    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
-) -> AgentOutput:
+def analyze_macro_liquidity(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
     """Analyze already-loaded macro liquidity snapshot data without mutating inputs."""
 
-    from apps.analysis.context_bundle import validate_consumer_projection
-
-    projection = validate_consumer_projection(context_projection, "macro") if context_projection is not None else None
     created_at = created_at or datetime.now(timezone.utc)
     if not isinstance(snapshot, dict):
-        return _bind_context_projection(
-            _build_unavailable_output(
-                snapshot_id="unknown",
-                input_snapshot_ids={},
-                source_refs=[],
-                created_at=created_at,
-                invalid_reason="非字典输入被拒绝；文件/路径读取不在范围内。",
-                risk_point="宏观流动性输入必须是已加载的快照字典。",
-            ),
-            projection,
+        return _build_unavailable_output(
+            snapshot_id="unknown",
+            input_snapshot_ids={},
+            source_refs=[],
+            created_at=created_at,
+            invalid_reason="非字典输入被拒绝；文件/路径读取不在范围内。",
+            risk_point="宏观流动性输入必须是已加载的快照字典。",
         )
 
     snapshot_id = str(snapshot.get("snapshot_id") or "unknown")
@@ -71,23 +57,19 @@ def analyze_macro_liquidity(
     macro = snapshot.get("macro")
 
     if not isinstance(macro, dict) or macro.get("status") != "available":
-        reason = (
-            "macro section is missing" if not isinstance(macro, dict) else f"macro status is {macro.get('status')!r}"
-        )
-        return _bind_context_projection(
-            _build_unavailable_output(
-                snapshot_id=snapshot_id,
-                input_snapshot_ids=input_snapshot_ids,
-                source_refs=source_refs,
-                created_at=created_at,
-                invalid_reason=reason,
-                risk_point="宏观流动性输入不可用。",
-            ),
-            projection,
+        reason = "macro section is missing" if not isinstance(macro, dict) else f"macro status is {macro.get('status')!r}"
+        return _build_unavailable_output(
+            snapshot_id=snapshot_id,
+            input_snapshot_ids=input_snapshot_ids,
+            source_refs=source_refs,
+            created_at=created_at,
+            invalid_reason=reason,
+            risk_point="宏观流动性输入不可用。",
         )
 
     data = _macro_data(snapshot)
-    indicators = _indicators(snapshot)
+    research_indicators = _daily_research_indicators(snapshot)
+    indicators = research_indicators if research_indicators is not None else _indicators(snapshot)
 
     deterministic = _build_deterministic_output(
         snapshot_id=snapshot_id,
@@ -98,27 +80,21 @@ def analyze_macro_liquidity(
         indicators=indicators,
         data=data,
     )
-    llm_result = invoke_macro_liquidity_llm(
-        snapshot,
-        deterministic_output=deterministic,
-        context_projection=projection,
-    )
-    return _bind_context_projection(
-        _merge_macro_liquidity_output(
-            snapshot,
-            deterministic,
-            llm_result,
-            context_projection=projection,
-        ),
-        projection,
-    )
+    # ``daily_research.v1`` is the current data passport.  Once it is present,
+    # the macro agent must remain evidence-driven: the legacy macro section and
+    # free-form LLM prose may contain values from a different observation
+    # window, so neither is allowed to overwrite passport-derived facts.
+    if research_indicators is not None:
+        return _finalize_daily_research_output(snapshot, deterministic)
+
+    llm_result = invoke_macro_liquidity_llm(snapshot, deterministic_output=deterministic)
+    return _merge_macro_liquidity_output(snapshot, deterministic, llm_result)
 
 
 def invoke_macro_liquidity_llm(
     snapshot: dict[str, Any],
     *,
     deterministic_output: AgentOutput | None = None,
-    context_projection: "ConsumerProjection | None" = None,
 ) -> dict[str, Any]:
     from apps.llm.gateway import chat_sync
 
@@ -133,12 +109,7 @@ def invoke_macro_liquidity_llm(
             "skipped": True,
         }
 
-    structured_payload = build_macro_liquidity_structured_payload(
-        snapshot,
-        deterministic_output=deterministic_output,
-        context_projection=context_projection,
-    )
-    prompt_messages = _prompt_messages_for_payload(structured_payload)
+    prompt = build_macro_liquidity_prompt(snapshot, deterministic_output=deterministic_output)
     provider = os.getenv("MACRO_LIQUIDITY_LLM_PROVIDER", _DEFAULT_LLM_PROVIDER)
     model = os.getenv("MACRO_LIQUIDITY_LLM_MODEL", os.getenv("LLM_COCKPIT_MODEL", _DEFAULT_LLM_MODEL))
     reasoning_effort = os.getenv(
@@ -146,7 +117,10 @@ def invoke_macro_liquidity_llm(
         os.getenv("LLM_COCKPIT_REASONING_EFFORT", _DEFAULT_LLM_REASONING_EFFORT),
     )
     response = chat_sync(
-        messages=prompt_messages,
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
         provider=provider,
         model=model,
         reasoning_effort=reasoning_effort,
@@ -158,7 +132,7 @@ def invoke_macro_liquidity_llm(
             "run_id": snapshot.get("run_id"),
             "snapshot_id": snapshot.get("snapshot_id"),
             "trade_date": snapshot.get("trade_date"),
-            "input_payload": structured_payload,
+            "input_payload": build_macro_liquidity_structured_payload(snapshot, deterministic_output=deterministic_output),
         },
     )
     return {
@@ -171,8 +145,6 @@ def invoke_macro_liquidity_llm(
         "prompt_version": _PROMPT_VERSION,
         "skipped": False,
         "audit_id": getattr(response, "audit_id", None),
-        "prompt_messages": prompt_messages,
-        "input_payload": structured_payload,
     }
 
 
@@ -180,68 +152,47 @@ def build_macro_liquidity_prompt(
     snapshot: dict[str, Any],
     *,
     deterministic_output: AgentOutput | None = None,
-    context_projection: "ConsumerProjection | None" = None,
 ) -> str:
-    payload = build_macro_liquidity_structured_payload(
-        snapshot,
-        deterministic_output=deterministic_output,
-        context_projection=context_projection,
+    payload = build_macro_liquidity_structured_payload(snapshot, deterministic_output=deterministic_output)
+    return (
+        f"{build_macro_liquidity_prompt_template()}\n\n"
+        "=== 结构化输入 ===\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
     )
-    return _prompt_messages_for_payload(payload)[1]["content"]
-
-
-def _prompt_messages_for_payload(payload: Mapping[str, Any]) -> list[dict[str, str]]:
-    return [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"{build_macro_liquidity_prompt_template()}\n\n"
-                "=== 结构化输入 ===\n"
-                f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
-            ),
-        },
-    ]
 
 
 def build_macro_liquidity_structured_payload(
     snapshot: dict[str, Any],
     *,
     deterministic_output: AgentOutput | None = None,
-    context_projection: "ConsumerProjection | None" = None,
 ) -> dict[str, Any]:
-    if context_projection is not None:
-        from apps.analysis.context_bundle import consumer_projection_payload
-
-        return {
-            "report_type": "macro_liquidity_state_delta",
-            "snapshot_id": str(snapshot.get("snapshot_id") or "unknown"),
-            "trade_date": _trade_date(snapshot),
-            "input_contract": (
-                "Only consume canonical_state, retained_evidence, accepted_facts, and decision "
-                "from the validated ContextBundle projection."
-            ),
-            "context_bundle_identity": context_projection.identity_payload.model_dump(mode="json"),
-            "context_bundle_consumer": context_projection.consumer,
-            "context_bundle_summary": _context_projection_summary(context_projection),
-            "context_bundle_projection": consumer_projection_payload(
-                context_projection,
-                expected_consumer="macro",
-            ),
-        }
     deterministic_output = deterministic_output or _build_deterministic_output(
         snapshot_id=str(snapshot.get("snapshot_id") or "unknown"),
         input_snapshot_ids=_input_snapshot_ids(snapshot),
         source_refs=_source_refs(snapshot),
         created_at=datetime.now(timezone.utc),
         snapshot=snapshot,
-        indicators=_indicators(snapshot),
+        indicators=_analysis_indicators(snapshot),
         data=_macro_data(snapshot),
     )
     macro = snapshot.get("macro") if isinstance(snapshot.get("macro"), dict) else {}
-    data = macro.get("data") if isinstance(macro.get("data"), dict) else {}
-    indicators = data.get("indicators") if isinstance(data.get("indicators"), dict) else {}
-    payload = {
+    indicators = _analysis_indicators(snapshot)
+    project_signals = _daily_research_project_signals(snapshot)
+    workflow_v2, workflow_real_rate = _workflow_real_rate(snapshot)
+    if workflow_v2:
+        real_yield_policy = {
+            "main": "gold_workflow.v2.real_rate",
+            "selected": _workflow_real_rate_snapshot(workflow_real_rate),
+            "supplementary": "US10Y - T10YIE 仅作背景，不参与 v2 实际利率主评分、driver 或方向叙述。",
+        }
+        existing_real_yield = _workflow_real_rate_snapshot(workflow_real_rate)
+    else:
+        real_yield_policy = {
+            "main": "US10Y - T10YIE",
+            "supplementary": "DFII10 / TIPS only as observation, not the main score口径",
+        }
+        existing_real_yield = _indicator_snapshot(indicators, _REAL_YIELD_KEYS)
+    return {
         "report_type": "macro_liquidity",
         "snapshot_id": str(snapshot.get("snapshot_id") or "unknown"),
         "trade_date": _trade_date(snapshot),
@@ -263,17 +214,16 @@ def build_macro_liquidity_structured_payload(
             "five_factor_score",
             "trading_configuration_meaning",
         ],
-        "real_yield_policy": {
-            "main": "US10Y - T10YIE",
-            "supplementary": "DFII10 / TIPS only as observation, not the main score口径",
-        },
+        "real_yield_policy": real_yield_policy,
         "short_curve_policy": {
             "formula": "US02Y - US03M (DGS2 - DGS3MO)",
             "rule": "先判断曲线正负和收窄/走阔，再拆分 US02Y 与 US03M 的变化来源；不得把转正或走阔机械解释为黄金利多。",
             "us02y": _indicator_snapshot(indicators, _US02Y_KEYS),
             "us03m": _indicator_snapshot(indicators, _US03M_KEYS),
             "spread_2y_3m": _indicator_snapshot(indicators, _SHORT_CURVE_KEYS),
+            "signal": project_signals.get("short_curve"),
         },
+        "project_signals": project_signals,
         "external_web_policy": {
             "use_full_available_capability": True,
             "rule": "联网获取到但 source_refs 未覆盖的数据，必须标注为外部联网补充 / 待系统化接入，不得混作系统已确认数据。",
@@ -288,12 +238,95 @@ def build_macro_liquidity_structured_payload(
         "summary": deterministic_output.summary,
         "data_category": str(deterministic_output.data_category.value) if deterministic_output.data_category else None,
         "existing_frame": {
-            "real_yield": _indicator_snapshot(indicators, _REAL_YIELD_KEYS),
+            "real_yield": existing_real_yield,
             "dxy": _indicator_snapshot(indicators, _DXY_KEYS),
-            "liquidity": {name: _indicator_snapshot(indicators, keys) for name, keys in _LIQUIDITY_GROUPS.items()},
+            "liquidity": {
+                name: _indicator_snapshot(indicators, keys) for name, keys in _LIQUIDITY_GROUPS.items()
+            },
         },
     }
-    return payload
+
+
+def _finalize_daily_research_output(snapshot: dict[str, Any], deterministic: AgentOutput) -> AgentOutput:
+    """Return a passport-bound macro result without a second narrative authority."""
+
+    payload = deterministic_input_payload(snapshot)
+    assessment = _daily_research_assessment(snapshot)
+    workflow_v2, _ = _workflow_real_rate(snapshot)
+    if workflow_v2 and assessment:
+        assessment = _sanitize_v2_real_rate_assessment(assessment)
+    if assessment:
+        payload["daily_research_assessment"] = assessment
+    domain_notes = assessment.get("domain_notes") if isinstance(assessment, dict) else {}
+    research_findings = [
+        str(note)
+        for section in ("rates", "liquidity", "energy")
+        for note in (domain_notes.get(section) or [])
+        if str(note).strip()
+    ] if isinstance(domain_notes, dict) else []
+    key_findings = _dedupe_strings([*deterministic.key_findings, *research_findings])
+    research_limitations = [
+        str(note)
+        for note in (assessment.get("limitations") or [])
+        if str(note).strip()
+    ] if isinstance(assessment, dict) else []
+    risk_points = _dedupe_strings([*deterministic.risk_points, *research_limitations])
+    return deterministic.model_copy(
+        update={
+            "input_payload": payload,
+            "key_findings": key_findings,
+            "risk_points": risk_points,
+            "llm_model": None,
+            "llm_provider": None,
+            "llm_usage": None,
+            "llm_latency_ms": None,
+            "llm_audit_id": None,
+            "prompt_messages": None,
+            "llm_raw_output": None,
+        }
+    )
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = str(item).strip()
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _sanitize_v2_real_rate_assessment(assessment: dict[str, Any]) -> dict[str, Any]:
+    """Keep legacy research prose from reintroducing a v2 real-rate value."""
+
+    sanitized = deepcopy(assessment)
+    for key in ("facts", "drivers", "counterevidence", "limitations"):
+        values = sanitized.get(key)
+        if isinstance(values, list):
+            sanitized[key] = [item for item in values if not _is_legacy_real_rate_note(item)]
+    domain_notes = sanitized.get("domain_notes")
+    if isinstance(domain_notes, dict) and isinstance(domain_notes.get("rates"), list):
+        domain_notes["rates"] = [item for item in domain_notes["rates"] if not _is_legacy_real_rate_note(item)]
+    return sanitized
+
+
+def _is_legacy_real_rate_note(value: Any) -> bool:
+    text = str(value).lower()
+    return any(token in text for token in ("实际利率", "real yield", "real-yield", "us10y-t10yie"))
+
+
+def _daily_research_assessment(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Reuse the evidence-bound research projection when a passport exists."""
+
+    try:
+        from apps.analysis.agents.research_context import build_research_assessment
+
+        result = build_research_assessment(snapshot)
+    except (ImportError, KeyError, TypeError, ValueError):
+        return {}
+    return result if isinstance(result, dict) else {}
 
 
 def _system_data_gaps(indicators: dict[str, Any], source_refs: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -306,21 +339,17 @@ def _system_data_gaps(indicators: dict[str, Any], source_refs: list[dict[str, An
 
     dxy = _indicator_snapshot(indicators, _DXY_KEYS)
     if dxy is None:
-        gaps.append(
-            {
-                "item": "DXY",
-                "current_status": "missing_from_system_snapshot",
-                "optimization": "接入 TradingView DXY 最新值、1周变化、1月变化，CNBC 仅作兜底。",
-            }
-        )
+        gaps.append({
+            "item": "DXY",
+            "current_status": "missing_from_system_snapshot",
+            "optimization": "接入 TradingView DXY 最新值、1周变化、1月变化，CNBC 仅作兜底。",
+        })
     elif "tradingview" not in refs_text:
-        gaps.append(
-            {
-                "item": "DXY TradingView weekly/monthly",
-                "current_status": "system_snapshot_has_dxy_but_not_confirmed_tradingview_source",
-                "optimization": "修复 TradingView source_ref 与周/月变化映射。",
-            }
-        )
+        gaps.append({
+            "item": "DXY TradingView weekly/monthly",
+            "current_status": "system_snapshot_has_dxy_but_not_confirmed_tradingview_source",
+            "optimization": "修复 TradingView source_ref 与周/月变化映射。",
+        })
 
     required = [
         ("ETF / GLD flows", ("etf", "gld"), "接入 WGC / GLD 持仓或可信 ETF flow 数据源。"),
@@ -331,13 +360,11 @@ def _system_data_gaps(indicators: dict[str, Any], source_refs: list[dict[str, An
     ]
     for item, needles, optimization in required:
         if not any(needle in refs_text for needle in needles):
-            gaps.append(
-                {
-                    "item": item,
-                    "current_status": "not_in_system_source_refs",
-                    "optimization": optimization,
-                }
-            )
+            gaps.append({
+                "item": item,
+                "current_status": "not_in_system_source_refs",
+                "optimization": optimization,
+            })
     return gaps
 
 
@@ -345,36 +372,15 @@ def _merge_macro_liquidity_output(
     snapshot: dict[str, Any],
     deterministic: AgentOutput,
     llm_result: dict[str, Any],
-    *,
-    context_projection: "ConsumerProjection | None" = None,
 ) -> AgentOutput:
     markdown = str(llm_result.get("markdown") or "").strip()
     prompt_version = llm_result.get("prompt_version")
     generated_by = "llm" if markdown else "rule"
-    input_payload: dict[str, Any] = {}
-    prompt_messages: list[dict[str, str]] = []
-    if markdown:
-        audited_payload = llm_result.get("input_payload")
-        audited_messages = llm_result.get("prompt_messages")
-        if isinstance(audited_payload, dict) and isinstance(audited_messages, list):
-            input_payload = dict(audited_payload)
-            prompt_messages = [dict(item) for item in audited_messages if isinstance(item, dict)]
-        elif context_projection is not None:
-            input_payload = build_macro_liquidity_structured_payload(
-                snapshot,
-                deterministic_output=deterministic,
-                context_projection=context_projection,
-            )
-            prompt_messages = _prompt_messages_for_payload(input_payload)
-        else:
-            # Preserve the legacy snapshot-only audit contract for injected/test gateways.
-            input_payload = deterministic_input_payload(snapshot)
-            prompt_messages = deterministic_prompt_messages(snapshot, deterministic)
     payload = {
         "generated_by": generated_by,
         "prompt_version": prompt_version,
-        "prompt_messages": prompt_messages,
-        "input_payload": input_payload,
+        "prompt_messages": deterministic_prompt_messages(snapshot, deterministic) if markdown else [],
+        "input_payload": deterministic_input_payload(snapshot) if markdown else {},
         "llm_raw_output": markdown or None,
         "narrative_md": markdown or deterministic.summary,
         "data_category": "external_opinion" if markdown else str(deterministic.data_category.value),
@@ -431,41 +437,6 @@ def _build_unavailable_output(
     )
 
 
-def _bind_context_projection(
-    output: AgentOutput,
-    projection: "ConsumerProjection | None",
-) -> AgentOutput:
-    if projection is None:
-        return output
-    from apps.analysis.context_bundle import consume_projection_for_agent_output
-
-    return AgentOutput.model_validate(
-        consume_projection_for_agent_output(
-            projection,
-            output,
-            expected_consumer="macro",
-        )
-    )
-
-
-def _context_projection_summary(projection: "ConsumerProjection") -> dict[str, Any]:
-    return {
-        "decision_id": projection.decision_id,
-        "decision_action": projection.decision.recommended_action.value,
-        "state_scope": projection.identity_payload.state_scope,
-        "retained_evidence_count": len(projection.retained_evidence),
-        "retained_refs": list(projection.retained_source_refs),
-        "accepted_fact_count": len(projection.accepted_facts),
-        "accepted_fact_refs": [
-            {
-                "source": item.get("source"),
-                "figure_fact_id": item.get("figure_fact_id"),
-            }
-            for item in projection.accepted_facts
-        ],
-    }
-
-
 def _input_snapshot_ids(snapshot: dict[str, Any]) -> dict[str, Any]:
     value = snapshot.get("input_snapshot_ids")
     ids = dict(value) if isinstance(value, dict) else {}
@@ -500,6 +471,112 @@ def _indicators(snapshot: dict[str, Any]) -> dict[str, Any]:
     return indicators if isinstance(indicators, dict) else {}
 
 
+def _analysis_indicators(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return the only indicator view allowed for the current research path."""
+
+    passport_indicators = _daily_research_indicators(snapshot)
+    return passport_indicators if passport_indicators is not None else _indicators(snapshot)
+
+
+def _daily_research_indicators(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """Project verified fresh rows from ``daily_research.passport`` only.
+
+    ``None`` means the caller has an older snapshot without the passport and
+    may use the legacy macro input for backward compatibility.  An empty dict
+    means a passport was supplied but none of its rows is eligible; callers
+    must then stay fail-closed and must not fall back to legacy indicators.
+    """
+
+    research = snapshot.get("daily_research")
+    if not isinstance(research, dict) or not isinstance(research.get("passport"), list):
+        return None
+
+    allowed_symbols = {
+        "US02Y",
+        "US03M",
+        "US10Y",
+        "US30Y",
+        "BREAKEVEN_10Y",
+        "REAL_10Y",
+        "REAL10Y",
+        "DXY",
+        "BROAD_DOLLAR",
+        "WTI_SPOT",
+        "BRENT_SPOT",
+        "RESERVES",
+        "TGA",
+        "TGA_WEEKLY_AVERAGE",
+        "ON_RRP_USAGE",
+        "SOFR",
+        "EFFR",
+        "IORB",
+        "HY_OAS",
+        "VIX",
+        "YIELD_SPREAD_10Y_2Y",
+        "YIELD_SPREAD_2Y_3M",
+    }
+    result: dict[str, Any] = {}
+    for row in research["passport"]:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "")
+        if symbol not in allowed_symbols:
+            continue
+        if row.get("status") != "fresh" or row.get("lineage_status") != "verified":
+            continue
+        value = row.get("value")
+        if value is None:
+            continue
+        item = {
+            "value": value,
+            "unit": row.get("unit"),
+            "date": row.get("observation_date"),
+            "previous_date": row.get("previous_date"),
+            "previous_value": row.get("previous_value"),
+            "daily_change": row.get("change"),
+            "weekly_anchor_date": row.get("weekly_anchor_date"),
+            "weekly_change": row.get("weekly_change"),
+            "components": row.get("components") or [],
+        }
+        result[symbol] = item
+    return result
+
+
+def _daily_research_project_signals(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Read grouped features only from the current daily research passport."""
+
+    research = snapshot.get("daily_research")
+    if not isinstance(research, dict) or not isinstance(research.get("passport"), list):
+        return {}
+    signals = research.get("project_signals")
+    return dict(signals) if isinstance(signals, dict) else {}
+
+
+def _workflow_real_rate(snapshot: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    """Return the date-quality-selected real rate only for workflow v2."""
+
+    workflow = snapshot.get("gold_workflow")
+    if not isinstance(workflow, dict) or workflow.get("schema_version") != "gold_workflow.v2":
+        return False, {}
+    real_rate = workflow.get("real_rate")
+    return True, dict(real_rate) if isinstance(real_rate, dict) else {}
+
+
+def _workflow_real_rate_snapshot(real_rate: dict[str, Any]) -> dict[str, Any]:
+    """Expose the selected workflow value without recomputing it."""
+
+    return {
+        "symbol": real_rate.get("symbol"),
+        "method": real_rate.get("method"),
+        "value": _to_float(real_rate.get("value")),
+        "change": _to_float(real_rate.get("change")),
+        "date": real_rate.get("date"),
+        "previous_date": real_rate.get("previous_date"),
+        "source_refs": list(real_rate.get("source_refs") or []),
+        "status": "available" if _to_float(real_rate.get("value")) is not None else "unavailable",
+    }
+
+
 def _compact_indicators(indicators: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in (
@@ -510,6 +587,7 @@ def _compact_indicators(indicators: dict[str, Any]) -> dict[str, Any]:
         "DGS3MO",
         "US03M",
         "YIELD_SPREAD_2Y_3M",
+        "YIELD_SPREAD_10Y_2Y",
         "T10YIE",
         "BREAKEVEN_10Y",
         "REAL_10Y",
@@ -625,25 +703,38 @@ def _build_deterministic_output(
     confidence = 0.45
     status = AgentStatus.SUCCESS
 
-    real_change = _computed_real_yield_change(indicators)
-    real_value = _computed_real_yield_value(indicators)
-    if real_change is None:
-        real_change = _first_change(indicators, _REAL_YIELD_KEYS)
-        real_value = real_value if real_value is not None else _first_value(indicators, _REAL_YIELD_KEYS)
-        if real_change is not None:
-            key_findings.append(
-                "10Y real-yield change is using supplementary TIPS/direct field because US10Y-T10YIE change is incomplete."
-            )
-        else:
+    workflow_v2, workflow_real_rate = _workflow_real_rate(snapshot)
+    if workflow_v2:
+        # gold_workflow.v2 has already selected official TIPS or a same-date
+        # estimate.  Do not recompute or fall back to passport legacy fields.
+        real_change = _to_float(workflow_real_rate.get("change"))
+        real_value = _to_float(workflow_real_rate.get("value"))
+        method = str(workflow_real_rate.get("method") or "unavailable")
+        if real_change is None and real_value is None:
             status = AgentStatus.PARTIAL
             confidence -= 0.12
-            invalid_conditions.append(
-                "10Y real-yield signal is missing; checked real-yield fields, nominal yield and T10YIE."
-            )
+            invalid_conditions.append("gold_workflow.v2.real_rate is unavailable; no legacy US10Y-T10YIE fallback was used.")
+        elif real_change is None:
+            status = AgentStatus.PARTIAL
+            confidence -= 0.08
+            invalid_conditions.append("gold_workflow.v2.real_rate change is missing; level is retained without directional scoring.")
+            key_findings.append(f"gold_workflow.v2 real-yield level is available ({real_value:.2f}) via {method}, but its change direction is missing.")
+        else:
+            key_findings.append(f"gold_workflow.v2 real-yield main口径 uses {method}; directional change is {real_change:.2f}.")
     else:
-        key_findings.append(
-            f"10Y real-yield main口径 uses US10Y - T10YIE; weekly/directional change is {real_change:.2f}."
-        )
+        real_change = _computed_real_yield_change(indicators)
+        real_value = _computed_real_yield_value(indicators)
+        if real_change is None:
+            real_change = _first_change(indicators, _REAL_YIELD_KEYS)
+            real_value = real_value if real_value is not None else _first_value(indicators, _REAL_YIELD_KEYS)
+            if real_change is not None:
+                key_findings.append("10Y real-yield change is using supplementary TIPS/direct field because US10Y-T10YIE change is incomplete.")
+            else:
+                status = AgentStatus.PARTIAL
+                confidence -= 0.12
+                invalid_conditions.append("10Y real-yield signal is missing; checked real-yield fields, nominal yield and T10YIE.")
+        else:
+            key_findings.append(f"10Y real-yield main口径 uses US10Y - T10YIE; weekly/directional change is {real_change:.2f}.")
     if real_change is not None:
         if real_change < 0:
             score += 1
@@ -653,7 +744,7 @@ def _build_deterministic_output(
             key_findings.append("Rising 10Y real yields are bearish for gold.")
         else:
             key_findings.append("10Y real yields are flat and do not add directional conviction.")
-    elif real_value is not None:
+    elif real_value is not None and not workflow_v2:
         key_findings.append(f"10Y real yield level is available ({real_value:.2f}) but change direction is missing.")
 
     dxy_change = _first_change(indicators, _DXY_KEYS)
@@ -672,10 +763,12 @@ def _build_deterministic_output(
             key_findings.append("DXY is rising, which is a macro headwind for gold.")
         elif dxy_value is not None:
             key_findings.append(f"DXY level is available ({dxy_value:.2f}) but directional change is missing.")
+            status = AgentStatus.PARTIAL
+            confidence -= 0.08
+            risk_points.append("DXY directional change is unavailable; only the current level is confirmed.")
+            invalid_conditions.append("DXY daily/weekly/monthly delta is missing; dollar direction must remain unconfirmed.")
 
-    present_liquidity = [
-        name for name, keys in _LIQUIDITY_GROUPS.items() if _first_indicator(indicators, keys) is not None
-    ]
+    present_liquidity = [name for name, keys in _LIQUIDITY_GROUPS.items() if _first_indicator(indicators, keys) is not None]
     if len(present_liquidity) < len(_LIQUIDITY_GROUPS):
         missing = [name for name in _LIQUIDITY_GROUPS if name not in present_liquidity]
         status = AgentStatus.PARTIAL
@@ -697,6 +790,12 @@ def _build_deterministic_output(
     confidence = _clamp(confidence + min(abs(score) * 0.08, 0.16), 0.0, 0.85 if status is AgentStatus.PARTIAL else 0.92)
 
     regime = classify_macro_regime(indicators) if indicators else None
+    if regime is not None and (workflow_v2 or _daily_research_indicators(snapshot) is not None):
+        regime = _normalize_research_regime(
+            regime,
+            indicators,
+            workflow_real_rate=workflow_real_rate if workflow_v2 else None,
+        )
     if regime and regime["market_phase"] != "unavailable":
         mp = regime["market_phase"]
         rc = regime["confidence"]
@@ -783,6 +882,151 @@ def _computed_real_yield_change(indicators: dict[str, Any]) -> float | None:
     if nominal_change is None or breakeven_change is None:
         return None
     return nominal_change - breakeven_change
+
+
+def _normalize_research_regime(
+    regime: dict[str, Any],
+    indicators: dict[str, Any],
+    *,
+    workflow_real_rate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Repair zero-safe real-yield fields for the legacy regime formatter.
+
+    The shared regime helper uses ``daily_change or weekly_change``.  A
+    verified zero breakeven change therefore incorrectly falls through to its
+    weekly change (for this run, turning +1bp real yield into -3bp).  Keep its
+    phase classification, but replace the exposed driver with the passport's
+    explicit daily/weekly arithmetic so the AgentOutput cannot contradict the
+    canonical fact.
+    """
+
+    if workflow_real_rate is not None:
+        return _normalize_workflow_regime(regime, indicators, workflow_real_rate)
+
+    normalized = dict(regime)
+    drivers = dict(normalized.get("drivers") or {})
+    real = dict(drivers.get("real_yield") or {})
+    nominal_daily = _period_change(indicators, _NOMINAL_YIELD_KEYS, "daily")
+    breakeven_daily = _period_change(indicators, _BREAKEVEN_KEYS, "daily")
+    nominal_weekly = _period_change(indicators, _NOMINAL_YIELD_KEYS, "weekly")
+    breakeven_weekly = _period_change(indicators, _BREAKEVEN_KEYS, "weekly")
+    daily_change = (
+        nominal_daily - breakeven_daily
+        if nominal_daily is not None and breakeven_daily is not None
+        else _period_change(indicators, _REAL_YIELD_KEYS, "daily")
+    )
+    weekly_change = (
+        nominal_weekly - breakeven_weekly
+        if nominal_weekly is not None and breakeven_weekly is not None
+        else _period_change(indicators, _REAL_YIELD_KEYS, "weekly")
+    )
+    computed_real_value = _computed_real_yield_value(indicators)
+    main_available = computed_real_value is not None
+    real_value = computed_real_value if computed_real_value is not None else _first_value(indicators, _REAL_YIELD_KEYS)
+    direction = _signed_direction(daily_change if daily_change is not None else weekly_change)
+    if real_value is not None:
+        real["value"] = real_value
+    real.update(
+        {
+            "status": "available" if real_value is not None else "unavailable",
+            "source": "US10Y - T10YIE (computed_main)" if main_available else real.get("source"),
+            "daily_change": daily_change,
+            "weekly_change": weekly_change,
+            "direction": direction,
+            "note": (
+                "Main report口径: nominal 10Y minus T10YIE."
+                if main_available
+                else "Supplementary fallback; main口径 requires US10Y/DGS10 and T10YIE."
+            ),
+        }
+    )
+    drivers["real_yield"] = real
+    normalized["drivers"] = drivers
+    interpretation = str(normalized.get("gold_interpretation") or "")
+    if direction == "rising":
+        interpretation = interpretation.replace(
+            "Real yields falling → bullish for gold",
+            "Real yields rising → bearish for gold",
+        )
+    elif direction == "falling":
+        interpretation = interpretation.replace(
+            "Real yields rising → bearish for gold",
+            "Real yields falling → bullish for gold",
+        )
+    elif direction == "flat":
+        interpretation = interpretation.replace(
+            "Real yields falling → bullish for gold",
+            "Real yields flat — no directional signal",
+        ).replace(
+            "Real yields rising → bearish for gold",
+            "Real yields flat — no directional signal",
+        )
+    normalized["gold_interpretation"] = interpretation
+    return normalized
+
+
+def _normalize_workflow_regime(
+    regime: dict[str, Any],
+    indicators: dict[str, Any],
+    workflow_real_rate: dict[str, Any],
+) -> dict[str, Any]:
+    """Reclassify regime with the v2 selected real-rate input.
+
+    The shared regime engine still owns the classification rules.  Its
+    keyword-only override replaces only the real-yield driver, so the
+    nominal, breakeven, dollar and liquidity scores remain unchanged.
+    """
+
+    value = _to_float(workflow_real_rate.get("value"))
+    change = _to_float(workflow_real_rate.get("change"))
+    method = str(workflow_real_rate.get("method") or "unavailable")
+    real_driver = {
+        "status": "available" if value is not None else "unavailable",
+        "source": f"gold_workflow.v2:{method}" if value is not None else "gold_workflow.v2:unavailable",
+        "value": value,
+        "daily_change": change,
+        "weekly_change": _to_float(workflow_real_rate.get("weekly_change")),
+        "direction": _signed_direction(change),
+        "date": workflow_real_rate.get("date"),
+        "previous_date": workflow_real_rate.get("previous_date"),
+        "source_refs": list(workflow_real_rate.get("source_refs") or []),
+        "note": (
+            f"gold_workflow.v2 selected {method}; no US10Y-T10YIE recomputation was used."
+            if value is not None
+            else "gold_workflow.v2 real_rate is unavailable; no legacy fallback was used."
+        ),
+    }
+
+    # Keep ``regime`` in the signature for the caller's legacy classification
+    # context; all phase/confidence decisions are recomputed with the one
+    # selected driver and the original indicator set.
+    del regime
+    normalized = dict(classify_macro_regime(indicators, real_yield_override=real_driver))
+    normalized["real_rate_policy"] = "gold_workflow.v2.real_rate"
+    return normalized
+
+
+def _period_change(indicators: dict[str, Any], keys: tuple[str, ...], period: str) -> float | None:
+    fields = ("daily_change", "change") if period == "daily" else ("weekly_change", "change_1w", "delta_1w")
+    for key in keys:
+        item = indicators.get(key)
+        if not isinstance(item, dict):
+            continue
+        for field in fields:
+            value = _to_float(item.get(field))
+            if value is not None:
+                return value
+    return None
+
+
+def _signed_direction(change: float | None) -> str:
+    if change is None:
+        return "unknown"
+    if change < 0:
+        return "falling"
+    if change > 0:
+        return "rising"
+    return "flat"
 
 
 def _to_float(value: Any) -> float | None:

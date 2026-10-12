@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from apps.runtime.output_disposition import is_output_purged
 from database.models.analysis import AnalysisSnapshot, FinalAnalysisResult
 from database.models.report import ReportArtifact, ReportItem
 
@@ -193,11 +194,25 @@ def _validate_report_artifact_parent(session: Session, payload: dict[str, Any], 
             f"artifact_id={artifact_id} report_id={report_id} missing parent report"
         )
 
+    if _is_report_item_purged(report_item):
+        raise ValueError(
+            "OUTPUT_PURGED: report item "
+            f"{report_id} cannot accept a new artifact"
+        )
+
     if existing is not None and existing.report_id != report_id:
         _raise_lineage_conflict(
             "report artifact lineage conflict: "
             f"artifact_id={artifact_id} report_id={report_id} conflicts with existing report_id={existing.report_id}"
         )
+
+
+def _is_report_item_purged(report_item: ReportItem) -> bool:
+    """Keep a report tombstone authoritative for both row and metadata forms."""
+    return (
+        is_output_purged(report_item)
+        or str(report_item.lifecycle_status or "").strip().lower() == "purged"
+    )
 
 
 def _first_present_source_ref_key(ref: dict[str, Any], keys: frozenset[str]) -> str | None:
@@ -233,9 +248,11 @@ def _validate_report_source_refs(source_refs: list[dict[str, Any]] | None) -> No
 
 def upsert_report_item(session: Session, payload: dict[str, Any]) -> ReportItem:
     report_id = str(payload["report_id"])
+    existing = session.get(ReportItem, report_id)
+    if existing is not None and _is_report_item_purged(existing):
+        raise ValueError(f"OUTPUT_PURGED: report item {report_id} cannot be re-registered")
     _validate_report_lineage(session, payload)
     _validate_report_source_refs(payload.get("source_refs"))
-    existing = session.get(ReportItem, report_id)
     trade_date = _parse_iso_date(payload.get("trade_date"))
 
     if existing is None:
@@ -260,6 +277,8 @@ def upsert_report_item(session: Session, payload: dict[str, Any]) -> ReportItem:
 def upsert_report_artifact(session: Session, payload: dict[str, Any]) -> ReportArtifact:
     artifact_id = str(payload["artifact_id"])
     existing = session.get(ReportArtifact, artifact_id)
+    if existing is not None and is_output_purged(existing):
+        raise ValueError(f"OUTPUT_PURGED: report artifact {artifact_id} cannot be re-registered")
     _validate_report_artifact_parent(session, payload, existing)
     _validate_report_source_refs(payload.get("source_refs"))
     generated_at = _parse_iso_datetime(payload.get("generated_at"))

@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from apps.collectors.jin10.fetcher import Jin10CategoryEntry, fetch_category_entries  # noqa: E402
 from apps.collectors.jin10.reportory import (  # noqa: E402
     fetch_reportory_daily_gold_entries,
+    fetch_reportory_market_odds_entries,
     reportory_daily_gold_report_date,
     reportory_daily_gold_report_id,
 )
@@ -37,9 +38,7 @@ from apps.worker.pipelines.weekly_context_revision import (  # noqa: E402
 from database.models.engine import SessionLocal  # noqa: E402
 
 BEIJING = ZoneInfo("Asia/Shanghai")
-DEFAULT_EXTERNAL_ROOT = Path(
-    os.getenv("FINANCE_AGENT_EXTERNAL_REPORT_ROOT", "~/finance-agent-data/jin10-reports")
-).expanduser()
+DEFAULT_EXTERNAL_ROOT = (Path.home() / "jin10-reports")
 DEFAULT_STORAGE_ROOT = Path("storage")
 DEFAULT_RAW_ROOT = Path(".")
 DEFAULT_LOCK_PATH = Path("/tmp/finance-agent-report-window-scan.lock")
@@ -94,7 +93,7 @@ WINDOWS = (
         time(19, 30),
         "458",
         "market_observation",
-        include=("每日市场观察",),
+        include=(),
     ),
     ScanWindow(
         "gold_daily_macro_close",
@@ -247,7 +246,9 @@ def scan_jin10(
     assert window.category and window.report_type
     discovery_errors: list[dict[str, str]] = []
     with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-        if window.key == "jin10_gold":
+        if window.key == "jin10_market_observation":
+            entries = fetch_reportory_market_odds_entries(client=client)
+        elif window.key == "jin10_gold":
             reportory_entries: list[Jin10CategoryEntry] = []
             legacy_entries: list[Jin10CategoryEntry] = []
             try:
@@ -298,7 +299,20 @@ def scan_jin10(
             )
             continue
         if not external_meta.exists():
-            if _is_reportory_daily_gold_entry(entry):
+            if window.key == "jin10_market_observation":
+                fetch_command = [
+                    sys.executable,
+                    "scripts/fetch_jin10_reportory_market_odds.py",
+                    "--url",
+                    entry.source_url,
+                    "--external-root",
+                    str(external_root),
+                ]
+                if entry.published_at:
+                    fetch_command.extend(["--published-at", entry.published_at])
+                if entry.title:
+                    fetch_command.extend(["--title", entry.title])
+            elif _is_reportory_daily_gold_entry(entry):
                 fetch_command = [
                     sys.executable,
                     "scripts/fetch_jin10_reportory_daily_gold.py",

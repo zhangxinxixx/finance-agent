@@ -1,3 +1,4 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import type { ComponentProps } from "react";
 import { Shield } from "lucide-react";
 import { fetchCMEOptionsDates } from "@/adapters/cmeOptions";
@@ -57,9 +58,14 @@ export function CMEOptionsIntentSummary({ snapshot }: { snapshot: CMEOptionsResp
   if (!snapshot?.intent) return null;
 
   const intentType = translateIntent(snapshot.intent.type);
-  const confPct = Math.round((snapshot.intent.confidence ?? snapshot.intent.score ?? 0) * 100);
+  const confidence = snapshot.intent.confidence;
+  const confidenceLabel = confidence === null || confidence === undefined ? "—" : `${Math.round(confidence * 100)}/100（非概率）`;
+  const scoreLabel = snapshot.intent.score === null || snapshot.intent.score === undefined
+    ? null
+    : `评分 ${snapshot.intent.score.toLocaleString("en-US", { maximumFractionDigits: 4 })}（评分，非概率）`;
   const evidence = snapshot.intent.evidence ?? [];
   const localizedEvidence = evidence.map((ev) => translateEvidence(ev));
+  const evidenceLabel = localizedEvidence.length > 0 ? localizedEvidence.join(" / ") : "未提供意图证据";
 
   return (
     <div
@@ -78,19 +84,19 @@ export function CMEOptionsIntentSummary({ snapshot }: { snapshot: CMEOptionsResp
       </div>
       <div
         className="cme-options-intent-evidence"
-        title={localizedEvidence.join(" / ") || `置信度 ${confPct}/100`}
         style={{
-          maxWidth: 260,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          maxWidth: 420,
+          overflow: "visible",
+          textOverflow: "clip",
+          whiteSpace: "normal",
         }}
       >
-        {localizedEvidence[0] ?? `置信度 ${confPct}/100`}
+        {evidenceLabel}
       </div>
       <div className="flex items-center gap-1.5">
-        <span className="cme-options-intent-score fa-num">{confPct}</span>
-        <span className="cme-options-intent-score-unit">/ 100</span>
+        <span className="cme-options-intent-score fa-num">{confidenceLabel}</span>
+        <span className="cme-options-intent-score-unit">置信度</span>
+        {scoreLabel ? <span className="cme-options-intent-score-unit">{scoreLabel}</span> : null}
       </div>
     </div>
   );
@@ -109,10 +115,7 @@ export function renderCMEOptionsTabContent({
   selectedExpiry: string | undefined;
   decision?: CMEOptionsDecisionResponse | null;
 }) {
-  const currentPrice = snapshot.parameters?.f_value
-    ?? snapshot.parameters?.report_p0
-    ?? snapshot.gex?.netgex_aggregate?.gamma_zero?.price
-    ?? 0;
+  const reportAnchor = snapshot.parameters?.report_p0 ?? snapshot.parameters?.p0 ?? null;
 
   if (activeTab === "overview" || activeTab === "snapshot-overview") {
     return (
@@ -126,13 +129,13 @@ export function renderCMEOptionsTabContent({
     return (
       <div className="cme-options-tab-grid cme-options-tab-grid--left-rail">
         <div className="cme-options-tab-stack">
-          <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={currentPrice} />
+          <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={reportAnchor} />
           <ChangeTable snapshot={snapshot} />
         </div>
         <div className="cme-options-tab-stack">
           <GammaZeroCard netGexAggregate={snapshot.gex?.netgex_aggregate} decisionGamma={decision?.gamma_summary} wallScores={wallScores} />
           <GEXBreakdown snapshot={snapshot} selectedExpiry={selectedExpiry} />
-          <ExposurePanel snapshot={snapshot} />
+          <ExposurePanel snapshot={snapshot} selectedExpiry={selectedExpiry} />
         </div>
       </div>
     );
@@ -142,10 +145,10 @@ export function renderCMEOptionsTabContent({
     return (
       <div className="cme-options-tab-grid cme-options-tab-grid--wall-map">
         <div className="cme-options-tab-stack">
-          <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={currentPrice} />
+          <PriceLadder supportResistance={snapshot.support_resistance} currentPrice={reportAnchor} />
         </div>
         <div className="cme-options-tab-stack">
-          <OptionsWallTable wallScores={wallScores} />
+          <OptionsWallTable wallScores={wallScores} selectedExpiry={selectedExpiry} />
         </div>
       </div>
     );
@@ -155,8 +158,8 @@ export function renderCMEOptionsTabContent({
     return (
       <div className="cme-options-tab-grid cme-options-tab-grid--right-rail">
         <div className="cme-options-tab-stack">
-          <IVSkewTable snapshot={snapshot} />
-          <ExposurePanel snapshot={snapshot} />
+          <IVSkewTable snapshot={snapshot} selectedExpiry={selectedExpiry} />
+          <ExposurePanel snapshot={snapshot} selectedExpiry={selectedExpiry} />
         </div>
         <CMEOptionsRightColumn snapshot={snapshot} decision={decision} />
       </div>
@@ -166,7 +169,7 @@ export function renderCMEOptionsTabContent({
   return (
     <div className="cme-options-tab-grid cme-options-tab-grid--right-rail">
       <div className="cme-options-tab-stack">
-        <SourceTracePanel sourceTrace={(snapshot.source_trace ?? []) as SourceTraceItems} />
+        <ResearchDetails label="查看数据记录"><SourceTracePanel sourceTrace={(snapshot.source_trace ?? []) as SourceTraceItems} /></ResearchDetails>
       </div>
       <CMEOptionsRightColumn snapshot={snapshot} decision={decision} />
     </div>

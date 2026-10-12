@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import {
   Activity,
   AlertTriangle,
@@ -8,6 +9,8 @@ import {
   Target,
 } from "lucide-react";
 import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPill";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { readingErrorMessage, readerContractMonth } from "@/components/reading/readingFormat";
 import {
   hasVerifiedGoldBaseline,
   type LiveStrategyGoldBaseline,
@@ -15,6 +18,27 @@ import {
   type LiveStrategySetup,
   type LiveStrategyStatus,
 } from "@/types/live-strategy";
+import {
+  getDisplayLiveStrategyStatus,
+  getLiveStrategyTrustState,
+  isLiveStrategyMarketUsable,
+  isLiveStrategyCurrent,
+  liveStrategyTrustLabel,
+  liveStrategyTrustMessage,
+  type LiveStrategyTrustState,
+} from "./liveStrategyTrust";
+import {
+  cmePathStatusLabel,
+  cmeScopeLabel,
+  dataStatusLabel,
+  liveMarketStatusLabel,
+  liveStrategyScenarioStatusLabel,
+  preserveStrategyItems,
+  strategyAssetLabel,
+  strategyEvidenceLabel,
+  strategyTimestampLabel,
+  strategyValueLabel,
+} from "./strategyDisplayLabels";
 
 interface LiveStrategyWorkspaceProps {
   data: LiveStrategyResponse | null;
@@ -36,37 +60,45 @@ const feasibilityFields = [
 
 const decisionCopy: Record<LiveStrategyStatus, { title: string; action: string }> = {
   SUSPENDED_DATA: { title: "当前不可执行", action: "等待行情和确认数据恢复，不使用旧价格形成新判断。" },
-  TRIGGERED: { title: "场景已经触发", action: "核对入场区、失效位和风险收益比，再确认后端 Gate。" },
+  TRIGGERED: { title: "场景已经触发", action: "核对入场区、失效位和风险收益比，再确认参考条件。" },
   ARMED: { title: "条件接近就绪", action: "等待最后的价格事件与周期确认，不提前执行。" },
   WATCHING: { title: "观察关键位", action: "重点跟踪最近关键位的接近、突破或收回事件。" },
   WAITING: { title: "暂无有效触发", action: "保持观望，等待后端给出完整触发与风险参数。" },
 };
 
 const reasonLabels: Record<string, string> = {
-  canonical_candle_stale: "XAUUSD 5 分钟 K 线已过期",
+  canonical_candle_stale: "现货黄金 5 分钟 K 线已过期",
+  canonical_candle_window_gap: "现货黄金 5 分钟 K 线缺失、过期或时间戳不在允许窗口",
   quote_cache_stale: "实时报价缓存已过期",
+  cme_unavailable: "芝商所期权结构数据不可用",
+  cme_quality_not_final: "芝商所数据尚未达到最终质量状态",
   baseline_options_trade_date_mismatch: "期权基线日期与当前策略不一致",
-  fresh_canonical_5m_required: "等待新的 XAUUSD 5 分钟 K 线",
+  option_key_levels_coordinate_mismatch: "黄金期货结构位未验证基差，不与现货黄金价格计算距离",
+  reference_level_unavailable: "参考关键位不可用",
+  risk_reward_insufficient: "风险收益比参数不足",
+  execution_intentionally_not_supported: "当前后端未提供执行条件支持",
+  fresh_canonical_5m_required: "等待新的现货黄金 5 分钟 K 线",
   confirmed_price_event_required: "等待关键位价格事件确认",
-  blocked_data: "数据完整性 Gate 未通过",
-  canonical_xauusd_5m_unavailable_or_stale: "等待新的 XAUUSD 5 分钟 K 线",
+  blocked_data: "数据完整性条件 未通过",
+  canonical_xauusd_5m_unavailable_or_stale: "等待新的现货黄金 5 分钟 K 线",
   no_directional_price_event: "等待关键位价格事件确认",
-  gold_direction_authority_unavailable: "等待已核验的 Gold 日结方向",
-  gold_daily_close_prebootstrap_hold: "尚无可用 Gold 日结基线（首个有效日结尚未建立）",
-  gold_direction_authority_invalid: "Gold 日结方向基线校验未通过",
-  gold_strategy_status_not_directional: "Gold 日结未给出可用方向",
+  gold_direction_authority_unavailable: "等待已核验的黄金日结方向",
+  gold_daily_close_prebootstrap_hold: "尚无可用黄金日结基线（首个有效日结尚未建立）",
+  gold_direction_authority_invalid: "黄金日结方向基线校验未通过",
+  gold_strategy_status_not_directional: "黄金日结未给出可用方向",
 };
 
 const updateMessageLabels: Record<string, string> = {
-  canonical_candle_stale: "XAUUSD 5 分钟 K 线缺失、过期或时间戳无效。",
+  canonical_candle_stale: "现货黄金 5 分钟 K 线缺失、过期或时间戳无效。",
+  canonical_candle_window_gap: "现货黄金 5 分钟 K 线缺失、过期或时间戳不在允许窗口；当前不能核验触发条件。",
   outside_approach_range: "当前价格距离最近关键位较远，尚未进入确定性观察区间。",
-  gold_daily_close_prebootstrap_hold: "尚未形成可核验的 Gold 日结方向；5m/15m 仅保留监控，不生成方向性策略。",
-  gold_direction_authority_invalid: "Gold 日结方向基线校验未通过；5m/15m 不生成方向性策略。",
-  gold_strategy_status_not_directional: "Gold 日结未给出可用方向；5m/15m 不生成方向性策略。",
+  gold_daily_close_prebootstrap_hold: "尚未形成可核验的黄金日结方向；5分钟和15分钟仅保留监控，不生成方向性策略。",
+  gold_direction_authority_invalid: "黄金日结方向基线校验未通过；5分钟和15分钟不生成方向性策略。",
+  gold_strategy_status_not_directional: "黄金日结未给出可用方向；5分钟和15分钟不生成方向性策略。",
 };
 
 function formatNumber(value: number | null | undefined, digits = 2) {
-  return value === null || value === undefined
+  return value === null || value === undefined || !Number.isFinite(value)
     ? "—"
     : value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
@@ -84,9 +116,10 @@ function activityTotal(summary: Record<string, unknown>, key: "pnt_totals" | "bl
 
 function blockCoverageLabel(summary: Record<string, unknown>) {
   const status = summary.block_coverage_status;
-  if (status === "observed") return "Block 已观测";
-  if (status === "not_verified") return "Block 未核验";
-  return "Block 不可用";
+  if (status === "observed") return "区间统计已观测";
+  if (status === "not_verified") return "区间统计未核验";
+  if (status === "unavailable" || status === null || status === undefined) return "区间统计不可用";
+  return "区间统计状态未知（技术值见追踪记录）";
 }
 
 function formatTimestamp(value: string | null | undefined) {
@@ -112,11 +145,11 @@ function availabilityTone(status: LiveStrategyResponse["status"]): FAStatusTone 
 function reasonFor(data: LiveStrategyResponse, key: string, ready: boolean) {
   if (ready) return "后端已确认";
   const reasons = data.feasibility.reasons[key] ?? [];
-  return reasons.length > 0 ? reasons.join("；") : "后端未返回该项不可用原因";
+  return reasons.length > 0 ? reasons.map(readableReason).join("；") : "后端未返回该项不可用原因";
 }
 
 function readableReason(reason: string) {
-  return reasonLabels[reason] ?? reason;
+  return reasonLabels[reason] ?? strategyEvidenceLabel(reason) ?? readableWarning(reason);
 }
 
 function goldBaselineLabel(baseline: LiveStrategyGoldBaseline) {
@@ -126,14 +159,7 @@ function goldBaselineLabel(baseline: LiveStrategyGoldBaseline) {
   return "日结方向待建立";
 }
 
-function marketStatusLabel(status: string | null) {
-  if (status === "stale") return "行情已过期";
-  if (status === "available" || status === "live") return "行情可用";
-  if (status === "partial") return "行情部分可用";
-  return status ?? "状态未知";
-}
-
-function liveStatusLabel(status: LiveStrategyStatus) {
+function liveStatusLabel(status: LiveStrategyStatus, reviewOnly = false) {
   const labels: Record<LiveStrategyStatus, string> = {
     SUSPENDED_DATA: "数据暂停",
     TRIGGERED: "已触发",
@@ -141,7 +167,7 @@ function liveStatusLabel(status: LiveStrategyStatus) {
     WATCHING: "观察中",
     WAITING: "等待中",
   };
-  return labels[status];
+  return reviewOnly && status === "SUSPENDED_DATA" ? "当前核验暂停" : labels[status];
 }
 
 function availabilityLabel(status: LiveStrategyResponse["status"]) {
@@ -149,14 +175,7 @@ function availabilityLabel(status: LiveStrategyResponse["status"]) {
 }
 
 function strategyLabel(value: string | null | undefined) {
-  const labels: Record<string, string> = {
-    bullish: "看多",
-    bearish: "看空",
-    neutral: "中性",
-    trend_tailwind: "趋势顺风",
-    magnet_pin: "磁吸位",
-  };
-  return labels[value ?? ""] ?? value ?? "—";
+  return strategyValueLabel(value).label;
 }
 
 function dedupeReasons(reasons: string[]) {
@@ -181,7 +200,7 @@ const keyLevelLabels: Record<string, string> = {
   secondary_support: "次级支撑",
   magnet_pin: "磁吸位",
   volatility_hub: "波动枢纽",
-  gamma_flip: "Gamma 转换带",
+  gamma_flip: "伽马转换带",
   tail_protection: "尾部保护",
 };
 
@@ -210,7 +229,9 @@ function formatLevelValue(level: Record<string, unknown>) {
 function formatLevelStrength(value: unknown) {
   const numeric = numberValue(value);
   if (numeric !== null) return `强度 ${numeric.toFixed(2)}`;
-  return stringValue(value) ? `强度 ${stringValue(value)}` : "强度未提供";
+  const normalized = stringValue(value)?.toLowerCase();
+  const label = normalized === "high" ? "较高" : normalized === "medium" || normalized === "med" ? "中等" : normalized === "low" ? "较低" : stringValue(value);
+  return label ? `强度 ${label}` : "强度未提供";
 }
 
 function formatSigned(value: number | null | undefined, digits = 0) {
@@ -220,19 +241,20 @@ function formatSigned(value: number | null | undefined, digits = 0) {
 }
 
 function optionSideLabel(value: string | null) {
-  if (value === "CALL") return "看涨";
-  if (value === "PUT") return "看跌";
-  if (value === "BALANCED") return "双边";
-  return value ?? "—";
+  const normalized = value?.toUpperCase();
+  if (normalized === "CALL") return "看涨";
+  if (normalized === "PUT") return "看跌";
+  if (normalized === "BALANCED") return "双边";
+  return value ? `未知方向（${value}）` : "—";
 }
 
 function cmeScenarioText(value: string) {
   const replacements: Array<[RegExp, string]> = [
-    [/primary support remains defended while price rotates toward the Gamma Flip band/gi, "主支撑未失守，价格向 Gamma 转换带回归"],
+    [/primary support remains defended while price rotates toward the Gamma Flip band/gi, "主支撑未失守，价格向伽马转换带回归"],
     [/primary support ([0-9.,]+) breaks with acceptance/gi, "主支撑 $1 被有效跌破"],
-    [/price accepts above the Gamma Flip band and confirms on retest/gi, "有效站上 Gamma 转换带并回踩确认"],
+    [/price accepts above the Gamma Flip band and confirms on retest/gi, "有效站上伽马转换带并回踩确认"],
     [/subsequent CME trade dates retain or improve Call OI participation/gi, "后续 CME 交易日看涨 OI 参与度保持或增强"],
-    [/price falls back below Gamma Flip ([0-9.,]+)/gi, "价格跌回 Gamma 转换位 $1 下方"],
+    [/price falls back below Gamma Flip ([0-9.,]+)/gi, "价格跌回伽马转换位 $1 下方"],
     [/the reclaimed structure cannot hold on retest/gi, "收复后回踩无法守住"],
     [/primary support breaks with price acceptance and the retest fails/gi, "主支撑被有效跌破，且回抽失败"],
     [/Put protection and downside skew strengthen again/gi, "看跌保护与下行 Skew 重新增强"],
@@ -247,28 +269,90 @@ function LiveStrategyUnavailable({ isLoading, error }: Pick<LiveStrategyWorkspac
       <AlertTriangle size={16} aria-hidden="true" />
       <div>
         <strong>当前策略{isLoading ? "加载中" : "不可用"}</strong>
-        <p>{isLoading ? "正在读取最新策略状态。" : error?.message ?? "后端未返回实时策略；页面不会使用旧数据补造判断。"}</p>
+        <p>{isLoading ? "正在读取最新策略状态。" : readingErrorMessage(error, "后端未返回实时策略；页面不会使用旧数据补造判断。")}</p>
       </div>
     </section>
   );
 }
 
-function CompactRiskStrip({ data }: { data: LiveStrategyResponse }) {
+export function LiveStrategyTrustNotice({
+  trustState,
+  error,
+  lastResultAt,
+  dataGateBlocked = false,
+}: {
+  trustState: LiveStrategyTrustState;
+  error: Error | null;
+  lastResultAt: string | null | undefined;
+  dataGateBlocked?: boolean;
+}) {
+  if (isLiveStrategyCurrent(trustState) && !dataGateBlocked) return null;
+  const requestBlocked = !isLiveStrategyCurrent(trustState);
+  return (
+    <div className="live-strategy-quality" role="status" aria-live="polite">
+      <AlertTriangle size={16} aria-hidden="true" />
+      <div>
+        <strong>{requestBlocked ? liveStrategyTrustLabel(trustState) : "当前行情不可核验"}</strong>
+        <p>{requestBlocked
+          ? `${liveStrategyTrustMessage(trustState)} 上次结果更新时间：${formatTimestamp(lastResultAt)}。`
+          : "后端行情完整性门禁未通过；保留后端原始策略状态供复盘，不把它当作当前触发或执行判断。"}</p>
+        {error ? <p>请求状态：{readingErrorMessage(error, "请求失败，当前条件无法核验。")} </p> : null}
+      </div>
+    </div>
+  );
+}
+
+function CompactRiskStrip({
+  data,
+  trustState,
+  error,
+}: {
+  data: LiveStrategyResponse;
+  trustState: LiveStrategyTrustState;
+  error: Error | null;
+}) {
+  const trustIssue = trustState === "refreshing"
+    ? "live_strategy_refreshing"
+    : trustState === "unavailable"
+      ? "live_strategy_refresh_failed"
+      : null;
+  const availabilityIssue = data.status === "partial"
+    ? "live_strategy_partial"
+    : data.status === "unavailable"
+      ? "live_strategy_unavailable"
+      : null;
   const issues = dedupeReasons(Array.from(new Set([
+    ...(trustIssue ? [trustIssue] : []),
+    ...(availabilityIssue ? [availabilityIssue] : []),
     ...data.data_quality.warnings,
     ...data.no_trade.reasons,
-  ].filter(Boolean)))).slice(0, 3);
+  ].filter(Boolean))));
   const recovery = dedupeReasons(Array.from(new Set([
     ...data.no_trade.waiting_conditions,
     ...(data.feasibility.reasons.data_ready ?? []),
     ...(data.feasibility.reasons.trigger_ready ?? []),
-  ].filter((reason) => reason && !issues.includes(reason))))).slice(0, 2);
+  ].filter((reason) => reason && !issues.includes(reason)))));
+
+  const issueLabel = (reason: string) => {
+    if (reason === "live_strategy_refreshing") return "正在刷新，当前条件无法核验";
+    if (reason === "live_strategy_refresh_failed") return error
+      ? `刷新失败：${readingErrorMessage(error, "当前条件无法核验")}`
+      : "刷新失败，当前条件无法核验";
+    if (reason === "live_strategy_partial") return "后端只返回部分数据，当前条件无法完整核验";
+    if (reason === "live_strategy_unavailable") return "后端未返回可用数据，当前条件无法核验";
+    return readableReason(reason);
+  };
 
   return (
     <section className="live-strategy-risk-strip" aria-label="数据风险与恢复条件">
       <div className="live-strategy-risk-title">
         <AlertTriangle size={16} aria-hidden="true" />
-        <div><span>当前风险约束</span><strong>{issues.length > 0 ? issues.map(readableReason).join(" · ") : "后端未提供阻断原因"}</strong></div>
+        <div>
+          <span>当前风险约束</span>
+          <div className="flex flex-wrap gap-x-2 gap-y-1 text-[length:var(--type-body-sm)] font-semibold leading-[var(--lh-body-sm)] text-[var(--fa-text-body)]">
+            {issues.length > 0 ? issues.map((reason) => <span key={reason}>{issueLabel(reason)}</span>) : <span>后端未提供阻断原因</span>}
+          </div>
+        </div>
       </div>
       <div className="live-strategy-recovery-list">
         <span>恢复后自动重评</span>
@@ -280,25 +364,27 @@ function CompactRiskStrip({ data }: { data: LiveStrategyResponse }) {
   );
 }
 
-function KeyLevelMap({ data }: { data: LiveStrategyResponse }) {
+function KeyLevelMap({ data, reviewOnly, dataGateBlocked }: { data: LiveStrategyResponse; reviewOnly: boolean; dataGateBlocked: boolean }) {
   const preferredRoles = ["primary_resistance", "gamma_flip", "primary_support", "tail_protection"];
   const structuralLevels = preferredRoles
     .map((role) => data.market_state.key_levels.find((candidate) => candidate.role === role))
     .filter((level): level is Record<string, unknown> => Boolean(level));
   const nearest = data.market_state.nearest_level;
+  const gcReportOnly = data.cme_positioning.structure_summary.execution_scope === "gc_report_only"
+    || data.cme_positioning.scenario_paths.some((path) => path.execution_scope === "gc_report_only");
 
   return (
     <section className="live-strategy-level-map" aria-label="今日关键价格地图">
       <header className="live-strategy-current-section-heading">
         <div><Target size={15} aria-hidden="true" /><h2>今日关键价格地图</h2></div>
-        <span>后端日度结构位 · 非实时触发</span>
+        <span>{dataGateBlocked ? "当前不可核验" : reviewOnly ? "上次结果 · 仅供复盘" : gcReportOnly ? "黄金期货日度结构位 · 未与现货黄金计算距离" : "后端日度结构位 · 非实时触发"}</span>
       </header>
       <div className="live-strategy-level-map-list">
-        {nearest?.value !== null && nearest?.value !== undefined ? (
+        {!gcReportOnly && nearest?.value !== null && nearest?.value !== undefined ? (
           <div className="is-nearest">
-            <span>最近关键位</span>
+            <span>{dataGateBlocked ? "关键位（未核验）" : "最近关键位"}</span>
             <strong className="fa-price-num">{formatNumber(nearest.value)}</strong>
-            <small>{strategyLabel(nearest.role)} · 距离 {formatPercent(nearest.distance_pct)}</small>
+            <small>{dataGateBlocked ? "后端原始字段，仅供复盘" : `${strategyLabel(nearest.role)} · 距离 ${formatPercent(nearest.distance_pct)}`}</small>
           </div>
         ) : null}
         {structuralLevels.map((level) => {
@@ -307,7 +393,7 @@ function KeyLevelMap({ data }: { data: LiveStrategyResponse }) {
             <div key={role}>
               <span>{keyLevelLabels[role] ?? role}</span>
               <strong className="fa-price-num">{formatLevelValue(level)}</strong>
-              <small>{formatLevelStrength(level.strength)} · {stringValue(level.expiry_scope) ?? "期限未提供"}</small>
+              <small>{formatLevelStrength(level.strength)} · {readerContractMonth(stringValue(level.expiry_scope))}{gcReportOnly ? " · 黄金期货结构" : ""}</small>
             </div>
           );
         })}
@@ -316,21 +402,29 @@ function KeyLevelMap({ data }: { data: LiveStrategyResponse }) {
   );
 }
 
-function CmePositioningMap({ data }: { data: LiveStrategyResponse }) {
+function CmePositioningMap({ data, reviewOnly }: { data: LiveStrategyResponse; reviewOnly: boolean }) {
   const positioning = data.cme_positioning;
   const available = positioning.status !== "unavailable" && positioning.trade_date !== null;
+  const sourceStatus = dataStatusLabel(positioning.source_status);
+  const scope = cmeScopeLabel(positioning.large_oi_scope);
+  const comparisonWindow = positioning.previous_trade_date && positioning.trade_date
+    ? `${positioning.previous_trade_date} → ${positioning.trade_date}`
+    : "上一交易日 → 当前交易日";
+  const gcReportOnly = positioning.structure_summary.execution_scope === "gc_report_only"
+    || positioning.scenario_paths.some((path) => path.execution_scope === "gc_report_only");
   const pntTotal = activityTotal(positioning.pnt_summary, "pnt_totals") ?? activityTotal(positioning.pnt_summary, "totals");
   const blockTotal = activityTotal(positioning.pnt_summary, "block_totals");
   const changes = [
     ...positioning.largest_increases.slice(0, 4),
     ...positioning.largest_decreases.slice(0, 2),
   ];
+  const hiddenChangeCount = Math.max(0, positioning.largest_increases.length - 4) + Math.max(0, positioning.largest_decreases.length - 2);
   return (
     <section className="live-strategy-cme-positioning" aria-label="CME 大额持仓与增减仓">
       <header className="live-strategy-current-section-heading">
-        <div><Database size={15} aria-hidden="true" /><h2>CME 大额持仓与增减仓</h2></div>
+        <div><Database size={15} aria-hidden="true" /><h2>芝商所（CME）大额持仓与增减仓</h2></div>
         <span className={positioning.aligned_with_baseline === false ? "is-mismatch" : undefined}>
-          {available ? `${positioning.trade_date} · ${positioning.source_status ?? "状态未知"}` : "CME 数据不可用"}
+          {reviewOnly ? `上次结果 · 仅供复盘 · ${positioning.trade_date ?? "日期未知"}` : available ? `${positioning.trade_date} · ${sourceStatus.label}` : "芝商所（CME）数据不可用"}
           {positioning.aligned_with_baseline === false ? ` · 基线 ${positioning.baseline_trade_date}` : ""}
         </span>
       </header>
@@ -342,7 +436,7 @@ function CmePositioningMap({ data }: { data: LiveStrategyResponse }) {
             <div>
               <span>结构状态</span>
               <strong>{positioning.structure_summary.label ?? "后端未给出结构判断"}</strong>
-              <small>{positioning.structure_summary.summary ?? "等待确定性结构字段。"}</small>
+              <small>{gcReportOnly ? "黄金期货报告结构，仅用于结构观察；未验证现货黄金与期货基差，不作为当前现货执行价位。" : positioning.structure_summary.summary ?? "等待确定性结构字段。"}</small>
             </div>
             <div>
               <span>机构意图</span>
@@ -352,43 +446,48 @@ function CmePositioningMap({ data }: { data: LiveStrategyResponse }) {
           </div>
           <div className="live-strategy-cme-summary">
             <div><span>总 OI</span><strong className="fa-num">{formatNumber(positioning.total_oi.current, 0)}</strong></div>
-            <div><span>单日变化</span><strong className={`fa-num ${(positioning.total_oi.delta ?? 0) >= 0 ? "is-up" : "is-down"}`}>{formatSigned(positioning.total_oi.delta)}</strong></div>
+            <div><span>区间变化</span><strong className={`fa-num ${(positioning.total_oi.delta ?? 0) >= 0 ? "is-up" : "is-down"}`}>{formatSigned(positioning.total_oi.delta)}</strong><small>{comparisonWindow}</small></div>
             <div><span>比较基准</span><strong>{positioning.previous_trade_date ?? "不可用"}</strong></div>
             <div><span>日期对齐</span><strong>{positioning.aligned_with_baseline === true ? "已对齐" : positioning.aligned_with_baseline === false ? "滞后 / 待更新" : "未知"}</strong></div>
-            <div><span>PNT / Block</span><strong className="fa-num">{formatNumber(pntTotal, 0)} / {formatNumber(blockTotal, 0)}</strong><small>{blockCoverageLabel(positioning.pnt_summary)}</small></div>
+            <div><span>看涨看跌 / 大宗成交（区间统计）</span><strong className="fa-num">{formatNumber(pntTotal, 0)} / {formatNumber(blockTotal, 0)}</strong><small>{blockCoverageLabel(positioning.pnt_summary)}</small></div>
           </div>
           <div className="live-strategy-cme-tables">
             <section>
-              <h3>{positioning.large_oi_scope === "nearby_6pct" ? "主战区大额 OI（约 ±6%）" : "绝对 OI 最大点位"}</h3>
-              <div className="live-strategy-cme-table-head"><span>Strike</span><span>期限 / 方向</span><span>OI</span><span>ΔOI</span></div>
+              <h3>{positioning.large_oi_scope === "nearby_6pct" ? "主战区大额未平仓量（约 ±6%）" : positioning.large_oi_scope === "full_chain" ? "绝对未平仓量最大点位" : scope.label}</h3>
+              <div className="live-strategy-cme-table-head"><span>执行价</span><span>期限 / 方向</span><span>未平仓量</span><span>未平仓量变化</span></div>
               {positioning.large_oi_levels.slice(0, 6).map((row) => (
                 <div className="live-strategy-cme-table-row" key={`${row.expiry}-${row.strike}`}>
                   <strong className="fa-price-num">{formatNumber(row.strike, 0)}</strong>
-                  <span>{row.expiry ?? "—"} · {optionSideLabel(row.dominant_side)}</span>
+                  <span>{readerContractMonth(row.expiry)} · {optionSideLabel(row.dominant_side)}</span>
                   <b className="fa-num">{formatNumber(row.total_oi, 0)}</b>
                   <b className={`fa-num ${(row.total_oi_change ?? 0) >= 0 ? "is-up" : "is-down"}`}>{formatSigned(row.total_oi_change)}</b>
                 </div>
               ))}
+              {positioning.large_oi_levels.length > 6 ? <p className="mt-1 text-[10px] text-[var(--fg-5)]">另有 {positioning.large_oi_levels.length - 6} 个大额点位未在摘要展开。</p> : null}
             </section>
             <section>
               <h3>近期最大增减仓</h3>
-              <div className="live-strategy-cme-table-head"><span>Strike</span><span>期限 / 类型</span><span>当前 OI</span><span>ΔOI</span></div>
+              <div className="live-strategy-cme-table-head"><span>执行价</span><span>期限 / 类型</span><span>当前未平仓量</span><span>未平仓量变化</span></div>
               {changes.map((row, index) => (
                 <div className="live-strategy-cme-table-row" key={`${row.expiry}-${row.strike}-${row.option_type}-${index}`}>
                   <strong className="fa-price-num">{formatNumber(row.strike, 0)}</strong>
-                  <span>{row.expiry ?? "—"} · {optionSideLabel(row.option_type)}</span>
+                  <span>{readerContractMonth(row.expiry)} · {optionSideLabel(row.option_type)}</span>
                   <b className="fa-num">{formatNumber(row.current_oi, 0)}</b>
                   <b className={`fa-num ${(row.delta ?? 0) >= 0 ? "is-up" : "is-down"}`}>{formatSigned(row.delta)}</b>
                 </div>
               ))}
+              {hiddenChangeCount > 0 ? <p className="mt-1 text-[10px] text-[var(--fg-5)]">另有 {hiddenChangeCount} 条增减仓记录未在摘要展开。</p> : null}
             </section>
           </div>
-          <div className="live-strategy-cme-paths" aria-label="CME 三路径">
+          <div className="live-strategy-cme-paths" aria-label="芝商所（CME）三路径">
             {positioning.scenario_paths.map((path) => (
               <article key={path.path_id}>
-                <div><strong>{path.label}</strong><span>{path.status === "confirmed" ? "已确认" : path.status === "active" ? "活跃" : "观察"}</span></div>
+                {(() => {
+                  const pathStatus = cmePathStatusLabel(path.status);
+                  return <div><strong>{path.label}</strong><span>{pathStatus.label}</span></div>;
+                })()}
                 <p><b>触发</b>{path.triggers.map(cmeScenarioText).join("；") || "—"}</p>
-                <p><b>目标</b><em className="fa-num">{path.targets.map((target) => formatNumber(target, 1)).join(" / ") || "—"}</em></p>
+                <p><b>目标{path.execution_scope === "gc_report_only" ? "（黄金期货报告结构）" : ""}</b><em className="fa-num">{path.targets.map((target) => formatNumber(target, 1)).join(" / ") || "—"}</em></p>
                 <p><b>失效</b>{path.invalidation.map(cmeScenarioText).join("；") || "—"}</p>
               </article>
             ))}
@@ -403,12 +502,16 @@ function TodayWatchlist({
   data,
   action,
   strategyStatus,
+  reviewOnly,
+  dataGateBlocked,
 }: {
   data: LiveStrategyResponse;
   action: string;
   strategyStatus: LiveStrategyStatus;
+  reviewOnly: boolean;
+  dataGateBlocked: boolean;
 }) {
-  const waitingConditions = dedupeReasons(data.no_trade.waiting_conditions).slice(0, 2);
+  const waitingConditions = dedupeReasons(data.no_trade.waiting_conditions);
   const readiness = [
     ["data_ready", "行情"],
     ["level_ready", "关键位"],
@@ -421,20 +524,24 @@ function TodayWatchlist({
     <section className="live-strategy-watchlist" aria-label="今日观察清单">
       <header className="live-strategy-current-section-heading">
         <div><Activity size={15} aria-hidden="true" /><h2>今日观察清单</h2></div>
-        <FAStatusPill tone={liveStatusTone(strategyStatus)}>{liveStatusLabel(strategyStatus)}</FAStatusPill>
+        {dataGateBlocked ? <span>当前不可核验</span> : reviewOnly ? <span>上次结果 · 仅供复盘</span> : null}
+        <FAStatusPill tone={liveStatusTone(strategyStatus)}>{liveStatusLabel(strategyStatus, reviewOnly || dataGateBlocked)}</FAStatusPill>
       </header>
       <div className="live-strategy-watchlist-grid">
-        <div><span>基线判断</span><strong>{strategyLabel(data.baseline.bias)} · {strategyLabel(data.baseline.market_regime)}</strong><small>置信度 {formatPercent(data.baseline.confidence === null ? null : data.baseline.confidence * 100)}</small></div>
-        <div><span>观望区间</span><strong className="fa-num">{data.no_trade.range ? `${formatNumber(data.no_trade.range[0])} – ${formatNumber(data.no_trade.range[1])}` : "后端未提供"}</strong><small>区间内不提前形成新判断</small></div>
-        <div><span>价格事件</span><strong>{data.market_state.level_event ?? "尚未出现方向性关键位事件"}</strong><small>15m 确认：{data.market_state.confirmation_15m?.confirmed ? "已确认" : "未确认"}</small></div>
+        <div><span>{dataGateBlocked ? "基线不可核验" : reviewOnly ? "上次基线判断" : "基线判断"}</span><strong>{strategyLabel(data.baseline.bias)} · {strategyLabel(data.baseline.market_regime)}</strong><small>置信度 {formatPercent(data.baseline.confidence === null ? null : data.baseline.confidence * 100)}</small></div>
+        <div><span>{dataGateBlocked ? "观望区间不可核验" : reviewOnly ? "上次观望区间" : "观望区间"}</span><strong className="fa-num">{data.no_trade.range ? `${formatNumber(data.no_trade.range[0])} – ${formatNumber(data.no_trade.range[1])}` : "后端未提供"}</strong><small>{dataGateBlocked ? "等待完整行情数据" : reviewOnly ? "上次结果 · 区间内不提前形成新判断" : "区间内不提前形成新判断"}</small></div>
+        <div><span>{dataGateBlocked ? "价格事件不可核验" : reviewOnly ? "上次价格事件" : "价格事件"}</span><strong>{data.market_state.level_event ?? "尚未出现方向性关键位事件"}</strong><small>15分钟确认：{data.market_state.confirmation_15m?.confirmed ? "已确认" : "未确认"}</small></div>
         <div><span>下一步动作</span><strong>{action}</strong></div>
       </div>
-      <div className="live-strategy-readiness-line" aria-label="策略准备度">
-        <span>策略准备度</span>
-        {readiness.map(([key, label]) => <b className={data.feasibility[key] ? "is-ready" : "is-waiting"} key={key}>{label} {data.feasibility[key] ? "就绪" : "待确认"}</b>)}
+      <div className="live-strategy-readiness-line" aria-label={dataGateBlocked ? "当前准备度不可核验" : reviewOnly ? "上次结果准备度" : "策略准备度"}>
+        <span>{dataGateBlocked ? "当前准备度不可核验" : reviewOnly ? "上次结果准备度" : "策略准备度"}</span>
+        {readiness.map(([key, label]) => {
+          const ready = data.feasibility[key];
+          return <b className={!reviewOnly && !dataGateBlocked && ready ? "is-ready" : "is-waiting"} key={key}>{label} {dataGateBlocked ? "当前不可核验" : reviewOnly ? (ready ? "上次就绪" : "上次未就绪") : ready ? "就绪" : "待确认"}</b>;
+        })}
       </div>
       <div className="live-strategy-next-confirmation">
-        <span>接下来只看</span>
+        <span>{dataGateBlocked ? "当前等待条件不可核验" : reviewOnly ? "上次等待条件" : "接下来只看"}</span>
         {(waitingConditions.length > 0 ? waitingConditions : ["等待后端给出确认条件"]).map((reason) => <strong key={reason}>{readableReason(reason)}</strong>)}
       </div>
     </section>
@@ -444,21 +551,30 @@ function TodayWatchlist({
 function ActiveSetupSummary({ data }: { data: LiveStrategyResponse }) {
   const setup: LiveStrategySetup | undefined = data.setups.find((item) => item.direction === data.active_scenario);
   if (!setup || data.active_scenario === "no_trade") {
+    const waitingConditions = dedupeReasons([
+      ...preserveStrategyItems(data.no_trade.waiting_conditions),
+      ...preserveStrategyItems(data.no_trade.reasons),
+    ]);
     return (
       <section className="live-strategy-active-plan">
         <div><span>当前场景</span><strong>观望 / 未激活</strong></div>
         <div><span>观望区间</span><strong className="fa-num">{data.no_trade.range ? `${formatNumber(data.no_trade.range[0])} – ${formatNumber(data.no_trade.range[1])}` : "—"}</strong></div>
-        <p>{readableReason(data.no_trade.waiting_conditions[0] ?? data.no_trade.reasons[0] ?? "等待后端给出可执行场景。")}</p>
+        <p><b>等待 / 不交易条件：</b>{waitingConditions.length > 0 ? waitingConditions.map(readableReason).join("；") : "等待后端给出可执行场景。"}</p>
       </section>
     );
   }
   const firstTarget = setup.targets.find((target) => target.price !== null && target.price !== undefined);
+  const conditions = dedupeReasons([
+    ...preserveStrategyItems(setup.trigger_conditions),
+    ...preserveStrategyItems(setup.confirmation_conditions),
+  ]);
+  const setupStatus = liveStrategyScenarioStatusLabel(setup.status);
   return (
     <section className="live-strategy-active-plan">
-      <div><span>当前场景</span><strong>{setup.direction === "long" ? "多头" : "空头"} · {setup.status}</strong></div>
+      <div><span>当前场景</span><strong>{setup.direction === "long" ? "多头" : "空头"} · {setupStatus.label}</strong></div>
       <div><span>入场区</span><strong className="fa-num">{setup.entry_zone ? `${formatNumber(setup.entry_zone[0])} – ${formatNumber(setup.entry_zone[1])}` : "—"}</strong></div>
       <div><span>失效 / 第一目标</span><strong className="fa-num">{formatNumber(setup.invalidation_level)} / {formatNumber(firstTarget?.price)}</strong></div>
-      <p>{setup.trigger_conditions[0] ?? "后端未提供触发条件。"}</p>
+      <p><b>触发 / 确认条件：</b>{conditions.length > 0 ? conditions.map(readableReason).join("；") : "后端未提供触发条件。"}</p>
     </section>
   );
 }
@@ -467,28 +583,30 @@ function Diagnostics({ data }: { data: LiveStrategyResponse }) {
   const event = data.market_state.latest_price_event;
   const confirmation15m = data.market_state.confirmation_15m;
   const timestamps = Object.entries(data.live_market.timestamps);
+  const reasonCode = data.update_reason.reason_code;
   return (
     <div className="live-strategy-diagnostics-body">
       <section>
         <h3><Target size={14} aria-hidden="true" />策略标识</h3>
         <div className="live-strategy-diagnostic-grid">
-          <div><span>Baseline ID</span><code>{data.baseline_strategy_id ?? data.baseline.strategy_card_id ?? "—"}</code></div>
-          <div><span>Live ID</span><code>{data.strategy_id ?? "—"}</code></div>
-          <div><span>规则版本</span><code>{data.strategy_version ?? data.baseline.version ?? "—"}</code></div>
-          <div><span>原因代码</span><code>{data.update_reason.reason_code ?? "—"}</code></div>
+          <div><span>正式基线</span><b>{data.baseline_strategy_id ?? data.baseline.strategy_card_id ? "已绑定" : "未提供"}</b></div>
+          <div><span>当前结果</span><b>{data.strategy_id ? "已绑定" : "未提供"}</b></div>
+          <div><span>规则版本</span><b>{data.strategy_version ?? data.baseline.version ? "已提供" : "未提供"}</b></div>
+          <div><span>更新原因</span><b>{reasonCode ? readableReason(reasonCode) : "后端未提供"}</b></div>
         </div>
+        <div className="mt-2"><EvidenceRecordActions label="策略技术追踪记录" record={{ baseline_strategy_id: data.baseline_strategy_id ?? data.baseline.strategy_card_id, strategy_id: data.strategy_id, strategy_version: data.strategy_version ?? data.baseline.version, update_reason: reasonCode }} /></div>
       </section>
       <section>
         <h3><Activity size={14} aria-hidden="true" />价格事件证据</h3>
         <div className="live-strategy-diagnostic-grid">
           <div><span>事件价格 / 时间</span><b className="fa-num">{formatNumber(event?.price)} / {formatTimestamp(event?.detected_at)}</b></div>
-          <div><span>5m closes</span><b className="fa-num">{event?.confirmation.five_minute_closes.map((value) => formatNumber(value)).join(" / ") || "—"}</b></div>
-          <div><span>15m close</span><b className="fa-num">{formatNumber(confirmation15m?.close ?? event?.confirmation.fifteen_minute_close)}</b></div>
+          <div><span>5分钟收盘价</span><b className="fa-num">{event?.confirmation.five_minute_closes.map((value) => formatNumber(value)).join(" / ") || "—"}</b></div>
+          <div><span>15分钟收盘价</span><b className="fa-num">{formatNumber(confirmation15m?.close ?? event?.confirmation.fifteen_minute_close)}</b></div>
           <div><span>关键位事件</span><b>{data.market_state.level_event ?? "—"}</b></div>
         </div>
       </section>
       <section className="live-strategy-diagnostic-wide">
-        <h3><Database size={14} aria-hidden="true" />完整可行性 Gate</h3>
+        <h3><Database size={14} aria-hidden="true" />完整可行性门禁</h3>
         <div className="live-strategy-feasibility-grid">
           {feasibilityFields.map(([key, label]) => {
             const ready = data.feasibility[key];
@@ -499,7 +617,7 @@ function Diagnostics({ data }: { data: LiveStrategyResponse }) {
       <section className="live-strategy-diagnostic-wide">
         <h3><Clock3 size={14} aria-hidden="true" />数据时间戳</h3>
         <div className="live-strategy-timestamp-list">
-          {timestamps.length > 0 ? timestamps.map(([label, value]) => <span key={label}>{label} <b className="fa-num">{formatTimestamp(value)}</b></span>) : <span>后端未提供数据时间戳</span>}
+          {timestamps.length > 0 ? timestamps.map(([label, value]) => <span key={label}>{strategyTimestampLabel(label)} <b className="fa-num">{formatTimestamp(value)}</b></span>) : <span>后端未提供数据时间戳</span>}
         </div>
       </section>
     </div>
@@ -512,7 +630,7 @@ export function LiveStrategyDiagnostics({ data }: { data: LiveStrategyResponse |
   }
   return (
     <section className="live-strategy-diagnostics-view" aria-label="实时策略技术诊断">
-      <header><span className="fa-eyebrow">live_strategy.v1</span><h2>实时策略技术诊断</h2></header>
+      <header><span className="fa-eyebrow">技术诊断</span><h2>实时策略技术诊断</h2></header>
       <Diagnostics data={data} />
     </section>
   );
@@ -523,51 +641,94 @@ export function LiveStrategyWorkspace({ data, isLoading, error, tradeDate, daily
   const level = data.market_state.nearest_level;
   const goldBaseline = data.data_quality.gold_baseline;
   const goldAuthorityReady = hasVerifiedGoldBaseline(goldBaseline);
-  const strategyStatus = data.strategy_status === "SUSPENDED_DATA"
-    ? "SUSPENDED_DATA"
-    : goldAuthorityReady ? data.strategy_status : "WAITING";
+  const trustState = getLiveStrategyTrustState({ isLoading, error });
+  const strategyStatus = getDisplayLiveStrategyStatus({
+    status: data.strategy_status,
+    availability: data.status,
+    dataReady: data.feasibility.data_ready,
+    market: data.live_market,
+    trustState,
+    goldBaselineVerified: goldAuthorityReady,
+  });
   const copy = decisionCopy[strategyStatus];
-  const updateMessage = !goldAuthorityReady
-    ? updateMessageLabels[goldBaseline.reason_code ?? ""] ?? "Gold 日结方向尚未通过核验；5m/15m 仅保留监控，不生成方向性策略。"
+  const updateMessage = trustState !== "current"
+    ? liveStrategyTrustMessage(trustState)
+      : data.status !== "available" || !data.feasibility.data_ready || !isLiveStrategyMarketUsable(data.live_market)
+      ? "后端行情完整性门禁未通过；当前不能核验触发或执行条件。"
+      : !goldAuthorityReady
+    ? updateMessageLabels[goldBaseline.reason_code ?? ""] ?? "黄金日结方向尚未通过核验；5分钟和15分钟仅保留监控，不生成方向性策略。"
     : updateMessageLabels[data.update_reason.reason_code ?? ""] ?? data.update_reason.message ?? "后端未提供状态说明。";
-  const blocked = strategyStatus === "SUSPENDED_DATA" || data.status !== "available" || !goldAuthorityReady;
+  const dataGateBlocked = data.status !== "available"
+    || !data.feasibility.data_ready
+    || !isLiveStrategyMarketUsable(data.live_market);
+  const blocked = strategyStatus === "SUSPENDED_DATA" || dataGateBlocked || !goldAuthorityReady;
+  const marketTimestamps = data.live_market.timestamps;
+  const reviewOnly = trustState !== "current";
+  const marketStatus = liveMarketStatusLabel(data.live_market.status);
 
   return (
-    <section className="live-strategy-workspace live-strategy-workspace--focused" aria-label="XAUUSD 当前策略">
+    <section className="live-strategy-workspace live-strategy-workspace--focused" aria-label="现货黄金当前策略">
+      <LiveStrategyTrustNotice trustState={trustState} error={error} lastResultAt={data.updated_at} dataGateBlocked={dataGateBlocked} />
       <header className="live-strategy-focus-header">
         <div>
-          <span className="fa-eyebrow">{data.asset} · 当前策略</span>
+          <span className="fa-eyebrow">{strategyAssetLabel(data.asset)} · 当前策略</span>
           <div className="live-strategy-focus-status">
             <h1>{copy.title}</h1>
-            <FAStatusPill tone={liveStatusTone(strategyStatus)}>{liveStatusLabel(strategyStatus)}</FAStatusPill>
-            <FAStatusPill tone={availabilityTone(data.status)}>{availabilityLabel(data.status)}</FAStatusPill>
+            <FAStatusPill tone={liveStatusTone(strategyStatus)}>{liveStatusLabel(strategyStatus, reviewOnly || dataGateBlocked)}</FAStatusPill>
+            <FAStatusPill tone={trustState !== "current" ? trustState === "refreshing" ? "warn" : "down" : dataGateBlocked ? "down" : availabilityTone(data.status)}>
+              {trustState !== "current" ? liveStrategyTrustLabel(trustState) : dataGateBlocked ? "当前条件无法核验" : availabilityLabel(data.status)}
+            </FAStatusPill>
           </div>
-          <p>{updateMessage}</p>
+          <p>{readableWarning(updateMessage)}</p>
         </div>
         <div className="live-strategy-focus-time">
-          <span>策略日期 <b className="fa-num">{tradeDate ?? "—"}</b></span>
-          <span>日度生成 <b className="fa-num">{formatTimestamp(dailyUpdatedAt)}</b></span>
-          <span>实时检查 <b className="fa-num">{formatTimestamp(data.updated_at)}</b></span>
+          <span>日度策略卡日期 <b className="fa-num">{tradeDate ?? "—"}</b></span>
+          <span>日度结果生成 <b className="fa-num">{formatTimestamp(dailyUpdatedAt)}</b></span>
+          <span>实时策略结果生成 <b className="fa-num">{formatTimestamp(data.updated_at)}</b></span>
           <span>每 15 分钟自动刷新</span>
           <button type="button" onClick={onRefresh}><RefreshCw size={13} aria-hidden="true" />立即刷新</button>
         </div>
       </header>
 
       <div className="live-strategy-focus-grid">
-        <div><span>最新价格</span><strong className="fa-price-num">{formatNumber(data.live_market.price)}</strong><small>{marketStatusLabel(data.live_market.status)} · {data.live_market.freshness_seconds === null ? "时间未知" : `${formatNumber(data.live_market.freshness_seconds, 0)} 秒前`}</small></div>
-        <div><span>最近关键位</span><strong>{strategyLabel(level?.role)} <b className="fa-num">{formatNumber(level?.value)}</b></strong><small>距离 {formatPercent(level?.distance_pct)} · ATR {formatNumber(data.market_state.atr14)}</small></div>
-        <div><span>Gold 日结基线</span><strong>{goldBaselineLabel(goldBaseline)}</strong><small>{readableReason(goldBaseline.reason_code ?? "gold_direction_authority_unavailable")}</small></div>
+        <div>
+          <span>{dataGateBlocked && !reviewOnly ? "行情不可核验" : reviewOnly ? "上次观测价格" : "最新价格"}</span>
+          <strong className="fa-price-num">{formatNumber(data.live_market.price)}</strong>
+          <small>
+            {dataGateBlocked && !reviewOnly
+              ? "当前数据状态未通过门禁"
+              : reviewOnly ? `上次核验时${marketStatus.label}` : marketStatus.label}
+            {data.live_market.freshness_seconds === null
+              ? " · 新鲜度未提供"
+              : dataGateBlocked && !reviewOnly
+                ? " · 新鲜度不可用于当前判断"
+              : reviewOnly
+                ? ` · 上次核验时为 ${formatNumber(data.live_market.freshness_seconds, 0)} 秒前`
+                : ` · ${formatNumber(data.live_market.freshness_seconds, 0)} 秒前`}
+            {` · K线观测 ${formatTimestamp(marketTimestamps.canonical)}${dataGateBlocked && !reviewOnly ? "（当前不可核验）" : ""}`}
+          </small>
+        </div>
+        <div>
+          <span>{dataGateBlocked && !reviewOnly ? "关键位不可核验" : reviewOnly ? "上次最近关键位" : "最近关键位"}</span>
+          <strong>{strategyLabel(level?.role)} <b className="fa-num">{formatNumber(level?.value)}</b></strong>
+          <small>{dataGateBlocked && !reviewOnly ? "当前行情门禁未通过 · " : reviewOnly ? "上次结果 · " : ""}距离 {formatPercent(level?.distance_pct)} · 平均真实波幅 {formatNumber(data.market_state.atr14)}</small>
+        </div>
+        <div>
+          <span>{dataGateBlocked && !reviewOnly ? "基线不可核验" : reviewOnly ? "上次黄金日结基线" : "黄金日结基线"}</span>
+          <strong>{goldBaselineLabel(goldBaseline)}</strong>
+          <small>{dataGateBlocked && !reviewOnly ? "当前行情门禁未通过 · " : reviewOnly ? "上次结果 · " : ""}{readableReason(goldBaseline.reason_code ?? "gold_direction_authority_unavailable")}</small>
+        </div>
         <div className="live-strategy-focus-action"><span>现在做什么</span><strong>{copy.action}</strong></div>
       </div>
 
       <div className="live-strategy-current-grid">
-        <KeyLevelMap data={data} />
-        <TodayWatchlist data={data} action={copy.action} strategyStatus={strategyStatus} />
+        <KeyLevelMap data={data} reviewOnly={reviewOnly} dataGateBlocked={dataGateBlocked} />
+        <TodayWatchlist data={data} action={copy.action} strategyStatus={strategyStatus} reviewOnly={reviewOnly} dataGateBlocked={dataGateBlocked} />
       </div>
 
-      <CmePositioningMap data={data} />
+      <CmePositioningMap data={data} reviewOnly={reviewOnly} />
 
-      {blocked ? <CompactRiskStrip data={data} /> : <ActiveSetupSummary data={data} />}
+      {blocked ? <CompactRiskStrip data={data} trustState={trustState} error={error} /> : <ActiveSetupSummary data={data} />}
 
     </section>
   );

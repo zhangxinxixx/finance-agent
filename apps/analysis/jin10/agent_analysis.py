@@ -3,27 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from apps.analysis.jin10.agent_prompt_profiles import typed_report_prompt_spec
-from apps.analysis.context_bundle.schemas import AnalysisContextBundle
-from apps.analysis.jin10.daily_context import (
-    LEGACY_FULL_CONTEXT,
-    STATE_DELTA_CONTEXT,
-    StateDeltaContextError,
-    compact_context_for_prompt,
-    compact_context_metadata,
-    normalize_analysis_context_mode,
-    project_context_bundle_for_prompt,
-)
+from apps.analysis.jin10.daily_context import compact_context_for_prompt, compact_context_metadata
 from apps.analysis.jin10.multimodal import ImageLoader, build_multimodal_user_content
-from apps.analysis.jin10.prompt_budget import (
-    PromptBudgetExceeded,
-    deterministic_trim_text,
-    enforce_prompt_budget,
-)
 from apps.documents.schemas import Jin10AgentAnalysisReport, Jin10DailyAnalysisReport, Jin10RawArticleReport
 
 MISSING = "未从识别结果中稳定提取"
@@ -56,51 +41,19 @@ def build_agent_analysis_prompt(
     *,
     previous_daily_analysis: dict[str, Any] | None = None,
     analysis_context: dict[str, Any] | None = None,
-    context_mode: str = LEGACY_FULL_CONTEXT,
-    analysis_context_bundle: AnalysisContextBundle | dict[str, Any] | None = None,
     market_odds_evidence: dict[str, Any] | None = None,
 ) -> str:
     """Build the report-specific prompt plus the canonical JSON contract."""
 
-    prompt, _ = build_agent_analysis_prompt_with_trace(
-        raw_report,
-        daily_report,
-        previous_daily_analysis=previous_daily_analysis,
-        analysis_context=analysis_context,
-        context_mode=context_mode,
-        analysis_context_bundle=analysis_context_bundle,
-        market_odds_evidence=market_odds_evidence,
-    )
-    return prompt
-
-
-def build_agent_analysis_prompt_with_trace(
-    raw_report: dict[str, Any],
-    daily_report: dict[str, Any] | None = None,
-    *,
-    previous_daily_analysis: dict[str, Any] | None = None,
-    analysis_context: dict[str, Any] | None = None,
-    context_mode: str = LEGACY_FULL_CONTEXT,
-    analysis_context_bundle: AnalysisContextBundle | dict[str, Any] | None = None,
-    market_odds_evidence: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    """Build a bounded prompt and its deterministic per-block budget trace."""
-
-    trim_reasons: dict[str, list[str]] = {}
     body = _build_agent_analysis_prompt_body(
         raw_report,
         daily_report,
         previous_daily_analysis=previous_daily_analysis,
         analysis_context=analysis_context,
-        context_mode=context_mode,
-        analysis_context_bundle=analysis_context_bundle,
         market_odds_evidence=market_odds_evidence,
-        _trim_reasons=trim_reasons,
     )
     profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
-    prompt = f"{body.rstrip()}\n\n{_structured_output_contract(profile)}\n"
-    trace = enforce_prompt_budget(prompt, trim_reasons=trim_reasons)
-    return prompt, trace
+    return f"{body.rstrip()}\n\n{_structured_output_contract(profile)}\n"
 
 
 def _build_agent_analysis_prompt_body(
@@ -109,37 +62,11 @@ def _build_agent_analysis_prompt_body(
     *,
     previous_daily_analysis: dict[str, Any] | None = None,
     analysis_context: dict[str, Any] | None = None,
-    context_mode: str = LEGACY_FULL_CONTEXT,
-    analysis_context_bundle: AnalysisContextBundle | dict[str, Any] | None = None,
     market_odds_evidence: dict[str, Any] | None = None,
-    _trim_reasons: dict[str, list[str]] | None = None,
 ) -> str:
     """Build the future LLM prompt for Jin10 raw-report post analysis."""
 
-    trim_reasons = _trim_reasons if _trim_reasons is not None else {}
-    resolved_context_mode = normalize_analysis_context_mode(context_mode)
-    prompt_profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
-    if resolved_context_mode == STATE_DELTA_CONTEXT:
-        if prompt_profile != "default_daily":
-            raise StateDeltaContextError(
-                "state_delta_context is only supported by the default_daily prompt profile"
-            )
-        state_delta_context = project_context_bundle_for_prompt(analysis_context_bundle)
-        action = (state_delta_context["evidence_delta_decision"] or {}).get("recommended_action")
-        if action != "run_transition_analysis":
-            raise StateDeltaContextError(
-                "state_delta_context requires run_transition_analysis action: " + str(action or "invalid")
-            )
-        return _build_state_delta_daily_prompt(
-            state_delta_context=state_delta_context,
-            trim_reasons=trim_reasons,
-        )
-
-    daily_block = (
-        _compact_daily_summary(daily_report, trim_reasons=trim_reasons)
-        if daily_report
-        else "未提供 daily_analysis 结构化摘要。"
-    )
+    daily_block = _compact_daily_summary(daily_report) if daily_report else "未提供 daily_analysis 结构化摘要。"
     charts = raw_report.get("charts") or []
     article_context = dict((raw_report.get("generated_from") or {}).get("article_context") or {})
     chart_lines = [
@@ -161,58 +88,31 @@ def _build_agent_analysis_prompt_body(
     chart_anchor_block = "\n".join(chart_anchor_lines) if chart_anchor_lines else f"- {MISSING}"
     level_snippet_block = "\n".join(f"- {item}" for item in article_context.get("level_snippets") or []) or f"- {MISSING}"
     chart_summary_block = "\n".join(f"- {item}" for item in article_context.get("chart_summaries") or []) or f"- {MISSING}"
+    previous_block = _compact_previous_analysis(previous_daily_analysis)
     prompt_context = compact_context_for_prompt(analysis_context)
-    effective_baseline = prompt_context.get("analysis_baseline") or _compact_previous_analysis_payload(
-        previous_daily_analysis
+    baseline_block = json.dumps(prompt_context.get("analysis_baseline") or {}, ensure_ascii=False, indent=2)
+    weekly_anchor_block = json.dumps(prompt_context.get("weekly_anchor") or {}, ensure_ascii=False, indent=2)
+    previous_daily_block = json.dumps(
+        prompt_context.get("previous_analysis_report") or prompt_context.get("previous_daily") or {},
+        ensure_ascii=False,
+        indent=2,
     )
-    baseline_block = _prompt_json(
-        _compact_prompt_value(
-            _compact_effective_baseline(effective_baseline),
-            block_name="analysis_baseline",
-            trim_reasons=trim_reasons,
-            max_list_items=4,
-            max_text_chars=450,
-        ),
+    market_context_block = json.dumps(prompt_context.get("latest_market") or {}, ensure_ascii=False, indent=2)
+    news_context_block = json.dumps(
+        {
+            "latest_news": prompt_context.get("latest_news") or {},
+            "gold_mainline": prompt_context.get("gold_mainline") or {},
+            "oil_context": prompt_context.get("oil_context") or {},
+            "oil_report_summary": prompt_context.get("oil_report_summary") or {},
+        },
+        ensure_ascii=False,
+        indent=2,
     )
-    market_context_block = _prompt_json(
-        _compact_prompt_value(
-            prompt_context.get("latest_market") or {},
-            block_name="latest_market_context（最新价格 / 利率 / CME / COT）",
-            trim_reasons=trim_reasons,
-            max_list_items=6,
-            max_text_chars=300,
-        ),
-    )
-    oil_context = prompt_context.get("oil_context") or prompt_context.get("oil_report_summary") or {}
-    news_context_block = _prompt_json(
-        _compact_prompt_value(
-            {
-                "latest_news": prompt_context.get("latest_news") or {},
-                "gold_mainline": prompt_context.get("gold_mainline") or {},
-                "oil_context": oil_context,
-            },
-            block_name="latest_news_context（最新消息 / 黄金主线 / 油价链）",
-            trim_reasons=trim_reasons,
-            max_list_items=4,
-            max_text_chars=300,
-        ),
-    )
-    if prompt_context.get("oil_context") and prompt_context.get("oil_report_summary"):
-        trim_reasons.setdefault("latest_news_context（最新消息 / 黄金主线 / 油价链）", []).append(
-            "selected_one_oil_context_representation"
-        )
     context_lineage_block = json.dumps(
         {
-            "prompt_context_version": prompt_context.get("schema_version"),
             "status": prompt_context.get("status"),
-            "baseline_kind": prompt_context.get("baseline_kind"),
-            "continuity_status": prompt_context.get("continuity_status"),
-            "warnings": prompt_context.get("warnings") or [],
-            "freshness": _compact_lineage_value(prompt_context.get("freshness") or {}),
-            "input_snapshot_ids": _compact_lineage_value(
-                prompt_context.get("input_snapshot_ids") or {},
-                baseline_kind=str(prompt_context.get("baseline_kind") or ""),
-            ),
+            "freshness": prompt_context.get("freshness") or {},
+            "input_snapshot_ids": prompt_context.get("input_snapshot_ids") or {},
         },
         ensure_ascii=False,
         indent=2,
@@ -239,6 +139,7 @@ def _build_agent_analysis_prompt_body(
             chart_mode_note=chart_mode_note,
             market_odds_evidence=market_odds_evidence,
         )
+    prompt_profile = _agent_analysis_prompt_profile(raw_report=raw_report, daily_report=daily_report)
     if prompt_profile != "default_daily":
         return _build_typed_report_analysis_prompt(
             prompt_profile=prompt_profile,
@@ -255,29 +156,6 @@ def _build_agent_analysis_prompt_body(
             chart_render_mode=chart_render_mode,
             chart_mode_note=chart_mode_note,
         )
-    canonical_article_block = _canonical_article_evidence(
-        raw_report=raw_report,
-        article_context=article_context,
-        trim_reasons=trim_reasons,
-    )
-    chart_metadata_block = _prompt_json(
-        [_compact_chart_metadata(chart) for chart in charts[:25]],
-    )
-    if len(charts) > 25 or any(
-        chart.get("caption") or len(str(chart.get("summary") or "")) > 120 for chart in charts[:25]
-    ):
-        trim_reasons.setdefault("chart_metadata", []).append("compacted_chart_metadata")
-    trim_reasons.setdefault("canonical_article_evidence", []).append("selected_one_canonical_article_representation")
-    trim_reasons.setdefault("analysis_baseline", []).extend(
-        [
-            "single_effective_baseline",
-            "omitted_weekly_anchor_and_stale_previous_report",
-            "transport_source_refs_removed",
-        ]
-    )
-    trim_reasons.setdefault("daily_analysis 结构化摘要", []).append("selected_structured_summary_fields")
-    trim_reasons.setdefault("instructions", []).append("consolidated_duplicate_output_rules")
-    trim_reasons.setdefault("context_freshness_and_lineage", []).append("selected_used_snapshot_lineage")
     return f"""你是一名专业的宏观市场与贵金属分析 Agent，默认使用简体中文。
 
 任务：以上周末黄金周报分析为锚，结合下方当日 Jin10 日报、最新市场快照和新闻上下文，写一份增量更新的黄金日报二次分析报告。
@@ -343,29 +221,73 @@ def _build_agent_analysis_prompt_body(
 # 最终综合判断
 
 关键要求：
-- 一句话结论必须点明阶段、关键位、底部线索和趋势反转是否确认；变化段使用“前序判断 -> 本次证据 -> 强化/维持/削弱/失效/待确认”。
-- 行情回顾只保留影响结论的数据；传导链按“数据或事件 -> 预期 -> 利率/美元/资金 -> 黄金”，最多 4 条。
-- 短线交易压力、中期修复/震荡、长期配置逻辑必须分开。
-- 确认矩阵固定覆盖阶段、底部证据、趋势反转证据、价格确认、宏观确认、资金确认；前两项只用强/中等/偏弱，后三项只用已完成/部分完成/未完成，不得混用量表。价格仍在作者区间且未突破第一确认位时，`价格确认`必须写“未完成”。
-- 关键位只采用输入或前序基准明确出现的数字，并标注规定的来源类别；短中线交易位与中长期参考位分组，近端确认位、动态期权锚和远期模型目标不得连成一条路径。
-- 三条路径固定为主路径、修复/上行路径、失败/下行路径，均写触发和失效；最大痛点仅作动态参考。
-- 空仓、已有多单、已有空单分别写等待条件和失效条件；最终综合判断用 3-5 条短句收束。
-- 期权确认区分成交量与 OI；仅成交变化不能确认趋势反转。Put/Call 关键区间只能作为历史观察信号，必须和利率、价格共同使用。
-- 利率确认区分盘中刺破与有效跌破，并固定检查 10Y 名义收益率、实际收益率、2Y 收益率、2Y-3M 利差。
-- 预计区间归类为报告作者预测；COT 注明数据时滞，并同时表达无拥挤空头与逼空燃料有限。
-- 同一逻辑只展开一次；正文保持交易员复盘语气，避免重复审查说明。
+- `一句话结论` 要直接回答当前更接近修复、承压、整固还是趋势延续；如果输入里有明确关键位，必须点名，同时说明底部线索和趋势反转是否已经确认。
+- `最新判断发生了什么变化？` 是全文重点，要优先写今天相对前序判断新增确认了什么、哪些被降温、哪些逻辑仍未失效；如果没有 previous_daily_analysis，就如实写本次新增确认 / 仍未确认。
+- 如果存在 `previous_daily_analysis`，默认先用一句短句概括“前序偏乐观/偏修复/偏承压，本次转为降温/强化/延后”，然后再展开。
+- 如果存在 `previous_daily_analysis`，开篇优先显式写出“前序判断是什么 -> 本次被什么变量打断或强化 -> 当前该把哪条路径降级”，不要先写抽象阶段名。
+- `报告中的行情回顾` 只保留与后续判断直接相关的行情与数据，不要把全文逐段改写。
+- `黄金为什么涨 / 为什么跌？` 要用“数据或事件 -> 市场预期 -> 利率/美元/资金 -> 黄金”的链路表达，最多 2-4 条。
+- `报告核心观点：短线、中期、长期分开` 必须区分交易压力、修复/震荡逻辑和长期配置逻辑。
+- `当前阶段判断与确认矩阵` 要给出黄金主判断，并固定列出：阶段、底部证据、趋势反转证据、价格确认、宏观确认、资金确认。`底部证据`和`趋势反转证据`只能使用“强/中等/偏弱”；`价格确认`、`宏观确认`和`资金确认`只能使用“已完成/部分完成/未完成”，不得混用量表。若价格仍在作者预计区间内且尚未突破第一确认位，`价格确认`必须写“未完成”。每项附一句证据或缺口。另补一句白银相对黄金的弹性/联动；白银证据不足时必须明确。
+- 如果本次报告已经明确跌破某个前序关键分界位，阶段名优先写成“某分界位失守后的方向抉择偏承压/偏修复”，不要过早写成“支撑保卫战”；真正的支撑保卫区放到下一句写清具体区间。
+- `关键位更新` 只解释输入材料、前序判断或结构化摘要中明确出现的关键价格、区间或分界位；来源类别只能从“图表事实 / COT数据事实 / 报告作者预测 / 报告作者解释 / Agent综合推论 / 前序框架延续”中选择。
+- 若提供了 `previous_daily_analysis`，允许继承其中仍未被当前报告否定的关键位框架，但必须明确标注为“前序报告延续”或“Agent 基于前序框架保留”，不得伪装成本次报告直接给出的事实。
+- `关键位更新` 优先输出为紧凑表格或紧凑列表；至少覆盖“价格 / 品种 / 来源类别 / 当前含义”四列或四项。
+- `关键位更新` 默认拆成两组：`短中线交易位` 与 `中长期参考位`。前者放交易分界位、修复确认位、突破确认位、下方防守位；后者放机构目标价、历史高位、长期情景位。两组不要混排。
+- 若前序报告已经给出一组连续关键位，先区分近端价格确认位、动态期权参考位和远期结构情景。只有同一时间尺度、同一证据层级的价位才允许连成路径。
+- 若本次报告没有推翻前序底部位或目标区，要明确写“前序底部位仍可观察，但当前先降级到先收复哪个位再谈下一档”，避免只保留近端价位。
+- 若存在相邻的下方观察位或底部观察位，优先合并表达为连续支撑区/保卫区，而不是拆成两个孤立点。
+- 中长期机构目标价、历史高位描述必须和短线交易位分组展示，不得混在同一短线表里。
+- `三条路径推演` 必须包含主路径、修复/上行路径、失败/下行路径，每条都写触发条件，不写确定性预测。近端路径只使用当前区间、价格确认位和失效位；最大痛点只作为次级动态参考，远期结构目标不得直接接在近端路径之后。
+- `操作层面怎么理解？` 要体现空仓、已有多单、已有空单分别要等什么确认、什么情况下失效。
+- `最终综合判断` 用 3-5 条短句收束：当前阶段、最大新增变量、最重要关键位、中长期逻辑是否失效、下一步观察条件。
+- 如果报告出现期权领先信号，要明确“期权领先但现货未确认”，并写出失效条件：跌破平衡区无法收回、Put 保护重新放大、Call 回升但 OI 不增加、到期后锚定区失效等。
+- 如果报告出现收益率确认位、价格修复位和期权信号，把确认条件融进关键位、路径推演和操作层面即可；除非非常必要，不要单独起一个“三确认模型”大段。
+- 利率确认要明确区分“盘中刺破”和“有效跌破”；价格确认要明确写周期口径，例如 4H 收盘、日线收盘。
+- 期权确认必须分两层：成交量确认（Call volume 回升、Put volume 不扩张）与持仓确认（Call OI 增加、Put OI 未明显增加）；如果只有成交量没有 OI，要标注可能只是短线换手。
+- 期权证据应明确列出四种组合：Put 成交下降且 Put OI 下降=保护真正退潮；Put 成交下降但 Put OI 上升=底部信号有限；Call 成交上升且 Call OI 上升=主动看涨资金进入；Call 成交上升但 Call OI 不升=更可能是短线换手。缺少对应 OI 时只给中等或偏弱辅助权重。
+- COT 解读必须注明统计截止日/发布时间差；管理资金低空头要同时写“无拥挤空头”和“逼空燃料有限”两面，不得单独作为底部确认。
+- 利率部分固定检查 10Y 名义收益率、实际收益率、2Y 收益率、2Y-3M 利差，并分别标记改善、恶化、中性或未确认；没有输入值就写未确认。
+- 若报告给出未来预计运行区间，必须标为“报告作者预测”，不能标为市场事实；只有已经观察到的价格、成交、持仓和图表读数才能列为事实。
+- Put/Call 关键区间只能作为历史观察信号，不是单独交易信号，必须和利率、价格确认共同使用。
+- 允许使用少量箭头逻辑，但不要整段使用代码块表现。
+- 同一条逻辑只详细解释一次，后文只引用，不重复铺陈。
+- 不要把全文写成“合规审查说明”或“证据说明文”；正文要更像给交易员的日报复盘。
+- 操作层面尽量短句化，避免每段都写成长说明。
+- 尽量多用“先看什么，再看什么；没发生什么，就不能说什么”这种交易语言。
+- `分析溯源 / 数据来源` 控制在短块内，优先交代是否联网、用了哪些输入、前序框架是否引用，不要展开成长说明。
+- 如果前序判断与本次判断存在明显反差，允许在开头直接下结论，例如“前序偏修复，本次被强 PMI 和鹰派利率重新压回 4500 下方”，然后再展开。
+- 更偏向“05-31 乐观 -> 06-02 降温”的变化表达，不偏向“证据_basis / inference_scope”这类存档词汇。
 
 === raw_report 基本信息 ===
-trade_date: {raw_report.get("trade_date") or MISSING}
-article_id: {raw_report.get("article_id") or MISSING}
-title: {raw_report.get("title") or MISSING}
-source_url: {raw_report.get("source_url") or MISSING}
+trade_date: {raw_report.get('trade_date') or MISSING}
+article_id: {raw_report.get('article_id') or MISSING}
+title: {raw_report.get('title') or MISSING}
+source_url: {raw_report.get('source_url') or MISSING}
 
-=== canonical_article_evidence ===
-{canonical_article_block}
+=== raw_report article_markdown ===
+{str(raw_report.get('article_markdown') or '').strip()}
 
-=== chart_metadata ===
-{chart_metadata_block}
+=== 正文关键片段 ===
+{paragraph_block}
+
+=== 关键句 / 导读 / 关键位片段 ===
+{key_sentence_block}
+
+=== 正文章节摘要 ===
+{section_block}
+
+=== 图表前后文锚点 ===
+{chart_anchor_block}
+
+=== 关键位 / 利率 / 期权证据片段 ===
+{level_snippet_block}
+
+=== 图表清单 ===
+{chart_block}
+
+=== 图表摘要线索 ===
+{chart_summary_block}
 
 === 图表渲染模式 ===
 chart_render_mode: {chart_render_mode}
@@ -374,8 +296,17 @@ chart_render_mode: {chart_render_mode}
 === daily_analysis 结构化摘要 ===
 {daily_block}
 
-=== analysis_baseline ===
+=== previous_daily_analysis（若存在） ===
+{previous_block}
+
+=== analysis_baseline（周一周报 / 后续前一日最终综合分析报告） ===
 {baseline_block}
+
+=== weekend_weekly_anchor（周级背景） ===
+{weekly_anchor_block}
+
+=== previous_daily_analysis（前一日最终综合分析报告） ===
+{previous_daily_block}
 
 === latest_market_context（最新价格 / 利率 / CME / COT） ===
 {market_context_block}
@@ -396,53 +327,6 @@ chart_render_mode: {chart_render_mode}
 - 如果提供了 `analysis_baseline`，开头必须先概括该基准来自周报还是前一日最终综合分析报告，再说明当日证据对它执行了哪种变化动作；前序与当日价位冲突时优先解释时间尺度和数据日期，不得静默覆盖。
 - 传导链、黄金路径、白银路径可以由模型自行组织，不必机械套模板。
 - 不要出现“当前会话形成的核心判断脉络”“当前会话形成的关键位体系”这类会话内元表述。
-
-请按下方结构化输出契约返回分析结果。"""
-
-
-def _build_state_delta_daily_prompt(
-    *,
-    state_delta_context: dict[str, Any],
-    trim_reasons: dict[str, list[str]],
-) -> str:
-    """Build the explicit Bundle-backed daily prompt without legacy memory."""
-
-    trim_reasons.setdefault("analysis_memory_bundle_v3", []).append(
-        "projected_from_validated_context_bundle_v3"
-    )
-    trim_reasons.setdefault("instructions", []).append(
-        "state_delta_context_excludes_legacy_report_memory"
-    )
-    context_block = _prompt_json(state_delta_context)
-    bundle_meta = state_delta_context["bundle"]
-    return f"""你是一名专业的宏观市场与贵金属分析 Agent，默认使用简体中文。
-
-任务：基于唯一的 AnalysisContextBundle v3，对 canonical AnalysisState 执行当日增量分析。只消费 Bundle 已保留的 delta evidence 和 accepted facts；不得寻找、消费或假设任何 Bundle 之外的报告正文、图表、历史分析或当前运行材料。
-
-本次分析身份：
-- canonical_state_id: {bundle_meta["canonical_state_id"]}
-- state_scope: {bundle_meta["state_scope"]}
-- bundle_id: {bundle_meta["bundle_id"]}
-- content_hash: {bundle_meta["content_hash"]}
-
-硬性规则：
-1. 不主动联网，不引入输入材料之外的实时行情或历史数据。
-2. canonical_state 是唯一分析记忆；只允许用 retained_delta_evidence 和 accepted_facts 强化、维持、削弱、失效或待确认其中的判断。
-3. `evidence_delta_decision.recommended_action` 是本次更新动作权限；若为 no_op 或 update_context_only，不得虚构状态变化；若为 manual_review，只能输出待人工确认结论。
-4. selection trace 中 deferred/rejected 的 Evidence 不在本次可用证据集内，不得引用或推断其内容。
-5. accepted_facts 之外的图表事实不得进入确认层；Bundle 未保留的图表或报告内容不得引用。
-6. 必须区分 retained evidence、accepted fact、Agent 推论和尚未确认部分；不得把 Bundle 外观点或事实包装成已确认信息。
-7. 关键位只能来自 canonical_state、retained delta evidence 或 accepted facts，并明确来源与时效。
-8. 不给确定性预测；每条路径必须包含触发、失效和风险。
-9. 期权成交量不能替代 OI，COT 不能确认日内突破；实际利率、名义利率、美元与期限利差缺失时必须逐项标记未确认。
-10. 最大痛点只能作为动态参考锚；远期模型目标不得直接进入短线交易路径。
-11. 一句话结论先说明 canonical 判断、本次 material delta 和 EvidenceDelta action，再说明仍缺哪些确认。
-12. 最终响应只返回末尾 JSON schema 对象，不输出 Markdown、YAML 或额外说明。
-
-推荐分析结构语义：一句话结论；最新判断变化；行情回顾；黄金传导链；短中长期判断；确认矩阵；关键位；三条路径；分角色等待/失效条件；最终综合判断。
-
-=== analysis_memory_bundle_v3 ===
-{context_block}
 
 请按下方结构化输出契约返回分析结果。"""
 
@@ -900,11 +784,7 @@ def _to_dict(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
-def _compact_daily_summary(
-    value: dict[str, Any] | None,
-    *,
-    trim_reasons: dict[str, list[str]] | None = None,
-) -> str:
+def _compact_daily_summary(value: dict[str, Any] | None) -> str:
     if not value:
         return "{}"
     keys = [
@@ -916,210 +796,11 @@ def _compact_daily_summary(
         "scenario_matrix",
         "risks",
     ]
-    compact = {key: value[key] for key in keys if key in value}
-    return _prompt_json(
-        _compact_prompt_value(
-            compact or value,
-            block_name="daily_analysis 结构化摘要",
-            trim_reasons=trim_reasons,
-            max_list_items=5,
-            max_text_chars=400,
-        ),
-    )
-
-
-def _compact_previous_analysis_payload(previous: dict[str, Any] | None) -> dict[str, Any]:
-    if not previous:
-        return {}
-    keys = (
-        "title",
-        "trade_date",
-        "run_id",
-        "source_kind",
-        "quality_status",
-        "publication_status",
-        "publish_allowed",
-        "one_line_conclusion",
-        "market_stage",
-        "key_levels",
-        "final_summary",
-        "unresolved_items",
-        "input_snapshot_ids",
-    )
-    return {key: previous[key] for key in keys if key in previous}
-
-
-def _compact_effective_baseline(value: Any) -> Any:
-    if not isinstance(value, dict):
-        return value
-    keys = (
-        "title",
-        "trade_date",
-        "context_as_of",
-        "run_id",
-        "article_id",
-        "source_kind",
-        "quality_status",
-        "publication_status",
-        "publish_allowed",
-        "one_line_conclusion",
-        "executive_summary",
-        "market_stage",
-        "claim_revisions",
-        "confirmation_matrix",
-        "key_levels",
-        "watch_items",
-        "unresolved_items",
-        "input_snapshot_ids",
-    )
-    return {key: value[key] for key in keys if key in value}
-
-
-def _compact_prompt_value(
-    value: Any,
-    *,
-    block_name: str = "prompt",
-    trim_reasons: dict[str, list[str]] | None = None,
-    depth: int = 0,
-    max_list_items: int = 16,
-    max_text_chars: int = 1_200,
-) -> Any:
-    """Bound nested prompt data without mutating the persisted artifact."""
-
-    reasons = trim_reasons if trim_reasons is not None else {}
-    if depth >= 6 and isinstance(value, (dict, list)):
-        reasons.setdefault(block_name, []).append("nested_depth_limited")
-        return "[nested data omitted at depth limit]"
-    if isinstance(value, dict):
-        items = list(value.items())
-        if len(items) > 40:
-            reasons.setdefault(block_name, []).append("mapping_keys_limited")
-            items = items[:40]
-        return {
-            str(key): _compact_prompt_value(
-                item,
-                block_name=block_name,
-                trim_reasons=reasons,
-                depth=depth + 1,
-                max_list_items=max_list_items,
-                max_text_chars=max_text_chars,
-            )
-            for key, item in items
-            if key != "source_refs"
-        }
-    if isinstance(value, list):
-        if len(value) > max_list_items:
-            reasons.setdefault(block_name, []).append("list_items_limited")
-        return [
-            _compact_prompt_value(
-                item,
-                block_name=block_name,
-                trim_reasons=reasons,
-                depth=depth + 1,
-                max_list_items=max_list_items,
-                max_text_chars=max_text_chars,
-            )
-            for item in value[:max_list_items]
-        ]
-    if isinstance(value, str):
-        return deterministic_trim_text(
-            value,
-            max_chars=max_text_chars,
-            block_name=block_name,
-            reason="text_value_limited",
-            trim_reasons=reasons,
-        )
-    return value
-
-
-def _canonical_article_evidence(
-    *,
-    raw_report: dict[str, Any],
-    article_context: dict[str, Any],
-    trim_reasons: dict[str, list[str]],
-) -> str:
-    article = str(raw_report.get("article_markdown") or "").strip()
-    if article:
-        return deterministic_trim_text(
-            article,
-            max_chars=2_200,
-            block_name="canonical_article_evidence",
-            reason="raw_article_text_limited",
-            trim_reasons=trim_reasons,
-        )
-    derived = {
-        "paragraph_snippets": article_context.get("paragraph_snippets") or [],
-        "key_sentences": article_context.get("key_sentences") or [],
-        "sections": article_context.get("sections") or [],
-        "chart_anchors": article_context.get("chart_anchors") or [],
-        "level_snippets": article_context.get("level_snippets") or [],
-        "chart_summaries": article_context.get("chart_summaries") or [],
-    }
-    trim_reasons.setdefault("canonical_article_evidence", []).append("raw_article_missing_used_derived_context")
-    return _prompt_json(
-        _compact_prompt_value(
-            derived,
-            block_name="canonical_article_evidence",
-            trim_reasons=trim_reasons,
-            max_list_items=8,
-            max_text_chars=600,
-        ),
-    )
-
-
-def _compact_chart_metadata(chart: dict[str, Any]) -> dict[str, Any]:
-    compact = {
-        key: chart[key]
-        for key in (
-            "seq",
-            "figure_id",
-            "page_no",
-            "title",
-            "caption",
-            "summary",
-            "image_path",
-            "bbox",
-            "source_ref",
-        )
-        if key in chart
-    }
-    for key in ("title", "summary"):
-        if key in compact:
-            compact[key] = str(compact[key])[:120]
-    compact.pop("caption", None)
-    return compact
-
-
-def _compact_lineage_value(value: Any, *, baseline_kind: str = "") -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    if any(isinstance(item, dict) and "status" in item for item in value.values()):
-        keys = ("analysis_baseline", "market", "news", "gold_mainline", "oil")
-        return {key: value[key] for key in keys if key in value}
-    compact = {
-        key: value[key]
-        for key in (
-            "premarket_snapshot",
-            "daily_market_brief",
-            "gold_macro_overview",
-            "oil_report_summary",
-        )
-        if key in value
-    }
-    baseline_ref = value.get("analysis_baseline")
-    if not baseline_ref:
-        baseline_ref = (
-            value.get("previous_analysis_report")
-            if baseline_kind == "previous_analysis_report"
-            else value.get("weekly_anchor")
-        )
-    if baseline_ref:
-        compact["analysis_baseline"] = baseline_ref
-    return compact
-
-
-def _prompt_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    lines = []
+    for key in keys:
+        if key in value:
+            lines.append(f"{key}: {value[key]}")
+    return "\n".join(lines) or str(value)
 
 
 def _extract_article_context(article: str) -> dict[str, Any]:
@@ -1136,10 +817,7 @@ def _extract_article_context(article: str) -> dict[str, Any]:
         "gold_options_bullish": _has_any(compact_text, ("黄金期权", "看涨期权", "看跌/看涨", "Put/Call", "成交量比率"))
         and _has_any(compact_text, ("回升", "下降", "筑底", "低点", "上行敞口")),
         "silver_base": "白银" in compact_text and _has_any(compact_text, ("筑底", "盘整", "企稳", "支撑", "突破")),
-        "cot_support": "COT" in readable_text
-        or "交易者持仓报告" in compact_text
-        or "未平仓合约" in compact_text
-        or "OI" in readable_text,
+        "cot_support": "COT" in readable_text or "交易者持仓报告" in compact_text or "未平仓合约" in compact_text or "OI" in readable_text,
         "central_targets": any(row.get("role") == "long_term_target" for row in levels),
         "rich_directional_evidence": False,
     }
@@ -1173,17 +851,7 @@ def _extract_levels_from_sentences(sentences: list[str]) -> list[dict[str, Any]]
             if key in seen:
                 continue
             seen.add(key)
-            rows.append(
-                {
-                    "label": label,
-                    "value": value,
-                    "source_block_id": "raw_article",
-                    "asset": asset,
-                    "role": role,
-                    "layer": _level_layer(role),
-                    "evidence": sentence,
-                }
-            )
+            rows.append({"label": label, "value": value, "source_block_id": "raw_article", "asset": asset, "role": role, "layer": _level_layer(role), "evidence": sentence})
     return rows
 
 
@@ -1199,10 +867,7 @@ def _extract_numeric_values(sentence: str) -> list[str]:
     for match in re.finditer(r"\d+(?:\.\d+)?\s*美元", sentence):
         values.append(match.group(0).replace(" ", "").replace("美元", ""))
     # Bare price-like numbers in sentences with explicit financial level words.
-    if _has_any(
-        _normalize_text(sentence),
-        ("目标", "支撑", "压力", "站回", "收复", "跌破", "失守", "回踩", "最大痛点", "区间", "附近"),
-    ):
+    if _has_any(_normalize_text(sentence), ("目标", "支撑", "压力", "站回", "收复", "跌破", "失守", "回踩", "最大痛点", "区间", "附近")):
         for match in re.finditer(r"(?<![\d.])\d{2,5}(?:\.\d+)?(?![\d.%])", sentence):
             values.append(match.group(0))
     return _dedupe(values)
@@ -1225,8 +890,8 @@ def _infer_asset_for_value(sentence: str, value: str) -> str:
     value_pos = compact.find(value.replace("-", "至"))
     if value_pos < 0:
         value_pos = compact.find(value.split("-")[0])
-    prefix = compact[max(0, value_pos - 30) : value_pos] if value_pos >= 0 else compact
-    suffix = compact[value_pos : value_pos + 30] if value_pos >= 0 else compact
+    prefix = compact[max(0, value_pos - 30): value_pos] if value_pos >= 0 else compact
+    suffix = compact[value_pos: value_pos + 30] if value_pos >= 0 else compact
     window = prefix + suffix
     if "白银" in window:
         return "白银"
@@ -1243,8 +908,8 @@ def _is_noise_level(sentence: str, value: str) -> bool:
         return True
     pos = compact.find(value_head)
     if pos >= 0:
-        before = compact[max(0, pos - 3) : pos]
-        after = compact[pos + len(value_head) : pos + len(value_head) + 3]
+        before = compact[max(0, pos - 3):pos]
+        after = compact[pos + len(value_head):pos + len(value_head) + 3]
         if after.startswith(("年", "月", "日", "个交易日")):
             return True
         if before.endswith(("图", "图表")):
@@ -1257,9 +922,7 @@ def _is_noise_level(sentence: str, value: str) -> bool:
             number = float(value_head)
         except ValueError:
             return False
-        if number <= 31 and not any(
-            token in compact for token in ("美元", "收益率", "最大痛点", "目标", "支撑", "压力", "站回", "失守")
-        ):
+        if number <= 31 and not any(token in compact for token in ("美元", "收益率", "最大痛点", "目标", "支撑", "压力", "站回", "失守")):
             return True
     return False
 
@@ -1302,7 +965,6 @@ def _canonical_level_value(value: str) -> str:
         except ValueError:
             return value
     return value
-
 
 def _infer_level_role(sentence: str) -> str:
     if "收益率" in sentence and _has_any(sentence, ("跌破", "回落至", "下方", "确认")):
@@ -1837,60 +1499,12 @@ def load_previous_jin10_agent_analysis(
 # ── LLM-powered analysis ──────────────────────────────────────────
 
 
-def _state_delta_lineage(projection: dict[str, Any]) -> dict[str, Any]:
-    """Return the stable Bundle lineage carried by state-delta audit records."""
-
-    bundle = projection["bundle"]
-    decision = projection["evidence_delta_decision"] or {}
-    return {
-        "context_bundle_id": bundle["bundle_id"],
-        "context_bundle_hash": bundle["content_hash"],
-        "canonical_state_id": bundle["canonical_state_id"],
-        "state_scope": bundle["state_scope"],
-        "retained_evidence_ids": projection["retained_evidence_ids"],
-        "retained_evidence_refs": projection["retained_evidence_refs"],
-        "evidence_delta_decision_id": decision.get("decision_id"),
-        "evidence_delta_action": decision.get("recommended_action"),
-    }
-
-
-def _state_delta_scaffold(raw: dict[str, Any], projection: dict[str, Any]) -> dict[str, Any]:
-    """Minimal deterministic envelope permitted before a state-delta model call."""
-
-    bundle = projection["bundle"]
-    return {
-        "document_id": str(raw.get("document_id") or ""),
-        "trade_date": str(raw.get("trade_date") or ""),
-        "run_id": str(raw.get("run_id") or raw.get("article_id") or bundle["run_id"]),
-        "article_id": str(raw.get("article_id") or ""),
-        "asset": bundle["asset"],
-        "family": "analysis_context_bundle",
-    }
-
-
-def _state_delta_source_refs(projection: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
-    bundle = projection["bundle"]
-    descriptor = {
-        "artifact_id": bundle["bundle_id"],
-        "artifact_type": "analysis_context_bundle",
-        "content_hash": bundle["content_hash"],
-        "canonical_state_id": bundle["canonical_state_id"],
-        "state_scope": bundle["state_scope"],
-    }
-    return (
-        [f"analysis_context_bundle:{bundle['bundle_id']}"],
-        [descriptor, *[dict(item) for item in projection["retained_evidence_refs"]]],
-    )
-
-
 def build_jin10_agent_analysis_report_with_llm(
     raw_report: Jin10RawArticleReport | dict[str, Any],
     daily_report: Jin10DailyAnalysisReport | dict[str, Any] | None = None,
     *,
     figure_image_loader: ImageLoader | None = None,
     analysis_context: dict[str, Any] | None = None,
-    context_mode: str = LEGACY_FULL_CONTEXT,
-    analysis_context_bundle: AnalysisContextBundle | dict[str, Any] | None = None,
     market_odds_evidence: dict[str, Any] | None = None,
 ) -> Jin10AgentAnalysisReport:
     """Build Jin10 analysis from a validated JSON response, with explicit fallback."""
@@ -1898,51 +1512,11 @@ def build_jin10_agent_analysis_report_with_llm(
 
     raw = _to_dict(raw_report)
     daily = _to_dict(daily_report) if daily_report is not None else {}
+    fallback = build_jin10_agent_analysis_report(raw_report, daily_report)
     prompt_version = agent_analysis_prompt_version(raw, daily)
     llm_config = _agent_llm_config()
     prompt_profile = _agent_analysis_prompt_profile(raw_report=raw, daily_report=daily)
-    resolved_context_mode = normalize_analysis_context_mode(context_mode)
-    state_delta_projection = None
-    if resolved_context_mode == STATE_DELTA_CONTEXT:
-        if prompt_profile != "default_daily":
-            raise StateDeltaContextError(
-                "state_delta_context is only supported by the default_daily prompt profile"
-            )
-        state_delta_projection = project_context_bundle_for_prompt(analysis_context_bundle)
-        state_delta_lineage = _state_delta_lineage(state_delta_projection)
-        if state_delta_lineage["evidence_delta_action"] != "run_transition_analysis":
-            raise StateDeltaContextError(
-                "state_delta_context requires run_transition_analysis action: "
-                + str(state_delta_lineage["evidence_delta_action"] or "invalid")
-            )
-        fallback = build_jin10_agent_analysis_report(
-            _state_delta_scaffold(raw, state_delta_projection),
-            {},
-        )
-        bundle_artifacts, bundle_refs = _state_delta_source_refs(state_delta_projection)
-        fallback.source_artifact_refs = bundle_artifacts
-        fallback.source_refs = bundle_refs
-        fallback.provenance = ["分析记忆来自单一、不可变的 AnalysisContextBundle v3。"]
-        fallback.evidence_basis = {
-            "analysis_memory": {
-                **state_delta_lineage,
-                "accepted_fact_ids": [
-                    str(item.get("figure_fact_id"))
-                    for item in state_delta_projection["accepted_facts"]
-                    if item.get("figure_fact_id")
-                ],
-            }
-        }
-        fallback.generated_from = {
-            "source": "jin10_agent_analysis_state_delta_scaffold",
-            "context_mode": STATE_DELTA_CONTEXT,
-            "analysis_context_bundle": dict(state_delta_projection["bundle"]),
-            **state_delta_lineage,
-        }
-        effective_context = None
-    else:
-        fallback = build_jin10_agent_analysis_report(raw_report, daily_report)
-        effective_context = analysis_context if prompt_profile == "default_daily" else None
+    effective_context = analysis_context if prompt_profile == "default_daily" else None
     if effective_context:
         context_metadata = compact_context_metadata(effective_context)
         prompt_context = compact_context_for_prompt(effective_context)
@@ -1976,35 +1550,17 @@ def build_jin10_agent_analysis_report_with_llm(
             "基于归档周报、当日 Jin10 日报与带独立日期的市场/新闻快照进行条件化增量推演。"
         )
 
-    # Build prompt and fail closed before any image loading or external model call.
-    try:
-        prompt, prompt_budget = build_agent_analysis_prompt_with_trace(
-            raw,
-            daily,
-            analysis_context=effective_context,
-            context_mode=resolved_context_mode,
-            analysis_context_bundle=analysis_context_bundle,
-            market_odds_evidence=market_odds_evidence,
-        )
-    except PromptBudgetExceeded as exc:
-        if state_delta_projection is not None:
-            raise
-        fallback.generated_from["source"] = "jin10_agent_analysis_fallback_prompt_budget_exceeded"
-        fallback.generated_from["prompt_version"] = prompt_version
-        fallback.generated_from["prompt_profile"] = prompt_profile
-        fallback.generated_from["model"] = llm_config["model"]
-        fallback.generated_from["provider"] = llm_config["provider"]
-        fallback.generated_from["prompt_budget"] = exc.trace
-        fallback.generated_from["context_mode"] = resolved_context_mode
-        fallback.generated_from["degraded"] = True
-        fallback.generated_from["degraded_reason"] = "prompt_budget_exceeded"
-        fallback.generated_from["structured_output_validated"] = False
-        return fallback
-    prompt_payload_hash = sha256(prompt.encode("utf-8")).hexdigest()
+    # Build prompt
+    prompt = build_agent_analysis_prompt(
+        raw,
+        daily,
+        analysis_context=effective_context,
+        market_odds_evidence=market_odds_evidence,
+    )
     multimodal_plan = build_multimodal_user_content(
         prompt,
-        {} if state_delta_projection is not None else raw,
-        image_loader=None if state_delta_projection is not None else figure_image_loader,
+        raw,
+        image_loader=figure_image_loader,
         max_images=llm_config["max_images"],
     )
 
@@ -2031,32 +1587,9 @@ def build_jin10_agent_analysis_report_with_llm(
                 "snapshot_id": f"jin10:{fallback.trade_date}:{fallback.run_id}:agent_analysis",
                 "trade_date": fallback.trade_date,
                 "report_id": str(fallback.run_id or fallback.article_id),
-                "context_mode": resolved_context_mode,
-                **(_state_delta_lineage(state_delta_projection) if state_delta_projection else {}),
                 "input_snapshot_ids": {
-                    **(
-                        {}
-                        if state_delta_projection
-                        else {"raw_report": fallback.source_artifact_refs}
-                    ),
-                    **(
-                        {"daily_context": (effective_context or {}).get("input_snapshot_ids") or {}}
-                        if effective_context
-                        else {}
-                    ),
-                    **(
-                        {
-                            "analysis_context_bundle": {
-                                "bundle_id": state_delta_projection["bundle"]["bundle_id"],
-                                "content_hash": state_delta_projection["bundle"]["content_hash"],
-                                "canonical_state_id": state_delta_projection["bundle"][
-                                    "canonical_state_id"
-                                ],
-                            }
-                        }
-                        if state_delta_projection
-                        else {}
-                    ),
+                    "raw_report": fallback.source_artifact_refs,
+                    "daily_context": (effective_context or {}).get("input_snapshot_ids") if effective_context else {},
                 },
             },
         )
@@ -2076,11 +1609,10 @@ def build_jin10_agent_analysis_report_with_llm(
             source_artifact_refs=fallback.source_artifact_refs,
             one_line_conclusion=llm_fields["one_line_conclusion"],
             provenance=fallback.provenance,
-            evidence_basis=(
-                fallback.evidence_basis
-                if state_delta_projection is not None
-                else {**fallback.evidence_basis, **llm_fields["evidence_basis"]}
-            ),
+            evidence_basis={
+                **fallback.evidence_basis,
+                **llm_fields["evidence_basis"],
+            },
             market_stage=llm_fields["market_stage"],
             logic_chain=llm_fields["logic_chain"],
             key_variables=llm_fields["key_variables"],
@@ -2110,30 +1642,11 @@ def build_jin10_agent_analysis_report_with_llm(
                 "degraded": degraded,
                 "degraded_reason": ";".join(multimodal_plan.degraded_reasons) if degraded else None,
                 "figure_results": figure_results,
-                "raw_report_family": (
-                    fallback.generated_from.get("raw_report_family") or raw.get("family")
-                    if state_delta_projection is None
-                    else None
-                ),
-                "daily_report_family": (
-                    fallback.generated_from.get("daily_report_family") or daily.get("family")
-                    if state_delta_projection is None
-                    else None
-                ),
+                "raw_report_family": fallback.generated_from.get("raw_report_family") or raw.get("family"),
+                "daily_report_family": fallback.generated_from.get("daily_report_family") or daily.get("family"),
                 "prompt_version": prompt_version,
                 "prompt_profile": prompt_profile,
-                "context_mode": resolved_context_mode,
-                **(_state_delta_lineage(state_delta_projection) if state_delta_projection else {}),
-                "analysis_context_bundle": (
-                    state_delta_projection["bundle"] if state_delta_projection else None
-                ),
-                "prompt_payload_hash": prompt_payload_hash,
-                "prompt_budget": prompt_budget,
-                **(
-                    {"daily_context": compact_context_metadata(effective_context)}
-                    if effective_context
-                    else {}
-                ),
+                "daily_context": compact_context_metadata(effective_context),
                 "prompt_ready": True,
                 "structured_output_validated": True,
                 "llm_structured_output": llm_fields,
@@ -2141,20 +1654,10 @@ def build_jin10_agent_analysis_report_with_llm(
             },
         )
     except Exception as exc:
-        if state_delta_projection is not None:
-            raise StateDeltaContextError(
-                "state_delta_context model failure: " + type(exc).__name__
-            ) from exc
         # Fallback to deterministic analysis
         fallback.generated_from["source"] = "jin10_agent_analysis_fallback_after_llm_error"
         fallback.generated_from["prompt_version"] = prompt_version
         fallback.generated_from["prompt_profile"] = _agent_analysis_prompt_profile(raw_report=raw, daily_report=daily)
-        fallback.generated_from["context_mode"] = resolved_context_mode
-        fallback.generated_from["analysis_context_bundle"] = (
-            state_delta_projection["bundle"] if state_delta_projection else None
-        )
-        fallback.generated_from["prompt_payload_hash"] = prompt_payload_hash
-        fallback.generated_from["prompt_budget"] = prompt_budget
         fallback.generated_from["model"] = llm_config["model"]
         fallback.generated_from["provider"] = llm_config["provider"]
         fallback.generated_from["reasoning_effort"] = llm_config["reasoning_effort"]

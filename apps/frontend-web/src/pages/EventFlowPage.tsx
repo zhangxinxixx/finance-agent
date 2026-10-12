@@ -1,3 +1,4 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { GitBranch, Loader2, RefreshCw } from "lucide-react";
 import { ErrorState } from "@/components/shared/ErrorState";
@@ -145,7 +146,7 @@ function collectLiveNewsCount(timeline: EventFlowTimelineItem[], date: string | 
 }
 
 function isUnsettledMainline(event: EventFlowTimelineItem): boolean {
-  if (event.importance === "高" && (event.pricing === "未定价" || event.pricing === "部分定价")) return true;
+  if (event.importance === "高" && (event.pricing === "未定价" || event.pricing === "未核验" || event.pricing === "部分定价")) return true;
   if (event.risk_level === "high" && event.pricing !== "已定价") return true;
   return false;
 }
@@ -254,12 +255,12 @@ export function EventFlowPage() {
         );
       case "inputs":
         return (
-          <EventFlowReportInputsPanel
+          <ResearchDetails label="查看研究材料详情"><EventFlowReportInputsPanel
             briefSummary={view.brief_summary}
             articleBriefs={view.article_briefs}
             reportInputItems={view.report_input_items ?? []}
             sourceRefs={view.source_refs ?? []}
-          />
+          /></ResearchDetails>
         );
       case "overview":
       default:
@@ -332,10 +333,7 @@ export function EventFlowPage() {
               <span className="event-flow-context-chip-label">时间</span>
               <span className="event-flow-context-chip-value">{dateRange}</span>
             </span>
-            <span className="event-flow-context-chip event-flow-context-chip--summary">
-              <span className="event-flow-context-chip-label">来源</span>
-              <span className="event-flow-context-chip-value">{sourceCoverage}</span>
-            </span>
+            <ResearchDetails label="查看事件记录">{sourceCoverage}</ResearchDetails>
           </div>
         </div>
       </section>

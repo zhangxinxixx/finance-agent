@@ -1,3 +1,5 @@
+import { formatEventFlowHeadlineSummary, translateEventFlowValue } from "./eventFlowFormat";
+import { readableWarning } from "@/lib/researchReading";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
@@ -18,7 +20,7 @@ export function EventFlowEmptyState({
     <>
       <FACard title="事件流" eyebrow="事件链路" accent="brand" bodyClassName="space-y-2">
         <div className="text-[12px] font-semibold text-[var(--fg-2)]">当前未返回可展示的事件流数据</div>
-        <div className="text-[11px] leading-5 text-[var(--fg-4)]">页面保留读模型入口，等待 `daily_market_brief` 或 Jin10 snapshot 返回有效事件。</div>
+        <div className="text-[11px] leading-5 text-[var(--fg-4)]">当前暂无有效事件，等待已归档的日报或金十事件材料。</div>
         <div className="flex flex-wrap gap-2">
           <FASourceTraceBadge source={formatDateTime(updatedAt)} status="updated_at" tone="info" />
           <FASourceTraceBadge source={source} status="data_source" tone="dim" />
@@ -50,8 +52,8 @@ export function BriefSummaryStrip({
         bodyClassName="space-y-3"
       >
         <div className="space-y-1.5">
-          <div className="text-[13px] font-semibold text-[var(--fg-1)]">{summary.headline}</div>
-          <div className="text-[11px] leading-5 text-[var(--fg-3)]">{summary.summary}</div>
+          <div className="text-[13px] font-semibold text-[var(--fg-1)]">{formatEventFlowHeadlineSummary(summary.headline).lead}</div>
+          <div className="text-[11px] leading-5 text-[var(--fg-3)]">{readableWarning(summary.summary)}</div>
         </div>
         <div className="flex flex-wrap gap-2">
           {summary.verificationStatus ? <FAStatusPill tone="info">{summary.verificationStatus}</FAStatusPill> : null}
@@ -86,7 +88,7 @@ export function EventImpactBanner({
 }: {
   summary: {
     bias: string;
-    confidence: number;
+    confidence: number | null;
     llmModel?: string | null;
     llmElapsedSeconds?: number | null;
     summary: string;
@@ -98,17 +100,17 @@ export function EventImpactBanner({
       style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
     >
       <div className="flex items-center gap-2">
-        <span className="text-[10px] font-semibold text-[var(--fg-5)]">Agent 事件分析</span>
+        <span className="text-[10px] font-semibold text-[var(--fg-5)]">已有事件分析</span>
         <span className="text-[10px] font-mono text-[var(--fg-4)]">
-          {summary.bias} · {(summary.confidence * 100).toFixed(0)}%
+          {translateEventFlowValue(summary.bias)} · 判断把握程度 {typeof summary.confidence === "number" && Number.isFinite(summary.confidence) ? `${(summary.confidence * 100).toFixed(0)}/100（非胜率）` : "未提供"}
         </span>
         {summary.llmModel && (
           <span className="text-[9px] text-[var(--fg-5)]">
-            {summary.llmModel} · {summary.llmElapsedSeconds?.toFixed(1)}s
+            模型调用记录已登记{typeof summary.llmElapsedSeconds === "number" && Number.isFinite(summary.llmElapsedSeconds) ? ` · 分析用时 ${summary.llmElapsedSeconds.toFixed(1)} 秒` : ""}
           </span>
         )}
       </div>
-      <div className="mt-1 text-[11px] text-[var(--fg-3)]">{summary.summary}</div>
+      <div className="mt-1 text-[11px] text-[var(--fg-3)]">{readableWarning(summary.summary)}</div>
     </div>
   );
 }

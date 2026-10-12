@@ -1,5 +1,5 @@
 # LLM / Agent 配置
-# Agent runtime configuration for analysis workloads
+# Hermes 负责计划统筹，Codex 负责代码执行
 # LLM 仅用于 analysis 层，不直接操作 raw 数据或指标计算
 
 llm:

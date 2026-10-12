@@ -18,7 +18,7 @@ function DriverGroup({ title, values, tone }: { title: string; values: string[];
     <div className="min-w-0">
       <div className="fa-label text-[var(--fg-5)]">{title}</div>
       <div className="mt-1 flex flex-wrap gap-1">
-        {values.length ? values.slice(0, 5).map((item) => (
+        {values.length ? values.map((item) => (
           <FAStatusPill key={`${title}-${item}`} tone={tone} dot={false}>
             {formatGoldDriverLabel(item)}
           </FAStatusPill>
@@ -51,7 +51,7 @@ export function MixedDriverSplitCard({ event, density = "normal" }: MixedDriverS
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="inline-flex items-center gap-1 text-[length:var(--type-caption)] font-semibold text-[var(--fg-5)]">
           <ShieldAlert size={10} />
-          Mixed 拆解
+          多空因素拆分
         </span>
         {event.net_effect ? (
           <FAStatusPill tone={goldNetBiasTone(event.net_effect)} dot={false}>

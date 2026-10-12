@@ -17,19 +17,17 @@ const ReportsPage = lazy(() => import("./pages/ReportsPage").then((module) => ({
 const ReportDetailPage = lazy(() => import("./pages/ReportDetailPage").then((module) => ({ default: module.ReportDetailPage })));
 const EventFlowPage = lazy(() => import("./pages/EventFlowPage").then((module) => ({ default: module.EventFlowPage })));
 const EventFlowDetailPage = lazy(() => import("./pages/EventFlowDetailPage").then((module) => ({ default: module.EventFlowDetailPage })));
-const FeishuMonitorPage = lazy(() => import("./pages/FeishuMonitorPage").then((module) => ({ default: module.FeishuMonitorPage })));
 const KnowledgeBasePage = lazy(() => import("./pages/KnowledgeBasePage").then((module) => ({ default: module.KnowledgeBasePage })));
 const SchedulerCenterPage = lazy(() => import("./pages/SchedulerCenterPage").then((module) => ({ default: module.SchedulerCenterPage })));
 const TaskScheduleListPage = lazy(() => import("./pages/TaskScheduleListPage").then((module) => ({ default: module.TaskScheduleListPage })));
 const PipelineDagPage = lazy(() => import("./pages/PipelineDagPage").then((module) => ({ default: module.PipelineDagPage })));
 const ProcessingMonitorPage = lazy(() => import("./pages/ProcessingMonitorPage").then((module) => ({ default: module.ProcessingMonitorPage })));
-const AgentTasksPage = lazy(() => import("./pages/AgentTasksPage").then((module) => ({ default: module.AgentTasksPage })));
 const AgentTaskDetailPage = lazy(() => import("./pages/AgentTaskDetailPage").then((module) => ({ default: module.AgentTaskDetailPage })));
 const ReviewCenterPage = lazy(() => import("./pages/ReviewCenterPage").then((module) => ({ default: module.ReviewCenterPage })));
 const StrategyPage = lazy(() => import("./pages/StrategyPage").then((module) => ({ default: module.StrategyPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 const SettingsAuditPage = lazy(() => import("./pages/SettingsAuditPage").then((module) => ({ default: module.SettingsAuditPage })));
-const LLMAuditPage = lazy(() => import("./pages/LLMAuditPage").then((module) => ({ default: module.LLMAuditPage })));
+
 
 function RouteFallback() {
   return (
@@ -61,7 +59,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/rates-dollar" element={lazyPage(<RatesDollarPage />)} />
           <Route path="/oil-geopolitics" element={lazyPage(<OilGeopoliticsPage />)} />
           <Route path="/data-ingestion" element={lazyPage(<DataIngestionPage />)} />
-          <Route path="/data-sources/:sourceId" element={lazyPage(<DataIngestionPage />)} />
+          <Route path="/data-sources/:sourceId" element={<Navigate to="/data-ingestion" replace />} />
           <Route path="/market-monitor" element={lazyPage(<MarketMonitorPage />)} />
           <Route path="/market-monitor/odds" element={lazyPage(<MarketOddsPage />)} />
           <Route path="/cme-options" element={lazyPage(<CMEOptionsPage />)} />
@@ -69,7 +67,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/reports/:reportId" element={lazyPage(<ReportDetailPage />)} />
           <Route path="/event-flow" element={lazyPage(<EventFlowPage />)} />
           <Route path="/event-flow/:eventId" element={lazyPage(<EventFlowDetailPage />)} />
-          <Route path="/feishu-monitor" element={lazyPage(<FeishuMonitorPage />)} />
+          <Route path="/feishu-monitor" element={<Navigate to="/event-flow?tab=live" replace />} />
           <Route path="/knowledge" element={lazyPage(<KnowledgeBasePage />)} />
           <Route path="/knowledge-base" element={lazyPage(<KnowledgeBasePage />)} />
           <Route path="/knowledge/:knowledgeId" element={lazyPage(<KnowledgeBasePage />)} />
@@ -84,7 +82,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/strategy" element={lazyPage(<StrategyPage />)} />
           <Route path="/settings" element={lazyPage(<SettingsPage />)} />
           <Route path="/settings/audit" element={lazyPage(<SettingsAuditPage />)} />
-          <Route path="/settings/llm-audit" element={lazyPage(<LLMAuditPage />)} />
+          <Route path="/settings/llm-audit" element={<Navigate to="/settings" replace />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -20,17 +20,17 @@ def _latest_agent_summaries(agent_names: Iterable[str]) -> dict[str, dict[str, A
 
     try:
         with SessionLocal() as db:
-            rows = (
-                db.query(AgentOutput)
-                .filter(AgentOutput.agent_name.in_(names))
-                .order_by(desc(AgentOutput.trade_date), desc(AgentOutput.created_at))
-                .all()
-            )
             result: dict[str, dict[str, Any]] = {}
-            for row in rows:
-                if row.agent_name in result:
+            for name in names:
+                row = (
+                    db.query(AgentOutput)
+                    .filter(AgentOutput.agent_name == name)
+                    .order_by(desc(AgentOutput.trade_date), desc(AgentOutput.created_at))
+                    .first()
+                )
+                if row is None:
                     continue
-                result[row.agent_name] = build_agent_output_summary(row)
+                result[name] = build_agent_output_summary(row)
             return result
     except Exception as exc:
         logger.debug(

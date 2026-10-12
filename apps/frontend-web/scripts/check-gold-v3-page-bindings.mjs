@@ -21,7 +21,8 @@ function assertNotIncludes(text, needle, message) {
   assert.ok(!text.includes(needle), message);
 }
 
-const dashboardRightPanel = source("src/components/dashboard/DashboardRightPanel.tsx");
+const dashboardPage = source("src/components/dashboard/DashboardPage.tsx");
+const workspaceAdapter = source("src/adapters/goldWorkspace.ts");
 const goldOverviewPanel = source("src/components/dashboard/GoldMacroOverviewPanel.tsx");
 const goldMainlinesPage = source("src/pages/GoldMainlinesPage.tsx");
 const oilGeopoliticsPage = source("src/pages/OilGeopoliticsPage.tsx");
@@ -51,10 +52,11 @@ for (const componentPath of [
 }
 
 assertIncludes(
-  dashboardRightPanel,
-  "<GoldMacroOverviewPanel overview={summary.gold_macro_overview} />",
-  "Dashboard must pass only DashboardSummary.gold_macro_overview into the GoldMacroOverviewPanel",
+  dashboardPage,
+  "<GoldWorkspacePanel />",
+  "Dashboard must retain the current backend-driven Gold workspace",
 );
+assertIncludes(workspaceAdapter, "normalizeResearchIdentity(r.research_identity)", "Gold workspace must preserve backend research identity");
 for (const forbidden of ["useGoldMainlines", "fetchGoldMainlines", "mainlineCoverageRows(", "topicRankings("]) {
   assertNotIncludes(goldOverviewPanel, forbidden, `Dashboard Gold overview panel must not recalculate or refetch mainline data: ${forbidden}`);
 }

@@ -463,8 +463,14 @@ class NewsDataService:
 # ── Default symbols ────────────────────────────────────────────────────
 
 DEFAULT_FRED_RATE_SYMBOLS: tuple[str, ...] = (
-    "DGS10", "DGS2", "DGS3MO", "DGS30", "DFII10", "DFII5",
-    "FEDFUNDS", "SOFR", "T10Y2Y", "T10YIE",
+    "DGS10", "DGS2", "DGS3MO", "DGS5", "DGS30",
+    "DFII5", "DFII10", "DFII30", "FEDFUNDS", "SOFR",
+    "T10Y2Y", "T10YIE", "T5YIE", "T5YIFR",
+    "CPIAUCSL", "CPILFESL", "CPIAUCNS", "CPILFENS", "PCEPILFE",
+    "CPIENGSL", "CPIUFDSL", "CUSR0000SAH1", "CUSR0000SEHA", "CUSR0000SEHC",
+    "CUSR0000SACL1E", "CUSR0000SASLE",
+    "PPIFIS", "PPIACO", "PCEPI", "JTSJOL", "ICSA", "NAPM",
+    "WALCL",
 )
 
 _DEFAULT_PRICE_SYMBOLS: dict[str, str] = {

@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from apps.features.market_data import aggregate_complete_candles, select_canonical_xauusd_rows
 from database.models.analysis import DataSourceStatus, MarketCandle
+from database.numeric_source_policy import is_formal_numeric_source
 
 
 SHADOW_ARTIFACT_NAME = "shadow_summary.json"
@@ -54,28 +55,29 @@ def build_xauusd_shadow_summary(
             .order_by(MarketCandle.open_time.asc(), MarketCandle.id.asc())
         ).all()
     )
+    all_rows = [row for row in all_rows if is_formal_numeric_source(row.source, row.source_ref, row.raw_path)]
     five_minute_rows = [row for row in all_rows if row.timeframe == "5m"]
-    jin10_rows = [row for row in five_minute_rows if row.source == "jin10_mcp_derived_5m"]
+    primary_rows = select_canonical_xauusd_rows([row for row in five_minute_rows if not row.source.startswith("twelvedata")])
     canonical_rows = select_canonical_xauusd_rows(five_minute_rows)
     twelve_rows = {timeframe: [row for row in all_rows if row.source == source] for timeframe, source in _TWELVE_SOURCES.items()}
 
-    jin10_times = {_as_utc(row.open_time) for row in jin10_rows}
+    primary_times = {_as_utc(row.open_time) for row in primary_rows}
     canonical_times = {_as_utc(row.open_time) for row in canonical_rows}
-    observed_provider_times = jin10_times | {_as_utc(row.open_time) for row in twelve_rows["5m"]}
+    observed_provider_times = primary_times | {_as_utc(row.open_time) for row in twelve_rows["5m"]}
     expected_slots = len(observed_provider_times)
     diagnostics = _load_twelvedata_diagnostics(root, day)
     twelve_summary = _summarize_twelve(diagnostics, twelve_rows, session=session, trade_date=day)
-    comparison = _comparison_summary(canonical_rows, twelve_rows["5m"])
+    comparison = _comparison_summary(primary_rows, twelve_rows["5m"])
 
     reasons: list[str] = []
     if not is_trade_day:
         reasons.append("not_utc_weekday")
     elif not is_finalized:
         reasons.append("sample_window_not_finalized")
-    if not jin10_rows:
-        reasons.append("jin10_5m_unavailable")
-    elif len(jin10_times) < expected_slots:
-        reasons.append("jin10_5m_incomplete")
+    if not primary_rows:
+        reasons.append("independent_primary_5m_unavailable")
+    elif len(primary_times) < expected_slots:
+        reasons.append("independent_primary_5m_incomplete")
     if not canonical_rows:
         reasons.append("canonical_5m_unavailable")
     elif len(canonical_times) < expected_slots:
@@ -117,11 +119,12 @@ def build_xauusd_shadow_summary(
             "expected_slots_method": "observed_provider_union",
             "coverage_limit": "joint_provider_outages_are_not_detectable_without_an_exchange_session_calendar",
         },
-        "jin10": {
-            "success": bool(jin10_rows),
-            "success_rate": len(jin10_times) / expected_slots if expected_slots else None,
-            "completeness": _completeness(len(jin10_times), expected_slots),
-            "source": "jin10_mcp_derived_5m",
+        "jin10": {"success": False, "status": "disabled", "reason": "jin10_news_only"},
+        "primary_5m": {
+            "success": bool(primary_rows),
+            "success_rate": len(primary_times) / expected_slots if expected_slots else None,
+            "completeness": _completeness(len(primary_times), expected_slots),
+            "source_breakdown": _source_breakdown(primary_rows),
         },
         "canonical_5m": {
             "completeness": _completeness(len(canonical_times), expected_slots),
@@ -132,7 +135,7 @@ def build_xauusd_shadow_summary(
         "boundary_diagnostics": _boundary_diagnostics(canonical_rows, twelve_rows, window_end=window_end),
         "status": status,
         "reasons": reasons,
-        "source_refs": _source_refs(jin10_rows, canonical_rows, diagnostics),
+        "source_refs": _source_refs(primary_rows, canonical_rows, diagnostics),
         "artifact_refs": [path for path, _ in diagnostics],
     }
     payload["rollup"] = _build_rollup(
@@ -333,9 +336,9 @@ def _load_twelvedata_diagnostics(root: Path, trade_date: date) -> list[tuple[str
     return result
 
 
-def _source_refs(jin10_rows: list[Any], canonical_rows: list[Any], diagnostics: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+def _source_refs(primary_rows: list[Any], canonical_rows: list[Any], diagnostics: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
     return {
-        "jin10_raw_paths": _unique_paths(jin10_rows),
+        "jin10_raw_paths": _unique_paths(primary_rows),
         "canonical_raw_paths": _unique_paths(canonical_rows),
         "twelvedata_diagnostic_paths": [path for path, _ in diagnostics],
     }

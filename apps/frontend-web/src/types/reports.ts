@@ -1,3 +1,5 @@
+import type { ResearchIdentity } from "@/types/research-identity";
+import type { ResearchTradePlan } from "@/types/research-trade-plan";
 import type { ArtifactRef } from "@/types/artifact";
 import type { DataStatus, ReportFormat, ReportMeta, SourceRef } from "@/types/common";
 import type { SourceTracePayload } from "@/types/source-trace";
@@ -5,8 +7,8 @@ import type { SourceTracePayload } from "@/types/source-trace";
 import type { GoldMacroOverview } from "@/types/gold-mainlines";
 import type { ResultIdentity } from "@/types/result-identity";
 
-export type ReportType = "final_report" | "strategy_card" | "options_report" | "macro_report" | string;
-export type ReportFamily = "cme_options_visual" | "final_report_markdown" | "options_report_markdown" | "jin10_daily_visual" | "jin10_weekly_visual";
+export type ReportType = "final_report" | "strategy_card" | "options_report" | "macro_report" | "observation_report" | "observation_strategy_card" | string;
+export type ReportFamily = "cme_options_visual" | "final_report_markdown" | "options_report_markdown" | "jin10_daily_visual" | "jin10_weekly_visual" | "observation_report_markdown" | "observation_strategy_card";
 
 export interface ReportIndexItem {
   type: ReportType;
@@ -20,6 +22,12 @@ export interface ReportIndexItem {
   format: string;
   available: boolean;
   status?: string | null;
+  data_status?: string | null;
+  lifecycle_status?: string | null;
+  review_status?: string | null;
+  output_mode?: string | null;
+  publish_allowed?: boolean | null;
+  authority?: string | null;
 }
 
 export interface ReportsIndexResponse {
@@ -278,7 +286,10 @@ export interface ReportDetailResponse {
   input_snapshot_ids: string[];
   review_items: Array<Record<string, unknown>>;
   structured_payload?: Record<string, unknown> | null;
-  /** New Gold result identity; legacy report_identity remains separate. */
+  report_identity?: ReportIdentityView | null;
+  /** Formal Gold result identity; observation report identity remains separate. */
+  research_identity?: ResearchIdentity | null;
+  current_context?: { gold_macro_overview?: GoldMacroOverview | null; market_odds?: Record<string, unknown> | null; context_as_of?: string | null; relationship: "current_context_only" } | null;
   result_identity?: ResultIdentity | null;
   gold_macro_overview?: GoldMacroOverview | null;
   market_odds_evidence?: MarketOddsEvidenceViewModel | null;
@@ -447,6 +458,16 @@ export interface ReportDetailMeta extends ReportMeta {
   input_snapshot_ids: string[];
   warning_count: number;
   artifact_count: number;
+  report_identity?: ReportIdentityView | null;
+}
+
+export interface ReportIdentityView {
+  report_type?: string | null;
+  family?: string | null;
+  output_mode?: string | null;
+  publish_allowed?: boolean | null;
+  review_status?: string | null;
+  authority?: string | null;
 }
 
 export interface ReportAnalysisInputItemView {
@@ -518,6 +539,7 @@ export interface ReportAnalysisInputsView {
 }
 
 export interface ReportDetailView {
+  final_trade_plan?: ResearchTradePlan | null;
   report_id: string;
   meta: ReportDetailMeta;
   data_status: DataStatus;
@@ -529,6 +551,8 @@ export interface ReportDetailView {
   tabs: Partial<Record<ReportArtifactTabKey, ReportArtifactContentView>>;
   available_tabs: ReportDetailTabKey[];
   structured_payload?: Record<string, unknown> | null;
+  research_identity?: ResearchIdentity | null;
+  current_context?: ReportDetailResponse["current_context"];
   result_identity: ResultIdentity | null;
   generation_trace?: ReportGenerationTrace | null;
   gold_macro_overview?: GoldMacroOverview | null;

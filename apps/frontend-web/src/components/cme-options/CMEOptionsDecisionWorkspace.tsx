@@ -1,18 +1,29 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
+import { readableWarning } from "@/lib/researchReading";
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, CircleGauge, Database, Target } from "lucide-react";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
+import { ChartReadingGuide } from "@/components/shared/ChartReadingGuide";
 import type {
   CMEOptionsDecisionKeyLevel,
   CMEOptionsDecisionResponse,
   CMEOptionsDecisionSetup,
   CMEOptionsDecisionStrategy,
 } from "@/types/cme-options";
-import { formatCompactNumber, translateDecisionText } from "./cmeOptionsFormat";
+import { formatCMEExpiryLabel, formatCMEProductLabel, formatCompactNumber, translateDecisionText } from "./cmeOptionsFormat";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
+import { cmeLivePriceStatusLabel } from "./cmeDecisionIdentity";
 
 interface CMEOptionsDecisionWorkspaceProps {
   decision: CMEOptionsDecisionResponse | null;
   isLoading: boolean;
   error: Error | null;
+}
+
+function coordinateLabel(value: string | null | undefined) {
+  if (value === "gc_futures" || value === "gc_futures_points") return "黄金期货（GC）";
+  if (value === "xauusd_spot") return "现货黄金（XAUUSD）";
+  if (value === "spot") return "现货";
+  return "坐标尚未确认";
 }
 
 function formatNumber(value: number | null | undefined, digits = 0) {
@@ -45,7 +56,7 @@ function regimeLabel(regime: string) {
     flip_zone: "伽马翻转区",
     unavailable: "伽马不可用",
   };
-  return labels[regime] ?? regime;
+  return labels[regime] ?? "伽马环境待确认";
 }
 
 function levelRole(role: string) {
@@ -61,7 +72,7 @@ function levelRole(role: string) {
     retest_support_candidate: "回踩支撑候选",
     retest_resistance_candidate: "反抽阻力候选",
   };
-  return labels[role] ?? role;
+  return labels[role] ?? "价位角色待确认";
 }
 
 function levelValue(level: CMEOptionsDecisionKeyLevel) {
@@ -93,6 +104,15 @@ function GammaProfile({ decision }: { decision: CMEOptionsDecisionResponse }) {
         <strong>伽马曲线</strong>
         <span>{translateDecisionText(decision.gamma_profile.scope)}</span>
       </div>
+      <ChartReadingGuide
+        question="各价格点的净伽马敞口，条长用于同一曲线内的相对比较。"
+        reference="中线 0；价格点来自当前决策曲线，范围以接口返回的 scope 为准。"
+        interpretation="正负只表示模型敞口符号，用于阅读结构环境，不代表价格概率。"
+        limits={[
+          "坐标、新鲜度和到期范围以决策元数据为准；缺失时不补推。",
+          "曲线不是实时现货走势，也不能单独确认策略触发。",
+        ]}
+      />
       <div className="cme-decision-gamma-profile-list">
         {points.map((point) => {
           const width = `${Math.max((Math.abs(point.netGex) / maxMagnitude) * 48, 1)}%`;
@@ -154,12 +174,17 @@ function StrategyPanel({ title, strategy, icon }: { title: string; strategy: CME
               <StrategySetup title="空头条件" setup={strategy.short_setup} />
             </div>
             <div className="cme-decision-strategy-details">
-              {strategy.targets && strategy.targets.length > 0 ? <p className="cme-decision-targets"><span>后端目标</span><b className="fa-num">{strategy.targets.map((value) => `${formatNumber(value, 1)} 点`).join(" / ")}</b></p> : null}
+              {strategy.targets && strategy.targets.length > 0 ? <p className="cme-decision-targets"><span>{strategy.execution_scope === "gc_report_only" ? "黄金期货（GC）结构目标" : "后端目标"}</span><b className="fa-num">{strategy.targets.map((value) => `${formatNumber(value, 1)} 点`).join(" / ")}</b></p> : null}
               {strategy.confirmation && strategy.confirmation.length > 0 ? <p className="cme-decision-targets"><span>确认</span>{strategy.confirmation.map(translateDecisionText).join("；")}</p> : null}
             </div>
           </>
         )}
-        {strategy.risk_notes.length > 0 ? <p className="cme-decision-risk-note">{translateDecisionText(strategy.risk_notes[0])}</p> : null}
+        {strategy.risk_notes.length > 0 ? (
+          <div className="cme-decision-risk-note">
+            <strong>风险与限制</strong>
+            {strategy.risk_notes.map((note) => <div key={note}>{translateDecisionText(note)}</div>)}
+          </div>
+        ) : null}
       </div>
     </CMEOptionsSurface>
   );
@@ -168,20 +193,29 @@ function StrategyPanel({ title, strategy, icon }: { title: string; strategy: CME
 function StructureDecisionPanel({ decision }: { decision: CMEOptionsDecisionResponse }) {
   const structure = decision.structure_summary;
   const intent = decision.intent_summary;
+  const relationLabel = structure.gamma_zero_relation === "below"
+    ? "黄金期货（GC）报告锚点仍在伽马零点（Gamma Zero）下方"
+    : structure.gamma_zero_relation === "at"
+      ? "黄金期货（GC）报告锚点位于伽马零点（Gamma Zero）附近"
+    : structure.gamma_zero_relation === "above"
+      ? "黄金期货（GC）报告锚点位于伽马零点（Gamma Zero）上方"
+      : "黄金期货（GC）报告锚点与伽马零点（Gamma Zero）的关系不可用";
+  const reportOnly = structure.execution_scope === "gc_report_only";
   return (
     <CMEOptionsSurface title="结构修复、机构意图与三路径" bodyStyle={{ padding: 0, background: "var(--bg-card-inner)" }}>
       <div className="cme-decision-structure-summary">
-        <div><span>结构状态</span><strong>{structure.label}</strong><small>{structure.summary}</small></div>
+        <div><span>结构状态</span><strong>{structure.label}</strong><small>{readableWarning(structure.summary)}</small></div>
         <div><span>机构意图</span><strong>{intent.wording ?? translateDecisionText(intent.type ?? "unavailable")}</strong><small>置信度 {formatPercent(intent.confidence === null ? null : intent.confidence * 100)}</small></div>
-        <div><span>NetGEX 修复</span><strong className="fa-num">{formatCompactNumber(structure.net_gex_change)}</strong><small>{structure.repair_detected ? "负 Gamma 收窄" : "尚未确认修复"}</small></div>
-        <div><span>趋势启动观察</span><strong>{structure.trend_confirmed ? "已确认" : structure.trend_launch_watch ? "观察中" : "未进入"}</strong><small>{structure.below_gamma_zero ? "价格仍在 Gamma Zero 下方" : "价格不在 Gamma Zero 下方"}</small></div>
+        <div><span>净伽马（NetGEX）修复</span><strong className="fa-num">{formatCompactNumber(structure.net_gex_change)}</strong><small>{structure.repair_detected ? "负伽马收窄" : "尚未确认修复"}</small></div>
+        <div><span>趋势启动观察</span><strong>{structure.trend_confirmed ? "已确认" : structure.trend_launch_watch ? "观察中" : "未进入"}</strong><small>{relationLabel}</small></div>
+        <div><span>执行坐标</span><strong>{reportOnly ? "黄金期货（GC）报告结构" : "黄金期货（GC）/ 已验证基差"}</strong><small>{translateDecisionText(structure.execution_note ?? "GC 期货坐标")}</small></div>
       </div>
       <div className="cme-decision-path-grid">
         {decision.scenario_paths.map((path) => (
           <article key={path.path_id}>
             <div><strong>{path.label}</strong><FAStatusPill tone={path.status === "confirmed" ? "up" : path.status === "active" ? "warn" : "dim"}>{translateDecisionText(path.status)}</FAStatusPill></div>
             <p><span>触发</span>{path.triggers.map(translateDecisionText).join("；") || "—"}</p>
-            <p><span>目标</span><b className="fa-num">{path.targets.map((value) => formatNumber(value, 1)).join(" / ") || "—"}</b></p>
+            <p><span>目标{path.execution_scope === "gc_report_only" ? "（黄金期货 GC 报告结构）" : ""}</span><b className="fa-num">{path.targets.map((value) => formatNumber(value, 1)).join(" / ") || "—"}</b></p>
             <p><span>失效</span>{path.invalidation.map(translateDecisionText).join("；") || "—"}</p>
           </article>
         ))}
@@ -207,18 +241,18 @@ function CmeOiInventoryPanel({ decision }: { decision: CMEOptionsDecisionRespons
       <CMEOptionsSurface title={inventoryTitle} bodyStyle={{ padding: 0, background: "var(--bg-card-inner)" }}>
         <div className="cme-decision-table-wrap">
           <table className="cme-decision-table cme-decision-table--compact">
-            <thead><tr><th>点位</th><th>期限</th><th>方向</th><th>OI</th><th>ΔOI</th></tr></thead>
+            <thead><tr><th>点位</th><th>期限</th><th>方向</th><th>持仓（OI）</th><th>持仓变化（ΔOI）</th></tr></thead>
             <tbody>
-              {inventoryLevels.slice(0, 8).map((row) => <tr key={`${row.expiry}-${row.strike}`}><th className="fa-num">{formatNumber(row.strike)}</th><td>{row.expiry}</td><td>{optionSideLabel(row.dominant_side)}</td><td>{formatNumber(row.total_oi)}</td><td>{formatSigned(row.total_oi_change)}</td></tr>)}
+              {inventoryLevels.slice(0, 8).map((row) => <tr key={`${row.expiry}-${row.strike}`}><th className="fa-num">{formatNumber(row.strike)}</th><td>{formatCMEExpiryLabel(row.expiry)}</td><td>{optionSideLabel(row.dominant_side)}</td><td>{formatNumber(row.total_oi)}</td><td>{formatSigned(row.total_oi_change)}</td></tr>)}
             </tbody>
           </table>
         </div>
         <div className="cme-decision-pnt-summary">
-          <span>PNT / Block</span>
-          <strong>PNT <b className="fa-num">{formatNumber(decision.pnt_summary.pnt_totals.total)}</b></strong>
-          <strong>Block <b className="fa-num">{formatNumber(decision.pnt_summary.block_totals.total)}</b></strong>
+          <span>PNT / 大宗成交</span>
+          <strong>PNT 成交 <b className="fa-num">{formatNumber(decision.pnt_summary.pnt_totals.total)}</b></strong>
+          <strong>大宗成交 <b className="fa-num">{formatNumber(decision.pnt_summary.block_totals.total)}</b></strong>
           <strong>合计 <b className="fa-num">{formatNumber(decision.pnt_summary.totals.total)}</b></strong>
-          <span className="cme-decision-pnt-status">{decision.pnt_summary.block_coverage_status === "observed" ? "Block 已观测" : decision.pnt_summary.block_coverage_status === "not_verified" ? "Block 未核验" : "Block 不可用"}</span>
+          <span className="cme-decision-pnt-status">{decision.pnt_summary.block_coverage_status === "observed" ? "大宗成交已观测" : decision.pnt_summary.block_coverage_status === "not_verified" ? "大宗成交未核验" : "大宗成交不可用"}</span>
         </div>
       </CMEOptionsSurface>
       <CMEOptionsSurface title="近期最大增减仓" bodyStyle={{ padding: 0, background: "var(--bg-card-inner)" }}>
@@ -226,7 +260,7 @@ function CmeOiInventoryPanel({ decision }: { decision: CMEOptionsDecisionRespons
           <table className="cme-decision-table cme-decision-table--compact">
             <thead><tr><th>点位</th><th>期限</th><th>类型</th><th>当前 OI</th><th>ΔOI</th></tr></thead>
             <tbody>
-              {changes.map((row, index) => <tr key={`${row.expiry}-${row.strike}-${row.option_type}-${index}`}><th className="fa-num">{formatNumber(row.strike)}</th><td>{row.expiry}</td><td>{optionSideLabel(row.option_type)}</td><td>{formatNumber(row.current_oi)}</td><td className={(row.delta ?? 0) >= 0 ? "is-positive" : "is-negative"}>{formatSigned(row.delta)}</td></tr>)}
+              {changes.map((row, index) => <tr key={`${row.expiry}-${row.strike}-${row.option_type}-${index}`}><th className="fa-num">{formatNumber(row.strike)}</th><td>{formatCMEExpiryLabel(row.expiry)}</td><td>{optionSideLabel(row.option_type)}</td><td>{formatNumber(row.current_oi)}</td><td className={(row.delta ?? 0) >= 0 ? "is-positive" : "is-negative"}>{formatSigned(row.delta)}</td></tr>)}
             </tbody>
           </table>
         </div>
@@ -241,7 +275,7 @@ function DecisionUnavailable({ isLoading, error }: Pick<CMEOptionsDecisionWorksp
       <AlertTriangle size={16} aria-hidden="true" />
       <div>
         <strong>决策视图{isLoading ? "加载中" : "不可用"}</strong>
-        <p>{isLoading ? "正在读取 /api/options/decision；下方快照分析仍可使用。" : error?.message ?? "后端未返回决策 ViewModel；下方快照分析仍可使用。"}</p>
+        <p>{isLoading ? "正在读取决策接口；下方快照分析仍可使用。" : error?.message ?? "后端未返回决策结果；下方快照分析仍可使用。"}</p>
       </div>
     </section>
   );
@@ -251,20 +285,13 @@ export function CMEOptionsDecisionWorkspace({ decision, isLoading, error }: CMEO
   if (!decision) return <DecisionUnavailable isLoading={isLoading} error={error} />;
 
   const { oi_summary: oi, gamma_summary: gamma, price_context: prices } = decision;
-  const resolvedGammaRegime = gamma.regime === "negative_gamma" || gamma.regime === "positive_gamma" || gamma.regime === "flip_zone"
-    ? gamma.regime
-    : gamma.net_gex === null
-      ? "unavailable"
-      : gamma.net_gex < 0
-        ? "negative_gamma"
-        : gamma.net_gex > 0
-          ? "positive_gamma"
-          : "flip_zone";
+  const resolvedGammaRegime = gamma.regime;
   const primarySummary = translateDecisionText(
     decision.intraday_strategy.summary
       ?? decision.intraday_strategy.reason
       ?? "等待关键价位确认后再执行。",
   );
+  const livePriceStatus = cmeLivePriceStatusLabel(prices.live_price_status, prices.live_price_freshness_seconds);
   return (
     <section className="cme-decision-workspace" aria-label="期权决策总览">
       <section className={`cme-decision-hero cme-decision-hero--${resolvedGammaRegime}`}>
@@ -276,16 +303,16 @@ export function CMEOptionsDecisionWorkspace({ decision, isLoading, error }: CMEO
           <h2>{regimeLabel(resolvedGammaRegime)}</h2>
           <p>{primarySummary}</p>
           <div className="cme-decision-hero-meta">
-            <span>{decision.meta.product}</span>
+            <span>{formatCMEProductLabel(decision.meta.product)}</span>
             <span>交易日 {decision.meta.current_trade_date ?? "—"}</span>
             <span>换月{statusLabel(decision.roll_summary.status)}</span>
           </div>
         </div>
         <div className="cme-decision-hero-metrics">
-          <div><span>报告价 / 实时价</span><strong className="fa-num">{formatNumber(prices.report_p0, 1)} <small>/</small> {formatNumber(prices.live_p0, 1)} 点</strong></div>
+          <div><span>黄金期货（GC）报告锚点 / 现货黄金（XAUUSD）观测</span><strong className="fa-num">{formatNumber(prices.report_p0, 1)} <small>/</small> {formatNumber(prices.live_p0, 1)} 点</strong><small>{prices.basis_status === "validated" ? "基差已验证" : "基差未验证，观测价不驱动黄金期货（GC）决策"} · {livePriceStatus}</small></div>
           <div><span>伽马零点</span><strong className="fa-num">{formatNumber(gamma.gamma_zero, 2)} 点</strong></div>
           <div><span>净伽马敞口</span><strong className="fa-num">{formatCompactNumber(gamma.net_gex)}</strong></div>
-          <div><span>总持仓单日变化</span><strong className="fa-num">{formatCompactNumber(oi.total.delta, "张", 2, true)}</strong></div>
+          <div><span>总持仓区间变化</span><strong className="fa-num">{formatCompactNumber(oi.total.delta, "张", 2, true)}</strong><small>{decision.meta.previous_trade_date ?? "—"} → {decision.meta.current_trade_date ?? "—"}</small></div>
         </div>
       </section>
 
@@ -294,7 +321,15 @@ export function CMEOptionsDecisionWorkspace({ decision, isLoading, error }: CMEO
         <div className="cme-decision-strategy-stack">
           <StrategyPanel title="中期结构判断" strategy={decision.swing_strategy} icon="swing" />
           <CMEOptionsSurface title="数据质量" bodyStyle={{ padding: 0, background: "var(--bg-card-inner)" }}>
-            <div className="cme-decision-quality"><Database size={15} aria-hidden="true" /><div><strong>{Array.isArray(decision.data_quality.cme_status) ? decision.data_quality.cme_status.map(translateDecisionText).join(" / ") : translateDecisionText(decision.data_quality.cme_status ?? "未标注")}</strong><p>{translateDecisionText(decision.data_quality.warnings[0] ?? "后端未返回额外降级提示。")}</p></div></div>
+            <div className="cme-decision-quality">
+              <Database size={15} aria-hidden="true" />
+              <div>
+                <strong>{Array.isArray(decision.data_quality.cme_status) ? decision.data_quality.cme_status.map(translateDecisionText).join(" / ") : translateDecisionText(decision.data_quality.cme_status ?? "未标注")}</strong>
+                {decision.data_quality.warnings.length > 0 ? (
+                  <div>{decision.data_quality.warnings.map((warning) => <p key={warning}>{translateDecisionText(warning)}</p>)}</div>
+                ) : <p>后端未返回额外降级提示。</p>}
+              </div>
+            </div>
           </CMEOptionsSurface>
         </div>
       </div>
@@ -308,31 +343,31 @@ export function CMEOptionsDecisionWorkspace({ decision, isLoading, error }: CMEO
               <div><span>翻转区间</span><strong className="fa-num">{gamma.flip_band ? `${formatNumber(gamma.flip_band.lower, 1)}–${formatNumber(gamma.flip_band.upper, 1)} 点` : "—"}</strong><small>{gamma.flip_band ? `步长 ${formatNumber(gamma.flip_band.step, 1)} 点` : "—"}</small></div>
               <div><span>净伽马敞口</span><strong className="fa-num">{formatCompactNumber(gamma.net_gex)}</strong><small>总持仓 {formatPercent(oi.total.pct_change)}</small></div>
             </div>
-            <GammaProfile decision={decision} />
-            {decision.roll_summary.items.length > 0 ? <div className="cme-decision-roll-list">{decision.roll_summary.items.map((roll) => <div key={`${roll.near_expiry}-${roll.far_expiry}`}><ArrowDownRight size={14} aria-hidden="true" /><strong>{roll.near_expiry}</strong><span className="fa-num">{formatCompactNumber(roll.near_oi_delta, "张", 2, true)}</span><ArrowUpRight size={14} aria-hidden="true" /><strong>{roll.far_expiry}</strong><span className="fa-num">{formatCompactNumber(roll.far_oi_delta, "张", 2, true)}</span><small>远月看跌 {formatCompactNumber(roll.far_put_delta, "张", 2, true)} · {roll.labels.map(translateDecisionText).join(" / ") || "—"}</small></div>)}</div> : <p className="cme-decision-empty">{translateDecisionText(decision.roll_summary.reason ?? "后端未提供换月对比。")}</p>}
+            <ResearchDetails label="查看伽马曲线"><GammaProfile decision={decision} /></ResearchDetails>
+            {decision.roll_summary.items.length > 0 ? <div className="cme-decision-roll-list">{decision.roll_summary.items.map((roll) => <div key={`${roll.near_expiry}-${roll.far_expiry}`}><ArrowDownRight size={14} aria-hidden="true" /><strong>{formatCMEExpiryLabel(roll.near_expiry)}</strong><span className="fa-num">{formatCompactNumber(roll.near_oi_delta, "张", 2, true)}</span><ArrowUpRight size={14} aria-hidden="true" /><strong>{formatCMEExpiryLabel(roll.far_expiry)}</strong><span className="fa-num">{formatCompactNumber(roll.far_oi_delta, "张", 2, true)}</span><small>远月看跌 {formatCompactNumber(roll.far_put_delta, "张", 2, true)} · {roll.labels.map(translateDecisionText).join(" / ") || "—"}</small></div>)}</div> : <p className="cme-decision-empty">{translateDecisionText(decision.roll_summary.reason ?? "后端未提供换月对比。")}</p>}
           </CMEOptionsSurface>
 
         </div>
 
-        <aside className="cme-decision-rail">
+        <aside className="cme-decision-rail"><ResearchDetails label="查看持仓与成交明细">
           <CmeOiInventoryPanel decision={decision} />
           <CMEOptionsSurface title="持仓对比" bodyStyle={{ padding: 0, background: "var(--bg-card-inner)" }}>
             <div className="cme-decision-table-wrap">
               <table className="cme-decision-table cme-decision-table--compact">
                 <thead><tr><th>到期</th><th>当前（张）</th><th>变化（张）</th><th>看跌（张）</th><th>看涨（张）</th></tr></thead>
                 <tbody>
-                  {decision.oi_by_expiry.map((row) => <tr key={row.expiry}><th>{row.expiry}</th><td>{formatNumber(row.total.current)}</td><td>{formatSigned(row.total.delta)}</td><td>{formatSigned(row.put.delta)}</td><td>{formatSigned(row.call.delta)}</td></tr>)}
+                  {decision.oi_by_expiry.map((row) => <tr key={row.expiry}><th>{formatCMEExpiryLabel(row.expiry)}</th><td>{formatNumber(row.total.current)}</td><td>{formatSigned(row.total.delta)}</td><td>{formatSigned(row.put.delta)}</td><td>{formatSigned(row.call.delta)}</td></tr>)}
                   <tr className="cme-decision-table-total"><th>合计</th><td>{formatNumber(oi.total.current)}</td><td>{formatSigned(oi.total.delta)}</td><td>{formatSigned(oi.put.delta)}</td><td>{formatSigned(oi.call.delta)}</td></tr>
                 </tbody>
               </table>
             </div>
           </CMEOptionsSurface>
-        </aside>
+        </ResearchDetails></aside>
       </div>
 
       <CMEOptionsSurface title="关键价位与失效条件" bodyStyle={{ padding: 0, background: "var(--bg-card-inner)" }}>
         <div className="cme-decision-level-list">
-          {decision.key_levels.map((level, index) => <article key={`${level.role}-${level.strike ?? level.band?.lower ?? index}`} className="cme-decision-level-row"><div><span>{levelRole(level.dynamic_role)}</span><strong className="fa-num">{levelValue(level)}</strong><small>报告角色：{levelRole(level.structural_role_at_report)}</small></div><div><span>强度 / 距离</span><p>{translateDecisionText(level.strength === null ? null : String(level.strength))} / {formatPercent(level.distance_pct)}</p></div><div><span>证据</span><p>{level.evidence.map(translateDecisionText).join("；") || "—"}</p></div><div><span>失效</span><p>{level.invalidation.map(translateDecisionText).join("；") || "—"}</p></div></article>)}
+          {decision.key_levels.map((level, index) => <article key={`${level.role}-${level.strike ?? level.band?.lower ?? index}`} className="cme-decision-level-row"><div><span>{levelRole(level.dynamic_role)}</span><strong className="fa-num">{levelValue(level)}</strong><small>报告角色：{levelRole(level.structural_role_at_report)} · 坐标：{coordinateLabel(level.coordinate_space)} · 期限：{level.expiry_scope === "aggregate" ? "聚合期限" : level.expiry_scope ? formatCMEExpiryLabel(level.expiry_scope) : "未提供"}</small></div><div><span>强度 / 距离</span><p>{translateDecisionText(level.strength === null ? null : String(level.strength))} / {formatPercent(level.distance_pct)}</p></div><div><span>证据</span><p>{level.evidence.map(translateDecisionText).join("；") || "—"}</p></div><div><span>失效</span><p>{level.invalidation.map(translateDecisionText).join("；") || "—"}</p></div></article>)}
           {decision.key_levels.length === 0 ? <p className="cme-decision-empty">后端未提供关键价位。</p> : null}
         </div>
       </CMEOptionsSurface>

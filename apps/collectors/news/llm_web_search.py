@@ -39,6 +39,7 @@ def collect_llm_web_search_news(
     provider_name: str | None = None,
     model: str | None = None,
     client: Any | None = None,
+    request_timeout: float | None = None,
 ) -> NewsCollectionResult:
     """Collect candidate news through an OpenAI Responses-compatible web search tool.
 
@@ -66,7 +67,8 @@ def collect_llm_web_search_news(
         client = OpenAI(
             api_key=provider.api_key,
             base_url=provider.base_url,
-            timeout=float(os.getenv("NEWS_WEB_SEARCH_TIMEOUT_SECONDS", str(provider.timeout))),
+            timeout=request_timeout if request_timeout is not None else float(os.getenv("NEWS_WEB_SEARCH_TIMEOUT_SECONDS", str(provider.timeout))),
+            max_retries=0,
         )
     else:
         resolved_provider = resolved_provider or "injected"

@@ -33,7 +33,12 @@ def api_options_decision(
     db: Session = Depends(get_db),
 ):
     """Return the stable, read-only CME options decision ViewModel."""
-    data = get_options_decision(date, lookback_days=lookback_days, db=db)
+    data = get_options_decision(
+        date,
+        lookback_days=lookback_days,
+        db=db,
+        allow_archived_parse=False,
+    )
     if data is None:
         raise HTTPException(status_code=404, detail="Options snapshot not found")
     return data

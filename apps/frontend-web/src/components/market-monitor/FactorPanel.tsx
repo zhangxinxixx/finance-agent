@@ -2,7 +2,7 @@ import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { FAStatusTone } from "@/components/shared/FAStatusPill";
 import type { MarketMonitorMetric, MarketMonitorStatus } from "@/types/market-monitor";
-import { findMetric, formatMetricChange, formatMetricValue, trendFromChange } from "./format";
+import { findMetric, formatMetricChange, formatMetricValue, marketMonitorUnitLabel, trendFromChange } from "./format";
 
 interface PricingChainPanelProps {
   metrics: MarketMonitorMetric[];
@@ -55,18 +55,18 @@ const PRICING_CHAIN_GROUPS: PricingChainGroup[] = [
 ];
 
 const METRIC_LABELS: Record<string, string> = {
-  XAUUSD: "XAU",
-  DXY: "DXY",
-  US02Y: "2Y",
-  US10Y: "10Y",
-  REAL_10Y: "R10Y",
-  YIELD_SPREAD_2Y_3M: "2Y3M",
-  T10YIE: "BE10Y",
-  TGA: "TGA",
-  RRP: "RRP",
-  SOFR: "SOFR",
-  EFFR: "EFFR",
-  IORB: "IORB",
+  XAUUSD: "现货黄金（XAUUSD）",
+  DXY: "美元指数（DXY）",
+  US02Y: "2年利率（US02Y）",
+  US10Y: "10年利率（US10Y）",
+  REAL_10Y: "10年实际利率",
+  YIELD_SPREAD_2Y_3M: "2年-3个月利差",
+  T10YIE: "10年通胀预期",
+  TGA: "财政账户（TGA）",
+  RRP: "隔夜逆回购（RRP）",
+  SOFR: "担保隔夜融资利率",
+  EFFR: "有效联邦基金利率",
+  IORB: "准备金利率（IORB）",
 };
 
 function groupTone(metrics: Array<MarketMonitorMetric | undefined>): FAStatusTone {
@@ -116,7 +116,7 @@ export function FactorPanel({ metrics }: PricingChainPanelProps) {
   return (
     <FACard
       title="定价链雷达"
-      eyebrow="Realtime Chain"
+      eyebrow="实时传导链"
       description="监测因子传导与缺口，不输出交易结论。"
       accent="info"
       density="compact"
@@ -155,7 +155,7 @@ export function FactorPanel({ metrics }: PricingChainPanelProps) {
                     <span className="market-monitor-pricing-radar-code">{metricLabel(key)}</span>
                     <div className="market-monitor-pricing-radar-value">
                       {value}
-                      {metric?.unit ? <span>{metric.unit}</span> : null}
+                      {metric?.unit ? <span>{marketMonitorUnitLabel(metric.unit)}</span> : null}
                     </div>
                     <span className="market-monitor-pricing-radar-change" style={{ color: metricChangeTone(metric) }}>
                       {formatMetricChange(metric?.one_week_change ?? null)}
@@ -192,24 +192,24 @@ export function PricingChainDiagnosticsPanel({ metrics }: PricingChainPanelProps
 
   const alerts = [
     dxyChange !== null && xauChange !== null && dxyChange > 0 && xauChange > 0
-      ? { title: "美元与黄金同涨", detail: "DXY 与 XAUUSD 同向上行，常规反向关系暂未生效，需要看事件或避险解释。", tone: "warn" as const }
+      ? { title: "美元与黄金同涨", detail: "美元指数（DXY）与现货黄金（XAUUSD）同向上行，常规反向关系暂未生效，需要看事件或避险解释。", tone: "warn" as const }
       : null,
     real10yChange !== null && xauChange !== null && real10yChange > 0 && xauChange > 0
-      ? { title: "实际利率压制未被价格确认", detail: "REAL_10Y 上行但黄金仍上涨，说明价格可能由避险、通胀或流动性因素接管。", tone: "warn" as const }
+      ? { title: "实际利率压制未被价格确认", detail: "10年实际利率（REAL_10Y）上行但黄金仍上涨，说明价格可能由避险、通胀或流动性因素接管。", tone: "warn" as const }
       : null,
     t10yieChange !== null && real10yChange !== null && t10yieChange > 0 && real10yChange > 0
       ? { title: "通胀与实际利率同升", detail: "通胀预期和实际利率同时抬升，黄金方向需要等待美元或价格结构确认。", tone: "info" as const }
       : null,
     liquidityMixed
-      ? { title: "流动性链路分歧", detail: "TGA/RRP/资金利率方向不一致，流动性变量只适合作背景过滤，不单独形成趋势信号。", tone: "info" as const }
+      ? { title: "流动性链路分歧", detail: "财政账户（TGA）、隔夜逆回购（RRP）和资金利率方向不一致，流动性变量只适合作背景过滤，不单独形成趋势信号。", tone: "info" as const }
       : null,
     missing.length > 0
-      ? { title: "数据缺口", detail: `${missing.map((metric) => metric.key).join(" / ")} 暂不可用，相关链路不参与判断。`, tone: "down" as const }
+      ? { title: "数据缺口", detail: `${missing.map((metric) => metricLabel(metric.key)).join(" / ")} 暂不可用，相关链路不参与判断。`, tone: "down" as const }
       : null,
   ].filter((item): item is { title: string; detail: string; tone: "warn" | "info" | "down" } => Boolean(item));
 
   return (
-    <FACard title="链路背离 / 数据缺口" eyebrow="Exceptions" accent={alerts.length ? "warn" : "up"} density="compact">
+      <FACard title="链路背离 / 数据缺口" eyebrow="异常与缺口" accent={alerts.length ? "warn" : "up"} density="compact">
       <div className="market-monitor-pricing-diagnostics">
         {alerts.length ? alerts.map((alert) => (
           <div key={alert.title} className="market-monitor-pricing-diagnostic-row" data-tone={alert.tone}>

@@ -1,4 +1,7 @@
 .report-prose {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   color: var(--fa-text-body);
   font-size: var(--type-body);
   line-height: 1.82;
@@ -18,7 +21,10 @@
   line-height: 1.45;
 }
 
-.report-prose h3 {
+.report-prose h3,
+.report-prose h4,
+.report-prose h5,
+.report-prose h6 {
   color: var(--fa-text-primary);
   font-size: var(--type-card-title);
   font-weight: 700;
@@ -66,6 +72,8 @@
 }
 
 .report-table-scroll {
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -104,4 +112,15 @@
 
 .report-table-scroll tbody tr:last-child td {
   border-bottom: 0;
+}
+
+.report-reading-full {
+  width: 100%;
+  min-width: 0;
+}
+
+.report-reading-full img {
+  max-width: 100%;
+  height: auto;
+  max-height: none;
 }

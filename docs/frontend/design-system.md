@@ -280,7 +280,7 @@ FinAnalytics Pro 是高密度金融终端，不走宽松 SaaS spacing。
 | Sidebar | `200px` 宽，`--bg-panel`，active 左侧 `2px` brand border | `AppSidebar` 后续视觉对齐 |
 | Header | `44px` 高，breadcrumb/search/status/user | `AppHeader` 后续视觉对齐 |
 | Main content | flexible，深蓝 canvas + 克制 radial glow | 页面容器视觉对齐，不复制 mock 数据 |
-| Right panel | `300px` 宽，context-aware | `ContextRightPanel` 或页面级右栏后续统一 |
+| Right panel | 按页面需要提供上下文 | 使用页面级右栏；无消费者的旧 `ContextRightPanel` 已于 2026-10-10 清理 |
 | Bottom status bar | `30px` 高，数据源 + queue | 由现有 `DataStatusBar` 向 `status-bar` 收敛 |
 
 ## 10. 暂不 1:1 还原项
@@ -298,7 +298,7 @@ FinAnalytics Pro 是高密度金融终端，不走宽松 SaaS spacing。
 Phase 1 的目标不是一次完成所有页面，而是先把整站拉进同一套 FinAnalytics 工作台骨架。执行边界如下：
 
 - 必做：
-  - `AppShell / AppSidebar / AppHeader / ContextRightPanel / DataStatusBar` 视觉收敛
+  - `AppShell / AppSidebar / AppHeader / DataStatusBar` 与页面级右栏视觉收敛
   - `finance-page-shell`、`finance-panel`、shared card/status/metric 体系统一
   - 所有已注册路由共享同一外层布局、padding、边框、背景和状态语言
 - 可延后：

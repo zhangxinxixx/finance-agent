@@ -8,7 +8,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, select, text
+from sqlalchemy import Engine, MetaData, inspect, select, text
+from sqlalchemy.schema import CreateTable
 from sqlalchemy.orm import Session
 
 from apps.parsers.cme.pdf_parser import CmePdfDetailRow, CmePdfParseResult
@@ -87,71 +88,42 @@ def ingest_cme_parse_result(
     raw_file = session.scalar(select(CmeRawFile).where(CmeRawFile.sha256 == sha256))
 
     total_rows = len(parse_result.detail_rows)
-    existing_rows = {
-        (row.product_code, row.expiry, row.strike, row.option_type): row
-        for row in session.scalars(
-            select(CmeOptionRow).where(
-                CmeOptionRow.report_date == parse_result.trade_date,
-                CmeOptionRow.product_code == parse_result.product,
-            )
+    # Version is part of the immutable contract key.  Do not infer it from
+    # the first row: a report date can legitimately contain both PRELIMINARY
+    # and FINAL rows, and SQL ordering is not a version authority.
+    existing_by_version: dict[str, dict[tuple[str, str, int, str], CmeOptionRow]] = {}
+    for row in session.scalars(
+        select(CmeOptionRow).where(
+            CmeOptionRow.report_date == parse_result.trade_date,
+            CmeOptionRow.product_code == parse_result.product,
         )
-    }
+    ):
+        row_version = str(row.version_type or "PRELIMINARY").strip().upper()
+        key = (row.product_code, row.expiry, row.strike, row.option_type)
+        existing_by_version.setdefault(row_version, {})[key] = row
 
-    # Determine if existing rows are PRELIM or FINAL
-    existing_version: str | None = None
-    if existing_rows:
-        first_row = next(iter(existing_rows.values()))
-        existing_version = first_row.version_type
+    existing_same_version = existing_by_version.get(version_type, {})
 
-    # PRELIM → FINAL transition: keep both, don't delete PRELIM rows
-    # FINAL rows will be preferred by get_cme_option_rows (default behavior)
-    replaced_rows = 0
-    if existing_version == "PRELIMINARY" and version_type == "FINAL":
-        # FINAL is coming in alongside existing PRELIM — keep PRELIM for backtracking
-        # Just clear existing_rows so we insert FINAL as new rows
-        replaced_rows = len(existing_rows)
-        existing_rows.clear()
-
-    if existing_rows and raw_file is None and existing_version == version_type:
+    # A different raw bulletin cannot silently replace an existing version.
+    # The same SHA is idempotent; a new version (PRELIMINARY alongside FINAL,
+    # or FINAL alongside PRELIMINARY) is additive and keeps both histories.
+    # This check must happen before flushing a new CmeRawFile so a rejected
+    # conflict cannot leave an orphan raw record when the caller commits its
+    # task failure.
+    if existing_same_version and raw_file is None:
         raise ValueError(
             "CME ingest blocked because a different raw file already owns "
             f"{parse_result.trade_date} {parse_result.product} {version_type} rows"
         )
 
-    existing_raw_file_id = ""
-    if existing_rows:
-        first_existing_row = next(iter(existing_rows.values()))
-        existing_raw_file_id = first_existing_row.raw_file_id
-
-    # Skip if already ingested with same version or trying to ingest PRELIM when FINAL exists
-    skip_ingest = False
-    if existing_version == version_type:
-        # Same version already exists — skip
-        skip_ingest = True
-    elif existing_version == "FINAL" and version_type == "PRELIMINARY":
-        # FINAL already exists, skip PRELIM
-        skip_ingest = True
-
-    if skip_ingest:
-        parse_run_raw_file_id = raw_file.id if raw_file is not None else existing_raw_file_id
-        parse_run = session.scalar(select(CmeParseRun).where(CmeParseRun.raw_file_id == parse_run_raw_file_id))
-        parse_run_id = parse_run.id if parse_run else ""
-        return CmeIngestResult(
-            raw_file_id=parse_run_raw_file_id,
-            report_date=parse_result.trade_date,
-            inserted_rows=0,
-            existing_rows=total_rows,
-            total_rows=total_rows,
-            warnings_count=len(parse_result.warnings),
-            detail_rows_count=len(parse_result.detail_rows),
-            summary_rows_count=len(parse_result.summary_rows),
-            parse_run_id=parse_run_id,
-            sha256=sha256,
-            replaced_rows=replaced_rows,
-            version_type=version_type,
-            warnings=list(parse_result.warnings),
-            notes=dict(parse_result.notes),
-        )
+    # PRELIM → FINAL is represented by two immutable row sets.  Keep the
+    # count for the existing result contract, but never clear or overwrite the
+    # PRELIMINARY rows.
+    replaced_rows = (
+        len(existing_by_version.get("PRELIMINARY", {}))
+        if version_type == "FINAL"
+        else 0
+    )
 
     if raw_file is None:
         raw_file = CmeRawFile(
@@ -170,10 +142,19 @@ def ingest_cme_parse_result(
     inserted_rows = 0
     for detail_row in parse_result.detail_rows:
         key = (detail_row.product, detail_row.expiry, detail_row.strike, detail_row.option_type)
-        existing_row = existing_rows.get(key)
+        existing_row = existing_same_version.get(key)
         if existing_row is not None:
             continue
-        session.add(_build_option_row(raw_file_id=raw_file.id, parse_result=parse_result, row=detail_row, version_type=version_type))
+        option_row = _build_option_row(
+            raw_file_id=raw_file.id,
+            parse_result=parse_result,
+            row=detail_row,
+            version_type=version_type,
+        )
+        session.add(option_row)
+        # Keep the in-memory key set current so a malformed caller cannot add
+        # the same contract twice in one unit of work even before flush.
+        existing_same_version[key] = option_row
         inserted_rows += 1
 
     parse_run = session.scalar(select(CmeParseRun).where(CmeParseRun.raw_file_id == raw_file.id))
@@ -191,6 +172,11 @@ def ingest_cme_parse_result(
         session.add(parse_run)
         session.flush()
     else:
+        # A reparse that replaces source rows is a new knowledge event. Keep
+        # its real timestamp so DWD corrections cannot appear in an old PIT.
+        if replaced_rows or inserted_rows or parse_run.status != parse_result.status:
+            from datetime import UTC, datetime
+            parse_run.created_at = datetime.now(UTC)
         parse_run.status = parse_result.status
         parse_run.detail_rows_count = len(parse_result.detail_rows)
         parse_run.summary_rows_count = len(parse_result.summary_rows)
@@ -318,7 +304,7 @@ def _migrate_cme_version_type(bind_or_session: Engine | Session) -> None:
     if isinstance(bind_or_session, Session):
         conn = bind_or_session.connection()
     else:
-        with bind_or_session.connect() as conn:
+        with bind_or_session.begin() as conn:
             _run_version_type_migration(conn)
             return
     _run_version_type_migration(conn)
@@ -339,23 +325,90 @@ def _run_version_type_migration(conn) -> None:
         result = conn.execute(text("PRAGMA table_info('cme_option_rows')"))
         has_column = any(row[1] == "version_type" for row in result.fetchall())
 
-    if has_column:
-        return
-
     if dialect_name == "postgresql":
-        conn.execute(text("ALTER TABLE cme_option_rows ADD COLUMN version_type VARCHAR(16) NOT NULL DEFAULT 'PRELIMINARY'"))
-        # Drop old unique constraint if it still has the old shape
-        conn.execute(text("ALTER TABLE cme_option_rows DROP CONSTRAINT IF EXISTS uq_cme_option_row"))
-        conn.execute(text(
-            "ALTER TABLE cme_option_rows ADD CONSTRAINT uq_cme_option_row "
-            "UNIQUE (report_date, product_code, expiry, strike, option_type, version_type)"
-        ))
-        conn.commit()
+        if not has_column:
+            conn.execute(text("ALTER TABLE cme_option_rows ADD COLUMN version_type VARCHAR(16) NOT NULL DEFAULT 'PRELIMINARY'"))
+        expected = {"report_date", "product_code", "expiry", "strike", "option_type", "version_type"}
+        constraints = inspect(conn).get_unique_constraints("cme_option_rows")
+        if not any(set(item["column_names"]) == expected for item in constraints):
+            conn.execute(text("ALTER TABLE cme_option_rows DROP CONSTRAINT IF EXISTS uq_cme_option_row"))
+            conn.execute(text(
+                "ALTER TABLE cme_option_rows ADD CONSTRAINT uq_cme_option_row "
+                "UNIQUE (report_date, product_code, expiry, strike, option_type, version_type)"
+            ))
     elif dialect_name == "sqlite":
-        # SQLite doesn't support DROP CONSTRAINT; rebuild table
-        # For test environments, just add the column
-        conn.execute(text("ALTER TABLE cme_option_rows ADD COLUMN version_type VARCHAR(16) NOT NULL DEFAULT 'PRELIMINARY'"))
-        conn.commit()
+        if not has_column:
+            conn.execute(text("ALTER TABLE cme_option_rows ADD COLUMN version_type VARCHAR(16) NOT NULL DEFAULT 'PRELIMINARY'"))
+        if not _sqlite_has_version_aware_unique_key(conn):
+            _rebuild_sqlite_cme_option_rows(conn)
+    # A caller-owned Session must retain its transaction. Engine callers use
+    # begin() above and commit only when this entire operation succeeds.
+
+
+def _sqlite_has_version_aware_unique_key(conn) -> bool:
+    """Return whether SQLite has the version-aware contract unique key."""
+
+    expected = {
+        "report_date",
+        "product_code",
+        "expiry",
+        "strike",
+        "option_type",
+        "version_type",
+    }
+    indexes = conn.execute(text("PRAGMA index_list('cme_option_rows')")).fetchall()
+    for index_row in indexes:
+        # SQLite returns (seq, name, unique, origin, partial).
+        if len(index_row) < 3 or not bool(index_row[2]):
+            continue
+        index_name = str(index_row[1])
+        safe_index_name = index_name.replace("'", "''")
+        columns = conn.execute(text(f"PRAGMA index_info('{safe_index_name}')")).fetchall()
+        if {str(column[2]) for column in columns} == expected:
+            return True
+    return False
+
+
+def _rebuild_sqlite_cme_option_rows(conn) -> None:
+    """Rebuild the legacy SQLite table so PRELIM and FINAL can coexist.
+
+    SQLite cannot drop a table constraint in place.  This path is only used
+    for databases created before ``version_type`` existed; all rows are
+    copied unchanged and the old table is removed only after the copy has
+    succeeded.  Raw files and parse runs keep their stable foreign keys.
+    """
+
+    old_table = CmeOptionRow.__table__
+    temp_name = "cme_option_rows__versioned_tmp"
+    metadata = MetaData()
+    # Clone the referenced table into the temporary metadata so SQLAlchemy can
+    # compile the foreign-key clause while generating SQLite DDL.
+    CmeRawFile.__table__.to_metadata(metadata)
+    temp_table = old_table.to_metadata(metadata, name=temp_name)
+    conn.exec_driver_sql(str(CreateTable(temp_table).compile(dialect=conn.dialect)))
+
+    existing_columns = {
+        str(row[1])
+        for row in conn.execute(text("PRAGMA table_info('cme_option_rows')")).fetchall()
+    }
+    target_columns = [column.name for column in old_table.columns]
+    insert_columns = [column for column in target_columns if column in existing_columns]
+    column_sql = ", ".join(f'"{column}"' for column in insert_columns)
+    conn.exec_driver_sql(
+        f'INSERT INTO "{temp_name}" ({column_sql}) '
+        f'SELECT {column_sql} FROM "cme_option_rows"'
+    )
+    conn.exec_driver_sql('DROP TABLE "cme_option_rows"')
+    conn.exec_driver_sql(f'ALTER TABLE "{temp_name}" RENAME TO "cme_option_rows"')
+
+    # Recreate the non-unique indexes declared by the ORM model.  CREATE INDEX
+    # is deterministic and safe after the old table has been dropped.
+    for index in old_table.indexes:
+        columns = ", ".join(f'"{column.name}"' for column in index.columns)
+        conn.exec_driver_sql(
+            f'CREATE INDEX IF NOT EXISTS "{index.name}" '
+            f'ON "cme_option_rows" ({columns})'
+        )
 
 
 def _resolve_bind(bind_or_session: Engine | Session) -> Engine:

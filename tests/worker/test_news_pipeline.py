@@ -16,6 +16,7 @@ from apps.worker.pipelines.news import NewsPipelineState, run_news_step
 from database.models.analysis import MarketCandle, ensure_analysis_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 from tests.fixtures.news.replay import materialize_news_replay
+from tests.helpers.warehouse import create_collection_schema, materialize_candles
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +41,25 @@ def _make_db_session(tmp_path: Path):
     engine = create_engine(f"sqlite:///{(tmp_path / 'test.db').as_posix()}", echo=False)
     Base.metadata.create_all(engine)
     ensure_analysis_tables(engine)
+    create_collection_schema(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
+
+
+@pytest.fixture(autouse=True)
+def _warehouse_session(tmp_path, monkeypatch):
+    """Exercise real collection ETL and reads for the pipeline fixtures."""
+    session = _make_db_session(tmp_path)
+    original = news_pipeline.run_news_step
+    def run_with_database(*args, **kwargs):
+        kwargs.setdefault("db_session", session)
+        db = kwargs["db_session"]
+        materialize_candles(db)
+        result = original(*args, **kwargs)
+        db.commit()
+        return result
+    monkeypatch.setitem(globals(), "run_news_step", run_with_database)
+    yield session
+    session.close()
 
 
 def _raw_item(
@@ -65,6 +84,102 @@ def _raw_item(
         verification_status=verification_status,
         duplicate_key=f"news:{source_key}:{event_type}",
         raw_payload={"source_refs": [{"source": source_key, "source_ref": f"{source_key}:test"}]},
+    )
+
+
+def _fomc_item() -> RawNewsItem:
+    return RawNewsItem(
+        source_key="fomc_calendar",
+        source_name="Federal Reserve FOMC Meeting Calendar",
+        source_type="official",
+        feed_key="fomc_meetings",
+        title="FOMC Meeting: June 15-16*, 2026",
+        url="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        domain="federalreserve.gov",
+        published_at="2026-06-15",
+        fetched_at="2026-06-10T12:31:00+00:00",
+        summary="Scheduled Federal Open Market Committee meeting: 2026-06-15 to 2026-06-16.",
+        source_country="US",
+        source_language="en",
+        event_type="fomc_meeting",
+        verification_status="official_confirmed",
+        duplicate_key="news:fomc_calendar:fixture-june-2026",
+        raw_path="raw/news/fomc_calendar/2026-06-10/meeting_calendar-fixture.json",
+        parsed_path="parsed/news/fomc_calendar/2026-06-10/meeting_calendar-fixture.json",
+        raw_payload={
+            "year": 2026,
+            "month": "June",
+            "date_text": "15-16*",
+            "start_date": "2026-06-15",
+            "end_date": "2026-06-16",
+            "is_sep": True,
+            "date_precision": "day",
+            "time_status": "unavailable",
+        },
+    )
+
+
+def _fomc_collector(**kwargs) -> NewsCollectionResult:
+    return NewsCollectionResult(
+        source_key="fomc_calendar",
+        status="success",
+        items=[_fomc_item()],
+        source_refs=[
+            {
+                "source_ref": "fomc_calendar:fomc_meetings",
+                "source": "fomc_calendar",
+                "feed_key": "fomc_meetings",
+                "source_url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+                "status": "available",
+                "raw_path": "raw/news/fomc_calendar/2026-06-10/meeting_calendar-fixture.json",
+                "parsed_path": "parsed/news/fomc_calendar/2026-06-10/meeting_calendar-fixture.json",
+            }
+        ],
+    )
+
+
+def _fred_calendar_collector(**kwargs) -> NewsCollectionResult:
+    item = RawNewsItem(
+        source_key="fred_calendar",
+        source_name="FRED Release Dates",
+        source_type="official",
+        feed_key="release_dates",
+        title="CPI release",
+        url="https://fred.stlouisfed.org/release?rid=10",
+        domain="fred.stlouisfed.org",
+        published_at="2026-06-11",
+        fetched_at="2026-06-10T12:31:00+00:00",
+        summary="Scheduled Consumer Price Index release date.",
+        source_country="US",
+        source_language="en",
+        event_type="inflation_release",
+        verification_status="official_confirmed",
+        duplicate_key="news:fred_calendar:fixture-cpi-2026-06-11",
+        raw_path="raw/news/fred_calendar/2026-06-10/release_dates_10-fixture.json",
+        parsed_path="parsed/news/fred_calendar/2026-06-10/release_dates_10-fixture.json",
+        raw_payload={
+            "release_id": 10,
+            "release_date": "2026-06-11",
+            "event_status": "scheduled",
+            "time_precision": "day",
+            "time_status": "unavailable",
+        },
+    )
+    return NewsCollectionResult(
+        source_key="fred_calendar",
+        status="success",
+        items=[item],
+        source_refs=[
+            {
+                "source_ref": "fred_calendar:10",
+                "source": "fred_calendar",
+                "feed_key": "release_dates",
+                "source_url": "https://api.stlouisfed.org/fred/release/dates?release_id=10",
+                "status": "available",
+                "raw_path": item.raw_path,
+                "parsed_path": item.parsed_path,
+            }
+        ],
     )
 
 
@@ -111,6 +226,8 @@ def test_news_collectors_skip_jin10_when_disabled(monkeypatch: pytest.MonkeyPatc
 
     assert collector_names == [
         "fed_rss",
+        "fomc_calendar",
+        "fred_calendar",
         "bls_calendar",
         "bea_calendar",
         "eia_energy",
@@ -118,6 +235,78 @@ def test_news_collectors_skip_jin10_when_disabled(monkeypatch: pytest.MonkeyPatc
         "google_news_rss",
         "reuters_public_news",
     ]
+
+
+def test_news_pipeline_keeps_fomc_schedule_out_of_reaction_events(tmp_path: Path) -> None:
+    state = NewsPipelineState()
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=[("fomc_calendar", _fomc_collector)]),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+    ):
+        run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-fomc")
+        feature_summary = run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-fomc")
+        brief_summary = run_news_step("news_brief", state, storage_root=tmp_path, run_id="run-fomc")
+
+    assert state.event_bundle is not None
+    assert state.event_bundle.event_candidates == []
+    assert feature_summary["official_calendar_count"] == 1
+    assert feature_summary["upcoming_14d_count"] == 1
+    assert brief_summary["official_calendar_event_count"] == 1
+    assert state.snapshot_dict is not None
+    calendar = state.snapshot_dict["official_calendar"]
+    assert calendar["status"] == "available"
+    assert calendar["window_start_date"] == "2026-06-10"
+    assert calendar["window_end_date"] == "2026-06-24"
+    assert state.snapshot_dict["upcoming_14d"] == calendar["events"]
+    event = calendar["events"][0]
+    assert event["start_date"] == "2026-06-15"
+    assert event["end_date"] == "2026-06-16"
+    assert event["time_precision"] == "day"
+    assert event["time_status"] == "unavailable"
+    assert event["event_status"] == "scheduled"
+    assert "event_time" not in event
+    assert event["source_refs"][0]["raw_path"].startswith("raw/news/fomc_calendar/")
+    assert state.snapshot_dict["daily_market_brief"]["next_7d_calendar"] == []
+
+
+def test_news_pipeline_keeps_fred_inflation_schedule_out_of_reaction_events(tmp_path: Path) -> None:
+    state = NewsPipelineState()
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=[("fred_calendar", _fred_calendar_collector)]),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+    ):
+        run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-fred-calendar")
+        feature_summary = run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-fred-calendar")
+
+    assert state.event_bundle is not None
+    assert state.event_bundle.event_candidates == []
+    assert feature_summary["official_calendar_count"] == 1
+    assert state.official_calendar["source_keys"] == ["fred_calendar"]
+    event = state.official_calendar["events"][0]
+    assert event["title"] == "CPI release"
+    assert event["start_date"] == "2026-06-11"
+    assert event["event_status"] == "scheduled"
+    assert event["time_precision"] == "day"
+    assert "event_time" not in event
+
+
+def test_news_pipeline_retains_fomc_items_when_checkpoint_skips_duplicates(tmp_path: Path) -> None:
+    with (
+        patch("apps.worker.pipelines.news._collectors", return_value=[("fomc_calendar", _fomc_collector)]),
+        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+    ):
+        first_state = NewsPipelineState()
+        run_news_step("news_collect", first_state, storage_root=tmp_path, run_id="first")
+
+        second_state = NewsPipelineState()
+        run_news_step("news_collect", second_state, storage_root=tmp_path, run_id="second")
+        feature_summary = run_news_step("news_feature", second_state, storage_root=tmp_path, run_id="second")
+
+    assert len(second_state.raw_items) == 1
+    assert second_state.new_items == []
+    assert len(second_state.official_calendar_items) == 1
+    assert feature_summary["official_calendar_count"] == 1
+    assert second_state.official_calendar["events"][0]["start_date"] == "2026-06-15"
 
 
 def test_news_feature_skips_jin10_legacy_inputs_when_disabled(
@@ -263,6 +452,9 @@ def test_news_pipeline_collect_checkpoint_skips_seen_items_on_rerun(tmp_path: Pa
 
         second_state = NewsPipelineState()
         second_summary = run_news_step("news_collect", second_state, storage_root=tmp_path, run_id="run-news-2")
+        second_feature_summary = run_news_step(
+            "news_feature", second_state, storage_root=tmp_path, run_id="run-news-2"
+        )
 
     checkpoint_path = tmp_path / "state" / "news_collection_checkpoints.json"
     checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
@@ -270,9 +462,17 @@ def test_news_pipeline_collect_checkpoint_skips_seen_items_on_rerun(tmp_path: Pa
     assert first_summary["raw_news_item_count"] == 2
     assert first_summary["collected_raw_news_item_count"] == 2
     assert first_summary["skipped_duplicate_item_count"] == 0
-    assert second_summary["raw_news_item_count"] == 0
+    assert second_summary["raw_news_item_count"] == 2
+    assert second_summary["context_raw_news_item_count"] == 2
+    assert second_summary["new_raw_news_item_count"] == 0
     assert second_summary["collected_raw_news_item_count"] == 2
     assert second_summary["skipped_duplicate_item_count"] == 2
+    assert second_feature_summary["event_candidate_count"] == 2
+    assert second_summary["news_collection"]["discovered_event_count"] == 0
+    assert second_state.news_collection["discovered_event_count"] == 2
+    assert second_state.news_collection["novel_item_count"] == 0
+    assert second_state.news_collection["context_item_count"] == 2
+    assert {row["source_key"] for row in second_state.news_collection["source_statuses"]} == {"fed_rss", "gdelt_news"}
     assert second_summary["collection_checkpoint_path"] == "state/news_collection_checkpoints.json"
     assert checkpoint_payload["sources"]["fed_rss"]["last_success_at"] == "2026-06-10T12:31:00+00:00"
     assert checkpoint_payload["sources"]["gdelt_news"]["last_accepted_item_count"] == 0
@@ -471,6 +671,12 @@ def test_news_pipeline_triggers_web_search_fallback_when_discovery_is_missing(
 
 
 def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp_path: Path) -> None:
+    class ReplayDatetime(_FixedNewsDatetime):
+        @classmethod
+        def now(cls, tz=None):
+            # The replay reports were published on June 11, after the base clock.
+            return super().now(tz).replace(day=11)
+
     state = NewsPipelineState()
     session = _make_db_session(tmp_path)
     session.add_all(
@@ -573,7 +779,7 @@ def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp
 
     with (
         patch("apps.worker.pipelines.news._collectors", return_value=_fake_collectors()),
-        patch("apps.worker.pipelines.news.datetime", _FixedNewsDatetime),
+        patch("apps.worker.pipelines.news.datetime", ReplayDatetime),
     ):
         run_news_step("news_collect", state, storage_root=tmp_path, run_id="run-news")
         feature_summary = run_news_step("news_feature", state, storage_root=tmp_path, run_id="run-news", db_session=session)
@@ -607,6 +813,8 @@ def test_news_pipeline_feature_step_wires_report_events_and_market_reactions(tmp
     )
     assert any(item["asset"] == "WTI" for item in brief_payload["daily_market_brief"]["asset_reactions"])
     assert state.snapshot_dict is not None
+    assert state.snapshot_dict["news_coverage"]["context_item_count"] == 2
+    assert state.snapshot_dict["news_coverage"]["discovered_event_count"] >= 2
     assert state.snapshot_dict["gold_event_mainlines"]["event_links"]
     assert state.snapshot_dict["gold_macro_overview"]["input_snapshot_ids"]["gold_event_mainlines"] == f"features/news/{state.retrieved_date}/run-news/gold_event_mainlines.json"
 
@@ -630,8 +838,8 @@ def test_news_pipeline_feature_step_writes_jin10_daily_analysis_triggers(tmp_pat
                     ),
                     url="https://xnews.jin10.com/details/trigger",
                     domain="xnews.jin10.com",
-                    published_at="2026-06-11T12:00:00+00:00",
-                    fetched_at="2026-06-11T12:00:01+00:00",
+                    published_at="2026-06-10T12:00:00+00:00",
+                    fetched_at="2026-06-10T12:00:01+00:00",
                     summary=(
                         "能源推升通胀数据，美联储已难兑现宽松。黄金乐观情绪被清除，短期动量仍为负。"
                         "多头交易仍需等新的催化剂，收复4500是第一道槛。"

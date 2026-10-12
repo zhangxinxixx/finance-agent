@@ -7,27 +7,27 @@ export interface HeatmapCell {
 
 export const HEATMAP_GRID: HeatmapCell[][] = [
   [
-    { key: "US10Y", name: "10Y 国债", symbol: "US10Y", group: "rates" },
-    { key: "US02Y", name: "2Y 国债", symbol: "US02Y", group: "rates" },
-    { key: "REAL_10Y", name: "实际利率", symbol: "TIPS", group: "rates" },
-    { key: "T10YIE", name: "通胀预期", symbol: "T10YIE", group: "rates" },
-    { key: "YIELD_SPREAD_2Y_3M", name: "短端利差", symbol: "2Y-3M", group: "rates" },
+    { key: "US10Y", name: "10年名义利率", symbol: "（US10Y）", group: "rates" },
+    { key: "US02Y", name: "2年名义利率", symbol: "（US02Y）", group: "rates" },
+    { key: "REAL_10Y", name: "实际利率", symbol: "（TIPS）", group: "rates" },
+    { key: "T10YIE", name: "通胀预期", symbol: "（T10YIE）", group: "rates" },
+    { key: "YIELD_SPREAD_2Y_3M", name: "短端利差", symbol: "（2Y-3M）", group: "rates" },
   ],
   [
-    { key: "TGA", name: "财政账户", symbol: "TGA", group: "liquidity" },
-    { key: "REPO", name: "逆回购", symbol: "REPO", group: "liquidity" },
-    { key: "FED_BS", name: "联储BS", symbol: "FedBS", group: "liquidity" },
-    { key: "DXY", name: "美元指数", symbol: "DXY", group: "dollar" },
+    { key: "TGA", name: "财政账户", symbol: "（TGA）", group: "liquidity" },
+    { key: "REPO", name: "逆回购", symbol: "（REPO）", group: "liquidity" },
+    { key: "FED_BS", name: "联储资产负债表", symbol: "（FedBS）", group: "liquidity" },
+    { key: "DXY", name: "美元指数", symbol: "（DXY）", group: "dollar" },
   ],
   [
-    { key: "XAUUSD", name: "现货黄金", symbol: "XAU", group: "metals" },
-    { key: "XAGUSD", name: "现货白银", symbol: "XAG", group: "metals" },
-    { key: "SPX", name: "标普500", symbol: "SPX", group: "funding" },
-    { key: "VIX", name: "波动率", symbol: "VIX", group: "funding" },
+    { key: "XAUUSD", name: "现货黄金", symbol: "（XAUUSD）", group: "metals" },
+    { key: "XAGUSD", name: "现货白银", symbol: "（XAGUSD）", group: "metals" },
+    { key: "SPX", name: "标普500", symbol: "（SPX）", group: "funding" },
+    { key: "VIX", name: "波动率指数", symbol: "（VIX）", group: "funding" },
   ],
   [
-    { key: "VIX_FULL", name: "VIX 恐慌指数", symbol: "VIX", group: "funding" },
-    { key: "BTC", name: "比特币", symbol: "BTC", group: "funding" },
+    { key: "VIX_FULL", name: "波动率恐慌指数", symbol: "（VIX）", group: "funding" },
+    { key: "BTC", name: "比特币", symbol: "（BTC）", group: "funding" },
   ],
 ];
 

@@ -22,11 +22,15 @@ export function useCMEOptions(date?: string, enabled = true): CMEOptionsState {
     async function loadCMEOptions() {
       if (!enabled) {
         setIsLoading(true);
+        setData(null);
         return;
       }
 
       setIsLoading(true);
       setError(null);
+      // A date change starts a new snapshot identity. Do not keep the prior
+      // date visible while the new request is in flight.
+      setData(null);
 
       try {
         const nextData = await fetchCMEOptionsData(date);

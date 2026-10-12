@@ -15,7 +15,7 @@ OBSERVED_AT = datetime(2026, 7, 8, 3, 0, tzinfo=timezone.utc)
 def _health_snapshot() -> dict:
     items = []
     for source_key in (
-        "jin10_mcp_market",
+        "twelvedata_xauusd",
         "jin10_mcp_flash",
         "jin10_xnews_public",
         "jin10_svip_reports",
@@ -52,7 +52,7 @@ def _set_source_health(snapshot: dict, source_key: str, **updates) -> None:
 
 
 def _seed_storage(storage_root: Path, *, content_scope: str = "full", body_complete: bool = True, vip_locked: bool = False) -> None:
-    _write_text(storage_root / "outputs" / "jin10" / "quotes_cache.json")
+    _write_text(storage_root / "raw" / "market" / "twelvedata" / "quote.json")
     _write_text(storage_root / "outputs" / "jin10" / "flash_cache.json")
     _write_text(storage_root / "features" / "news" / "2026-07-08" / "run-1" / "jin10_article_briefs.json")
     _write_text(storage_root / "raw" / "jin10_datacenter" / "2026-07-08" / "dc_etf_gold.json")
@@ -103,6 +103,7 @@ def test_data_quality_monitor_writes_three_artifacts_for_full_content(tmp_path, 
 
 def test_data_quality_monitor_no_jin10_skips_external_checks_but_stays_partial(tmp_path, monkeypatch) -> None:
     storage_root = tmp_path / "storage"
+    _write_text(storage_root / "raw" / "market" / "twelvedata" / "quote.json")
     monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
     monkeypatch.setattr(data_quality_agent, "get_data_source_health_latest", lambda date=None: _health_snapshot())
 
@@ -141,10 +142,10 @@ def test_data_quality_monitor_no_jin10_skips_external_checks_but_stays_partial(t
     assert readiness["disabled_sources"]
     assert result["source_health"]["jin10_disabled"] is True
     assert result["source_health"]["overall_status"] == "partial"
-    assert result["source_health"]["monitored_sources"] == []
+    assert result["source_health"]["monitored_sources"] == ["twelvedata_xauusd"]
     assert result["source_health"]["probe_mode"] == "disabled"
     assert "jin10_mcp_calendar" in result["source_health"]["disabled_sources"]
-    assert result["source_health"]["checks"] == []
+    assert all(check["source_key"] == "twelvedata_xauusd" for check in result["source_health"]["checks"])
     assert result["data_quality_report"]["summary"]["freshness_problem_count"] == 0
 
 
@@ -157,7 +158,7 @@ def test_data_quality_monitor_includes_live_probe_findings_in_readiness(tmp_path
         def run(self, **kwargs):
             return [
                 DataHealthCheck(
-                    source_key="jin10_mcp_market",
+                    source_key="twelvedata_xauusd",
                     check_type="source_probe",
                     status="unavailable",
                     severity="critical",
@@ -245,7 +246,7 @@ def test_data_quality_monitor_marks_stale_market_as_full_analysis_blocker(tmp_pa
     _seed_storage(storage_root)
     snapshot = _health_snapshot()
     for item in snapshot["items"]:
-        if item["source_key"] == "jin10_mcp_market":
+        if item["source_key"] == "twelvedata_xauusd":
             item["freshness_status"] = "stale"
             item["freshness_reason"] = "ttl_exceeded"
             item["latest_health_at"] = "2026-07-08T02:00:00+00:00"
@@ -265,7 +266,7 @@ def test_data_quality_monitor_marks_stale_market_as_full_analysis_blocker(tmp_pa
     assert readiness["capabilities"]["options_structure_analysis"] == "allowed"
     assert readiness["can_run_full_analysis"] is False
     assert "full analysis" in readiness["blocked_outputs"]
-    assert any(issue["source_key"] == "jin10_mcp_market" and issue["reason_code"] == "freshness_stale" for issue in readiness["blocking_issues"])
+    assert any(issue["source_key"] == "twelvedata_xauusd" and issue["reason_code"] == "freshness_stale" for issue in readiness["blocking_issues"])
 
 
 def test_non_core_flash_staleness_degrades_without_blocking_daily_analysis(tmp_path, monkeypatch) -> None:

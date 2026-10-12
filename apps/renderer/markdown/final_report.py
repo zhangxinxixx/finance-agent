@@ -111,6 +111,7 @@ def render_final_report_markdown(
     news_output: AgentOutput | Mapping[str, Any] | None = None,
     coordinator_output: AgentOutput | Mapping[str, Any] | None,
     created_at: datetime | None = None,
+    research_assessment: Mapping[str, Any] | None = None,
 ) -> str:
     """Render a deterministic Markdown final report from in-memory domain agent outputs.
 
@@ -129,9 +130,26 @@ def render_final_report_markdown(
         "news": _coerce_agent_output(news_output),
         "coordinator": _coerce_agent_output(coordinator_output),
     }
+    from apps.analysis.snapshots.input_validation import research_report_rejection_reasons
+    rejection_reasons = research_report_rejection_reasons(snapshot_data, outputs["coordinator"])
+    if rejection_reasons:
+        raise ValueError("research report blocked: " + ",".join(rejection_reasons))
     snapshot_id = _string_or_unavailable(snapshot_data.get("snapshot_id"))
     input_snapshot_ids = _collect_input_snapshot_ids(snapshot_data, outputs)
     warnings = _collect_warnings(snapshot_warning, snapshot_data, outputs)
+
+    if research_assessment and snapshot_data.get("daily_research", {}).get("schema_version") == "daily_research.v1":
+        from apps.renderer.markdown.daily_research import daily_research_sections, render_daily_research_report
+
+        if snapshot_data.get("gold_workflow", {}).get("schema_version") == "gold_workflow.v2":
+            if snapshot_data['gold_workflow'].get('reader_report_version') in {'gold_reader.v1', 'gold_reader.v2', 'gold_reader.v3', 'gold_reader.v4'}:
+                from apps.renderer.markdown.gold_reader import reader_sections, render_reader_report
+
+                return render_reader_report(snapshot_data, reader_sections(snapshot_data, outputs, research_assessment))
+            from apps.renderer.markdown.gold_workflow import gold_workflow_sections
+
+            return render_daily_research_report(snapshot_data, gold_workflow_sections(snapshot_data, outputs, research_assessment))
+        return render_daily_research_report(snapshot_data, daily_research_sections(snapshot_data, outputs, research_assessment))
 
     lines: list[str] = [
         "# XAUUSD 相关报告",
@@ -196,6 +214,16 @@ def _render_gold_analysis_context(snapshot: Mapping[str, Any]) -> list[str]:
     }.get(baseline_kind, "前序分析")
     freshness = data.get("freshness") if isinstance(data.get("freshness"), Mapping) else {}
     oil_report = data.get("oil_report_summary") if isinstance(data.get("oil_report_summary"), Mapping) else {}
+    positioning_report = (
+        data.get("positioning_report_summary")
+        if isinstance(data.get("positioning_report_summary"), Mapping)
+        else {}
+    )
+    market_odds_report = (
+        data.get("market_odds_report_summary")
+        if isinstance(data.get("market_odds_report_summary"), Mapping)
+        else {}
+    )
     lines = [
         "### 分析基准与当日增量",
         "",
@@ -214,6 +242,59 @@ def _render_gold_analysis_context(snapshot: Mapping[str, Any]) -> list[str]:
         conclusion = str(oil_report.get("one_line_conclusion") or oil_report.get("final_summary") or "").strip()
         if conclusion:
             lines.append(f"- 原油报告摘要：{conclusion}")
+    if positioning_report:
+        lines.append(
+            f"- 今日持仓报告：{positioning_report.get('trade_date') or 'missing'} / "
+            f"ref={positioning_report.get('article_id') or 'missing'} / "
+            f"quality={positioning_report.get('status') or 'unknown'}"
+        )
+        conclusion = str(
+            positioning_report.get("one_line_conclusion") or positioning_report.get("final_summary") or ""
+        ).strip()
+        if conclusion:
+            lines.append(f"- 今日持仓摘要：{conclusion}")
+        validation = (
+            positioning_report.get("cme_validation")
+            if isinstance(positioning_report.get("cme_validation"), Mapping)
+            else {}
+        )
+        validation_summary = validation.get("summary") if isinstance(validation.get("summary"), Mapping) else {}
+        if validation:
+            lines.append(
+                "- 持仓/CME 交叉校验："
+                f"{validation.get('validation_status') or 'unknown'}；"
+                f"matched={validation_summary.get('matched_count', 0)}/"
+                f"{validation_summary.get('comparison_count', 0)}；"
+                f"CME trade_date={validation.get('cme_trade_date') or 'missing'}"
+            )
+    if market_odds_report:
+        lines.append(
+            f"- 今日外部赔率报告：{market_odds_report.get('trade_date') or 'missing'} / "
+            f"ref={market_odds_report.get('article_id') or 'missing'} / "
+            f"quality={market_odds_report.get('status') or 'unknown'}"
+        )
+        conclusion = str(
+            market_odds_report.get("one_line_conclusion") or market_odds_report.get("final_summary") or ""
+        ).strip()
+        if conclusion:
+            lines.append(f"- 今日外部赔率摘要：{conclusion}")
+        evidence = (
+            market_odds_report.get("structured_evidence")
+            if isinstance(market_odds_report.get("structured_evidence"), Mapping)
+            else {}
+        )
+        gold_items = evidence.get("gold_items") if isinstance(evidence.get("gold_items"), list) else []
+        compact_odds = []
+        for item in gold_items[:8]:
+            if not isinstance(item, Mapping):
+                continue
+            probability = item.get("probability")
+            probability_text = f"{float(probability) * 100:g}%" if isinstance(probability, (int, float)) else "unknown"
+            compact_odds.append(
+                f"{item.get('predicate') or 'unknown'} {item.get('target_value') or 'unknown'}={probability_text}"
+            )
+        if compact_odds:
+            lines.append(f"- 黄金外部触价赔率：{'；'.join(compact_odds)}")
     lines.append("")
     return lines
 
@@ -1381,6 +1462,7 @@ def build_structured_report(
     news_output: AgentOutput | Mapping[str, Any] | None = None,
     coordinator_output: AgentOutput | Mapping[str, Any] | None,
     created_at: datetime | None = None,
+    research_assessment: Mapping[str, Any] | None = None,
 ) -> StructuredReportOutput:
     """Build a deterministic StructuredReportOutput from in-memory domain agent outputs.
 
@@ -1399,6 +1481,10 @@ def build_structured_report(
         "news": _coerce_agent_output(news_output),
         "coordinator": _coerce_agent_output(coordinator_output),
     }
+    from apps.analysis.snapshots.input_validation import research_report_rejection_reasons
+    rejection_reasons = research_report_rejection_reasons(snapshot_data, outputs["coordinator"])
+    if rejection_reasons:
+        raise ValueError("research report blocked: " + ",".join(rejection_reasons))
     snapshot_id = _string_or_unavailable(snapshot_data.get("snapshot_id"))
     source_refs = _collect_source_refs(snapshot_data, outputs)
     trade_date = str(snapshot_data.get("trade_date", "")) or str(snapshot_data.get("as_of", ""))
@@ -1554,6 +1640,23 @@ def build_structured_report(
     if warnings:
         risk_disclosures.extend(warnings)
 
+    if research_assessment and snapshot_data.get("daily_research", {}).get("schema_version") == "daily_research.v1":
+        from apps.renderer.markdown.daily_research import daily_research_sections
+
+        version = version.model_copy(update={"report_version": "2.0.0"})
+        sections = [StructuredReportSection.model_validate(item) for item in daily_research_sections(snapshot_data, outputs, research_assessment)]
+        if snapshot_data.get("gold_workflow", {}).get("schema_version") == "gold_workflow.v2":
+            from apps.renderer.markdown.gold_workflow import gold_workflow_sections
+
+            if snapshot_data['gold_workflow'].get('reader_report_version') in {'gold_reader.v1', 'gold_reader.v2', 'gold_reader.v3', 'gold_reader.v4'}:
+                from apps.renderer.markdown.gold_reader import reader_sections
+
+                version = version.model_copy(update={'report_version': {'gold_reader.v1': '2.3.0', 'gold_reader.v2': '2.4.0', 'gold_reader.v3': '2.5.0', 'gold_reader.v4': '2.6.0'}[snapshot_data['gold_workflow']['reader_report_version']]})
+                sections = [StructuredReportSection.model_validate(item) for item in reader_sections(snapshot_data, outputs, research_assessment)]
+            else:
+                version = version.model_copy(update={"report_version": "2.2.0" if snapshot_data["gold_workflow"].get("production_shadow") else "2.1.0"})
+                sections = [StructuredReportSection.model_validate(item) for item in gold_workflow_sections(snapshot_data, outputs, research_assessment)]
+
     return StructuredReportOutput(
         version=version,
         sections=sections,
@@ -1592,6 +1695,9 @@ def _build_source_agent_outputs_list(
                 "version": ao.version,
                 "bias": ao.bias.value,
                 "confidence": ao.confidence,
+                "status": ao.status.value,
+                "data_quality": list(ao.data_quality),
+                "research_synthesis_status": (ao.input_payload or {}).get("research_synthesis", {}).get("status"),
             })
     return agents
 

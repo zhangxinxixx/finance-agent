@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from apps.api.schemas.event_flow import EventFlowActionRequest, EventFlowActionResponse, EventFlowBriefLinkRequest
 from apps.api.services import event_flow_action_service
+from apps.api.services.page_calendar_read_model_service import get_calendar_summary
 from database.models.engine import get_db
 
 router = APIRouter()
@@ -34,6 +35,12 @@ def api_event_flow_events():
     from apps.api.services.event_flow_service import build_event_flow_events
 
     return build_event_flow_events()
+
+
+@router.get("/api/events/calendar-summary")
+def api_event_calendar_summary():
+    """Return the DWS/ADS economic-calendar projection used by pages."""
+    return get_calendar_summary()
 
 
 @router.get("/api/events/report-inputs")

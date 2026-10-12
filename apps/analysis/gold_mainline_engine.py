@@ -514,12 +514,15 @@ def _merge_context_update(row: dict[str, Any], update: dict[str, Any]) -> None:
 
 def _real_rates_usd_features(macro_context: dict[str, Any]) -> dict[str, Any] | None:
     indicators = _dict(macro_context.get("indicators"))
+    project_signals = _dict(macro_context.get("project_signals"))
+    short_curve_signal_present = "short_curve" in project_signals
+    short_curve_signal = _dict(project_signals.get("short_curve"))
     real_10y = _indicator(indicators, "REAL_10Y", "DFII10")
     dxy = _indicator(indicators, "DXY")
     us10y = _indicator(indicators, "US10Y", "DGS10")
     breakeven = _indicator(indicators, "BREAKEVEN_10Y", "T10YIE")
     short_curve = _indicator(indicators, "YIELD_SPREAD_2Y_3M")
-    if not any([real_10y, dxy, us10y, breakeven, short_curve]):
+    if not any([real_10y, dxy, us10y, breakeven, short_curve]) and not short_curve_signal_present:
         return None
     real_rate_level = _number(real_10y.get("value") if real_10y else None)
     real_rate_change = _number(real_10y.get("weekly_change") if real_10y else None)
@@ -530,9 +533,33 @@ def _real_rates_usd_features(macro_context: dict[str, Any]) -> dict[str, Any] | 
     nominal_yield_monthly_change = _number(us10y.get("monthly_change") if us10y else None)
     breakeven_change = _number(breakeven.get("weekly_change") if breakeven else None)
     breakeven_monthly_change = _number(breakeven.get("monthly_change") if breakeven else None)
-    short_curve_level = _number(short_curve.get("value") if short_curve else None)
-    short_curve_change = _number(short_curve.get("weekly_change") if short_curve else None)
-    short_curve_monthly_change = _number(short_curve.get("monthly_change") if short_curve else None)
+    if short_curve_signal_present:
+        curve_is_usable = short_curve_signal.get("status") in {"fresh", "available", "ready"}
+        short_curve_level = _number(short_curve_signal.get("spread")) if curve_is_usable else None
+        short_curve_change = _number(short_curve_signal.get("weekly_spread_change")) if curve_is_usable else None
+        short_curve_monthly_change = None
+        short_curve_two_year_change = _number(short_curve_signal.get("two_year_change")) if curve_is_usable else None
+        short_curve_three_month_change = _number(short_curve_signal.get("three_month_change")) if curve_is_usable else None
+        short_curve_two_year_weekly_change = _number(short_curve_signal.get("weekly_two_year_change")) if curve_is_usable else None
+        short_curve_three_month_weekly_change = _number(short_curve_signal.get("weekly_three_month_change")) if curve_is_usable else None
+        short_curve_previous_date = short_curve_signal.get("previous_date") if curve_is_usable else None
+        short_curve_observation_date = short_curve_signal.get("as_of") if curve_is_usable else None
+        short_curve_change_type = str(short_curve_signal.get("change_type") or "unavailable") if curve_is_usable else "unavailable"
+        short_curve_driver = str(short_curve_signal.get("driver") or "unavailable") if curve_is_usable else "unavailable"
+        short_curve_summary = str(short_curve_signal.get("summary") or "2Y-3M 项目曲线信号不可用。")
+    else:
+        short_curve_level = _number(short_curve.get("value") if short_curve else None)
+        short_curve_change = _number(short_curve.get("weekly_change") if short_curve else None)
+        short_curve_monthly_change = _number(short_curve.get("monthly_change") if short_curve else None)
+        short_curve_two_year_change = None
+        short_curve_three_month_change = None
+        short_curve_two_year_weekly_change = None
+        short_curve_three_month_weekly_change = None
+        short_curve_previous_date = short_curve.get("previous_date") if short_curve else None
+        short_curve_observation_date = short_curve.get("date") if short_curve else None
+        short_curve_change_type = "legacy_indicator"
+        short_curve_driver = "legacy_indicator"
+        short_curve_summary = "2Y-3M 使用历史宏观指标视图；当前项目曲线腿部变化未单独提供。"
     real_rate_resolved_change, real_rate_basis = _resolved_change(weekly=real_rate_change, monthly=real_rate_monthly_change)
     dxy_resolved_change, dxy_basis = _resolved_change(weekly=dxy_change, monthly=dxy_monthly_change)
     nominal_yield_resolved_change, nominal_yield_basis = _resolved_change(
@@ -576,6 +603,16 @@ def _real_rates_usd_features(macro_context: dict[str, Any]) -> dict[str, Any] | 
         "yield_spread_2y_3m_monthly_change": short_curve_monthly_change,
         "yield_spread_2y_3m_trend": short_curve_trend,
         "yield_spread_2y_3m_trend_basis": short_curve_basis,
+        "yield_curve_2y3m_observation_date": short_curve_observation_date,
+        "yield_curve_2y3m_previous_date": short_curve_previous_date,
+        "yield_curve_2y3m_two_year_change": short_curve_two_year_change,
+        "yield_curve_2y3m_three_month_change": short_curve_three_month_change,
+        "yield_curve_2y3m_two_year_weekly_change": short_curve_two_year_weekly_change,
+        "yield_curve_2y3m_three_month_weekly_change": short_curve_three_month_weekly_change,
+        "yield_curve_2y3m_change_type": short_curve_change_type,
+        "yield_curve_2y3m_driver": short_curve_driver,
+        "yield_curve_2y3m_directional_role": "context_only",
+        "yield_curve_2y3m_summary": short_curve_summary,
         "yield_curve_2y3m_signal": _yield_curve_2y3m_signal(
             level=short_curve_level,
             trend=short_curve_trend,
@@ -583,6 +620,16 @@ def _real_rates_usd_features(macro_context: dict[str, Any]) -> dict[str, Any] | 
         "yield_curve_2y3m_market_meaning": _yield_curve_2y3m_market_meaning(
             level=short_curve_level,
             trend=short_curve_trend,
+            two_year_change=(
+                short_curve_two_year_weekly_change
+                if short_curve_two_year_weekly_change is not None
+                else short_curve_two_year_change
+            ),
+            three_month_change=(
+                short_curve_three_month_weekly_change
+                if short_curve_three_month_weekly_change is not None
+                else short_curve_three_month_change
+            ),
         ),
     }
     available_sources = []
@@ -601,13 +648,15 @@ def _real_rates_usd_features(macro_context: dict[str, Any]) -> dict[str, Any] | 
         if (
             fields["real_rate_trend"] == "falling"
             and fields["dxy_trend"] != "rising"
-            and fields["yield_curve_2y3m_signal"] != "inversion_deepening_hard_landing_risk"
         )
         else "neutral"
     )
     return {
         "feature_fields": fields,
-        "source_refs": _macro_source_refs(macro_context=macro_context, symbols=["REAL_10Y", "DFII10", "DXY", "US10Y", "DGS10", "BREAKEVEN_10Y", "T10YIE", "YIELD_SPREAD_2Y_3M", "DGS2", "DGS3MO"]),
+        "source_refs": _merge_source_refs([
+            _macro_source_refs(macro_context=macro_context, symbols=["REAL_10Y", "DFII10", "DXY", "US10Y", "DGS10", "BREAKEVEN_10Y", "T10YIE", "YIELD_SPREAD_2Y_3M", "DGS2", "DGS3MO"]),
+            short_curve_signal.get("source_refs") if short_curve_signal_present else [],
+        ]),
         "missing_data": [item for item in ["real_rates", "inflation_expectations", "dxy", "yield_curve"] if item not in available_sources],
         "verification_status": (
             "official_confirmed"
@@ -621,7 +670,7 @@ def _real_rates_usd_features(macro_context: dict[str, Any]) -> dict[str, Any] | 
         ),
         "freshness": "fresh",
         "direction": direction,
-        "summary": "实际利率、名义利率、通胀预期、DXY 与 2Y-3M 利差已由宏观快照接入；2Y-3M 用于确认短端政策拐点定价和黄金低点窗口。",
+        "summary": "实际利率、名义利率、通胀预期、DXY 与 2Y-3M 利差已由宏观快照接入；2Y-3M 仅拆分两腿描述短端政策定价，不单独决定黄金方向。",
     }
 
 
@@ -1725,18 +1774,31 @@ def _yield_curve_2y3m_signal(*, level: float | None, trend: str) -> str:
     return "positive_curve_no_near_term_easing"
 
 
-def _yield_curve_2y3m_market_meaning(*, level: float | None, trend: str) -> str:
+def _yield_curve_2y3m_market_meaning(
+    *,
+    level: float | None,
+    trend: str,
+    two_year_change: float | None = None,
+    three_month_change: float | None = None,
+) -> str:
+    leg_detail = _yield_curve_leg_detail(two_year_change, three_month_change)
     if level is None:
         return "2Y-3M 利差缺失，无法判断短端政策拐点定价。"
     if level < 0 and trend == "rising":
-        return "2Y-3M 仍倒挂但正在改善，代表短端政策拐点/降息预期升温；若 10Y 实际利率同步回落，黄金低点确认概率提高。"
+        return f"2Y-3M 仍倒挂但正在改善；{leg_detail} 这只说明短端定价结构变化，属于政策拐点观察，不代表黄金方向，也不意味着黄金低点确认概率提高；仍需实际利率和美元独立确认。"
     if level < 0 and trend == "falling":
-        return "2Y-3M 倒挂加深，代表短端压力或硬着陆风险仍未解除；黄金修复需要实际利率和美元进一步确认。"
+        return f"2Y-3M 倒挂加深；{leg_detail} 短端压力或硬着陆风险仍需观察，曲线本身不提供黄金方向；黄金修复需要实际利率和美元进一步确认。"
     if level < 0:
-        return "2Y-3M 处于倒挂区间，市场仍在定价周期后段和潜在政策转向，但方向尚未确认。"
+        return f"2Y-3M 处于倒挂区间；{leg_detail} 周期后段或潜在政策转向仍是观察假设，方向尚未确认。"
     if trend == "falling":
-        return "2Y-3M 正斜率收窄，短端利率压力仍需观察；黄金低点确认不能只靠曲线信号。"
-    return "2Y-3M 维持正斜率或继续走阔，短端衰退/降息定价不足，黄金主要仍看实际利率和美元。"
+        return f"2Y-3M 正斜率收窄；{leg_detail} 短端利率压力仍需观察，黄金方向不能只靠曲线信号。"
+    return f"2Y-3M 维持正斜率或继续走阔；{leg_detail} 短端衰退/降息定价不足的解释仍需其他证据，黄金主要看实际利率和美元。"
+
+
+def _yield_curve_leg_detail(two_year_change: float | None, three_month_change: float | None) -> str:
+    if two_year_change is None or three_month_change is None:
+        return "2Y 或 3M 的可比变化缺失"
+    return f"2Y 周变化 {two_year_change:+.4f}、3M 周变化 {three_month_change:+.4f}（百分点）"
 
 
 def _number(value: Any) -> float | None:

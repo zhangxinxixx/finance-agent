@@ -423,17 +423,14 @@ class LLMGateway:
         raise final_error
 
     def _resolve_providers(self, provider: str | None) -> list[str]:
-        """Resolve provider list: explicit > default > fallback chain."""
+        """Resolve the primary/backup chain while preserving non-primary pins."""
         if provider and provider in self.config.providers:
+            if provider == self.config.default_provider:
+                return self.config.provider_chain
             return [provider]
         if provider:
             logger.warning("Provider '%s' not available, trying fallback", provider)
-        # Try default first, then all others
-        available = self.config.available_providers
-        default = self.config.default_provider
-        if default in available:
-            return [default] + [p for p in available if p != default]
-        return available
+        return self.config.provider_chain
 
 
 def _request_config(

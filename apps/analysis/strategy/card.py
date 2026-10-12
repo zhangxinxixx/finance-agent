@@ -70,6 +70,26 @@ def build_strategy_card(
     gold_macro_conditions = _extract_gold_macro_conditions(snapshot)
     trigger_conditions = list(gold_macro_conditions.get("trigger_conditions") or []) if gold_macro_conditions else []
     confirmation_conditions = list(gold_macro_conditions.get("confirmation_conditions") or []) if gold_macro_conditions else []
+    research = (coordinator_output.input_payload or {}).get("daily_research_assessment", {})
+    if research and coordinator_output.accepted_state_conclusion is None:
+        # Consume the same adjudication/scenarios as the report. Do not derive
+        # another direction or translate futures strikes into spot entries.
+        scenario_summary = research["summary"]
+        for scenario in research.get("scenarios", []):
+            trigger_conditions.append(f"{scenario.get('priority', '条件场景')} / {scenario['name']}：{scenario['trigger']}")
+            confirmation_conditions.append(f"{scenario['name']}：{scenario['path']}")
+            invalid_conditions.append(f"{scenario['name']}：{scenario['invalidated_by']}")
+        for name in ("2Y−3M 两腿驱动", "10Y−2Y 期限结构", "SOFR−IORB / EFFR−IORB", "TGA 周均与准备金", "CME 到期结构与期现基差", "新闻证据等级与事件时间"):
+            if name not in watchlist:
+                watchlist.append(name)
+        workflow = research.get("gold_workflow", {})
+        if workflow:
+            watchlist.append("30Y−10Y 长端曲线；4H/1H 趋势过滤与 15m/5m 结构")
+            for key in ("reason", "flat", "long", "short", "event_rule"):
+                confirmation_conditions.append(workflow["execution"][key])
+            displayed = workflow.get("scenario_display", {}).get("scenarios") or workflow["scenario_engine"]["scenarios"]
+            for scenario in displayed:
+                watchlist.append(f"{scenario['name']}：规则权重 {scenario.get('display_weight_pct', scenario['weight_pct'])}%，非统计概率")
     if gold_macro_conditions:
         for item in gold_macro_conditions.get("watchlist") or []:
             if item not in watchlist:

@@ -1,0 +1,164 @@
+.gold-workspace { display: grid; gap: var(--space-4, 16px); min-width: 0; margin-bottom: var(--space-4, 16px); }
+.gold-workspace .fa-card { padding: var(--space-4, 16px); min-width: 0; }
+.gold-workspace p { margin: 0; overflow-wrap: anywhere; }
+.gold-workspace h1, .gold-workspace h2, .gold-workspace h3 { margin: 0; }
+.gold-workspace-header, .gold-section-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3, 12px); }
+.gold-workspace-header h1 { display: flex; align-items: center; gap: var(--space-2, 8px); }
+.gold-workspace-header p, .gold-section-header p { margin-top: var(--space-1, 4px); }
+.gold-section-header h2 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2, 8px); }
+.gold-workspace-guide { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2, 8px); }
+.gold-color-key { display: flex; flex-wrap: wrap; gap: var(--space-3, 12px); font-size: var(--type-label); font-weight: 600; }
+.gold-workspace .gold-tone--up { color: var(--up); }
+.gold-workspace .gold-tone--down { color: var(--down); }
+.gold-workspace .gold-tone--warn { color: var(--warn); }
+.gold-workspace .gold-tone--neutral { color: var(--fa-text-primary); }
+.gold-workspace .gold-tone--dim { color: var(--fa-text-muted); }
+.gold-workspace-actions, .gold-chart-actions, .gold-decision-links { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2, 8px); }
+.gold-workspace button { font-size: var(--type-label); border-radius: var(--radius-md); cursor: pointer; }
+.gold-primary-button, .gold-secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-1, 4px); padding: var(--space-2, 8px) var(--space-3, 12px); border: 1px solid var(--border); white-space: nowrap; }
+.gold-primary-button { color: var(--bg-card); background: var(--brand); border-color: var(--brand); }
+.gold-secondary-button { color: var(--fa-text-primary); background: var(--bg-card); }
+.gold-workspace button:disabled { opacity: .65; cursor: wait; }
+.gold-text-button, .gold-decision-links a { font-size: var(--type-label); color: var(--brand); background: transparent; border: 0; }
+.gold-market-headline { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: var(--space-3, 12px) var(--space-5, 20px); }
+.gold-market-headline > div { display: flex; flex-direction: column; gap: var(--space-1, 4px); min-width: 0; }
+.gold-market-headline .fa-price-num { display: block; font-size: var(--type-kpi-lg); }
+.gold-quote-heading, .gold-quote-number, .gold-direction-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2, 8px); }
+.gold-market-headline .gold-quote-number { flex-direction: row; align-items: baseline; gap: var(--space-2, 8px); margin: var(--space-2, 8px) 0; }
+.gold-price-change { font-size: var(--type-label); font-weight: 600; }
+.gold-quote-research { border-left: 1px solid var(--border); padding-left: var(--space-4, 16px); justify-content: center; }
+.gold-quote-details { grid-column: 1 / -1; border-top: 1px solid var(--border-faint); }
+.gold-market-headline .fa-price-num, .gold-factor-value strong, .gold-price-ladder strong { font-family: var(--font-market); font-variant-numeric: tabular-nums; }
+.gold-notice { padding: var(--space-2, 8px) var(--space-3, 12px); border-left: 2px solid var(--warn-border); color: var(--fa-text-body); background: var(--warn-soft); border-radius: var(--radius-sm); }
+.gold-research-decision, .gold-conditional-strategy { display: grid; gap: var(--space-3, 12px); }
+.gold-research-decision { border-left: 3px solid var(--important-border); }
+.gold-research-summary { display: grid; gap: var(--space-2, 8px); }
+.gold-research-summary .report-reading-full strong { color: var(--fa-text-primary); }
+.gold-detail-copy { display: grid; gap: var(--space-3, 12px); }
+.gold-horizon-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4, 16px); }
+.gold-horizon { display: flex; flex-direction: column; gap: var(--space-3, 12px); }
+.gold-horizon--short { border-top: 3px solid var(--brand); }
+.gold-horizon--long { border-top: 3px solid var(--important-border); }
+.gold-horizon-judgment { display: grid; gap: var(--space-2, 8px); }
+.gold-horizon-judgment > h3 { color: var(--brand); }
+.gold-horizon > .fa-faint-text { margin-top: auto; }
+.gold-horizon-empty { display: grid; gap: var(--space-2, 8px); }
+.gold-impact-balance { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3, 12px); margin-top: var(--space-3, 12px); }
+.gold-impact-group { display: grid; align-content: start; gap: var(--space-2, 8px); padding: var(--space-3, 12px); border-left: 3px solid var(--border); border-radius: var(--radius-sm); min-width: 0; }
+.gold-impact-group--up { border-left-color: var(--up); background: var(--up-soft); }
+.gold-impact-group--down { border-left-color: var(--down); background: var(--down-soft); }
+.gold-impact-group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1, 4px); }
+.gold-impact-group li { display: flex; flex-wrap: wrap; gap: var(--space-1, 4px) var(--space-2, 8px); font-size: var(--type-body); color: var(--fa-text-body); }
+.gold-factor-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3, 12px); margin-top: var(--space-3, 12px); }
+.gold-factor { display: grid; gap: var(--space-2, 8px); border: 1px solid var(--border-faint); border-top: 2px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3, 12px); min-width: 0; }
+.gold-factor--supportive { border-top-color: var(--up); }
+.gold-factor--pressure { border-top-color: var(--down); }
+.gold-factor--mixed { border-top-color: var(--warn); }
+.gold-factor-heading { display: flex; flex-wrap: wrap; gap: var(--space-1, 4px); align-items: center; justify-content: space-between; }
+.gold-factor-value { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); align-items: baseline; }
+.gold-factor-value strong { color: var(--fa-text-primary); font-size: var(--type-card-title); }
+.gold-impact-readings { display: grid; gap: var(--space-3); }
+.gold-impact-reading { display: grid; grid-template-columns: 1fr auto; gap: var(--space-1) var(--space-2); align-items: center; padding-top: var(--space-2); border-top: 1px solid var(--border-faint); min-width: 0; }
+.gold-impact-reading p { grid-column: 1 / -1; }
+.gold-key-level-grid, .gold-oil-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); align-items: start; }
+.gold-spot-prose { display: grid; gap: var(--space-4); }
+.gold-condition-number { font-family: var(--font-market); font-variant-numeric: tabular-nums; font-weight: var(--fw-semibold); }
+.gold-environment-watch { display: grid; gap: var(--space-3); }
+.gold-scenario-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3, 12px); }
+.gold-scenario { min-width: 0; border-left: 2px solid var(--important-border); padding-left: var(--space-3, 12px); }
+.gold-scenario--up { border-left-color: var(--up); }
+.gold-scenario--down { border-left-color: var(--down); }
+.gold-scenario--warn { border-left-color: var(--warn); }
+.gold-execution-rule { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2, 8px) var(--space-4, 16px); border-bottom: 1px solid var(--border-faint); padding-bottom: var(--space-3, 12px); }
+.gold-conditional-strategy .gold-section-header > span { max-width: 100%; flex-wrap: wrap; }
+.gold-scenario dl, .gold-scenario dd { margin: 0; }
+.gold-scenario dl { display: grid; gap: var(--space-2, 8px); margin-top: var(--space-2, 8px); }
+.gold-scenario dt { font-size: var(--type-label); color: var(--fa-text-label); margin-bottom: var(--space-1, 4px); }
+.gold-scenario dd { font-size: var(--type-body); line-height: var(--lh-body); color: var(--fa-text-body); overflow-wrap: anywhere; }
+.gold-structure-notes ul { margin: var(--space-2, 8px) 0 0; padding-left: var(--space-4, 16px); }
+.gold-position-guidance { display: grid; gap: var(--space-2, 8px); }
+.gold-visual-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: var(--space-3, 12px); }
+.gold-workspace-chart:only-child { grid-column: 1 / -1; }
+.gold-chart-actions { margin: var(--space-3, 12px) 0; }
+.gold-chart-actions button { padding: var(--space-1, 4px) var(--space-2, 8px); color: var(--fa-text-body); background: var(--bg-card); border: 1px solid var(--border); }
+.gold-chart-actions button[aria-pressed="true"] { color: var(--brand); background: var(--brand-dim); border-color: var(--brand); }
+.gold-workspace-chart [data-chart-timeframe] > div:first-child { max-width: calc(100% - 16px); flex-wrap: wrap; }
+.gold-level-map { display: flex; flex-direction: column; gap: var(--space-3, 12px); }
+.gold-price-ladder { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3, 12px); }
+.gold-price-ladder li { position: relative; display: grid; grid-template-columns: auto 1fr; gap: var(--space-1, 4px) var(--space-3, 12px); padding-left: var(--space-4, 16px); border-left: 2px solid var(--border); font-size: var(--type-body); }
+.gold-level-marker { position: absolute; left: -4px; top: 8px; width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--brand); }
+.gold-price-ladder small { grid-column: 1 / -1; font-size: var(--type-caption); color: var(--fa-text-muted); }
+.gold-price-ladder p, .gold-price-ladder details { grid-column: 1 / -1; }
+.gold-price-ladder strong { color: var(--fa-text-primary); font-size: var(--type-card-title); }
+.gold-cme-levels .gold-price-ladder { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.gold-cme-levels .gold-price-ladder li { grid-template-columns: minmax(0, 1fr); align-content: start; }
+.gold-cme-levels .gold-price-ladder li > span:not(.gold-level-marker) { color: var(--fa-text-muted); font-size: var(--type-label); }
+.gold-cme-levels .gold-price-ladder li p { font-size: var(--type-label); }
+.gold-empty { padding: var(--space-4, 16px) 0; }
+.gold-analysis-progress { background: var(--info-soft); border: 1px solid var(--info-border); padding: var(--space-3, 12px); border-radius: var(--radius-md); }
+.gold-analysis-progress ol { list-style: none; padding: 0; margin: var(--space-2, 8px) 0; display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); }
+.gold-step { display: flex; flex-wrap: wrap; gap: var(--space-1, 4px); font-size: var(--type-label); color: var(--fa-text-muted); }
+.gold-step--success { color: var(--up); }
+.gold-step--failed, .gold-step--blocked { color: var(--down); }
+.gold-step small { width: 100%; overflow-wrap: anywhere; }
+.gold-workspace-navigation { display: flex; flex-wrap: wrap; gap: var(--space-3); padding: var(--space-3) 0; border-block: 1px solid var(--border); }
+.gold-workspace-navigation a { color: var(--brand); font-size: var(--type-label); padding: var(--space-1) var(--space-2); }
+.gold-workspace [id^="gold-"] { scroll-margin-top: var(--space-4); min-width: 0; }
+.gold-research-topics { display: grid; gap: var(--space-4); min-width: 0; }
+.gold-topic-navigation { display: flex; flex-wrap: wrap; gap: var(--space-2); border-bottom: 1px solid var(--border); padding-bottom: var(--space-3); }
+.gold-topic-navigation button { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-5); color: var(--fa-text-body); background: var(--bg-card); border: 1px solid var(--border); }
+.gold-topic-navigation button[aria-pressed="true"] { color: var(--brand); border-color: var(--brand); background: var(--brand-dim); font-weight: var(--fw-semibold); }
+.gold-topic-navigation button span { font-variant-numeric: tabular-nums; color: var(--fa-text-muted); }
+.gold-topic-group-description { margin-bottom: var(--space-4) !important; }
+.gold-topic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); align-items: start; }
+.gold-workspace .gold-topic { display: grid; gap: var(--space-5); padding: var(--space-6); border-top: 2px solid var(--brand); }
+.gold-topic .gold-section-header { align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--border-faint); padding-bottom: var(--space-3); }
+.gold-topic .gold-section-header h3 { flex: 1 1 160px; }
+.gold-topic-judgment { padding: var(--space-3) var(--space-4); border-left: 3px solid var(--important-border); background: var(--bg-card-inner); }
+.gold-topic-judgment .report-prose { color: var(--fa-text-primary); font-weight: var(--fw-medium); }
+.gold-topic-reasoning { display: grid; gap: var(--space-5); margin: 0; }
+.gold-topic-reasoning dt { font-weight: var(--fw-semibold); margin-bottom: var(--space-1); }
+.gold-topic-reasoning dd { margin: 0; }
+.gold-topic .report-prose p, .gold-topic .report-prose ul, .gold-topic .report-prose ol { margin-block: var(--space-2); }
+.gold-topic-invalidation { border-top: 1px solid var(--warn-border); padding-top: var(--space-3); }
+.gold-topic-pending { border-left: 2px solid var(--warn); padding: var(--space-3) var(--space-4); background: var(--warn-soft); }
+.gold-topic-pending ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
+.gold-topic-empty, .gold-topic-excerpts { display: grid; gap: var(--space-3); }
+.gold-topic-metrics { display: grid; gap: var(--space-3); border-bottom: 1px solid var(--border-faint); padding-bottom: var(--space-4); }
+.gold-topic-metric { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-1) var(--space-3); min-width: 0; }
+.gold-topic-metric > .fa-faint-text { text-align: right; }
+.gold-topic-metric strong { font-family: var(--font-market); font-variant-numeric: tabular-nums; }
+.gold-topic-metric .gold-impact-readings { grid-column: 1 / -1; }
+.gold-topic-page-context { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+.gold-topic-page { grid-auto-rows: max-content; align-content: start; }
+.gold-rates-visual { display: grid; gap: var(--space-4); }
+.gold-rate-bars { display: grid; gap: var(--space-4); }
+.gold-rate-bar-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(120px, 2fr) auto minmax(160px, 1fr); gap: var(--space-4); align-items: center; }
+.gold-rate-bar-row strong { font-variant-numeric: tabular-nums; }
+.gold-rate-bar-track { height: var(--space-3); background: var(--bg-card-inner); border-radius: var(--radius-xs); overflow: hidden; }
+.gold-rate-bar { display: block; height: 100%; background: var(--brand); border-radius: var(--radius-xs); }
+.gold-rate-bar--stale, .gold-rate-bar--unverified { background: var(--fg-5); }
+@media (max-width: 1100px) {
+  .gold-factor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gold-visual-grid { grid-template-columns: minmax(0, 1fr); }
+  .gold-scenario-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 650px) {
+  .gold-workspace-header, .gold-section-header { flex-direction: column; }
+  .gold-market-headline, .gold-factor-grid, .gold-horizon-grid, .gold-impact-balance { grid-template-columns: minmax(0, 1fr); }
+  .gold-quote-research { border-left: 0; border-top: 1px solid var(--border-faint); padding: var(--space-3, 12px) 0 0; }
+  .gold-workspace-actions { width: 100%; }
+  .gold-workspace-actions button { flex: 1; }
+  .gold-topic-grid { grid-template-columns: minmax(0, 1fr); }
+  .gold-key-level-grid, .gold-oil-grid { grid-template-columns: minmax(0, 1fr); }
+  .gold-cme-levels .gold-price-ladder { grid-template-columns: minmax(0, 1fr); }
+  .gold-workspace-navigation { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; gap: var(--space-2); }
+  .gold-workspace-navigation a { flex: 0 0 auto; }
+  .gold-topic .gold-section-header { flex-direction: row; align-items: flex-start; }
+  .gold-topic .gold-section-header h3 { flex-basis: auto; width: 100%; }
+  .gold-rate-bar-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .gold-rate-bar-track { grid-column: 1 / -1; grid-row: 2; }
+  .gold-rate-bar-row > .fa-faint-text { grid-column: 1 / -1; }
+  .gold-topic-metric > .fa-faint-text { text-align: left; grid-column: 1 / -1; }
+  .gold-topic-navigation button { flex: 1 1 auto; justify-content: center; }
+}

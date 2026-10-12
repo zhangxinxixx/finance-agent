@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from hashlib import sha256
 from datetime import date
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from apps.api.schemas.common import DataStatus, ReportLifecycleStatus
 from apps.api.services import report_service
 from database.models.analysis import ensure_analysis_tables
+from database.models.analysis import AnalysisSnapshot
 from database.models.report import ReportArtifact, ReportItem, ensure_report_tables
 from database.models.task import TaskRun, TaskStatus, ensure_task_tables
 
@@ -138,7 +140,7 @@ def test_failed_premarket_intermediate_report_is_not_live_authority(tmp_path: Pa
     run_id = "b204d78b-82a5-46bc-9913-f681c92a51ff"
     with factory() as session:
         report_id = _seed_macro_report(session, tmp_path, run_id=run_id, status=TaskStatus.failed)
-        monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
         detail = report_service.get_report_detail(session, report_id)
 
@@ -146,6 +148,69 @@ def test_failed_premarket_intermediate_report_is_not_live_authority(tmp_path: Pa
     assert detail.data_status == DataStatus.unavailable
     assert detail.lifecycle_status == ReportLifecycleStatus.needs_review
     assert {warning.code for warning in detail.warnings} >= {"upstream-task-not-successful"}
+
+
+def test_final_report_authority_requires_success_snapshot_and_unchanged_artifact(tmp_path, monkeypatch):
+    factory = _session_factory()
+    run_id = 'c3515c79-3985-4702-b907-4bf0582ff978'
+    snapshot_id = 'verified-snapshot'
+    path = tmp_path / 'storage/outputs/final_report/final_report.md'
+    path.parent.mkdir(parents=True)
+    path.write_text('# Verified historical report')
+    snapshot_path = tmp_path / 'storage/features/snapshot.json'
+    snapshot_path.parent.mkdir(parents=True)
+    payload = {'run_id': run_id, 'snapshot_id': snapshot_id, 'trade_date': '2026-08-03'}
+    content = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+    snapshot_path.write_bytes(content)
+    with factory() as db:
+        db.add(TaskRun(id=uuid.UUID(run_id), name='premarket', status=TaskStatus.success, snapshot_id=snapshot_id))
+        db.add(AnalysisSnapshot(snapshot_id=snapshot_id, run_id=run_id, asset='XAUUSD', trade_date=date(2026, 8, 3),
+                               status='success', payload=payload, artifact_path=str(snapshot_path),
+                               payload_sha256=sha256(content).hexdigest()))
+        item = ReportItem(report_id='final:'+run_id, family='final_report_markdown', report_type='final_report',
+                          title='verified', asset='XAUUSD', trade_date=date(2026, 8, 3), run_id=run_id, snapshot_id=snapshot_id)
+        item.artifacts = [ReportArtifact(artifact_id='final-md', artifact_type='analysis_md', file_path=str(path),
+                                       sha256=sha256(path.read_bytes()).hexdigest())]
+        db.add(item)
+        # The legacy result path must not bypass the registered review state.
+        from database.queries.analysis import upsert_final_analysis_result
+        upsert_final_analysis_result(db, payload={'asset': 'XAUUSD', 'trade_date': '2026-08-03',
+            'run_id': run_id, 'snapshot_id': snapshot_id, 'confidence': .5, 'payload': {}},
+            paths={'final_report_path': str(path), 'final_report_sha256': sha256(path.read_bytes()).hexdigest()})
+        db.commit()
+    monkeypatch.setattr(report_service._storage, '_PROJECT_ROOT', tmp_path)
+    monkeypatch.setattr(report_service._storage, '_try_db_session', factory)
+    assert any(item['report_id'] == 'final:'+run_id for item in report_service.list_reports_index()['reports'])
+    def assert_history_without_authority():
+        row = next(item for item in report_service.list_reports_index()['reports']
+                   if item['report_id'] == 'final:'+run_id)
+        assert row['authority'] == 'historical_only'
+        assert row['publish_allowed'] is False
+        with factory() as db:
+            assert not report_service._verified_final_report(
+                db, run_id=run_id, snapshot_id=snapshot_id, path=path,
+                digest=db.get(ReportItem, 'final:'+run_id).artifacts[0].sha256)
+    for field, status in [('lifecycle_status', 'needs_review'), ('data_status', 'stale'),
+                          ('data_status', 'mock'), ('data_status', 'fallback'), ('data_status', 'manual_required')]:
+        with factory() as db:
+            item = db.get(ReportItem, 'final:'+run_id)
+            item.lifecycle_status = 'generated'
+            item.data_status = 'live'
+            setattr(item, field, status)
+            db.commit()
+        assert_history_without_authority()
+    with factory() as db:
+        item = db.get(ReportItem, 'final:'+run_id)
+        item.data_status = 'live'
+        run = db.get(TaskRun, uuid.UUID(run_id))
+        run.status = TaskStatus.failed
+        db.commit()
+    assert_history_without_authority()
+    with factory() as db:
+        db.get(TaskRun, uuid.UUID(run_id)).status = TaskStatus.success
+        db.commit()
+    path.write_text('# Changed report')
+    assert_history_without_authority()
 
 
 def test_report_index_hides_failed_premarket_but_keeps_success(tmp_path: Path, monkeypatch) -> None:
@@ -163,8 +228,8 @@ def test_report_index_hides_failed_premarket_but_keeps_success(tmp_path: Path, m
         )
         _seed_canonical_lineage(tmp_path, run_id=success_id)
 
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(report_service, "_try_db_session", factory)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_try_db_session", factory)
 
     report_ids = {item["report_id"] for item in report_service.list_reports_index()["reports"]}
 
@@ -183,10 +248,10 @@ def test_quality_gate_blocked_successful_run_is_not_report_authority(tmp_path: P
             status=TaskStatus.success,
             publish_allowed=False,
         )
-        monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
         detail = report_service.get_report_detail(session, report_id)
 
-    monkeypatch.setattr(report_service, "_try_db_session", factory)
+    monkeypatch.setattr(report_service._storage, "_try_db_session", factory)
     report_ids = {item["report_id"] for item in report_service.list_reports_index()["reports"]}
 
     assert detail is not None
@@ -209,7 +274,7 @@ def test_allowed_macro_report_projects_exact_canonical_snapshot_lineage(
             publish_allowed=True,
         )
         _seed_canonical_lineage(tmp_path, run_id=run_id)
-        monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
         detail = report_service.get_report_detail(session, report_id)
 
@@ -235,7 +300,7 @@ def test_allowed_macro_report_without_valid_canonical_lineage_fails_closed(
             publish_allowed=True,
         )
         _seed_canonical_lineage(tmp_path, run_id=run_id, valid=False)
-        monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
         detail = report_service.get_report_detail(session, report_id)
 

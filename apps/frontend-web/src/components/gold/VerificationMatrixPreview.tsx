@@ -10,7 +10,7 @@ interface VerificationMatrixPreviewProps {
 }
 
 export function VerificationMatrixPreview({ overview, limit = 5 }: VerificationMatrixPreviewProps) {
-  const verificationItems = collectVerificationItems(overview, limit);
+  const verificationItems = collectVerificationItems(overview, Number.POSITIVE_INFINITY);
 
   if (!verificationItems.length) return null;
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class LLMConfig:
     """Top-level LLM configuration with provider registry."""
 
     default_provider: str = "cockpit"
+    fallback_providers: tuple[str, ...] = ("jojocode",)
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
 
     @classmethod
@@ -39,17 +42,15 @@ class LLMConfig:
         cockpit_key = os.getenv("COCKPIT_API_KEY", "").strip()
         cockpit_url = os.getenv("COCKPIT_BASE_URL", "").strip()
         if not cockpit_key or not cockpit_url:
-            # Try reading from an optional local provider config.
+            # Try reading from hermes config
             try:
                 import yaml
-                provider_config_path = os.path.expanduser(
-                    os.getenv("FINANCE_AGENT_PROVIDER_CONFIG", "~/.finance-agent/config.yaml")
-                )
-                if os.path.exists(provider_config_path):
-                    with open(provider_config_path) as f:
-                        provider_config = yaml.safe_load(f)
-                    for provider in provider_config.get("custom_providers", []):
-                        if provider.get("name") == "cockpit":
+                hermes_config_path = os.path.expanduser("~/.hermes/config.yaml")
+                if os.path.exists(hermes_config_path):
+                    with open(hermes_config_path) as f:
+                        hermes_config = yaml.safe_load(f)
+                    for provider in hermes_config.get("custom_providers", []):
+                        if provider.get("name") == "cockpit-codex":
                             cockpit_key = cockpit_key or provider.get("api_key", "")
                             cockpit_url = cockpit_url or provider.get("base_url", "")
                             break
@@ -67,8 +68,16 @@ class LLMConfig:
             )
 
         # JojoCode — Responses-compatible provider with hosted web_search.
+        # Prefer explicit environment configuration. For local development, the
+        # existing Cockpit account registry is a credential source so the same
+        # account can be reused without copying its API key into the repository.
         jojocode_key = os.getenv("JOJOCODE_API_KEY", "").strip()
         jojocode_url = os.getenv("JOJOCODE_BASE_URL", "").strip()
+        if not jojocode_key:
+            discovered = _load_jojocode_from_cockpit()
+            if discovered is not None:
+                jojocode_key, discovered_url = discovered
+                jojocode_url = jojocode_url or discovered_url
         if jojocode_key:
             providers["jojocode"] = ProviderConfig(
                 name="jojocode",
@@ -121,7 +130,17 @@ class LLMConfig:
             # Fallback to first available provider
             default_provider = next(iter(providers)) if providers else ""
 
-        return cls(default_provider=default_provider, providers=providers)
+        fallback_providers = tuple(
+            name
+            for name in _provider_names(os.getenv("LLM_FALLBACK_PROVIDERS", "jojocode"))
+            if name in providers and name != default_provider
+        )
+
+        return cls(
+            default_provider=default_provider,
+            fallback_providers=fallback_providers,
+            providers=providers,
+        )
 
     def get_provider(self, name: str | None = None) -> ProviderConfig:
         """Get provider config by name, or default."""
@@ -136,5 +155,57 @@ class LLMConfig:
         return list(self.providers.keys())
 
     @property
+    def provider_chain(self) -> list[str]:
+        """Return the configured primary/backup chain, omitting unavailable providers."""
+        chain = [self.default_provider, *self.fallback_providers]
+        return list(dict.fromkeys(name for name in chain if name in self.providers))
+
+    @property
     def is_configured(self) -> bool:
         return len(self.providers) > 0
+
+
+def _provider_names(value: str) -> list[str]:
+    return list(dict.fromkeys(name.strip() for name in value.split(",") if name.strip()))
+
+
+def _load_jojocode_from_cockpit() -> tuple[str, str] | None:
+    """Resolve an existing JojoCode account from Cockpit without exposing it."""
+    for path in _cockpit_provider_files():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, list):
+            continue
+        for provider in payload:
+            if not isinstance(provider, dict):
+                continue
+            name = str(provider.get("name") or "").strip().lower()
+            base_url = str(provider.get("baseUrl") or provider.get("base_url") or "").strip()
+            if "jojo" not in name or not base_url.rstrip("/").endswith("/v1"):
+                continue
+            for account in provider.get("apiKeys") or []:
+                if not isinstance(account, dict):
+                    continue
+                api_key = str(account.get("apiKey") or "").strip()
+                if api_key:
+                    return api_key, base_url
+    return None
+
+
+def _cockpit_provider_files() -> list[Path]:
+    candidates: list[Path] = []
+    explicit = os.getenv("JOJOCODE_COCKPIT_PROVIDERS_FILE", "").strip()
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    candidates.append(Path.home() / ".antigravity_cockpit" / "codex_model_providers.json")
+    try:
+        windows_candidates = sorted(
+            Path("/mnt/c/Users").glob("*/.antigravity_cockpit/codex_model_providers.json")
+        )
+        if len(windows_candidates) == 1:
+            candidates.extend(windows_candidates)
+    except OSError:
+        pass
+    return list(dict.fromkeys(candidates))

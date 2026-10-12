@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import base64
+import json
 from pathlib import Path
+
+import pytest
 
 from apps.analysis.jin10.vlm_benchmark import (
     balanced_gate_decision,
@@ -204,11 +208,36 @@ def test_resolve_sample_assets_uses_full_page_for_page_stage_and_crop_for_downst
     assert assets["analysis_image"] == crop
 
 
-def test_benchmark_cli_validate_only_runs_from_repo_root() -> None:
+@pytest.fixture
+def benchmark_storage(tmp_path):
+    """CLI tests use synthetic local assets rather than private runtime files."""
+    root = tmp_path / "storage"
+    manifest = build_daily_weekly_manifest(storage_root=root)
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    pages = {}
+    for sample in manifest["samples"]:
+        parsed = Path(sample["parsed_dir"])
+        parsed.mkdir(parents=True, exist_ok=True)
+        image = parsed / f"page-{sample['page_no']}.png"
+        image.write_bytes(png)
+        pages.setdefault(parsed, []).append({"page_no": sample["page_no"], "image_path": str(image)})
+        if sample["figure_id"]:
+            figures = parsed / "figures"
+            figures.mkdir(exist_ok=True)
+            (figures / f"{sample['figure_id']}.png").write_bytes(png)
+    for parsed, images in pages.items():
+        (parsed / "page_images.json").write_text(json.dumps({"pages": images}), encoding="utf-8")
+    return root
+
+
+def test_benchmark_cli_validate_only_runs_from_repo_root(benchmark_storage) -> None:
     repo_root = Path(__file__).resolve().parents[2]
 
     completed = subprocess.run(
-        [sys.executable, "scripts/benchmark_jin10_vlm.py", "--validate-only", "--repeats", "1"],
+        [sys.executable, "scripts/benchmark_jin10_vlm.py", "--validate-only", "--repeats", "1",
+         "--storage-root", str(benchmark_storage)],
         cwd=repo_root,
         capture_output=True,
         text=True,
@@ -219,7 +248,7 @@ def test_benchmark_cli_validate_only_runs_from_repo_root() -> None:
     assert '"daily-224307-cover"' in completed.stdout
 
 
-def test_benchmark_cli_records_explicit_reasoning_effort() -> None:
+def test_benchmark_cli_records_explicit_reasoning_effort(benchmark_storage) -> None:
     repo_root = Path(__file__).resolve().parents[2]
 
     completed = subprocess.run(
@@ -227,6 +256,8 @@ def test_benchmark_cli_records_explicit_reasoning_effort() -> None:
             sys.executable,
             "scripts/benchmark_jin10_vlm.py",
             "--validate-only",
+            "--storage-root",
+            str(benchmark_storage),
             "--repeats",
             "1",
             "--reasoning-effort",
@@ -242,7 +273,7 @@ def test_benchmark_cli_records_explicit_reasoning_effort() -> None:
     assert '"reasoning_effort": "high"' in completed.stdout
 
 
-def test_benchmark_cli_records_explicit_model() -> None:
+def test_benchmark_cli_records_explicit_model(benchmark_storage) -> None:
     repo_root = Path(__file__).resolve().parents[2]
 
     completed = subprocess.run(
@@ -250,6 +281,8 @@ def test_benchmark_cli_records_explicit_model() -> None:
             sys.executable,
             "scripts/benchmark_jin10_vlm.py",
             "--validate-only",
+            "--storage-root",
+            str(benchmark_storage),
             "--repeats",
             "1",
             "--model",

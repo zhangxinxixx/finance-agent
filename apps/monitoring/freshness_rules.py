@@ -7,7 +7,6 @@ from typing import Any
 from apps.monitoring.schemas import DataHealthCheck
 
 MONITORED_JIN10_SOURCES = (
-    "jin10_mcp_market",
     "jin10_mcp_flash",
     "jin10_xnews_public",
     "jin10_svip_reports",
@@ -33,8 +32,8 @@ class FreshnessRule:
 
 
 FRESHNESS_RULES: dict[str, FreshnessRule] = {
-    "jin10_mcp_market": FreshnessRule(
-        "jin10_mcp_market",
+    "twelvedata_xauusd": FreshnessRule(
+        "twelvedata_xauusd",
         threshold_minutes=5,
         blocked_capabilities=("daily_market_snapshot", "full_daily_analysis", "technical_trigger_confirmation"),
     ),

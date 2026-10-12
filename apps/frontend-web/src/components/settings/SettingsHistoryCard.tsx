@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { SettingsHistoryEntry } from "@/adapters/settings";
-import { formatSettingsTime } from "./settingsFormat";
+import { formatSettingsTime, settingsActionLabel, settingsActorLabel, settingsKeyLabel } from "./settingsFormat";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 interface SettingsHistoryCardProps {
   entries: SettingsHistoryEntry[];
@@ -23,7 +24,7 @@ export function SettingsHistoryCard({
   return (
     <FACard
       title="最近变更"
-      eyebrow="Audit History"
+      eyebrow="变更记录"
       accent="warn"
       action={
         <Link
@@ -35,7 +36,7 @@ export function SettingsHistoryCard({
         </Link>
       }
     >
-      {error ? <div className="text-[11px] text-[var(--down)]">{error}</div> : null}
+      {error ? <div className="text-[11px] text-[var(--down)]">{readingErrorMessage(error, "配置变更历史读取失败，请稍后重试。")}</div> : null}
       {!error && isLoading ? <div className="text-[11px] text-[var(--fg-4)]">加载中...</div> : null}
       {!error && !isLoading ? (
         <div className="space-y-2">
@@ -46,12 +47,12 @@ export function SettingsHistoryCard({
               className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-2"
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{entry.settingKey}</span>
-                <FAStatusPill tone={entry.action === "reset" ? "warn" : "info"}>{entry.action}</FAStatusPill>
+                <span className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{settingsKeyLabel(entry.settingKey)}</span>
+                <FAStatusPill tone={entry.action === "reset" ? "warn" : "info"}>{settingsActionLabel(entry.action)}</FAStatusPill>
               </div>
-              <div className="mt-1 text-[10px] text-[var(--fg-4)]">{entry.reason ?? entry.auditId ?? "未提供备注"}</div>
+              <div className="mt-1 text-[10px] text-[var(--fg-4)]">{entry.reason ?? "未提供备注"}</div>
               <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--fg-5)]">
-                <span>{entry.actor ?? "system"}</span>
+                <span>{settingsActorLabel(entry.actor)}</span>
                 <div className="flex items-center gap-2">
                   {entry.scope !== "secret" && entry.action !== "rollback" && entry.auditId ? (
                     <button

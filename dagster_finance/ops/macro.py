@@ -15,13 +15,27 @@ class MacroConfig(Config):
     storage_root: str = "./storage"
 
 
+def _commit_macro_db_step(context, db_session, step_name: str) -> None:
+    """Commit a successful macro step and roll back if the commit fails."""
+
+    try:
+        db_session.commit()
+    except Exception:
+        try:
+            db_session.rollback()
+        except Exception:
+            context.log.exception("Failed to roll back macro DB transaction: step=%s", step_name)
+        raise
+    context.log.info("Committed macro DB transaction: step=%s", step_name)
+
+
 @op(
     ins={"task_run_ready": In(Nothing)},
     out={"state": Out(MacroPipelineState, description="Initialized macro state")},
     tags={"pipeline": "macro", "step": "init"},
 )
 def macro_init_op(context) -> Output[MacroPipelineState]:
-    state = MacroPipelineState()
+    state = MacroPipelineState(research_enabled=True)
     context.log.info("Macro pipeline state initialized")
     return Output(state, output_name="state")
 
@@ -41,10 +55,12 @@ def macro_collect_op(context, state: MacroPipelineState, config: MacroConfig) ->
     )
     context.log.info(f"macro_collect done: {summary.get('status', 'ok')}")
     raise_for_failed_summary("macro_collect", summary)
+    _commit_macro_db_step(context, db, "macro_collect")
     return state
 
 
 @op(
+    required_resource_keys={"db_session"},
     tags={"pipeline": "macro", "step": "macro_feature"},
 )
 def macro_feature_op(context, state: MacroPipelineState, config: MacroConfig) -> MacroPipelineState:
@@ -53,7 +69,7 @@ def macro_feature_op(context, state: MacroPipelineState, config: MacroConfig) ->
     context.log.info("Starting macro_feature")
     summary = run_macro_step(
         "macro_feature", state,
-        storage_root=storage, run_id=run_id,
+        storage_root=storage, run_id=run_id, db_session=context.resources.db_session,
     )
     context.log.info(f"macro_feature done: {summary.get('status', 'ok')}")
     raise_for_failed_summary("macro_feature", summary)
@@ -61,6 +77,7 @@ def macro_feature_op(context, state: MacroPipelineState, config: MacroConfig) ->
 
 
 @op(
+    required_resource_keys={"db_session"},
     tags={"pipeline": "macro", "step": "report_render"},
 )
 def report_render_op(context, state: MacroPipelineState, config: MacroConfig) -> MacroPipelineState:
@@ -69,8 +86,9 @@ def report_render_op(context, state: MacroPipelineState, config: MacroConfig) ->
     context.log.info("Starting report_render")
     summary = run_macro_step(
         "report_render", state,
-        storage_root=storage, run_id=run_id,
+        storage_root=storage, run_id=run_id, db_session=context.resources.db_session,
     )
     context.log.info(f"report_render done: {summary.get('status', 'ok')}")
     raise_for_failed_summary("report_render", summary)
+    _commit_macro_db_step(context, context.resources.db_session, "report_render")
     return state

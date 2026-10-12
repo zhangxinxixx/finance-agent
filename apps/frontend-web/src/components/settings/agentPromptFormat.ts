@@ -22,6 +22,6 @@ export function promptTemplatePayload(prompt: AgentPromptRegistry | undefined): 
 }
 
 export function formatPromptVersionTime(value: string | null | undefined): string {
-  if (!value) return "unknown";
+  if (!value) return "未记录时间";
   return value.replace("T", " ").replace("Z", "");
 }

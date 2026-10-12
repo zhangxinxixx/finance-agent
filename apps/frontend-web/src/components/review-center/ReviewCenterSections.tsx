@@ -1,11 +1,10 @@
 import { Link } from "react-router-dom";
 import { FACard } from "@/components/shared/FACard";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPill";
-import { SourceTrace } from "@/components/shared/SourceTrace";
 import { getStatusTone } from "@/components/shared/statusMeta";
 import { formatDateTime } from "@/lib/date";
-import { compactId } from "@/lib/format";
 import type { TaskReviewViewModel } from "@/types/agent-task";
 import type { ReviewActionKind } from "@/adapters/agentTasks";
 import type { OrchestrationManualReviewAction, OrchestrationManualReviewItem } from "@/adapters/orchestration";
@@ -17,6 +16,7 @@ import type {
   PromptEvolutionReviewResponse,
 } from "@/types/prompt-evolution";
 import type { SystemEvolutionProposal, SystemEvolutionReviewResponse } from "@/types/system-evolution";
+import { evidenceLabel, operationFieldLabel, operationMainlineLabel, operationReadableLabel, operationReasonLabel, operationReviewLabel, operationStatusLabel } from "@/components/operations/operationsLabels";
 
 function statusTone(status: string): FAStatusTone {
   return getStatusTone(status, "review");
@@ -60,7 +60,7 @@ function reviewActionLabel(value: string | null | undefined): string {
     rerun: "重新运行",
     use_fallback: "采用备用结果",
   };
-  return value ? labels[value] ?? value : "待处理";
+  return value ? labels[value] ?? operationReviewLabel(value) : "待处理";
 }
 
 export function ReviewCard({
@@ -81,43 +81,43 @@ export function ReviewCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-[10px] text-[var(--fg-5)]">{review.review_id}</span>
+            <span className="text-[10px] text-[var(--fg-5)]">复核记录已登记</span>
             {isFactReviewIssue ? <FAStatusPill tone="info">事实审查</FAStatusPill> : null}
-            <FAStatusPill tone={statusTone(review.status)}>{review.status}</FAStatusPill>
-            <FAStatusPill tone={severityTone(review.severity)}>{review.severity}</FAStatusPill>
+            <FAStatusPill tone={statusTone(review.status)}>{operationStatusLabel(review.status)}</FAStatusPill>
+            <FAStatusPill tone={severityTone(review.severity)}>{operationReviewLabel(review.severity)}</FAStatusPill>
           </div>
-          <h2 className="mt-2 text-[13px] font-semibold text-[var(--fg-2)]">{review.source_module}</h2>
+          <h2 className="mt-2 text-[13px] font-semibold text-[var(--fg-2)]">{operationMainlineLabel(review.source_module)}</h2>
           <p className="mt-2 max-w-3xl text-[12px] leading-6 text-[var(--fg-3)]">{review.reason}</p>
         </div>
         <div className="text-right text-[10px] text-[var(--fg-5)]">
           <div>{review.created_at ? formatDateTime(review.created_at) : "创建时间不可用"}</div>
-          <div className="mt-1 font-mono">{review.run_id ?? "run 不可用"}</div>
-          {review.action_status ? <div className="mt-1">{review.action_status}</div> : null}
+          <div className="mt-1 font-mono">{review.run_id ? evidenceLabel(review.run_id) : "运行标识未提供"}</div>
+          {review.action_status ? <div className="mt-1">{operationStatusLabel(review.action_status)}</div> : null}
         </div>
       </div>
 
       <div className="mt-3 grid gap-2 md:grid-cols-3">
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
           <div className="text-[9px] uppercase tracking-[0.1em] text-[var(--fg-5)]">来源步骤</div>
-          <div className="mt-1 font-mono text-[10px] text-[var(--fg-3)]">{review.source_step_id ?? "—"}</div>
+          <div className="mt-1 text-[10px] text-[var(--fg-3)]">{review.source_step_id ? "步骤记录已登记" : "未提供"}</div>
         </div>
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[9px] uppercase tracking-[0.1em] text-[var(--fg-5)]">关联 Claim</div>
-          <div className="mt-1 font-mono text-[10px] text-[var(--fg-3)]">{review.claim_id ?? "—"}</div>
+          <div className="text-[9px] tracking-[0.1em] text-[var(--fg-5)]">关联主张</div>
+          <div className="mt-1 font-mono text-[10px] text-[var(--fg-3)]">{review.claim_id ? evidenceLabel(review.claim_id) : "—"}</div>
         </div>
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
           <div className="text-[9px] uppercase tracking-[0.1em] text-[var(--fg-5)]">建议动作</div>
-          <div className="mt-1 text-[10px] text-[var(--fg-3)]">{review.suggested_action ?? "只读复核，暂无建议动作"}</div>
+          <div className="mt-1 text-[10px] text-[var(--fg-3)]">{review.suggested_action ? reviewActionLabel(review.suggested_action) : "只读复核，暂无建议动作"}</div>
         </div>
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        <FASourceTraceBadge source={compactId(review.run_id, 12, 4)} status="run_id" tone="info" />
+        <FASourceTraceBadge source="运行记录已登记" status="运行标识" tone="info" />
         {review.agent_output_id ? (
-          <FASourceTraceBadge source={compactId(review.agent_output_id, 12, 4)} status="agent_output" tone="dim" />
+          <FASourceTraceBadge source="分析产物已登记" status="分析产物" tone="dim" />
         ) : null}
         {review.impact_modules.map((module) => (
-          <FASourceTraceBadge key={`${review.review_id}-${module}`} source={module} status="impact" tone="warn" />
+          <FASourceTraceBadge key={`${review.review_id}-${module}`} source={operationMainlineLabel(module)} status="影响模块" tone="warn" />
         ))}
       </div>
 
@@ -151,7 +151,7 @@ export function ReviewCard({
                 to={`/reports/${encodeURIComponent(reportId)}`}
                 className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2.5 py-1 font-mono text-[10px] text-[var(--brand-hover)] hover:border-[var(--border-strong)] hover:text-[var(--brand)]"
               >
-                {reportId}
+                报告记录 · {evidenceLabel(reportId)}
               </Link>
             ))}
           </div>
@@ -161,8 +161,9 @@ export function ReviewCard({
       {review.source_refs.length > 0 ? (
         <div className="mt-3">
           <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--fg-5)]">事实审查溯源</div>
-          <div className="max-h-[260px] overflow-y-auto pr-1">
-            <SourceTrace sourceRefs={review.source_refs} compact emptyText="当前复核项没有 source refs。" />
+          <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
+            <div className="text-[10px] text-[var(--fg-4)]">{review.source_refs.length} 条来源记录已登记，详情可复制核对。</div>
+            <div className="mt-2"><EvidenceRecordActions record={review.source_refs} label="来源引用依据" /></div>
           </div>
         </div>
       ) : null}
@@ -177,13 +178,17 @@ export function ReviewCard({
                   key={`${artifact.artifact_id}-${artifact.file_path}`}
                   className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-1 font-mono text-[9px] text-[var(--fg-4)]"
                 >
-                  {artifact.artifact_type}:{artifact.file_path}
+                  {operationFieldLabel(artifact.artifact_type || "artifact_type")}：已登记，可展开回查
                 </span>
               ))}
             </div>
           </div>
         </div>
       ) : null}
+
+      <div className="mt-3 border-t border-[var(--border-faint)] pt-3">
+        <EvidenceRecordActions record={review} label="复核依据记录" />
+      </div>
     </article>
   );
 }
@@ -191,10 +196,10 @@ export function ReviewCard({
 function factSummary(facts: Record<string, unknown>): string {
   const blockedOutputs = facts.blocked_outputs;
   if (Array.isArray(blockedOutputs) && blockedOutputs.length > 0) {
-    return blockedOutputs.filter((item): item is string => typeof item === "string").join(" / ");
+    return `${blockedOutputs.length} 项输出受阻，详情可复制依据记录`;
   }
   const entries = Object.entries(facts).filter(([, value]) => value !== null && value !== undefined);
-  return entries.length ? entries.slice(0, 3).map(([key, value]) => `${key}: ${String(value)}`).join(" · ") : "—";
+  return entries.length ? `${entries.length} 项事实已登记，详情可复制依据记录` : "暂无事实依据";
 }
 
 export function OrchestrationManualReviewCard({
@@ -214,32 +219,32 @@ export function OrchestrationManualReviewCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-[10px] text-[var(--fg-5)]">{item.dedupe_key}</span>
-            <FAStatusPill tone="info">Automation</FAStatusPill>
-            <FAStatusPill tone={statusTone(item.status ?? "unknown")}>{item.status ?? "unknown"}</FAStatusPill>
-            <FAStatusPill tone={isOpen ? "warn" : "up"}>{item.action_status}</FAStatusPill>
+            <span className="text-[10px] text-[var(--fg-5)]">编排记录已登记</span>
+            <FAStatusPill tone="info">自动编排</FAStatusPill>
+            <FAStatusPill tone={statusTone(item.status ?? "unknown")}>{operationStatusLabel(item.status)}</FAStatusPill>
+            <FAStatusPill tone={isOpen ? "warn" : "up"}>{operationStatusLabel(item.action_status)}</FAStatusPill>
           </div>
-          <h2 className="mt-2 text-[13px] font-semibold text-[var(--fg-2)]">{item.kind ?? item.trigger ?? "orchestration"}</h2>
+          <h2 className="mt-2 text-[13px] font-semibold text-[var(--fg-2)]">{item.kind || item.trigger ? operationReasonLabel(item.kind ?? item.trigger) : "自动编排事件待确认"}</h2>
           <p className="mt-2 max-w-3xl text-[12px] leading-6 text-[var(--fg-3)]">{item.reason ?? "—"}</p>
         </div>
         <div className="text-right text-[10px] text-[var(--fg-5)]">
-          <div>{item.workflow_id}</div>
+          <div>工作流标识已登记</div>
           {item.action_recorded_at ? <div className="mt-1">{formatDateTime(item.action_recorded_at)}</div> : null}
-          {item.action_actor ? <div className="mt-1">{item.action_actor}</div> : null}
+          {item.action_actor ? <div className="mt-1">操作人已登记</div> : null}
         </div>
       </div>
 
       <div className="mt-3 grid gap-2 md:grid-cols-3">
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[9px] uppercase tracking-[0.1em] text-[var(--fg-5)]">Trigger</div>
-          <div className="mt-1 text-[10px] text-[var(--fg-3)]">{item.trigger ?? "—"}</div>
+          <div className="text-[9px] tracking-[0.1em] text-[var(--fg-5)]">触发条件</div>
+          <div className="mt-1 text-[10px] text-[var(--fg-3)]">{item.trigger ? operationReasonLabel(item.trigger) : "触发条件未提供"}</div>
         </div>
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[9px] uppercase tracking-[0.1em] text-[var(--fg-5)]">Workflow</div>
-          <div className="mt-1 font-mono text-[10px] text-[var(--fg-3)]">{compactId(item.workflow_id, 18, 6)}</div>
+          <div className="text-[9px] tracking-[0.1em] text-[var(--fg-5)]">工作流标识</div>
+          <div className="mt-1 text-[10px] text-[var(--fg-3)]">工作流记录已登记</div>
         </div>
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
-          <div className="text-[9px] uppercase tracking-[0.1em] text-[var(--fg-5)]">Facts</div>
+          <div className="text-[9px] tracking-[0.1em] text-[var(--fg-5)]">事实依据</div>
           <div className="mt-1 line-clamp-2 text-[10px] text-[var(--fg-3)]">{factSummary(item.facts)}</div>
         </div>
       </div>
@@ -247,7 +252,7 @@ export function OrchestrationManualReviewCard({
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
         <div className="min-w-0 text-[10px] leading-4 text-[var(--fg-4)]">
           <span className="font-semibold text-[var(--fg-5)]">处理结果：</span>
-          {item.action_status === "open" ? "待处理" : `${item.action_status}${item.action_note ? ` · ${item.action_note}` : ""}`}
+          {item.action_status === "open" ? "待处理" : `${operationStatusLabel(item.action_status)}${item.action_note ? ` · ${item.action_note}` : ""}`}
         </div>
         <div className="flex flex-wrap gap-1.5">
           {ORCHESTRATION_REVIEW_ACTIONS.map((action) => (
@@ -262,6 +267,9 @@ export function OrchestrationManualReviewCard({
             </button>
           ))}
         </div>
+      </div>
+      <div className="mt-3 border-t border-[var(--border-faint)] pt-3">
+        <EvidenceRecordActions record={item} label="编排事实依据" />
       </div>
     </article>
   );
@@ -281,7 +289,7 @@ export function ReviewCenterSummaryCard({
       title="人工复核中心"
       eyebrow="事实审查承接"
       accent="warn"
-      action={<FAStatusPill tone={source === "api" ? "up" : "warn"}>{source}</FAStatusPill>}
+      action={<FAStatusPill tone={source === "api" ? "up" : "warn"}>{source === "api" ? "接口结果" : "来源待确认"}</FAStatusPill>}
       bodyClassName="space-y-3"
     >
       <div className="grid gap-3 sm:grid-cols-3">
@@ -309,8 +317,18 @@ function booleanTone(value?: boolean): FAStatusTone {
 function formatProposalValue(value: unknown, fallback = "暂无"): string {
   if (typeof value === "string" && value.trim()) return value;
   if (typeof value === "number") return String(value);
-  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "boolean") return value ? "是" : "否";
   return fallback;
+}
+
+function readableNarrative(value: unknown, fallback = "说明已登记"): string {
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  // Error responses can contain Chinese framing words while still exposing a
+  // machine endpoint. Keep that detail in the evidence copy action only.
+  if (/(?:\/api\/|https?:\/\/|\/(?:home|tmp|var|mnt)\/|(?:schema|snapshot|run|result|receipt|endpoint)[_-]?id)\S*/i.test(value)) {
+    return fallback;
+  }
+  return /[\u3400-\u9fff]/.test(value) ? value : fallback;
 }
 
 function firstItems<T>(items: T[] | undefined, count = 3): T[] {
@@ -318,11 +336,13 @@ function firstItems<T>(items: T[] | undefined, count = 3): T[] {
 }
 
 function proposalTitle(proposal: SystemEvolutionProposal): string {
-  return proposal.title || proposal.proposal_id || proposal.proposal_type || "未命名提案";
+  return readableNarrative(proposal.title, "系统演进提案已登记");
 }
 
 function releaseRecordTitle(record: PromptEvolutionReleaseRecord): string {
-  return record.action || record.agent_name || "release_record";
+  if (record.action === "release_approved") return "发布批准记录";
+  if (record.action === "rolled_back") return "回滚记录";
+  return "发布记录已登记";
 }
 
 export function PromptEvolutionValidationCard({
@@ -360,43 +380,46 @@ export function PromptEvolutionValidationCard({
 
   return (
     <FACard
-      title="PromptEvolution A/B 验证"
-      eyebrow="只读 Prompt 治理"
-      description="展示 PromptEvaluationCase、A/B validation 和发布/回滚记录；页面只读，不激活生产 Prompt。"
+      title="提示内容 A/B 验证"
+      eyebrow="只读提示治理"
+      description="展示提示评估样本、A/B 验证和发布/回滚记录；页面只读，不激活生产提示内容。"
       accent={validationStatus === "pass" ? "info" : "warn"}
       action={(
         <button type="button" onClick={onRefresh} className="fa-workspace-toolbar-button">
-          刷新 Prompt 验证
+          刷新提示词验证
         </button>
       )}
       bodyClassName="space-y-3"
     >
       {isError ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[length:var(--type-body-sm)] text-[var(--warn)]">
-          {errorMessage ?? "无法加载 PromptEvolution 验证结果"}
+          {readableNarrative(errorMessage, "提示内容验证暂时无法读取")}
+          {errorMessage ? <div className="mt-2"><EvidenceRecordActions record={{ error: errorMessage }} label="验证错误依据" /></div> : null}
         </div>
       ) : null}
       {actionError ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[length:var(--type-body-sm)] text-[var(--warn)]">
-          {actionError.message}
+          操作暂未完成，请稍后复核。
+          <div className="mt-2"><EvidenceRecordActions record={actionError} label="操作错误依据" /></div>
         </div>
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
-        <FAStatusPill tone={statusTone(validationStatus)}>{validationStatus}</FAStatusPill>
-        <FAStatusPill tone={validation?.proposal_only ? "info" : "warn"}>{validation?.proposal_only ? "proposal_only" : "未确认只读"}</FAStatusPill>
-        <FAStatusPill tone={activatedPrompt ? "warn" : "up"}>{activatedPrompt ? "activated" : "not_activated"}</FAStatusPill>
-        <FAStatusPill tone={(validation?.regression_count ?? 0) > 0 ? "warn" : "dim"}>regression {validation?.regression_count ?? 0}</FAStatusPill>
-        <FAStatusPill tone={(validation?.improvement_count ?? 0) > 0 ? "info" : "dim"}>improvement {validation?.improvement_count ?? 0}</FAStatusPill>
+        <FAStatusPill tone={statusTone(validationStatus)}>{operationStatusLabel(validationStatus)}</FAStatusPill>
+        <FAStatusPill tone={validation?.proposal_only ? "info" : "warn"}>{validation?.proposal_only ? "仅提案，不写入" : "只读状态待确认"}</FAStatusPill>
+        <FAStatusPill tone={activatedPrompt ? "warn" : "up"}>{activatedPrompt ? "已激活（需关注）" : "未激活"}</FAStatusPill>
+        <FAStatusPill tone={(validation?.regression_count ?? 0) > 0 ? "warn" : "dim"}>回归问题 {validation?.regression_count ?? 0}</FAStatusPill>
+        <FAStatusPill tone={(validation?.improvement_count ?? 0) > 0 ? "info" : "dim"}>改进项 {validation?.improvement_count ?? 0}</FAStatusPill>
         <FAStatusPill tone={releaseReadiness?.status === "approved" ? "up" : releaseReadiness?.status === "blocked" ? "warn" : "info"}>
-          发布状态 {releaseReadiness?.status ?? "unknown"}
+          发布状态 {operationStatusLabel(releaseReadiness?.status)}
         </FAStatusPill>
         {isLoading ? <FAStatusPill tone="dim">加载中</FAStatusPill> : null}
       </div>
 
       {releaseReadiness?.blocking_reasons?.length ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[length:var(--type-body-sm)] text-[var(--warn)]">
-          {releaseReadiness.blocking_reasons.join(" / ")}
+          发布仍有 {releaseReadiness.blocking_reasons.length} 项阻断原因，详情可复制依据记录。
+          <div className="mt-2"><EvidenceRecordActions record={releaseReadiness.blocking_reasons} label="发布阻断依据" /></div>
         </div>
       ) : null}
 
@@ -406,23 +429,24 @@ export function PromptEvolutionValidationCard({
           <div className="mt-2 grid grid-cols-2 gap-2">
             <div>
               <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{review?.cases.count ?? 0}</div>
-              <div className="fa-compact-label text-[var(--fg-5)]">cases</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">评估样本</div>
             </div>
             <div>
               <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{review?.trade_date || "—"}</div>
-              <div className="fa-compact-label text-[var(--fg-5)]">trade_date</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">交易日</div>
             </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             {firstItems(cases, 5).map((item) => (
-              <FASourceTraceBadge key={item.case_id ?? item.case_type ?? "case"} source={item.case_type ?? "case"} status={item.created_from ?? "case"} tone="info" />
+              <FASourceTraceBadge key={item.case_id ?? item.case_type ?? "case"} source={operationReadableLabel(item.case_type, "评估样本已登记")} status={operationReadableLabel(item.created_from, "来源已登记")} tone="info" />
             ))}
           </div>
           <div className="mt-3 space-y-1 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
-            <div>cases: {review?.artifacts.prompt_evaluation_cases ?? "unavailable"}</div>
-            <div>validation: {review?.artifacts.prompt_ab_validation_result ?? "unavailable"}</div>
-            <div>release: {review?.artifacts.prompt_release_records ?? "unavailable"}</div>
+            <div>评估样本：{review?.artifacts.prompt_evaluation_cases ? "已登记" : "未提供"}</div>
+            <div>验证结果：{review?.artifacts.prompt_ab_validation_result ? "已登记" : "未提供"}</div>
+            <div>发布记录：{review?.artifacts.prompt_release_records ? "已登记" : "未提供"}</div>
           </div>
+          {review?.artifacts ? <div className="mt-2"><EvidenceRecordActions record={review.artifacts} label="验证产物依据" /></div> : null}
         </div>
 
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
@@ -459,24 +483,25 @@ export function PromptEvolutionValidationCard({
               <div key={`${record.recorded_at ?? releaseRecordTitle(record)}-${record.action ?? "record"}`} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-panel)] p-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[length:var(--type-label)] font-semibold text-[var(--fg-2)]">{releaseRecordTitle(record)}</span>
-                  <FAStatusPill tone={record.action === "rolled_back" ? "warn" : "info"}>{record.agent_name ?? "agent"}</FAStatusPill>
-                  <FAStatusPill tone={record.activated_prompt ? "warn" : "up"}>{record.activated_prompt ? "activated" : "record_only"}</FAStatusPill>
+                  <FAStatusPill tone={record.action === "rolled_back" ? "warn" : "info"}>{record.agent_name ? "代理已登记" : "代理未提供"}</FAStatusPill>
+                  <FAStatusPill tone={record.activated_prompt ? "warn" : "up"}>{record.activated_prompt ? "已激活（需关注）" : "仅登记记录"}</FAStatusPill>
                 </div>
                 <p className="mt-1 text-[length:var(--type-body-sm)] leading-5 text-[var(--fg-4)]">
-                  {record.rollback_reason || record.test_result || record.validation_artifact || "暂无发布说明"}
+                  {readableNarrative(record.rollback_reason || record.test_result || record.validation_artifact, "发布说明已登记")}
                 </p>
                 {record.rolled_back_from || record.rolled_back_to || record.affected_agents?.length ? (
                   <div className="mt-1 flex flex-wrap gap-2 text-[length:var(--type-caption)] text-[var(--fg-muted)]">
-                    {record.rolled_back_from ? <span>from: {record.rolled_back_from}</span> : null}
-                    {record.rolled_back_to ? <span>to: {record.rolled_back_to}</span> : null}
-                    {record.affected_agents?.length ? <span>agents: {record.affected_agents.join(", ")}</span> : null}
+                    {record.rolled_back_from ? <span>回滚前：{evidenceLabel(record.rolled_back_from)}</span> : null}
+                    {record.rolled_back_to ? <span>回滚后：{evidenceLabel(record.rolled_back_to)}</span> : null}
+                    {record.affected_agents?.length ? <span>受影响代理：{record.affected_agents.length} 个</span> : null}
                   </div>
                 ) : null}
+                <div className="mt-2"><EvidenceRecordActions record={record} label="发布记录依据" /></div>
               </div>
             ))}
             {releaseRecords.length === 0 ? (
               <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-panel)] p-2 text-[length:var(--type-body-sm)] text-[var(--fg-4)]">
-                {isLoading ? "正在加载 PromptEvolution 发布记录..." : "当前没有 Prompt 发布或回滚记录。"}
+                {isLoading ? "正在加载提示内容发布记录…" : "当前没有提示内容发布或回滚记录。"}
               </div>
             ) : null}
           </div>
@@ -522,9 +547,9 @@ export function SystemEvolutionProposalCard({
 
   return (
     <FACard
-      title="SystemEvolution 提案"
+      title="系统演进提案"
       eyebrow="只读系统治理"
-      description="承接 SystemEvolutionAgent findings 和 improvement_proposals，用于人工复核系统演进风险，不直接修改代码、Prompt 或数据。"
+      description="承接系统演进发现与改进提案，用于人工复核系统演进风险，不直接修改代码、提示内容或数据。"
       accent={blocked ? "warn" : "info"}
       action={(
         <button type="button" onClick={onRefresh} className="fa-workspace-toolbar-button">
@@ -535,15 +560,16 @@ export function SystemEvolutionProposalCard({
     >
       {isError ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[length:var(--type-body-sm)] text-[var(--warn)]">
-          {errorMessage ?? "无法加载 SystemEvolution 复核结果"}
+          {readableNarrative(errorMessage, "系统演进复核暂时无法读取")}
+          {errorMessage ? <div className="mt-2"><EvidenceRecordActions record={{ error: errorMessage }} label="系统复核错误依据" /></div> : null}
         </div>
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
-        <FAStatusPill tone={statusTone(reviewStatus)}>{reviewStatus}</FAStatusPill>
-        <FAStatusPill tone={blocked ? "warn" : "up"}>{blocked ? "blocked" : "not_blocked"}</FAStatusPill>
-        <FAStatusPill tone={proposals.length > 0 ? "info" : "dim"}>proposals {review?.proposals.count ?? 0}</FAStatusPill>
-        <FAStatusPill tone={findings.length > 0 ? "warn" : "dim"}>findings {review?.findings.count ?? 0}</FAStatusPill>
+        <FAStatusPill tone={statusTone(reviewStatus)}>{operationStatusLabel(reviewStatus)}</FAStatusPill>
+        <FAStatusPill tone={blocked ? "warn" : "up"}>{blocked ? "存在阻断" : "未发现阻断"}</FAStatusPill>
+        <FAStatusPill tone={proposals.length > 0 ? "info" : "dim"}>改进提案 {review?.proposals.count ?? 0}</FAStatusPill>
+        <FAStatusPill tone={findings.length > 0 ? "warn" : "dim"}>发现项 {review?.findings.count ?? 0}</FAStatusPill>
         {isLoading ? <FAStatusPill tone="dim">加载中</FAStatusPill> : null}
       </div>
 
@@ -555,22 +581,22 @@ export function SystemEvolutionProposalCard({
               <div key={proposal.proposal_id ?? proposalTitle(proposal)} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-panel)] p-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[length:var(--type-label)] font-semibold text-[var(--fg-2)]">{proposalTitle(proposal)}</span>
-                  <FAStatusPill tone={statusTone(proposal.status ?? "pending_review")}>{proposal.status ?? "pending_review"}</FAStatusPill>
-                  {proposal.review_actor ? <FAStatusPill tone="dim">{proposal.review_actor}</FAStatusPill> : null}
+                  <FAStatusPill tone={statusTone(proposal.status ?? "pending_review")}>{operationStatusLabel(proposal.status ?? "pending_review")}</FAStatusPill>
+                  {proposal.review_actor ? <FAStatusPill tone="dim">复核人已登记</FAStatusPill> : null}
                 </div>
                 <p className="mt-1 text-[length:var(--type-body-sm)] leading-5 text-[var(--fg-4)]">
-                  {formatProposalValue(proposal.rationale, "暂无 rationale")}
+                  {readableNarrative(proposal.rationale, "提案理由已登记")}
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {firstItems(proposal.finding_codes, 4).map((code) => (
-                    <FASourceTraceBadge key={`${proposal.proposal_id}-${code}`} source={code} status="finding" tone="warn" />
+                    <FASourceTraceBadge key={`${proposal.proposal_id}-${code}`} source={operationReasonLabel(code)} status="发现项" tone="warn" />
                   ))}
                 </div>
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
                     <div className="min-w-0 text-[length:var(--type-caption)] leading-5 text-[var(--fg-5)]">
-                      issue: {proposal.linked_issue ?? "—"} · pr: {proposal.linked_pr ?? "—"}
-                      {proposal.test_result ? ` · test: ${proposal.test_result}` : ""}
-                      {proposal.rollback_reason ? ` · rollback: ${proposal.rollback_reason}` : ""}
+                      {proposal.linked_issue ? "Issue 已登记" : "未关联 Issue"} · {proposal.linked_pr ? "PR 已登记" : "未关联 PR"}
+                      {proposal.test_result ? " · 测试结果已登记" : ""}
+                      {proposal.rollback_reason ? " · 回滚说明已登记" : ""}
                     </div>
                   <div className="flex flex-wrap gap-1.5">
                     {SYSTEM_EVOLUTION_ACTIONS.map((item) => {
@@ -619,12 +645,13 @@ export function SystemEvolutionProposalCard({
                       );
                     })}
                   </div>
+                  <div className="mt-2"><EvidenceRecordActions record={proposal} label="系统演进提案依据" /></div>
                 </div>
               </div>
             ))}
             {proposals.length === 0 ? (
               <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-panel)] p-2 text-[length:var(--type-body-sm)] text-[var(--fg-4)]">
-                {isLoading ? "正在加载 SystemEvolution 提案..." : "当前没有待复核系统演进提案。"}
+                {isLoading ? "正在加载系统演进提案…" : "当前没有待复核系统演进提案。"}
               </div>
             ) : null}
           </div>
@@ -635,23 +662,24 @@ export function SystemEvolutionProposalCard({
           <div className="mt-2 grid grid-cols-2 gap-2">
             <div>
               <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{requiredFollowups.length}</div>
-              <div className="fa-compact-label text-[var(--fg-5)]">followups</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">待跟进项</div>
             </div>
             <div>
               <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{review?.trade_date || "—"}</div>
-              <div className="fa-compact-label text-[var(--fg-5)]">trade_date</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">交易日</div>
             </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             {firstItems(requiredFollowups, 5).map((item) => (
-              <FASourceTraceBadge key={item} source={item} status="followup" tone="warn" />
+              <FASourceTraceBadge key={item} source={operationReasonLabel(item)} status="待跟进" tone="warn" />
             ))}
           </div>
           <div className="mt-3 space-y-1 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
-            <div>findings: {review?.artifacts.findings ?? "unavailable"}</div>
-            <div>proposals: {review?.artifacts.improvement_proposals ?? "unavailable"}</div>
-            <div>review: {review?.artifacts.review ?? "unavailable"}</div>
+            <div>发现项：{review?.artifacts.findings ? "已登记" : "未提供"}</div>
+            <div>改进提案：{review?.artifacts.improvement_proposals ? "已登记" : "未提供"}</div>
+            <div>复核记录：{review?.artifacts.review ? "已登记" : "未提供"}</div>
           </div>
+          {review?.artifacts ? <div className="mt-2"><EvidenceRecordActions record={review.artifacts} label="系统演进产物依据" /></div> : null}
         </div>
       </div>
     </FACard>
@@ -685,9 +713,9 @@ export function PromptEvolutionProposalCard({
 
   return (
     <FACard
-      title="PromptEvolution 提案预览"
+      title="提示内容改进提案预览"
       eyebrow="只读治理"
-      description="从现有 AgentOutput、PromptFeedback 和 ReviewGate findings 生成可审核提案，不写入生产 Prompt。"
+      description="从现有分析输出、人工反馈和质量门控发现生成可审核提案，不写入生产提示内容。"
       accent="info"
       action={(
         <div className="flex flex-wrap items-center gap-2">
@@ -695,7 +723,7 @@ export function PromptEvolutionProposalCard({
             value={selectedAgentId}
             onChange={(event) => onAgentChange(event.target.value)}
             className="h-8 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 text-[length:var(--type-label)] text-[var(--fg-2)]"
-            aria-label="选择 PromptEvolution 目标 Agent"
+            aria-label="选择提示内容改进目标代理"
           >
             {agentOptions.map((option) => (
               <option key={option.value} value={option.value}>
@@ -712,13 +740,14 @@ export function PromptEvolutionProposalCard({
     >
       {isError ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[length:var(--type-body-sm)] text-[var(--warn)]">
-          {errorMessage ?? "无法加载 PromptEvolution 提案预览"}
+          {readableNarrative(errorMessage, "提示内容改进提案暂时无法读取")}
+          {errorMessage ? <div className="mt-2"><EvidenceRecordActions record={{ error: errorMessage }} label="提案错误依据" /></div> : null}
         </div>
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
-        <FAStatusPill tone={preview?.proposal_only ? "info" : "warn"}>{preview?.proposal_only ? "proposal_only" : "未确认只读"}</FAStatusPill>
-        <FAStatusPill tone={preview && preview.writes.length === 0 ? "up" : "warn"}>writes {preview?.writes.length ?? "?"}</FAStatusPill>
+        <FAStatusPill tone={preview?.proposal_only ? "info" : "warn"}>{preview?.proposal_only ? "仅提案，不写入" : "只读状态待确认"}</FAStatusPill>
+        <FAStatusPill tone={preview && preview.writes.length === 0 ? "up" : "warn"}>写入动作 {preview?.writes.length ?? "待确认"}</FAStatusPill>
         <FAStatusPill tone={booleanTone(proposal?.manual_review_required)}>人工复核</FAStatusPill>
         {isLoading ? <FAStatusPill tone="dim">加载中</FAStatusPill> : null}
       </div>
@@ -731,17 +760,17 @@ export function PromptEvolutionProposalCard({
           </p>
           <div className="mt-3 grid gap-2 sm:grid-cols-3">
             <div>
-              <div className="fa-compact-label text-[var(--fg-5)]">proposal_type</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">提案类型</div>
               <div className="mt-1 text-[length:var(--type-label)] text-[var(--fg-2)]">
-                {formatProposalValue(proposalDetail?.proposal_type)}
+                {operationReasonLabel(proposalDetail?.proposal_type)}
               </div>
             </div>
             <div>
-              <div className="fa-compact-label text-[var(--fg-5)]">failure_patterns</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">失败模式</div>
               <div className="fa-num mt-1 text-[length:var(--type-card-title)] text-[var(--fg-2)]">{failurePatterns.length}</div>
             </div>
             <div>
-              <div className="fa-compact-label text-[var(--fg-5)]">test_cases</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">测试用例</div>
               <div className="fa-num mt-1 text-[length:var(--type-card-title)] text-[var(--fg-2)]">{testCaseCount}</div>
             </div>
           </div>
@@ -752,24 +781,24 @@ export function PromptEvolutionProposalCard({
           <div className="mt-2 grid grid-cols-3 gap-2">
             <div>
               <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{preview?.recent_run_count ?? 0}</div>
-              <div className="fa-compact-label text-[var(--fg-5)]">AgentOutput</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">分析输出</div>
             </div>
             <div>
               <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{preview?.feedback_count ?? 0}</div>
-              <div className="fa-compact-label text-[var(--fg-5)]">Feedback</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">反馈</div>
             </div>
             <div>
               <div className="fa-num text-[length:var(--type-card-title)] text-[var(--fg-2)]">{preview?.review_gate_finding_count ?? 0}</div>
-              <div className="fa-compact-label text-[var(--fg-5)]">Review</div>
+              <div className="fa-compact-label text-[var(--fg-5)]">复核发现</div>
             </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
-            <FAStatusPill tone={booleanTone(proposal?.requires_schema_change)}>schema</FAStatusPill>
-            <FAStatusPill tone={booleanTone(proposal?.requires_data_source_change)}>data_source</FAStatusPill>
-            <FAStatusPill tone={booleanTone(proposal?.requires_dag_change)}>dag</FAStatusPill>
+            <FAStatusPill tone={booleanTone(proposal?.requires_schema_change)}>需要改数据结构</FAStatusPill>
+            <FAStatusPill tone={booleanTone(proposal?.requires_data_source_change)}>需要改数据源</FAStatusPill>
+            <FAStatusPill tone={booleanTone(proposal?.requires_dag_change)}>需要改流程图</FAStatusPill>
           </div>
           <div className="mt-3 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
-            prompt: {preview?.current_prompt_source ?? "unknown"} · refs: {inputRefs?.agent_output_ids.length ?? 0}/
+            提示来源：{preview?.current_prompt_source ? "已登记" : "未提供"} · 证据数量：{inputRefs?.agent_output_ids.length ?? 0}/
             {inputRefs?.feedback_ids.length ?? 0}/{inputRefs?.review_ids.length ?? 0}
           </div>
         </div>
@@ -778,9 +807,8 @@ export function PromptEvolutionProposalCard({
       {proposalDetail?.patch ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-panel)] p-3">
           <div className="fa-label text-[var(--fg-4)]">建议补丁</div>
-          <p className="mt-2 max-h-[120px] overflow-y-auto whitespace-pre-wrap text-[length:var(--type-body-sm)] leading-6 text-[var(--fg-2)]">
-            {proposalDetail.patch}
-          </p>
+          <p className="mt-2 text-[length:var(--type-body-sm)] leading-6 text-[var(--fg-2)]">建议补丁已登记，可复制完整记录供技术复核。</p>
+          <div className="mt-2"><EvidenceRecordActions record={proposalDetail.patch} label="建议补丁依据" /></div>
         </div>
       ) : null}
     </FACard>

@@ -79,6 +79,8 @@ export interface LiveStrategyCmeScenarioPath {
   triggers: string[];
   targets: number[];
   invalidation: string[];
+  coordinate_space?: string;
+  execution_scope?: string;
 }
 
 export interface LiveStrategyCmePositioning {
@@ -115,6 +117,9 @@ export interface LiveStrategyCmePositioning {
     repair_detected: boolean;
     trend_launch_watch: boolean;
     trend_confirmed: boolean;
+    reference_coordinate_space?: string | null;
+    execution_scope?: string | null;
+    execution_note?: string | null;
   };
   scenario_paths: LiveStrategyCmeScenarioPath[];
 }

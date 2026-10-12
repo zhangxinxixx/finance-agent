@@ -6,6 +6,7 @@ import type {
   TransmissionChain,
   TransmissionPath,
 } from "@/types/gold-mainlines";
+import type { SourceRef } from "@/types/common";
 
 export type EventImportance = "高" | "中" | "低";
 export type EventStatus = "已公布" | "发展中" | "传闻中" | "已结束" | "即将公布";
@@ -20,7 +21,8 @@ export type EventImpact =
   | "双向波动"
   | "偏鹰扰动"
   | "边际偏空"
-  | "事件前谨慎";
+  | "事件前谨慎"
+  | "未评估";
 export type EventType =
   | "货币政策"
   | "经济数据"
@@ -35,7 +37,10 @@ export type EventType =
   | "政策变量"
   | "资金流"
   | "政策会议";
-export type PricingStatus = "已定价" | "部分定价" | "未定价";
+export type PricingStatus = "已定价" | "部分定价" | "未定价" | "未核验";
+
+export type EventFlowReadStatus = "available" | "partial" | "unavailable" | "error" | string;
+export type EventFlowEvidenceIdentity = "verified" | "unverified" | "mismatch";
 
 export interface EventFlowTimelineItem {
   id: string;
@@ -150,13 +155,45 @@ export interface EventFlowReportItem {
 
 export interface EventImpactSummary {
   bias: string;
-  confidence: number;
+  confidence: number | null;
   summary: string;
   sentiment: Record<string, unknown>;
   riskRadar: Record<string, unknown>;
   events: Array<Record<string, unknown>>;
   llmModel: string | null;
   llmElapsedSeconds: number | null;
+}
+
+export interface EventFlowImpactReadModel {
+  event_id: string | null;
+  status: EventFlowReadStatus;
+  source: string;
+  updated_at: string | null;
+  impact_path: string | null;
+  gold_impact: string | null;
+  silver_impact: string | null;
+  dollar_impact: string | null;
+  yield_impact: string | null;
+  oil_impact: string | null;
+  risk_level: string | null;
+  pricing_status: string | null;
+  verification_status: string | null;
+  affected_assets: string[];
+  event_impact_summary: EventImpactSummary | null;
+  source_refs: SourceRef[];
+}
+
+export interface EventFlowMarketReactionReadModel {
+  event_id: string | null;
+  status: EventFlowReadStatus;
+  source: string;
+  updated_at: string | null;
+  pricing_status: string | null;
+  verification_status: string | null;
+  market_validation: Record<string, unknown>;
+  market_snapshot: Record<string, unknown>;
+  source_refs: SourceRef[];
+  warnings: string[];
 }
 
 export interface EventFlowBriefCounts {

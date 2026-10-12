@@ -93,7 +93,7 @@ SOURCE_REQUIREMENTS: dict[str, dict[str, Any]] = {
     },
     "geopolitical_news": {
         "priority": "P0",
-        "label": "Jin10 / geopolitical news",
+        "label": "geopolitical news",
         "aliases": {"geopolitical_news", "jin10", "news_sources", "geopolitical_context"},
         "mainlines": ["geopolitical_war_risk"],
         "allowed_staleness_seconds": 60 * 60 * 6,
@@ -397,6 +397,7 @@ def source_statuses_from_analysis_snapshot(snapshot: dict[str, Any]) -> list[dic
         *,
         updated_at: str | None,
         source_ref: dict[str, Any] | None,
+        frequency: str | None = None,
     ) -> None:
         if not updated_at or source_ref is None:
             return
@@ -405,6 +406,7 @@ def source_statuses_from_analysis_snapshot(snapshot: dict[str, Any]) -> list[dic
                 "source_key": source_key,
                 "status": "available",
                 "latest_health_at": updated_at,
+                "frequency": frequency,
                 "source_refs": [{"source_ref": _snapshot_ref_value(source_ref, fallback=source_key)}],
             }
         )
@@ -421,13 +423,15 @@ def source_statuses_from_analysis_snapshot(snapshot: dict[str, Any]) -> list[dic
             quote_time = technical_ref["notes"].get("quote_time")
         add(
             "xauusd_price",
-            updated_at=str(quote_time or snapshot_time),
+            updated_at=str(quote_time or technical.get("as_of") or snapshot_time),
             source_ref=technical_ref,
+            frequency="daily" if technical.get("as_of") else None,
         )
         add(
             "technical_levels",
-            updated_at=str(quote_time or snapshot_time),
+            updated_at=str(quote_time or technical.get("as_of") or snapshot_time),
             source_ref=technical_ref,
+            frequency="daily" if technical.get("as_of") else None,
         )
 
     macro = _available_section_data(snapshot, "macro")
@@ -436,8 +440,9 @@ def source_statuses_from_analysis_snapshot(snapshot: dict[str, Any]) -> list[dic
         "dxy": ("DXY", ("DXY",)),
         "treasury_2y": ("US02Y", ("DGS2", "US02Y")),
         "treasury_10y": ("US10Y", ("DGS10", "US10Y")),
-        "tips_10y": ("REAL_10Y", ("DFII10", "REAL_10Y")),
+        "tips_10y": ("REAL10Y", ("DFII10", "REAL10Y")),
         "breakeven_inflation": ("BREAKEVEN_10Y", ("T10YIE", "BREAKEVEN_10Y")),
+        "vix_risk_assets": ("VIX", ("VIXCLS",)),
     }
     for source_key, (indicator_key, symbols) in indicator_sources.items():
         indicator = indicators.get(indicator_key)
@@ -448,7 +453,7 @@ def source_statuses_from_analysis_snapshot(snapshot: dict[str, Any]) -> list[dic
             refs,
             lambda item, symbol_set=symbol_set: str(item.get("symbol") or "").upper() in symbol_set,
         )
-        add(source_key, updated_at=str(indicator.get("date") or snapshot_time), source_ref=ref)
+        add(source_key, updated_at=str(indicator.get("date") or snapshot_time), source_ref=ref, frequency="daily" if source_key == "vix_risk_assets" else None)
 
     fed_ref = _find_snapshot_ref(
         refs,
@@ -504,7 +509,20 @@ def source_statuses_from_analysis_snapshot(snapshot: dict[str, Any]) -> list[dic
                     "brent_wti",
                     updated_at=observation.bar_close_time.isoformat(),
                     source_ref={"source_ref": source_ref.reference},
+                    frequency="daily",
                 )
+
+    if not _has_source_row(rows, "brent_wti"):
+        oil_indicators = [indicators.get(key, {}) for key in ("WTI_SPOT", "BRENT_SPOT")]
+        oil_refs = [_find_snapshot_ref(refs, lambda ref, symbol=symbol: ref.get("symbol") == symbol and ref.get("source") == "fred") for symbol in ("DCOILWTICO", "DCOILBRENTEU")]
+        if all(item.get("value") is not None and item.get("date") for item in oil_indicators) and all(oil_refs):
+            add("brent_wti", updated_at=min(item["date"] for item in oil_indicators), source_ref=oil_refs[0], frequency="daily")
+
+    macro_etf = macro.get("official_etf", {})
+    if macro_etf.get("status") in {"available", "fresh", "partial"}:
+        etf_refs = macro_etf.get("source_refs", [])
+        if etf_refs:
+            add("gold_etf_flows", updated_at=macro_etf.get("report_date") or macro_etf.get("as_of"), source_ref=etf_refs[0], frequency="daily")
 
     geopolitical_ref = _find_snapshot_ref(
         refs,
@@ -575,7 +593,7 @@ def _formal_observation_is_usable(observation: Any, *, as_of: datetime) -> bool:
         or not observation.source_refs
     ):
         return False
-    return all(source_ref.retrieved_at <= as_of for source_ref in observation.source_refs)
+    return all(observation.bar_close_time <= source_ref.retrieved_at <= as_of for source_ref in observation.source_refs)
 
 
 def _has_source_row(rows: list[dict[str, Any]], source_key: str) -> bool:
@@ -668,6 +686,8 @@ def _source_freshness(*, source_id: str, requirement: dict[str, Any], source: di
     allowed = int(requirement.get("allowed_staleness_seconds") or 0)
     if not source:
         return SourceFreshness(status="missing", allowed_staleness_seconds=allowed)
+    if source.get("frequency") == "daily" and source_id in {"xauusd_price", "technical_levels", "brent_wti", "vix_risk_assets"}:
+        allowed = 4 * 24 * 60 * 60
 
     source_status = _source_status(source)
     updated_at = _updated_at(source)

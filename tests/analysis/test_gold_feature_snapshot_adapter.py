@@ -39,6 +39,29 @@ def _formal_ref(name: str) -> dict[str, str]:
     return {"source": "formal_fixture", "reference": f"formal://{name}", "retrieved_at": "2025-01-17T21:00:00Z"}
 
 
+def _treasury_ref(symbol: str = "DGS10") -> dict[str, str]:
+    curve, curve_type = {
+        "DGS2": ("nominal", "daily_treasury_yield_curve"),
+        "DGS10": ("nominal", "daily_treasury_yield_curve"),
+        "DGS30": ("nominal", "daily_treasury_yield_curve"),
+        "DFII10": ("real", "daily_treasury_real_yield_curve"),
+    }[symbol]
+    return {
+        "symbol": symbol,
+        "source": "treasury_rates",
+        "source_url": (
+            "https://home.treasury.gov/resource-center/data-chart-center/"
+            "interest-rates/daily-treasury-rates.csv/2025/all"
+            f"?_format=csv&field_tdr_date_value=2025&page=&type={curve_type}"
+        ),
+        "raw_path": (
+            f"raw/macro/treasury_rates/2025-01-17/{curve}-2025-"
+            "20250117T210000000000Z-0123456789ab.csv"
+        ),
+        "retrieved_at": "2025-01-17T21:00:00Z",
+    }
+
+
 def _formal_official_events() -> dict:
     official_ref = {
         "source": "federal_reserve",
@@ -414,6 +437,9 @@ def test_macro_top_level_fred_refs_replace_analysis_snapshot_fallback_lineage() 
         }
         for symbol in ("DGS2", "DGS10", "DGS30", "T10YIE", "DFII10", "DTWEXBGS")
     }
+    # Historical FRED snapshots only required a non-empty raw_path; keep that
+    # compatibility contract while Treasury uses its stricter archive layout.
+    macro["source_refs"]["DGS10"]["raw_path"] = "legacy/fred-record"
 
     result = build_feature_snapshot_from_analysis_snapshot(snapshot)
 
@@ -428,6 +454,191 @@ def test_macro_top_level_fred_refs_replace_analysis_snapshot_fallback_lineage() 
     assert all(item.source_refs[0].source == "fred" for item in observations)
     assert all("api.stlouisfed.org" in item.source_refs[0].reference for item in observations)
     assert all(item.source_refs[0].source != "analysis_snapshot" for item in observations)
+
+
+def test_macro_top_level_treasury_refs_use_the_official_curve_contract() -> None:
+    snapshot = _snapshot()
+    macro = snapshot["macro"]["data"]
+    macro["source_refs"] = {
+        "DGS2": _treasury_ref("DGS2"),
+        "DGS10": _treasury_ref("DGS10"),
+        "DGS30": _treasury_ref("DGS30"),
+        "T10YIE": {
+            "source": "fred",
+            "source_url": "https://api.stlouisfed.org/fred/series/observations?series_id=T10YIE",
+            "raw_path": "raw/macro/fred/2025-01-17/T10YIE-0123456789.json",
+            "retrieved_at": "2025-01-17T21:00:00Z",
+        },
+        "DFII10": _treasury_ref("DFII10"),
+        "DTWEXBGS": {
+            "source": "fred",
+            "source_url": "https://api.stlouisfed.org/fred/series/observations?series_id=DTWEXBGS",
+            "raw_path": "raw/macro/fred/2025-01-17/DTWEXBGS-0123456789.json",
+            "retrieved_at": "2025-01-17T21:00:00Z",
+        },
+    }
+
+    result = build_feature_snapshot_from_analysis_snapshot(snapshot)
+
+    assert result.us02y.source_refs[0].source == "treasury_rates"
+    assert result.us10y.source_refs[0].source == "treasury_rates"
+    assert result.us30y.source_refs[0].source == "treasury_rates"
+    assert result.real10y_direct.source_refs[0].source == "treasury_rates"
+    assert result.t10yie.source_refs[0].source == "fred"
+
+
+@pytest.mark.parametrize("archive_seconds,cross_midnight", ((0, False), (6, False), (6, True)))
+def test_real10y_accepts_treasury_nominal_and_fred_breakeven_lineage(
+    archive_seconds: int, cross_midnight: bool,
+) -> None:
+    snapshot = _snapshot()
+    macro = snapshot["macro"]["data"]
+    macro["indicators"]["REAL_10Y"] = {
+        "derivation_version": "real10y_components.v1",
+        "value": 2.24,
+        "date": "2025-01-17",
+        "components": [
+            {"source_symbol": "DGS10", "date": "2025-01-17", "value": 4.61},
+            {"source_symbol": "T10YIE", "date": "2025-01-17", "value": 2.37},
+        ],
+    }
+    macro["source_refs"] = {
+        "DGS10": _treasury_ref("DGS10"),
+        "T10YIE": {
+            "source": "fred",
+            "source_url": "https://api.stlouisfed.org/fred/series/observations?series_id=T10YIE",
+            "raw_path": "raw/macro/fred/2025-01-17/T10YIE-0123456789.json",
+            "retrieved_at": "2025-01-17T21:00:00Z",
+        },
+    }
+    # Production retrieved_at marks request start; archival follows the HTTP
+    # response. Both must precede the snapshot, but need not be equal.
+    macro["source_refs"]["DGS10"]["raw_path"] = macro["source_refs"]["DGS10"]["raw_path"].replace(
+        "210000000000", f"2100{archive_seconds:02d}000000"
+    )
+    if cross_midnight:
+        snapshot["snapshot_time"] = "2025-01-18T00:05:00Z"
+        macro["source_refs"]["DGS10"]["retrieved_at"] = "2025-01-17T23:59:59Z"
+        macro["source_refs"]["DGS10"]["raw_path"] = macro["source_refs"]["DGS10"]["raw_path"].replace(
+            "20250117T210006", "20250118T000006"
+        )
+
+    result = build_feature_snapshot_from_analysis_snapshot(snapshot)
+
+    assert (result.us10y.value, result.t10yie.value, result.real10y_estimated.value) == (
+        4.61,
+        2.37,
+        2.24,
+    )
+    assert result.us10y.source_refs[0].source == "treasury_rates"
+    assert result.us10y.source_refs[0].retrieved_at.second == archive_seconds
+    assert result.t10yie.source_refs[0].source == "fred"
+    assert "REAL10Y_ESTIMATED_AVAILABLE" in result.real10y_reason_codes
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "source",
+        "domain",
+        "port",
+        "path",
+        "curve",
+        "series_year",
+        "raw_path",
+        "missing_raw_path",
+        "missing_retrieved_at",
+        "archived_invalid_time",
+        "archived_after_snapshot",
+        "archived_date_mismatch",
+        "future_retrieved_at",
+    ),
+)
+def test_treasury_lineage_tampering_blocks_real10y_components(mutation: str) -> None:
+    snapshot = _snapshot()
+    macro = snapshot["macro"]["data"]
+    macro["indicators"]["REAL_10Y"] = {
+        "derivation_version": "real10y_components.v1",
+        "value": 2.24,
+        "date": "2025-01-17",
+        "components": [
+            {"source_symbol": "DGS10", "date": "2025-01-17", "value": 4.61},
+            {"source_symbol": "T10YIE", "date": "2025-01-17", "value": 2.37},
+        ],
+    }
+    treasury = _treasury_ref("DGS10")
+    if mutation == "source":
+        treasury["source"] = "treasury_rates_mirror"
+    elif mutation == "domain":
+        treasury["source_url"] = treasury["source_url"].replace("home.treasury.gov", "mirror.treasury.gov")
+    elif mutation == "port":
+        treasury["source_url"] = treasury["source_url"].replace(
+            "https://home.treasury.gov/", "https://home.treasury.gov:8443/"
+        )
+    elif mutation == "path":
+        treasury["source_url"] = treasury["source_url"].replace("daily-treasury-rates.csv", "other.csv")
+    elif mutation == "curve":
+        treasury["source_url"] = treasury["source_url"].replace(
+            "daily_treasury_yield_curve", "daily_treasury_real_yield_curve"
+        )
+    elif mutation == "series_year":
+        treasury["source_url"] = treasury["source_url"].replace("/2025/all", "/2024/all").replace(
+            "field_tdr_date_value=2025", "field_tdr_date_value=2024"
+        )
+    elif mutation == "raw_path":
+        treasury["raw_path"] = "raw/macro/treasury_rates/2025-01-17/nominal-2025.csv"
+    elif mutation == "missing_raw_path":
+        treasury.pop("raw_path")
+    elif mutation == "missing_retrieved_at":
+        treasury.pop("retrieved_at")
+    elif mutation == "archived_invalid_time":
+        treasury["raw_path"] = treasury["raw_path"].replace("210000000000", "250000000000")
+    elif mutation == "archived_after_snapshot":
+        treasury["raw_path"] = treasury["raw_path"].replace("210000000000", "220000000000")
+    elif mutation == "archived_date_mismatch":
+        treasury["raw_path"] = treasury["raw_path"].replace("20250117T", "20250118T")
+    else:
+        treasury["retrieved_at"] = "2025-01-18T00:00:00Z"
+    macro["source_refs"] = {
+        "DGS10": treasury,
+        "T10YIE": {
+            "source": "fred",
+            "source_url": "https://api.stlouisfed.org/fred/series/observations?series_id=T10YIE",
+            "raw_path": "raw/macro/fred/2025-01-17/T10YIE-0123456789.json",
+            "retrieved_at": "2025-01-17T21:00:00Z",
+        },
+    }
+
+    result = build_feature_snapshot_from_analysis_snapshot(snapshot)
+
+    assert result.us10y.value is None
+    assert result.t10yie.value is None
+    assert result.real10y_estimated.value is None
+    assert "REAL10Y_ESTIMATED_CORE_INPUT_UNUSABLE" in result.real10y_reason_codes
+
+
+def test_treasury_source_cannot_claim_fred_only_t10yie() -> None:
+    snapshot = _snapshot()
+    macro = snapshot["macro"]["data"]
+    macro["indicators"]["REAL_10Y"] = {
+        "derivation_version": "real10y_components.v1",
+        "value": 2.24,
+        "date": "2025-01-17",
+        "components": [
+            {"source_symbol": "DGS10", "date": "2025-01-17", "value": 4.61},
+            {"source_symbol": "T10YIE", "date": "2025-01-17", "value": 2.37},
+        ],
+    }
+    macro["source_refs"] = {
+        "DGS10": _treasury_ref("DGS10"),
+        "T10YIE": _treasury_ref("DGS10"),
+    }
+
+    result = build_feature_snapshot_from_analysis_snapshot(snapshot)
+
+    assert result.us10y.value is None
+    assert result.t10yie.value is None
+    assert result.real10y_estimated.value is None
 
 
 @pytest.mark.parametrize(

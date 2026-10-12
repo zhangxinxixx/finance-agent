@@ -35,7 +35,7 @@ assert.match(panel, /item\.outcomes/);
 assert.match(panel, /outcome\.fill_price/);
 assert.match(panel, /outcome\.exit_price/);
 assert.match(panel, /历史待核验/);
-assert.match(panel, /不计入 approved 或准确率/);
+assert.match(panel, /不计入已批准样本或准确率/);
 assert.doesNotMatch(panel, /accuracy\s*\?\?\s*0/);
 assert.doesNotMatch(panel, /correct_count\s*\/|\/\s*directional_count/);
 

@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import type { ReactNode } from "react";
 import { Inbox } from "lucide-react";
 import { FAIcon } from "./FAIcon";
@@ -17,7 +18,7 @@ export function FAEmptyState({ title = "暂无数据", description = "当前视�
     >
       <FAIcon icon={Inbox} tone="dim" />
       <div className="mt-3 text-[13px] font-semibold text-[var(--fg-2)]">{title}</div>
-      <div className="mt-1 max-w-md text-[11px] leading-relaxed text-[var(--fg-4)]">{description}</div>
+      <div className="mt-1 max-w-md text-[11px] leading-relaxed text-[var(--fg-4)]">{typeof description === "string" ? readableWarning(description) : description}</div>
       {action ? <div className="mt-4">{action}</div> : null}
     </div>
   );

@@ -8,12 +8,14 @@ import uuid
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session, selectinload
 
 from apps.runtime.artifact_registry import register_step_artifacts
-from apps.runtime.state_machine import transition_task_run, transition_task_step
+from apps.runtime.state_machine import coerce_task_status, transition_task_run, transition_task_step
+from apps.runtime.source_controls import jin10_disabled
 from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 
 TASK_TYPE = "daily_analysis_followup"
@@ -21,10 +23,19 @@ INITIAL_STAGE = "news_followup"
 DETAIL_FETCH_STEP = "detail_fetch"
 VIP_BROWSER_FALLBACK_STEP = "vip_browser_fallback"
 DAILY_ANALYSIS_STEP = "daily_analysis"
+FOLLOWUP_MAX_STAGE_STEPS = 4
+MAX_SELECTED_FOLLOWUP_TASKS = 50
+_FOLLOWUP_TERMINAL_STATUSES = {
+    TaskStatus.success,
+    TaskStatus.failed,
+    TaskStatus.blocked,
+    TaskStatus.cancelled,
+    TaskStatus.stale,
+    TaskStatus.degraded,
+    TaskStatus.partial_success,
+}
 PLAN_VERSION = "daily-analysis-followup-plan-v1"
-DEFAULT_JIN10_BROWSER_PROFILE = Path(
-    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
-).expanduser()
+DEFAULT_JIN10_BROWSER_PROFILE = (Path.home() / ".config" / "finance-agent" / "jin10-browser")
 VIP_BROWSER_FALLBACK_SOURCE_KEY = "jin10_vip_browser_fallback"
 VIP_FALLBACK_PARTIAL_SNAPSHOT_ERRORS = {
     "login_required",
@@ -44,11 +55,12 @@ def run_daily_analysis_followup_task(
     detail_fetcher: DetailFetcher | None = None,
     vip_browser_fetcher: VipBrowserFetcher | None = None,
 ) -> TaskStatus:
-    """Expand a queued daily-analysis follow-up into auditable worker steps.
+    """Execute one explicitly claimed stage of a daily-analysis follow-up.
 
-    This first worker slice intentionally does not call Jin10/Feishu, browser
-    automation, or LLM analysis. It only turns the queued follow-up payload into
-    traceable next steps so a later executor can consume them safely.
+    The initial stage materializes the auditable plan. Later stages may fetch a
+    detail page, use the configured browser fallback, and archive the daily
+    analysis input snapshot. Source controls and injected fetchers govern
+    external access; implicit pending-row scans belong to no execution path.
     """
     run = _load_run(db, task_id)
     if run is None or run.task_type != TASK_TYPE:
@@ -176,30 +188,285 @@ def run_pending_daily_analysis_followup_tasks(
     limit: int = 10,
     storage_root: Path = Path("./storage"),
 ) -> dict[str, Any]:
-    runs = (
-        db.query(TaskRun)
-        .filter(
-            TaskRun.task_type == TASK_TYPE,
-            TaskRun.status == TaskStatus.pending,
-            TaskRun.current_stage == INITIAL_STAGE,
-        )
-        .order_by(TaskRun.created_at.asc())
-        .limit(max(limit, 0))
-        .all()
-    )
-    results = [
-        {
-            "run_id": str(run.id),
-            "status": run_daily_analysis_followup_task(db, run.id, storage_root=storage_root).value,
+    """Retain the old callable while refusing implicit pending-row scans.
+
+    Formal execution must use ``run_selected_daily_analysis_followup_tasks``
+    with IDs supplied by the API/Dagster run. ``limit`` and ``storage_root``
+    remain accepted for import compatibility, but this path intentionally does
+    not read or execute any existing pending rows.
+    """
+    del db, limit, storage_root
+    return {
+        "status": "disabled",
+        "matched_count": 0,
+        "processed_count": 0,
+        "results": [],
+        "reason": "explicit_task_ids_required",
+    }
+
+
+def run_selected_daily_analysis_followup_tasks(
+    db: Session,
+    task_ids: Sequence[uuid.UUID | str],
+    *,
+    storage_root: Path = Path("./storage"),
+    max_stage_steps: int = FOLLOWUP_MAX_STAGE_STEPS,
+    detail_fetcher: DetailFetcher | None = None,
+    vip_browser_fetcher: VipBrowserFetcher | None = None,
+) -> dict[str, Any]:
+    """Advance only the explicitly selected follow-up tasks.
+
+    Dagster supplies the task IDs; this function deliberately never scans for
+    pending rows. Each stage is claimed under a row lock before execution so
+    two Dagster runs can safely receive the same ID without executing it twice.
+    ``max_stage_steps`` bounds one run. A task that still needs another stage
+    remains pending and is reported as ``waiting`` for a later explicit launch.
+    """
+    requested_count = len(task_ids)
+    if requested_count > MAX_SELECTED_FOLLOWUP_TASKS:
+        return {
+            "status": "rejected",
+            "reason": "task_batch_too_large",
+            "requested_count": requested_count,
+            "unique_task_count": 0,
+            "processed_count": 0,
+            "results": [],
         }
-        for run in runs
-    ]
+    step_limit = min(max(int(max_stage_steps), 1), FOLLOWUP_MAX_STAGE_STEPS)
+    normalized_ids: list[uuid.UUID] = []
+    results: list[dict[str, Any]] = []
+    seen: set[uuid.UUID] = set()
+    for raw_id in task_ids:
+        try:
+            task_id = uuid.UUID(str(raw_id))
+        except (TypeError, ValueError, AttributeError):
+            results.append({"task_id": str(raw_id), "status": "invalid_task_id"})
+            continue
+        if task_id not in seen:
+            normalized_ids.append(task_id)
+            seen.add(task_id)
+
+    for task_id in normalized_ids:
+        results.append(
+            _run_selected_followup_task(
+                db,
+                task_id,
+                storage_root=storage_root,
+                max_stage_steps=step_limit,
+                detail_fetcher=detail_fetcher,
+                vip_browser_fetcher=vip_browser_fetcher,
+            )
+        )
+
+    processed = sum(
+        result.get("status") in {"completed", "failed", "blocked", "waiting", "already_running"}
+        for result in results
+    )
     return {
         "status": "success",
-        "matched_count": len(runs),
-        "processed_count": len(results),
+        "requested_count": requested_count,
+        "unique_task_count": len(normalized_ids),
+        "processed_count": processed,
         "results": results,
     }
+
+
+def _run_selected_followup_task(
+    db: Session,
+    task_id: uuid.UUID,
+    *,
+    storage_root: Path,
+    max_stage_steps: int,
+    detail_fetcher: DetailFetcher | None,
+    vip_browser_fetcher: VipBrowserFetcher | None,
+) -> dict[str, Any]:
+    stages_processed = 0
+    for _ in range(max_stage_steps):
+        claim = _claim_selected_followup_task(db, task_id)
+        if claim["status"] != "claimed":
+            return {
+                "task_id": str(task_id),
+                "status": claim["status"],
+                "current_stage": claim.get("current_stage"),
+                "reason": claim.get("reason"),
+                "stages_processed": stages_processed,
+            }
+
+        try:
+            run_daily_analysis_followup_task(
+                db,
+                task_id,
+                storage_root=storage_root,
+                detail_fetcher=detail_fetcher,
+                vip_browser_fetcher=vip_browser_fetcher,
+            )
+            stages_processed += 1
+            db.expire_all()
+            run = db.query(TaskRun).filter(TaskRun.id == task_id).first()
+        except Exception as exc:
+            db.rollback()
+            _mark_selected_followup_failed(db, task_id, exc)
+            return {
+                "task_id": str(task_id),
+                "status": "failed",
+                "reason": "worker_exception",
+                "error": f"{type(exc).__name__}: {exc}",
+                "stages_processed": stages_processed,
+            }
+
+        if run is None:
+            return {
+                "task_id": str(task_id),
+                "status": "not_found",
+                "reason": "task_disappeared_after_worker",
+                "stages_processed": stages_processed,
+            }
+        current_status = coerce_task_status(run.status)
+        if current_status in _FOLLOWUP_TERMINAL_STATUSES:
+            return {
+                "task_id": str(task_id),
+                "status": _followup_result_status(current_status),
+                "task_status": current_status.value,
+                "current_stage": run.current_stage,
+                "stages_processed": stages_processed,
+            }
+        if current_status != TaskStatus.pending:
+            return {
+                "task_id": str(task_id),
+                "status": "waiting",
+                "task_status": current_status.value,
+                "current_stage": run.current_stage,
+                "reason": "worker_left_task_in_nonterminal_state",
+                "stages_processed": stages_processed,
+            }
+
+    db.expire_all()
+    run = db.query(TaskRun).filter(TaskRun.id == task_id).first()
+    task_status = coerce_task_status(run.status).value if run is not None else None
+    return {
+        "task_id": str(task_id),
+        "status": "waiting",
+        "task_status": task_status,
+        "current_stage": run.current_stage if run is not None else None,
+        "reason": "stage_step_limit_reached",
+        "stages_processed": stages_processed,
+    }
+
+
+def _claim_selected_followup_task(db: Session, task_id: uuid.UUID) -> dict[str, Any]:
+    """Atomically claim one explicitly named pending task for a Dagster run."""
+    query = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_id, TaskRun.task_type == TASK_TYPE)
+        .populate_existing()
+    )
+    run = query.with_for_update(skip_locked=True).first()
+    if run is None:
+        visible = query.first()
+        if visible is None:
+            db.rollback()
+            return {"status": "not_found", "reason": "task_not_found"}
+        visible_status = coerce_task_status(visible.status)
+        current_stage = visible.current_stage
+        db.rollback()
+        return {
+            "status": "already_running"
+            if visible_status in {TaskStatus.pending, TaskStatus.running}
+            else "terminal",
+            "current_stage": current_stage,
+            "reason": f"task_status={visible_status.value}",
+        }
+
+    if coerce_task_status(run.status) == TaskStatus.pending:
+        # PostgreSQL's row lock protects the read above. The compare-and-set
+        # keeps the same claim safe on SQLite (where ``FOR UPDATE`` is ignored)
+        # and gives concurrent Dagster runs one deterministic winner.
+        claimed = db.execute(
+            update(TaskRun)
+            .where(
+                TaskRun.id == task_id,
+                TaskRun.task_type == TASK_TYPE,
+                TaskRun.status == TaskStatus.pending,
+            )
+            .values(status=TaskStatus.running)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if claimed != 1:
+            db.rollback()
+            visible = (
+                db.query(TaskRun)
+                .filter(TaskRun.id == task_id, TaskRun.task_type == TASK_TYPE)
+                .populate_existing()
+                .first()
+            )
+            if visible is None:
+                db.rollback()
+                return {"status": "not_found", "reason": "task_not_found_after_claim"}
+            visible_status = coerce_task_status(visible.status)
+            current_stage = visible.current_stage
+            db.rollback()
+            return {
+                "status": "already_running"
+                if visible_status in {TaskStatus.pending, TaskStatus.running}
+                else "terminal",
+                "current_stage": current_stage,
+                "reason": f"task_status={visible_status.value}",
+            }
+        transition_task_run(
+            db,
+            run,
+            TaskStatus.running,
+            source="dagster_followup",
+            reason="followup_task_claimed",
+        )
+        db.commit()
+        return {"status": "claimed", "current_stage": run.current_stage}
+    run_status = coerce_task_status(run.status)
+    current_stage = run.current_stage
+    if run_status == TaskStatus.running:
+        db.rollback()
+        return {"status": "already_running", "current_stage": current_stage}
+    if run_status in _FOLLOWUP_TERMINAL_STATUSES:
+        db.rollback()
+        return {"status": "terminal", "current_stage": current_stage, "reason": f"task_status={run_status.value}"}
+    db.rollback()
+    return {"status": "waiting", "current_stage": current_stage, "reason": f"task_status={run_status.value}"}
+
+
+def _mark_selected_followup_failed(db: Session, task_id: uuid.UUID, exc: Exception) -> None:
+    run = db.query(TaskRun).filter(TaskRun.id == task_id, TaskRun.task_type == TASK_TYPE).first()
+    if run is None or coerce_task_status(run.status) in _FOLLOWUP_TERMINAL_STATUSES:
+        return
+    error_message = f"{type(exc).__name__}: {exc}"[:500]
+    transition_task_run(
+        db,
+        run,
+        TaskStatus.failed,
+        source="dagster_followup",
+        reason="followup_worker_exception",
+        error_message=error_message,
+    )
+    run.error_summary = error_message
+    for step in run.steps:
+        if step.status in {StepStatus.pending, StepStatus.running} and step.stage == run.current_stage:
+            transition_task_step(
+                db,
+                step,
+                StepStatus.failed,
+                source="dagster_followup",
+                reason="followup_worker_exception",
+                error_message=error_message,
+                error_type="execution_error",
+                retryable=True,
+            )
+            break
+    db.commit()
+
+
+def _followup_result_status(status: TaskStatus) -> str:
+    if status == TaskStatus.success:
+        return "completed"
+    return status.value
 
 
 def _run_detail_fetch_stage(
@@ -245,6 +512,24 @@ def _run_detail_fetch_stage(
         )
         transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="detail_fetch_source_url_missing")
         run.error_summary = "detail_fetch blocked: source_url is missing"
+        db.commit()
+        return TaskStatus.blocked
+
+    if jin10_disabled() and _is_jin10_followup_input(input_payload):
+        transition_task_step(
+            db,
+            detail_step,
+            StepStatus.blocked,
+            source=TASK_TYPE,
+            reason="jin10_disabled",
+            blocked_reason="Jin10 is disabled by FINANCE_AGENT_DISABLE_JIN10",
+            error_type="source_disabled",
+            retryable=False,
+        )
+        transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="jin10_disabled")
+        run.current_stage = DETAIL_FETCH_STEP
+        run.progress = 0.25
+        run.error_summary = "detail_fetch blocked: Jin10 is disabled"
         db.commit()
         return TaskStatus.blocked
 
@@ -383,6 +668,19 @@ def _run_vip_browser_fallback_stage(
         transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="vip_fallback_article_id_missing")
         run.current_stage = VIP_BROWSER_FALLBACK_STEP
         run.error_summary = "vip_browser_fallback blocked: article_id is missing"
+        db.commit()
+        return TaskStatus.blocked
+
+    if jin10_disabled() and _is_jin10_followup_input(input_payload):
+        _block_vip_fallback(
+            db,
+            fallback_step,
+            error_type="source_disabled",
+            message="Jin10 is disabled by FINANCE_AGENT_DISABLE_JIN10",
+        )
+        transition_task_run(db, run, TaskStatus.blocked, source=TASK_TYPE, reason="jin10_disabled")
+        run.current_stage = VIP_BROWSER_FALLBACK_STEP
+        run.error_summary = "vip_browser_fallback blocked: Jin10 is disabled"
         db.commit()
         return TaskStatus.blocked
 
@@ -987,6 +1285,16 @@ def _default_detail_fetcher() -> DetailFetcher:
     from apps.collectors.news.jin10_detail_fetcher import fetch_jin10_detail_page
 
     return fetch_jin10_detail_page
+
+
+def _is_jin10_followup_input(input_payload: dict[str, Any]) -> bool:
+    source_url = str(input_payload.get("source_url") or "").casefold()
+    if "jin10" in source_url:
+        return True
+    source_refs = input_payload.get("source_refs")
+    if isinstance(source_refs, list):
+        return any("jin10" in str(item).casefold() for item in source_refs)
+    return False
 
 
 def _default_vip_browser_fetcher() -> VipBrowserFetcher:

@@ -22,9 +22,7 @@ from scripts.run_daily_report_pipeline import (
 )
 
 
-DEFAULT_EXTERNAL_ROOT = Path(
-    os.getenv("FINANCE_AGENT_EXTERNAL_REPORT_ROOT", "~/finance-agent-data/jin10-reports")
-).expanduser()
+DEFAULT_EXTERNAL_ROOT = (Path.home() / "jin10-reports")
 DEFAULT_STORAGE_ROOT = Path("storage")
 DEFAULT_CATEGORY = "270"
 DEFAULT_REPORT_TYPE = "daily"
@@ -33,9 +31,7 @@ DEFAULT_START_TIME = "09:50"
 DEFAULT_DEADLINE_TIME = "23:30"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_VISION_MODEL = "gpt-5.6-luna"
-DEFAULT_BROWSER_PROFILE = Path(
-    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
-).expanduser()
+DEFAULT_BROWSER_PROFILE = (Path.home() / ".config" / "finance-agent" / "jin10-browser")
 NON_REPORT_SUFFIXES = ("黄金头条", "投行金评")
 
 

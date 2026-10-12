@@ -23,8 +23,8 @@ export function SettingsInfoRail({
 }: SettingsInfoRailProps) {
   return (
     <div className="space-y-3">
-      <SettingsSystemCard title="系统信息" eyebrow="System" items={systemInfo} />
-      <SettingsSystemCard title="环境路径" eyebrow="Infra" items={globalConfig} />
+      <SettingsSystemCard title="系统信息" eyebrow="运行信息" items={systemInfo} />
+      <SettingsSystemCard title="环境路径" eyebrow="环境信息" items={globalConfig} />
       <SettingsHistoryCard
         entries={historyEntries}
         isLoading={isHistoryLoading}

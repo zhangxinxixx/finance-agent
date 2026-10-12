@@ -124,7 +124,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "Chromium user data directory for manual Jin10 homepage collection. "
-            "Example: ~/.finance-agent/jin10_browser_profile."
+            "Example: ~/.config/finance-agent/jin10-browser."
         ),
     )
     parser.add_argument(

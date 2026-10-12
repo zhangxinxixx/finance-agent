@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_STORAGE_ROOT = _PROJECT_ROOT / "storage"
-_DEFAULT_DATABASE_URL = "postgresql://finance_agent:finance_agent@127.0.0.1:55432/finance_agent"
+_DEFAULT_DATABASE_URL = "postgresql://finance_agent:CHANGE_ME@127.0.0.1:55432/finance_agent"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))

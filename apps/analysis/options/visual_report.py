@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -22,6 +23,8 @@ class VisualMetricCard:
     value: str
     change: str = ""
     tone: str = "neutral"
+    unit: str = ""
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -88,7 +91,7 @@ def build_options_visual_report_vm(result: OptionsAnalysisResult) -> OptionsVisu
     source_refs = _build_source_refs(result)
     gamma_zero = result.netgex.gamma_zero
     key_metrics = [
-        VisualMetricCard("Gamma Zero", _fmt_float(gamma_zero), tone="info"),
+        VisualMetricCard("Proxy Gamma Flip", _fmt_float(gamma_zero), tone="info", note="Selected Expiry Window Proxy Gamma Flip; dealer position unknown"),
         VisualMetricCard("Rows", str(len(result.normalized_rows))),
         VisualMetricCard("Top Walls", str(len(result.scored_walls))),
         VisualMetricCard("Status", result.data_source_status, tone=_status_tone(result.data_source_status)),
@@ -107,7 +110,7 @@ def build_options_visual_report_vm(result: OptionsAnalysisResult) -> OptionsVisu
         data_source_status=result.data_source_status,
         generated_at=result.generated_at,
         hero_title=f"CME {result.product} 期权结构视觉报告 · {result.trade_date}",
-        hero_subtitle=f"{', '.join(result.expiries)} · {result.data_source_status} · Black-76 / GEX / WallScore",
+        hero_subtitle=f"{', '.join(result.expiries)} · {result.data_source_status} · OI-Signed GEX Proxy / Proxy Gamma Flip / WallScore",
         tags=_build_tags(result),
         core_conclusion=_build_core_conclusion(result),
         model_parameters=_build_model_parameters(result),
@@ -147,6 +150,25 @@ def _build_source_refs(result: OptionsAnalysisResult) -> list[dict[str, Any]]:
                 "input_snapshot_ids": dict(result.input_snapshot_ids),
             }
         )
+    if result.expiry_selection:
+        refs.append(
+            {
+                "source": "cme_expiry_selection",
+                "policy": (result.expiry_selection.get("selection_policy") or {}).get("name")
+                if isinstance(result.expiry_selection.get("selection_policy"), dict)
+                else None,
+                "selected_expiries": list(result.expiries),
+                "coverage": result.expiry_selection.get("open_interest_coverage"),
+            }
+        )
+    if result.reconciliation:
+        refs.append(
+            {
+                "source": "cme_prelim_final_reconciliation",
+                "status": result.reconciliation.get("status"),
+                "report_date": result.reconciliation.get("report_date", result.trade_date),
+            }
+        )
     if result.calibration is not None:
         refs.extend(result.calibration.source_refs)
     if not refs:
@@ -164,7 +186,9 @@ def _build_source_refs(result: OptionsAnalysisResult) -> list[dict[str, Any]]:
 def _build_tags(result: OptionsAnalysisResult) -> list[str]:
     tags = [result.data_source_status]
     if result.netgex.gamma_zero is not None:
-        tags.append(f"Gamma Zero {_fmt_float(result.netgex.gamma_zero)}")
+        tags.append(f"Proxy Gamma Flip {_fmt_float(result.netgex.gamma_zero)}")
+    tags.append("OI-Signed GEX Proxy")
+    tags.append("dealer position unknown")
     if result.intent.primary_intent.intent_type.value:
         tags.append(result.intent.primary_intent.intent_type.value)
     return tags
@@ -175,7 +199,7 @@ def _build_core_conclusion(result: OptionsAnalysisResult) -> str:
     gamma_zero = _fmt_float(result.netgex.gamma_zero)
     return (
         f"{result.product} 当前结构信号为 {intent.intent_type.value}，"
-        f"Gamma Zero 位于 {gamma_zero}，"
+        f"Selected Expiry Window Proxy Gamma Flip 位于 {gamma_zero}，"
         f"主分析区间为 {result.analysis_strike_min}-{result.analysis_strike_max}。"
     )
 
@@ -184,7 +208,9 @@ def _build_model_parameters(result: OptionsAnalysisResult) -> list[VisualMetricR
     rows = [
         VisualMetricRow("Report P0", _fmt_float(result.report_p0), result.report_p0_source, "neutral"),
         VisualMetricRow("Forward Price", _fmt_float(result.forward_price), result.f_source, "neutral"),
-        VisualMetricRow("Gamma Zero", _fmt_float(result.netgex.gamma_zero), result.netgex.gamma_zero_method, "info"),
+        VisualMetricRow("Selected Expiry Window Proxy Gamma Flip", _fmt_float(result.netgex.gamma_zero), result.netgex.gamma_zero_method, "info"),
+        VisualMetricRow("GEX Semantics", "OI-Signed GEX Proxy", "Call(+)/Put(-) public OI proxy; dealer position unknown", "warning"),
+        VisualMetricRow("OI/Gamma Concentration Zone", _format_concentration_zone(result), "Selected window public OI/model gamma cluster", "info"),
     ]
     for expiry, forward in result.forward_by_expiry.items():
         rows.append(
@@ -246,13 +272,155 @@ def _build_iv_skew_rows(result: OptionsAnalysisResult) -> list[VisualMetricRow]:
 
 
 def _build_greeks(result: OptionsAnalysisResult) -> list[VisualMetricCard]:
-    aggregate = result.exposure_summary_by_expiry.get("aggregate", {})
+    gex_summaries = _expiry_summary_items(result.expiries, result.gex_summary_by_expiry)
+    summaries = _expiry_exposure_summaries(result)
+    net_gex, net_gex_note = _aggregate_direct_exposure(
+        gex_summaries,
+        "net_gex",
+        source_path="gex_summary_by_expiry",
+    )
+    net_dex, net_dex_note = _aggregate_direct_exposure(summaries, "net_dex")
+    net_dex_note += "; formula: delta × OI × contract_multiplier × F (delta-dollar; not per $1/oz)"
+    top_vega, top_vega_note = _aggregate_nested_exposure(
+        summaries,
+        list_keys=("vex_top_by_strike", "vex_top"),
+        value_key="vex",
+        absolute=True,
+    )
+    top_theta, top_theta_note = _aggregate_nested_exposure(
+        summaries,
+        list_keys=("theta_top_by_strike", "theta_top"),
+        value_key="theta_exposure",
+        absolute=False,
+    )
     return [
-        VisualMetricCard("Net GEX", _fmt_signed(aggregate.get("net_gex")), tone="info"),
-        VisualMetricCard("Net DEX", _fmt_signed(aggregate.get("net_dex")), tone="neutral"),
-        VisualMetricCard("Vega", _fmt_signed(aggregate.get("vega")), tone="neutral"),
-        VisualMetricCard("Theta", _fmt_signed(aggregate.get("theta")), tone="warning"),
+        VisualMetricCard(
+            "OI-Signed GEX Proxy",
+            _fmt_signed(net_gex),
+            tone="info",
+            unit="USD per 1% move",
+            note=net_gex_note,
+        ),
+        VisualMetricCard(
+            "Net DEX",
+            _fmt_signed(net_dex),
+            tone="neutral",
+            unit="USD delta-dollar",
+            note=net_dex_note,
+        ),
+        VisualMetricCard(
+            "Vega",
+            _fmt_signed(top_vega),
+            tone="neutral",
+            unit="USD per 1 vol-point",
+            note=top_vega_note,
+        ),
+        VisualMetricCard(
+            "Theta",
+            _fmt_signed(top_theta),
+            tone="warning",
+            unit="USD/day",
+            note=top_theta_note,
+        ),
     ]
+
+
+def _expiry_exposure_summaries(
+    result: OptionsAnalysisResult,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return the per-expiry exposure summaries used by the Markdown report."""
+    return _expiry_summary_items(result.expiries, result.exposure_summary_by_expiry)
+
+
+def _expiry_summary_items(
+    expiries: list[str],
+    summaries: dict[str, dict[str, Any]] | None,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return ordered expiry summaries without treating an aggregate as an expiry."""
+    values = summaries or {}
+    if expiries:
+        return [
+            (expiry, values.get(expiry) if isinstance(values.get(expiry), dict) else {})
+            for expiry in expiries
+        ]
+    return [
+        (expiry, summary)
+        for expiry, summary in values.items()
+        if expiry != "aggregate" and isinstance(summary, dict)
+    ]
+
+
+def _aggregate_direct_exposure(
+    summaries: list[tuple[str, dict[str, Any]]],
+    value_key: str,
+    *,
+    source_path: str = "exposure_summary_by_expiry",
+) -> tuple[float | None, str]:
+    values: list[float] = []
+    missing: list[str] = []
+    for expiry, summary in summaries:
+        value = _as_number(summary.get(value_key))
+        if value is None:
+            missing.append(f"{source_path}.{expiry}.{value_key}")
+        else:
+            values.append(value)
+
+    if not values:
+        if missing:
+            return None, "missing: " + ", ".join(missing)
+        return None, f"missing: {source_path} (no {value_key} values)"
+    note = f"aggregate of {len(values)} expiry summaries from {source_path}"
+    if missing:
+        note = "partial: " + note + "; missing: " + ", ".join(missing)
+    return sum(values), note
+
+
+def _aggregate_nested_exposure(
+    summaries: list[tuple[str, dict[str, Any]]],
+    *,
+    list_keys: tuple[str, ...],
+    value_key: str,
+    absolute: bool,
+) -> tuple[float | None, str]:
+    values: list[float] = []
+    missing: list[str] = []
+    available_expiries: set[str] = set()
+    for expiry, summary in summaries:
+        entries: Any = None
+        selected_key = list_keys[0]
+        for candidate in list_keys:
+            candidate_entries = summary.get(candidate)
+            if isinstance(candidate_entries, list) and candidate_entries:
+                selected_key = candidate
+                entries = candidate_entries
+                break
+        if not isinstance(entries, list) or not entries:
+            missing.append(f"exposure_summary_by_expiry.{expiry}.{selected_key}")
+            continue
+        expiry_values = [
+            _as_number(entry.get(value_key))
+            for entry in entries
+            if isinstance(entry, dict)
+        ]
+        numeric_values = [value for value in expiry_values if value is not None]
+        if not numeric_values:
+            missing.append(f"exposure_summary_by_expiry.{expiry}.{selected_key}.{value_key}")
+            continue
+        available_expiries.add(expiry)
+        values.extend(abs(value) if absolute else value for value in numeric_values)
+
+    if not values:
+        if missing:
+            return None, "missing: " + ", ".join(missing)
+        return None, f"missing: exposure_summary_by_expiry (no {value_key} values)"
+    note = (
+        "partial: by-strike Top 10 per expiry; "
+        f"aggregate of {len(available_expiries)} expiry exposure summaries; "
+        "full-chain total unavailable"
+    )
+    if missing:
+        note += "; missing: " + ", ".join(missing)
+    return sum(values), note
 
 
 def _build_oi_rows(result: OptionsAnalysisResult, *, side: str) -> list[VisualMetricRow]:
@@ -374,7 +542,7 @@ def _build_scenarios(result: OptionsAnalysisResult) -> list[VisualScenarioRow]:
             tone="neutral",
         ),
         VisualScenarioRow(
-            title="转强路径 · Gamma 接受",
+            title="转强路径 · Proxy Gamma Flip 确认",
             detail=bullish_detail,
             tone="info",
         ),
@@ -389,7 +557,7 @@ def _build_scenarios(result: OptionsAnalysisResult) -> list[VisualScenarioRow]:
 def _build_switches(result: OptionsAnalysisResult) -> list[VisualMetricRow]:
     return [
         VisualMetricRow("Data Status", result.data_source_status, "CME source status", _status_tone(result.data_source_status)),
-        VisualMetricRow("Real GEX", "enabled" if result.used_real_gex else "proxy", "Exposure calculation mode", "neutral"),
+        VisualMetricRow("GEX Semantics", "OI-Signed GEX Proxy", "Settlement-implied Black-76 USD GEX; missing-IV rows remain a separate dimensionless shape proxy; dealer position unknown", "warning"),
     ]
 
 
@@ -399,6 +567,14 @@ def _build_intent_text(evidence: Any) -> str:
     return str(evidence or "unavailable")
 
 
+def _format_concentration_zone(result: OptionsAnalysisResult) -> str:
+    zone = result.oi_gamma_concentration_zone or {}
+    levels = zone.get("strike_levels") if isinstance(zone, dict) else None
+    if isinstance(levels, list) and levels:
+        return ", ".join(str(level) for level in levels[:5])
+    return "unavailable"
+
+
 def _fmt_float(value: Any) -> str:
     if value is None:
         return "unavailable"
@@ -406,6 +582,16 @@ def _fmt_float(value: Any) -> str:
         return f"{float(value):,.2f}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def _as_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _fmt_signed(value: Any) -> str:

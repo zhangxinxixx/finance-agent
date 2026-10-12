@@ -61,6 +61,33 @@ def test_unanchored_markdown_requires_review_and_cannot_create_items() -> None:
     assert feature.items == []
 
 
+def test_reportory_structured_data_is_preferred_over_missing_layout() -> None:
+    feature = build_jin10_market_odds_evidence(
+        article_id="20260722T062313Z-a706a018",
+        published_at="2026-07-22T14:25:56+08:00",
+        parser_version="jin10-vlm-parser-v0.2",
+        figures=[],
+        structured_report_data={
+            "items": [{
+                "category": "黄金",
+                "title": "黄金7月触及价位",
+                "odds": [
+                    {"label": "上破4300美元", "probability": 17.25},
+                    {"label": "跌破3900美元", "probability": 10},
+                ],
+            }],
+        },
+    )
+
+    assert feature.extraction_status == "accepted"
+    assert feature.panel_count == 1
+    assert [(item.predicate, item.target_value, item.probability) for item in feature.items] == [
+        ("touch_above", 4300.0, 0.1725),
+        ("touch_below", 3900.0, 0.1),
+    ]
+    assert all(item.figure_id == "reportory_item_001" for item in feature.items)
+
+
 def test_artifact_writer_and_daily_brief_adapter_preserve_supplemental_guard(tmp_path) -> None:
     feature = _feature()
     target = write_market_odds_evidence(feature, output_dir=tmp_path)

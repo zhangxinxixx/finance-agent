@@ -1,8 +1,7 @@
 import { FACard } from "@/components/shared/FACard";
 import type { StrategyScenarioViewModel } from "@/types/strategy";
-import { strategySentence } from "./strategyFormat";
+import { strategyEvidenceLabel } from "./strategyDisplayLabels";
 
-const MAX_CONDITION_ITEMS = 5;
 const COLLAPSED_ENGLISH_SUMMARY = "后端返回英文策略摘要，已在主视图折叠；请在溯源或原始报告中查看原文。";
 
 export function StrategyScenarioSection({ scenario }: { scenario: StrategyScenarioViewModel }) {
@@ -16,7 +15,7 @@ export function StrategyScenarioSection({ scenario }: { scenario: StrategyScenar
     <FACard title="情景分析" eyebrow="情景推演" bodyClassName="space-y-3.5">
       <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3.5 shadow-[0_0_0_1px_rgba(59,130,246,0.04)]">
         <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">主要情景</div>
-        <p className="mt-1 text-[12px] leading-6 text-[var(--fg-1)]">{strategySentence(scenario.main_scenario)}</p>
+        <p className="mt-1 text-[12px] leading-6 text-[var(--fg-1)]">{strategyEvidenceLabel(scenario.main_scenario)}</p>
       </div>
 
       {alternativeScenarios.items.length > 0 ? (
@@ -25,7 +24,7 @@ export function StrategyScenarioSection({ scenario }: { scenario: StrategyScenar
           <ul className="mt-1 space-y-1">
             {alternativeScenarios.items.map((alt, idx) => (
               <li key={idx} className="text-[11px] leading-relaxed text-[var(--fg-3)]">
-                <span className="mr-1 text-[var(--fg-5)]">-</span> {alt}
+                <span className="mr-1 text-[var(--fg-5)]">-</span> {strategyEvidenceLabel(alt)}
               </li>
             ))}
           </ul>
@@ -84,7 +83,7 @@ function normalizeScenarioItems(items: string[]): NormalizedScenarioItems {
   let collapsedCount = 0;
 
   for (const item of items) {
-    const text = strategySentence(item);
+    const text = strategyEvidenceLabel(item);
     if (!text) continue;
     if (text === COLLAPSED_ENGLISH_SUMMARY) collapsedCount += 1;
     if (seen.has(text)) continue;
@@ -93,9 +92,12 @@ function normalizeScenarioItems(items: string[]): NormalizedScenarioItems {
   }
 
   return {
-    items: normalized.slice(0, MAX_CONDITION_ITEMS),
+    // Trigger, confirmation, invalidation and risk conditions are decision
+    // evidence. Keep every backend item in the primary reading path instead
+    // of silently hiding the tail behind a visual cap.
+    items: normalized,
     collapsedCount,
-    overflowCount: Math.max(0, normalized.length - MAX_CONDITION_ITEMS),
+    overflowCount: 0,
   };
 }
 

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -18,6 +21,40 @@ from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep
 _TASK_TYPE = "daily_analysis_followup"
 _STAGE = "news_followup"
 _ACTIVE_STATUSES = (TaskStatus.pending, TaskStatus.running)
+_DAGSTER_JOB_NAME = "daily_analysis_followup_job"
+MAX_FOLLOWUP_TASK_IDS = 50
+
+
+class DailyAnalysisFollowupDispatchError(RuntimeError):
+    """A structured failure after follow-up rows have already been committed."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        reason: str,
+        message: str,
+        cause: str | None = None,
+        detail_extra: dict[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.reason = reason
+        self.message = message
+        self.cause = cause
+        self.detail_extra = dict(detail_extra or {})
+
+    def detail(self, *, task_ids: Sequence[str]) -> dict[str, Any]:
+        detail = {
+            "message": self.message,
+            "reason": self.reason,
+            "dispatch_status": "unavailable" if self.reason == "dagster_unavailable" else "failed",
+            "task_ids": list(task_ids),
+            "task_rows_preserved": True,
+            "dagster_check_error": self.cause,
+        }
+        detail.update(self.detail_extra)
+        return detail
 
 
 def create_daily_analysis_followup_tasks(
@@ -101,6 +138,231 @@ def create_daily_analysis_followup_tasks(
         "created_run_ids": created_run_ids,
         "existing_run_ids": existing_run_ids,
     }
+
+
+def launch_daily_analysis_followup_job(
+    task_ids: Sequence[str | uuid.UUID],
+    *,
+    dagster_url: str | None = None,
+    storage_root: str | None = None,
+    max_stage_steps: int = 4,
+) -> dict[str, Any]:
+    """Launch one explicit task-id batch in the formal Dagster job.
+
+    The API passes only IDs returned by ``create_daily_analysis_followup_tasks``.
+    This helper never queries or discovers pending rows, and it deliberately has
+    no schedule or worker fallback when Dagster is unavailable.
+    """
+    normalized_ids = _normalize_task_ids(task_ids)
+    if not normalized_ids:
+        return {
+            "dispatch_status": "not_dispatched",
+            "task_ids": [],
+            "dagster_run_id": None,
+            "dagster_status": None,
+        }
+    if len(normalized_ids) > MAX_FOLLOWUP_TASK_IDS:
+        raise DailyAnalysisFollowupDispatchError(
+            status_code=413,
+            reason="task_batch_too_large",
+            message=(
+                f"daily analysis follow-up dispatch accepts at most {MAX_FOLLOWUP_TASK_IDS} task_ids; "
+                f"received {len(normalized_ids)}"
+            ),
+        )
+
+    try:
+        import httpx
+    except ImportError as exc:  # pragma: no cover - dependency is part of the API runtime
+        raise DailyAnalysisFollowupDispatchError(
+            status_code=500,
+            reason="dagster_client_unavailable",
+            message="Dagster dispatch client is unavailable",
+            cause=str(exc),
+        ) from exc
+
+    configured_storage_root = storage_root or os.getenv("FINANCE_AGENT_STORAGE_ROOT", "./storage")
+    bounded_stage_steps = min(max(int(max_stage_steps), 1), 4)
+    task_set_hash = hashlib.sha256(",".join(normalized_ids).encode("utf-8")).hexdigest()
+    mutation = """
+        mutation LaunchDailyAnalysisFollowup($jobName: String!, $runConfigData: RunConfigData!, $taskSetHash: String!) {
+            launchPipelineExecution(
+                executionParams: {
+                    selector: {
+                        pipelineName: $jobName
+                        repositoryName: "__repository__"
+                        repositoryLocationName: "dagster_finance.definitions"
+                    }
+                    mode: "default"
+                    runConfigData: $runConfigData
+                    executionMetadata: {
+                        tags: [
+                            { key: "pipeline", value: "daily_analysis_followup" }
+                            { key: "task_scope", value: "explicit_ids" }
+                            { key: "task_set_hash", value: $taskSetHash }
+                        ]
+                    }
+                }
+            ) {
+                ... on LaunchRunSuccess {
+                    run { runId status }
+                }
+                ... on PythonError { message }
+                ... on RunConfigValidationInvalid { errors { message } }
+            }
+        }
+    """
+    variables = {
+        "jobName": _DAGSTER_JOB_NAME,
+        "taskSetHash": task_set_hash,
+        "runConfigData": {
+            "ops": {
+                "daily_analysis_followup_op": {
+                    "config": {
+                        "task_ids": normalized_ids,
+                        "storage_root": configured_storage_root,
+                        "max_stage_steps": bounded_stage_steps,
+                    }
+                }
+            }
+        },
+    }
+    try:
+        response = httpx.post(
+            dagster_url or _default_dagster_url(),
+            json={"query": mutation, "variables": variables},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as exc:
+        raise DailyAnalysisFollowupDispatchError(
+            status_code=502,
+            reason="dagster_unavailable",
+            message=f"Dagster unavailable: {exc}",
+            cause=str(exc),
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise DailyAnalysisFollowupDispatchError(
+            status_code=502,
+            reason="dagster_unavailable",
+            message=f"Dagster returned an unreadable response: {exc}",
+            cause=str(exc),
+        ) from exc
+
+    graphql_errors = payload.get("errors") if isinstance(payload, dict) else None
+    if graphql_errors:
+        message = "; ".join(
+            str(item.get("message") or "unknown GraphQL error")
+            for item in graphql_errors
+            if isinstance(item, dict)
+        ) or "unknown GraphQL error"
+        raise DailyAnalysisFollowupDispatchError(
+            status_code=500,
+            reason="dagster_launch_failed",
+            message=f"Dagster launch failed: {message}",
+            cause=message,
+        )
+
+    result = (payload.get("data") or {}).get("launchPipelineExecution", {}) if isinstance(payload, dict) else {}
+    run = result.get("run") if isinstance(result, dict) else None
+    if isinstance(run, dict) and run.get("runId"):
+        return {
+            "dispatch_status": "dispatched",
+            "task_ids": normalized_ids,
+            "dagster_run_id": str(run["runId"]),
+            "dagster_status": str(run.get("status") or "QUEUED"),
+            "dagster_job_name": _DAGSTER_JOB_NAME,
+        }
+
+    error_message = _dagster_result_error(result)
+    raise DailyAnalysisFollowupDispatchError(
+        status_code=500,
+        reason="dagster_launch_failed",
+        message=f"Dagster launch failed: {error_message}",
+        cause=error_message,
+    )
+
+
+def dispatch_daily_analysis_followup_tasks(task_ids: Sequence[str | uuid.UUID]) -> dict[str, Any]:
+    """Dispatch one explicit task-id set, chunking it into bounded Dagster runs."""
+    selected_ids = _normalize_task_ids(task_ids)
+    if not selected_ids:
+        return {
+            "dispatch_status": "not_dispatched",
+            "task_ids": [],
+            "dagster_run_id": None,
+            "dagster_status": None,
+        }
+
+    dispatches: list[dict[str, Any]] = []
+    dispatched_task_ids: list[str] = []
+    for chunk_start in range(0, len(selected_ids), MAX_FOLLOWUP_TASK_IDS):
+        chunk = selected_ids[chunk_start : chunk_start + MAX_FOLLOWUP_TASK_IDS]
+        try:
+            dispatch = launch_daily_analysis_followup_job(chunk)
+        except DailyAnalysisFollowupDispatchError as exc:
+            raise DailyAnalysisFollowupDispatchError(
+                status_code=exc.status_code,
+                reason=exc.reason,
+                message=exc.message,
+                cause=exc.cause,
+                detail_extra={
+                    "dispatch_status": "partial_failure" if dispatched_task_ids else exc.detail(task_ids=selected_ids)["dispatch_status"],
+                    "dispatched_task_ids": dispatched_task_ids,
+                    "remaining_task_ids": selected_ids[len(dispatched_task_ids) :],
+                    "dagster_run_ids": [item.get("dagster_run_id") for item in dispatches],
+                },
+            ) from exc
+        dispatches.append(dispatch)
+        dispatched_task_ids.extend(str(task_id) for task_id in dispatch.get("task_ids", chunk))
+
+    if len(dispatches) == 1:
+        return dispatches[0]
+    return {
+        "dispatch_status": "dispatched",
+        "task_ids": selected_ids,
+        "dagster_run_id": None,
+        "dagster_run_ids": [item.get("dagster_run_id") for item in dispatches],
+        "dagster_status": "MIXED"
+        if len({str(item.get("dagster_status")) for item in dispatches}) > 1
+        else str(dispatches[0].get("dagster_status") or "QUEUED"),
+        "dagster_statuses": [item.get("dagster_status") for item in dispatches],
+        "dagster_job_name": dispatches[0].get("dagster_job_name"),
+    }
+
+
+def _normalize_task_ids(task_ids: Sequence[str | uuid.UUID]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_id in task_ids:
+        try:
+            value = str(uuid.UUID(str(raw_id)))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if value not in seen:
+            normalized.append(value)
+            seen.add(value)
+    return normalized
+
+
+def _dagster_result_error(result: Any) -> str:
+    if not isinstance(result, dict):
+        return "invalid launch response"
+    errors = result.get("errors")
+    if isinstance(errors, list):
+        messages = [
+            str(item.get("message") or "unknown validation error")
+            for item in errors
+            if isinstance(item, dict)
+        ]
+        if messages:
+            return "; ".join(messages)
+    return str(result.get("message") or result or "missing Dagster run")
+
+
+def _default_dagster_url() -> str:
+    return os.getenv("DAGSTER_GRAPHQL_URL", "http://127.0.0.1:3333/graphql")
 
 
 def _find_existing_active_run(db: Session, *, trade_date: str, input_hash: str) -> TaskRun | None:

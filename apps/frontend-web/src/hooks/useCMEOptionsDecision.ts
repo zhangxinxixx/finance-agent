@@ -25,6 +25,9 @@ export function useCMEOptionsDecision(date?: string, enabled = true): CMEOptions
     }
     setIsLoading(true);
     setError(null);
+    // Decision data carries the selected trade date. Clear the previous
+    // identity before loading a new one so snapshot and decision cannot mix.
+    setData(null);
     void fetchCMEOptionsDecision(date)
       .then((nextData) => { if (!cancelled) setData(nextData); })
       .catch((cause) => {

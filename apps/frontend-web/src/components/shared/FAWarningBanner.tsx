@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import type { ReactNode } from "react";
 import { AlertTriangle, Info } from "lucide-react";
 
@@ -23,8 +24,8 @@ export function FAWarningBanner({ title, description, tone = "warn", action, cla
     <div className={`flex items-start gap-3 rounded-[var(--radius-lg)] border px-3 py-2.5 ${styles.box} ${className}`}>
       <Icon size={14} className={`mt-0.5 shrink-0 ${styles.icon}`} />
       <div className="min-w-0 flex-1">
-        <div className="text-[12px] font-semibold text-[var(--fg-2)]">{title}</div>
-        {description ? <div className="mt-0.5 text-[11px] leading-snug text-[var(--fg-4)]">{description}</div> : null}
+        <div className="text-[12px] font-semibold text-[var(--fg-2)]">{typeof title === "string" ? readableWarning(title) : title}</div>
+        {description ? <div className="mt-0.5 text-[11px] leading-snug text-[var(--fg-4)]">{typeof description === "string" ? readableWarning(description) : description}</div> : null}
       </div>
       {action ? <div className="shrink-0">{action}</div> : null}
     </div>

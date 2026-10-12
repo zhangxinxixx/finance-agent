@@ -1,5 +1,6 @@
 import { FACard } from "@/components/shared/FACard";
 import type { SettingsPreferenceItem } from "@/adapters/settings";
+import { settingsPreferenceValueLabel } from "./settingsFormat";
 
 function PreferenceSelect({
   item,
@@ -24,7 +25,7 @@ function PreferenceSelect({
         >
           {item.options.map((option) => (
             <option key={option} value={option} className="bg-[var(--bg-card)] text-[var(--fg-2)]">
-              {option}
+              {settingsPreferenceValueLabel(item.key, option)}
             </option>
           ))}
         </select>
@@ -55,7 +56,7 @@ export function GeneralPreferencesPanel({
   return (
     <FACard
       title="全局偏好"
-      eyebrow="Writable Preferences"
+      eyebrow="可编辑偏好"
       accent="brand"
       action={
         <div className="flex items-center gap-2">

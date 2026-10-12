@@ -272,6 +272,44 @@ def test_weekly_scan_uses_article_publication_date(tmp_path, monkeypatch) -> Non
     assert result["actions"][0]["article_id"] == "224965"
 
 
+def test_market_observation_scan_uses_reportory_fetcher(tmp_path, monkeypatch) -> None:
+    window = next(item for item in WINDOWS if item.key == "jin10_market_observation")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(scanner.httpx, "Client", lambda **kwargs: nullcontext(object()))
+    monkeypatch.setattr(
+        scanner,
+        "fetch_reportory_market_odds_entries",
+        lambda **kwargs: [
+            Jin10CategoryEntry(
+                "20260722T062313Z-a706a018",
+                "加息尾部升温｜市场赔率数据表",
+                "https://reportory.jin10.com/jin10-report-hub/v2/market-report/market-odds-report/2026/07/22/20260722T062313Z-a706a018.html",
+                "2026-07-22 14:25:56",
+            )
+        ],
+    )
+    monkeypatch.setattr(scanner, "run_command", lambda command, *, env: commands.append(command) or {"status": "ok"})
+
+    result = scanner.scan_jin10(
+        window,
+        now=_at("2026-07-22T18:00:00"),
+        external_root=tmp_path / "external",
+        storage_root=tmp_path / "storage",
+        dry_run=False,
+        env={},
+    )
+
+    fetch_command = next(
+        command
+        for command in commands
+        if any(item.endswith("fetch_jin10_reportory_market_odds.py") for item in command)
+    )
+    assert fetch_command[fetch_command.index("--url") + 1].startswith("https://reportory.jin10.com/")
+    assert fetch_command[fetch_command.index("--published-at") + 1] == "2026-07-22 14:25:56"
+    assert result["actions"][0]["article_id"] == "20260722T062313Z-a706a018"
+
+
 def test_gold_scan_prefers_reportory_daily_and_keeps_legacy_discovery(tmp_path, monkeypatch) -> None:
     window = next(item for item in WINDOWS if item.key == "jin10_gold")
     reportory_url = (
@@ -792,8 +830,10 @@ def test_scan_cme_keeps_transient_download_failure_as_waiting(tmp_path, monkeypa
     }
 
 
-def test_systemd_service_pins_api_database_after_environment_file() -> None:
+def test_systemd_service_uses_database_from_environment_file() -> None:
     project_root = Path(__file__).resolve().parents[2]
     service = (project_root / "deploy/systemd/report-window-scanner.service").read_text(encoding="utf-8")
 
-    assert "ExecStart=/usr/bin/env DATABASE_URL=postgresql://finance_agent:finance_agent@127.0.0.1:55432/" in service
+    assert "EnvironmentFile=-%h/workspace/finance-agent/.env" in service
+    assert "ExecStart=%h/.local/bin/uv run python scripts/run_report_window_scan.py" in service
+    assert "DATABASE_URL=" not in service

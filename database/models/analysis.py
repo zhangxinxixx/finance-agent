@@ -786,6 +786,7 @@ def ensure_analysis_tables(bind_or_session):
         bind = bind.get_bind()
     # Register auxiliary analysis models before create_all() so metadata includes them.
     from database.models import playbook as _playbook_models  # noqa: F401
+    from database.models import market_state as _market_state_models  # noqa: F401
 
     AnalysisBase.metadata.create_all(bind=bind, checkfirst=True)
     _ensure_analysis_columns(bind)

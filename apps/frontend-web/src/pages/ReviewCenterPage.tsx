@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { RefreshCw, ShieldCheck } from "lucide-react";
 import { ReviewCenterFilterBar } from "@/components/review-center/ReviewCenterFilterBar";
-import { AnalysisMemoryPanel } from "@/components/analysis-memory/AnalysisMemoryPanel";
 import {
   ReviewCenterEmptyState,
   ReviewCenterErrorBanner,
@@ -29,14 +28,15 @@ import { usePromptEvolutionProposal } from "@/hooks/usePromptEvolutionProposal";
 import { usePromptEvolutionReview } from "@/hooks/usePromptEvolutionReview";
 import { useOrchestrationManualReview } from "@/hooks/useOrchestrationManualReview";
 import { useSystemEvolutionReview } from "@/hooks/useSystemEvolutionReview";
+import { operationMainlineLabel } from "@/components/operations/operationsLabels";
 
 const PROMPT_EVOLUTION_AGENT_OPTIONS = [
-  { value: "event_attribution_agent", label: "EventAttribution" },
-  { value: "transmission_chain_agent", label: "TransmissionChain" },
-  { value: "driver_decomposition_agent", label: "DriverDecomposition" },
-  { value: "mainline_ranking_agent", label: "MainlineRanking" },
-  { value: "gold_macro_overview_agent", label: "GoldMacroOverview" },
-  { value: "report_render_agent", label: "ReportRender" },
+  { value: "event_attribution_agent", label: "事件归因" },
+  { value: "transmission_chain_agent", label: "传导链识别" },
+  { value: "driver_decomposition_agent", label: "驱动拆解" },
+  { value: "mainline_ranking_agent", label: "主线排序" },
+  { value: "gold_macro_overview_agent", label: "黄金宏观总览" },
+  { value: "report_render_agent", label: "报告输出" },
 ];
 
 export function ReviewCenterPage() {
@@ -91,10 +91,10 @@ export function ReviewCenterPage() {
           ]}
           secondaryLabel="范围"
           secondaryItems={[
-            { label: "模块", value: sourceModule || "全部模块" },
+            { label: "模块", value: sourceModule ? operationMainlineLabel(sourceModule) : "全部模块" },
             { label: "编排复核", value: orchestrationReview.count },
             { label: "系统演进", value: systemEvolution.proposalCount },
-            { label: "Prompt验证", value: promptEvolutionReview.caseCount },
+            { label: "提示词验证", value: promptEvolutionReview.caseCount },
           ]}
         />
 
@@ -114,14 +114,14 @@ export function ReviewCenterPage() {
       )}
       bodyClassName="fa-page-stack"
     >
-      {reviewCenter.isError ? <ReviewCenterErrorBanner message={reviewCenter.error?.message ?? "无法加载 /api/reviews"} /> : null}
-      {reviewCenter.actionError ? <ReviewCenterErrorBanner message={reviewCenter.actionError.message} /> : null}
-      {orchestrationReview.isError ? <ReviewCenterErrorBanner message={orchestrationReview.error?.message ?? "无法加载 /api/orchestration/manual-review"} /> : null}
-      {orchestrationReview.actionError ? <ReviewCenterErrorBanner message={orchestrationReview.actionError.message} /> : null}
-      {systemEvolution.isError ? <ReviewCenterErrorBanner message={systemEvolution.error?.message ?? "无法加载 /api/governance/system-evolution/latest"} /> : null}
-      {systemEvolution.actionError ? <ReviewCenterErrorBanner message={systemEvolution.actionError.message} /> : null}
-      {promptEvolutionReview.isError ? <ReviewCenterErrorBanner message={promptEvolutionReview.error?.message ?? "无法加载 /api/governance/prompt-evolution/latest"} /> : null}
-      {promptEvolutionReview.actionError ? <ReviewCenterErrorBanner message={promptEvolutionReview.actionError.message} /> : null}
+      {reviewCenter.isError ? <ReviewCenterErrorBanner message={reviewCenter.error?.message ?? "复核数据暂时无法读取"} record={reviewCenter.error} /> : null}
+      {reviewCenter.actionError ? <ReviewCenterErrorBanner message={reviewCenter.actionError.message} record={reviewCenter.actionError} /> : null}
+      {orchestrationReview.isError ? <ReviewCenterErrorBanner message={orchestrationReview.error?.message ?? "自动编排复核暂时无法读取"} record={orchestrationReview.error} /> : null}
+      {orchestrationReview.actionError ? <ReviewCenterErrorBanner message={orchestrationReview.actionError.message} record={orchestrationReview.actionError} /> : null}
+      {systemEvolution.isError ? <ReviewCenterErrorBanner message={systemEvolution.error?.message ?? "系统演进复核暂时无法读取"} record={systemEvolution.error} /> : null}
+      {systemEvolution.actionError ? <ReviewCenterErrorBanner message={systemEvolution.actionError.message} record={systemEvolution.actionError} /> : null}
+      {promptEvolutionReview.isError ? <ReviewCenterErrorBanner message={promptEvolutionReview.error?.message ?? "提示内容验证暂时无法读取"} record={promptEvolutionReview.error} /> : null}
+      {promptEvolutionReview.actionError ? <ReviewCenterErrorBanner message={promptEvolutionReview.actionError.message} record={promptEvolutionReview.actionError} /> : null}
 
       <ReviewCenterSummaryCard
         source={reviewCenter.source}
@@ -129,14 +129,12 @@ export function ReviewCenterPage() {
         filteredCount={filteredReviews.length}
       />
 
-      <AnalysisMemoryPanel allowReview />
-
       {orchestrationReview.items.length > 0 ? (
         <section className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-[12px] font-semibold text-[var(--fg-2)]">自动化编排复核</div>
-              <div className="mt-1 text-[10px] text-[var(--fg-5)]">{orchestrationReview.tradeDate || "latest"} · {orchestrationReview.count} 项</div>
+              <div className="mt-1 text-[10px] text-[var(--fg-5)]">{orchestrationReview.tradeDate || "最近一次记录"} · {orchestrationReview.count} 项</div>
             </div>
             <button type="button" onClick={orchestrationReview.refetch} className="fa-workspace-toolbar-button">
               <RefreshCw size={12} />

@@ -1,3 +1,6 @@
+import { readerValue } from "@/lib/readerLabels";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { readableWarning } from "@/lib/researchReading";
 import { useMemo, useState, type ReactNode } from "react";
 import { CheckCircle2, FileText, FolderTree, Loader2, SearchCheck, ShieldAlert, XCircle } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -48,7 +51,7 @@ function inputListSection({
           {items.map((item) => (
             <li key={`${title}-${item}`} className="flex gap-2 text-[11px] leading-5 text-[var(--fg-2)]">
               <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-[var(--fg-5)]" />
-              <span>{item}</span>
+              <span>{readerValue(item, "中文研究条目尚未提供，参考条件待确认。")}</span>
             </li>
           ))}
         </ul>
@@ -124,7 +127,7 @@ function ArticleBriefSummary({ bundle }: { bundle: Jin10ArticleBriefBundle | nul
               const headline = formatEventFlowHeadlineSummary(brief.headline, 44);
               return (
                 <div className="mt-2 space-y-0.5">
-                  <div className="min-w-0 text-[12px] font-semibold leading-5 text-[var(--fg-1)]" title={headline.raw}>
+                  <div className="min-w-0 text-[12px] font-semibold leading-5 text-[var(--fg-1)]" >
                     {headline.lead}
                   </div>
                   {headline.subline ? <div className="text-[11px] leading-5 text-[var(--fg-4)]">{headline.subline}</div> : null}
@@ -136,13 +139,13 @@ function ArticleBriefSummary({ bundle }: { bundle: Jin10ArticleBriefBundle | nul
                 </div>
               );
             })()}
-            {brief.analysis_summary ? <div className="mt-2 text-[11px] leading-5 text-[var(--fg-2)]">{brief.analysis_summary}</div> : null}
+            {brief.analysis_summary ? <div className="mt-2 text-[11px] leading-5 text-[var(--fg-2)]">{readerValue(brief.analysis_summary, "本条摘要的中文影响分析尚未提供。")}</div> : null}
             {brief.key_points.length > 0 ? (
               <ul className="mt-2 space-y-1 text-[11px] leading-5 text-[var(--fg-3)]">
                 {brief.key_points.slice(0, 3).map((point) => (
                   <li key={`${brief.brief_id}-${point}`} className="flex gap-2">
                     <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-[var(--fg-5)]" />
-                    <span>{point}</span>
+                    <span>{readerValue(point, "中文要点尚未提供，相关影响待核实。")}</span>
                   </li>
                 ))}
               </ul>
@@ -390,7 +393,7 @@ function ReportInputActionCard({ item }: { item: EventFlowReportInputItem }) {
             const title = formatEventFlowHeadlineSummary(item.title, 46);
             return (
               <div className="mt-2 space-y-0.5">
-                <div className="min-w-0 text-[12px] font-semibold leading-5 text-[var(--fg-1)]" title={title.raw}>
+                <div className="min-w-0 text-[12px] font-semibold leading-5 text-[var(--fg-1)]" >
                   {title.lead}
                 </div>
                 {title.subline ? <div className="text-[11px] leading-5 text-[var(--fg-4)]">{title.subline}</div> : null}
@@ -398,7 +401,7 @@ function ReportInputActionCard({ item }: { item: EventFlowReportInputItem }) {
               </div>
             );
           })()}
-          {item.summary ? <div className="mt-1 text-[11px] leading-5 text-[var(--fg-3)]">{item.summary}</div> : null}
+          {item.summary ? <div className="mt-1 text-[11px] leading-5 text-[var(--fg-3)]">{readableWarning(item.summary)}</div> : null}
           {(item.source_url || item.access_status || item.task_status) ? (
             <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] leading-4 text-[var(--fg-4)]">
               {item.source_url ? (
@@ -462,22 +465,13 @@ function ReportInputActionCard({ item }: { item: EventFlowReportInputItem }) {
             <FAStatusPill tone="info">{translateEventFlowValue(receipt.status)}</FAStatusPill>
             {receipt.review_id ? <FAStatusPill tone="warn">待复核</FAStatusPill> : null}
           </div>
-          <div className="mt-2 grid gap-1.5 text-[10px] sm:grid-cols-2">
-            <div className="rounded-[var(--radius-sm)] bg-[var(--bg-card-inner)] px-2 py-1.5">
-              <div className="text-[var(--fg-5)]">运行 ID</div>
-              <div className="break-all font-mono text-[var(--fg-2)]">{receipt.run_id ?? "—"}</div>
-            </div>
-            <div className="rounded-[var(--radius-sm)] bg-[var(--bg-card-inner)] px-2 py-1.5">
-              <div className="text-[var(--fg-5)]">复核 ID</div>
-              <div className="break-all font-mono text-[var(--fg-2)]">{receipt.review_id ?? "—"}</div>
-          </div>
+          <EvidenceRecordActions record={receipt} label="研究材料处理记录" />
         </div>
-      </div>
       ) : null}
 
       {error ? (
         <div className="mt-3 rounded-[var(--radius-sm)] border border-[var(--down-border)] bg-[var(--down-soft)] px-3 py-2 text-[11px] leading-5 text-[var(--down)]">
-          {error}
+          {readerValue(error, "研究材料处理失败，请稍后重试。") }
         </div>
       ) : null}
     </article>

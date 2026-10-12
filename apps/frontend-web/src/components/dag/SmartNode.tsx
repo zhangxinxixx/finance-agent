@@ -4,6 +4,7 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { DagNodeSpec, DagNodeType } from "@/types/pipeline-dag";
+import { operationReadableLabel, operationStageLabel, operationStatusLabel } from "@/components/operations/operationsLabels";
 
 // ── Stage config ──
 const STAGE_ICONS: Record<DagNodeType, string> = {
@@ -40,10 +41,7 @@ const STATUS_STYLE: Record<string, { dot: string; text: string; bg: string }> = 
 
 // ── Helper ──
 function statusLabel(s: string): string {
-  const m: Record<string, string> = {
-    success: "成功", running: "运行中", failed: "失败", pending: "等待", partial: "部分",
-  };
-  return m[s] || s;
+  return operationStatusLabel(s);
 }
 
 function formatDuration(ms: number | null): string {
@@ -71,12 +69,14 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
   const sequenceIndex = typeof data.sequence_index === "number" ? data.sequence_index as number : null;
   const color = STAGE_COLORS_SMART[spec.type] || "#94a3b8";
   const icon = STAGE_ICONS[spec.type] || "●";
-  const stageLabel = STAGE_LABELS_SMART[spec.type] || spec.type;
+  const stageLabel = STAGE_LABELS_SMART[spec.type] || operationStageLabel(spec.type);
   const st = STATUS_STYLE[spec.status] || STATUS_STYLE.pending;
   const upstreamCount = spec.upstream_ids?.length ?? 0;
   const downstreamCount = spec.downstream_ids?.length ?? 0;
   const matchedCount = Number(spec.output.fields.task_count ?? spec.output.fields.op_count ?? spec.input.fields.task_count ?? spec.input.fields.op_count ?? 0);
-  const summary = spec.output.summary || spec.input.summary;
+  const rawSummary = spec.output.summary || spec.input.summary;
+  const summary = rawSummary && /[\u4e00-\u9fff]/.test(rawSummary) ? rawSummary : "节点说明已登记，可在详情中核对。";
+  const nodeLabel = /[\u4e00-\u9fff]/.test(spec.label) ? spec.label : operationReadableLabel(spec.label, "节点已登记");
 
   // Lineage highlight
   const hl = data.highlighted as string | undefined;
@@ -176,7 +176,7 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
             </span>
           </div>
           <div className="mt-2 text-[14px] font-bold leading-tight text-[var(--fg-1)]">
-            {spec.label}
+            {nodeLabel}
           </div>
           {hasDuration && (
             <div className="mt-1 text-[10px] font-mono tabular-nums text-[var(--fg-4)]">
@@ -230,13 +230,13 @@ export const SmartNode = memo(function SmartNode({ data }: { data: any }) {
             )}
           </div>
           <span className="shrink-0 text-[10px] font-semibold uppercase tabular-nums" style={{ color: st.text }}>
-            {matchedCount > 0 ? `${matchedCount} run` : "idle"}
+            {matchedCount > 0 ? `${matchedCount} 项运行记录` : "等待记录"}
           </span>
         </div>
         <div className="mt-2 flex items-center justify-between text-[9px] font-mono uppercase text-[var(--fg-5)]">
-          <span>in {upstreamCount}</span>
-          <span style={{ color }}>{spec.module}</span>
-          <span>out {downstreamCount}</span>
+          <span>上游 {upstreamCount}</span>
+          <span style={{ color }}>{operationReadableLabel(spec.module, "模块已登记")}</span>
+          <span>下游 {downstreamCount}</span>
         </div>
       </div>
     </div>

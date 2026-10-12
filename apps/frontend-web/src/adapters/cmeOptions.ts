@@ -19,7 +19,6 @@ import type {
   CMEOptionsGEXByExpiry,
   CMEOptionsGEXTopItem,
   CMEOptionsIVSkew,
-  CMEOptionsMockFile,
   CMEOptionsParameters,
   CMEOptionsPendingReview,
   CMEOptionsResponse,
@@ -29,7 +28,6 @@ import type {
   CMEOptionsWallScore,
 } from "@/types/cme-options";
 
-const CME_OPTIONS_MOCK_URL = new URL("../mocks/cme-options.json", import.meta.url);
 const CME_OPTIONS_SNAPSHOT_PATH = "/api/options/snapshot";
 const CME_OPTIONS_DATES_PATH = "/api/options/dates";
 const CME_OPTIONS_DECISION_PATH = "/api/options/decision";
@@ -224,6 +222,8 @@ function normalizeDecisionStrategy(value: unknown): CMEOptionsDecisionStrategy {
     call_oi_change: asNullableNumber(raw.call_oi_change),
     put_oi_change: asNullableNumber(raw.put_oi_change),
     confidence: asNullableNumber(raw.confidence),
+    coordinate_space: typeof raw.coordinate_space === "string" ? raw.coordinate_space : null,
+    execution_scope: typeof raw.execution_scope === "string" ? raw.execution_scope : null,
     risk_notes: asStringArray(raw.risk_notes),
   };
 }
@@ -244,6 +244,7 @@ function normalizeDecisionKeyLevels(value: unknown): CMEOptionsDecisionKeyLevel[
       evidence: asStringArray(raw.evidence),
       invalidation: asStringArray(raw.invalidation),
       expiry_scope: asString(raw.expiry_scope, "aggregate"),
+      coordinate_space: typeof raw.coordinate_space === "string" ? raw.coordinate_space : null,
       distance_pct: asNullableNumber(raw.distance_pct),
       structural_role_at_report: asString(raw.structural_role_at_report, asString(raw.role, "unavailable")),
       current_relation: raw.current_relation === "below_price" || raw.current_relation === "above_price" || raw.current_relation === "at_price"
@@ -353,6 +354,12 @@ function normalizeDecisionResponse(payload: unknown): CMEOptionsDecisionResponse
       live_price_coverage_status: prices.live_price_coverage_status === "complete" || prices.live_price_coverage_status === "degraded"
         ? prices.live_price_coverage_status
         : "unavailable",
+      live_coordinate_space: typeof prices.live_coordinate_space === "string" ? prices.live_coordinate_space : null,
+      basis_status: typeof prices.basis_status === "string" ? prices.basis_status : null,
+      basis_reason: typeof prices.basis_reason === "string" ? prices.basis_reason : null,
+      gc_equivalent_p0: asNullableNumber(prices.gc_equivalent_p0),
+      live_price_unavailable_reason: typeof prices.live_price_unavailable_reason === "string" ? prices.live_price_unavailable_reason : null,
+      structure_coordinate_space: typeof prices.structure_coordinate_space === "string" ? prices.structure_coordinate_space : null,
       model_f: asNumberRecord(prices.model_f),
       price_anchor_rule: typeof prices.price_anchor_rule === "string" ? prices.price_anchor_rule : null,
     },
@@ -374,7 +381,7 @@ function normalizeDecisionResponse(payload: unknown): CMEOptionsDecisionResponse
       warnings: asStringArray(pnt.warnings),
       top_activity: Array.isArray(pnt.top_activity) ? pnt.top_activity.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [],
     },
-    gamma_summary: { regime: asString(gamma.regime, "unavailable"), net_gex: asNullableNumber(gamma.net_gex), gamma_zero: asNullableNumber(gamma.gamma_zero), method: typeof gamma.method === "string" ? gamma.method : null, flip_band: band && asNullableNumber(band.lower) !== null && asNullableNumber(band.upper) !== null && asNullableNumber(band.step) !== null ? { lower: asNumber(band.lower), upper: asNumber(band.upper), step: asNumber(band.step) } : null, live_price: asNullableNumber(gamma.live_price) },
+    gamma_summary: { regime: asString(gamma.regime, "unavailable"), net_gex: asNullableNumber(gamma.net_gex), gamma_zero: asNullableNumber(gamma.gamma_zero), method: typeof gamma.method === "string" ? gamma.method : null, flip_band: band && asNullableNumber(band.lower) !== null && asNullableNumber(band.upper) !== null && asNullableNumber(band.step) !== null ? { lower: asNumber(band.lower), upper: asNumber(band.upper), step: asNumber(band.step) } : null, live_price: asNullableNumber(gamma.live_price), coordinate_space: typeof gamma.coordinate_space === "string" ? gamma.coordinate_space : null },
     gamma_profile: { price_grid: asNumberArray(profile.price_grid), net_gex_values: asNumberArray(profile.net_gex_values), scope: asString(profile.scope, "aggregate_across_expiries") },
     key_levels: normalizeDecisionKeyLevels(raw.key_levels),
     roll_summary: { status: asDecisionStatus(roll.status), reason: typeof roll.reason === "string" ? roll.reason : undefined, items: rolls },
@@ -391,19 +398,35 @@ function normalizeDecisionResponse(payload: unknown): CMEOptionsDecisionResponse
       label: asString(structure.label, "结构不可用"),
       summary: asString(structure.summary, "后端未返回结构摘要。"),
       reference_price: asNullableNumber(structure.reference_price),
+      reference_price_source: typeof structure.reference_price_source === "string" ? structure.reference_price_source : null,
+      reference_coordinate_space: typeof structure.reference_coordinate_space === "string" ? structure.reference_coordinate_space : null,
       gamma_zero: asNullableNumber(structure.gamma_zero),
       below_gamma_zero: asBoolean(structure.below_gamma_zero),
+      gamma_zero_relation: typeof structure.gamma_zero_relation === "string" ? structure.gamma_zero_relation : "unavailable",
       net_gex: asNullableNumber(structure.net_gex),
       net_gex_change: asNullableNumber(structure.net_gex_change),
       repair_detected: asBoolean(structure.repair_detected),
       trend_launch_watch: asBoolean(structure.trend_launch_watch),
       trend_confirmed: asBoolean(structure.trend_confirmed),
+      execution_scope: typeof structure.execution_scope === "string" ? structure.execution_scope : null,
+      execution_note: typeof structure.execution_note === "string" ? structure.execution_note : null,
     },
     scenario_paths: Array.isArray(raw.scenario_paths) ? raw.scenario_paths.map((item) => {
       const path = item && typeof item === "object" ? item as Record<string, unknown> : {};
-      return { path_id: asString(path.path_id), label: asString(path.label), status: asString(path.status), triggers: asStringArray(path.triggers), targets: asNumberArray(path.targets), invalidation: asStringArray(path.invalidation) };
+      return {
+        path_id: asString(path.path_id),
+        label: asString(path.label),
+        status: asString(path.status),
+        triggers: asStringArray(path.triggers),
+        targets: asNumberArray(path.targets),
+        invalidation: asStringArray(path.invalidation),
+        coordinate_space: typeof path.coordinate_space === "string" ? path.coordinate_space : undefined,
+        execution_scope: typeof path.execution_scope === "string" ? path.execution_scope : undefined,
+      };
     }) : [],
     intraday_strategy: normalizeDecisionStrategy(raw.intraday_strategy), swing_strategy: normalizeDecisionStrategy(raw.swing_strategy),
+    source_refs: normalizeSourceTrace(raw.source_refs),
+    artifact_refs: asStringArray(raw.artifact_refs),
     data_quality: {
       ...quality,
       cme_status: typeof quality.cme_status === "string"
@@ -796,7 +819,7 @@ function normalizeWallScores(value: unknown): CMEOptionsWallScore[] {
             ? wall.delta_oi
             : null,
       wall_score: asNumber(wall.wall_score),
-      pnt: asNumber(wall.pnt),
+      pnt: asNullableNumber(wall.pnt),
     };
   });
 }
@@ -806,7 +829,7 @@ function normalizeDataSource(value: RawCMEOptionsDataSource | undefined): CMEOpt
     product: asString(value?.product),
     status: normalizeDataSourceStatus(value?.status),
     expiries: asStringArray(value?.expiries),
-    row_count: asNumber(value?.row_count),
+    row_count: asNullableNumber(value?.row_count),
     report_date: typeof value?.report_date === "string" ? value.report_date : null,
     source_url: typeof value?.source_url === "string" ? value.source_url : null,
     input_snapshot_ids: asStringArray(value?.input_snapshot_ids),
@@ -845,7 +868,7 @@ function createUnavailableResponse(reason: string): CMEOptionsResponse {
       product: "",
       status: "PRELIM",
       expiries: [],
-      row_count: 0,
+      row_count: null,
     },
     parameters: {
       f_value: 0,
@@ -856,7 +879,7 @@ function createUnavailableResponse(reason: string): CMEOptionsResponse {
         net_gex: null,
         net_gex_direction: null,
         gamma_zero: {
-          price: 0,
+          price: null,
           method: "",
         },
       },
@@ -864,7 +887,7 @@ function createUnavailableResponse(reason: string): CMEOptionsResponse {
     },
     wall_scores: [],
     support_resistance: { resistance: [], support: [] },
-    intent: { type: "neutral", confidence: 0 },
+    intent: { type: "neutral", confidence: null, score: null, evidence: [] },
     calibration: {},
     source_trace: [],
     has_data: false,
@@ -883,22 +906,6 @@ export async function fetchCMEOptionsDates(): Promise<string[]> {
   } catch {
     return [];
   }
-}
-
-async function loadMockCMEOptions(): Promise<CMEOptionsResponse> {
-  const response = await fetch(CME_OPTIONS_MOCK_URL);
-
-  if (!response.ok) {
-    throw new Error(`加载 CME Options mock 失败：${response.status}`);
-  }
-
-  const payload = (await response.json()) as CMEOptionsMockFile;
-
-  return {
-    ...payload,
-    has_data: payload.has_data ?? payload.wall_scores.length > 0,
-    source: "mock",
-  };
 }
 
 function buildSnapshotPath(date?: string): string {
@@ -930,7 +937,7 @@ function normalizeApiSnapshot(payload: RawCMEOptionsSnapshot, date?: string): CM
         net_gex: asNullableNumber(payload.gex?.netgex_aggregate?.net_gex),
         net_gex_direction: normalizeNetGEXDirection(payload.gex?.netgex_aggregate?.net_gex_direction),
         gamma_zero: {
-          price: asNumber(payload.gex?.netgex_aggregate?.gamma_zero?.price),
+          price: asNullableNumber(payload.gex?.netgex_aggregate?.gamma_zero?.price),
           method: asString(payload.gex?.netgex_aggregate?.gamma_zero?.method),
         },
       },
@@ -940,8 +947,8 @@ function normalizeApiSnapshot(payload: RawCMEOptionsSnapshot, date?: string): CM
     support_resistance: normalizeSupportResistance(payload.support_resistance),
     intent: {
       type: asString(payload.intent?.type, "neutral"),
-      confidence: asNumber(payload.intent?.confidence),
-      score: asNumber(payload.intent?.score),
+      confidence: asNullableNumber(payload.intent?.confidence),
+      score: asNullableNumber(payload.intent?.score),
       evidence: Array.isArray(payload.intent?.evidence)
         ? payload.intent.evidence.filter((item): item is string => typeof item === "string")
         : [],
@@ -965,18 +972,10 @@ export async function fetchCMEOptionsData(date?: string): Promise<CMEOptionsResp
     return normalizeApiSnapshot(payload, date);
   } catch (apiCause) {
     const apiError = apiCause instanceof Error ? apiCause.message : "CME Options API 请求失败";
-
-    try {
-      const mockData = await loadMockCMEOptions();
-      return {
-        ...mockData,
-        source: "mock",
-        error_reason: apiError,
-      };
-    } catch (mockCause) {
-      const mockError = mockCause instanceof Error ? mockCause.message : "CME Options mock 请求失败";
-      return createUnavailableResponse(`${apiError}; ${mockError}`);
-    }
+    // The selected report date is part of the result identity. A failed
+    // snapshot must stay unavailable instead of silently borrowing an
+    // unrelated bundled example.
+    return createUnavailableResponse(apiError);
   }
 }
 

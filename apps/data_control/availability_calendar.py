@@ -23,10 +23,8 @@ class _ArtifactCandidate:
 
 DEFAULT_AVAILABILITY_RULES: tuple[AvailabilityRule, ...] = (
     AvailabilityRule(
-        source_key="jin10_mcp_market",
-        label="Jin10 market quotes",
-        source_type="market_quote",
-        artifact_globs=("outputs/jin10/quotes_cache.json",),
+        source_key="twelvedata_xauusd", label="Independent XAUUSD observations",
+        source_type="market_quote", artifact_globs=("raw/market/twelvedata/**/*.json",),
         freshness_threshold_minutes=5,
         required_for=("intraday_snapshot", "trigger_level_confirmation"),
         missing_policy="block_price_trigger_only",

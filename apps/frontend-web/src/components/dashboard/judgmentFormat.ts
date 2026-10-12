@@ -1,3 +1,4 @@
+import { readableWarning, uniqueReading } from "@/lib/researchReading";
 import type { SignalDirection } from "@/types/dashboard";
 
 export function directionLabel(direction: SignalDirection) {
@@ -18,10 +19,10 @@ export function translateText(text: string): string {
     "neutral-bullish": "中性偏多",
     "neutral-bearish": "中性偏空",
     "USD/oz": "美元/盎司",
-    "options: PRELIM only (FINAL unavailable)": "期权数据：初稿（终稿未出）",
+    "options: PRELIM only (FINAL unavailable)": "CME初步公告，最终公告尚不可用",
     "macro: partial (1 symbols unavailable)": "宏观数据：部分缺失",
     "tasks: no recent task history": "暂无任务记录",
-    "CME data source: PRELIM (FINAL preferred)": "CME数据：初步数据（建议使用最终数据）",
+    "CME data source: PRELIM (FINAL preferred)": "CME初步公告，最终公告尚不可用",
     "Data source openbb_macro: not_connected": "OpenBB宏观数据：未连接",
     "Data source bls_calendar: not_connected": "BLS日历：未连接",
     macro_latest: "宏观最新快照",
@@ -86,7 +87,7 @@ export function translateText(text: string): string {
       const map: Record<string, string> = { partial: "部分可用", complete: "完整", unavailable: "不可用", provisional: "临时" };
       return `前置分析状态：${map[status.toLowerCase()] || status}`;
     }],
-    [/coordinator view is provisional/i, "协调器视图为临时结论"],
+    [/coordinator view is provisional/i, "综合判断仍待确认"],
     [/Liquidity indicators are incomplete:\s*/i, "流动性指标不完整："],
     [/Unavailable (macro )?symbols?:?\s*/i, "缺失指标："],
     [/ON RRP/i, "ON RRP(隔夜逆回购)"],
@@ -117,9 +118,9 @@ export function translateText(text: string): string {
           unavailable: "不可用",
           provisional: "临时",
         };
-        return `前置${moduleMap[module] || module}分析${statusMap[status.toLowerCase()] || status}，协调器已给出临时结论`;
+        return `前置${moduleMap[module] || module}分析${statusMap[status.toLowerCase()] || status}，综合判断仍待确认`;
       }],
-    [/coordinator view is provisional/i, "协调器视图为临时结论"],
+    [/coordinator view is provisional/i, "综合判断仍待确认"],
     [/Macro prior risk:\s*/i, "宏观风险："],
     [/Options prior risk:\s*/i, "期权风险："],
     [/Risk prior risk:\s*/i, "风险层风险："],
@@ -184,7 +185,7 @@ export function translateText(text: string): string {
   result = result.replace(/\bbullish\b/gi, "偏多");
   result = result.replace(/\bbearish\b/gi, "偏空");
 
-  return result || text;
+  return uniqueReading((result || text).split(/；|;|\n/).map(readableWarning)).join("；");
 }
 
 export function reviewStatusLabel(status: string | null | undefined): string {

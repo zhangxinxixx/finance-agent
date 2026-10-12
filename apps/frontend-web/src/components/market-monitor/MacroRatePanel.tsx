@@ -1,7 +1,7 @@
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { MarketMonitorMetric } from "@/types/market-monitor";
-import { findMetric, formatMetricChange, formatMetricValue, statusTone } from "./format";
+import { findMetric, formatMetricChange, formatMetricValue, marketMonitorMetricLabel, marketMonitorStatusLabel, marketMonitorUnitLabel, statusTone } from "./format";
 
 interface MacroRatePanelProps {
   metrics: MarketMonitorMetric[];
@@ -35,7 +35,7 @@ export function MacroRatePanel({ metrics }: MacroRatePanelProps) {
   const divergenceMetric = findMetric(metrics, "REAL_10Y");
 
   return (
-    <FACard title="驱动因子诊断" eyebrow="Factor Readout" accent="brand">
+    <FACard title="驱动因子诊断" eyebrow="因子读数" accent="brand">
       <div className="space-y-2.5">
         {FACTOR_GROUPS.map(({ title, colorClass, metricKey, fallbackTitle, fallbackDescription }) => {
           const metric = findMetric(metrics, metricKey);
@@ -49,20 +49,20 @@ export function MacroRatePanel({ metrics }: MacroRatePanelProps) {
               <div className="mt-2 flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-[12px] font-semibold text-[var(--fg-2)]">
-                    {metric?.label || fallbackTitle}
+                    {metric ? marketMonitorMetricLabel(metricKey, metric.label) : fallbackTitle}
                   </div>
                   <p className="mt-1 text-[10px] leading-5 text-[var(--fg-4)]">
                     {metric?.interpretation?.trim() || fallbackDescription}
                   </p>
                 </div>
                 <FAStatusPill tone={statusTone(metric?.status ?? "unavailable")}>
-                  {metric?.status ?? "unavailable"}
+                  {marketMonitorStatusLabel(metric?.status)}
                 </FAStatusPill>
               </div>
               <div className="mt-3 flex flex-wrap gap-2 text-[10px]">
                 <span className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-terminal)] px-2 py-1 font-mono text-[var(--fg-2)]">
-                  latest {metric ? formatMetricValue(metric.latest_value, 4) : "—"}
-                  {metric?.unit ? ` ${metric.unit}` : ""}
+                  最新值 {metric ? formatMetricValue(metric.latest_value, 4) : "—"}
+                  {metric?.unit ? ` ${marketMonitorUnitLabel(metric.unit)}` : ""}
                 </span>
                 <span className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-terminal)] px-2 py-1 font-mono text-[var(--fg-4)]">
                   1W {metric ? formatMetricChange(metric.one_week_change) : "—"}

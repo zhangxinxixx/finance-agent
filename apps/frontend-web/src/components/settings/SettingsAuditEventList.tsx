@@ -4,6 +4,7 @@ import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { formatDateTime } from "@/lib/date";
 import type { SettingsHistoryEntry } from "@/adapters/settings";
 import { toneForAuditAction } from "./settingsAuditFormat";
+import { settingsActionLabel, settingsActorLabel, settingsKeyLabel, settingsScopeLabel, settingsSourceLabel } from "./settingsFormat";
 
 function AuditItem({
   entry,
@@ -27,27 +28,27 @@ function AuditItem({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{entry.settingKey}</div>
+          <div className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{settingsKeyLabel(entry.settingKey)}</div>
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-[var(--fg-5)]">
-            <span>{entry.actor ?? "system"}</span>
+            <span>{settingsActorLabel(entry.actor)}</span>
             <span>·</span>
             <span className="fa-num">{formatDateTime(entry.createdAt)}</span>
           </div>
         </div>
-        <FAStatusPill tone={toneForAuditAction(entry.action)}>{entry.action}</FAStatusPill>
+        <FAStatusPill tone={toneForAuditAction(entry.action)}>{settingsActionLabel(entry.action)}</FAStatusPill>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-[var(--fg-4)]">
-        <span className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-0.5">{entry.scope}</span>
+        <span className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-0.5">{settingsScopeLabel(entry.scope)}</span>
         {entry.sourceKey ? (
           <span
             title={entry.sourceKey}
             className="inline-block max-w-[180px] truncate rounded-full border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-0.5"
           >
-            {entry.sourceKey}
+            {settingsSourceLabel(entry.sourceKey)}
           </span>
         ) : null}
       </div>
-      <div className="mt-2 line-clamp-2 text-[10px] leading-5 text-[var(--fg-4)]">{entry.reason ?? entry.auditId ?? "未提供备注"}</div>
+      <div className="mt-2 line-clamp-2 text-[10px] leading-5 text-[var(--fg-4)]">{entry.reason ?? "未提供备注"}</div>
     </button>
   );
 }
@@ -62,7 +63,7 @@ export function SettingsAuditEventList({
   onSelect: (auditId: string | null) => void;
 }) {
   return (
-    <FACard title="事件列表" eyebrow="Filtered Events" accent="warn" bodyClassName="space-y-2">
+    <FACard title="事件列表" eyebrow="筛选结果" accent="warn" bodyClassName="space-y-2">
       {entries.length === 0 ? (
         <FAEmptyState title="没有匹配的审计事件" description="调整过滤条件后再试，或者清空筛选查看完整历史。" className="p-6" />
       ) : (

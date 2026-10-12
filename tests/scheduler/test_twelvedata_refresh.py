@@ -32,7 +32,7 @@ def test_refresh_twelvedata_persists_closed_bars_and_records_fallback(monkeypatc
             high=4202.0,
             low=4199.0,
             close=4201.0,
-            source="jin10_mcp_derived_5m",
+            source="canonical_xauusd_5m",
         )
         session.commit()
 

@@ -106,6 +106,39 @@ def test_event_candidates_merge_multi_source_candidate_without_official_confirma
     assert data["data_quality"]["unverified_count"] == 0
 
 
+def test_rss_candidate_exposes_headline_scope_without_full_text_claim() -> None:
+    item = _item(
+        source_key="reuters_public_news",
+        source_type="wire_public_candidate",
+        title="Reuters public metadata candidate",
+        url="https://news.google.com/rss/articles/reuters-public",
+        domain="reuters.com",
+        event_type="macro_watchlist",
+    )
+    item = RawNewsItem(**{
+        **item.to_dict(),
+        "raw_payload": {
+            "content_scope": "headline_summary_only",
+            "full_text_available": False,
+            "authorized_wire": False,
+            "publisher": "Reuters",
+            "publisher_url": "https://www.reuters.com/",
+            "discovery_method": "google_news_rss_site_filter",
+            "candidate_scope": "public_metadata_only",
+        },
+    })
+
+    event = build_event_candidates([item], as_of="2026-06-10T08:30:00+00:00").to_dict()["event_candidates"][0]
+
+    assert event["data_quality"]["evidence_scope"] == "headline_or_snippet_only"
+    assert event["data_quality"]["full_text_available"] is False
+    assert event["need_verification"] is True
+    source_ref = event["source_refs"][0]
+    assert source_ref["publisher"] == "Reuters"
+    assert source_ref["discovery_method"] == "google_news_rss_site_filter"
+    assert source_ref["authorized_wire"] is False
+
+
 def test_two_low_trust_cross_domain_candidates_do_not_upgrade_to_multi_source() -> None:
     bundle = build_event_candidates(
         [

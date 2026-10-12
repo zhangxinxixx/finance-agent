@@ -63,7 +63,7 @@
   --chart-5: #7c3aed;
   --chart-6: #0891b2;
 
-  --font-ui: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --font-ui: "IBM Plex Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif;
   --font-sans: var(--font-ui);
   --font-display: var(--font-ui);
   --font-mono: "JetBrains Mono", Consolas, monospace;
@@ -71,8 +71,8 @@
 
   --text-9: 11px;
   --text-10: 12px;
-  --text-11: 12.5px;
-  --text-12: 13px;
+  --text-11: 13px;
+  --text-12: 14px;
   --text-13: 14px;
   --text-14: 15px;
   --text-16: 16px;

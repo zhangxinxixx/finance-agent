@@ -7,6 +7,7 @@ identity even when an old caller passes ``asset="XAUUSD"``.
 
 from __future__ import annotations
 
+from database.numeric_source_policy import require_formal_numeric_source
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -32,6 +33,7 @@ def normalize_market_candle_identity(
     silently being presented as spot data.
     """
 
+    require_formal_numeric_source(source, source_ref)
     normalized_asset = str(asset or "").strip().upper()
     if not normalized_asset:
         raise ValueError("market candle asset must not be empty")

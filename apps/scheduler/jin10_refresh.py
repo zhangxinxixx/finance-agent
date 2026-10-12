@@ -1,8 +1,4 @@
-"""Jin10 实时行情定时刷新（APScheduler 任务）。
-
-每 15 分钟拉取 Jin10 MCP 实时报价，写入轻量 JSON 缓存。
-供 /api/jin10/quotes/latest 消费（当 premarket_snapshot 不可用时回退）。
-"""
+"""Optional Jin10 news refresh and retained numeric retirement callables."""
 
 from __future__ import annotations
 
@@ -21,18 +17,14 @@ from apps.analysis.agents.jin10_flash_semantic_filter import (
     render_jin10_flash_semantic_filter_messages,
 )
 from apps.collectors.jin10.web_flash import collect_jin10_web_flash_with_browser_profile
-from apps.collectors.jin10.mcp_client import Jin10MCPClient
 from apps.collectors.news.base import RawNewsItem
 from apps.collectors.news.jin10_detail_fetcher import fetch_jin10_detail_page
-from apps.features.market_data import aggregate_complete_candles
 from apps.features.news.jin10_article_briefs import archive_jin10_article_briefs, build_jin10_article_briefs
 from apps.features.news.jin10_web_flash_briefs import archive_jin10_web_flash_briefs, build_jin10_web_flash_briefs
 from apps.llm.gateway import chat_sync
 from apps.runtime.secret_resolver import resolve_runtime_secret
-from apps.parsers.macro.storage import archive_raw_payload
 from database.models.analysis import ensure_analysis_tables
 from database.models.engine import SessionLocal
-from database.queries.market import delete_market_candles_before, list_market_candles, upsert_market_candle
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +34,7 @@ _JIN10_MCP_URL = "https://mcp.jin10.com/mcp"
 _JIN10_MCP_KEY_ENV = "JIN10_MCP_KEY"
 _JIN10_CALENDAR_PAST_WINDOW_DAYS = 7
 _JIN10_CALENDAR_FUTURE_WINDOW_DAYS = 14
-_DEFAULT_JIN10_BROWSER_PROFILE = Path(
-    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
-).expanduser()
+_DEFAULT_JIN10_BROWSER_PROFILE = (Path.home() / ".config" / "finance-agent" / "jin10-browser")
 _JIN10_WEB_FLASH_HOMEPAGE_URL = "https://www.jin10.com/"
 _JIN10_WEB_ARTICLE_ANALYSIS_KEYWORDS = (
     "黄金",
@@ -72,8 +62,6 @@ QUOTE_SYMBOLS = [
 ]
 
 KLINE_SYMBOLS = ["XAUUSD"]
-DAILY_MARKET_CANDLE_ASSETS = ("GC", "DXY", "VIX", "WTI", "BRENT")
-_JIN10_MCP_MARKET_SOURCE_KEY = "jin10_mcp_market"
 
 
 def _get_mcp_key() -> str:
@@ -336,308 +324,29 @@ def _first_url(brief: dict[str, Any], data_quality: dict[str, Any]) -> str | Non
     return None
 
 
-def refresh_jin10_quotes_cache() -> None:
-    """拉取 Jin10 MCP 实时报价并写入 JSON 缓存文件。"""
-    mcp_key = _get_mcp_key()
-    if not mcp_key:
-        logger.debug("Jin10 MCP key not configured; skipping quotes cache refresh")
-        return
-
-    try:
-        import httpx
-    except ImportError:
-        logger.exception("httpx not available")
-        return
-
-    quotes: dict[str, dict[str, Any]] = {}
-    try:
-        with httpx.Client(timeout=15.0, trust_env=False) as client:
-            init_r = client.post(
-                _JIN10_MCP_URL,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2025-11-25",
-                        "capabilities": {},
-                        "clientInfo": {"name": "finance-agent", "version": "0.1"},
-                    },
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {mcp_key}",
-                },
-            )
-            init_r.raise_for_status()
-            sid = init_r.headers.get("Mcp-Session-Id", "")
-            if not sid:
-                logger.warning("Jin10 MCP session id missing during refresh")
-                return
-
-            client.post(
-                _JIN10_MCP_URL,
-                json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {mcp_key}",
-                    "Mcp-Session-Id": sid,
-                },
-            ).raise_for_status()
-
-            for symbol in QUOTE_SYMBOLS:
-                try:
-                    resp = client.post(
-                        _JIN10_MCP_URL,
-                        json={
-                            "jsonrpc": "2.0",
-                            "id": 99,
-                            "method": "tools/call",
-                            "params": {"name": "get_quote", "arguments": {"code": symbol}},
-                        },
-                        headers={
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {mcp_key}",
-                            "Mcp-Session-Id": sid,
-                        },
-                    )
-                    resp.raise_for_status()
-                    for line in resp.text.split("\n"):
-                        if not line.startswith("data:"):
-                            continue
-                        result = json.loads(line[5:]).get("result", {})
-                        sc = result.get("structuredContent", {})
-                        if isinstance(sc, dict) and sc.get("status") == 200:
-                            qdata = sc.get("data", {})
-                            quotes[symbol] = {
-                                "price": _coerce_float(qdata.get("price") or qdata.get("last") or qdata.get("close")),
-                                "open": _coerce_float(qdata.get("open")),
-                                "high": _coerce_float(qdata.get("high")),
-                                "low": _coerce_float(qdata.get("low")),
-                                "change": _coerce_float(qdata.get("ups_price") or qdata.get("change")),
-                                "change_pct": _coerce_float(qdata.get("ups_percent") or qdata.get("change_pct") or qdata.get("changePercent")),
-                                "bid": _coerce_float(qdata.get("bid") or qdata.get("bidPrice")),
-                                "ask": _coerce_float(qdata.get("ask") or qdata.get("askPrice")),
-                                "time": qdata.get("time"),
-                                "name": qdata.get("name"),
-                            }
-                        break
-                except Exception as exc:
-                    logger.warning("Quote %s refresh failed: %s", symbol, exc)
-    except Exception as exc:
-        logger.warning("Jin10 MCP quotes refresh failed: %s", exc)
-        return
-
-    if quotes:
-        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "quotes": quotes,
-        }
-        _CACHE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.debug("Jin10 quotes cache refreshed: %d symbols", len(quotes))
+def refresh_jin10_quotes_cache() -> dict[str, str]:
+    """Compatibility callable: Jin10 numeric collection is retired."""
+    return {"status": "skipped", "reason": "jin10_news_only"}
 
 
 def refresh_jin10_kline_cache(
-    *,
-    count: int = 5,
-    now: datetime | None = None,
-    storage_root: Path | None = None,
-) -> None:
-    """Refresh overlapping Jin10 staging minutes and materialize complete 5m bars."""
-    mcp_key = _get_mcp_key()
-    if not mcp_key:
-        logger.debug("Jin10 MCP key not configured; skipping kline refresh")
-        return
-
-    try:
-        collected_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        resolved_storage_root = (storage_root or Path("./storage")).resolve()
-        with Jin10MCPClient(mcp_key=mcp_key) as client, SessionLocal() as session:
-            ensure_analysis_tables(session)
-            imported = 0
-            derived = 0
-            latest_raw_path: str | None = None
-            for symbol in KLINE_SYMBOLS:
-                payload = client.get_kline(symbol, count=min(max(count, 1), 100))
-                raw_path = archive_raw_payload(
-                    storage_root=resolved_storage_root,
-                    source="jin10_mcp",
-                    retrieved_date=collected_at.date().isoformat(),
-                    symbol=f"kline_{symbol}",
-                    payload=payload,
-                )
-                latest_raw_path = raw_path
-                rows = _extract_kline_rows(payload)
-                for row in rows:
-                    candle = _normalize_kline_row(row)
-                    if candle is None:
-                        continue
-                    upsert_market_candle(
-                        session,
-                        asset=symbol,
-                        timeframe="1m",
-                        open_time=candle["open_time"],
-                        open=candle["open"],
-                        high=candle["high"],
-                        low=candle["low"],
-                        close=candle["close"],
-                        volume=candle["volume"],
-                        source="jin10_mcp_kline_1m",
-                        source_ref={
-                            "symbol": symbol,
-                            "source": "jin10_mcp",
-                            "source_key": _JIN10_MCP_MARKET_SOURCE_KEY,
-                            "provider_timeframe": "1m",
-                            "provider_symbol": symbol,
-                            "instrument_type": "otc_spot_quote_proxy",
-                            "source_role": "staging_primary",
-                            "quality_status": "staging",
-                            "retrieved_at": collected_at.isoformat(),
-                            "retention_policy_hours": 24,
-                            "volume_semantics": "unavailable_or_quote_activity",
-                        },
-                        raw_path=raw_path,
-                    )
-                    imported += 1
-                minute_rows = list_market_candles(
-                    session,
-                    asset=symbol,
-                    timeframe="1m",
-                    limit=120,
-                    source="jin10_mcp_kline_1m",
-                )
-                complete_five_minute = aggregate_complete_candles(
-                    minute_rows,
-                    source_timeframe="1m",
-                    target_timeframe="5m",
-                    source="jin10_mcp_derived_5m",
-                    closed_before=collected_at - timedelta(seconds=30),
-                )
-                for candle in complete_five_minute[-24:]:
-                    upsert_market_candle(
-                        session,
-                        asset=symbol,
-                        timeframe="5m",
-                        open_time=candle.open_time,
-                        open=candle.open,
-                        high=candle.high,
-                        low=candle.low,
-                        close=candle.close,
-                        volume=None,
-                        source=candle.source,
-                        source_ref={
-                            **candle.source_ref,
-                            "provider": "jin10_mcp",
-                            "provider_symbol": symbol,
-                            "retrieved_at": collected_at.isoformat(),
-                        },
-                        raw_path=raw_path,
-                    )
-                    derived += 1
-                delete_market_candles_before(
-                    session,
-                    asset=symbol,
-                    timeframe="1m",
-                    source="jin10_mcp_kline_1m",
-                    before=collected_at - timedelta(hours=24),
-                )
-            from database.queries.data_source_status import upsert_data_source_status
-
-            has_market_data = imported > 0
-            upsert_data_source_status(
-                session,
-                {
-                    "source_key": _JIN10_MCP_MARKET_SOURCE_KEY,
-                    "source_name": "Jin10 MCP Market",
-                    "source_group": "technical",
-                    "source_type": "mcp",
-                    "access_method": "mcp",
-                    "configured": True,
-                    "raw_ingested": has_market_data,
-                    "parsed": has_market_data,
-                    "analysis_ready": has_market_data,
-                    "latest_raw_time": collected_at if has_market_data else None,
-                    "latest_parsed_time": collected_at if has_market_data else None,
-                    "latest_snapshot_id": None,
-                    "row_count": imported + derived,
-                    "status": "ok" if has_market_data else "partial",
-                    "error_message": None if has_market_data else "Jin10 MCP kline refresh returned no usable rows",
-                    "last_run_id": f"jin10_kline_refresh_{collected_at.strftime('%Y%m%dT%H%M%SZ')}",
-                    "next_run_time": None,
-                    "source_metadata": {
-                        "collector_raw_artifact_path": latest_raw_path,
-                        "provider_timeframe": "1m",
-                        "derived_timeframe": "5m",
-                        "imported_row_count": imported,
-                        "derived_row_count": derived,
-                        "collected_at": collected_at.isoformat(),
-                    },
-                },
-            )
-            session.commit()
-            logger.debug("Jin10 kline cache refreshed: minute_upserts=%d derived_5m_upserts=%d", imported, derived)
-    except Exception as exc:
-        logger.warning("Jin10 MCP kline refresh failed: %s", exc)
+    *, count: int = 5, now: datetime | None = None, storage_root: Path | None = None,
+) -> dict[str, str]:
+    """Do not refresh, overwrite or delete historical Jin10 numeric caches."""
+    return {"status": "skipped", "reason": "jin10_news_only"}
 
 
-def refresh_market_candle_daily_cache(*, range_: str = "1mo") -> None:
-    """Refresh recent daily market candles for local coverage and gap repair."""
-    try:
-        storage_root = Path("./storage").resolve()
-        with SessionLocal() as session:
-            ensure_analysis_tables(session)
-            imported = 0
-            scanned = 0
-            for asset in DAILY_MARKET_CANDLE_ASSETS:
-                try:
-                    candles, raw_path, source, source_ref = _collect_daily_market_candles(
-                        storage_root=storage_root,
-                        asset=asset,
-                        range_=range_,
-                    )
-                except Exception as exc:
-                    logger.warning("Daily market candle refresh failed for %s: %s", asset, exc)
-                    continue
-                for candle in candles:
-                    scanned += 1
-                    upsert_market_candle(
-                        session,
-                        asset=asset,
-                        timeframe="1d",
-                        open_time=candle["open_time"],
-                        open=candle["open"],
-                        high=candle["high"],
-                        low=candle["low"],
-                        close=candle["close"],
-                        volume=candle["volume"],
-                        source=source,
-                        source_ref={
-                            **source_ref,
-                            "refresh_role": "scheduled_daily_gap_repair",
-                        },
-                        raw_path=raw_path,
-                    )
-                    imported += 1
-            session.commit()
-            logger.debug("Daily market candle refresh completed: scanned=%d upserted=%d", scanned, imported)
-    except Exception as exc:
-        logger.warning("Daily market candle refresh failed: %s", exc)
-
-
-def _collect_daily_market_candles(
-    *,
-    storage_root: Path,
-    asset: str,
-    range_: str,
-) -> tuple[list[dict[str, Any]], str, str, dict[str, Any]]:
-    from scripts.backfill_market_candles import collect_daily_candles
-
-    return collect_daily_candles(
-        storage_root=storage_root,
-        asset=asset,
-        range_=range_,
+def refresh_market_candle_daily_cache(*, range_: str = "1mo") -> dict[str, str]:
+    """Compatibility entry for the retired local daily-candle refresh."""
+    del range_
+    logger.warning(
+        "Ignoring retired market_candles_daily refresh; local daily candle collection is disabled "
+        "and chart history is supplied by TradingView."
     )
+    return {
+        "status": "skipped",
+        "reason": "market_candles_daily_retired",
+    }
 
 
 def _extract_kline_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:

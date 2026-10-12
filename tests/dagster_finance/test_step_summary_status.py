@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from dagster import Failure, build_op_context
@@ -9,7 +9,7 @@ from apps.worker.pipelines.cme import CmePipelineState
 from apps.worker.pipelines.macro import MacroPipelineState
 from apps.worker.pipelines.news import NewsPipelineState
 from dagster_finance.ops.cme import CmeConfig, cme_download_op
-from dagster_finance.ops.macro import MacroConfig, macro_collect_op
+from dagster_finance.ops.macro import MacroConfig, macro_collect_op, report_render_op
 from dagster_finance.ops.news import NewsConfig, news_collect_op
 
 
@@ -49,3 +49,35 @@ def test_pipeline_ops_fail_the_dagster_step_when_a_pipeline_summary_fails(
     with patch(target, return_value={"status": "failed", "error": "collector unavailable"}):
         with pytest.raises(Failure, match="collector unavailable"):
             operation(build_op_context(resources=resources), state, config)
+
+
+def test_report_render_op_passes_db_session_for_registry_persistence() -> None:
+    db_session = Mock()
+    state = MacroPipelineState(snapshot_dict={"as_of": "2026-09-29"})
+
+    with patch("dagster_finance.ops.macro.run_macro_step", return_value={"status": "success"}) as run_step:
+        result = report_render_op(
+            build_op_context(resources={"db_session": db_session}),
+            state,
+            MacroConfig(),
+        )
+
+    assert result is state
+    assert "db_session" in report_render_op.required_resource_keys
+    assert run_step.call_args.kwargs["db_session"] is db_session
+    db_session.commit.assert_called_once_with()
+
+
+def test_macro_collect_op_commits_and_rolls_back_on_commit_failure() -> None:
+    db_session = Mock()
+    db_session.commit.side_effect = RuntimeError("commit failed")
+
+    with patch("dagster_finance.ops.macro.run_macro_step", return_value={"status": "success"}):
+        with pytest.raises(RuntimeError, match="commit failed"):
+            macro_collect_op(
+                build_op_context(resources={"db_session": db_session}),
+                MacroPipelineState(),
+                MacroConfig(),
+            )
+
+    db_session.rollback.assert_called_once_with()

@@ -33,7 +33,7 @@ export function Heatmap({ metrics }: HeatmapProps) {
               跨资产联动热力图
             </div>
             <div style={{ fontFamily: "var(--font-sans)", fontSize: 9, color: "var(--fg-5)", marginTop: 2 }}>
-              日度涨跌幅
+              周变化（按各指标原始口径）
             </div>
           </div>
         </div>
@@ -48,7 +48,7 @@ export function Heatmap({ metrics }: HeatmapProps) {
             background: "var(--bg-card-inner)",
           }}
         >
-          1W
+          周变化
         </span>
       </div>
 

@@ -15,7 +15,7 @@ from apps.features.market_data import (
 )
 from database.models.analysis import ensure_analysis_tables
 from database.models.engine import DATABASE_URL
-from database.queries.market import list_market_candles
+from database.queries.warehouse_read import list_warehouse_candles as list_market_candles
 
 
 EXPECTED_INTERVAL_SECONDS = {
@@ -156,12 +156,11 @@ def choose_best_source(session: Any, *, asset: str, timeframe: str, limit: int) 
             asset=asset,
             timeframe="1m",
             limit=limit,
-            source="jin10_mcp_kline_1m",
         )
         if staging_rows:
             return SourcePlan(
                 source_timeframe="1m",
-                provider="jin10_mcp_staging",
+                provider=_provider_from_rows(staging_rows),
                 rows=staging_rows,
                 degraded_reason="1m is internal staging; the formal minimum XAUUSD timeframe is 5m.",
             )

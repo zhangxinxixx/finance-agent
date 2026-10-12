@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from apps.api.schemas.claim import Claim, ClaimReview, ClaimReviewVerdict, ClaimType
+from apps.runtime.output_disposition import purged_output_summary
 from apps.api.services._trace_refs import (
     artifact_ref_from_path,
     coerce_artifact_type,
@@ -94,6 +95,64 @@ def build_agent_output_summary(row) -> dict[str, Any]:
 
     payload = row.payload or {}
     runtime_meta = resolve_agent_runtime_meta(row.agent_name)
+    cleanup = purged_output_summary(row)
+    if cleanup is not None:
+        # Keep the row identity and its original failure status for audit, but
+        # never project the body, claims, source refs, or old directional view
+        # after the cleanup service has written a tombstone.
+        message = "该 Agent 产出已清理，原分析正文不可用。"
+        return {
+            "agent_output_id": row.id,
+            "registry_id": runtime_meta.get("registry_id"),
+            "agent_name": row.agent_name,
+            "display_name": runtime_meta["display_name"],
+            "role": runtime_meta["role"],
+            "module": row.module,
+            "version": row.version,
+            "run_id": row.run_id,
+            "snapshot_id": row.snapshot_id,
+            "status": row.status,
+            "disposition": "purged",
+            "purged": True,
+            "output_cleanup": cleanup,
+            "bias": "unavailable",
+            "confidence": 0.0,
+            "summary": message,
+            "summary_zh": message,
+            "key_findings": [],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "invalidation_conditions": [],
+            "active_blockers": ["output_purged"],
+            "data_gaps": ["output_purged"],
+            "review_triggers": [],
+            "input_snapshot_ids": {},
+            "source_refs": [],
+            "artifact_refs": [],
+            "market_phase": None,
+            "regime_drivers": None,
+            "narrative_md": "",
+            "data_category": None,
+            "evidence_refs": [],
+            "data_quality": [],
+            "claims": [],
+            "claim_reviews": [],
+            "claim_count": 0,
+            "fact_review_status": "purged",
+            "synthesis_group_id": None,
+            "generated_by": None,
+            "prompt_id": None,
+            "prompt_version": None,
+            "prompt_checksum": None,
+            "prompt_source_file": None,
+            "llm_model": None,
+            "llm_provider": None,
+            "llm_usage": None,
+            "llm_elapsed_seconds": None,
+            "prompt_version_id": None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
     summary_zh = build_summary_zh(
         agent_name=row.agent_name,
         display_name=runtime_meta["display_name"],

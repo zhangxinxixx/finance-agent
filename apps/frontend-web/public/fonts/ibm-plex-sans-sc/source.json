@@ -1,0 +1,24 @@
+{
+  "package": "@ibm/plex-sans-sc",
+  "version": "1.1.0",
+  "license": "OFL-1.1",
+  "source": "https://registry.npmjs.org/@ibm/plex-sans-sc/-/plex-sans-sc-1.1.0.tgz",
+  "upstream": "https://github.com/IBM/plex",
+  "assets": [
+    {
+      "file": "IBMPlexSansSC-Regular.woff2",
+      "bytes": 3813972,
+      "sha256": "dc51399ce38f7200806df891476d7216a81c8aede47284e421a54413608c407c"
+    },
+    {
+      "file": "IBMPlexSansSC-SemiBold.woff2",
+      "bytes": 4020292,
+      "sha256": "31c2e2375deec6d2ea3d371bec2d3cb2bfe43a51a9e8af986d5b25cd7cb279d3"
+    },
+    {
+      "file": "OFL-1.1.txt",
+      "bytes": 4456,
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+    }
+  ]
+}

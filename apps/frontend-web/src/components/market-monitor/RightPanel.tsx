@@ -1,8 +1,6 @@
 import { ContextPanelShell } from "@/components/shared/ContextPanel";
 import type { MarketAgentRegimeSummary, MarketMonitorMockFile } from "@/types/market-monitor";
 import {
-  CalendarSection,
-  EventDynamicsSection,
   MarketDiagnosisSection,
   ReportsKnowledgeSection,
 } from "@/components/market-monitor/RightPanelSections";
@@ -10,14 +8,13 @@ import {
 interface RightPanelProps {
   marketRegimes: MarketMonitorMockFile["market_regimes"];
   agentMarketRegime?: MarketAgentRegimeSummary | null;
+  currentRegimeAvailable?: boolean;
 }
 
-export function RightPanel({ marketRegimes, agentMarketRegime }: RightPanelProps) {
+export function RightPanel({ marketRegimes, agentMarketRegime, currentRegimeAvailable = false }: RightPanelProps) {
   return (
     <ContextPanelShell padded={false} className="market-monitor-side-panel">
-      <MarketDiagnosisSection marketRegimes={marketRegimes} agentMarketRegime={agentMarketRegime} />
-      <CalendarSection />
-      <EventDynamicsSection />
+      <MarketDiagnosisSection marketRegimes={marketRegimes} agentMarketRegime={agentMarketRegime} currentRegimeAvailable={currentRegimeAvailable} />
       <ReportsKnowledgeSection />
     </ContextPanelShell>
   );

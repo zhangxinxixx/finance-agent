@@ -7,6 +7,7 @@ from datetime import UTC, datetime, time, timedelta
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
+from database.numeric_source_policy import is_formal_numeric_source, require_formal_numeric_source
 from database.market_identity import is_xauusd_spot_identity
 
 
@@ -20,7 +21,7 @@ TIMEFRAME_SECONDS = {
 }
 
 XAUUSD_SOURCE_PRIORITY = {
-    "jin10_mcp_derived_5m": 0,
+    "canonical_xauusd_5m": 0,
     "twelvedata_xauusd_5m": 1,
     "canonical_xauusd_5m_aggregate_15m": 0,
     "canonical_xauusd_5m_aggregate_30m": 0,
@@ -29,7 +30,6 @@ XAUUSD_SOURCE_PRIORITY = {
     "twelvedata_xauusd_15m": 1,
     "twelvedata_xauusd_1h": 1,
     "twelvedata_xauusd_4h": 1,
-    "jin10_mcp_kline_1m": 0,
 }
 
 _REJECTED_QUALITY = {"invalid", "rejected", "quarantined"}
@@ -73,7 +73,7 @@ def select_canonical_xauusd_rows(rows: Iterable[Any]) -> list[Any]:
 
 def is_xauusd_compatible_row(row: Any) -> bool:
     """Reject known futures-continuous rows from the XAUUSD spot proxy chain."""
-    return is_xauusd_spot_identity(
+    return is_formal_numeric_source(str(_value(row, "source") or ""), _source_ref(row), _value(row, "raw_path")) and is_xauusd_spot_identity(
         asset=str(_value(row, "asset") or "XAUUSD"),
         source=str(_value(row, "source") or ""),
         source_ref=_source_ref(row),
@@ -89,6 +89,7 @@ def aggregate_complete_candles(
     closed_before: datetime | None = None,
 ) -> list[AggregatedCandle]:
     """Aggregate only buckets containing every expected unique component bar."""
+    require_formal_numeric_source(source)
     source_seconds = TIMEFRAME_SECONDS[source_timeframe]
     target_seconds = TIMEFRAME_SECONDS[target_timeframe]
     if target_seconds % source_seconds:
@@ -98,6 +99,8 @@ def aggregate_complete_candles(
 
     buckets: dict[datetime, dict[datetime, Any]] = {}
     for row in rows:
+        if not is_xauusd_compatible_row(row):
+            continue
         open_time = _open_time(row)
         if open_time is None:
             continue
@@ -119,6 +122,7 @@ def aggregate_complete_candles(
                 "open_time": expected_time.isoformat(),
                 "source": str(_value(component, "source") or ""),
                 "raw_path": _value(component, "raw_path"),
+                "source_ref": _source_ref(component),
             }
             for expected_time, component in zip(expected_times, components, strict=True)
         ]
@@ -195,9 +199,13 @@ def merge_candle_series(primary: Iterable[Any], fallback: Iterable[Any]) -> list
     """Fill missing timestamps with whole fallback bars without field mixing."""
     merged: dict[datetime, Any] = {}
     for row in fallback:
+        if not is_xauusd_compatible_row(row):
+            continue
         if (open_time := _open_time(row)) is not None:
             merged[open_time] = row
     for row in primary:
+        if not is_xauusd_compatible_row(row):
+            continue
         if (open_time := _open_time(row)) is not None:
             merged[open_time] = row
     return [merged[key] for key in sorted(merged)]

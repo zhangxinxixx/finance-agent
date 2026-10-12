@@ -14,9 +14,6 @@ from apps.runtime.source_controls import jin10_disabled
 from apps.scheduler.jin10_refresh import (
     refresh_jin10_calendar_cache,
     refresh_jin10_flash_cache,
-    refresh_jin10_kline_cache,
-    refresh_market_candle_daily_cache,
-    refresh_jin10_quotes_cache,
     refresh_jin10_web_article_analysis,
     refresh_jin10_web_flash_briefs,
 )
@@ -32,6 +29,7 @@ _TWELVEDATA_LEGACY_TASK_TYPES = {
     "twelvedata_xauusd_1h",
     "twelvedata_xauusd_4h",
 }
+_RETIRED_REFRESH_JOB_TYPES = frozenset({"jin10_quotes", "jin10_kline", "market_candles_daily"})
 
 
 def _configured_refresh_jobs() -> set[str] | None:
@@ -46,16 +44,31 @@ def _job_is_enabled(task_type: str, configured_jobs: set[str] | None) -> bool:
 
 
 def _twelvedata_dispatch_is_enabled(configured_jobs: set[str] | None) -> bool:
-    return (
-        configured_jobs is None
-        or "twelvedata_xauusd_dispatch" in configured_jobs
-        or bool(configured_jobs & _TWELVEDATA_LEGACY_TASK_TYPES)
+    # Research can collect on demand. A display widget does not justify a
+    # second, continuous market feed; validation polling requires explicit opt-in.
+    return bool(
+        configured_jobs
+        and (
+            "twelvedata_xauusd_dispatch" in configured_jobs
+            or configured_jobs & _TWELVEDATA_LEGACY_TASK_TYPES
+        )
     )
+
+
+def _warn_about_retired_refresh_jobs(configured_jobs: set[str] | None) -> None:
+    if not configured_jobs:
+        return
+    retired = sorted(configured_jobs & _RETIRED_REFRESH_JOB_TYPES)
+    if retired:
+        logger.warning(
+            "Ignoring retired API background refresh jobs %s; local market-candle collection is disabled "
+            "and chart history is supplied by TradingView.",
+            ", ".join(retired),
+        )
+
 
 def _refresh_jobs() -> tuple[tuple[str, str, Any, int, str, str | None], ...]:
     return (
-        ("jin10_quotes", "Jin10 行情刷新", refresh_jin10_quotes_cache, 15, "jin10_quotes_refresh", "startup-quotes"),
-        ("jin10_kline", "Jin10 K线刷新", refresh_jin10_kline_cache, 1, "jin10_kline_refresh", "startup-kline"),
         ("jin10_calendar", "Jin10 财经日历刷新", refresh_jin10_calendar_cache, 60, "jin10_calendar_refresh", None),
         ("jin10_flash", "Jin10 快讯刷新", refresh_jin10_flash_cache, 15, "jin10_flash_refresh", "startup-flash"),
         ("jin10_web_flash", "Jin10 网页重点/VIP快讯刷新", refresh_jin10_web_flash_briefs, 5, "jin10_web_flash_refresh", "startup-web-flash"),
@@ -81,23 +94,11 @@ def _twelvedata_jobs() -> tuple[tuple[str, str, str, dict[str, Any]], ...]:
     )
 
 
-def _daily_market_jobs() -> tuple[tuple[str, str, Any, str, dict[str, Any], str], ...]:
-    return (
-        (
-            "market_candles_daily",
-            "正式跨资产日线刷新",
-            refresh_market_candle_daily_cache,
-            "market_candles_daily_refresh",
-            {"hour": 13, "minute": 10, "second": 0, "timezone": "UTC"},
-            "startup-market-daily",
-        ),
-    )
-
-
 def start_jin10_cache_refresh_scheduler() -> BackgroundScheduler:
     """Register periodic refreshes and run the existing eager refreshes asynchronously."""
     scheduler = BackgroundScheduler(daemon=True)
     configured_jobs = _configured_refresh_jobs()
+    _warn_about_retired_refresh_jobs(configured_jobs)
     jin10_is_disabled = jin10_disabled()
     scheduled_jobs = 0
     refresh_jobs = _refresh_jobs()
@@ -117,7 +118,7 @@ def start_jin10_cache_refresh_scheduler() -> BackgroundScheduler:
             )
             scheduled_jobs += 1
             if startup_thread_name is not None:
-                Thread(target=refresher, daemon=True, name=startup_thread_name).start()
+                Thread(target=partial(record_jin10_refresh, task_type, task_name, refresher), daemon=True, name=startup_thread_name).start()
 
     for task_type, task_name, job_id, cron_kwargs in _twelvedata_jobs():
         if not _twelvedata_dispatch_is_enabled(configured_jobs):
@@ -134,24 +135,8 @@ def start_jin10_cache_refresh_scheduler() -> BackgroundScheduler:
         )
         scheduled_jobs += 1
 
-    for task_type, task_name, refresher, job_id, cron_kwargs, startup_thread_name in _daily_market_jobs():
-        if not _job_is_enabled(task_type, configured_jobs):
-            continue
-        scheduler.add_job(
-            partial(record_jin10_refresh, task_type, task_name, refresher),
-            "cron",
-            id=job_id,
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-            misfire_grace_time=1800,
-            **cron_kwargs,
-        )
-        scheduled_jobs += 1
-        Thread(target=refresher, daemon=True, name=startup_thread_name).start()
-
     scheduler.start()
-    logger.info("Market cache refresh scheduler started: %s jobs", scheduled_jobs)
+    logger.info("Jin10 cache refresh scheduler started: %s jobs", scheduled_jobs)
     return scheduler
 
 

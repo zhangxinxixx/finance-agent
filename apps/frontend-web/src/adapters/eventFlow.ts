@@ -16,6 +16,8 @@ import type {
   EventType,
   PricingStatus,
   EventFlowActionResponse,
+  EventFlowImpactReadModel,
+  EventFlowMarketReactionReadModel,
   EventFlowProgressTrigger,
   EventFlowProgressTriggerBundle,
   Jin10ArticleBrief,
@@ -326,27 +328,25 @@ const REPORTS: EventFlowReportItem[] = [
 ];
 
 export async function fetchEventFlowOverviewView(): Promise<EventFlowViewModel> {
-  const curated = _getMockViewModel();
-  try {
-    const overviewResp = await fetch("/api/events/flow/overview");
-    if (overviewResp.ok) {
-      const rawOverview = await overviewResp.json();
-      if (rawOverview.status !== "unavailable") {
-        return _mapApiToViewModel(rawOverview);
-      }
-    }
-  } catch {
-    // API 不可用，fallback 到 mock
-  }
-  return curated;
+  const rawOverview = await fetchJson<Record<string, unknown>>("/api/events/flow/overview");
+  // A successful HTTP response can still carry an unavailable/partial
+  // read-model status. Keep that identity visible; never replace it with
+  // the bundled historical fixture.
+  return _mapApiToViewModel(rawOverview);
+}
+
+export async function fetchEventFlowEventImpact(eventId: string): Promise<EventFlowImpactReadModel> {
+  return fetchJson<EventFlowImpactReadModel>(`/api/events/${encodeURIComponent(eventId)}/impact`);
+}
+
+export async function fetchEventFlowMarketReaction(eventId: string): Promise<EventFlowMarketReactionReadModel> {
+  return fetchJson<EventFlowMarketReactionReadModel>(`/api/events/${encodeURIComponent(eventId)}/market-reaction`);
 }
 
 export async function fetchEventFlowReportInputsView(current: EventFlowViewModel): Promise<EventFlowViewModel> {
   try {
-    const reportInputsResp = await fetch("/api/events/report-inputs");
-    if (reportInputsResp.ok) {
-      return _mergeReportInputsIntoViewModel(current, await reportInputsResp.json());
-    }
+    const reportInputs = await fetchJson<Record<string, unknown>>("/api/events/report-inputs");
+    return _mergeReportInputsIntoViewModel(current, reportInputs);
   } catch {
     // Report inputs are supplementary; keep the event-flow shell usable.
   }
@@ -519,7 +519,31 @@ function goldPricingToEventPricing(value: string | null | undefined): PricingSta
   const normalized = value?.toLowerCase();
   if (normalized === "priced" || normalized === "confirmed" || normalized === "已定价") return "已定价";
   if (normalized === "partial" || normalized === "partially_priced" || normalized === "部分定价") return "部分定价";
-  return "未定价";
+  if (normalized === "unpriced" || normalized === "未定价") return "未定价";
+  return "未核验";
+}
+
+function normalizeEventPricing(value: unknown): PricingStatus {
+  const normalized = asString(value).toLowerCase();
+  if (normalized === "priced" || normalized === "confirmed" || normalized === "已定价") return "已定价";
+  if (normalized === "partial" || normalized === "partially_priced" || normalized === "部分定价") return "部分定价";
+  if (normalized === "unpriced" || normalized === "未定价") return "未定价";
+  return "未核验";
+}
+
+function normalizeEventImpact(value: unknown): EventImpact {
+  const raw = asString(value);
+  if (!raw) return "未评估";
+  if (/[一-鿿]/.test(raw)) {
+    return raw as EventImpact;
+  }
+
+  const normalized = raw.toLowerCase().replace(/[\s-]+/g, "_");
+  if (["bullish", "strong_bullish", "neutral_bullish", "positive"].includes(normalized)) return "利多黄金";
+  if (["bearish", "strong_bearish", "neutral_bearish", "negative"].includes(normalized)) return "利空黄金";
+  if (["mixed", "neutral", "two_sided", "uncertain"].includes(normalized)) return "混合";
+  if (normalized === "high_volatility") return "高波动待定";
+  return "未评估";
 }
 
 function goldBiasToEventImpact(value: GoldNetBias | null): EventImpact {
@@ -618,7 +642,7 @@ function tableRowsFromTimeline(timeline: EventFlowTimelineItem[]): EventFlowTabl
     source: event.source ?? "事件流",
     assets: event.assets ?? event.affected_assets?.join(", ") ?? "—",
     impact: event.impact,
-    pricing: event.pricing ?? "未定价",
+    pricing: event.pricing ?? "未核验",
     period: event.period ?? "主线",
     stars: event.importance === "高" ? 5 : event.importance === "中" ? 3 : 1,
     verification_status: event.verification_status,
@@ -791,10 +815,7 @@ function normalizeRelatedNewsItems(value: unknown): EventFlowRelatedNewsItem[] {
       const sourceType = asString(item.source_type) || null;
       const headline = title ? buildChineseHeadline(title, asString(item.source_type) || null) : "";
       if (!headline) return [];
-      const summary = toChineseContent(asString(item.summary), {
-        eventType: sourceType,
-        fallback: buildChineseSummary(title, sourceType),
-      });
+      const summary = toChineseContent(asString(item.summary));
       return {
         news_item_id: asString(item.news_item_id) || asString(item.source_ref) || `${source}-${index}`,
         source_ref: asString(item.source_ref) || null,
@@ -817,17 +838,16 @@ function normalizeRelatedNewsItems(value: unknown): EventFlowRelatedNewsItem[] {
 }
 
 function fallbackEventHeadline(eventType: string | null | undefined): string {
-  if (eventType === "hormuz_risk") return "美伊协议与霍尔木兹通航主线更新";
-  if (eventType === "macro_data") return "宏观数据主线更新";
-  if (eventType === "fomc_statement") return "联储政策表态更新";
-  if (eventType === "oil_supply_shock") return "油价与供给主线更新";
-  if (eventType === "scheduled_calendar") return "宏观日历事件更新";
-  return "";
+  void eventType;
+  return "事件标题缺失";
 }
 
 function buildChineseHeadline(value: string | null | undefined, eventType?: string | null): string {
   const text = cleanupWireTitle(value ?? "");
   if (!text) return fallbackEventHeadline(eventType);
+  // A wire headline is a fact. Keep foreign-language source text intact;
+  // translating a known phrase here must not turn it into a new market claim.
+  if (!hasChinese(text)) return text;
   if (hasChinese(text)) return chineseNameText(text);
 
   const lower = text.toLowerCase();
@@ -1018,11 +1038,11 @@ function buildChineseSummary(
 ): string {
   const text = cleanupWireTitle(value ?? "");
   if (!text) {
-    if (eventType === "hormuz_risk") {
-      return "当前事件围绕霍尔木兹与伊朗主线展开，核心影响是原油、通胀预期、美元与黄金之间的再定价。";
-    }
-    return "当前事件仍在发酵，市场主要通过利率、美元、原油与黄金链条重新定价。";
+    return "";
   }
+  // Only normalize text that is already present. The adapter must not infer
+  // an impact narrative from an English title or an event enum.
+  if (!hasChinese(text)) return text;
   if (hasChinese(text)) return chineseNameText(text);
 
   const lower = text.toLowerCase();
@@ -1206,21 +1226,15 @@ function toChineseContent(
 ): string {
   const text = normalizeInlineText(value);
   if (!text) return options.fallback ?? "";
-  if (hasChinese(text)) return chineseNameText(text);
-  return buildChineseSummary(text, options.eventType, options.impactPath) || options.fallback || "";
+  if (!hasChinese(text)) return text;
+  return chineseNameText(text);
 }
 
 function normalizeBrief(brief: Record<string, unknown>): Jin10ArticleBrief {
   const articleClass = asString(brief.article_class);
   const headline = buildChineseHeadline(asString(brief.headline), articleClass);
-  const analysisSummary = toChineseContent(asString(brief.analysis_summary), {
-    eventType: articleClass,
-    fallback: "当前摘要已接入事件流，可作为日报与主线判断的补充依据。",
-  });
-  const originalExcerpt = toChineseContent(asString(brief.original_excerpt), {
-    eventType: articleClass,
-    fallback: analysisSummary || headline,
-  });
+  const analysisSummary = toChineseContent(asString(brief.analysis_summary));
+  const originalExcerpt = toChineseContent(asString(brief.original_excerpt));
 
   return {
     brief_id: asString(brief.brief_id),
@@ -1232,7 +1246,7 @@ function normalizeBrief(brief: Record<string, unknown>): Jin10ArticleBrief {
     access_status: asString(brief.access_status),
     original_excerpt: originalExcerpt,
     key_points: Array.isArray(brief.key_points)
-      ? brief.key_points.map((item) => toChineseContent(typeof item === "string" ? item : "", { fallback: "" })).filter(Boolean)
+      ? brief.key_points.map((item) => toChineseContent(typeof item === "string" ? item : "")).filter(Boolean)
       : [],
     analysis_summary: analysisSummary,
     asset_tags: translateAssetList(Array.isArray(brief.asset_tags) ? brief.asset_tags.filter((item): item is string => typeof item === "string") : []),
@@ -1252,8 +1266,8 @@ function normalizeEventImpactSummary(value: unknown): EventImpactSummary | null 
   if (Object.keys(raw).length === 0) return null;
   const events = Array.isArray(raw.events) ? raw.events.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
   return {
-    bias: asString(raw.bias, "neutral"),
-    confidence: asNumber(raw.confidence),
+    bias: asString(raw.bias, "unknown"),
+    confidence: typeof raw.confidence === "number" && Number.isFinite(raw.confidence) ? raw.confidence : null,
     summary: asString(raw.summary),
     sentiment: asRecord(raw.sentiment),
     riskRadar: asRecord(raw.risk_radar),
@@ -1291,11 +1305,7 @@ function normalizeBriefSummary(value: unknown): EventFlowBriefSummary | null {
   const artifactRef = asRecord(raw.artifact_ref);
 
   const headline = buildChineseHeadline(asString(marketMainline.headline) || asString(marketMainline.summary), asString(marketMainline.event_type) || null);
-  const summary = toChineseContent(asString(marketMainline.summary, headline), {
-    eventType: asString(marketMainline.event_type) || null,
-    impactPath: asString(marketMainline.impact_path) || null,
-    fallback: headline,
-  });
+  const summary = toChineseContent(asString(marketMainline.summary));
 
   return {
     headline: headline || "事件主线待确认",
@@ -1303,7 +1313,7 @@ function normalizeBriefSummary(value: unknown): EventFlowBriefSummary | null {
     status: asString(marketMainline.status) || null,
     riskLevel: asString(marketMainline.risk_level) || null,
     verificationStatus: asString(marketMainline.verification_status) || null,
-    pricingStatus: asString(marketMainline.pricing_status) || null,
+    pricingStatus: asString(marketMainline.pricing_status) ? normalizeEventPricing(marketMainline.pricing_status) : null,
     artifactPath: asString(artifactRef.path) || null,
     counts: {
       confirmedEventCount: asNumber(counts.confirmed_event_count),
@@ -1312,9 +1322,9 @@ function normalizeBriefSummary(value: unknown): EventFlowBriefSummary | null {
       calendarEventCount: asNumber(counts.calendar_event_count),
       sourceRefCount: asNumber(counts.source_ref_count),
     },
-    newsHighlights: normalizeBriefList(reportInputs.news_highlights).map((item) => toChineseContent(item, { fallback: item })),
-    watchlist: normalizeBriefList(reportInputs.watchlist).map((item) => toChineseContent(item, { fallback: item })),
-    riskPoints: normalizeBriefList(reportInputs.risk_points).map((item) => toChineseContent(item, { fallback: item })),
+    newsHighlights: normalizeBriefList(reportInputs.news_highlights).map((item) => toChineseContent(item)),
+    watchlist: normalizeBriefList(reportInputs.watchlist).map((item) => toChineseContent(item)),
+    riskPoints: normalizeBriefList(reportInputs.risk_points).map((item) => toChineseContent(item)),
   };
 }
 
@@ -1371,10 +1381,7 @@ function normalizeProgressTrigger(value: Record<string, unknown>): EventFlowProg
       eventType: asString(value.event_type) || null,
       fallback: buildChineseHeadline(sourceTitle, asString(value.event_type) || null),
     }),
-    evidence_text: toChineseContent(asString(value.evidence_text, sourceTitle), {
-      eventType: asString(value.event_type) || null,
-      fallback: sourceTitle,
-    }),
+    evidence_text: toChineseContent(asString(value.evidence_text)),
     source_url: asString(value.source_url),
     created_at: asString(value.created_at) || null,
     published_at: publishedAtFromRefs(refs),
@@ -1422,10 +1429,7 @@ function normalizeReportInputItems(value: unknown): EventFlowReportInputItem[] {
         input_kind: asString(raw.input_kind, "summary"),
         group: asString(raw.group, "未分类"),
         title: buildChineseHeadline(title, asString(raw.input_kind) || null),
-        summary: toChineseContent(asString(raw.summary, title), {
-          eventType: asString(raw.input_kind) || null,
-          fallback: buildChineseHeadline(title, asString(raw.input_kind) || null),
-        }),
+        summary: toChineseContent(asString(raw.summary)),
         verification_status: asString(raw.verification_status) || null,
         access_status: asString(raw.access_status) || null,
         artifact_path: asString(raw.artifact_path) || null,
@@ -1462,15 +1466,17 @@ function _mapApiToViewModel(raw: Record<string, unknown>): EventFlowViewModel {
       time: (e.time as string) ?? "",
       date: "",
       title,
-      desc: buildChineseSummary(asString(e.title), asString(e.event_type) || null, asString(e.impact_path) || null),
+      desc: toChineseContent(
+        asString(e.summary) || asString(e.description) || asString(e.desc) || asString(e.original_excerpt),
+      ),
       type: "市场事件" as EventType,
       importance: ((e.importance as string) ?? "低") as EventImportance,
       status: "已公布" as EventStatus,
-      impact: "混合" as EventImpact,
-      source: translateSourceName((e.source as string) ?? "Jin10"),
+      impact: normalizeEventImpact(e.impact),
+      source: translateSourceName(asString(e.source) || null),
       assets: Array.isArray(e.affected_assets) ? translateAssetList(e.affected_assets.filter((item): item is string => typeof item === "string")).join(" / ") : "",
       period: "",
-      pricing: ((e.pricing as string) ?? "未定价") as PricingStatus,
+      pricing: normalizeEventPricing(e.pricing),
       verification_status: asString(e.verification_status) || goldLink?.verification_status || null,
       risk_level: asString(e.risk_level) || null,
       event_kind: asString(e.kind) || null,
@@ -1508,10 +1514,10 @@ function _mapApiToViewModel(raw: Record<string, unknown>): EventFlowViewModel {
     time: (e.time as string) ?? "",
     title,
     type: "市场事件" as EventType,
-    source: translateSourceName((e.source as string) ?? "Jin10"),
+    source: translateSourceName(asString(e.source) || null),
     assets: Array.isArray(e.affected_assets) ? translateAssetList(e.affected_assets.filter((item): item is string => typeof item === "string")).join(" / ") : "",
-    impact: "混合" as EventImpact,
-    pricing: ((e.pricing as string) ?? "未定价") as PricingStatus,
+    impact: normalizeEventImpact(e.impact),
+    pricing: normalizeEventPricing(e.pricing),
     period: "",
     stars: e.importance === "高" ? 5 : e.importance === "中" ? 3 : 1,
     verification_status: asString(e.verification_status) || null,
@@ -1524,7 +1530,9 @@ function _mapApiToViewModel(raw: Record<string, unknown>): EventFlowViewModel {
   return {
     status: (raw.status as EventFlowViewModel["status"]) ?? "partial",
     source: (raw.source as string) ?? "api",
-    updated_at: (raw.updated_at as string) ?? new Date().toISOString(),
+    // The UI refresh timestamp is not a source timestamp. Keep it empty when
+    // the read model omits updated_at instead of inventing "now".
+    updated_at: asString(raw.updated_at),
     timeline,
     chain: [],
     sentiment: [],

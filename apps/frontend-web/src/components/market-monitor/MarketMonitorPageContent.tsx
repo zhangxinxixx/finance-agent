@@ -34,6 +34,9 @@ interface MarketMonitorPageContentProps {
   calendarFreshness: Jin10CalendarFreshness | null;
   calendarIsLoading: boolean;
   calendarIsError: boolean;
+  requestError: string | null;
+  historyError: string | null;
+  isRefreshing: boolean;
   realtimeRegime: MarketMonitorMockFile["realtime_regime"];
   primaryDriver: MarketMonitorMockFile["primary_driver"];
   agentMarketRegime: MarketMonitorMockFile["agent_market_regime"] | null;
@@ -63,6 +66,9 @@ export function MarketMonitorPageContent({
   calendarFreshness,
   calendarIsLoading,
   calendarIsError,
+  requestError,
+  historyError,
+  isRefreshing,
   realtimeRegime,
   primaryDriver,
   agentMarketRegime,
@@ -90,7 +96,13 @@ export function MarketMonitorPageContent({
       )}
       bodyClassName="fa-page-stack"
     >
-      <MarketMonitorPageChrome errorReason={errorReason} source={source} />
+      <MarketMonitorPageChrome
+        errorReason={errorReason}
+        source={source}
+        requestError={requestError}
+        historyError={historyError}
+        isRefreshing={isRefreshing}
+      />
 
       {activeTab === "overview" ? (
         <MarketMonitorOverviewSection
@@ -100,6 +112,7 @@ export function MarketMonitorPageContent({
           onTimeframeChange={setHistoryTimeframe}
           marketRegimes={marketRegimes}
           agentMarketRegime={agentMarketRegime}
+          realtimeRegime={realtimeRegime}
           overviewTitle={pageStatusLabel}
           sourceLabel={sourceLabel}
           latestDate={textOrDash(snapshot.latest_date)}
@@ -111,6 +124,8 @@ export function MarketMonitorPageContent({
         <MarketMonitorPricingChainSection
           metrics={metrics}
           history={history}
+          activeTimeframe={historyTimeframe}
+          onTimeframeChange={setHistoryTimeframe}
         />
       ) : null}
 

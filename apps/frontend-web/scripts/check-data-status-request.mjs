@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
+import ts from "typescript";
+let calls = 0;
+let resolve;
+let reject;
+const exports = {};
+const source = readFileSync(new URL("../src/hooks/useDataStatus.ts", import.meta.url), "utf8");
+const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+vm.runInNewContext(code, { exports, require: (name) => name === "react" ? {} : {
+  fetchJson: () => { calls += 1; return new Promise((yes, no) => { resolve = yes; reject = no; }); },
+} });
+const fetchStatus = exports.fetchDataStatusSummary;
+const first = fetchStatus();
+const second = fetchStatus();
+assert.equal(first, second);
+assert.equal(calls, 1);
+resolve({ overall_status: "PARTIAL" });
+assert.equal((await first).overall_status, "PARTIAL");
+const next = fetchStatus();
+assert.equal(calls, 2, "A later poll must fetch fresh data");
+const failure = assert.rejects(next, /offline/);
+reject(new Error("offline"));
+await failure;
+const retry = fetchStatus();
+assert.equal(calls, 3, "Failure must release the in-flight request");
+resolve({ overall_status: "OK" });
+assert.equal((await retry).overall_status, "OK");
+console.log("Data status request sharing OK");

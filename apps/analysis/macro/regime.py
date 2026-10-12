@@ -18,7 +18,11 @@ from __future__ import annotations
 from typing import Any
 
 
-def classify_macro_regime(indicators: dict[str, Any]) -> dict[str, Any]:
+def classify_macro_regime(
+    indicators: dict[str, Any],
+    *,
+    real_yield_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Classify the gold macro regime from loaded macro indicator values.
 
     Args:
@@ -51,7 +55,7 @@ def classify_macro_regime(indicators: dict[str, Any]) -> dict[str, Any]:
     confidence = 0.5
 
     # ── 1. Real yield (main口径: nominal 10Y - T10YIE; TIPS is supplementary) ──
-    real_yield_data = _eval_real_yield(indicators)
+    real_yield_data = dict(real_yield_override) if real_yield_override is not None else _eval_real_yield(indicators)
     drivers["real_yield"] = real_yield_data
     if real_yield_data["status"] == "available":
         if real_yield_data["direction"] == "falling":

@@ -12,7 +12,7 @@ export function FASectionHeader({ title, eyebrow, description, action, className
   return (
     <div className={`flex min-w-0 items-start justify-between gap-3 ${className}`}>
       <div className="min-w-0">
-        {eyebrow ? <div className="fa-eyebrow">{eyebrow}</div> : null}
+        {typeof eyebrow === "string" && /[\u3400-\u9fff]/.test(eyebrow) && eyebrow !== title ? <div className="fa-eyebrow">{eyebrow}</div> : null}
         <h2 className="fa-module-title truncate text-[14px] font-semibold leading-tight">{title}</h2>
         {description ? <p className="fa-muted-text mt-1.5">{description}</p> : null}
       </div>

@@ -62,7 +62,7 @@ assert.match(systemEvolutionHook, /fetchSystemEvolutionReview/, "system evolutio
 assert.match(systemEvolutionHook, /useSystemEvolutionReview/, "system evolution hook must export useSystemEvolutionReview");
 assert.match(systemEvolutionHook, /submitProposalAction:/, "system evolution hook must expose submitProposalAction");
 assert.match(sections, /SystemEvolutionProposalCard/, "Review Center sections must render SystemEvolution proposals");
-assert.match(sections, /SystemEvolution 提案/, "SystemEvolution card must label governance proposals");
+assert.match(sections, /系统演进提案/, "SystemEvolution card must label governance proposals");
 assert.match(sections, /批准/, "SystemEvolution card must render approve action");
 assert.match(sections, /拒绝/, "SystemEvolution card must render reject action");
 assert.match(sections, /关联 Issue/, "SystemEvolution card must render link issue action");

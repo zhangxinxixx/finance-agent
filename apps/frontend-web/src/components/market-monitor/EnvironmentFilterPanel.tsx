@@ -1,7 +1,7 @@
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { MarketEnvironmentFilterKey, MarketMonitorMockFile } from "@/types/market-monitor";
-import { textOrDash } from "./format";
+import { marketMonitorStatusLabel, marketMonitorUnitLabel, textOrDash } from "./format";
 
 interface EnvironmentFilterPanelProps {
   environmentFilters: MarketMonitorMockFile["environment_filters"];
@@ -45,7 +45,7 @@ export function EnvironmentFilterPanel({ environmentFilters }: EnvironmentFilter
                           : "neutral"
                   }
                 >
-                  {item?.status ?? "—"}
+                  {marketMonitorStatusLabel(item?.status)}
                 </FAStatusPill>
               </div>
 
@@ -54,7 +54,7 @@ export function EnvironmentFilterPanel({ environmentFilters }: EnvironmentFilter
                   <div className="text-[8px] font-semibold text-[var(--fg-5)]">最新值</div>
                   <div className="mt-1 font-mono text-[12px] text-[var(--fg-2)]">
                     {textOrDash(item?.latest_value)}
-                    {item?.unit ? <span className="ml-1 text-[9px] text-[var(--fg-5)]">{item.unit}</span> : null}
+                    {item?.unit ? <span className="ml-1 text-[9px] text-[var(--fg-5)]">{marketMonitorUnitLabel(item.unit)}</span> : null}
                   </div>
                 </div>
                 <div className={STAT_BOX_CLASS_NAME}>

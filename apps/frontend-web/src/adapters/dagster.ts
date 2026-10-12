@@ -2,6 +2,8 @@
 // Queries Dagster's GraphQL API for pipeline runs, graph topology, and step events.
 // Transforms responses into the same shapes the existing UI expects.
 
+import { fetchJson } from "@/adapters/apiClient";
+
 const DAGSTER_GRAPHQL_URL =
   import.meta.env.VITE_DAGSTER_GRAPHQL_URL?.trim() || "/dagster/graphql";
 
@@ -13,17 +15,11 @@ interface GraphQLResponse<T> {
 }
 
 async function dagsterQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
-  const res = await fetch(DAGSTER_GRAPHQL_URL, {
+  const json = await fetchJson<GraphQLResponse<T>>(DAGSTER_GRAPHQL_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ query, variables }),
   });
-
-  if (!res.ok) {
-    throw new Error(`Dagster GraphQL ${res.status}: ${res.statusText}`);
-  }
-
-  const json = (await res.json()) as GraphQLResponse<T>;
   if (json.errors?.length) {
     throw new Error(`Dagster GraphQL error: ${json.errors.map((e) => e.message).join("; ")}`);
   }
@@ -57,7 +53,6 @@ interface DagsterRunStepEvent {
 
 interface DagsterRunDetail extends DagsterRun {
   stepEvents: DagsterRunStepEvent[];
-  runConfigYaml: string | null;
 }
 
 interface DagsterPipelineSnapshot {
@@ -74,9 +69,10 @@ interface DagsterPipelineSnapshot {
 interface DagsterSchedule {
   name: string;
   cronSchedule: string;
-  executionTimezone: string;
-  jobName: string;
+  executionTimezone: string | null;
+  pipelineName: string;
   scheduleState: { status: string; id: string; runs: Array<{ runId: string; status: string; creationTime: number }> } | null;
+  futureTicks: { results: Array<{ timestamp: number | null }> };
 }
 
 // ── GraphQL Queries ──
@@ -116,7 +112,6 @@ const RUN_DETAIL_QUERY = `
         endTime
         tags { key value }
         mode
-        runConfigYaml
         repositoryOrigin { repositoryName repositoryLocationName }
         stepEvents {
           ... on StepEvent {
@@ -124,22 +119,18 @@ const RUN_DETAIL_QUERY = `
             eventType
             timestamp
             level
-            message
           }
           ... on ExecutionStepFailureEvent {
             stepKey
             eventType
             timestamp
             level
-            message
-            error { message stack }
           }
           ... on ExecutionStepSuccessEvent {
             stepKey
             eventType
             timestamp
             level
-            message
           }
         }
       }
@@ -171,14 +162,15 @@ const PIPELINE_SNAPSHOT_QUERY = `
 `;
 
 const SCHEDULES_QUERY = `
-  query SchedulesQuery {
-    schedulesOrError {
+  query SchedulesQuery($repositorySelector: RepositorySelector!) {
+    schedulesOrError(repositorySelector: $repositorySelector) {
+      __typename
       ... on Schedules {
         results {
           name
           cronSchedule
           executionTimezone
-          jobName
+          pipelineName
           scheduleState {
             status
             id
@@ -188,8 +180,12 @@ const SCHEDULES_QUERY = `
               creationTime
             }
           }
+          futureTicks(limit: 1) {
+            results { timestamp }
+          }
         }
       }
+      ... on PythonError { message }
     }
   }
 `;
@@ -299,7 +295,6 @@ export interface DagsterRunDetailResult {
   startedAt: string | null;
   endedAt: string | null;
   stepEvents: DagsterStepEvent[];
-  runConfigYaml: string | null;
   tags: Record<string, string>;
 }
 
@@ -325,9 +320,8 @@ export async function fetchDagsterRunDetail(runId: string): Promise<DagsterRunDe
       eventType: e.eventType,
       timestamp: new Date(e.timestamp * 1000).toISOString(),
       level: e.level,
-      message: e.message,
+      message: null,
     })),
-    runConfigYaml: run.runConfigYaml,
     tags: Object.fromEntries(run.tags.map((t) => [t.key, t.value])),
   };
 }
@@ -390,30 +384,48 @@ export async function fetchDagsterGraphTopology(jobName = "premarket_job"): Prom
 export interface DagsterScheduleInfo {
   name: string;
   cronSchedule: string;
-  executionTimezone: string;
-  jobName: string;
+  executionTimezone: string | null;
+  pipelineName: string;
   status: string;
   lastRunId: string | null;
   lastRunStatus: string | null;
   lastRunAt: string | null;
+  nextTickAt: string | null;
 }
 
 export async function fetchDagsterSchedules(): Promise<DagsterScheduleInfo[]> {
-  const data = await dagsterQuery<{ schedulesOrError: { results: DagsterSchedule[] } }>(
+  const data = await dagsterQuery<{
+    schedulesOrError: {
+      __typename: string;
+      results?: DagsterSchedule[];
+      message?: string;
+    };
+  }>(
     SCHEDULES_QUERY,
+    {
+      repositorySelector: {
+        repositoryName: "__repository__",
+        repositoryLocationName: "dagster_finance.definitions",
+      },
+    },
   );
+  if (data.schedulesOrError.__typename !== "Schedules") {
+    throw new Error(data.schedulesOrError.message || "Dagster schedules unavailable");
+  }
 
-  return data.schedulesOrError.results.map((s) => {
+  return (data.schedulesOrError.results ?? []).map((s) => {
     const lastRun = s.scheduleState?.runs?.[0];
+    const nextTick = s.futureTicks?.results?.[0]?.timestamp;
     return {
       name: s.name,
       cronSchedule: s.cronSchedule,
       executionTimezone: s.executionTimezone,
-      jobName: s.jobName,
+      pipelineName: s.pipelineName,
       status: s.scheduleState?.status ?? "UNKNOWN",
       lastRunId: lastRun?.runId ?? null,
       lastRunStatus: lastRun?.status ?? null,
       lastRunAt: lastRun?.creationTime ? new Date(lastRun.creationTime * 1000).toISOString() : null,
+      nextTickAt: nextTick ? new Date(nextTick * 1000).toISOString() : null,
     };
   });
 }

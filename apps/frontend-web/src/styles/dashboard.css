@@ -613,14 +613,28 @@
   }
 
   .dashboard-kpi-strip {
+    margin-top: var(--space-2);
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 5px;
     overflow: visible;
     border: 0;
     border-radius: 0;
     background: transparent;
     box-shadow: none;
+  }
+
+  .dashboard-reading-context {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .dashboard-market-details > summary {
+    cursor: pointer;
+    padding: var(--space-2) 0;
   }
 
   .dashboard-summary-grid {
@@ -1526,7 +1540,7 @@
 
   @media (max-width: 980px) {
     .dashboard-kpi-strip {
-      grid-template-columns: repeat(3, minmax(120px, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
     .dashboard-kpi-card:nth-child(3n) {
@@ -1564,6 +1578,23 @@
   }
 
   @media (max-width: 720px) {
+    .dashboard-decision-headline {
+      flex-direction: column;
+    }
+
+    .dashboard-decision-headline > span {
+      max-width: 100%;
+      line-height: var(--lh-snug);
+    }
+
+    .dashboard-decision-headline > strong {
+      width: 100%;
+    }
+
+    .dashboard-decision-focus-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .dashboard-kpi-strip {
       grid-template-columns: repeat(2, minmax(124px, 1fr));
     }
@@ -1581,5 +1612,80 @@
     .dashboard-kpi-card:nth-child(2n) {
       border-right: 0;
     }
+  }
+}
+
+@layer components {
+  .dashboard-research-brief {
+    display: grid;
+    min-width: 0;
+    gap: 16px;
+    padding: 16px;
+    overflow-wrap: anywhere;
+  }
+  .dashboard-research-brief header,
+  .dashboard-research-brief section {
+    display: grid;
+    min-width: 0;
+    gap: 8px;
+  }
+  .dashboard-research-notice { color: var(--warn); }
+  .dashboard-research-facts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .dashboard-research-facts > div {
+    min-width: 0;
+    border-top: 1px solid var(--dashboard-rule);
+    padding-top: 8px;
+  }
+  .dashboard-research-facts dd { margin: 4px 0 0; }
+  .dashboard-research-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    border-top: 1px solid var(--dashboard-rule);
+    padding-top: 12px;
+    color: var(--brand);
+  }
+  .dashboard-research-brief .report-reading-full { max-width: 100%; min-width: 0; }
+  @media (max-width: 720px) {
+    .dashboard-research-facts { grid-template-columns: minmax(0, 1fr); }
+  }
+}
+
+@layer components {
+  .research-trade-plan {
+    display: grid;
+    min-width: 0;
+    max-width: 100%;
+    gap: 12px;
+    padding: 14px;
+    margin-bottom: 16px;
+    overflow-wrap: anywhere;
+  }
+  .research-trade-plan-embedded { padding: 0; margin-bottom: 0; }
+  .research-trade-plan header, .research-trade-plan section { display: grid; gap: 8px; min-width: 0; }
+  .research-trade-plan p, .research-trade-plan h2, .research-trade-plan h3, .research-trade-plan h4 { margin: 0; }
+  .research-trade-plan p, .research-trade-plan dd, .research-trade-plan li { white-space: pre-wrap; }
+  .research-trade-plan-status, .research-trade-plan-action { color: var(--warn); }
+  .research-trade-plan-levels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .research-trade-plan-attention { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+  .research-trade-plan-paths { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .research-trade-plan-path { min-width: 0; padding-top: 8px; border-top: 1px solid var(--border); }
+  .research-trade-plan dl { margin: 0; display: grid; gap: 8px; }
+  .research-trade-plan dd { margin: 4px 0 0; min-width: 0; }
+  .research-trade-plan-position { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .research-trade-plan-position > div { min-width: 0; }
+  @media (max-width: 720px) {
+    .research-trade-plan-paths, .research-trade-plan-position { grid-template-columns: minmax(0, 1fr); }
   }
 }

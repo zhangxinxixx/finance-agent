@@ -20,9 +20,7 @@ from apps.collectors.jin10.fetcher import (
 )
 from apps.collectors.jin10.classifier import classify_jin10_report
 
-DEFAULT_JIN10_BROWSER_PROFILE = Path(
-    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
-).expanduser()
+DEFAULT_JIN10_BROWSER_PROFILE = (Path.home() / ".config" / "finance-agent" / "jin10-browser")
 
 
 def _fetch_report(article_id: str, args: argparse.Namespace, client: httpx.Client):
@@ -132,7 +130,7 @@ def main() -> int:
     parser.add_argument(
         "--browser-profile",
         default=default_browser_profile,
-        help="Chromium user data dir with Jin10 login session. Defaults to JIN10_BROWSER_PROFILE.",
+        help="Chromium user data dir with Jin10 login session. Defaults to JIN10_BROWSER_PROFILE or the Hermes Jin10 profile.",
     )
     args = parser.parse_args()
 

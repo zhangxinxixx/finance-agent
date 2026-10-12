@@ -5,6 +5,8 @@ All tests use in-memory SQLite; no dependency on local PostgreSQL.
 
 from __future__ import annotations
 
+import pytest
+from copy import deepcopy
 import hashlib
 import json
 from datetime import date
@@ -758,3 +760,113 @@ def test_ensure_analysis_tables_from_session():
     assert "analysis_snapshots" in tables
     assert "agent_outputs" in tables
     assert "final_analysis_results" in tables
+
+
+
+
+@pytest.mark.parametrize('field,value', [
+    ('run_id', 'other-run'), ('asset', 'GC'), ('trade_date', '2026-05-15'),
+    ('snapshot_time', '2026-05-14T11:00:00Z'), ('status', 'failed'),
+    ('payload', {'full': 'changed'}), ('macro', {'dgs10': 9}),
+    ('options', {}), ('positioning', {}), ('news', {}), ('technical', {}),
+    ('input_snapshot_ids', {}), ('source_refs', []), ('artifact_path', 'other.json'),
+])
+def test_snapshot_conflicts_are_immutable_and_preserve_transaction(field, value):
+    from database.queries.analysis import upsert_analysis_snapshot
+    session = _make_session()
+    first = upsert_analysis_snapshot(session, _SAMPLE_SNAPSHOT_PAYLOAD, 'one.json')
+    pending = deepcopy(_SAMPLE_SNAPSHOT_PAYLOAD)
+    pending['snapshot_id'] = 'caller-work'
+    other = upsert_analysis_snapshot(session, pending, 'caller.json')
+    changed = deepcopy(_SAMPLE_SNAPSHOT_PAYLOAD)
+    path = value if field == 'artifact_path' else 'one.json'
+    if field != 'artifact_path':
+        changed[field] = value
+    with pytest.raises(ValueError, match='analysis snapshot conflict'):
+        upsert_analysis_snapshot(session, changed, path)
+    session.commit()
+    assert session.get(AnalysisSnapshot, other.id) is other
+    assert first.payload == _SAMPLE_SNAPSHOT_PAYLOAD['payload']
+    assert first.artifact_path == 'one.json'
+
+
+@pytest.mark.parametrize('conflict', [False, True])
+def test_snapshot_unique_insert_race_preserves_caller_work(tmp_path, conflict):
+    """Two connections: competitor commits after the losing lookup, before insert."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from unittest.mock import patch
+    from database.queries.analysis import upsert_analysis_snapshot
+    engine = create_engine(f'sqlite:///{tmp_path / "race.db"}')
+    ensure_analysis_tables(engine)
+    looked_up, inserted = Event(), Event()
+
+    def winner():
+        assert looked_up.wait(5)
+        with Session(engine) as session:
+            payload = deepcopy(_SAMPLE_SNAPSHOT_PAYLOAD)
+            if conflict:
+                payload['payload'] = {'competitor': True}
+            upsert_analysis_snapshot(session, payload, 'one.json')
+            session.commit()
+        inserted.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool, Session(engine) as loser:
+        future = pool.submit(winner)
+        scalar = loser.scalar
+        first_lookup = True
+
+        def delayed_lookup(*args, **kwargs):
+            nonlocal first_lookup
+            if first_lookup:
+                first_lookup = False
+                # Finish an empty read before competitor commits (SQLite isolation).
+                assert scalar(*args, **kwargs) is None
+                looked_up.set()
+                assert inserted.wait(5)
+                caller = deepcopy(_SAMPLE_SNAPSHOT_PAYLOAD)
+                caller['snapshot_id'] = 'caller-work'
+                loser.add(AnalysisSnapshot(snapshot_id='caller-work', asset='GC',
+                    trade_date=date(2026, 5, 14), run_id='caller', payload=caller,
+                    payload_sha256='0' * 64, artifact_path='caller.json'))
+                return None
+            return scalar(*args, **kwargs)
+
+        with patch.object(loser, 'scalar', side_effect=delayed_lookup):
+            if conflict:
+                with pytest.raises(ValueError, match='analysis snapshot conflict'):
+                    upsert_analysis_snapshot(loser, _SAMPLE_SNAPSHOT_PAYLOAD, 'one.json')
+            else:
+                result = upsert_analysis_snapshot(loser, _SAMPLE_SNAPSHOT_PAYLOAD, 'one.json')
+                assert result.payload == _SAMPLE_SNAPSHOT_PAYLOAD['payload']
+        loser.commit()
+        future.result()
+    with Session(engine) as check:
+        assert len(list(check.scalars(select(AnalysisSnapshot)))) == 2
+
+
+def test_snapshot_insert_failure_preserves_caller_transaction():
+    from sqlalchemy.exc import IntegrityError
+    from database.queries.analysis import upsert_analysis_snapshot
+    session = _make_session()
+    caller = deepcopy(_SAMPLE_SNAPSHOT_PAYLOAD)
+    caller['snapshot_id'] = 'caller'
+    row = upsert_analysis_snapshot(session, caller, 'caller.json')
+    with pytest.raises(IntegrityError):
+        upsert_analysis_snapshot(session, _SAMPLE_SNAPSHOT_PAYLOAD, None)
+    session.commit()
+    assert session.get(AnalysisSnapshot, row.id) is row
+    assert len(list(session.scalars(select(AnalysisSnapshot)))) == 1
+
+
+def test_snapshot_idempotence_normalizes_timezone_after_reload():
+    from database.queries.analysis import upsert_analysis_snapshot
+    session = _make_session()
+    payload = deepcopy(_SAMPLE_SNAPSHOT_PAYLOAD)
+    payload['snapshot_time'] = '2026-05-14T18:00:00+08:00'
+    first = upsert_analysis_snapshot(session, payload, 'one.json')
+    identity = first.id
+    session.commit()
+    session.expunge_all()
+    second = upsert_analysis_snapshot(session, _SAMPLE_SNAPSHOT_PAYLOAD, 'one.json')
+    assert second.id == identity

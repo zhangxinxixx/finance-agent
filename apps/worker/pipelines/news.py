@@ -44,6 +44,7 @@ from apps.features.news.market_binding import (
     build_market_reaction,
     market_snapshot_assets_for_event,
 )
+from apps.features.news.official_calendar import build_official_calendar_snapshot
 from apps.features.news.report_event_extractor import (
     Jin10ReportEventExtraction,
     archive_jin10_report_events,
@@ -51,6 +52,7 @@ from apps.features.news.report_event_extractor import (
 )
 from apps.renderer.markdown.daily_brief import archive_daily_brief, render_daily_brief_payload
 from apps.runtime.source_controls import jin10_disabled
+from apps.worker.news_artifact_registration import build_news_artifact_refs
 
 NEWS_STEPS = {"news_collect", "news_feature", "news_brief"}
 _MARKET_REACTION_TIMEFRAME = "1m"
@@ -63,7 +65,14 @@ class NewsPipelineState:
     """Holds intermediate results for the news/event pipeline."""
 
     retrieved_date: str = ""
+    # ``raw_items`` is the current collector response context for this run.
+    # Checkpoints only decide what is new; they must not remove an item that
+    # is still present in the current response before feature construction.
     raw_items: list[RawNewsItem] = field(default_factory=list)
+    new_items: list[RawNewsItem] = field(default_factory=list)
+    warehouse_record_ids: list[str] | None = None
+    warehouse_status: str | None = None
+    official_calendar_items: list[RawNewsItem] = field(default_factory=list)
     source_refs: list[dict[str, Any]] = field(default_factory=list)
     collector_statuses: list[dict[str, Any]] = field(default_factory=list)
     event_bundle: EventCandidateBundle | None = None
@@ -77,6 +86,8 @@ class NewsPipelineState:
     gold_macro_overview: Any | None = None
     etf_holdings_context: dict[str, Any] = field(default_factory=dict)
     news_freshness: dict[str, Any] = field(default_factory=dict)
+    news_collection: dict[str, Any] = field(default_factory=dict)
+    official_calendar: dict[str, Any] = field(default_factory=dict)
     snapshot_dict: dict[str, Any] | None = None
     artifact_paths: dict[str, str] = field(default_factory=dict)
     step_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -102,6 +113,10 @@ def run_news_step(
         raise ValueError(f"Unknown news step: {step_name!r}")
 
     summary = fn(state, storage_root=storage_root, run_id=run_id, db_session=db_session)
+    summary["artifact_refs"] = build_news_artifact_refs(
+        step_name=step_name, paths=state.artifact_paths, storage_root=storage_root, run_id=run_id or "manual"
+    )
+    summary.setdefault("source_refs", list(state.source_refs))
     state.step_summaries[step_name] = summary
     return summary
 
@@ -127,20 +142,20 @@ def _step_collect(
             result = collector(retrieved_date=retrieved_date, storage_root=storage_root)
             observed_items.extend(result.items)
             collected_raw_news_item_count += len(result.items)
+            if any(_is_scheduled_calendar_item(item) for item in result.items):
+                # Scheduled calendars must remain available on reruns even
+                # when the generic checkpoint suppresses already-seen items.
+                state.official_calendar_items.extend(
+                    item for item in result.items if _is_scheduled_calendar_item(item)
+                )
             accepted_items, skipped_count = _filter_checkpointed_items(
                 result.items,
                 _checkpoint_for_source(checkpoint_state, result.source_key),
             )
             skipped_duplicate_item_count += skipped_count
-            checkpointed_result = NewsCollectionResult(
-                source_key=result.source_key,
-                status=result.status,
-                items=accepted_items,
-                source_refs=result.source_refs,
-                unavailable_feeds=result.unavailable_feeds,
-                warnings=result.warnings,
-            )
-            _merge_collection_result(state, checkpointed_result)
+            # Keep the complete current response as feature context.  The
+            # accepted list remains a separate audit/counting concept.
+            _merge_collection_result(state, result, new_items=accepted_items)
             ended_at = datetime.now(timezone.utc).isoformat()
             _update_collection_checkpoint(
                 checkpoint_state,
@@ -156,6 +171,8 @@ def _step_collect(
                 "collector": collector_name,
                 "status": result.status,
                 "items": len(accepted_items),
+                "new_items": len(accepted_items),
+                "context_items": len(result.items),
                 "collected_items": len(result.items),
                 "skipped_duplicate_items": skipped_count,
                 "unavailable_feeds": len(result.unavailable_feeds),
@@ -210,15 +227,7 @@ def _step_collect(
                 _checkpoint_for_source(checkpoint_state, result.source_key),
             )
             skipped_duplicate_item_count += skipped_count
-            checkpointed_result = NewsCollectionResult(
-                source_key=result.source_key,
-                status=result.status,
-                items=accepted_items,
-                source_refs=result.source_refs,
-                unavailable_feeds=result.unavailable_feeds,
-                warnings=result.warnings,
-            )
-            _merge_collection_result(state, checkpointed_result)
+            _merge_collection_result(state, result, new_items=accepted_items)
             ended_at = datetime.now(timezone.utc).isoformat()
             _update_collection_checkpoint(
                 checkpoint_state,
@@ -235,6 +244,8 @@ def _step_collect(
                 "collector": collector_name,
                 "status": result.status,
                 "items": len(accepted_items),
+                "new_items": len(accepted_items),
+                "context_items": len(result.items),
                 "collected_items": len(result.items),
                 "skipped_duplicate_items": skipped_count,
                 "unavailable_feeds": len(result.unavailable_feeds),
@@ -280,6 +291,16 @@ def _step_collect(
     })
     state.news_freshness = news_freshness
 
+    from apps.data_layer.collection_ingestion import ingest_news_collection
+
+    warehouse_ingestion = ingest_news_collection(
+        db_session, observed_items, run_id=run_id, storage_root=storage_root, source_refs=state.source_refs,
+    )
+    state.warehouse_status = warehouse_ingestion["status"]
+    state.warehouse_record_ids = list(dict.fromkeys(
+        item.duplicate_key for item in [*state.raw_items, *state.official_calendar_items]
+    ))
+
     failed_or_unavailable = [
         row for row in state.collector_statuses
         if row.get("status") in {"failed", "unavailable"}
@@ -290,6 +311,26 @@ def _step_collect(
         status = "success"
     else:
         status = "partial_success"
+
+    state.news_collection = {
+        "status": status,
+        "coverage_status": _collection_coverage_status(
+            context_item_count=len(state.raw_items),
+            collector_statuses=state.collector_statuses,
+        ),
+        "context_item_count": len(state.raw_items),
+        "new_item_count": len(state.new_items),
+        "novel_item_count": len(state.new_items),
+        "collected_item_count": collected_raw_news_item_count,
+        "context": len(state.raw_items),
+        "novel": len(state.new_items),
+        "collected": collected_raw_news_item_count,
+        "checkpoint_skipped_item_count": skipped_duplicate_item_count,
+        "discovered_event_count": 0,
+        "confirmed_event_count": 0,
+        "unverified_event_count": 0,
+        "source_statuses": _compact_source_statuses(state.collector_statuses),
+    }
 
     run_key = run_id or "manual"
     diagnostics_path = _archive_collection_diagnostics(
@@ -307,6 +348,8 @@ def _step_collect(
         "status": status,
         "retrieved_date": retrieved_date,
         "raw_news_item_count": len(state.raw_items),
+        "context_raw_news_item_count": len(state.raw_items),
+        "new_raw_news_item_count": len(state.new_items),
         "collected_raw_news_item_count": collected_raw_news_item_count,
         "skipped_duplicate_item_count": skipped_duplicate_item_count,
         "collector_statuses": state.collector_statuses,
@@ -314,6 +357,9 @@ def _step_collect(
         "artifact_path": diagnostics_path,
         "collection_checkpoint_path": checkpoint_path,
         "news_freshness": news_freshness,
+        "news_collection": dict(state.news_collection),
+        "news_coverage": dict(state.news_collection),
+        "warehouse": warehouse_ingestion,
     }
 
 
@@ -330,9 +376,37 @@ def _step_feature(
     as_of = datetime.now(timezone.utc).isoformat()
     warnings: list[str] = []
 
+    from database.queries.warehouse_news import list_warehouse_news_items
+    if db_session is None or state.warehouse_status != "loaded" or state.warehouse_record_ids is None:
+        raise RuntimeError("DWD_NEWS_INPUTS_NOT_LOADED")
+    keys = state.warehouse_record_ids
+    rows = []
+    for offset in range(0, len(keys), 1000):
+        rows.extend(list_warehouse_news_items(db_session, str(run_id),
+                    record_ids=keys[offset:offset + 1000], as_of=datetime.fromisoformat(as_of), limit=1000))
+    if {row["duplicate_key"] for row in rows} != set(keys):
+        raise RuntimeError("DWD_NEWS_INPUTS_MISSING")
+    original_keys = {item.duplicate_key for item in state.raw_items}
+    new_keys = {item.duplicate_key for item in state.new_items}
+    warehouse_items = [RawNewsItem(**row) for row in rows]
+    state.raw_items = [item for item in warehouse_items if item.duplicate_key in original_keys]
+    state.new_items = [item for item in warehouse_items if item.duplicate_key in new_keys]
+    state.official_calendar_items = [item for item in warehouse_items if _is_scheduled_calendar_item(item)]
+
     report_extraction: Jin10ReportEventExtraction | None = None
     report_events_path: str | None = None
-    feature_items = list(state.raw_items)
+    calendar_items = state.official_calendar_items or [
+        item for item in state.raw_items if _is_scheduled_calendar_item(item)
+    ]
+    state.official_calendar = build_official_calendar_snapshot(
+        calendar_items,
+        as_of=as_of,
+        source_refs=state.source_refs,
+    )
+    # A scheduled meeting is a future planning input.  Keep it out of the
+    # ordinary candidate/reaction path, which treats published_at as an
+    # occurred-event timestamp for news features.
+    feature_items = [item for item in state.raw_items if not _is_scheduled_calendar_item(item)]
     feature_source_refs = list(state.source_refs)
 
     jin10_is_disabled = jin10_disabled()
@@ -359,7 +433,22 @@ def _step_feature(
         feature_items,
         as_of=as_of,
         source_refs=feature_source_refs,
+        preserve_articles=jin10_is_disabled,
     )
+    state.news_collection.update({
+        "context_item_count": len(state.raw_items),
+        "new_item_count": len(state.new_items),
+        "novel_item_count": len(state.new_items),
+        "discovered_event_count": len(bundle.event_candidates),
+        "confirmed_event_count": sum(
+            1 for event in bundle.event_candidates
+            if event.verification_status == "official_confirmed"
+        ),
+        "unverified_event_count": sum(
+            1 for event in bundle.event_candidates
+            if event.verification_status != "official_confirmed"
+        ),
+    })
     assessments = build_impact_assessments(bundle.event_candidates, as_of=as_of)
     daily_analysis_triggers = build_daily_analysis_triggers(
         event_bundle=bundle,
@@ -460,6 +549,10 @@ def _step_feature(
         "market_reaction_count": len(reactions),
         "official_event_count": len(official_event_snapshot.events),
         "official_event_readiness": official_event_snapshot.readiness,
+        "official_calendar_count": len(state.official_calendar.get("events") or []),
+        "upcoming_14d_count": len(state.official_calendar.get("events") or []),
+        "news_collection": dict(state.news_collection),
+        "news_coverage": dict(state.news_collection),
         "gold_mainline_count": len(gold_event_mainlines.mainlines),
         "gold_event_link_count": len(gold_event_mainlines.event_links),
         "event_candidates_path": event_candidates_path,
@@ -640,6 +733,11 @@ def _step_brief(
         run_id=run_key,
         snapshot=daily_brief_input_snapshot,
     )
+    state.artifact_paths.update({
+        "daily_brief_input_snapshot": daily_brief_input_snapshot_path,
+        "daily_brief_json": daily_brief_paths["json"],
+        "daily_brief_markdown": daily_brief_paths["markdown"],
+    })
     daily_brief_output = render_daily_brief_payload(
         daily_brief_input_snapshot,
         artifact_path=daily_brief_paths["markdown"],
@@ -652,8 +750,25 @@ def _step_brief(
     data_quality["gold_event_link_count"] = len(gold_event_mainlines_payload.get("event_links") or [])
     data_quality["gold_verification_item_count"] = len(gold_macro_overview.verification_matrix)
     data_quality["news_freshness"] = dict(state.news_freshness)
+    official_calendar = state.official_calendar or build_official_calendar_snapshot(
+        [item for item in state.raw_items if _is_scheduled_calendar_item(item)],
+        as_of=datetime.now(timezone.utc).isoformat(),
+        source_refs=state.source_refs,
+    )
+    state.official_calendar = official_calendar
+    upcoming_14d = list(official_calendar.get("events") or [])
+    data_quality["official_calendar_event_count"] = len(upcoming_14d)
+    state.news_collection.update({
+        "discovered_event_count": len(state.event_bundle.event_candidates) if state.event_bundle else 0,
+        "confirmed_event_count": len(brief.confirmed_events),
+        "unconfirmed_risk_count": len(brief.unconfirmed_risks),
+    })
     state.snapshot_dict = {
         "news_freshness": dict(state.news_freshness),
+        "news_collection": dict(state.news_collection),
+        "news_coverage": dict(state.news_collection),
+        "official_calendar": official_calendar,
+        "upcoming_14d": upcoming_14d,
         "official_events": (
             {
                 "status": "available",
@@ -717,6 +832,10 @@ def _step_brief(
         "positioning_input_count": data_quality.get("positioning_input_count", 0),
         "technical_level_input_count": data_quality.get("technical_level_input_count", 0),
         "news_freshness": dict(state.news_freshness),
+        "official_calendar_event_count": len(upcoming_14d),
+        "upcoming_14d_count": len(upcoming_14d),
+        "news_collection": dict(state.news_collection),
+        "news_coverage": dict(state.news_collection),
     }
 
 
@@ -778,17 +897,48 @@ def _load_report_input_artifacts(*, storage_root: Path, retrieved_date: str, run
     return artifacts
 
 
+def _is_fomc_calendar_item(item: RawNewsItem) -> bool:
+    return (
+        (item.source_key == "fomc_calendar" and item.event_type == "fomc_meeting")
+        or (item.source_key == "fred_calendar" and item.event_type == "inflation_release")
+    )
+
+
+def _is_scheduled_calendar_item(item: RawNewsItem) -> bool:
+    return (
+        item.source_key in {
+            "fomc_calendar",
+            "fred_calendar",
+            "bls_calendar",
+            "bea_calendar",
+            "eia_energy",
+        }
+        and item.event_type in {
+            "fomc_meeting",
+            "inflation_release",
+            "labor_release",
+            "pce_release",
+            "gdp_release",
+            "energy_inventory_release",
+        }
+    )
+
+
 def _collectors() -> list[tuple[str, Callable[..., NewsCollectionResult]]]:
     from apps.collectors.news.bea import collect_bea_schedule
     from apps.collectors.news.bls import collect_bls_calendar
     from apps.collectors.news.eia import collect_eia_energy_events
     from apps.collectors.news.fed_rss import collect_fed_rss
+    from apps.collectors.news.fomc_calendar import collect_fomc_calendar
+    from apps.collectors.news.fred_calendar import collect_fred_release_calendar
     from apps.collectors.news.gdelt import GDELT_DOC_QUERIES, collect_gdelt_docs
     from apps.collectors.news.google_news_rss import GOOGLE_NEWS_QUERIES, collect_google_news_rss
     from apps.collectors.news.reuters_public import REUTERS_PUBLIC_QUERIES, collect_reuters_public_news
 
     collectors: list[tuple[str, Callable[..., NewsCollectionResult]]] = [
         ("fed_rss", collect_fed_rss),
+        ("fomc_calendar", collect_fomc_calendar),
+        ("fred_calendar", collect_fred_release_calendar),
         ("bls_calendar", collect_bls_calendar),
         ("bea_calendar", collect_bea_schedule),
         ("eia_energy", collect_eia_energy_events),
@@ -1037,9 +1187,50 @@ def _gold_event_mainlines_payload(state: NewsPipelineState) -> dict[str, Any]:
     return payload
 
 
-def _merge_collection_result(state: NewsPipelineState, result: NewsCollectionResult) -> None:
+def _merge_collection_result(
+    state: NewsPipelineState,
+    result: NewsCollectionResult,
+    *,
+    new_items: list[RawNewsItem] | None = None,
+) -> None:
     state.raw_items.extend(result.items)
+    state.new_items.extend(result.items if new_items is None else new_items)
     state.source_refs.extend(dict(ref) for ref in result.source_refs if isinstance(ref, dict))
+
+
+def _collection_coverage_status(
+    *,
+    context_item_count: int,
+    collector_statuses: list[dict[str, Any]],
+) -> str:
+    """Report source coverage separately from whether an event was found."""
+
+    if context_item_count > 0:
+        return "covered"
+    if any(
+        row.get("status") in {"success", "partial", "empty", "available", "ok"}
+        for row in collector_statuses
+    ):
+        return "covered"
+    return "uncovered"
+
+
+def _compact_source_statuses(collector_statuses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project collector diagnostics into a small snapshot-safe coverage list."""
+
+    return [
+        {
+            "source_key": str(row.get("collector") or "unknown"),
+            "status": str(row.get("status") or "unknown"),
+            "collected_item_count": int(row.get("collected_items") or 0),
+            "novel_item_count": int(row.get("new_items", row.get("items")) or 0),
+            "context_item_count": int(row.get("context_items", row.get("collected_items")) or 0),
+            "checkpoint_skipped_item_count": int(row.get("skipped_duplicate_items") or 0),
+            "unavailable_feed_count": int(row.get("unavailable_feeds") or 0),
+        }
+        for row in collector_statuses
+        if isinstance(row, dict)
+    ]
 
 
 def _assess_news_freshness(
@@ -1383,6 +1574,12 @@ def _extract_latest_jin10_report_events(
     raw_report = _read_json_dict(bundle["raw_article_report_json"])
     daily_analysis = _read_json_dict(bundle["daily_analysis_json"])
     agent_analysis = _read_json_dict(bundle["agent_analysis_report_json"]) if bundle.get("agent_analysis_report_json") else {}
+    from apps.features.news.report_quality import materialize_jin10_report_quality
+
+    materialize_jin10_report_quality(
+        storage_root=storage_root, run_dir=bundle["daily_analysis_json"].parent,
+        raw_payload=raw_report, daily_payload=daily_analysis, agent_payload=agent_analysis,
+    )
     artifact_paths = {
         "raw_article_report": bundle["raw_article_report_json"].relative_to(storage_root).as_posix(),
         "daily_analysis": bundle["daily_analysis_json"].relative_to(storage_root).as_posix(),
@@ -1454,7 +1651,7 @@ def _build_market_reactions(
     if not assets:
         return []
 
-    from database.queries.market import list_market_candles_by_assets
+    from database.queries.warehouse_read import list_warehouse_candles_by_assets as list_market_candles_by_assets
 
     rows = list_market_candles_by_assets(
         db_session,

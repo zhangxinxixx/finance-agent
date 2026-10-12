@@ -32,7 +32,7 @@ export function ReportsRailHeader({
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingBottom: 8, borderBottom: "1px solid var(--border-faint)" }}>
       <div>
-        <div style={{ fontSize: "var(--text-10)", fontWeight: 600, letterSpacing: 0, textTransform: "uppercase", color: "var(--fg-5)" }}>Report Nav</div>
+        <div style={{ fontSize: "var(--text-10)", fontWeight: 600, letterSpacing: 0, color: "var(--fg-5)" }}>报告导航</div>
         <span style={{ fontSize: "var(--text-12)", fontWeight: 600, color: "var(--fg-3)" }}>筛选导航</span>
       </div>
       {hasActiveFilters ? (

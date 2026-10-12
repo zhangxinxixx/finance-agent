@@ -315,6 +315,8 @@ def fetch_gdelt_doc_articles(
                 "query": query,
                 "image_url": image_url or None,
                 "article": article,
+                "content_scope": "headline_snippet_only",
+                "full_text_available": False,
             },
         ))
     return result

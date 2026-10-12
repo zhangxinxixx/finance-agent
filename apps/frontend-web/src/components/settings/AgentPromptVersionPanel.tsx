@@ -1,6 +1,7 @@
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { PromptVersionItem } from "@/types/agent-registry";
 import { formatPromptVersionTime } from "./agentPromptFormat";
+import { promptStatusLabel } from "./settingsFormat";
 
 interface AgentPromptVersionPanelProps {
   versions: PromptVersionItem[];
@@ -26,7 +27,7 @@ export function AgentPromptVersionPanel({
       <div className="flex items-center justify-between gap-2 border-b border-[var(--border-faint)] px-2.5 py-2">
         <div>
           <div className="text-[12px] font-semibold text-[var(--fg-2)]">版本治理</div>
-          <div className="mt-0.5 text-[11px] text-[var(--fg-4)]">Prompt 修改只创建新版本，不覆盖历史运行。</div>
+          <div className="mt-0.5 text-[11px] text-[var(--fg-4)]">提示词修改只创建新版本，不覆盖历史运行。</div>
         </div>
         <button
           type="button"
@@ -47,11 +48,16 @@ export function AgentPromptVersionPanel({
           <div key={version.id} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <FAStatusPill tone={version.status === "active" ? "info" : "dim"} className="text-[12px]">{version.version}</FAStatusPill>
+                <FAStatusPill tone={version.status === "active" ? "info" : "dim"} className="text-[12px]">版本 {version.version}</FAStatusPill>
                 <FAStatusPill tone={version.enabled ? "neutral" : "down"} className="text-[12px]">
-                  {version.status === "active" ? "激活" : version.status}
+                  {promptStatusLabel(version.status)}
                 </FAStatusPill>
-                <span className="truncate text-[11px] text-[var(--fg-4)]">{version.change_note ?? version.prompt_source ?? "无备注"}</span>
+                {version.change_note || version.prompt_source ? (
+                  <details className="min-w-0 text-[11px] text-[var(--fg-4)]">
+                    <summary className="cursor-pointer truncate">查看变更说明</summary>
+                    <div className="mt-1 break-words">{version.change_note ?? version.prompt_source}</div>
+                  </details>
+                ) : <span className="text-[11px] text-[var(--fg-4)]">无备注</span>}
               </div>
               <button
                 type="button"
@@ -63,7 +69,10 @@ export function AgentPromptVersionPanel({
               </button>
             </div>
             <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--fg-5)]">
-              <span className="font-mono">{version.prompt_sha256.slice(0, 12)}</span>
+              <details>
+                <summary className="cursor-pointer">查看版本校验摘要</summary>
+                <span className="break-all font-mono">{version.prompt_sha256}</span>
+              </details>
               <span>{formatPromptVersionTime(version.updated_at ?? version.created_at)}</span>
             </div>
           </div>

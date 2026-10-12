@@ -21,6 +21,7 @@ import queue
 import threading
 import uuid
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ from apps.features.macro.snapshot import (
 )
 from apps.output.artifacts import artifact_run_dir
 from apps.parsers.macro.models import MacroPoint
+from apps.parsers.macro.validation import validate_macro_points
 from apps.runtime.artifact_registry import register_artifact
 from apps.runtime.artifact_storage import LocalFileSystemArtifactStorage
 from apps.runtime.source_controls import jin10_disabled
@@ -80,6 +82,21 @@ class MacroPipelineState:
     report_md: str | None = None
     full_report_md: str | None = None
     step_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
+    research_enabled: bool = False
+    # Official growth collector state is kept on the same macro pipeline
+    # object so macro_feature can attach its deterministic feature snapshot
+    # without creating a second task graph.
+    growth_result: Any | None = None
+    growth_health: dict[str, Any] = field(default_factory=dict)
+    # Point-in-time cutoff captured after macro collection has merged all
+    # source results.  ``as_of`` remains the date partition used by the
+    # existing macro artifacts; research features need this more precise
+    # timestamp to reject knowledge collected after the run.
+    run_time: datetime | None = None
+    point_validation: dict[str, Any] = field(default_factory=dict)
+    warehouse_record_ids: list[str] | None = None
+    warehouse_status: str = "unavailable"
+    warehouse_points: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -247,32 +264,44 @@ def _step_collect(
         })
 
     # --- Technical / XAUUSD price ---
+    technical_source_key = "twelvedata_xauusd_daily"
     try:
-        if jin10_is_disabled:
-            raise _Jin10Disabled
-        from apps.collectors.technical.collector import collect_technical
+        from apps.collectors.technical.spot_history import collect_spot_history as collect_technical
 
         tech_result = collect_technical(
-            retrieved_date=today,
-            storage_root=storage_root,
+            retrieved_date=today, storage_root=storage_root,
+            include_quote=True, include_intraday=True,
         )
         all_points.extend(tech_result.points)
         all_unavailable.extend(tech_result.unavailable_symbols)
         all_refs.extend(tech_result.source_refs)
         collector_statuses.append({
             "collector": "technical",
+            "source_key": technical_source_key,
             "status": "success",
             "points": len(tech_result.points),
             "unavailable": len(tech_result.unavailable_symbols),
         })
     except _Jin10Disabled:
-        collector_statuses.append({"collector": "technical", "status": "skipped", "reason": "jin10_disabled"})
+        collector_statuses.append({
+            "collector": "technical",
+            "source_key": technical_source_key,
+            "status": "skipped",
+            "reason": "jin10_disabled",
+        })
     except Exception as exc:
         collector_statuses.append({
             "collector": "technical",
+            "source_key": technical_source_key,
             "status": "failed",
             "error": str(exc),
         })
+
+    # Retire the old source status even when optional Jin10 news is enabled.
+    collector_statuses.append({
+        "collector": "technical_yahoo", "source_key": "technical_yahoo",
+        "status": "skipped", "reason": "jin10_news_only",
+    })
 
     # --- Positioning / CFTC COT ---
     try:
@@ -326,71 +355,11 @@ def _step_collect(
             "error": str(exc),
         })
 
-    # --- Jin10 Quotes / MCP (real-time prices) ---
-    try:
-        if jin10_is_disabled:
-            raise _Jin10Disabled
-        from apps.collectors.jin10.quotes import collect_quotes
-
-        quotes_result = collect_quotes(
-            retrieved_date=today,
-            storage_root=storage_root,
-        )
-        all_points.extend(quotes_result.points)
-        all_unavailable.extend(quotes_result.unavailable_symbols)
-        all_refs.extend(quotes_result.source_refs)
-        collector_statuses.append({
-            "collector": "jin10_quotes",
-            "status": "success",
-            "points": len(quotes_result.points),
-            "unavailable": len(quotes_result.unavailable_symbols),
-        })
-    except _Jin10Disabled:
-        collector_statuses.append({"collector": "jin10_quotes", "status": "skipped", "reason": "jin10_disabled"})
-    except Exception as exc:
-        collector_statuses.append({
-            "collector": "jin10_quotes",
-            "status": "failed",
-            "error": str(exc),
-        })
-
-    # --- Jin10 K-line / MCP ---
-    try:
-        if jin10_is_disabled:
-            raise _Jin10Disabled
-        from apps.collectors.jin10.kline import collect_kline
-
-        kline_result = collect_kline(
-            retrieved_date=today,
-            storage_root=storage_root,
-        )
-        all_points.extend(kline_result.points)
-        all_unavailable.extend(kline_result.unavailable_symbols)
-        all_refs.extend(kline_result.source_refs)
-        dxy_kline_fallback = None
-        if not any(point.symbol == "DXY" for point in all_points):
-            dxy_kline_fallback = _promote_latest_kline_close(
-                kline_result.points,
-                code="DXY",
-            )
-            if dxy_kline_fallback is not None:
-                all_points.append(dxy_kline_fallback)
-                all_unavailable = [symbol for symbol in all_unavailable if symbol != "DXY"]
-        collector_statuses.append({
-            "collector": "jin10_kline",
-            "status": "success",
-            "points": len(kline_result.points) + int(dxy_kline_fallback is not None),
-            "unavailable": len(kline_result.unavailable_symbols),
-            "dxy_fallback_promoted": dxy_kline_fallback is not None,
-        })
-    except _Jin10Disabled:
-        collector_statuses.append({"collector": "jin10_kline", "status": "skipped", "reason": "jin10_disabled"})
-    except Exception as exc:
-        collector_statuses.append({
-            "collector": "jin10_kline",
-            "status": "failed",
-            "error": str(exc),
-        })
+    # Jin10 is optional news only; never promote quotes/K-lines to numeric inputs.
+    collector_statuses.extend([
+        {"collector": name, "status": "skipped", "reason": "jin10_news_only"}
+        for name in ("jin10_quotes", "jin10_kline")
+    ])
 
     # --- Jin10 Articles / MCP ---
     try:
@@ -459,13 +428,36 @@ def _step_collect(
         "warnings": ["Yahoo market proxy collection is disabled"],
     })
 
+    if state.research_enabled:
+        for name, result, error in _collect_official_research(today=today, storage_root=storage_root):
+            if result is None:
+                collector_statuses.append({"collector": name, "status": "failed", "error": error})
+                continue
+            all_points.extend(result.points)
+            all_refs.extend(result.source_refs)
+            all_unavailable.extend(result.unavailable_symbols)
+            if name == "official_growth":
+                state.growth_result = result
+                state.growth_health = dict(getattr(result, "collector_health", {}) or {})
+            collector_statuses.append({"collector": name, "status": "partial" if result.unavailable_symbols else "success", "points": len(result.points), "unavailable": len(result.unavailable_symbols)})
+
+    state.run_time = datetime.now(timezone.utc)
+    all_points, state.point_validation = validate_macro_points(
+        all_points, cutoff=state.run_time, source_refs=all_refs,
+    )
+    available_symbols = {point.symbol for point in all_points}
+    all_unavailable.extend(item["symbol"] for item in state.point_validation["rejections"]
+                           if item["symbol"] not in available_symbols)
     state.all_points = all_points
     state.all_unavailable = list(dict.fromkeys(all_unavailable))
     state.all_source_refs = all_refs
+    # Capture the cutoff only after every collector result has been merged so
+    # the COT features can authorize the retrieved_at values from this run.
 
     data_source_status_upserts = 0
     macro_observation_upserts = 0
     raw_artifact_registry_upserts = 0
+    warehouse_ingestion = {"status": "unavailable", "error_code": "DWH_SESSION_REQUIRED"}
     if db_session is not None:
         data_source_status_upserts = _upsert_macro_data_source_statuses(
             db_session,
@@ -480,6 +472,9 @@ def _step_collect(
             all_refs=all_refs,
             run_id=run_id,
         )
+        warehouse_ingestion = db_session.info.get("macro_warehouse_ingestion", warehouse_ingestion)
+        state.warehouse_record_ids = db_session.info.get("macro_warehouse_record_ids")
+        state.warehouse_status = warehouse_ingestion.get("status", "unavailable")
 
     return {
         "step": "macro_collect",
@@ -487,11 +482,45 @@ def _step_collect(
         "as_of": today,
         "total_points": len(all_points),
         "total_unavailable": len(state.all_unavailable),
+        "data_status": "unavailable" if not all_points else "partial" if state.all_unavailable else "available",
+        "point_validation": state.point_validation,
         "collectors": collector_statuses,
         "data_source_status_upserts": data_source_status_upserts,
         "macro_observation_upserts": macro_observation_upserts,
         "raw_artifact_registry_upserts": raw_artifact_registry_upserts,
+        "warehouse": warehouse_ingestion,
     }
+
+
+def _collect_official_research(*, today: str, storage_root: Path) -> list[tuple[str, Any, str | None]]:
+    """Independent sources join inside the existing logged macro_collect step."""
+    from apps.collectors.bls.employment import collect_bls_employment
+    from apps.parsers.bls.employment import BLS_EMPLOYMENT_SERIES, BLS_INDUSTRY_SERIES
+    from apps.collectors.etf.official_gld import collect_official_gld
+    from apps.collectors.positioning.collector import collect_positioning_cot
+    from apps.collectors.treasury.rates import collect_treasury_rate_curves
+    from apps.collectors.growth.official import collect_growth_data
+
+    jobs = {
+        "bls_employment": lambda: collect_bls_employment(
+            retrieved_date=today,
+            storage_root=storage_root,
+            series_ids=BLS_EMPLOYMENT_SERIES + BLS_INDUSTRY_SERIES,
+        ),
+        "official_gld": lambda: collect_official_gld(retrieved_date=today, storage_root=storage_root),
+        "cftc_combined": lambda: collect_positioning_cot(retrieved_date=today, storage_root=storage_root, report_type="combined"),
+        "treasury_rate_curves": lambda: collect_treasury_rate_curves(retrieved_date=today, storage_root=storage_root, include_history=True),
+        "official_growth": lambda: collect_growth_data(retrieved_date=today, storage_root=storage_root),
+    }
+    results = []
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="official-research") as executor:
+        futures = {name: executor.submit(job) for name, job in jobs.items()}
+        for name, future in futures.items():
+            try:
+                results.append((name, future.result(), None))
+            except Exception as exc:
+                results.append((name, None, f"{type(exc).__name__}: {exc}"))
+    return results
 
 
 def _collect_fred_fallback_with_timeout(
@@ -620,8 +649,24 @@ _MACRO_STATUS_CONTRACTS: dict[str, dict[str, Any]] = {
             "provider_role": "supplemental",
             "fallback_for": ["openbb_macro"],
             "fallback_sources": ["jin10_news"],
-            "frontend_label": "Jin10 黄金实时/技术补充源",
-            "notes": "黄金现货价格与日内 OHLC 使用 Jin10 XAUUSD；历史技术指标不足时显式降级。",
+            "frontend_label": "金十旧数值入口（已停用）",
+            "notes": "仅保留旧来源状态兼容；金十不提供正式数值。",
+        },
+    },
+    "twelvedata_xauusd_daily": {
+        "source_name": "Twelve Data XAU/USD Daily",
+        "source_group": "technical",
+        "source_type": "api",
+        "access_method": "twelvedata_rest",
+        "metadata": {
+            "provider_role": "validation_and_fallback",
+            "fallback_for": [],
+            "fallback_sources": [],
+            "frontend_label": "Twelve Data 黄金日线独立源",
+            "provider_symbol": "XAU/USD",
+            "frequency": "daily",
+            "instrument_type": "composite_otc_spot_proxy",
+            "notes": "独立 XAU/USD 日线、报价及日内现货代理；保留真实来源和时效边界。",
         },
     },
     "positioning_cot": {
@@ -656,7 +701,7 @@ _COLLECTOR_TO_SOURCE_KEY = {
     "fed": "fed",
     "treasury": "treasury",
     "dxy": "dxy",
-    "technical": "technical_yahoo",
+    "technical": "twelvedata_xauusd_daily",
     "positioning": "positioning_cot",
     "news": "jin10_news",
 }
@@ -673,9 +718,10 @@ def _upsert_macro_data_source_statuses(
     now = datetime.now(timezone.utc)
     by_collector = {item.get("collector"): item for item in collector_statuses}
     upserted = 0
+    persisted_source_keys: set[str] = set()
 
-    for collector_name, source_key in _COLLECTOR_TO_SOURCE_KEY.items():
-        status = by_collector.get(collector_name, {"collector": collector_name, "status": "not_connected"})
+    def persist(source_key: str, status: dict[str, Any]) -> None:
+        nonlocal upserted
         upsert_data_source_status(
             db_session,
             _build_source_status_payload(
@@ -686,7 +732,24 @@ def _upsert_macro_data_source_statuses(
                 run_id=run_id,
             ),
         )
+        persisted_source_keys.add(source_key)
         upserted += 1
+
+    for collector_name, default_source_key in _COLLECTOR_TO_SOURCE_KEY.items():
+        status = by_collector.get(collector_name, {"collector": collector_name, "status": "not_connected"})
+        source_key = str(status.get("source_key") or default_source_key)
+        if source_key not in _MACRO_STATUS_CONTRACTS:
+            source_key = default_source_key
+        persist(source_key, status)
+
+    # A disabled Jin10 lane and its independent fallback can be represented
+    # by separate source rows.  Persist explicit source-key rows not covered
+    # by the legacy collector map without allowing arbitrary status payloads
+    # to create contracts.
+    for status in collector_statuses:
+        source_key = str(status.get("source_key") or "")
+        if source_key and source_key in _MACRO_STATUS_CONTRACTS and source_key not in persisted_source_keys:
+            persist(source_key, status)
 
     openbb_statuses = [
         by_collector.get("data_layer_fred_rates", {"collector": "data_layer_fred_rates", "status": "not_connected"}),
@@ -713,6 +776,9 @@ def _upsert_macro_point_observations(
     all_refs: list[dict[str, str]],
     run_id: str | None,
 ) -> tuple[int, int]:
+    all_points, _validation = validate_macro_points(
+        all_points, cutoff=datetime.now(timezone.utc), source_refs=all_refs,
+    )
     raw_artifact_ids = _register_macro_raw_artifacts(
         db_session,
         storage_root=storage_root,
@@ -738,10 +804,20 @@ def _upsert_macro_point_observations(
                     "collector_source": point.source,
                     "point_date": point.date,
                     "raw_path": point.raw_path,
+                    "validation_schema_version": _validation["schema_version"],
+                    "validation_status": "valid",
+                    "observation_kind": "scheduled_event" if point.symbol.startswith("NEWS_EVENT:") else "observation",
                 },
             }
             for point in all_points
         ],
+    )
+    from apps.data_layer.collection_ingestion import ingest_collection_records, macro_raw_sources
+
+    db_session.info["macro_warehouse_record_ids"] = [row.id for row in rows]
+    db_session.info["macro_warehouse_ingestion"] = ingest_collection_records(
+        db_session, "macro", record_ids=[row.id for row in rows], storage_root=storage_root,
+        run_id=run_id, raw_sources=macro_raw_sources(rows),
     )
     return len(rows), len(set(raw_artifact_ids.values()))
 
@@ -971,6 +1047,8 @@ def _collector_status_to_source_status(collector_status: dict[str, Any]) -> str:
     status = collector_status.get("status")
     if status == "failed":
         return "failed"
+    if status in {"disabled", "skipped"}:
+        return "disabled"
     points = int(collector_status.get("points") or 0)
     unavailable = int(collector_status.get("unavailable") or 0)
     if points and unavailable:
@@ -1060,36 +1138,6 @@ def _canonicalize_macro_point(
     )
 
 
-def _promote_latest_kline_close(
-    points: list[MacroPoint],
-    *,
-    code: str,
-) -> MacroPoint | None:
-    """Promote a collected intraday close into a canonical macro fallback."""
-
-    prefix = f"KLINE:{code}:"
-    candidates = [point for point in points if point.symbol.startswith(prefix)]
-    if not candidates:
-        return None
-
-    def candle_timestamp(point: MacroPoint) -> int:
-        try:
-            return int(point.symbol.rsplit(":", 1)[-1])
-        except ValueError:
-            return -1
-
-    latest = max(candidates, key=candle_timestamp)
-    return MacroPoint(
-        symbol=code,
-        date=latest.date,
-        value=latest.value,
-        source=latest.source,
-        source_url=latest.source_url,
-        retrieved_at=latest.retrieved_at,
-        raw_path=latest.raw_path,
-    )
-
-
 def _step_feature(
     state: MacroPipelineState,
     *,
@@ -1106,14 +1154,71 @@ def _step_feature(
     if not state.as_of:
         raise RuntimeError("macro_feature requires macro_collect to have completed first")
 
+    from apps.features.macro.warehouse_input import load_macro_feature_points
+
+    if state.warehouse_record_ids is None or state.warehouse_status != "loaded":
+        raise RuntimeError("DWD_MACRO_COLLECTION_NOT_LOADED")
+    points = load_macro_feature_points(
+        db_session, record_ids=state.warehouse_record_ids, as_of=_macro_research_cutoff(state),
+    )
+    state.warehouse_points = points
+    # Collector diagnostics remain context; comparison numbers are copied only
+    # from the latest typed DWD point, never from the collector's metadata bag.
+    latest = {}
+    for point in sorted(points, key=lambda value: value["date"]):
+        latest[(point["source"], point["symbol"])] = point
+    feature_refs = []
+    for source_ref in state.all_source_refs:
+        ref = {key: value for key, value in source_ref.items() if key != "previous_value"}
+        point = latest.get((ref.get("source"), ref.get("symbol")))
+        if point:
+            ref.update({key: value for key, value in point["reference_context"].items()
+                        if key in {"previous_value", "reference_period", "previous_reference_period"}})
+        feature_refs.append(ref)
     snapshot = build_macro_snapshot(
-        [p.to_dict() for p in state.all_points],
+        points,
         as_of=state.as_of,
         unavailable_symbols=state.all_unavailable,
-        source_refs=state.all_source_refs,
+        source_refs=feature_refs,
     )
 
     state.snapshot_dict = snapshot.to_dict()
+    if state.research_enabled:
+        from apps.features.macro.employment import build_employment_features
+        from apps.features.macro.growth import build_growth_features
+        from apps.features.market.official_etf import build_official_gld_context
+        from apps.features.positioning.formal_snapshot import build_cot_positioning_snapshot
+
+        from apps.features.macro.inflation import build_inflation
+        state.snapshot_dict["inflation"] = build_inflation(points, as_of=_macro_research_cutoff(state).isoformat())
+        state.snapshot_dict["employment"] = build_employment_features(
+            points,
+            as_of=state.as_of,
+            unavailable_symbols=state.all_unavailable,
+            source_refs=feature_refs,
+        ).to_dict()
+        state.snapshot_dict["official_etf"] = build_official_gld_context(points=points, source_refs=[ref for ref in feature_refs if ref.get("source") in {"ssga_gld", "spdr_gld"}])
+        cot_cutoff = _macro_research_cutoff(state)
+        state.snapshot_dict["cot_reports"] = {
+            report_type: build_cot_positioning_snapshot(
+                candidates=points,
+                as_of=cot_cutoff,
+                report_type=report_type,
+                source_refs=[ref for ref in feature_refs if ref.get("source") == "cftc"],
+            ).model_dump(mode="json")
+            for report_type in ("futures_only", "combined")
+        }
+        growth_snapshot = build_growth_features(
+            points,
+            as_of=state.as_of,
+            unavailable_symbols=state.all_unavailable,
+            source_refs=feature_refs,
+            collector_health=state.growth_health,
+        )
+        state.snapshot_dict["growth"] = growth_snapshot.to_dict()
+        # Keep a flat health view at the snapshot root for the source-health
+        # layer while retaining the same data under growth for domain users.
+        state.snapshot_dict["collector_health"] = growth_snapshot.collector_health
     return {
         "step": "macro_feature",
         "status": "success",
@@ -1121,6 +1226,25 @@ def _step_feature(
         "indicator_count": len(snapshot.indicators),
         "unavailable_count": len(snapshot.unavailable_symbols),
     }
+
+
+def _macro_research_cutoff(state: MacroPipelineState) -> datetime:
+    """Return the one point-in-time boundary shared by research features.
+
+    A collected state records the merge-completion time.  Hand-built
+    historical states may omit it, so use the inclusive end of their date
+    partition rather than consulting the wall clock and admitting future
+    source knowledge.
+    """
+
+    if state.run_time is not None:
+        if state.run_time.tzinfo is None or state.run_time.utcoffset() is None:
+            raise ValueError("macro research run_time must be timezone-aware")
+        return state.run_time.astimezone(timezone.utc)
+    try:
+        return datetime.fromisoformat(f"{state.as_of}T23:59:59.999999+00:00")
+    except ValueError as exc:
+        raise ValueError(f"invalid macro as_of date for research cutoff: {state.as_of!r}") from exc
 
 
 def _step_render(
@@ -1599,4 +1723,6 @@ def _snapshot_from_dict(data: dict[str, Any]) -> MacroSnapshot:
         indicators=indicators,
         unavailable_symbols=data.get("unavailable_symbols", []),
         source_refs=data.get("source_refs", {}),
+        growth=data.get("growth") if isinstance(data.get("growth"), dict) else None,
+        collector_health=data.get("collector_health") if isinstance(data.get("collector_health"), dict) else None,
     )

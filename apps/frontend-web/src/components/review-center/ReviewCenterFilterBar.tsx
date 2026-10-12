@@ -1,6 +1,7 @@
 import { RefreshCw, Search } from "lucide-react";
 import { FAFilterBar } from "@/components/shared/FAFilterBar";
 import { REVIEW_STATUS_OPTIONS, getReviewStatusLabel } from "./reviewCenterPageModel";
+import { operationMainlineLabel } from "@/components/operations/operationsLabels";
 
 interface ReviewCenterFilterBarProps {
   status: string;
@@ -63,7 +64,7 @@ export function ReviewCenterFilterBar({
               <option value="" className="bg-[var(--bg-card)] text-[var(--fg-2)]">全部模块</option>
               {modules.map((module) => (
                 <option key={module} value={module} className="bg-[var(--bg-card)] text-[var(--fg-2)]">
-                  {module}
+                  {operationMainlineLabel(module)}
                 </option>
               ))}
             </select>
@@ -73,7 +74,7 @@ export function ReviewCenterFilterBar({
             <input
               value={query}
               onChange={(event) => onQueryChange(event.target.value)}
-              placeholder="搜索复核项 / run / 原因..."
+              placeholder="搜索复核项、日期或原因…"
               className="w-full bg-transparent text-[11px] text-[var(--fg-2)] outline-none placeholder:text-[var(--fg-5)]"
             />
           </label>

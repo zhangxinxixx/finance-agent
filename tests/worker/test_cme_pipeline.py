@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -34,6 +35,7 @@ from apps.worker.pipelines.cme import (
 from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
 from database.queries.cme import ensure_cme_tables
+from tests.helpers.warehouse import create_collection_schema
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +64,20 @@ def _make_db_session(tmp_path: Path):
     engine = create_engine(f"sqlite:///{(tmp_path / 'test.db').as_posix()}", echo=False)
     Base.metadata.create_all(engine)
     ensure_cme_tables(engine)
+    create_collection_schema(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
+
+
+def _dwd_row(row_data, index=0, *, phase="PRELIMINARY"):
+    data = dict(row_data)
+    for name in ("underlying", "settlement", "delta", "oi_change", "total_volume", "block_volume", "pnt_volume", "globex_volume", "outcry_volume", "exercises", "pt_change"):
+        data.setdefault(name, None)
+    data.update(id=f"option-{index}", source_record_id=f"option-{index}", raw_file_id="raw-abc-123",
+                raw_sha256="a" * 64, batch_id=1, warehouse_fact_id=index + 1, version_sha256=f"{index:064x}",
+                version_type=phase, retrieved_at=datetime(2026, 5, 7, tzinfo=timezone.utc),
+                source_url="https://www.cmegroup.com/bulletin.pdf", raw_path="raw/test.pdf",
+                report_date=data.get("trade_date", "2026-05-06"))
+    return SimpleNamespace(**data)
 
 
 def _make_sample_parse_result() -> CmePdfParseResult:
@@ -276,7 +291,7 @@ class TestStepIngest:
 
         db = MagicMock()
 
-        with patch("apps.worker.pipelines.cme.ingest_cme_parse_result", return_value=mock_ingest_result) as mock_ing:
+        with patch("apps.data_layer.collection_ingestion.ingest_collection_records", return_value={"status": "loaded"}), patch("apps.worker.pipelines.cme.ingest_cme_parse_result", return_value=mock_ingest_result) as mock_ing:
             summary = run_cme_step(
                 "cme_ingest", state, db=db, storage_root=tmp_path, run_id="run-a",
             )
@@ -323,11 +338,8 @@ class TestStepOptionsAnalysis:
 
         # Create mock option rows with all needed attributes
         mock_rows = []
-        for row_data in json.loads(SAMPLE_ROWS_PATH.read_text())[:5]:
-            mock_row = MagicMock()
-            for k, v in row_data.items():
-                setattr(mock_row, k, v)
-            mock_rows.append(mock_row)
+        for index, row_data in enumerate(json.loads(SAMPLE_ROWS_PATH.read_text())[:5]):
+            mock_rows.append(_dwd_row(row_data, index))
 
         state = CmePipelineState()
         state.ingest_result = mock_ingest_result
@@ -387,11 +399,8 @@ class TestFullPipelineChain:
         # Create mock option rows for the options analysis step
         sample_rows = json.loads(SAMPLE_ROWS_PATH.read_text())[:5]
         mock_option_rows = []
-        for row_data in sample_rows:
-            mock_row = MagicMock()
-            for k, v in row_data.items():
-                setattr(mock_row, k, v)
-            mock_option_rows.append(mock_row)
+        for index, row_data in enumerate(sample_rows):
+            mock_option_rows.append(_dwd_row(row_data, index))
 
         # Create the PDF file for the parse step
         pdf_path = tmp_path / "raw" / "test.pdf"
@@ -418,7 +427,7 @@ class TestFullPipelineChain:
         mock_ingest_result.report_date = "2026-05-06"
         mock_ingest_result.to_dict.return_value = {"report_date": "2026-05-06", "inserted_rows": 2}
 
-        with patch("apps.worker.pipelines.cme.ingest_cme_parse_result", return_value=mock_ingest_result):
+        with patch("apps.data_layer.collection_ingestion.ingest_collection_records", return_value={"status": "loaded"}), patch("apps.worker.pipelines.cme.ingest_cme_parse_result", return_value=mock_ingest_result):
             s3 = run_cme_step("cme_ingest", state, db=db, storage_root=tmp_path, run_id="run-chain-a")
         assert s3["status"] == "success"
         assert state.ingest_result is mock_ingest_result
@@ -457,11 +466,8 @@ class TestFullPipelineChain:
 
         sample_rows = json.loads(SAMPLE_ROWS_PATH.read_text())[:5]
         mock_option_rows = []
-        for row_data in sample_rows:
-            mock_row = MagicMock()
-            for k, v in row_data.items():
-                setattr(mock_row, k, v)
-            mock_option_rows.append(mock_row)
+        for index, row_data in enumerate(sample_rows):
+            mock_option_rows.append(_dwd_row(row_data, index))
 
         pdf_path = tmp_path / "raw" / "test.pdf"
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -481,7 +487,7 @@ class TestFullPipelineChain:
             mock_ingest_result.raw_file_id = 1
             mock_ingest_result.to_dict.return_value = {"report_date": "2026-05-06", "inserted_rows": 2}
 
-            with patch("apps.worker.pipelines.cme.ingest_cme_parse_result", return_value=mock_ingest_result):
+            with patch("apps.data_layer.collection_ingestion.ingest_collection_records", return_value={"status": "loaded"}), patch("apps.worker.pipelines.cme.ingest_cme_parse_result", return_value=mock_ingest_result):
                 run_cme_step("cme_ingest", state, db=db, storage_root=tmp_path, run_id=run_id)
             with patch("apps.worker.pipelines.cme.get_cme_option_rows", return_value=mock_option_rows):
                 summary = run_cme_step("option_wall", state, db=db, storage_root=tmp_path, run_id=run_id)
@@ -553,12 +559,11 @@ class TestStatusMapping:
 
         sample_rows = json.loads(SAMPLE_ROWS_PATH.read_text())[:5]
         mock_option_rows = []
-        for row_data in sample_rows:
-            mock_row = MagicMock()
-            for k, v in row_data.items():
-                setattr(mock_row, k, v)
-            mock_option_rows.append(mock_row)
+        for index, row_data in enumerate(sample_rows):
+            mock_option_rows.append(_dwd_row(row_data, index))
 
+        for row in mock_option_rows:
+            row.version_type = "FINAL" if parse_status == "FINAL" else "PRELIMINARY"
         db = MagicMock()
         return state, mock_raw, mock_ingest_result, db, mock_option_rows
 
@@ -600,8 +605,8 @@ class TestStatusMapping:
         assert summary["data_source_status"] == "PRELIM"
         assert summary["data_quality_categories"]["prelim_data"] > 0
 
-    def test_unknown_status_falls_back_to_prelim_assumed(self, tmp_path):
-        """UNKNOWN or missing parse → PRELIM_assumed with prelim_data counting."""
+    def test_selected_dwd_preliminary_is_independent_of_current_unknown_parse(self, tmp_path):
+        """Selected DWD bulletin qualification wins over the current parser state."""
         state, _, _, db, mock_option_rows = self._make_state_with_parse_status("UNKNOWN")
 
         with patch(
@@ -612,12 +617,12 @@ class TestStatusMapping:
                 "option_wall", state, db=db, storage_root=tmp_path, run_id="run-unknown",
             )
 
-        assert summary["data_source_status"] == "PRELIM_assumed"
-        # PRELIM_assumed starts with PRELIM, so counts as prelim_data
+        assert summary["data_source_status"] == "PRELIM"
+        # The selected DWD PRELIMINARY retains its preliminary quality marker.
         assert summary["data_quality_categories"]["prelim_data"] > 0
 
-    def test_input_snapshot_ids_include_parse_run_id(self, tmp_path):
-        """input_snapshot_ids must carry parse_run_id when available."""
+    def test_input_snapshot_ids_bind_selected_warehouse_facts(self, tmp_path):
+        """Input identities must bind DWD versions, not an unrelated parser attempt."""
         state, _, _, db, mock_option_rows = self._make_state_with_parse_status("FINAL")
 
         with patch(
@@ -628,7 +633,9 @@ class TestStatusMapping:
                 "option_wall", state, db=db, storage_root=tmp_path, run_id="run-provenance",
             )
 
-        assert summary["input_snapshot_ids"]["parse_run_id"] == "parse-run-xyz-456"
+        assert "parse_run_id" not in summary["input_snapshot_ids"]
+        assert summary["input_snapshot_ids"]["warehouse_fact_ids"] == [1, 2, 3, 4, 5]
+        assert summary["input_snapshot_ids"]["warehouse_batch_ids"] == [1]
         assert "raw_file_sha256" in summary["input_snapshot_ids"]
         assert "raw_file_id" in summary["input_snapshot_ids"]
 
@@ -654,6 +661,15 @@ class TestStatusMapping:
 
 
 class TestRunPremarket:
+    @pytest.fixture(autouse=True)
+    def cme_only_snapshot(self, monkeypatch):
+        # These fixtures exercise CME step status mapping without collected spot.
+        # Full research authority is covered by test_validated_research_runner.py.
+        import apps.worker.runner as runner
+        builder = runner.build_analysis_snapshot
+        monkeypatch.setattr(runner, 'build_analysis_snapshot',
+                            lambda **kwargs: builder(**{**kwargs, 'include_daily_research': False}))
+
     def _make_task_with_steps(self, db, step_names):
         task = TaskRun(name="premarket", status=TaskStatus.pending)
         db.add(task)

@@ -11,7 +11,9 @@ export function HeatmapCell({ cell, metrics }: HeatmapCellProps) {
   const lookupKey = cell.key === "VIX_FULL" ? "VIX" : cell.key;
   const metric = findMetric(metrics, lookupKey);
   const changeVal = metric?.one_week_change ?? null;
-  const changeText = formatMetricChange(changeVal, "---");
+  const changeText = formatMetricChange(changeVal);
+  const symbolCode = cell.symbol.replace(/[（）()]/g, "");
+  const titleText = cell.symbol ? `${cell.name}（代码：${symbolCode}）` : cell.name;
 
   return (
     <div
@@ -25,7 +27,7 @@ export function HeatmapCell({ cell, metrics }: HeatmapCellProps) {
         gap: 2,
       }}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center">
         <span
           style={{
             fontFamily: "var(--font-sans)",
@@ -35,18 +37,7 @@ export function HeatmapCell({ cell, metrics }: HeatmapCellProps) {
             color: "var(--fg-2)",
           }}
         >
-          {cell.name}
-        </span>
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontWeight: 500,
-            fontSize: 8,
-            lineHeight: 1,
-            color: "var(--fg-5)",
-          }}
-        >
-          {cell.symbol}
+          {titleText}
         </span>
       </div>
       <span

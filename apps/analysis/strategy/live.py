@@ -15,6 +15,7 @@ from apps.analysis.strategy.live_input_gates import (
     CANONICAL_CANDLE_DURATION_SECONDS,
     CANONICAL_FRESHNESS_SECONDS,
     evaluate_live_input_gates,
+    bulletin_date_aligned,
 )
 from apps.analysis.strategy.price_events import detect_latest_price_event, event_thresholds
 from apps.analysis.strategy.risk_plan import build_risk_plan
@@ -25,6 +26,7 @@ QUOTE_FRESHNESS_SECONDS = 120
 CLOCK_SKEW_TOLERANCE_SECONDS = 30
 ATR_PERIOD = 14
 _CONFIRMED_PRICE_EVENTS = frozenset({"accepted_break", "failed_break", "retest", "reclaim"})
+_SPOT_COORDINATE_SPACE = "XAUUSD spot"
 
 __all__ = [
     "CANONICAL_CANDLE_DURATION_SECONDS",
@@ -104,7 +106,10 @@ def build_live_strategy(
     quote = _fresh_quote(quote_cache, normalized_asset, current_time, warnings)
     atr14 = _atr14(market.get("candles"), warnings)
     levels = _key_levels(options_decision)
-    nearest_level = _nearest_level(price, levels)
+    options_report_only = _options_report_only(options_decision)
+    spot_levels = [] if options_report_only else _spot_compatible_levels(levels)
+    coordinate_mismatch = bool(levels) and not spot_levels
+    nearest_level = _nearest_level(price, spot_levels)
     gamma_regime = _nested(options_decision, "gamma_summary", "regime") or "unavailable"
     cme_positioning = _cme_positioning(options_decision, baseline_trade_date=baseline_summary.get("trade_date"))
 
@@ -116,11 +121,14 @@ def build_live_strategy(
         utc_scope_gate=utc_scope_gate,
     )
     level_ready = nearest_level is not None and not level_gate_reasons
-    level_reason_code = (
-        "option_key_levels_unavailable"
-        if nearest_level is None
-        else level_gate_reasons[0] if level_gate_reasons else None
-    )
+    if nearest_level is None and (options_report_only or coordinate_mismatch) and levels:
+        level_reason_code = "option_key_levels_coordinate_mismatch"
+    elif nearest_level is None:
+        level_reason_code = "option_key_levels_unavailable"
+    elif level_gate_reasons:
+        level_reason_code = level_gate_reasons[0]
+    else:
+        level_reason_code = None
     if not has_baseline:
         warnings.append("gold_direction_authority_unavailable")
     if not level_ready:
@@ -152,7 +160,7 @@ def build_live_strategy(
         detect_latest_price_event(
             candles_5m=canonical_5m_rows[-15:],
             candles_15m=[item for item in market_15m.get("candles") or [] if isinstance(item, Mapping)],
-            key_levels=levels,
+            key_levels=spot_levels,
             atr14=atr14,
             source_refs=source_refs,
         )
@@ -176,7 +184,7 @@ def build_live_strategy(
     )
     risk_plan = build_risk_plan(
         price=price,
-        key_levels=levels,
+        key_levels=spot_levels,
         atr14=atr14,
         latest_price_event=latest_price_event,
         bid=quote.get("bid"),
@@ -263,7 +271,7 @@ def build_live_strategy(
     artifact_refs = _artifact_refs(baseline_summary, market, options_decision, quote)
     baseline_date = baseline_summary.get("trade_date")
     options_date = _nested(options_decision, "meta", "current_trade_date")
-    if baseline_date and options_date and baseline_date != options_date:
+    if baseline_date and options_date and not bulletin_date_aligned(options_date, baseline_date):
         warnings.append("baseline_options_trade_date_mismatch")
 
     response = LiveStrategyOutput(
@@ -361,6 +369,7 @@ def build_live_strategy(
             "baseline_trade_date": baseline_date,
             "options_trade_date": options_date,
             "baseline_options_same_trade_date": baseline_date == options_date if baseline_date and options_date else None,
+            "baseline_options_date_aligned": bulletin_date_aligned(options_date, baseline_date),
             "warnings": _unique(warnings),
         },
     )
@@ -531,6 +540,9 @@ def _semantic_input_gates(gates: Mapping[str, Mapping[str, Any]]) -> dict[str, d
             "source_status",
             "trade_date",
             "expected_trade_date",
+            "date_policy",
+            "date_aligned",
+            "generated_at",
         ),
         "utc_scope": (
             "ready",
@@ -540,6 +552,7 @@ def _semantic_input_gates(gates: Mapping[str, Mapping[str, Any]]) -> dict[str, d
             "effective_trade_date",
             "cme_trade_date",
             "canonical_5m_trade_date",
+            "date_policy",
         ),
     }
     return {
@@ -760,6 +773,31 @@ def _key_levels(options_decision: Mapping[str, Any] | None) -> list[dict[str, An
     return result
 
 
+def _options_report_only(options_decision: Mapping[str, Any] | None) -> bool:
+    decision = options_decision or {}
+    structure = decision.get("structure_summary")
+    if isinstance(structure, Mapping) and structure.get("execution_scope") == "gc_report_only":
+        return True
+    return any(
+        isinstance(path, Mapping) and path.get("execution_scope") == "gc_report_only"
+        for path in decision.get("scenario_paths") or []
+    )
+
+
+def _spot_compatible_levels(levels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only levels explicitly expressed in the live XAUUSD coordinate.
+
+    Legacy decisions without coordinate metadata remain compatible.  Once a
+    level declares a coordinate, GC futures strikes are never compared with a
+    spot price without an explicit mapping layer.
+    """
+    return [
+        item
+        for item in levels
+        if not item.get("coordinate_space") or item.get("coordinate_space") == _SPOT_COORDINATE_SPACE
+    ]
+
+
 def _cme_positioning(
     options_decision: Mapping[str, Any] | None,
     *,
@@ -791,7 +829,7 @@ def _cme_positioning(
         "trade_date": trade_date,
         "previous_trade_date": meta.get("previous_trade_date"),
         "baseline_trade_date": baseline_date,
-        "aligned_with_baseline": baseline_date == trade_date if baseline_date and trade_date else None,
+        "aligned_with_baseline": bulletin_date_aligned(trade_date, baseline_date),
         "source_status": quality.get("cme_status"),
         "comparison_status": meta.get("comparison_status") or summary.get("comparison_status") or "unavailable",
         "total_oi": dict(total),
@@ -839,6 +877,13 @@ def _fresh_quote(
             else "quote_cache_stale"
         )
         return {"status": "stale", "timestamp": _iso(timestamp), "freshness_seconds": freshness_seconds, "bid": None, "ask": None, "change_pct": None}
+    from database.numeric_source_policy import is_formal_numeric_source
+
+    source = str(quote.get("source") or cache.get("source") or "jin10_quote_cache")
+    artifact_ref = quote.get("raw_path") or cache.get("raw_path")
+    if not is_formal_numeric_source(source, [cache.get("source_refs"), quote.get("source_refs")], artifact_ref):
+        warnings.append("jin10_numeric_source_forbidden")
+        return {"status": "unavailable", "timestamp": _iso(timestamp), "freshness_seconds": freshness_seconds, "bid": None, "ask": None, "change_pct": None}
     return {
         "status": "fresh",
         "timestamp": _iso(timestamp),
@@ -846,7 +891,8 @@ def _fresh_quote(
         "bid": _number_or_none(quote.get("bid")),
         "ask": _number_or_none(quote.get("ask")),
         "change_pct": _number_or_none(quote.get("change_pct")),
-        "artifact_ref": "storage/outputs/jin10/quotes_cache.json",
+        "artifact_ref": artifact_ref,
+        "source": source,
     }
 
 
@@ -868,7 +914,7 @@ def _source_refs(
         refs.extend(item for item in premarket_context.get("source_refs") or [] if isinstance(item, Mapping))
     refs.extend(item for item in (options_decision or {}).get("source_refs") or [] if isinstance(item, Mapping))
     if quote.get("status") == "fresh":
-        refs.append({"name": "jin10_quote_cache", "source_ref": quote.get("artifact_ref"), "status": "supplemental"})
+        refs.append({"name": quote.get("source"), "source_ref": quote.get("artifact_ref"), "status": "supplemental"})
     return [dict(item) for item in refs]
 
 

@@ -2,7 +2,7 @@
 
 Sections follow the MVP template from cme_gold_options_analysis_rules_prompt.md:
   一句话结论 | 数据口径 | 核心 GEX 结果 | 重点墙位 |
-  GEX / Gamma Zero | Delta/Vega/Theta | 订单墙 / WallScore |
+  OI-Signed GEX Proxy / Proxy Gamma Flip | Delta/Vega/Theta | 订单墙 / WallScore |
   Roll / 换月迁移 | I1-I4 机构意图 | 支撑/阻力 |
   IV Smile / Skew | 实盘策略卡片 | 数据质量与局限性.
 """
@@ -91,7 +91,7 @@ def _dominant_side(net_gex: float, total_gex: float | None = None) -> str:
 
 def _wall_role_from_bias(net_gex: float, strike: int, gamma_zero: float | None) -> str:
     if gamma_zero is not None and abs(strike - gamma_zero) <= 25:
-        return "Gamma Zero / 方向分水岭"
+        return "Proxy Gamma Flip / 方向分水岭"
     if net_gex < 0:
         return "Put 防守 / 支撑"
     if net_gex > 0:
@@ -102,8 +102,11 @@ def _wall_role_from_bias(net_gex: float, strike: int, gamma_zero: float | None) 
 def _audit_counts(result: OptionsAnalysisResult) -> dict[str, int | float]:
     proxy_rows = sum(1 for exposure in result.exposures if exposure.method == "proxy")
     black76_rows = sum(1 for exposure in result.exposures if exposure.method == "black76")
-    total_abs_gex = sum(abs(exposure.gex_1pct) for exposure in result.exposures)
-    proxy_abs_gex = sum(abs(exposure.gex_1pct) for exposure in result.exposures if exposure.method == "proxy")
+    shape_proxy_oi_total = sum(
+        float(exposure.shape_proxy_oi or 0.0)
+        for exposure in result.exposures
+        if exposure.method == "proxy"
+    )
     return {
         "raw_rows": result.norm_report.total_input_rows,
         "range_rows": sum(
@@ -113,7 +116,9 @@ def _audit_counts(result: OptionsAnalysisResult) -> dict[str, int | float]:
         "valid_rows": len(result.normalized_rows),
         "black76_rows": black76_rows,
         "proxy_rows": proxy_rows,
-        "proxy_gex_share": proxy_abs_gex / total_abs_gex if total_abs_gex > 0 else 0.0,
+        # Kept as a compatibility key; shape-only rows are never USD GEX.
+        "proxy_gex_share": 0.0,
+        "shape_proxy_oi_total": shape_proxy_oi_total,
     }
 
 
@@ -210,7 +215,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     lines.append(f"# CME 黄金期权结构分析报告 — {result.trade_date}")
     lines.append("")
     lines.append(f"> 数据产品: {result.product} | 生成时间: {result.generated_at}")
-    lines.append(f"> 分析月份: {', '.join(result.expiries)}")
+    lines.append(f"> 分析到期窗口: {', '.join(result.expiries)}（不是全市场到期月）")
     lines.append(f"> 主交易区间: {result.analysis_strike_min}–{result.analysis_strike_max}（{result.analysis_range_source}）；区间外只作为尾部/异常提示")
     if near_month and next_month:
         lines.append(f"> 近月 / 次月对比: {near_month} vs {next_month}")
@@ -238,7 +243,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         f"{expiry}={_fmt_maybe_num((result.forward_by_expiry.get(expiry) or {}).get('f_value'))}"
         for expiry in result.expiries
     )
-    lines.append(f"- model_f: {model_f_text}（Black-76 / GEX / Gamma Zero 用价）。")
+    lines.append(f"- model_f: {model_f_text}（Black-76 / OI-Signed GEX Proxy / Gamma Flip 用价）。")
     if result.report_p0 is not None:
         ts = f"，时间: {result.report_p0_timestamp}" if result.report_p0_timestamp else ""
         lines.append(f"- report_p0: {result.report_p0:.2f}（source={result.report_p0_source}{ts}），用于日终结构、主交易区和 WallScore 距离权重。")
@@ -250,9 +255,21 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         lines.append("- 时间差提示: 期权结构基于 CME trade_date 数据；live_p0 是分析时实时价格，二者可能存在时间错配。")
     else:
         lines.append("- live_p0: 未提供；本报告不输出现价驱动的实盘策略卡片，只输出结构支撑/阻力。")
-    lines.append("- IV 通过 Black-76 模型从结算价反推，未使用市场报价的隐含波动率。")
-    lines.append("- GEX 为模型 Gamma Exposure，按标的期货价格 1% move 标准化，单位为美元/1% move 的估算敞口；不是 Delta 名义敞口，也不等于真实 dealer inventory。")
-    lines.append("- Gamma Zero 仅基于可计算 Black-76 Gamma 的行；Proxy 行不参与零轴拟合，仅用于静态墙位/风险提示。")
+    lines.append("- IV 通过 CME settlement 反推 settlement-implied Black-76 IV，未使用 vendor/市场报价 IV；无法反推的行降级为 Gamma Proxy。")
+    lines.append("- **OI-Signed GEX Proxy** 按公开 OI 与模型 Gamma 的 Call(+)/Put(-) 期权类型符号计算；legacy CallGEX/PutGEX 字段仍是正的腿绝对量，净值只减一次 Put。")
+    lines.append("- `dealer_position_unknown=true`：公开 OI 不揭示 dealer 实际持仓、gamma 符号或做市商意图；GEX、墙、Gamma Flip 都是模型估计。")
+    lines.append("- **Selected Expiry Window Proxy Gamma Flip** 仅基于当前选择到期窗口和可计算 settlement-implied Black-76 Gamma 的行；Gamma Proxy 行不参与零轴拟合，仅用于静态墙位/风险提示。")
+    concentration = result.oi_gamma_concentration_zone or {}
+    concentration_levels = concentration.get("strike_levels") if isinstance(concentration, dict) else None
+    if isinstance(concentration_levels, list) and concentration_levels:
+        lines.append(f"- **OI/Gamma Concentration Zone**: {', '.join(str(level) for level in concentration_levels[:5])}；这是 selected window 的公开 OI/Gamma 集中区，不代表 dealer inventory。")
+    else:
+        lines.append("- **OI/Gamma Concentration Zone**: 当前无足够集中度数据，未生成精确区间。")
+    selection = result.expiry_selection or {}
+    if selection:
+        coverage = selection.get("open_interest_coverage")
+        coverage_text = f"{float(coverage):.1%}" if isinstance(coverage, (int, float)) else "未计算"
+        lines.append(f"- 到期选择策略: {((selection.get('selection_policy') or {}).get('name') if isinstance(selection.get('selection_policy'), dict) else None) or '未声明'}；OI 覆盖率 {coverage_text}；区间外到期月不参与本次主 GEX。")
     lines.append("- 本报告不构成交易建议，不涉及自动下单。")
     lines.append("- 所有分析仅为结构识别和情景推演，需人工判断后决策。")
     lines.append("")
@@ -304,12 +321,12 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         else:
             sentence_parts.append(f"{near_month} 主导短线 Gamma，{near_gz:.0f} 附近是近月转强分水岭")
     if next_month and isinstance(next_gz, (int, float)) and isinstance(next_f, (int, float)) and next_f < next_gz:
-        sentence_parts.append(f"{next_month} 当前也在 Gamma Zero 下方，说明次月仍偏保护")
+        sentence_parts.append(f"{next_month} 当前也在 Proxy Gamma Flip 下方，说明次月仍偏保护")
     if gz is not None:
         if repair_text:
-            sentence_parts.append(f"跨月 Gamma Zero 约 {gz:.0f}，只有重新站上零轴并接受 {repair_text}，结构才会从防守再平衡转向修复延续")
+            sentence_parts.append(f"Selected Expiry Window Proxy Gamma Flip 约 {gz:.0f}，只有重新站上代理零轴并接受 {repair_text}，结构才会从防守再平衡转向修复延续")
         else:
-            sentence_parts.append(f"跨月 Gamma Zero 约 {gz:.0f}")
+            sentence_parts.append(f"Selected Expiry Window Proxy Gamma Flip 约 {gz:.0f}")
     lines.append("。".join(sentence_parts) + "。")
     if desc_zh:
         lines.append(f"> {desc_zh}")
@@ -334,10 +351,10 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     lines.append(f"| rows_missing_delta | {nr.rows_missing_delta} | 缺失 delta 的行 |")
     lines.append(f"| black76_rows | {audit_counts['black76_rows']} | 可反推 IV 并使用 Black-76 Gamma 的行 |")
     lines.append(f"| proxy_rows | {audit_counts['proxy_rows']} | 使用 Gamma Proxy 的行 |")
-    lines.append(f"| proxy_gex_share | {audit_counts['proxy_gex_share']:.2%} | Proxy GEX 占总绝对 GEX 的比例 |")
+    lines.append(f"| shape_proxy_oi_total | {audit_counts['shape_proxy_oi_total']:.2f} | 无量纲 delta-shape × OI；不参与 USD GEX |")
     lines.append("")
     lines.append("- 模型: Black-76（优先结算价反推 IV；无法反推 IV 的行降级为 Gamma Proxy）。")
-    lines.append("- Gamma Zero: 仅用主交易区间内的 Black-76 可估值行计算；Proxy 行不参与零轴拟合。")
+    lines.append("- Selected Expiry Window Proxy Gamma Flip: 仅用主交易区间内的 settlement-implied Black-76 可估值行计算；Gamma Proxy 行不参与代理零轴拟合。")
     lines.append("- WallScore 默认只在主交易区间内排序；区间外 strike 只进入尾部/异常提示，不直接进入支撑阻力和策略卡片。")
     lines.append("- 贴现因子: r=0，D≈1；短期限黄金期权中对 Gamma/GEX 影响较小，但仍在审计字段中显式记录。")
     lines.append("")
@@ -357,9 +374,9 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     # =====================================================================
     # 3. 核心 GEX 结果（per-expiry summary table，对标目标报告）
     # =====================================================================
-    lines.append("## 核心 GEX 结果")
+    lines.append("## 核心 GEX 结果（OI-Signed GEX Proxy）")
     lines.append("")
-    lines.append("| 到期月 | F | Gamma Zero | NetGEX | CallGEX | PutGEX | 结构 |")
+    lines.append("| 到期月 | F | Proxy Gamma Flip | OI-Signed GEX Proxy | Call GEX Proxy | Put GEX Proxy | 结构 |")
     lines.append("| :---: | ---: | ---: | ---: | ---: | ---: | :--- |")
     for expiry in result.expiries:
         summary = result.gex_summary_by_expiry.get(expiry, {})
@@ -377,13 +394,13 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         )
     lines.append("")
     if gz is not None:
-        lines.append(f"跨月 NetGEX 零轴（Gamma Zero）: **{gz:.1f}**（{result.netgex.gamma_zero_method}）")
+        lines.append(f"Selected Expiry Window Proxy Gamma Flip: **{gz:.1f}**（{result.netgex.gamma_zero_method}）")
         lines.append("")
         compared_expiries = " 与 ".join(result.expiries[:2])
         lines.append(
-            f"> 跨月 Gamma Zero 是 {compared_expiries} 在同一假设价格网格下的 "
-            "NetGEX 汇总曲线零点，即 `Σ NetGEX_expiry(F_grid)=0`，不是两个单月 "
-            "Gamma Zero 的简单平均。"
+            f"> Selected Expiry Window Proxy Gamma Flip 是 {compared_expiries} 在同一假设价格网格下的 "
+            "OI-Signed GEX Proxy 汇总曲线零点，即 `Σ OI-Signed_GEX_Proxy_expiry(F_grid)=0`，不是两个单月 "
+            "Proxy Gamma Flip 的简单平均。"
         )
     lines.append("")
 
@@ -398,10 +415,10 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         next_iv = result.iv_skew_by_expiry.get(next_month, {})
         lines.append(f"| 到期月 | {near_month} | {next_month} |")
         lines.append(f"| F | {_fmt_maybe_num(near_summary.get('f_value'))} | {_fmt_maybe_num(next_summary.get('f_value'))} |")
-        lines.append(f"| Gamma Zero | {_fmt_maybe_num(near_summary.get('gamma_zero'))} | {_fmt_maybe_num(next_summary.get('gamma_zero'))} |")
-        lines.append(f"| NetGEX | {_fmt_num(near_summary.get('net_gex', 0))} | {_fmt_num(next_summary.get('net_gex', 0))} |")
-        lines.append(f"| CallGEX | {_fmt_num(near_summary.get('call_gex', 0))} | {_fmt_num(next_summary.get('call_gex', 0))} |")
-        lines.append(f"| PutGEX | {_fmt_num(near_summary.get('put_gex', 0))} | {_fmt_num(next_summary.get('put_gex', 0))} |")
+        lines.append(f"| Proxy Gamma Flip | {_fmt_maybe_num(near_summary.get('gamma_zero'))} | {_fmt_maybe_num(next_summary.get('gamma_zero'))} |")
+        lines.append(f"| OI-Signed GEX Proxy | {_fmt_num(near_summary.get('net_gex', 0))} | {_fmt_num(next_summary.get('net_gex', 0))} |")
+        lines.append(f"| Call GEX Proxy | {_fmt_num(near_summary.get('call_gex', 0))} | {_fmt_num(next_summary.get('call_gex', 0))} |")
+        lines.append(f"| Put GEX Proxy | {_fmt_num(near_summary.get('put_gex', 0))} | {_fmt_num(next_summary.get('put_gex', 0))} |")
         lines.append(
             f"| 结构 | {_STRUCTURE_LABELS.get(near_summary.get('structure', ''), '')} | {_STRUCTURE_LABELS.get(next_summary.get('structure', ''), '')} |"
         )
@@ -414,28 +431,29 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             gzero = summary.get("gamma_zero")
             if isinstance(f_val, (int, float)) and isinstance(gzero, (int, float)):
                 if f_val < gzero:
-                    lines.append(f"- {label}: 当前 F≈{f_val:.1f} 低于 Gamma Zero≈{gzero:.1f}，当前价格区间更偏 Put-GEX / 保护结构；价格修复到零轴上方后才逐步转向 Call-GEX 主导。")
+                    lines.append(f"- {label}: 当前 F≈{f_val:.1f} 低于 Proxy Gamma Flip≈{gzero:.1f}，当前价格区间更偏 Put-GEX Proxy / 保护结构；价格修复到代理零轴上方后才逐步转向 Call-GEX Proxy 主导。")
                 else:
-                    lines.append(f"- {label}: 当前 F≈{f_val:.1f} 高于 Gamma Zero≈{gzero:.1f}，当前价格区间更偏 Call-GEX 主导。")
+                    lines.append(f"- {label}: 当前 F≈{f_val:.1f} 高于 Proxy Gamma Flip≈{gzero:.1f}，当前价格区间更偏 Call-GEX Proxy 主导。")
         lines.append("")
 
     # =====================================================================
-    # 3b. GEX / Gamma Zero (existing heading, backward compat)
+    # 3b. Strict public-OI proxy semantics
     # =====================================================================
-    lines.append("## GEX / Gamma Zero")
+    lines.append("## OI-Signed GEX Proxy / Selected Expiry Window Proxy Gamma Flip")
     lines.append("")
     if result.used_real_gex:
-        lines.append("> ✅ 使用 Black-76 真实 Gamma 计算 GEX")
+        lines.append("> ✅ 使用 settlement-implied Black-76 Gamma 计算 OI-Signed GEX Proxy（不是 vendor IV，也不是已知 dealer GEX）")
     else:
         lines.append("> ⚠️ 使用 Gamma Proxy（|Δ| × (1 - |Δ|)），因为无法可靠计算 IV")
-    lines.append("> 说明：每个 expiry 的 GEX / Greeks 使用该 expiry 自身的 F/T 计算；NetGEX 零轴为跨 expiry 的汇总曲线。")
-    lines.append("> Gamma Zero 仅基于主交易区间内可反推 IV 的 Black-76 行；Proxy 行不参与零轴拟合，避免静态 proxy 污染零轴。")
+    lines.append("> `dealer_position_unknown=true`；公开 OI 与 option-type sign 不能确认 dealer 持仓方向。")
+    lines.append("> 说明：每个 expiry 的 OI-Signed GEX Proxy / Greeks 使用该 expiry 自身的 F/T 计算；Proxy Gamma Flip 为跨 expiry 的汇总代理曲线零点。")
+    lines.append("> Selected Expiry Window Proxy Gamma Flip 仅基于主交易区间内可反推 settlement-implied IV 的 Black-76 行；Gamma Proxy 行不参与代理零轴拟合，避免静态 shape proxy 污染零轴。")
     lines.append("")
 
     for expiry, gex_top in result.gex_top_by_expiry.items():
         lines.append(f"### {expiry} — GEX Top Strikes")
         lines.append("")
-        lines.append("| Strike | Call GEX | Put GEX | Net GEX | Total GEX |")
+        lines.append("| Strike | Call GEX Proxy | Put GEX Proxy | OI-Signed GEX Proxy | Total GEX Proxy |")
         lines.append("| ---: | ---: | ---: | ---: | ---: |")
         for row in gex_top[:10]:
             lines.append(
@@ -448,15 +466,15 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         lines.append("")
 
     if gz is not None:
-        lines.append(f"**Gamma Zero（NetGEX 零轴）≈ {gz:.1f}**（方法: {result.netgex.gamma_zero_method}）")
+        lines.append(f"**Selected Expiry Window Proxy Gamma Flip ≈ {gz:.1f}**（方法: {result.netgex.gamma_zero_method}）")
         lines.append("> 4600 附近只代表进入 Call-GEX 更占优的结构区，仍需 4650/4700 接受确认，不能单独视为趋势启动。")
         if p0 is not None:
             if gz > p0:
-                lines.append(f"> report_p0 {p0:.0f} 位于 Gamma Zero 下方 → 日终结构处于 Put-GEX/保护影响区；盘中另看 live_p0。")
+                lines.append(f"> report_p0 {p0:.0f} 位于 Proxy Gamma Flip 下方 → 日终结构处于 Put-GEX Proxy/保护影响区；盘中另看 live_p0。")
             else:
-                lines.append(f"> report_p0 {p0:.0f} 位于 Gamma Zero 上方 → 日终结构处于 Call-GEX 主导区；盘中另看 live_p0。")
+                lines.append(f"> report_p0 {p0:.0f} 位于 Proxy Gamma Flip 上方 → 日终结构处于 Call-GEX Proxy 主导区；盘中另看 live_p0。")
     else:
-        lines.append("**Gamma Zero: 无法确定**（NetGEX 未发生正负切换）")
+        lines.append("**Selected Expiry Window Proxy Gamma Flip: 无法确定**（OI-Signed GEX Proxy 未发生正负切换）")
     lines.append("")
 
     # =====================================================================
@@ -486,7 +504,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
 
         lines.append(f"### {expiry} 重点墙位")
         lines.append("")
-        lines.append("| Strike | Total GEX | CallGEX | PutGEX | NetGEX | OI | ΔOI | 结论 |")
+        lines.append("| Strike | Total GEX Proxy | Call GEX Proxy | Put GEX Proxy | OI-Signed GEX Proxy | OI | ΔOI | 结论 |")
         lines.append("| ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |")
         for row in gex_top[:8]:
             strike = row["strike"]
@@ -543,7 +561,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             lines.append("")
             if supports:
                 for s in sorted(supports, key=lambda x: x["total_gex"], reverse=True)[:3]:
-                    lines.append(f"- **{s['strike']}**：Total GEX {_fmt_num(s['total_gex'])}，下方核心支撑")
+                    lines.append(f"- **{s['strike']}**：Total GEX Proxy {_fmt_num(s['total_gex'])}，下方核心支撑")
             else:
                 lines.append("- 无明显支撑候选")
             lines.append("")
@@ -552,7 +570,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             lines.append("")
             if resistances:
                 for r in sorted(resistances, key=lambda x: x["total_gex"], reverse=True)[:3]:
-                    lines.append(f"- **{r['strike']}**：Total GEX {_fmt_num(r['total_gex'])}，上方核心阻力")
+                    lines.append(f"- **{r['strike']}**：Total GEX Proxy {_fmt_num(r['total_gex'])}，上方核心阻力")
             else:
                 lines.append("- 无明显阻力候选")
         lines.append("")
@@ -569,11 +587,11 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     lines.append("## CME 大额持仓与近期流量")
     lines.append("")
     if nearby_position_levels:
-        lines.append("> 本表按 CME report_p0 约 ±6% 主战区筛选后，再按合并绝对 OI 排序；不等同于 WallScore。远端库存仅作参考，墙位与方向判断仍需同时参考 NetGEX、ΔOI 与 PNT/Block。")
+        lines.append("> 本表按 CME report_p0 约 ±6% 主战区筛选后，再按合并绝对 OI 排序；不等同于 WallScore。远端库存仅作参考，墙位与方向判断仍需同时参考 OI-Signed GEX Proxy、ΔOI 与 PNT/Block。")
     else:
-        lines.append("> 未提供 CME report_p0 或主战区无有效点位，本表回退为全链绝对 OI 排序；不等同于 WallScore。墙位与方向判断仍需同时参考 NetGEX、ΔOI 与 PNT/Block。")
+        lines.append("> 未提供 CME report_p0 或主战区无有效点位，本表回退为全链绝对 OI 排序；不等同于 WallScore。墙位与方向判断仍需同时参考 OI-Signed GEX Proxy、ΔOI 与 PNT/Block。")
     lines.append("")
-    lines.append("| Strike | Call OI | Put OI | Total OI | ΔOI | Volume | PNT/Block | Total GEX | NetGEX | 结构解读 |")
+    lines.append("| Strike | Call OI | Put OI | Total OI | ΔOI | Volume | PNT/Block | Total GEX Proxy | OI-Signed GEX Proxy | 结构解读 |")
     lines.append("| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |")
     for level in position_levels[:10]:
         net_gex = float(level["net_gex"])
@@ -610,7 +628,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     # =====================================================================
     lines.append("## Delta / Vega / Theta Exposure")
     lines.append("")
-    lines.append("> Net DEX 判断方向敞口；Total VEX 判断波动率敏感度；Total Theta/day 判断 Pin / 时间衰减压力。策略默认使用 by-strike 聚合，by-leg 仅用于定位具体 Call/Put 合约腿。")
+    lines.append("> Net DEX 为 delta-dollar 方向敞口；Vega/Theta 仅汇总各到期 Top strike 列表，用于定位局部波动率敏感度和时间衰减压力，不能当作全链总量。by-leg 仅用于定位具体 Call/Put 合约腿。")
     lines.append("")
     lines.append("| 指标 | " + " | ".join(result.expiries) + " | 合并 |")
     lines.append("| :--- | " + " | ".join(["---:" for _ in result.expiries]) + " | ---: |")
@@ -626,12 +644,12 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         top_vex_strike_by_expiry[expiry] = (exp_sum.get("vex_top_by_strike") or [{}])[0].get("strike", "—")
         top_theta_strike_by_expiry[expiry] = (exp_sum.get("theta_top_by_strike") or [{}])[0].get("strike", "—")
     lines.append("| Net Delta Exposure | " + " | ".join(_fmt_num(net_dex_by_expiry[e]) for e in result.expiries) + f" | {_fmt_num(sum(net_dex_by_expiry.values()))} |")
-    lines.append("| Total Vega Exposure* | " + " | ".join(_fmt_num(total_vex_by_expiry[e]) for e in result.expiries) + f" | {_fmt_num(sum(total_vex_by_expiry.values()))} |")
-    lines.append("| Total Theta/day* | " + " | ".join(_fmt_num(total_theta_by_expiry[e]) for e in result.expiries) + f" | {_fmt_num(sum(total_theta_by_expiry.values()))} |")
+    lines.append("| Top-strike Vega 摘要* | " + " | ".join(_fmt_num(total_vex_by_expiry[e]) for e in result.expiries) + f" | {_fmt_num(sum(total_vex_by_expiry.values()))} |")
+    lines.append("| Top-strike Theta/day 摘要* | " + " | ".join(_fmt_num(total_theta_by_expiry[e]) for e in result.expiries) + f" | {_fmt_num(sum(total_theta_by_expiry.values()))} |")
     lines.append("| Vega Top Strike | " + " | ".join(str(top_vex_strike_by_expiry[e]) for e in result.expiries) + " | — |")
     lines.append("| Theta Top Strike | " + " | ".join(str(top_theta_strike_by_expiry[e]) for e in result.expiries) + " | — |")
     lines.append("")
-    lines.append("\* Total VEX/Theta 为主交易区 by-strike Top 列表的聚合摘要，用于报告层风险定位，不替代完整逐腿明细。")
+    lines.append(r"\* Vega/Theta 为主交易区每到期 Top strike 列表的局部聚合摘要；完整链总量不可由截断列表恢复。")
     lines.append("")
     for expiry, exp_sum in result.exposure_summary_by_expiry.items():
         lines.append(f"### {expiry}")
@@ -675,7 +693,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     if not result.scored_walls:
         lines.append("> 当前数据未识别到显著订单墙。")
     else:
-        lines.append("| 排名 | Strike | dominant_side | NetGEX bias | 墙类型 | OI | OI变化 | 成交量 | WallScore | GEX/OI/ΔOI/Vol/PNT/Dist |")
+        lines.append("| 排名 | Strike | dominant_side | OI-Signed GEX Proxy bias | 墙类型 | OI | OI变化 | 成交量 | WallScore | GEX-Proxy/OI/ΔOI/Vol/PNT/Dist |")
         lines.append("| ---: | ---: | :---: | ---: | :---: | ---: | ---: | ---: | ---: | :--- |")
         for sw in result.scored_walls[:15]:
             w = sw.wall
@@ -756,11 +774,11 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         lines.append("")
         lines.append("1. I1/I2/I3/I4 得分接近，没有单一 regime 压倒性胜出。")
         lines.append(f"2. 最高分与次高分差距约 {score_gap:.2f}，结构更像混合状态而非单边确认。")
-        lines.append("3. 近月和次月都接近各自 Gamma Zero，方向切换敏感。")
+        lines.append("3. 近月和次月都接近各自 Proxy Gamma Flip，方向切换敏感。")
         lines.append("4. Call/Put GEX 差距不大，Skew 有防守倾向，但上方 Call-GEX 仍存在。")
         max_roll = max((signal.confidence for signal in result.roll_signals), default=0.0)
         lines.append(f"5. Roll 信号置信度最高约 {max_roll:.0%}，不足以支持趋势迁移结论。")
-    lines.append("> 若 evidence 中出现单日 OI 减仓，不应写成“双边增仓”；I2 判断主要来自 GEX 双边均衡、Gamma Zero 集中、Skew 偏防守和双边墙位共存。")
+    lines.append("> 若 evidence 中出现单日 OI 减仓，不应写成“双边增仓”；I2 判断主要来自 OI-Signed GEX Proxy 双边均衡、Proxy Gamma Flip 集中、Skew 偏防守和双边墙位共存。")
     if desc_zh:
         lines.append(f"> {desc_zh}")
     for ev in primary.evidence:
@@ -819,7 +837,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     structural_resistances.sort(key=lambda x: (abs(x[0].gex), x[1].wall_score), reverse=True)
     lines.append("### 结构支撑（不依赖 P0）")
     lines.append("")
-    lines.append("| Strike | dominant_side | 类型 | NetGEX | WallScore | 结构含义 |")
+    lines.append("| Strike | dominant_side | 类型 | OI-Signed GEX Proxy | WallScore | 结构含义 |")
     lines.append("| ---: | :---: | :---: | ---: | ---: | :--- |")
     for w, sw in structural_supports[:5]:
         wt = _wall_type_zh(w.wall_type.value if hasattr(w.wall_type, 'value') else str(w.wall_type))
@@ -828,7 +846,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     lines.append("")
     lines.append("### 结构阻力（不依赖 P0）")
     lines.append("")
-    lines.append("| Strike | dominant_side | 类型 | NetGEX | WallScore | 结构含义 |")
+    lines.append("| Strike | dominant_side | 类型 | OI-Signed GEX Proxy | WallScore | 结构含义 |")
     lines.append("| ---: | :---: | :---: | ---: | ---: | :--- |")
     for w, sw in structural_resistances[:5]:
         wt = _wall_type_zh(w.wall_type.value if hasattr(w.wall_type, 'value') else str(w.wall_type))
@@ -933,16 +951,16 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         lines.append("- 当前缺少完整上下边界，不激活区间修复路径。")
     lines.append("")
 
-    lines.append("### 转强路径：接受 Gamma 翻转带")
+    lines.append("### 转强路径：确认 Proxy Gamma Flip")
     lines.append("")
     if upper_trigger is not None:
         lines.append(f"- **触发：** 重新站上 {upper_trigger:g}，回踩不破并由 15m 确认。")
-        target_text = " → ".join(f"{target:g}" for target in upper_targets) or "上方 Call-GEX 墙"
+        target_text = " → ".join(f"{target:g}" for target in upper_targets) or "上方 Call-GEX Proxy 集中区"
         lines.append(f"- **目标：** {target_text}。")
         invalidation = lower_trigger if lower_trigger is not None else scenario_anchor
         lines.append(f"- **失效：** 跌回 {invalidation:g} 下方且无法快速收回。")
     else:
-        lines.append("- Gamma 翻转与上方确认墙不可用，不激活转强路径。")
+        lines.append("- Proxy Gamma Flip 与上方确认区不可用，不激活转强路径。")
     lines.append("")
 
     lines.append("### 转弱路径：核心地板失守")
@@ -969,14 +987,19 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         lines.append(f"> live_p0={live_p0:.1f}（source={result.live_p0_source}）。以下策略卡片只用于盘中情景重排，不改变前文日终期权结构。")
         lines.append("")
         # Find nearest support and resistance
-        support_candidates: list[dict] = []
-        resistance_candidates: list[dict] = []
+        support_by_strike: dict[int, dict] = {}
+        resistance_by_strike: dict[int, dict] = {}
         for sw in result.scored_walls:
             w = sw.wall
+            candidate = {"strike": w.strike, "score": sw.wall_score, "gex": w.gex}
             if w.strike < p0:
-                support_candidates.append({"strike": w.strike, "score": sw.wall_score, "gex": w.gex})
+                if w.strike not in support_by_strike or sw.wall_score > support_by_strike[w.strike]["score"]:
+                    support_by_strike[w.strike] = candidate
             elif w.strike > p0:
-                resistance_candidates.append({"strike": w.strike, "score": sw.wall_score, "gex": w.gex})
+                if w.strike not in resistance_by_strike or sw.wall_score > resistance_by_strike[w.strike]["score"]:
+                    resistance_by_strike[w.strike] = candidate
+        support_candidates = list(support_by_strike.values())
+        resistance_candidates = list(resistance_by_strike.values())
         support_candidates.sort(key=lambda x: (p0 - x["strike"]))  # nearest below
         resistance_candidates.sort(key=lambda x: (x["strike"] - p0))  # nearest above
 
@@ -1008,7 +1031,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             lines.append("- 15M 出现 failed breakout / second entry 确认；")
             if gz and p0 < gz:
                 lines.append(
-                    f"- 价格先重新站上 Gamma Zero（{gz:.0f}）；未收复前主剧本不激活。"
+                    f"- 价格先重新站上 Proxy Gamma Flip（{gz:.0f}）；未收复前主剧本不激活。"
                 )
             lines.append("")
             lines.append("**目标：**")
@@ -1028,7 +1051,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             if s2:
                 lines.append(f"- {s2} 支撑失守；")
             if gz and p0 >= gz:
-                lines.append(f"- 价格跌回 Gamma Zero（{gz:.0f}）下方。")
+                lines.append(f"- 价格跌回 Proxy Gamma Flip（{gz:.0f}）下方。")
             lines.append("- 注：站上分水岭只代表进入 Call-GEX 更占优的结构区，仍需上方墙位接受确认，不能单独视为趋势启动。")
         else:
             lines.append("当前无明显支撑候选，无法构建主剧本。")
@@ -1093,9 +1116,9 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
     lines.append(f"- 机构意图: {label_zh}")
     if report_p0 is not None and gz is not None:
         if gz > report_p0:
-            lines.append(f"- report_p0 在 Gamma Zero ({gz:.0f}) 下方，日终结构偏 Put-GEX/保护区；盘中需另看 live_p0")
+            lines.append(f"- report_p0 在 Proxy Gamma Flip ({gz:.0f}) 下方，日终结构偏 Put-GEX Proxy/保护区；盘中需另看 live_p0")
         else:
-            lines.append(f"- report_p0 在 Gamma Zero ({gz:.0f}) 上方，日终结构偏 Call-GEX 主导；盘中需另看 live_p0")
+            lines.append(f"- report_p0 在 Proxy Gamma Flip ({gz:.0f}) 上方，日终结构偏 Call-GEX Proxy 主导；盘中需另看 live_p0")
 
     if result.scored_walls:
         top_wall = result.scored_walls[0]
@@ -1137,7 +1160,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         lines.append(f"| 低 OI (< 10) | {dq.low_oi_count} |")
     if dq.proxy_strike_count > 0:
         lines.append(f"| Gamma Proxy strike 数 | {dq.proxy_strike_count} |")
-        lines.append(f"| Proxy GEX Share | {_audit_counts(result)['proxy_gex_share']:.2%} |")
+        lines.append(f"| Shape Proxy OI | {_audit_counts(result)['shape_proxy_oi_total']:.2f} | 不具备 USD GEX 单位，不参与 Gamma Flip |")
     if dq.prelim_data_count > 0:
         lines.append(f"| PRELIM 标记行数 | {dq.prelim_data_count} |")
     if dq.rows_filtered_by_strike > 0:
@@ -1157,7 +1180,7 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
         expiry_text = " / ".join(result.expiries) or "相关月份"
         lines.append(
             "- 近月 T 对 Gamma 较敏感；若 CME 官方到期日与估算差 1 个交易日，"
-            f"{expiry_text} GEX 与 Gamma Zero 可能小幅变化。"
+            f"{expiry_text} OI-Signed GEX Proxy 与 Proxy Gamma Flip 可能小幅变化。"
         )
         lines.append("")
     if dq.warnings:
@@ -1167,6 +1190,21 @@ def render_options_report_markdown(result: OptionsAnalysisResult) -> str:
             lines.append(f"- {w}")
     else:
         lines.append("- 无异常警告。")
+    if result.reconciliation:
+        reconciliation = result.reconciliation
+        lines.append("")
+        lines.append("### PRELIM → FINAL 对账")
+        lines.append("")
+        lines.append(
+            f"- 状态: `{reconciliation.get('status', 'unavailable')}`；当前选择: `{reconciliation.get('current_selection', 'UNAVAILABLE')}`；"
+            f"report_date: `{reconciliation.get('report_date', result.trade_date)}`。"
+        )
+        delta = reconciliation.get("delta") if isinstance(reconciliation.get("delta"), dict) else {}
+        lines.append(
+            f"- 行级变化: FINAL 新增 {delta.get('added_in_final', 0)}，移除 {delta.get('removed_from_final', 0)}，"
+            f"字段变化 {delta.get('changed', 0)}，未变化 {delta.get('unchanged', 0)}。"
+        )
+        lines.append("- PRELIM 原始/特征产物保留用于审计；FINAL 到达后生成新的 feature/output run，不覆盖历史 bytes。")
     lines.append("")
     lines.append("---")
     lines.append(f"*报告生成时间: {result.generated_at} | 模型: Black-76 | 产品: {result.product}*")

@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
-
-if TYPE_CHECKING:
-    from apps.analysis.context_bundle import ConsumerProjection
 
 _AGENT_NAME = "technical_agent"
 _MODULE = "technical"
@@ -15,20 +11,8 @@ _VERSION = "1.0"
 
 
 def analyze_technical(
-    snapshot: dict[str, Any],
-    *,
-    created_at: datetime | None = None,
-    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
+    snapshot: dict[str, Any], *, created_at: datetime | None = None
 ) -> AgentOutput:
-    from apps.analysis.context_bundle import validate_consumer_projection
-
-    projection = (
-        validate_consumer_projection(context_projection, "technical") if context_projection is not None else None
-    )
-    return _bind_context_projection(_analyze_technical(snapshot, created_at=created_at), projection)
-
-
-def _analyze_technical(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
     """Analyze the technical snapshot section of an already-loaded analysis snapshot.
 
     Works on ``snapshot["technical"]`` — a dict with ``status`` and
@@ -60,13 +44,18 @@ def _analyze_technical(snapshot: dict[str, Any], *, created_at: datetime | None 
     input_snapshot_ids = _input_snapshot_ids(snapshot)
     source_refs = _source_refs(snapshot)
     technical = snapshot.get("technical")
+    research_mode = bool(snapshot.get("daily_research"))
+    spot = next((row for row in snapshot.get("daily_research", {}).get("passport", []) if row.get("symbol") == "XAUUSD_DAILY"), {})
+    research_price_valid = not research_mode or (spot.get("status") == "fresh" and spot.get("lineage_status", "verified") == "verified" and bool(spot.get("source_refs")))
 
-    if not isinstance(technical, dict) or technical.get("status") != "available":
+    if not isinstance(technical, dict) or technical.get("status") != "available" or not research_price_valid:
         reason = (
             "technical section is missing"
             if not isinstance(technical, dict)
             else f"technical status is {technical.get('status')!r}"
         )
+        if not research_price_valid:
+            reason = "fresh daily spot price with verified lineage is required"
         return AgentOutput(
             version=_VERSION,
             agent_name=_AGENT_NAME,
@@ -112,58 +101,64 @@ def _analyze_technical(snapshot: dict[str, Any], *, created_at: datetime | None 
     trend = str(data.get("trend", "")).lower()
     if trend == "bullish":
         score += 1
-        key_findings.append("Price above MA20 approximation → bullish trend.")
+        key_findings.append("Price above MA20 → bullish trend.")
     elif trend == "bearish":
         score -= 1
-        key_findings.append("Price below MA20 approximation → bearish trend.")
+        key_findings.append("Price below MA20 → bearish trend.")
     elif trend == "neutral":
-        key_findings.append("Price near MA20 approximation; no clear trend direction.")
+        key_findings.append("Price near MA20; no clear trend direction.")
     else:
         key_findings.append("Trend direction not determined; insufficient data.")
 
     # ── MA levels ──────────────────────────────────────────────────────────
-    ma20 = _to_float(data.get("ma20_approx"))
-    ma50 = _to_float(data.get("ma50_approx"))
+    ma20 = _to_float(data.get("ma20", data.get("ma20_approx")))
+    ma50 = _to_float(data.get("ma50", data.get("ma50_approx")))
     ma_notes: list[str] = []
     if ma20 is not None and price is not None:
         ma_notes.append(f"MA20≈{ma20:.2f}")
         if price > ma20:
             ma_notes.append("price > MA20")
         else:
-            ma_notes.append("price < MA20")
+            ma_notes.append("price < MA20" if price < ma20 else "price = MA20")
     if ma50 is not None and price is not None:
         ma_notes.append(f"MA50≈{ma50:.2f}")
         if price > ma50:
             ma_notes.append("price > MA50")
         else:
-            ma_notes.append("price < MA50")
+            ma_notes.append("price < MA50" if price < ma50 else "price = MA50")
     if ma_notes:
-        key_findings.append("MA approximation: " + ", ".join(ma_notes) + ".")
+        key_findings.append("Moving averages: " + ", ".join(ma_notes) + ".")
     if ma20 is None and ma50 is None:
         invalid_conditions.append("MA20/MA50 approximations unavailable; trend signal weakened.")
         confidence -= 0.08
 
     # Gold cross: price above both MAs is extra bullish
-    if ma20 is not None and ma50 is not None and price is not None and price > ma20 and price > ma50:
+    if (
+        ma20 is not None
+        and ma50 is not None
+        and price is not None
+        and price > ma20
+        and price > ma50
+    ):
         score += 1
-        key_findings.append("Gold cross pattern: price above both MA20 and MA50 — bullish reinforcement.")
+        key_findings.append("Price above both MA20 and MA50; this alone does not establish a moving-average crossover.")
 
     # ── RSI ────────────────────────────────────────────────────────────────
-    rsi = _to_float(data.get("rsi_14"))
+    rsi = _to_float(data.get("rsi14", data.get("rsi_14")))
     if rsi is not None:
         if rsi > 70:
-            score -= 1
-            key_findings.append(f"RSI(14) = {rsi:.1f}: overbought (>70) → bearish signal.")
-            risk_points.append(f"RSI overbought at {rsi:.1f}; reversal risks elevated.")
+            score -= 0 if research_mode else 1
+            key_findings.append(f"RSI(14) = {rsi:.1f}: overbought (>70)；强趋势中可持续，不单独作为反转信号。" if research_mode else f"RSI(14) = {rsi:.1f}: overbought (>70) → bearish signal.")
+            risk_points.append(f"RSI {rsi:.1f} 位于高位，需结合后续价格与动量变化检验能否持续。" if research_mode else f"RSI overbought at {rsi:.1f}; reversal risks elevated.")
         elif rsi < 30:
-            score += 1
-            key_findings.append(f"RSI(14) = {rsi:.1f}: oversold (<30) → bullish signal.")
+            score += 0 if research_mode else 1
+            key_findings.append(f"RSI(14) = {rsi:.1f}: oversold (<30)；需后续价格收复确认，超卖不等于自动看涨。" if research_mode else f"RSI(14) = {rsi:.1f}: oversold (<30) → bullish signal.")
         elif 40 <= rsi <= 60:
             key_findings.append(f"RSI(14) = {rsi:.1f}: neutral zone.")
         else:
             key_findings.append(f"RSI(14) = {rsi:.1f}.")
     else:
-        rsi_note = str(data.get("rsi_14_note", ""))
+        rsi_note = str(data.get("rsi14_note", data.get("rsi_14_note", "")))
         if rsi_note:
             invalid_conditions.append(f"RSI(14) unavailable: {rsi_note}")
         else:
@@ -171,18 +166,18 @@ def _analyze_technical(snapshot: dict[str, Any], *, created_at: datetime | None 
         confidence -= 0.05
 
     # ── ATR / Volatility ──────────────────────────────────────────────────
-    atr = _to_float(data.get("atr_14"))
+    atr = _to_float(data.get("atr14", data.get("atr_14")))
     volatility = str(data.get("volatility", "")).lower()
     if atr is not None and price is not None:
         atr_pct = round((atr / price) * 100, 2)
         key_findings.append(f"ATR(14)≈{atr:.2f} ({atr_pct}% of price).")
         if volatility == "high":
-            risk_points.append(f"Volatility elevated (ATR≈{atr_pct}% of price); wider stop-loss recommended.")
-            score -= 1 if trend == "bullish" else 0
+            risk_points.append(f"Volatility elevated (ATR≈{atr_pct}% of price); 波动幅度限制价位判断精度，不单独改变方向。")
+            score -= 1 if trend == "bullish" and not research_mode else 0
         elif volatility == "low":
             key_findings.append("Low volatility environment; range-bound expectations.")
     else:
-        atr_note = str(data.get("atr_14_note", ""))
+        atr_note = str(data.get("atr14_note", data.get("atr_14_note", "")))
         if atr_note:
             invalid_conditions.append(f"ATR(14) unavailable: {atr_note}")
         else:
@@ -190,12 +185,21 @@ def _analyze_technical(snapshot: dict[str, Any], *, created_at: datetime | None 
         confidence -= 0.05
 
     # ── Data quality: approximations reduce confidence ────────────────────
-    if ma20 is not None or ma50 is not None:
-        key_findings.append("Note: MAs are approximated from Perf.1M/Perf.3M; precise levels require historical data.")
+    if data.get("indicator_method"):
+        key_findings.append(f"Indicator method: {data['indicator_method']}.")
+    elif ma20 is not None or ma50 is not None:
         confidence -= 0.03
+    if data.get("quality_status") == "observe":
+        status = AgentStatus.PARTIAL
+        risk_points.append("Spot/OTC provider proxy; technical levels require confirmation from a primary spot source.")
 
     # ── Final bias and confidence ──────────────────────────────────────────
     bias = _bias_from_score(score)
+    if research_mode:
+        bias = AgentBias(trend) if trend in {"bullish", "bearish", "neutral"} and price is not None else AgentBias.UNAVAILABLE
+        for level in data.get("price_structure", {}).get("levels", []):
+            key_findings.append(f"{level['kind']} {level['price']:g}，截至 {level['evaluation_date']} 为 {level['status']}；原始窗口 {level['window_start']} 至 {level['window_end']}，不是正式状态迁移线。")
+        watchlist.extend(["previous 5/20 session ranges", "close confirmation", "CME spot/futures basis"])
     if not key_findings:
         key_findings.append("Technical data is present but directional signals are insufficient.")
     confidence = _clamp(
@@ -268,19 +272,12 @@ def _bias_from_score(score: int) -> AgentBias:
 
 def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
     if status is AgentStatus.PARTIAL:
-        return f"技术面只读视图 {bias.value}（输入不完整）；confidence {confidence:.2f}."
+        return (
+            f"技术面只读视图 {bias.value}（输入不完整）；"
+            f"confidence {confidence:.2f}."
+        )
     return f"技术面只读视图 {bias.value}；确信度 {confidence:.2f}。"
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
-
-
-def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
-    if projection is None:
-        return output
-    from apps.analysis.context_bundle import consume_projection_for_agent_output
-
-    return AgentOutput.model_validate(
-        consume_projection_for_agent_output(projection, output, expected_consumer="technical")
-    )

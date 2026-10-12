@@ -1,3 +1,5 @@
+import type { ResearchIdentity } from "@/types/research-identity";
+import type { ResearchTradePlan } from "@/types/research-trade-plan";
 import type { DataStatus, ModuleStatus, ReportMeta, SourceRef } from "@/types/common";
 import type { GoldMacroOverview } from "@/types/gold-mainlines";
 
@@ -56,6 +58,9 @@ export interface DashboardMetric {
   trend?: TrendDirection;
   status?: "ok" | "warn" | "error" | "unavailable" | "info";
   note?: string;
+  instrument_kind?: "spot" | "futures" | "reference";
+  source?: string | null;
+  data_date?: string | null;
 }
 
 export interface WallLevel {
@@ -83,16 +88,27 @@ export interface OptionsSummary {
   summary_text?: string;
   data_status?: string;
   intent: string;
-  intent_score: number;
+  intent_score: number | null;
   confidence?: {
-    score: number;
+    score: number | null;
     level: string;
     trade_date: string | null;
     age_days: number | null;
+    calendar_days?: number | null;
+    trading_days?: number | null;
+    weight_multiplier?: number;
+    role?: string;
+    rule?: string;
+    source_version?: string;
+    is_probability?: boolean;
     data_status: string;
     reasons: string[];
   };
   gamma_zero: number | null;
+  gamma_flip_label?: string;
+  gex_semantics_label?: string;
+  dealer_position_unknown?: boolean;
+  coordinate_space?: string;
   pin_level: number | null;
   net_gex: number | null;
   wall_score: number | null;
@@ -108,15 +124,19 @@ export interface MacroSummary {
 export interface StrategyCardData {
   bias: string;
   direction: SignalDirection;
-  confidence: number;
+  confidence: number | null;
   macro_phase: string;
   key_levels: { resistance: number[]; support: number[] };
+  key_level_coordinates?: {
+    resistance: "spot" | "gc_futures" | "unknown";
+    support: "spot" | "gc_futures" | "unknown";
+  };
   triggers: string[];
   invalid_conditions: string[];
   risk_points: string[];
   run_id?: string;
   snapshot_id?: string;
-  evidence_refs?: { source?: string; ref?: string; description?: string }[];
+  evidence_refs?: { source?: string; ref?: string; source_ref?: string; description?: string }[];
   data_quality?: string[];
   data_category_summary?: {
     confirmed_data?: number;
@@ -130,7 +150,7 @@ export interface DashboardAgentCompactSummary {
   agentName?: string | null;
   status?: string | null;
   bias: string;
-  confidence: number;
+  confidence: number | null;
   summary: string;
   summaryRaw?: string;
   factReviewStatus: string | null;
@@ -155,6 +175,7 @@ export interface RiskItem {
 }
 
 export interface SourceTraceItem {
+  report_id?: string | null;
   name: string;
   trade_date: string;
   file: string;
@@ -245,13 +266,15 @@ export interface DashboardSummary {
     change_pct?: number | null;
     unit?: string | null;
     time?: string | null;
+    price_time?: string | null;
+    trade_date?: string | null;
     source?: string | null;
     name?: string | null;
   }>;
   conclusion: {
     bias: string;
     direction: SignalDirection;
-    confidence: number;
+    confidence: number | null;
     macro_phase: string;
     options_summary: string;
     pin_level: number | null;
@@ -285,6 +308,7 @@ export interface DashboardSummary {
   pipeline: PipelineStatus;
   warnings: string[];
   risk_alerts: string[];
+  research_context?: { research_identity?: ResearchIdentity | null } | null;
   integrated_macro?: DashboardIntegratedMacroReadModel | null;
   agent_summary?: DashboardAgentSummary;
   composite_analysis?: DashboardCompositeAnalysisStatus;
@@ -297,10 +321,15 @@ export interface DashboardSummary {
 }
 
 export interface DashboardIntegratedMacroReadModel {
+  research_identity?: ResearchIdentity | null;
+  final_trade_plan?: ResearchTradePlan | null;
   report_type: string;
   trade_date: string;
   run_id?: string | null;
   source: string;
+  as_of?: string | null;
+  authority?: string | null;
+  publish_allowed?: boolean | null;
   overall_bias: string;
   direction: SignalDirection;
   macro_regime: string;

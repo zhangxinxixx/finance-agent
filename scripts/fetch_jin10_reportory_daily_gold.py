@@ -15,9 +15,7 @@ from apps.collectors.jin10.reportory import (  # noqa: E402
 )
 
 
-DEFAULT_BROWSER_PROFILE = Path(
-    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
-).expanduser()
+DEFAULT_BROWSER_PROFILE = (Path.home() / ".config" / "finance-agent" / "jin10-browser")
 
 
 def _validated_directory(value: str, *, label: str, must_exist: bool) -> Path:
@@ -37,15 +35,11 @@ def main() -> int:
     parser.add_argument("--external-root", default="~/jin10-reports")
     parser.add_argument(
         "--browser-profile",
-        default=(str(DEFAULT_BROWSER_PROFILE) if DEFAULT_BROWSER_PROFILE.exists() else None),
+        default=os.getenv("JIN10_BROWSER_PROFILE") or str(DEFAULT_BROWSER_PROFILE),
     )
     args = parser.parse_args()
     try:
         reportory_daily_gold_report_id(args.url)
-        if not args.browser_profile:
-            raise ValueError(
-                "browser_profile_required: pass --browser-profile or set JIN10_BROWSER_PROFILE"
-            )
         browser_profile = _validated_directory(args.browser_profile, label="browser_profile", must_exist=True)
         external_root = _validated_directory(args.external_root, label="external_root", must_exist=False)
     except ValueError as exc:

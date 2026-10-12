@@ -34,6 +34,10 @@ def build_analysis_snapshot(
     market_context_snapshot: MarketContextSnapshot | None = None,
     market_price_snapshot: MarketPriceSnapshot | None = None,
     oil_snapshot: OilSnapshot | None = None,
+    disabled_sources: tuple[str, ...] = (),
+    include_daily_research: bool = False,
+    include_gold_workflow: bool = False,
+    previous_research: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one deterministic premarket analysis snapshot from existing artifacts.
 
@@ -73,7 +77,14 @@ def build_analysis_snapshot(
     if oil_snapshot is not None:
         input_snapshot_ids["oil"] = _formal_snapshot_content_id(oil_snapshot)
 
-    all_points = collected_points or []
+    from apps.runtime.source_controls import has_news_only_numeric_lineage
+    from database.numeric_source_policy import quarantine_numeric_payload
+
+    macro_snapshot = quarantine_numeric_payload(macro_snapshot)
+
+    all_points = [point for point in (collected_points or [])
+                  if str(point.get("symbol", "")).startswith("NEWS")
+                  or not has_news_only_numeric_lineage({key: point.get(key) for key in ("source", "source_refs", "raw_path")})]
     bounded_context_points = _context_points_on_or_before(all_points, trade_date)
     bounded_market_points = _market_points_on_or_before(all_points, trade_date)
     technical_section = _build_technical_section(bounded_market_points, source_refs or [])
@@ -118,7 +129,7 @@ def build_analysis_snapshot(
             official_event_snapshot
         )
 
-    return {
+    result = {
         "version": SNAPSHOT_VERSION,
         "snapshot_id": f"{asset}:{trade_date}:{run_id}",
         "asset": asset,
@@ -139,10 +150,13 @@ def build_analysis_snapshot(
         "market_context": formal_market_context_section,
         "oil": formal_oil_section,
         "gold_analysis_context": (
+            {"status": "disabled", "reason": "jin10_disabled"}
+            if "jin10" in disabled_sources else
             {"status": "available", "data": copy.deepcopy(gold_analysis_context)}
             if isinstance(gold_analysis_context, dict)
             else {"status": "unavailable", "reason": "gold_analysis_context_not_available"}
         ),
+        "disabled_sources": list(disabled_sources),
         "source_refs": _merge_source_refs(
             source_refs,
             macro_snapshot,
@@ -154,6 +168,15 @@ def build_analysis_snapshot(
             _formal_snapshot_source_refs(official_event_snapshot),
         ),
     }
+    if include_daily_research:
+        from apps.features.research.daily import build_daily_research_features
+
+        result["daily_research"] = build_daily_research_features(result)
+        if include_gold_workflow:
+            from apps.features.research.workflow import build_gold_workflow
+
+            result["gold_workflow"] = build_gold_workflow(result, previous=previous_research)
+    return result
 
 
 def write_analysis_snapshot(
@@ -169,12 +192,10 @@ def write_analysis_snapshot(
         trade_date=str(snapshot["trade_date"]),
         run_id=str(snapshot["run_id"]),
     )
-    out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "premarket_snapshot.json"
-    path.write_text(
-        json.dumps(snapshot, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    from apps.runtime.immutable_artifact import immutable_json_item, write_immutable_artifact_bundle
+
+    write_immutable_artifact_bundle([immutable_json_item(path, snapshot)], storage_root=storage_root)
     return path
 
 
@@ -258,7 +279,25 @@ def _macro_future_observations(
         for symbol, indicator in indicators.items():
             if isinstance(indicator, dict):
                 candidates.append((f"indicators.{symbol}.date", indicator.get("date")))
+    for domain in ("official_etf", "employment", "cot_reports"):
+        value = snapshot.get(domain)
+        if isinstance(value, dict):
+            candidates.extend(_research_observation_dates(value, domain))
     return _future_observations(candidates, trade_date)
+
+
+def _research_observation_dates(value: dict[str, Any], prefix: str) -> list[tuple[str, Any]]:
+    """Bound observed research periods; retrieval and scheduled dates are distinct."""
+    result: list[tuple[str, Any]] = []
+    for key, item in value.items():
+        field = f"{prefix}.{key}"
+        if key in {"source_refs", "current_source", "previous_source"}:
+            continue
+        if isinstance(item, dict):
+            result.extend(_research_observation_dates(item, field))
+        elif key.endswith("reported_on") or key in {"report_date", "previous_report_date", "current_month", "previous_month", "yoy_month"}:
+            result.append((field, item + "-01" if isinstance(item, str) and len(item) == 7 else item))
+    return result
 
 
 def _options_future_observations(
@@ -659,14 +698,14 @@ def _build_technical_section(
     Extracts XAUUSD close price from collected points and available OHLC / SMA
     data from the corresponding source-ref notes.
     """
-    from apps.features.technical.snapshot import build_technical_snapshot
+    from apps.features.technical.snapshot import build_price_structure, build_technical_snapshot
 
     # Find XAUUSD MacroPoint
     xau_points = [p for p in collected_points if p.get("symbol") == "XAUUSD"]
     if not xau_points:
         return {"status": "unavailable", "reason": "no_xauusd_collected_points"}
 
-    xau = xau_points[0]
+    xau = max(xau_points, key=lambda point: str(point.get("date") or ""))
     try:
         close = float(xau["value"])
     except (TypeError, ValueError, KeyError):
@@ -681,12 +720,13 @@ def _build_technical_section(
     closes: list[float] | None = None
     highs: list[float] | None = None
     lows: list[float] | None = None
+    dates: list[str] = []
     tech_source_refs: list[dict[str, str]] = []
 
     for ref in source_refs:
         if not isinstance(ref, dict):
             continue
-        if ref.get("symbol") == "XAUUSD" and ref.get("source") in {"jin10_quote", "yahoo_finance"}:
+        if ref.get("symbol") == "XAUUSD" and ref.get("source") == xau.get("source") and ref.get("raw_path") == xau.get("raw_path"):
             notes = ref.get("notes")
             if isinstance(notes, dict):
                 open_ = _try_float(notes.get("open"))
@@ -697,10 +737,14 @@ def _build_technical_section(
                 closes = _try_float_list(notes.get("closes"))
                 highs = _try_float_list(notes.get("highs"))
                 lows = _try_float_list(notes.get("lows"))
+                dates = list(notes.get("dates") or [])
             tech_source_refs.append({
                 "source": str(ref.get("source", "")),
+                "symbol": str(ref.get("symbol") or ""),
+                "instrument_type": str(ref.get("instrument_type") or "spot"),
                 "source_url": str(ref.get("source_url", "")),
                 "raw_path": str(ref.get("raw_path", "")),
+                "retrieved_at": str(ref.get("retrieved_at") or xau.get("retrieved_at") or ""),
             })
 
     snapshot = build_technical_snapshot(
@@ -715,7 +759,25 @@ def _build_technical_section(
         lows=lows,
         source_refs=tech_source_refs or None,
     )
-    return {"status": "available", "data": snapshot.to_dict()}
+    data = snapshot.to_dict()
+    data["as_of"] = xau.get("date")
+    prior_points = [point for point in xau_points if point.get("source") == xau.get("source") and point.get("raw_path") == xau.get("raw_path") and str(point.get("date") or "") < str(xau.get("date") or "")]
+    if prior_points and data.get("previous_price") is not None:
+        data["previous_date"] = max(prior_points, key=lambda point: str(point.get("date") or "")).get("date")
+    data["retrieved_at"] = xau.get("retrieved_at")
+    data["quality_status"] = "observe" if str(xau.get("source", "")).startswith("twelvedata") else "accepted"
+    data["instrument"] = "XAUUSD spot/OTC proxy"
+    if high is not None and low is not None:
+        data["key_levels"] = [
+            {"price": low, "kind": "daily_low", "status": "observed", "date": xau.get("date")},
+            {"price": high, "kind": "daily_high", "status": "observed", "date": xau.get("date")},
+        ]
+    if closes and highs and lows and dates and dates[-1] == xau.get("date"):
+        structure = build_price_structure(dates=dates, closes=closes, highs=highs, lows=lows)
+        structure["source_refs"] = tech_source_refs
+        data["price_structure"] = structure
+        data.setdefault("key_levels", []).extend(structure["levels"])
+    return {"status": "available", "data": data}
 
 
 def _build_positioning_section(
@@ -727,9 +789,21 @@ def _build_positioning_section(
     """
     from apps.features.positioning.snapshot import build_positioning_snapshot
 
+    def _is_futures_only_point(point: object) -> bool:
+        if not isinstance(point, dict):
+            return False
+        symbol = point.get("symbol")
+        if not isinstance(symbol, str):
+            return False
+        if symbol == "COT_GOLD_combined" or symbol.startswith("COT_GOLD_combined_"):
+            return False
+        if symbol != "COT_GOLD" and not symbol.startswith("COT_GOLD_"):
+            return False
+        return point.get("report_type") in {None, "futures_only"}
+
     cot_points = [
         p for p in collected_points
-        if isinstance(p.get("symbol"), str) and p["symbol"].startswith("COT_GOLD")
+        if _is_futures_only_point(p)
     ]
     if not cot_points:
         return {"status": "unavailable", "reason": "no_cot_gold_collected_points"}
@@ -750,6 +824,7 @@ def _build_positioning_section(
             "source": str(point.get("source", "")),
             "source_url": str(point.get("source_url", "")),
             "raw_path": str(point.get("raw_path", "")),
+            "retrieved_at": str(point.get("retrieved_at") or ""),
         })
 
     snapshot = build_positioning_snapshot(
@@ -889,63 +964,12 @@ def _market_odds_snapshot_to_dict(odds) -> dict[str, Any]:
 
 
 def _build_jin10_section(collected_points: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build Jin10 section from collected macro points.
-
-    Extracts QUOTE:*, KLINE:*, NEWS_ARTICLE:*, NEWS_FLASH, and NEWS_EVENT
-    entries from the collected points and provides a summary.
-    """
-    quotes: dict[str, dict[str, Any]] = {}
-    flash_count = 0
-    article_count = 0
-    calendar_count = 0
-    kline_codes: set[str] = set()
-
-    for p in collected_points:
-        symbol = str(p.get("symbol", ""))
-        if symbol.startswith("QUOTE:"):
-            parts = symbol.split(":")
-            if len(parts) >= 2:
-                code = parts[1]
-                entry = quotes.setdefault(code, {})
-                entry["code"] = code
-                if len(parts) >= 3:
-                    field = parts[2]
-                    entry[field.lower()] = p.get("value")
-                else:
-                    entry["price"] = p.get("value")
-        elif symbol.startswith("KLINE:"):
-            parts = symbol.split(":")
-            if len(parts) >= 2:
-                kline_codes.add(parts[1])
-            elif len(parts) >= 3:
-                pass  # individual candle, counted via kline_codes
-        elif symbol.startswith("NEWS_FLASH"):
-            flash_count += 1
-        elif symbol.startswith("NEWS_ARTICLE:HEADLINE"):
-            article_count += 1
-        elif symbol.startswith("NEWS_EVENT:"):
-            calendar_count += 1
-
-    has_any = bool(quotes) or flash_count > 0 or article_count > 0 or calendar_count > 0
-
-    return {
-        "status": "available" if has_any else "unavailable",
-        "quotes": {
-            code: {
-                "code": q.get("code"),
-                "price": q.get("price"),
-                "open": q.get("open"),
-                "high": q.get("high"),
-                "low": q.get("low"),
-                "change": q.get("change"),
-                "change_pct": q.get("change_pct"),
-            }
-            for code, q in quotes.items()
-        },
-        "counts": {
-            "flash_news": flash_count,
-            "articles_headlines": article_count,
-            "calendar_events": calendar_count,
-        },
-        "kline_codes": sorted(kline_codes),
+    """Only news context belongs to the optional Jin10 section."""
+    symbols = [str(point.get("symbol", "")) for point in collected_points]
+    counts = {
+        "flash_news": sum(symbol.startswith("NEWS_FLASH") for symbol in symbols),
+        "articles_headlines": sum(symbol.startswith("NEWS_ARTICLE:HEADLINE") for symbol in symbols),
+        "calendar_events": sum(symbol.startswith("NEWS_EVENT:") for symbol in symbols),
     }
+    return {"status": "available" if any(counts.values()) else "unavailable",
+            "reason": "jin10_news_only", "quotes": {}, "kline_codes": [], "counts": counts}

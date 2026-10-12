@@ -22,12 +22,13 @@ from apps.analysis.gold_policy.canonical_predecessor import resolve_canonical_pr
 from apps.analysis.gold_policy.daily_close_store import verify_gold_daily_close_bundle
 from apps.analysis.gold_policy.runtime_controls import build_gold_daily_close_runtime_controls
 from apps.analysis.gold_policy.runtime_inputs import (
+    prepare_gold_policy_current_feature,
     prepare_gold_policy_formal_options_inputs,
-    prepare_gold_policy_runtime_inputs,
 )
 from apps.runtime.premarket_snapshot_authority import resolve_gold_daily_report_premarket_snapshot
 from apps.worker.report_registry_sink import register_gold_policy_report_bundle
 from database.models.engine import SessionLocal
+from scripts.gold_key_level_market_inputs import load_gold_key_level_market_inputs
 
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -53,6 +54,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--run-id", default=None, help="Optional immutable report run id.")
     parser.add_argument(
+        "--premarket-run-id", default=None,
+        help="Explicit premarket input run; verifies DB identity and artifact hash, including in dry-run.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate inputs and print the planned immutable bundle path without writing.",
@@ -68,6 +73,7 @@ def run_gold_daily_report(
     run_id: str | None = None,
     dry_run: bool = False,
     db: DBSession | None = None,
+    premarket_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute the typed close and optionally stage its verified bundle in the registry."""
 
@@ -78,11 +84,16 @@ def run_gold_daily_report(
     root = storage_root.expanduser().resolve()
     resolved_request_path = snapshot_path
     authority_file_sha256: str | None = None
-    if not dry_run and db is not None:
+    authority_identity: dict[str, Any] | None = None
+    if premarket_run_id is not None and db is None:
+        return {"status": "blocked", "reason": "selected_premarket_requires_database", "trade_date": trade_date}
+    if db is not None and (not dry_run or premarket_run_id is not None):
+        selection = {"premarket_run_id": premarket_run_id} if premarket_run_id is not None else {}
         authority = resolve_gold_daily_report_premarket_snapshot(
             db,
             storage_root=root,
             trade_date=trade_date,
+            **selection,
         )
         authority_identity = {
             "status": authority.status,
@@ -154,18 +165,9 @@ def run_gold_daily_report(
         }
 
     try:
-        runtime = prepare_gold_policy_runtime_inputs(storage_root=root, snapshot=snapshot)
-        current = runtime.current
+        current = prepare_gold_policy_current_feature(snapshot=snapshot)
         if current.as_of.astimezone(UTC).date() != requested_date:
             raise ValueError("formal_feature_date_mismatch")
-        if runtime.lookup.status in {"ambiguous", "invalid"}:
-            return {
-                "status": "blocked",
-                "reason": runtime.lookup.reason_code,
-                "trade_date": trade_date,
-                "snapshot_path": str(resolved_snapshot),
-                "jin10": "not_used",
-            }
         resolved_run_id = run_id or _default_run_id(
             trade_date=trade_date,
             feature_id=current.snapshot_id,
@@ -187,7 +189,7 @@ def run_gold_daily_report(
             snapshot_path=resolved_snapshot,
             feature_snapshot_id=current.snapshot_id,
         )
-        if existing_reason is not None and not dry_run:
+        if existing_reason is not None:
             return {
                 "status": "blocked",
                 "reason": existing_reason,
@@ -197,6 +199,8 @@ def run_gold_daily_report(
                 "jin10": "not_used",
             }
         if existing is not None and not dry_run:
+            if premarket_run_id is not None:
+                existing = {**existing, "input_authority": authority_identity}
             return _stage_report_registry(
                 existing,
                 db=db,
@@ -211,13 +215,20 @@ def run_gold_daily_report(
         if predecessor.status in {"invalid", "ambiguous"}:
             raise ValueError(f"canonical_predecessor_{predecessor.reason_code}")
         head = predecessor.head if predecessor.status == "found" else None
-        previous = head.feature_snapshot if head is not None else runtime.previous
+        previous = head.feature_snapshot if head is not None else None
+        formal_key_levels = load_gold_key_level_market_inputs(
+            head=head,
+            db=db,
+            storage_root=root,
+            decision_as_of=decision_time,
+        )
         controls = build_gold_daily_close_runtime_controls(
             current_feature=current,
             previous_feature=previous,
             previous_transition=head.transition_decision if head is not None else None,
             decision_as_of=decision_time,
             options_regime_snapshot=formal_options.snapshot,
+            key_level_controls_input=formal_key_levels.controls_input,
         )
     except Exception as exc:
         return {
@@ -231,6 +242,7 @@ def run_gold_daily_report(
 
     if dry_run:
         return {
+            **({"input_authority": authority_identity} if premarket_run_id is not None else {}),
             "status": "dry_run",
             "trade_date": trade_date,
             "run_id": resolved_run_id,
@@ -241,6 +253,8 @@ def run_gold_daily_report(
             "planned_report_files": list(_REPORT_FILES),
             "control_reason_codes": list(controls.reason_codes),
             "formal_options": formal_options.summary(),
+            "formal_key_levels": formal_key_levels.summary.model_dump(mode="json"),
+            "formal_key_level_reasons": list(formal_key_levels.summary.reason_codes),
             "jin10": "not_used",
         }
 
@@ -250,7 +264,7 @@ def run_gold_daily_report(
             run_id=resolved_run_id,
             current_feature=current,
             controls=controls,
-            bootstrap_previous_feature=runtime.previous if head is None else None,
+            bootstrap_previous_feature=None,
         )
         report_paths = _complete_report_paths(execution.write_result.bundle_path)
         if report_paths is None:
@@ -258,6 +272,7 @@ def run_gold_daily_report(
         data_quality = _read_json(execution.write_result.bundle_path / "data_quality.json")
         report_manifest = _read_json(execution.write_result.bundle_path / "report_manifest.json")
         completed = {
+            **({"input_authority": authority_identity} if premarket_run_id is not None else {}),
             "status": "completed",
             "trade_date": trade_date,
             "run_id": resolved_run_id,
@@ -385,19 +400,32 @@ def _existing_completed_result(
     snapshot_path: Path,
     feature_snapshot_id: str,
 ) -> tuple[dict[str, Any] | None, str | None]:
+    # A missing target may be prepared; an occupied or redirected target must
+    # pass full verification before either dry-run or write can proceed.
+    component = storage_root
+    for part in bundle_path.relative_to(storage_root).parts:
+        component = component / part
+        if component.is_symlink():
+            return None, "existing_bundle_invalid"
+    try:
+        bundle_path.lstat()
+    except FileNotFoundError:
+        return None, None
+    except OSError:
+        return None, "existing_bundle_invalid"
     verification = verify_gold_daily_close_bundle(
         storage_root=storage_root,
         bundle_path=bundle_path,
     )
     if verification.status != "valid" or verification.receipt is None:
-        return None, None
+        return None, "existing_bundle_invalid"
     if verification.current_feature_id != feature_snapshot_id:
         return None, "existing_bundle_feature_snapshot_mismatch"
     report_paths = _complete_report_paths(bundle_path)
     data_quality = _read_json(bundle_path / "data_quality.json")
     report_manifest = _read_json(bundle_path / "report_manifest.json")
     if not report_paths or not data_quality or not report_manifest:
-        return None, None
+        return None, "existing_bundle_invalid"
     return (
         {
             "status": "completed",
@@ -487,7 +515,9 @@ def main(
         "run_id": args.run_id,
         "dry_run": args.dry_run,
     }
-    if args.dry_run:
+    if args.premarket_run_id is not None:
+        call_kwargs["premarket_run_id"] = args.premarket_run_id
+    if args.dry_run and args.premarket_run_id is None:
         result = run_gold_daily_report(**call_kwargs)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result["status"] == "dry_run" else 2
@@ -522,6 +552,8 @@ def main(
             if callable(close):
                 close()
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    if args.dry_run:
+        return 0 if result.get("status") == "dry_run" else 2
     return 0 if result.get("status") == "completed" and result.get("registry_status") == "registered" else 2
 
 

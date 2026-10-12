@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useSchedulerOverview } from "@/hooks/useScheduler";
 import {
-  CATEGORY_LABELS, CATEGORY_COLORS, formatStatus, getStatusTone,
+  CATEGORY_LABELS, CATEGORY_COLORS, getStatusTone,
   formatFileSize, fetchRunDetail, fetchAgentAnalysis, agentAnalysisToTaskRun,
   type SchedulerCategoryStat, type SchedulerTaskRun,
   type SchedulerCronJob, type SchedulerOutputItem, type RunDetail, type AgentAnalysisItem,
@@ -12,11 +12,12 @@ import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FARuntimeLog, type FARuntimeLogEntry, type FARuntimeLogLevel } from "@/components/shared/FARuntimeLog";
 import { Link } from "react-router-dom";
 import {
-  CheckCircle, XCircle, RefreshCw, Play, ChevronRight, ArrowRight,
+  CheckCircle, XCircle, RefreshCw, ChevronRight, ArrowRight,
   Dot, Search, Database, FileText, Gauge, GitBranch, Activity,
   Clock, Layers, X, ExternalLink, List,
 } from "lucide-react";
-import { triggerRunAllCollectors } from "@/adapters/scheduler";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { evidenceLabel, operationEventLabel, operationReadableLabel, operationStatusLabel } from "@/components/operations/operationsLabels";
 import { useEffect } from "react";
 
 // ═══════════════════════════════════════════════════════════════
@@ -69,7 +70,7 @@ function schedulerEventSource(event: RunDetail["events"][number]): string {
   const payload = event.payload ?? {};
   const stepName = typeof payload.step_name === "string" ? payload.step_name : null;
   const source = typeof payload.source === "string" ? payload.source : null;
-  return stepName ?? event.task_id ?? source ?? "run";
+  return stepName ? operationReadableLabel(stepName, "步骤已登记") : (event.task_id ? `任务${evidenceLabel(event.task_id)}` : source ? operationReadableLabel(source, "来源已登记") : "运行记录");
 }
 
 function schedulerEventMessage(event: RunDetail["events"][number]): string {
@@ -79,10 +80,11 @@ function schedulerEventMessage(event: RunDetail["events"][number]): string {
     typeof payload.blocked_reason === "string" ? payload.blocked_reason : null,
     typeof payload.error_message === "string" ? payload.error_message : null,
     typeof payload.from_status === "string" && typeof payload.to_status === "string"
-      ? `${payload.from_status} -> ${payload.to_status}`
+      ? `${operationStatusLabel(payload.from_status)} → ${operationStatusLabel(payload.to_status)}`
       : null,
   ].filter((item): item is string => Boolean(item));
-  return details.length > 0 ? `${event.event_type} · ${details.join(" · ")}` : event.event_type;
+  const eventLabel = operationEventLabel(event.event_type);
+  return details.length > 0 ? `${eventLabel} · ${details.join(" · ")}` : eventLabel;
 }
 
 function schedulerEventTime(value: string | null | undefined): string {
@@ -182,20 +184,21 @@ const TASK_TYPE_LABELS: Record<string, string> = {
 };
 
 function formatSourceGroup(value: string): string {
-  return SOURCE_GROUP_LABELS[value] ?? value;
+  return SOURCE_GROUP_LABELS[value] ?? operationReadableLabel(value, "来源分组尚未说明");
 }
 
 function formatSourceType(value: string): string {
-  return SOURCE_TYPE_LABELS[value] ?? value;
+  return SOURCE_TYPE_LABELS[value] ?? operationReadableLabel(value, "来源类型尚未说明");
 }
 
 function formatReadinessState(value: string | null): string {
-  if (!value) return "未知";
-  return READINESS_LABELS[value] ?? value;
+  if (!value) return "状态待确认";
+  return READINESS_LABELS[value] ?? operationStatusLabel(value);
 }
 
 function formatTaskTypeLabel(value: string): string {
-  return TASK_TYPE_LABELS[value] ?? value.split("_").join(" ");
+  if (/[^\x00-\x7F]/.test(value)) return value;
+  return TASK_TYPE_LABELS[value] ?? TASK_TYPE_LABELS[value.toLowerCase()] ?? operationReadableLabel(value, "任务类型尚未说明");
 }
 
 function formatExpectedTasks(tasks: string[]): string {
@@ -206,7 +209,7 @@ function formatExpectedTasks(tasks: string[]): string {
 }
 
 function formatRecentTasks(source: SchedulerInputSourceMatrixItem): string {
-  if (source.latest_task_run?.task_name) return source.latest_task_run.task_name;
+  if (source.latest_task_run?.task_name) return formatTaskTypeLabel(source.latest_task_run.task_name);
   if (source.recent_task_types.length > 0) return source.recent_task_types.map(formatTaskTypeLabel).join(" / ");
   return "暂无";
 }
@@ -216,13 +219,11 @@ function formatRecentTasks(source: SchedulerInputSourceMatrixItem): string {
 // ═══════════════════════════════════════════════════════════════
 
 function HeaderBar({
-  summary, onRefresh, onCollect, running,
-  days, setDays, category, setCategory, categoryStats, query, setQuery,
+  summary, onRefresh, days, setDays, query, setQuery,
 }: {
-  summary: any; onRefresh: () => void; onCollect: () => void; running: boolean;
+  summary: any; onRefresh: () => void;
   days: DateRange; setDays: (d: DateRange) => void;
-  category: CategoryFilter; setCategory: (c: CategoryFilter) => void;
-  categoryStats: Record<string, SchedulerCategoryStat>; query: string; setQuery: (q: string) => void;
+  query: string; setQuery: (q: string) => void;
 }) {
   const ok = summary.data_sources_ok === summary.data_sources_total && summary.failed_count === 0;
 
@@ -239,7 +240,7 @@ function HeaderBar({
         任务清单
         <ChevronRight size={9} />
       </Link>
-      <Link to="/scheduler/dag" className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-0.5 text-[8px] text-[var(--fg-4)] hover:text-[var(--brand)] hover:border-[var(--brand-gold)] transition-colors shrink-0">
+      <Link to="/scheduler" className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-0.5 text-[8px] text-[var(--fg-4)] hover:text-[var(--brand)] hover:border-[var(--brand-gold)] transition-colors shrink-0">
         <Activity size={9} />
         流程图
         <ChevronRight size={9} />
@@ -263,10 +264,7 @@ function HeaderBar({
         <Search size={10} className="text-[var(--fg-6)]" />
         <input type="text" placeholder="搜索任务..." value={query} onChange={e => setQuery(e.target.value)} className="flex-1 bg-transparent text-[9px] text-[var(--fg-3)] outline-none" />
       </div>
-      <button onClick={onCollect} disabled={running} className="inline-flex items-center gap-1 rounded border border-[var(--brand-gold)] bg-[var(--color-gold-subtle)] px-2 py-1 text-[9px] font-semibold text-[var(--brand-gold)] hover:bg-[var(--brand-gold)] hover:text-black disabled:opacity-50">
-        {running ? <RefreshCw size={10} className="animate-spin" /> : <Play size={10} />}采集
-      </button>
-      <button onClick={onRefresh} className="rounded border border-[var(--border)] px-2 py-1 text-[9px] text-[var(--fg-4)]"><RefreshCw size={10} /></button>
+      <button onClick={onRefresh} aria-label="刷新任务" className="rounded border border-[var(--border)] px-2 py-1 fa-label text-[var(--fg-4)]"><RefreshCw size={10} /></button>
     </div>
   );
 }
@@ -283,12 +281,11 @@ function StatusLegend({ stats }: { stats: Record<string, SchedulerCategoryStat> 
       <span className="text-[var(--fg-5)] font-semibold">分类统计</span>
       {entries.map(([k, s]) => {
         const color = CATEGORY_COLORS[k] ?? "#94a3b8";
-        const label = CATEGORY_LABELS[k] ?? k;
         const pct = s.total > 0 ? Math.round((s.success / s.total) * 100) : 0;
         return (
           <div key={k} className="flex items-center gap-1">
             <div className="w-2 h-2 rounded-sm" style={{ background: color }} />
-            <span className="text-[var(--fg-3)]">{label}</span>
+          <span className="text-[var(--fg-3)]">{CATEGORY_LABELS[k] ?? "分类待确认"}</span>
             <span className="font-mono text-[var(--fg-5)]">{s.success}/{s.total}</span>
             <div className="w-10 h-1 rounded-full bg-[var(--bg-card-inner)] overflow-hidden">
               <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
@@ -379,7 +376,7 @@ function PipelineGrid({
                 const hasFlow = stageRuns.length > 0 && nextRuns.length > 0;
 
                 return (
-                  <>
+                  <Fragment key={stage}>
                     <div className="flex-1 min-w-[140px] p-1.5 border-l border-[var(--border-faint)] bg-[var(--bg-card)] group-hover:bg-[var(--bg-card-inner)] transition-colors relative">
                       {stageRuns.length === 0 ? (
                         <div className="h-full flex items-center justify-center">
@@ -406,7 +403,7 @@ function PipelineGrid({
                               >
                                 <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
                                 <div className="min-w-0 flex-1">
-                                  <div className="text-[9px] font-medium text-[var(--fg-2)] truncate leading-tight">{run.task_name}</div>
+                                  <div className="text-[9px] font-medium text-[var(--fg-2)] truncate leading-tight">{formatTaskTypeLabel(run.task_name)}</div>
                                   <div className="text-[7px] text-[var(--fg-5)] truncate">{formatTaskTypeLabel(run.task_type)}</div>
                                 </div>
                                 {isSelected && <ChevronRight size={10} className="text-[var(--fg-5)] shrink-0" />}
@@ -420,7 +417,7 @@ function PipelineGrid({
                         <ArrowRight size={12} className="absolute -right-[12px] top-1/2 -translate-y-1/2 text-[var(--brand-gold)]/40 z-10" />
                       )}
                     </div>
-                  </>
+                  </Fragment>
                 );
               })}
             </div>
@@ -467,7 +464,7 @@ function TaskDetailDrawer({ runId, runType, onClose }: { runId: string; runType:
       {/* Content */}
       <div className="p-3">
         {loading && <div className="flex justify-center py-8"><RefreshCw size={16} className="animate-spin text-[var(--fg-5)]" /></div>}
-        {error && <div className="text-[10px] text-[var(--down)] py-4 text-center">{error}</div>}
+        {error && <div className="space-y-2 py-4 text-center text-[10px] text-[var(--down)]"><div>任务详情读取失败。</div><EvidenceRecordActions record={error} label="读取错误依据" /></div>}
         {runType === "agent" && !loading && (
           <div className="space-y-3 text-[9px]">
             <div className="rounded border border-[var(--border-faint)] px-2 py-1.5 bg-[var(--bg-card-inner)]">
@@ -483,9 +480,9 @@ function TaskDetailDrawer({ runId, runType, onClose }: { runId: string; runType:
             {/* Meta grid */}
             <div className="grid grid-cols-2 gap-1.5">
               {[
-                { l: "运行 ID", v: detail.run_id.slice(0, 12) + "..." },
+                { l: "运行标识", v: evidenceLabel(detail.run_id) },
                 { l: "类型", v: formatTaskTypeLabel(detail.task_type) },
-                { l: "状态", v: detail.status },
+                { l: "状态", v: operationStatusLabel(detail.status) },
                 { l: "交易日", v: detail.trade_date || "—" },
                 { l: "耗时", v: (detail.started_at && detail.ended_at ? ((new Date(detail.ended_at).getTime() - new Date(detail.started_at).getTime()) / 1000).toFixed(1) + "s" : "—") },
                 { l: "步骤数", v: `${detail.steps.length}` },
@@ -500,7 +497,8 @@ function TaskDetailDrawer({ runId, runType, onClose }: { runId: string; runType:
             {/* Error banner */}
             {detail.error && (
               <div className="rounded border border-[var(--down)]/20 bg-[var(--down)]/5 px-2 py-1.5 text-[8px] text-[var(--down)]">
-                {detail.error_summary || detail.error}
+                任务执行返回错误说明。
+                <div className="mt-2"><EvidenceRecordActions record={detail.error_summary || detail.error} label="任务错误依据" /></div>
               </div>
             )}
 
@@ -533,10 +531,10 @@ function TaskDetailDrawer({ runId, runType, onClose }: { runId: string; runType:
                         {/* Step card */}
                         <div className="flex-1 rounded border px-2 py-1.5 min-w-0" style={{ borderColor: "var(--border-faint)", background: "var(--bg-card-inner)" }}>
                           <div className="flex items-center gap-1.5 mb-1">
-                            <span className="text-[8px] font-semibold text-[var(--fg-2)] truncate">{taskName}</span>
+                            <span className="text-[8px] font-semibold text-[var(--fg-2)] truncate">{formatTaskTypeLabel(taskName)}</span>
                             {step.stage && <span className="text-[7px] text-[var(--fg-6)]">[{formatTaskTypeLabel(step.stage)}]</span>}
                             <span className="flex-1" />
-                            <div className="w-1.5 h-1.5 rounded-full" style={{ background: sc }} />
+                            <span className="text-[7px] text-[var(--fg-5)]">{operationStatusLabel(step.status)}</span>
                           </div>
 
                           {/* Refs */}
@@ -545,19 +543,19 @@ function TaskDetailDrawer({ runId, runType, onClose }: { runId: string; runType:
                               {step.source_refs && step.source_refs.length > 0 && (
                                 <div className="text-[var(--fg-5)]">
                                   <span className="text-[var(--fg-6)]">📥 来源:</span>
-                                  {step.source_refs.slice(0, 3).map((r: any, i: number) => <div key={i} className="ml-2 truncate font-mono">{r.path || r.name || r.url || JSON.stringify(r)}</div>)}
+                                  {step.source_refs.slice(0, 3).map((r: any, i: number) => <div key={i} className="ml-2"><EvidenceRecordActions record={r} url={r.url} label="来源依据" /></div>)}
                                 </div>
                               )}
                               {step.output_refs && step.output_refs.length > 0 && (
                                 <div className="text-[var(--brand)]">
                                   <span className="text-[var(--fg-6)]">↓ 产出:</span>
-                                  {step.output_refs.slice(0, 3).map((r: any, i: number) => <div key={i} className="ml-2 truncate font-mono">{r.path || r.name || JSON.stringify(r)}</div>)}
+                                  {step.output_refs.slice(0, 3).map((r: any, i: number) => <div key={i} className="ml-2"><EvidenceRecordActions record={r} url={r.url} label="产出依据" /></div>)}
                                 </div>
                               )}
                               {((step as any).artifact_refs) && ((step as any).artifact_refs).length > 0 && (
                                 <div className="text-[var(--warn)]">
                                   <span className="text-[var(--fg-6)]">📦 产物:</span>
-                                  {((step as any).artifact_refs).slice(0, 3).map((r: any, i: number) => <div key={i} className="ml-2 truncate font-mono">{r.path || r.name || JSON.stringify(r)}</div>)}
+                                  {((step as any).artifact_refs).slice(0, 3).map((r: any, i: number) => <div key={i} className="ml-2"><EvidenceRecordActions record={r} label="产物依据" /></div>)}
                                 </div>
                               )}
                             </div>
@@ -610,7 +608,6 @@ export function SchedulerCenterPage() {
   const [days, setDays] = useState<DateRange>(7);
   const [category] = useState<CategoryFilter>("all");
   const [query, setQuery] = useState("");
-  const [runningCollectors, setRunningCollectors] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunType, setSelectedRunType] = useState<"task" | "agent">("task");
   const [agentRuns, setAgentRuns] = useState<SchedulerTaskRun[]>([]);
@@ -625,12 +622,6 @@ export function SchedulerCenterPage() {
       setAgentRuns(merged);
     }).catch(() => {});
   }, [data]);
-
-  async function handleCollect() {
-    setRunningCollectors(true);
-    try { await triggerRunAllCollectors(); setTimeout(() => { refresh(); setRunningCollectors(false); }, 5000); }
-    catch { setRunningCollectors(false); }
-  }
 
   function handleSelectRun(runId: string) {
     const isAgent = agentRuns.some(r => r.run_id === runId);
@@ -677,14 +668,14 @@ export function SchedulerCenterPage() {
   if (isLoading)
     return <PageShell><div className="flex justify-center py-20"><RefreshCw size={20} className="animate-spin text-[var(--fg-5)]" /></div></PageShell>;
   if (isError)
-    return <PageShell><div className="flex flex-col items-center py-20"><XCircle size={28} className="text-[var(--down)] mb-2" /><span className="text-sm text-[var(--fg-3)]">{error?.message ?? "加载失败"}</span><button onClick={refresh} className="mt-2 rounded border px-3 py-1 text-xs">重试</button></div></PageShell>;
+    return <PageShell><div className="flex flex-col items-center py-20"><XCircle size={28} className="mb-2 text-[var(--down)]" /><span className="text-sm text-[var(--fg-3)]">调度概览读取失败。</span>{error ? <div className="mt-3"><EvidenceRecordActions record={error.message} label="读取错误依据" /></div> : null}<button onClick={refresh} className="mt-2 rounded border px-3 py-1 text-xs">重试</button></div></PageShell>;
   if (!data) return null;
 
   const { summary, category_stats, data_source_status, cron_jobs, artifacts_summary } = data;
 
   return (
     <PageShell>
-      <HeaderBar summary={summary} onRefresh={refresh} onCollect={handleCollect} running={runningCollectors} days={days} setDays={setDays} category={category} setCategory={() => {}} categoryStats={category_stats} query={query} setQuery={setQuery} />
+      <HeaderBar summary={summary} onRefresh={refresh} days={days} setDays={setDays} query={query} setQuery={setQuery} />
       <StatusLegend stats={category_stats} />
 
       <div className="flex-1 flex min-h-0">
@@ -704,6 +695,8 @@ export function SchedulerCenterPage() {
               sourceSummary={data.input_source_summary}
               sourceMatrix={data.input_source_matrix}
               cronJobs={cron_jobs}
+              cronJobsSource={data.cron_jobs_source}
+              cronJobsError={data.cron_jobs_error}
               outputs={artifacts_summary.recent_outputs}
             />
           </div>
@@ -718,12 +711,16 @@ function SidePanel({
   sourceSummary,
   sourceMatrix,
   cronJobs,
+  cronJobsSource,
+  cronJobsError,
   outputs,
 }: {
   dataSource: any;
   sourceSummary: SchedulerInputSourceSummary;
   sourceMatrix: SchedulerInputSourceMatrixItem[];
   cronJobs: SchedulerCronJob[];
+  cronJobsSource?: string;
+  cronJobsError?: string | null;
   outputs: SchedulerOutputItem[];
 }) {
   return (
@@ -788,13 +785,34 @@ function SidePanel({
           })}
         </div>
       </div>
-      {cronJobs.length > 0 && (
+      {(cronJobs.length > 0 || cronJobsError) && (
         <div className="rounded border border-[var(--border-faint)] bg-[var(--bg-card)] p-2.5">
-          <div className="flex items-center gap-1.5 mb-2"><Clock size={10} className="text-[var(--fg-5)]" /><span className="text-[9px] font-semibold text-[var(--fg-3)]">定时任务</span></div>
+          <div className="mb-2 flex items-center gap-1.5">
+            <Clock size={12} className="text-[var(--fg-5)]" />
+            <span className="fa-compact-label font-semibold text-[var(--fg-3)]">任务调度引擎 · 定时任务</span>
+            {cronJobsSource && <span className="fa-faint-text ml-auto">调度来源已登记</span>}
+          </div>
+          {cronJobsError && (
+            <div className="fa-faint-text mb-2 rounded border border-[var(--warn-border)] bg-[var(--warn-soft)] p-2 text-[var(--warn)]">
+              调度状态不可用，具体原因已登记。
+              <div className="mt-2"><EvidenceRecordActions record={cronJobsError} label="调度错误依据" /></div>
+            </div>
+          )}
           {cronJobs.map(j => (
-            <div key={j.name} className="flex items-center gap-1.5 text-[8px] mb-1">
+            <div key={j.job_id || j.name} className="mb-1.5 flex items-start gap-1.5">
               <div className={`w-1 h-1 rounded-full ${j.enabled ? "bg-[var(--up)]" : "bg-[var(--fg-5)]"}`} />
-              <span className="flex-1 truncate text-[var(--fg-3)]">{j.name}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="fa-compact-label flex-1 truncate text-[var(--fg-3)]">{formatTaskTypeLabel(j.name)}</span>
+                  <span className="fa-faint-text">{j.enabled ? "运行中" : operationStatusLabel(j.status || "stopped")}</span>
+                </div>
+                <div className="fa-faint-text mt-0.5">
+                  调度规则已登记
+                  {j.execution_timezone ? " · 时区已登记" : ""}
+                  {j.next_run_at ? ` · 下次 ${formatSourceUpdateTime(j.next_run_at)}` : ""}
+                </div>
+                <div className="mt-1"><EvidenceRecordActions record={j} label="调度规则依据" /></div>
+              </div>
             </div>
           ))}
         </div>
@@ -803,7 +821,7 @@ function SidePanel({
         <div className="rounded border border-[var(--border-faint)] bg-[var(--bg-card)] p-2.5">
           <div className="flex items-center gap-1.5 mb-2"><FileText size={10} className="text-[var(--fg-5)]" /><span className="text-[9px] font-semibold text-[var(--fg-3)]">最近产出</span></div>
           {outputs.slice(0, 8).map(o => (
-            <div key={o.path} className="flex items-center gap-1 text-[7px] mb-0.5"><span className="flex-1 truncate text-[var(--fg-4)]">{o.name}</span><span className="text-[var(--fg-6)]">{formatFileSize(o.size)}</span></div>
+            <div key={o.path} className="mb-0.5 flex items-center gap-1 text-[7px]"><span className="flex-1 truncate text-[var(--fg-4)]">产出已登记</span><span className="text-[var(--fg-6)]">{formatFileSize(o.size)}</span><EvidenceRecordActions record={o} label="产出依据" /></div>
           ))}
         </div>
       )}

@@ -1,5 +1,8 @@
+import { readerSource } from "@/lib/readerLabels";
+import { EvidenceRecordActions } from "./EvidenceRecordActions";
+import { ResearchDetails } from "./ResearchDetails";
 import type { SourceRef } from "@/types/common";
-import { compactSourceLabel, resolveSourceRefs, sourceRefPairs } from "@/lib/sourceRefs";
+import { compactSourceLabel, resolveSourceRefs } from "@/lib/sourceRefs";
 import { Database, FileText, Bot, ExternalLink } from "lucide-react";
 import { FAEmptyState } from "./FAEmptyState";
 import { FAStatusPill, type FAStatusTone } from "./FAStatusPill";
@@ -46,7 +49,7 @@ function sourceIcon(source: SourceRef) {
     return <Bot size={12} />;
   }
 
-  if (label.includes("pdf") || label.includes("md") || label.includes("report") || source.artifact_path) {
+  if (label.includes("report")) {
     return <FileText size={12} />;
   }
 
@@ -105,10 +108,9 @@ export function SourceTrace({ sources, sourceRefs, compact = false, emptyText = 
   }
 
   return (
-    <div className={compact ? "space-y-1" : "space-y-2"}>
+    <ResearchDetails label="查看来源记录"><div className={compact ? "space-y-1" : "space-y-2"}>
       {refs.map((source, index) => {
-        const pairs = sourceRefPairs(source);
-        const label = displaySourceLabel(compactSourceLabel(source));
+        const label = readerSource(compactSourceLabel(source));
         const statusMeta = getStatusMeta(source.status, { domain: "source" });
         return (
           <article
@@ -128,32 +130,11 @@ export function SourceTrace({ sources, sourceRefs, compact = false, emptyText = 
               </FAStatusPill>
             </div>
 
-            {!compact ? (
-              <div className="mt-3 grid gap-1.5 text-[10px] text-[var(--fg-5)]">
-                {pairs.map((item) => (
-                  <div key={`${item.label}-${item.value}`} className="flex items-center justify-between gap-3">
-                    <span>{SOURCE_PAIR_LABELS[item.label] ?? item.label}</span>
-                    <span className="truncate font-mono text-[var(--fg-4)]">{displayTraceValue(item.label, item.value)}</span>
-                  </div>
-                ))}
-                {source.provider ? (
-                  <div className="flex items-center justify-between gap-3">
-                    <span>{SOURCE_PAIR_LABELS.provider}</span>
-                    <span className="truncate font-mono text-[var(--brand)]">{source.provider}</span>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
+            {!compact ? <div className="mt-3"><EvidenceRecordActions record={source} url={source.source_url} label="此来源的归档记录" /></div> : null}
 
-            {!compact ? (
-              <div className={`mt-3 flex items-center gap-1 text-[10px] ${traceToneClass[statusMeta.tone]}`}>
-                <ExternalLink size={11} />
-                <span>可追溯</span>
-              </div>
-            ) : null}
           </article>
         );
       })}
-    </div>
+    </div></ResearchDetails>
   );
 }

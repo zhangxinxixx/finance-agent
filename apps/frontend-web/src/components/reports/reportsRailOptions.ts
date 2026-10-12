@@ -24,12 +24,14 @@ export const CATEGORY_CONFIGS: CategoryConfig[] = [
   { key: "jin10_oil", label: "原油", color: "#f97316", matchType: "jin10_oil_report" },
   { key: "jin10_fx", label: "外汇", color: "#8b5cf6", matchType: "jin10_fx_report" },
   { key: "jin10_market_observation", label: "市场观察", color: "#06b6d4", matchType: "jin10_market_observation_report" },
+  { key: "observation_report", label: "研究观察", color: "var(--warn)", matchType: "observation_report" },
+  { key: "observation_strategy_card", label: "观察策略卡", color: "var(--important)", matchType: "observation_strategy_card" },
 ];
 
 export const ASSET_OPTIONS = [
   { key: "all", label: "全部", color: "var(--brand)" },
-  { key: "XAUUSD", label: "XAUUSD", color: "#f59e0b" },
-  { key: "OG", label: "OG (Gold)", color: "#10b981" },
+  { key: "XAUUSD", label: "现货黄金（XAUUSD）", color: "#f59e0b" },
+  { key: "OG", label: "黄金期权（OG）", color: "#10b981" },
   { key: "OIL", label: "原油", color: "#f97316" },
   { key: "FX", label: "外汇", color: "#8b5cf6" },
 ];
@@ -42,9 +44,9 @@ export const STATUS_OPTIONS = [
 ];
 
 export const DATA_SOURCE_OPTIONS = [
-  { key: "agent", label: "Agent" },
+  { key: "agent", label: "智能体" },
   { key: "manual", label: "人工" },
-  { key: "api", label: "API" },
+  { key: "api", label: "数据接口" },
 ];
 
 export const DATE_RANGE_OPTIONS: [string, string][] = [

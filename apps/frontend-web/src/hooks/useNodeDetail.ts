@@ -17,76 +17,7 @@ export interface NodeDetailResult {
   error: string | null;
 }
 
-function extractSourceRefs(steps: RunStep[]): DagSourceRef[] {
-  const refs: DagSourceRef[] = [];
-  for (const s of steps) {
-    if (s.source_refs && Array.isArray(s.source_refs)) {
-      for (const ref of s.source_refs) {
-        if (ref && typeof ref === "object") {
-          refs.push({
-            source_ref: (ref as any).source_name || (ref as any).source_id || "unknown",
-            label: (ref as any).source_name || (ref as any).source_id || "unknown",
-            endpoint: (ref as any).endpoint || null,
-            artifact_path: (ref as any).file_path || null,
-            status: (ref as any).status || "unknown",
-          });
-        }
-      }
-    }
-  }
-  return refs;
-}
-
-function extractArtifactRefs(steps: RunStep[]): DagArtifactRef[] {
-  const refs: DagArtifactRef[] = [];
-  const seen = new Set<string>();
-  for (const s of steps) {
-    const allRefs = [
-      ...(s.output_refs && Array.isArray(s.output_refs) ? s.output_refs : []),
-      ...(s.artifact_refs && Array.isArray(s.artifact_refs) ? s.artifact_refs : []),
-    ];
-    for (const ref of allRefs) {
-      if (ref && typeof ref === "object") {
-        const id = (ref as any).artifact_id || (ref as any).file_path || JSON.stringify(ref);
-        if (!seen.has(id)) {
-          seen.add(id);
-          refs.push({
-            artifact_id: (ref as any).artifact_id || (ref as any).file_path || "unknown",
-            artifact_type: (ref as any).artifact_type || "unknown",
-            file_path: (ref as any).file_path || null,
-          });
-        }
-      }
-    }
-  }
-  return refs;
-}
-
 function populateFromRunDetail(node: DagNodeSpec, detail: RunDetail): DagNodeSpec {
-  const sourceRefs = extractSourceRefs(detail.steps || []);
-  const artifactRefs = extractArtifactRefs(detail.steps || []);
-
-  // Build input/output fields from source_refs and artifact_refs
-  const inputFields: Record<string, unknown> = {};
-  for (const ref of sourceRefs.slice(0, 8)) {
-    inputFields[ref.label] = ref.endpoint || ref.artifact_path || ref.status;
-  }
-
-  const outputFields: Record<string, unknown> = {};
-  for (const ref of artifactRefs.slice(0, 8)) {
-    outputFields[ref.artifact_type] = ref.file_path || ref.artifact_id;
-  }
-
-  // Collect step-level input_json/output_json
-  const stepInputJsons: Record<string, unknown>[] = [];
-  const stepOutputJsons: Record<string, unknown>[] = [];
-  const stepErrorJsons: Record<string, unknown>[] = [];
-  for (const s of detail.steps || []) {
-    if (s.input_json && typeof s.input_json === "object") stepInputJsons.push(s.input_json);
-    if (s.output_json && typeof s.output_json === "object") stepOutputJsons.push(s.output_json);
-    if (s.error_json && typeof s.error_json === "object") stepErrorJsons.push(s.error_json);
-  }
-
   // Compute duration
   const durationMs = detail.started_at && detail.ended_at
     ? new Date(detail.ended_at).getTime() - new Date(detail.started_at).getTime()
@@ -100,18 +31,16 @@ function populateFromRunDetail(node: DagNodeSpec, detail: RunDetail): DagNodeSpe
     input: {
       source: "task_run",
       summary: detail.error_summary || `${detail.steps?.length || 0} steps`,
-      fields: Object.keys(inputFields).length > 0 ? inputFields : { task_type: detail.task_type, status: detail.status },
-      source_refs: sourceRefs,
-      artifact_refs: artifactRefs,
-      step_jsons: stepInputJsons,
+      fields: { task_type: detail.task_type, status: detail.status, step_count: detail.steps?.length || 0 },
+      source_refs: [],
+      artifact_refs: [],
     } as any,
     output: {
       source: detail.run_id,
       summary: detail.status,
-      fields: Object.keys(outputFields).length > 0 ? outputFields : { status: detail.status, progress: detail.progress ?? "N/A" },
-      source_refs: sourceRefs,
-      artifact_refs: artifactRefs,
-      step_jsons: stepOutputJsons,
+      fields: { status: detail.status, progress: detail.progress ?? "N/A" },
+      source_refs: [],
+      artifact_refs: [],
     } as any,
     execution: {
       started_at: detail.started_at,
@@ -119,7 +48,6 @@ function populateFromRunDetail(node: DagNodeSpec, detail: RunDetail): DagNodeSpe
       duration_ms: durationMs,
       retries: totalRetries,
       events: detail.events ?? [],
-      step_errors: stepErrorJsons,
     } as any,
   };
 }

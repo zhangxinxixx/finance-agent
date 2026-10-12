@@ -36,6 +36,12 @@ api -> scheduler -> worker -> collectors -> parsers -> features -> analysis -> r
 - 每个结论尽量绑定 `run_id`、`snapshot_id`、`source_refs`、`artifact_refs`。
 - 缺失数据必须显式暴露为 `unavailable` / `fallback` / `mock` / `manual_required`，不伪装成实时数据。
 
+数仓分工：原始文件进入 RAW/ODS，DWD 保存具名、可追溯的明细事实，DWS 产出按研究时点计算的主题快照，ADS 生成页面与报告读模型。系统页面仅消费 DWS 及以上；原始正文和加工明细不进入页面响应。原始源文件默认保留 30 天，清理回执与来源身份继续保留。不合格研究产出不得转为正式报告。
+
+行情图表使用 TradingView；研究所需市场快照保留独立来源和时点。金十仅作可选新闻来源，不能充当正式行情、宏观或期权数值。历史研究与当前背景分别显示，研究身份和关键位有效期由后端提供。
+
+公开数据库迁移保留已发布的 Analysis Memory 历史 revision，并通过合并 revision 接入当前数仓链。旧研究状态与 canary 数据不会因代码收口被删除；旧运行入口已退役。升级前应备份数据库，并配置自己的 `DATABASE_URL`。
+
 ## 技术栈
 
 后端：
@@ -43,7 +49,7 @@ api -> scheduler -> worker -> collectors -> parsers -> features -> analysis -> r
 - Python 3.11
 - FastAPI
 - SQLAlchemy
-- PostgreSQL / Redis
+- PostgreSQL；Redis 为可选依赖
 - APScheduler
 - Dagster
 - uv
@@ -61,7 +67,7 @@ api -> scheduler -> worker -> collectors -> parsers -> features -> analysis -> r
 
 - FRED / Fed / Treasury 宏观流动性数据
 - CME / COMEX Daily Bulletin 与期权结构
-- Jin10 新闻、日历、快讯、行情和报告
+- Jin10 可选新闻、日历、快讯与历史报告阅读；正式数值使用独立行情和官方来源
 - 市场行情、技术结构、仓位、市场 odds
 - 黄金九条主线、利率美元链、石油地缘链
 - Agent 分析、报告三产物、策略卡片、SourceTrace
@@ -95,17 +101,17 @@ tests/              API、pipeline、collector、feature、renderer 测试
 前置条件：
 
 - Python 3.11
-- Node.js 18+
+- Node.js 22、pnpm 10.33.2
 - uv
-- 本机 PostgreSQL / Redis，或本仓库脚本配置的 user-space PostgreSQL / Redis
+- 本机 PostgreSQL，或本仓库脚本配置的 user-space PostgreSQL；Redis 为可选依赖
 
 首次初始化：
 
 ```bash
 cp .env.example .env
-uv sync --extra dev
+uv sync --locked --extra dev
 cd apps/frontend-web
-npm install
+pnpm install --frozen-lockfile
 ```
 
 `.env` 只放本地真实配置，已被 `.gitignore` 排除。不要把真实 key、token、密码或 cookie 写入仓库。
@@ -121,6 +127,7 @@ export no_proxy=127.0.0.1,localhost,::1
 
 ```text
 API health:  http://127.0.0.1:8000/health
+API ready:   http://127.0.0.1:8000/ready
 Frontend:    http://127.0.0.1:8080
 Dashboard:   http://127.0.0.1:8080/dashboard
 API docs:    http://127.0.0.1:8000/docs
@@ -138,7 +145,7 @@ API docs:    http://127.0.0.1:8000/docs
 
 默认 `./start.sh start` 会启动完整开发栈：
 
-- user-space PostgreSQL / Redis
+- user-space PostgreSQL；仅设置 `FINANCE_AGENT_ENABLE_REDIS=1` 时启动 Redis
 - FastAPI API（默认 `:8000`）
 - Vite 前端 dev server（默认 `:8080`）
 
@@ -227,7 +234,8 @@ cp .env.example .env
 | 变量 | 用途 |
 | --- | --- |
 | `DATABASE_URL` | 后端数据库连接，默认本地 PostgreSQL 55432 |
-| `REDIS_URL` | Redis 连接 |
+| `REDIS_URL` | 可选 Redis 连接；主链无当前消费者，默认不启动 |
+| `FINANCE_AGENT_ENABLE_REDIS` | 显式设为 `1` 时由本地依赖脚本启动 Redis；Python 客户端使用 `uv sync --extra redis` |
 | `FRED_API_KEY` | FRED 宏观数据 |
 | `OPENAI_API_KEY` | LLM 分析能力 |
 | `FEISHU_*` | 飞书通知或 Jin10 群消息采集 |

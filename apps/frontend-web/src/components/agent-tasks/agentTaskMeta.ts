@@ -37,7 +37,7 @@ export function taskTypeLabel(taskType: string): string {
   if (raw.includes("strategy")) return "策略汇总";
   if (raw.includes("report")) return "报告生成";
   if (raw.includes("premarket")) return "盘前总览";
-  return taskType.replace(/_/g, " ");
+  return "任务类型尚未说明";
 }
 
 export function taskTopicSummary(run: Pick<TaskRunSummaryViewModel, "task_type">): string {

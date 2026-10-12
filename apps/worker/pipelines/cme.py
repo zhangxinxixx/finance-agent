@@ -20,15 +20,18 @@ from apps.collectors.cme.downloader import CmeRawFile, download_cme_pdf
 from apps.output.artifacts import artifact_run_dir
 from apps.parsers.cme.pdf_parser import CmePdfParseResult, parse_pg64_pdf
 from apps.renderer.html.options_visual import render_options_visual_html
-from database.models.cme import CmeOptionRow
+from database.queries.warehouse_cme import (
+    WarehouseCmeOptionRow as CmeOptionRow, WarehouseCmeReadError,
+    get_available_cme_trade_dates, get_cme_option_rows, get_cme_option_rows_multi_date,
+    build_cme_selected_lineage,
+)
 from database.queries.cme import (
     CmeIngestResult,
-    get_available_cme_trade_dates,
-    get_cme_option_rows,
-    get_cme_option_rows_multi_date,
     ingest_cme_parse_result,
 )
 from apps.features.options.calibration import calibrate_walls
+from apps.features.options.reconcile import reconcile_cme_versions
+from apps.features.options.selection import select_expiry_window
 
 # ---------------------------------------------------------------------------
 # Step names that belong to the CME pipeline
@@ -50,6 +53,7 @@ class CmePipelineState:
     ingest_result: CmeIngestResult | None = None
     snapshot_dict: dict[str, Any] | None = None
     report_md: str | None = None
+    reconciliation: dict[str, Any] = field(default_factory=dict)
     step_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -198,7 +202,18 @@ def _step_ingest(
         source_url=state.raw_file.source_url,
         section=section_file.replace(".pdf", ""),
     )
+    from apps.data_layer.collection_ingestion import ingest_collection_records
+
+    warehouse_ingestion = ingest_collection_records(
+        db, "cme-options", record_ids=[ingest_result.raw_file_id], storage_root=storage_root,
+        run_id=run_id,
+        raw_sources=[{"raw_path": state.raw_file.raw_path, "source_key": "cme_daily_bulletin",
+                      "source_url": state.raw_file.source_url, "collected_at": state.raw_file.retrieved_at,
+                      "sha256": state.raw_file.sha256, "expected_records": ingest_result.total_rows}],
+    )
     db.commit()
+    if warehouse_ingestion.get("status") != "loaded":
+        raise RuntimeError("DWD_CME_COLLECTION_NOT_LOADED")
     state.ingest_result = ingest_result
 
     # Write cme_ingest_summary.json
@@ -226,7 +241,10 @@ def _step_ingest(
         "inserted_rows": ingest_result.inserted_rows,
         "existing_rows": ingest_result.existing_rows,
         "total_rows": ingest_result.total_rows,
+        "replaced_rows": ingest_result.replaced_rows,
+        "version_type": ingest_result.version_type,
         "summary_path": str(summary_path),
+        "warehouse": warehouse_ingestion,
     }
 
 
@@ -264,7 +282,9 @@ def _step_options_analysis(
 
     report_date = state.ingest_result.report_date
 
-    # Read option rows from DB and convert to dicts for the analysis pipeline
+    # Read the FINAL-preferred option rows from DB and convert to dicts for the
+    # analysis pipeline.  ``get_cme_option_rows`` already preserves the
+    # exchange's PRELIMINARY rows while preferring FINAL for the current view.
     option_rows = get_cme_option_rows(db, report_date=report_date, product=product)
     if not option_rows:
         return {
@@ -275,25 +295,159 @@ def _step_options_analysis(
 
     raw_rows = [_row_to_dict(row) for row in option_rows]
 
+    # The downloaded file in this run is not necessarily the file selected for
+    # analysis: a PRELIM retry can run after a FINAL bulletin was already
+    # ingested.  Build lineage from the selected DB rows before setting the
+    # feature revision, source URL, or input IDs so the feature cannot claim
+    # FINAL while pointing back to the current PRELIM download.
+    selected_lineage = _selected_cme_lineage(db, option_rows)
+
     # Run the full analysis pipeline
     source_status = _map_parse_status(state.parse_result)
     source_url = state.raw_file.source_url if state.raw_file else None
-    input_ids: dict[str, str] = {}
-    if state.raw_file:
-        input_ids["raw_file_sha256"] = state.raw_file.sha256
-    if state.ingest_result and state.ingest_result.raw_file_id:
+    input_ids: dict[str, Any] = {}
+    selected_versions = {
+        str(getattr(row, "version_type", "") or "").strip().upper()
+        for row in option_rows
+        if isinstance(getattr(row, "version_type", ""), str)
+    }
+    if "FINAL" in selected_versions:
+        source_status = "FINAL"
+    elif "PRELIMINARY" in selected_versions:
+        source_status = "PRELIM"
+
+    selected_raw_ids = selected_lineage["raw_file_ids"]
+    selected_shas = selected_lineage["raw_file_sha256s"]
+    selected_parse_ids = selected_lineage["parse_run_ids"]
+    input_ids["warehouse_fact_ids"] = sorted(row.warehouse_fact_id for row in option_rows)
+    input_ids["warehouse_batch_ids"] = sorted({row.batch_id for row in option_rows})
+    input_ids["warehouse_versions"] = sorted({row.version_sha256 for row in option_rows})
+    if selected_raw_ids:
+        input_ids["raw_file_id"] = selected_raw_ids[0]
+        input_ids["raw_file_ids"] = selected_raw_ids
+    elif state.ingest_result and state.ingest_result.raw_file_id:
         input_ids["raw_file_id"] = str(state.ingest_result.raw_file_id)
-    if state.ingest_result and state.ingest_result.parse_run_id:
-        # Guard against MagicMock truthiness in tests
-        pr_id = state.ingest_result.parse_run_id
-        if isinstance(pr_id, str):
-            input_ids["parse_run_id"] = pr_id
+    if selected_shas:
+        input_ids["raw_file_sha256"] = selected_shas[0]
+        input_ids["raw_file_sha256s"] = selected_shas
+    elif state.raw_file:
+        input_ids["raw_file_sha256"] = state.raw_file.sha256
+    if selected_parse_ids:
+        input_ids["parse_run_id"] = selected_parse_ids[0]
+        input_ids["parse_run_ids"] = selected_parse_ids
+    if selected_lineage["source_urls"]:
+        source_url = selected_lineage["source_urls"][0]
 
-    # P2-11: only use the two nearest-month expiries for analysis
-    from apps.features.options.black76 import sort_expiry_codes
+    # Dynamic window: always include the nearest eligible expiry, then fill
+    # the remaining slot(s) by total OI.  The selection metadata is persisted
+    # with the feature so a report never looks like a full-chain calculation
+    # when only a compact window was selected.
+    expiry_selection = select_expiry_window(
+        raw_rows,
+        trade_date=report_date,
+        # Select the nearest eligible expiry plus the top two OI expiries.
+        # Three is the maximum union size; using 2 here would silently drop
+        # one of the requested OI leaders whenever the nearest is different.
+        max_expiries=3,
+        top_n_oi=2,
+    )
+    near_expiries = expiry_selection.selected_expiries
 
-    all_expiries = sorted({row.get("expiry") or "" for row in raw_rows if row.get("expiry")})
-    near_expiries = sort_expiry_codes(all_expiries)[:2]
+    # When a FINAL bulletin arrives after a PRELIMINARY bulletin, retain both
+    # row sets and record a row-level diff.  The DB query's default FINAL
+    # preference makes the FINAL set the current feature input automatically.
+    current_versions = selected_versions
+    if "FINAL" in current_versions:
+        # A PRELIM parse can be retried after FINAL has already been ingested;
+        # the DB's FINAL-preferred row set is authoritative for this feature.
+        source_status = "FINAL"
+    elif "PRELIMINARY" in current_versions:
+        source_status = "PRELIM"
+    reconciliation: dict[str, Any]
+    if "FINAL" in current_versions:
+        try:
+            prelim_orm = get_cme_option_rows(
+                db, report_date=report_date, product=product, version_type="PRELIMINARY",
+            )
+        except WarehouseCmeReadError as exc:
+            if str(exc) != "DWD_CME_FACTS_MISSING":
+                raise
+            prelim_orm = []
+        final_orm = get_cme_option_rows(
+            db, report_date=report_date, product=product, version_type="FINAL",
+        )
+        try:
+            prelim_source_ids = sorted(
+                {
+                    str(getattr(row, "raw_file_id"))
+                    for row in prelim_orm
+                    if isinstance(getattr(row, "raw_file_id", None), str)
+                }
+            )
+            final_source_ids = sorted(
+                {
+                    str(getattr(row, "raw_file_id"))
+                    for row in final_orm
+                    if isinstance(getattr(row, "raw_file_id", None), str)
+                }
+            )
+            reconciliation = reconcile_cme_versions(
+                [_row_to_dict(row) for row in prelim_orm],
+                [_row_to_dict(row) for row in final_orm],
+                report_date=report_date,
+                product=product,
+                source_refs=[
+                    {
+                        "source": "dwh_fact_cme_option",
+                        "version_type": "PRELIMINARY",
+                        "report_date": report_date,
+                        "raw_file_ids": prelim_source_ids,
+                    },
+                    {
+                        "source": "dwh_fact_cme_option",
+                        "version_type": "FINAL",
+                        "report_date": report_date,
+                        "raw_file_ids": final_source_ids,
+                    },
+                ],
+            )
+        except ValueError as exc:
+            # A malformed comparison must not contaminate the current FINAL
+            # feature.  Keep the feature usable and expose the audit failure.
+            reconciliation = {
+                "schema_version": "cme_options_reconciliation.v1",
+                "report_date": report_date,
+                "product": product,
+                "status": "unavailable",
+                "current_selection": "FINAL",
+                "feature_version": "cme_options_analysis.v2",
+                "error": str(exc),
+                "source_refs": [],
+            }
+    else:
+        reconciliation = reconcile_cme_versions(
+            raw_rows,
+            [],
+            report_date=report_date,
+            product=product,
+            source_refs=[
+                {
+                    "source": "dwh_fact_cme_option",
+                    "version_type": "PRELIMINARY" if "PRELIMINARY" in current_versions else source_status,
+                    "report_date": report_date,
+                }
+            ],
+        )
+
+    raw_sha = input_ids.get("raw_file_sha256")
+    revision_source = raw_sha[:12] if isinstance(raw_sha, str) else "unversioned"
+    feature_revision = f"cme_options_analysis.v2:{source_status.upper()}:{revision_source}"
+    reconciliation = {
+        **reconciliation,
+        "feature_revision": feature_revision,
+        "selected_feature_revision": feature_revision,
+    }
+    state.reconciliation = reconciliation
 
     result = build_options_snapshot(
         raw_rows,
@@ -303,6 +457,10 @@ def _step_options_analysis(
         data_source_status=source_status,
         data_source_url=source_url,
         input_snapshot_ids=input_ids,
+        expiry_selection=expiry_selection.to_dict(),
+        reconciliation=reconciliation,
+        feature_version="cme_options_analysis.v2",
+        feature_revision=feature_revision,
     )
 
     # ── P4-06: multi-day wall calibration with near-month filter ────
@@ -310,7 +468,7 @@ def _step_options_analysis(
         available_dates = get_available_cme_trade_dates(db, product=product, limit=6)
         if len(available_dates) >= 2:
             multi_rows = get_cme_option_rows_multi_date(db, trade_dates=available_dates, product=product)
-            # Filter to near-month expiries only for cross-date comparison
+            # Filter to the selected dynamic expiry window for cross-date comparison.
             multi_dicts: dict[str, list[dict[str, Any]]] = {}
             for date, rows in multi_rows.items():
                 filtered = [r for r in rows if (r.expiry if hasattr(r, 'expiry') else r.get('expiry')) in near_expiries]
@@ -329,6 +487,8 @@ def _step_options_analysis(
         logging.getLogger(__name__).exception("Multi-day calibration failed — continuing without calibration")
 
     snapshot_dict = snapshot_to_dict(result)
+    snapshot_dict["selected_source_refs"] = selected_lineage.get("source_refs", [])
+    snapshot_dict["data_source"]["source_refs"] = selected_lineage.get("source_refs", [])
     report_md = render_options_report_markdown(result)
     visual_vm = build_options_visual_report_vm(result)
     visual_json = visual_vm.to_dict()
@@ -375,11 +535,16 @@ def _step_options_analysis(
         "status": "success",
         "trade_date": report_date,
         "product": product,
+        "feature_version": result.feature_version,
+        "feature_revision": result.feature_revision,
         "expiries": result.expiries,
         "row_count": len(result.normalized_rows),
         "walls_count": len(result.scored_walls),
         "intent_type": result.intent.primary_intent.intent_type.value,
         "gamma_zero": result.netgex.gamma_zero,
+        "gex_semantics": result.gex_semantics,
+        "expiry_selection": result.expiry_selection,
+        "reconciliation": result.reconciliation,
         "json_path": str(json_path),
         "md_path": str(md_path),
         "visual_json_path": str(visual_json_path),
@@ -400,6 +565,11 @@ def _step_options_analysis(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _selected_cme_lineage(db: DBSession, option_rows: list[CmeOptionRow]) -> dict[str, Any]:
+    """Use selected immutable DWD lineage, including PRELIM retries after FINAL."""
+    return build_cme_selected_lineage(option_rows)
 
 
 def _row_to_dict(row: CmeOptionRow) -> dict[str, Any]:
@@ -424,4 +594,5 @@ def _row_to_dict(row: CmeOptionRow) -> dict[str, Any]:
         "outcry_volume": row.outcry_volume,
         "exercises": row.exercises,
         "pt_change": row.pt_change,
+        "raw_file_id": row.raw_file_id,
     }

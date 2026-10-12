@@ -11,12 +11,13 @@ from database.models.analysis import AnalysisBase
 from database.models.execution import ExecutionBase
 from database.models.report import ReportBase
 from database.models.task import Base
+from database.models.warehouse import WarehouseBase
+from database.models.raw_source import RawSourceBase
 from database.migrations.runtime import alembic_config_value
 
 # Import model modules that register tables on shared metadata.
 from database.models import cme as _cme_models  # noqa: F401
 from database.models import playbook as _playbook_models  # noqa: F401
-from database.models import analysis_state as _analysis_state_models  # noqa: F401
 
 # this is the Alembic Config object
 config = getattr(context, "config", None)
@@ -35,6 +36,8 @@ target_metadata = [
     Base.metadata,
     ExecutionBase.metadata,
     ReportBase.metadata,
+    WarehouseBase.metadata,
+    RawSourceBase.metadata,
 ]
 
 

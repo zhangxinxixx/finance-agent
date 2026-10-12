@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -81,6 +82,66 @@ def test_task_recorder_emits_failed_event(monkeypatch) -> None:
     assert "TASK_STARTED" in event_types
     assert "TASK_STATUS_CHANGED" in event_types
     assert "RUN_FAILED" in event_types
+
+
+def test_task_recorder_closes_the_same_step_row(monkeypatch) -> None:
+    factory = _make_factory()
+    monkeypatch.setattr(task_recorder_module, "SessionLocal", factory)
+
+    with TaskRecorder(task_type="macro_collect", task_name="Macro") as rec:
+        step_id = rec.step("collect", status="running", stage="collector")
+        assert step_id is not None
+        assert rec.step("collect", status="success", step_id=step_id) == step_id
+
+    with factory() as session:
+        run = session.query(TaskRun).one()
+        steps = session.query(task_recorder_module.TaskStep).all()
+
+    assert run.status == TaskStatus.success
+    assert len(steps) == 1
+    assert str(steps[0].id) == step_id
+    assert steps[0].status.value == "success"
+
+
+def test_task_recorder_rejects_cross_run_step_reference(monkeypatch) -> None:
+    factory = _make_factory()
+    monkeypatch.setattr(task_recorder_module, "SessionLocal", factory)
+
+    with TaskRecorder(task_type="macro_collect", task_name="Run A") as first:
+        first_step_id = first.step("collect", status="running")
+        assert first_step_id is not None
+
+    with TaskRecorder(task_type="macro_collect", task_name="Run B") as second:
+        with pytest.raises(ValueError, match="does not belong to this task run"):
+            second.step("collect", status="success", step_id=first_step_id)
+
+    with factory() as session:
+        steps = session.query(task_recorder_module.TaskStep).order_by(task_recorder_module.TaskStep.created_at).all()
+        runs = session.query(TaskRun).order_by(TaskRun.created_at).all()
+
+    assert len(runs) == 2
+    assert len(steps) == 1
+    assert str(steps[0].id) == first_step_id
+    assert steps[0].status.value == "running"
+    assert steps[0].task_run_id == runs[0].id
+
+
+def test_task_recorder_rejects_step_name_mismatch_without_mutation(monkeypatch) -> None:
+    factory = _make_factory()
+    monkeypatch.setattr(task_recorder_module, "SessionLocal", factory)
+
+    with TaskRecorder(task_type="macro_collect", task_name="Macro") as rec:
+        step_id = rec.step("collect", status="running")
+        assert step_id is not None
+        with pytest.raises(ValueError, match="name mismatch"):
+            rec.step("render", status="success", step_id=step_id)
+
+    with factory() as session:
+        step = session.query(task_recorder_module.TaskStep).one()
+
+    assert str(step.id) == step_id
+    assert step.name == "collect"
+    assert step.status.value == "running"
 
 
 def test_task_recorder_rolls_up_a_blocked_step_to_a_blocked_run(monkeypatch) -> None:

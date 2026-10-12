@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import httpx
 
@@ -92,3 +93,23 @@ def test_fed_rss_partial_failure_keeps_successful_feeds(tmp_path: Path) -> None:
     assert [item.feed_key for item in result.items] == ["monetary_policy"]
     assert result.unavailable_feeds == ["speeches_testimony"]
     assert result.source_refs[-1]["status"] == "failed"
+
+
+def test_recent_official_article_is_archived_with_body_lineage_and_failure_keeps_feed(tmp_path: Path):
+    feed_url = "https://fed.test/speeches.xml"
+    article_url = "https://www.federalreserve.gov/monetarypolicy/fomcminutes20260506.htm"
+    client = FakeFeedClient({feed_url: _response(feed_url, FED_RSS_FIXTURE),
+                             article_url: _response(article_url, '<div id="article"><p>Conditional policy statement.</p></div>')})
+    result = collect_fed_rss(retrieved_date="2026-06-11", storage_root=tmp_path, feeds={"speeches_testimony": feed_url}, client=client)
+    payload = result.items[0].raw_payload
+    assert payload["full_text_available"] is True
+    assert payload["article_paragraphs"] == ["Conditional policy statement."]
+    ref = payload["source_refs"][0]
+    raw = json.loads((tmp_path / ref["raw_path"]).read_text())
+    parsed = json.loads((tmp_path / ref["parsed_path"]).read_text())
+    assert raw["fetched_at"] == ref["retrieved_at"] == parsed["fetched_at"]
+    assert raw["html"] and parsed["raw_path"] == ref["raw_path"]
+    client.responses[article_url] = httpx.ConnectError("unavailable")
+    failed = collect_fed_rss(retrieved_date="2026-06-11", storage_root=tmp_path, feeds={"speeches_testimony": feed_url}, client=client)
+    assert failed.items[0].raw_payload["full_text_available"] is False
+    assert failed.items[0].raw_payload["article_status"] == "unavailable"

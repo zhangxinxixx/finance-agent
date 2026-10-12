@@ -1,5 +1,5 @@
 import type { MarketMonitorMetric } from "@/types/market-monitor";
-import { formatMetricChange, formatMetricValue } from "./format";
+import { formatMetricChange, formatMetricValue, marketMonitorUnitLabel } from "./format";
 import { activeMetricSummary, CHART_SERIES, type ChartSeriesData } from "@/components/market-monitor/marketMonitorChart";
 
 interface MultiLineChartLegendProps {
@@ -18,8 +18,8 @@ export function MultiLineChartLegend({ metrics, seriesData, statusText }: MultiL
         padding: "4px 12px 6px",
         fontFamily: "var(--font-sans)",
         fontWeight: 500,
-        fontSize: 9,
-        lineHeight: 1,
+        fontSize: "var(--type-label)",
+        lineHeight: "var(--lh-body)",
         color: "var(--fg-4)",
       }}
     >
@@ -49,8 +49,9 @@ export function MultiLineChartLegend({ metrics, seriesData, statusText }: MultiL
           <div key={`${series.key}-meta`} className="flex items-center gap-1 text-[var(--fg-5)]">
             <span>{series.label}</span>
             <span className="fa-num text-[var(--fg-3)]">{metric ? formatMetricValue(metric.latest_value, 2) : "—"}</span>
-            <span>{metric?.unit ?? ""}</span>
-            <span className="fa-num">{formatMetricChange(metric?.one_week_change ?? null, "—")}</span>
+            <span>{metric?.unit ? marketMonitorUnitLabel(metric.unit) : "单位未提供"}</span>
+            <span>周变化 {formatMetricChange(metric?.one_week_change ?? null, "—")}</span>
+            <span>观测于 {metric?.latest_date || "未提供"}</span>
           </div>
         );
       })}

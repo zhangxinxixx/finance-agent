@@ -9,8 +9,22 @@ from apps.api.main import app
 client = TestClient(app)
 
 
-def test_get_task_not_found():
-    resp = client.get("/tasks/00000000-0000-0000-0000-000000000000")
+def test_get_task_not_found(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
+    from database.models.engine import get_db
+    from database.models.task import Base
+    from apps.api.services import premarket_task_service
+
+    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(premarket_task_service, "database_reachable", lambda: True)
+    monkeypatch.setattr(premarket_task_service, "get_dagster_task_view", lambda *_: None)
+    with Session(engine) as db:
+        monkeypatch.setitem(app.dependency_overrides, get_db, lambda: db)
+        resp = client.get("/tasks/00000000-0000-0000-0000-000000000000")
+    engine.dispose()
     assert resp.status_code == 404
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from apps.monitoring.schemas import DataHealthCheck
+from database.numeric_source_policy import is_formal_numeric_source
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,10 @@ def build_numeric_consistency_check(
     observed_at: datetime,
 ) -> DataHealthCheck:
     source_key = f"consistency:{rule.metric}"
+    if primary and not is_formal_numeric_source(primary.source, primary.source_ref, primary.artifact_ref):
+        primary = None
+    if secondary and not is_formal_numeric_source(secondary.source, secondary.source_ref, secondary.artifact_ref):
+        secondary = None
     if primary is None or secondary is None:
         missing = [name for name, value in (("primary", primary), ("secondary", secondary)) if value is None]
         return DataHealthCheck(

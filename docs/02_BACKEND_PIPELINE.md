@@ -76,3 +76,4 @@ UV_CACHE_DIR=/tmp/uv-cache rtk uv run pytest \
 
 - [Agent 架构](05_AGENT_ARCHITECTURE.md)
 - [报告系统](06_REPORT_SYSTEM.md)
+- [风险与待办](12_RISKS_AND_TODO.md)

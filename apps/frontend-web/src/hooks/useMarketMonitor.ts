@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchMarketMonitorData, fetchMarketMonitorHistory, type MarketMonitorHistoryResponse } from "@/adapters/marketMonitor";
 import type { MarketMonitorResponse } from "@/types/market-monitor";
 
@@ -9,8 +9,10 @@ interface MarketMonitorState {
   history: MarketMonitorHistoryResponse | null;
   historyTimeframe: MarketMonitorHistoryTimeframe;
   isLoading: boolean;
+  isRefreshing: boolean;
   isError: boolean;
   error: Error | null;
+  historyError: Error | null;
   refetch: () => void;
   setHistoryTimeframe: (timeframe: MarketMonitorHistoryTimeframe) => void;
 }
@@ -20,15 +22,31 @@ export function useMarketMonitor(): MarketMonitorState {
   const [history, setHistory] = useState<MarketMonitorHistoryResponse | null>(null);
   const [historyTimeframe, setHistoryTimeframe] = useState<MarketMonitorHistoryTimeframe>("1D");
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [historyError, setHistoryError] = useState<Error | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const dataRef = useRef<MarketMonitorResponse | null>(null);
+  const historyRef = useRef<MarketMonitorHistoryResponse | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadMarketMonitor() {
-      setIsLoading(true);
+      const hasExistingResult = dataRef.current !== null || historyRef.current !== null;
+      setIsLoading(!hasExistingResult);
+      setIsRefreshing(hasExistingResult);
+      // A retry starts a new observation window. Do not keep the previous
+      // failure banner visible while that window is still pending.
       setError(null);
+      if (hasExistingResult) {
+        // Do not let a new timeframe label sit above the previous window while
+        // the request is pending. The chart can return as an explicit partial
+        // state after the new window succeeds.
+        historyRef.current = null;
+        setHistory(null);
+        setHistoryError(null);
+      }
 
       try {
         const [dataResult, historyResult] = await Promise.allSettled([
@@ -41,17 +59,30 @@ export function useMarketMonitor(): MarketMonitorState {
         }
 
         if (!cancelled) {
+          dataRef.current = dataResult.value;
           setData(dataResult.value);
-          setHistory(historyResult.status === "fulfilled" ? historyResult.value : null);
+          if (historyResult.status === "fulfilled") {
+            historyRef.current = historyResult.value;
+            setHistory(historyResult.value);
+            setHistoryError(null);
+          } else {
+            setHistoryError(historyResult.reason instanceof Error ? historyResult.reason : new Error("历史窗口加载失败"));
+          }
+          setError(null);
         }
       } catch (cause) {
         if (!cancelled) {
           setError(cause instanceof Error ? cause : new Error("加载 Market Monitor 数据失败"));
-          setData(null);
+          // Keep the last successful result visible, but let the page mark it
+          // as stale because the current refresh did not complete.
+          if (!dataRef.current && !historyRef.current) {
+            setData(null);
+          }
         }
       } finally {
         if (!cancelled) {
           setIsLoading(false);
+          setIsRefreshing(false);
         }
       }
     }
@@ -68,8 +99,10 @@ export function useMarketMonitor(): MarketMonitorState {
     history,
     historyTimeframe,
     isLoading,
+    isRefreshing,
     isError: error !== null,
     error,
+    historyError,
     refetch: () => setReloadToken((value) => value + 1),
     setHistoryTimeframe,
   };

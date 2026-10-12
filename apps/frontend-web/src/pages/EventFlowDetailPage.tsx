@@ -1,5 +1,9 @@
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { readerValue } from "@/lib/readerLabels";
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
+import { readableWarning } from "@/lib/researchReading";
 import { useMemo, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Activity, ArrowRight, ExternalLink, FileText, Loader2, RefreshCw, ShieldAlert } from "lucide-react";
 import { ApiError } from "@/adapters/apiClient";
 import { reviewEventFlowEvent } from "@/adapters/eventFlow";
@@ -15,16 +19,30 @@ import { ImpactAssets } from "@/components/event-flow/ImpactAssets";
 import { RiskRadar } from "@/components/event-flow/RiskRadar";
 import { formatEventFlowHeadlineSummary, formatEventFlowSourceLabel, translateEventFlowValue } from "@/components/event-flow/eventFlowFormat";
 import { useEventFlow } from "@/hooks/useEventFlow";
+import { useEventFlowEventEvidence } from "@/hooks/useEventFlowEventEvidence";
 import { useReports } from "@/hooks/useReports";
 import { formatDateTime } from "@/lib/date";
 import { compactSourceLabel, dedupeSourceRefs, normalizeSourceRefs } from "@/lib/sourceRefs";
 import { CATEGORY_MAP, getReportDetailId, shortRunId } from "@/components/reports/reportListMeta";
 import { findRelatedBriefs } from "@/components/event-flow/eventFlowMatching";
 import { normalizeEventDateCandidates } from "@/components/event-flow/eventFlowDate";
-import type { Jin10ArticleBrief, Jin10ArticleBriefBundle, EventFlowTimelineItem } from "@/types/event-flow";
+import type {
+  EventFlowEvidenceIdentity,
+  EventFlowImpactReadModel,
+  EventFlowMarketReactionReadModel,
+  Jin10ArticleBrief,
+  Jin10ArticleBriefBundle,
+  EventFlowTimelineItem,
+} from "@/types/event-flow";
 import type { ReportIndexItem } from "@/types/reports";
 import type { SourceRef } from "@/types/common";
 import type { EventFlowTableRow } from "@/types/event-flow";
+import {
+  eventEvidenceIdentityLabel,
+  extractObservedEventWindowRows,
+  formatObservedEventWindowValue,
+  resolveEventPricingStatus,
+} from "@/components/event-flow/eventEvidenceFormat";
 
 const EVENT_FLOW_ASSET_LABELS: Record<string, string> = {
   xauusd: "黄金",
@@ -121,7 +139,7 @@ function buildFallbackRow(event: EventFlowTimelineItem): EventFlowTableRow {
     source: event.source ?? "事件流",
     assets: event.assets ?? event.affected_assets?.map(formatAssetToken).join(", ") ?? "—",
     impact: event.impact,
-    pricing: event.pricing ?? "未定价",
+    pricing: event.pricing ?? "未核验",
     period: event.period ?? "主线",
     stars: event.importance === "高" ? 5 : event.importance === "中" ? 3 : 1,
     verification_status: event.verification_status,
@@ -183,7 +201,7 @@ function EventRelatedBriefsCard({
       >
         <FAEmptyState
           title="当前事件暂无可匹配的快讯摘要"
-          description="说明事件读模型还缺显式关联键，当前只保留来源和报告下钻。"
+          description="尚未确认此事件与研究报告的对应关系；报告仅供进一步查阅。"
         />
       </FACard>
     );
@@ -299,11 +317,11 @@ function eventFromBrief(brief: Jin10ArticleBrief): EventFlowTimelineItem {
     type: "市场事件",
     importance: brief.display_bucket.includes("快讯") ? "中" : "低",
     status: "发展中",
-    impact: "混合",
+    impact: "未评估",
     source: "金十快讯摘要",
     assets: brief.asset_tags.join(", "),
     period: "短期",
-    pricing: "未定价",
+    pricing: "未核验",
     verification_status: brief.access_status === "readable" ? "single_source" : "needs_verification",
     risk_level: "unknown",
     event_kind: brief.display_bucket,
@@ -315,7 +333,7 @@ function eventFromBrief(brief: Jin10ArticleBrief): EventFlowTimelineItem {
 function formatArtifactValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (value && typeof value === "object") return JSON.stringify(value);
+  if (value && typeof value === "object") return "暂无可提取的研究说明";
   return "";
 }
 
@@ -324,8 +342,12 @@ function asDetailRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function numberOrZero(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+function asStringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function displayObservedCount(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
 }
 
 function sourceRefRenderKey(ref: SourceRef): string {
@@ -337,25 +359,6 @@ function sourceRefRenderKey(ref: SourceRef): string {
     ref.trade_date ?? "",
     ref.run_id ?? "",
   ].join("|");
-}
-
-function marketWindowRows(validation: Record<string, unknown>): Array<{ window: string; asset: string; direction: string; value: string }> {
-  const windows = asDetailRecord(validation.windows);
-  return Object.entries(windows)
-    .flatMap(([window, assets]) =>
-      Object.entries(asDetailRecord(assets)).map(([asset, movement]) => {
-        const item = asDetailRecord(movement);
-        const change = item.change_bp ?? item.pct_change ?? item.abs_change;
-        const suffix = item.change_bp !== undefined ? "bp" : item.pct_change !== undefined ? "%" : "";
-        return {
-          window,
-          asset: formatAssetToken(asset),
-          direction: String(item.direction ?? "unknown"),
-          value: change === undefined ? "—" : `${change}${suffix}`,
-        };
-      }),
-    )
-    .slice(0, 6);
 }
 
 function EventRelatedReportsCard({
@@ -374,10 +377,10 @@ function EventRelatedReportsCard({
       title={
         <div className="flex items-center gap-2">
           <FileText size={12} className="text-[var(--brand-hover)]" />
-          <span>关联报告</span>
+          <span>同日候选报告 · 关联未核验</span>
         </div>
       }
-      eyebrow="报告联动"
+      eyebrow="候选报告"
       accent="brand"
     >
       {isLoading ? (
@@ -390,11 +393,15 @@ function EventRelatedReportsCard({
         <FAEmptyState title="报告索引加载失败" description={error.message} />
       ) : reports.length === 0 ? (
         <FAEmptyState
-          title="暂无关联报告"
-          description="当前按事件日期与黄金主题做保守匹配，没有命中可跳转的报告。"
+          title="暂无同日候选报告"
+          description="当前仅按事件日期与黄金主题筛选候选，没有命中可跳转的报告；日期和主题筛选不构成事件依据。"
         />
       ) : (
-        <div className="divide-y divide-[var(--border-faint)]">
+        <div className="space-y-2">
+          <div className="rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-2.5 py-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-3)]">
+            以下仅是按事件日期与黄金主题筛选出的候选报告；关联关系尚未核验，不能作为事件事实或因果依据。
+          </div>
+          <div className="divide-y divide-[var(--border-faint)]">
           {reports.map((report) => {
             const meta = CATEGORY_MAP[report.type] ?? { label: translateEventFlowValue(report.type), color: "#64748b" };
             const detailId = getReportDetailId(report);
@@ -411,16 +418,84 @@ function EventRelatedReportsCard({
                     <div className="flex flex-wrap items-center gap-1.5">
                       <FAStatusPill tone="info">{meta.label}</FAStatusPill>
                       <FAStatusPill tone="dim">{report.trade_date}</FAStatusPill>
+                      <FAStatusPill tone="warn">关联未核验</FAStatusPill>
                     </div>
-                    <div className="mt-1 text-[12px] font-semibold text-[var(--fg-2)]">{meta.label} · {report.trade_date}</div>
-                    <div className="mt-1 text-[10px] text-[var(--fg-4)]">批次 {shortRunId(report.run_id)} · {formatReportFormatLabel(report.format)}</div>
+                    <div className="mt-1 text-[12px] font-semibold text-[var(--fg-2)]">同日候选 · {meta.label} · {report.trade_date}</div>
+                    <div className="mt-1 text-[10px] text-[var(--fg-4)]">报告日期 {report.trade_date}</div>
                   </div>
                   {detailId ? <ArrowRight size={14} className="mt-1 shrink-0 text-[var(--fg-5)]" /> : null}
                 </div>
               </button>
             );
           })}
+          </div>
         </div>
+      )}
+    </FACard>
+  );
+}
+
+function EventImpactReadModelCard({
+  impact,
+  error,
+  isLoading,
+  routeEventId,
+  identity,
+}: {
+  impact: EventFlowImpactReadModel | null;
+  error: Error | null;
+  isLoading: boolean;
+  routeEventId: string | null;
+  identity: EventFlowEvidenceIdentity;
+}) {
+  const rows = impact
+    ? [
+        ["影响路径", impact.impact_path],
+        ["黄金", impact.gold_impact],
+        ["白银", impact.silver_impact],
+        ["美元", impact.dollar_impact],
+        ["收益率", impact.yield_impact],
+        ["原油", impact.oil_impact],
+      ].filter((item): item is [string, string] => Boolean(item[1]))
+    : [];
+
+  return (
+    <FACard title="已有影响分析" eyebrow="事件依据" accent="info" bodyClassName="space-y-3">
+      {isLoading ? (
+        <div className="rounded-[var(--radius-sm)] bg-[var(--bg-card-inner)] p-3 text-[length:var(--type-caption)] text-[var(--fg-3)]">正在读取事件影响分析。</div>
+      ) : error && !impact ? (
+        <FAEmptyState title="影响分析读取失败" description={error.message} className="py-4" />
+      ) : !impact || impact.status === "unavailable" || impact.status === "error" || rows.length === 0 ? (
+        <>
+          {impact ? (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2 text-[length:var(--type-caption)] text-[var(--fg-4)]">
+              更新时间：{formatDateTime(impact.updated_at)} · {eventEvidenceIdentityLabel(identity)}
+            </div>
+          ) : null}
+          <FAEmptyState title="暂无已有影响分析" description="当前事实尚无对应影响分析，无法仅根据标题或事件分类确认因果关系。" className="py-4" />
+        </>
+      ) : (
+        <>
+          <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2 text-[length:var(--type-caption)] text-[var(--fg-4)]">
+            更新时间：{formatDateTime(impact.updated_at)}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <FAStatusPill tone={impact.status === "available" ? "up" : "warn"}>{translateEventFlowValue(impact.status)}</FAStatusPill>
+            <FAStatusPill tone={identity === "verified" ? "up" : "warn"}>{eventEvidenceIdentityLabel(identity)}</FAStatusPill>
+            {impact.verification_status ? <FAStatusPill tone="info">{translateEventFlowValue(impact.verification_status)}</FAStatusPill> : null}
+            {identity === "verified" && impact.pricing_status ? <FAStatusPill tone="dim">{translateEventFlowValue(impact.pricing_status)}</FAStatusPill> : identity !== "verified" ? <FAStatusPill tone="dim">未核验</FAStatusPill> : null}
+          </div>
+          <div className="grid gap-2 text-[length:var(--type-body-sm)] text-[var(--fg-2)] sm:grid-cols-2">
+            {rows.map(([label, value]) => (
+              <div key={label} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
+                <div className="fa-label font-semibold text-[var(--fg-5)]">{label}</div>
+                <div className="mt-1 break-words leading-5">{translateEventFlowValue(value)}</div>
+              </div>
+            ))}
+          </div>
+          <EvidenceRecordActions record={impact} label="本事件的已保存影响分析" />
+          <div className="text-[length:var(--type-caption)] text-[var(--fg-5)]">此处展示已保存的分析结果；行情是否确认该影响，请查看对应事件窗口。</div>
+        </>
       )}
     </FACard>
   );
@@ -429,17 +504,45 @@ function EventRelatedReportsCard({
 function MarketValidationPlaceholder({
   activeEvent,
   sourceRefs,
+  marketReaction,
+  marketReactionError,
+  isLoading,
+  routeEventId,
+  identity,
 }: {
   activeEvent: EventFlowTimelineItem;
   sourceRefs: SourceRef[];
+  marketReaction: EventFlowMarketReactionReadModel | null;
+  marketReactionError: Error | null;
+  isLoading: boolean;
+  routeEventId: string | null;
+  identity: EventFlowEvidenceIdentity;
 }) {
-  const validation = asDetailRecord(activeEvent.market_validation);
-  const snapshot = asDetailRecord(activeEvent.market_snapshot ?? validation.market_snapshot);
-  const confirmation = asDetailRecord(validation.confirmation_summary);
-  const windowRows = marketWindowRows(validation);
+  const validation = asDetailRecord(marketReaction?.market_validation);
+  // A regular event has a dedicated read model. If that request failed or
+  // returned unavailable, do not silently reuse overview validation from a
+  // different snapshot. Brief routes have no dedicated event endpoint and
+  // may still use the already supplied overview fields.
+  const eventValidation = marketReaction || marketReactionError ? {} : asDetailRecord(activeEvent.market_validation);
+  const resolvedValidation = Object.keys(validation).length > 0 ? validation : eventValidation;
+  const eventSnapshot = marketReaction || marketReactionError ? {} : asDetailRecord(activeEvent.market_snapshot);
+  const snapshot = asDetailRecord(marketReaction?.market_snapshot ?? eventSnapshot ?? resolvedValidation.market_snapshot);
+  const confirmation = asDetailRecord(resolvedValidation.confirmation_summary);
+  const windowRows = extractObservedEventWindowRows(resolvedValidation);
   const observedAssets = Array.isArray(snapshot.observed_assets) ? formatAssetList(snapshot.observed_assets.map(String)) : [];
   const missingAssets = Array.isArray(snapshot.missing_assets) ? formatAssetList(snapshot.missing_assets.map(String)) : [];
-  const hasValidation = Object.keys(validation).length > 0 || Object.keys(snapshot).length > 0;
+  const reactionStatus = marketReaction?.status ?? (marketReactionError ? "error" : asStringValue(resolvedValidation.status));
+  const reactionUnavailable = reactionStatus === "unavailable" || reactionStatus === "error";
+  const hasValidation = !reactionUnavailable && (Object.keys(resolvedValidation).length > 0 || Object.keys(snapshot).length > 0 || Boolean(marketReaction));
+  const hasObservedWindows = !reactionUnavailable && windowRows.length > 0;
+  const rawPricingStatus = marketReaction?.pricing_status ?? asStringValue(resolvedValidation.pricing_status);
+  const pricingStatus = translateEventFlowValue(resolveEventPricingStatus({
+    status: reactionStatus,
+    rawPricingStatus,
+    hasObservedWindows,
+    identity,
+  }));
+  const warningList = marketReaction?.warnings ?? [];
 
   return (
     <FACard
@@ -453,51 +556,75 @@ function MarketValidationPlaceholder({
       accent="warn"
       bodyClassName="space-y-3"
     >
-      {hasValidation ? (
+      {marketReaction ? (
+        <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2 text-[length:var(--type-caption)] text-[var(--fg-4)]">
+          更新时间：{formatDateTime(marketReaction.updated_at)} · {eventEvidenceIdentityLabel(identity)}
+        </div>
+      ) : null}
+      {isLoading ? (
+        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3 text-[length:var(--type-caption)] text-[var(--fg-3)]">
+          正在读取该事件的行情验证窗口；当前不会把事件标签当作已定价结论。
+        </div>
+      ) : marketReactionError && !hasValidation ? (
+        <FAEmptyState title="行情验证读取失败" description={marketReactionError.message} className="py-4" />
+      ) : reactionUnavailable ? (
+        <FAEmptyState title="行情验证不可用" description="后端没有返回可核验的事件窗口样本，当前定价状态保持为未核验。" className="py-4" />
+      ) : hasValidation ? (
         <>
+          <div className="flex flex-wrap items-center gap-2">
+            <FAStatusPill tone={hasObservedWindows ? "info" : "warn"}>{hasObservedWindows ? "已有窗口样本" : "尚无窗口样本"}</FAStatusPill>
+            <FAStatusPill tone={pricingStatus === "已定价" ? "up" : pricingStatus === "部分定价" ? "warn" : "dim"}>{pricingStatus}</FAStatusPill>
+            {reactionStatus ? <FAStatusPill tone={reactionStatus === "available" ? "up" : "warn"}>{translateEventFlowValue(reactionStatus)}</FAStatusPill> : null}
+          </div>
           <div className="grid gap-2 sm:grid-cols-3">
             {[
-              { label: "确认", value: numberOrZero(confirmation.confirmed_count) },
-              { label: "背离", value: numberOrZero(confirmation.contradicted_count) },
-              { label: "观测", value: numberOrZero(confirmation.observed_count) },
+              { label: "确认", value: displayObservedCount(confirmation.confirmed_count) },
+              { label: "背离", value: displayObservedCount(confirmation.contradicted_count) },
+              { label: "观测", value: displayObservedCount(confirmation.observed_count) },
             ].map((item) => (
               <div key={item.label} className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-2">
-                <div className="text-[10px] font-semibold text-[var(--fg-4)]">{item.label}</div>
+                <div className="fa-label font-semibold text-[var(--fg-4)]">{item.label}</div>
                 <div className="mt-1 font-mono text-[13px] font-semibold text-[var(--fg-1)]">{item.value}</div>
               </div>
             ))}
           </div>
-          <div className="grid gap-2 text-[11px] text-[var(--fg-3)]">
-            <div>当前定价标签：{translateEventFlowValue(activeEvent.pricing ?? String(validation.pricing_status ?? "未标注"))}</div>
+          <div className="grid gap-2 text-[length:var(--type-body-sm)] text-[var(--fg-3)]">
+            <div>当前定价标签：{pricingStatus}</div>
             <div>影响路径：{translateEventFlowValue(activeEvent.impact_path ?? "未返回")}</div>
-            <div>主窗口：{String(snapshot.primary_window ?? "未返回")}</div>
+            <div>主窗口：{String(snapshot.primary_window ?? "未返回").replace(/h$/, "小时").replace(/m$/, "分钟").replace(/d$/i, "天")}</div>
             <div>已观测资产：{observedAssets.length > 0 ? observedAssets.join(" / ") : "暂无"}</div>
             <div>缺失资产：{missingAssets.length > 0 ? missingAssets.join(" / ") : "暂无"}</div>
           </div>
+          {warningList.length > 0 ? (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-2.5 py-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-2)]">
+              <div className="mb-1 font-semibold text-[var(--warn)]">验证限制</div>
+              {warningList.map((warning) => <div key={warning}>· {readableWarning(warning)}</div>)}
+            </div>
+          ) : null}
           {windowRows.length > 0 ? (
             <div className="space-y-1.5">
               {windowRows.map((row) => (
                 <div
                   key={`${row.window}-${row.asset}`}
-                  className="grid grid-cols-[52px_72px_minmax(0,1fr)] gap-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-1.5 text-[10px] text-[var(--fg-3)]"
+                  className="grid grid-cols-[52px_72px_minmax(0,1fr)] gap-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-1.5 text-[length:var(--type-caption)] text-[var(--fg-3)]"
                 >
-                  <span className="font-mono text-[var(--fg-5)]">{row.window}</span>
-                  <span className="font-semibold text-[var(--fg-2)]">{row.asset}</span>
-                  <span className="truncate">{translateEventFlowValue(row.direction)} · {row.value}</span>
+                  <span className="font-mono text-[var(--fg-5)]">{row.window.replace(/h$/, "小时").replace(/m$/, "分钟").replace(/d$/i, "天")}</span>
+                  <span className="font-semibold text-[var(--fg-2)]">{formatAssetToken(row.asset)}</span>
+                  <span className="truncate">{translateEventFlowValue(row.direction)} · {formatObservedEventWindowValue(row)}</span>
                 </div>
               ))}
             </div>
           ) : (
-            <FAEmptyState title="暂无窗口行情反应" description="当前事件已返回验证结构，但窗口反应字段为空或缺少行情样本。" className="py-4" />
+            <FAEmptyState title="暂无窗口行情反应" description="当前事件已返回验证结构，但没有可用窗口样本，因此不能确认已定价或市场方向。" className="py-4" />
           )}
         </>
       ) : (
         <>
-          <div className="rounded-[var(--radius-md)] border border-[rgba(245,158,11,0.18)] bg-[rgba(245,158,11,0.06)] p-3 text-[11px] leading-5 text-[var(--fg-2)]">
-            当前详情页已拿到事件状态、来源和关联快讯，但后端尚未给此事件返回真实价格验证。这里明确展示边界，不把占位说明伪装成结论。
+          <div className="rounded-[var(--radius-md)] border border-[rgba(245,158,11,0.18)] bg-[rgba(245,158,11,0.06)] p-3 text-[length:var(--type-caption)] leading-5 text-[var(--fg-2)]">
+            此事件尚无真实价格验证，市场影响仍待确认。
           </div>
-          <div className="grid gap-2 text-[11px] text-[var(--fg-3)]">
-            <div>当前定价标签：{translateEventFlowValue(activeEvent.pricing ?? "未标注")}</div>
+          <div className="grid gap-2 text-[length:var(--type-body-sm)] text-[var(--fg-3)]">
+            <div>当前定价标签：未核验</div>
             <div>当前验证状态：{translateEventFlowValue(activeEvent.verification_status ?? "needs_verification")}</div>
             <div>后续接入项：黄金 / 美元指数 / 10年期美债 / 纽约原油 / 美元兑日元 事件窗口反应</div>
           </div>
@@ -518,6 +645,10 @@ function MarketValidationPlaceholder({
 
 export function EventFlowDetailPage() {
   const { eventId } = useParams<{ eventId: string }>();
+  const location = useLocation();
+  const returnToGold = location.state?.eventReturnTo === "/gold-mainlines";
+  const returnTo = returnToGold ? "/gold-mainlines" : "/event-flow";
+  const returnLabel = returnToGold ? "返回黄金主线" : "返回事件流";
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { data, isLoading, error, refetch } = useEventFlow();
@@ -526,6 +657,8 @@ export function EventFlowDetailPage() {
   const [reviewError, setReviewError] = useState<string | null>(null);
   const { indexItems, railLoading, railError } = useReports();
   const routeEventId = eventId ? decodeURIComponent(eventId) : "";
+  const evidenceEventId = routeEventId && !routeEventId.startsWith("brief_") ? routeEventId : null;
+  const eventEvidence = useEventFlowEventEvidence(evidenceEventId);
   const selectedBriefId = searchParams.get("briefId") ?? (routeEventId.startsWith("brief_") ? routeEventId.slice("brief_".length) : null);
   const allBriefs = data?.article_briefs?.briefs;
   const selectedBrief = selectedBriefId ? allBriefs?.find((brief) => brief.brief_id === selectedBriefId) ?? null : null;
@@ -605,10 +738,10 @@ export function EventFlowDetailPage() {
                   重试
                 </button>
                 <Link
-                  to="/event-flow"
+                  to={returnTo}
                   className="rounded-[var(--radius-md)] border border-[var(--border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--fg-3)]"
                 >
-                  返回事件流
+                  {returnLabel}
                 </Link>
               </div>
             }
@@ -622,13 +755,23 @@ export function EventFlowDetailPage() {
     { label: "类型", value: translateEventFlowValue(activeEvent.raw_event_type ?? activeEvent.type) },
     { label: "重要性", value: translateEventFlowValue(importanceLabel(activeEvent.importance)) },
     { label: "状态", value: translateEventFlowValue(activeEvent.status) },
-    { label: "定价", value: translateEventFlowValue(activeEvent.pricing ?? "未标注") },
+    { label: "定价", value: translateEventFlowValue(resolveEventPricingStatus({
+      status: evidenceEventId ? eventEvidence.marketReaction?.status ?? (eventEvidence.marketReactionError ? "error" : "unavailable") : asStringValue(asDetailRecord(activeEvent.market_validation).status),
+      rawPricingStatus: evidenceEventId ? eventEvidence.marketReaction?.pricing_status : asStringValue(asDetailRecord(activeEvent.market_validation).pricing_status),
+      hasObservedWindows: extractObservedEventWindowRows(eventEvidence.marketReaction?.market_validation ?? (evidenceEventId ? {} : activeEvent.market_validation)).length > 0,
+      identity: evidenceEventId ? eventEvidence.marketReactionIdentity : "unverified",
+    })) },
     { label: "验证", value: translateEventFlowValue(activeEvent.verification_status ?? "needs_verification") },
     { label: "资产", value: activeEvent.assets ?? "—" },
   ];
   const pageSource = formatEventFlowSourceLabel(data.source, 18).text;
   const eventSource = formatEventFlowSourceLabel(activeEvent.source ?? "—", 18).text;
   const headerTitle = formatEventFlowHeadlineSummary(activeEvent.title, 72);
+
+  function refreshEventDetail() {
+    refetch();
+    eventEvidence.refetch();
+  }
 
   async function requestReview() {
     if (!activeEvent) return;
@@ -658,16 +801,17 @@ export function EventFlowDetailPage() {
 
   return (
     <div className="finance-page-shell">
-      <div className="flex min-h-full flex-col gap-4">
+      <div className="flex min-h-full flex-col gap-4 overflow-visible">
         <FACard
           title="主线详情"
           eyebrow="事件流"
           accent="brand"
+          className="shrink-0"
           action={
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={refetch}
+                onClick={refreshEventDetail}
                 className="inline-flex items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-1.5 text-[11px] font-semibold text-[var(--fg-2)]"
               >
                 <RefreshCw size={12} />
@@ -689,20 +833,20 @@ export function EventFlowDetailPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <Link to="/event-flow" className="text-[11px] font-semibold text-[var(--brand-hover)] hover:text-[var(--brand)]">
-                  返回事件流
+                <Link to={returnTo} className="text-[11px] font-semibold text-[var(--brand-hover)] hover:text-[var(--brand)]">
+                  {returnLabel}
                 </Link>
-                <FAStatusPill tone={toTone(translateEventFlowValue(activeEvent.pricing ?? "未标注"))}>{translateEventFlowValue(activeEvent.pricing ?? "未标注")}</FAStatusPill>
+                <FAStatusPill tone={toTone(headerMetrics.find((item) => item.label === "定价")?.value)}>{headerMetrics.find((item) => item.label === "定价")?.value}</FAStatusPill>
                 <FAStatusPill tone={riskTone(activeEvent.risk_level)}>{translateEventFlowValue(activeEvent.risk_level ?? "unknown")}</FAStatusPill>
               </div>
               <div className="space-y-1">
-                <div className="text-[16px] font-semibold leading-7 text-[var(--fg-1)]">{headerTitle.lead}</div>
+                <div className="break-words text-[16px] font-semibold leading-7 text-[var(--fg-1)]">{headerTitle.lead}</div>
                 {headerTitle.subline ? (
                   <div className="text-[11px] leading-5 text-[var(--fg-4)]">{headerTitle.subline}</div>
                 ) : null}
               </div>
-              <div className="line-clamp-2 text-[12px] leading-6 text-[var(--fg-3)]">
-                {activeEvent.desc || "当前事件暂无更多正文说明。"}
+              <div className="break-words text-[12px] leading-6 text-[var(--fg-3)]">
+                {activeEvent.desc ? readerValue(activeEvent.desc, "中文事实说明尚未提供，请查阅原始来源；影响判断仍待核实。") : "当前事件暂无更多正文说明。"}
               </div>
             </div>
           </div>
@@ -714,6 +858,7 @@ export function EventFlowDetailPage() {
             {activeEvent.assets ? <FASourceTraceBadge source={activeEvent.assets} status="asset" tone="neutral" /> : null}
           </div>
 
+          <EvidenceRecordActions record={activeEvent} label="事件事实与引用" url={activeEvent.source_refs?.find((ref) => ref.source_url)?.source_url} />
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
             {headerMetrics.map((item) => (
               <div
@@ -728,19 +873,18 @@ export function EventFlowDetailPage() {
 
           {reviewReceipt ? (
             <div className="rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[11px] leading-5 text-[var(--fg-2)]">
-              已登记复核：{translateEventFlowValue(reviewReceipt.status)} · 运行 {reviewReceipt.runId ?? "—"} · 复核 {reviewReceipt.reviewId ?? "—"}
+              已登记复核：{translateEventFlowValue(reviewReceipt.status)}，可在复核中心跟踪处理。
             </div>
           ) : null}
           {reviewError ? (
             <div className="rounded-[var(--radius-sm)] border border-[var(--down-border)] bg-[var(--down-soft)] px-3 py-2 text-[11px] leading-5 text-[var(--down)]">
-              {reviewError}
+              {readerValue(reviewError, "复核登记失败，请稍后重试。")}
             </div>
           ) : null}
         </FACard>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div className="space-y-4">
-            <EventChainAnalysis chain={data.chain} activeEvent={activeEvent} />
 
             <FACard
               title={
@@ -755,7 +899,7 @@ export function EventFlowDetailPage() {
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
                 <div className="space-y-2">
                   <div className="text-[11px] font-semibold text-[var(--fg-3)]">事实摘要</div>
-                  <div className="text-[12px] leading-6 text-[var(--fg-2)]">{activeEvent.desc || "当前事件暂无更多事实摘要。"}</div>
+                  <div className="text-[12px] leading-6 text-[var(--fg-2)]">{activeEvent.desc ? readerValue(activeEvent.desc, "中文事实摘要尚未提供，请查阅原始来源。") : "当前事件暂无更多事实摘要。"}</div>
                   <dl className="grid gap-x-3 gap-y-2 text-[11px] text-[var(--fg-4)] sm:grid-cols-2">
                     <div className="min-w-0">
                       <dt className="text-[var(--fg-5)]">来源</dt>
@@ -778,7 +922,7 @@ export function EventFlowDetailPage() {
                 <div className="space-y-2 border-t border-[var(--border-faint)] pt-4 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
                   <div className="text-[11px] font-semibold text-[var(--fg-3)]">链路备注</div>
                   <div className="text-[12px] leading-6 text-[var(--fg-2)]">
-                    当前详情页仅保留已落库的事件事实、快讯摘要、来源引用与关联报告，避免把未验证的行情推断写成结论。
+                    同日候选报告尚未确认与此事件有关，不能当作事件影响依据。
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {activeEvent.verification_status ? <FAStatusPill tone="info">{translateEventFlowValue(activeEvent.verification_status)}</FAStatusPill> : null}
@@ -789,16 +933,24 @@ export function EventFlowDetailPage() {
               </div>
             </FACard>
 
-            <EventFlowReportInputsPanel
+            <EventImpactReadModelCard
+              impact={eventEvidence.impact}
+              error={eventEvidence.impactError}
+              isLoading={eventEvidence.impactLoading}
+              routeEventId={evidenceEventId ?? activeEvent.id}
+              identity={eventEvidence.impactIdentity}
+            />
+
+            <ResearchDetails label="查看研究材料详情"><EventFlowReportInputsPanel
               briefSummary={data.brief_summary}
               articleBriefs={data.article_briefs}
               reportInputItems={data.report_input_items ?? []}
               sourceRefs={data.source_refs ?? []}
               showBriefSummaryCard={false}
-            />
+            /></ResearchDetails>
 
             {relatedBriefs.length > 0 ? <EventRelatedBriefsCard briefs={relatedBriefs} feishuMonitorDate={feishuMonitorDate} /> : null}
-            <EventFlowSourceRefsCard eventRefs={eventRefs} briefRefs={briefRefs} pageRefs={pageRefs} />
+            <ResearchDetails label="查看来源记录"><EventFlowSourceRefsCard eventRefs={eventRefs} briefRefs={briefRefs} pageRefs={pageRefs} /></ResearchDetails>
             <EventRelatedReportsCard
               reports={relatedReports}
               isLoading={railLoading}
@@ -813,7 +965,18 @@ export function EventFlowDetailPage() {
           </div>
 
           <aside className="space-y-4">
-            <MarketValidationPlaceholder activeEvent={activeEvent} sourceRefs={evidenceRefs} />
+            <MarketValidationPlaceholder
+              activeEvent={activeEvent}
+              sourceRefs={dedupeSourceRefs([
+                ...evidenceRefs,
+                ...(eventEvidence.marketReaction?.source_refs ?? []),
+              ])}
+              marketReaction={eventEvidence.marketReaction}
+              marketReactionError={eventEvidence.marketReactionError}
+              isLoading={eventEvidence.marketReactionLoading}
+              routeEventId={evidenceEventId ?? activeEvent.id}
+              identity={eventEvidence.marketReactionIdentity}
+            />
             <RiskRadar radar={data.radar} />
             <ImpactAssets table={relatedRows} />
           </aside>

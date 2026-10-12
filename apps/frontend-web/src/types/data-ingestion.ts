@@ -172,6 +172,7 @@ export interface DataSourceItem {
   source_group: string;
   source_type: DataSourceAccessType;
   endpoint: string | null;
+  source_url?: string | null;
   configured: boolean;
   raw_ingested: boolean;
   parsed: boolean;
@@ -181,7 +182,7 @@ export interface DataSourceItem {
   latest_update_time?: string | null;
   freshness_status?: string | null;
   freshness_reason?: string | null;
-  row_count: number;
+  row_count: number | null;
   status: DataIngestionStatus;
   error_message: string | null;
   source_refs: string[];
@@ -291,7 +292,7 @@ export interface DataSourceStatusViewModel {
   latest_update_time?: string | null;
   freshness_status?: string | null;
   freshness_reason?: string | null;
-  row_count: number;
+  row_count: number | null;
   error_message?: string | null;
   status_reason?: string | null;
   snapshot_id?: string | null;

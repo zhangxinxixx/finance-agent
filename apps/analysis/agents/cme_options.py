@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
-
-if TYPE_CHECKING:
-    from apps.analysis.context_bundle import ConsumerProjection
 
 _AGENT_NAME = "cme_options_agent"
 _MODULE = "options"
@@ -22,22 +18,13 @@ _WATCHLIST = [
     "expiration summaries",
     "data quality",
     "FINAL/PRELIM source status",
+    "OI-Signed GEX Proxy / dealer position unknown",
+    "Selected Expiry Window Proxy Gamma Flip",
+    "OI/Gamma Concentration Zone",
 ]
 
 
-def analyze_cme_options(
-    snapshot: dict[str, Any],
-    *,
-    created_at: datetime | None = None,
-    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
-) -> AgentOutput:
-    from apps.analysis.context_bundle import validate_consumer_projection
-
-    projection = validate_consumer_projection(context_projection, "options") if context_projection is not None else None
-    return _bind_context_projection(_analyze_cme_options(snapshot, created_at=created_at), projection)
-
-
-def _analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
+def analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
     """Analyze already-computed CME options snapshot data without mutating inputs or reading files."""
 
     created_at = created_at or datetime.now(timezone.utc)
@@ -67,11 +54,7 @@ def _analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | Non
     options = snapshot.get("options")
 
     if not isinstance(options, dict) or options.get("status") != "available":
-        reason = (
-            "options section is missing"
-            if not isinstance(options, dict)
-            else f"options status is {options.get('status')!r}"
-        )
+        reason = "options section is missing" if not isinstance(options, dict) else f"options status is {options.get('status')!r}"
         return AgentOutput(
             version=_VERSION,
             agent_name=_AGENT_NAME,
@@ -122,9 +105,7 @@ def _analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | Non
         if strike is not None:
             finding += f" near {strike:g}"
         else:
-            invalid_conditions.append(
-                "Top wall score has no numeric strike/level; precise wall price was not invented."
-            )
+            invalid_conditions.append("Top wall score has no numeric strike/level; precise wall price was not invented.")
         if wall_score is not None:
             finding += f" with score {wall_score:.2f}"
             confidence += min(wall_score * 0.10, 0.10)
@@ -141,6 +122,7 @@ def _analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | Non
     _add_iv_skew(options, key_findings)
     _add_block_pnt(options, key_findings)
     _add_expiration_summary(options, key_findings)
+    _add_proxy_semantics(options, key_findings, risk_points)
 
     if not _has_numeric_price(options):
         status = AgentStatus.PARTIAL
@@ -148,10 +130,13 @@ def _analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | Non
         invalid_conditions.append("No reliable price/level fields were available; precise levels were omitted.")
 
     source_status = _source_status(options)
-    if source_status and source_status.upper() != "FINAL":
+    normalized_source_status = source_status.upper()
+    if normalized_source_status in {"PRELIM", "PRELIMINARY"}:
+        key_findings.append("CME PRELIM is usable for current research without an extra version discount; later revisions remain auditable.")
+    elif source_status and normalized_source_status != "FINAL":
         status = AgentStatus.PARTIAL
         confidence -= 0.12
-        risk_points.append(f"CME options source status is {source_status}; treat conclusions as provisional.")
+        risk_points.append(f"CME options source status is {source_status}; the version is unknown or unsupported.")
     elif not source_status:
         status = AgentStatus.PARTIAL
         confidence -= 0.08
@@ -159,9 +144,7 @@ def _analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | Non
 
     prelim_count = _prelim_count(options)
     if prelim_count > 0:
-        status = AgentStatus.PARTIAL
-        confidence -= 0.08
-        risk_points.append(f"Data quality reports {prelim_count:g} PRELIM-derived option rows/signals.")
+        key_findings.append(f"Data quality records {prelim_count:g} PRELIM-derived option rows/signals; PRELIM remains usable without an extra version discount.")
 
     warnings = _data_quality_warnings(options)
     if warnings:
@@ -181,6 +164,15 @@ def _analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | Non
     bias = _bias_from_score(score)
     bullish_drivers, bearish_drivers = _directional_drivers(options)
     confidence = _clamp(confidence + min(abs(score) * 0.05, 0.12), 0.0, 0.78 if status is AgentStatus.PARTIAL else 0.90)
+    research_mode = bool(snapshot.get("daily_research"))
+    if research_mode:
+        bias = AgentBias.NEUTRAL
+        bullish_drivers, bearish_drivers = [], []
+        key_findings.append("期权墙、正负 GEX 与到期结构用于约束波动和观察区间；没有参与者净头寸及交易方向证据，不据此生成黄金多空判断。")
+        risk_points.append("期货执行价与 XAUUSD 现货不能直接等同；PRELIM、远期锚和 IV 假设限制结构解释。")
+    evidence_items = _options_evidence_items(options=options, bias=bias, confidence=confidence, source_refs=source_refs)
+    if research_mode:
+        evidence_items = [dict(item, direction="neutral", role="constraint", directional_vote=False) for item in evidence_items]
 
     return AgentOutput(
         version=_VERSION,
@@ -199,12 +191,15 @@ def _analyze_cme_options(snapshot: dict[str, Any], *, created_at: datetime | Non
         status=status,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
-        evidence_items=_options_evidence_items(
-            options=options, bias=bias, confidence=confidence, source_refs=source_refs
-        ),
+        evidence_items=evidence_items,
         input_payload={
             "bullish_drivers": bullish_drivers,
             "bearish_drivers": bearish_drivers,
+            "analysis_role": "volatility_and_expiry_constraint" if research_mode else "legacy_options_view",
+            "gex_semantics": _dict(options.get("gex_semantics")) or _dict(_dict(options.get("gex")).get("semantics")),
+            "dealer_position_unknown": True,
+            "expiry_selection": _dict(options.get("expiry_selection")) or _dict(_dict(options.get("data_source")).get("expiry_selection")),
+            "reconciliation": _dict(options.get("reconciliation")) or _dict(_dict(options.get("data_source")).get("reconciliation")),
         },
     )
 
@@ -336,6 +331,34 @@ def _add_gex(
         risk_points.append("Per-expiry GEX summaries are unavailable or incomplete.")
 
 
+def _add_proxy_semantics(
+    options: dict[str, Any],
+    key_findings: list[str],
+    risk_points: list[str],
+) -> None:
+    """Expose the v2 GEX meaning without changing legacy directional scoring."""
+
+    semantics = _dict(options.get("gex_semantics")) or _dict(_dict(options.get("gex")).get("semantics"))
+    label = _text(semantics.get("label")) or "OI-Signed GEX Proxy"
+    if semantics or options.get("dealer_position_unknown") is True:
+        key_findings.append(f"GEX semantics: {label}; dealer position is unknown and no dealer inventory is inferred.")
+    else:
+        risk_points.append("GEX semantics metadata is missing; treat Gamma Zero/GEX as legacy model output only.")
+
+    gamma_flip = _dict(_dict(options.get("gex")).get("gamma_flip"))
+    if gamma_flip:
+        price = _to_float(gamma_flip.get("price") or gamma_flip.get("level"))
+        if price is not None:
+            key_findings.append(f"Selected Expiry Window Proxy Gamma Flip is {price:g}.")
+        else:
+            risk_points.append("Selected Expiry Window Proxy Gamma Flip has no numeric level.")
+    concentration = _dict(options.get("oi_gamma_concentration_zone")) or _dict(_dict(options.get("gex")).get("oi_gamma_concentration_zone"))
+    if concentration:
+        levels = concentration.get("strike_levels")
+        if isinstance(levels, list) and levels:
+            key_findings.append("OI/Gamma Concentration Zone levels: " + ", ".join(str(level) for level in levels[:5]) + ".")
+
+
 def _add_expiry_structure_findings(options: dict[str, Any], key_findings: list[str]) -> list[dict[str, Any]]:
     structures = _expiry_structures(options)
     for item in structures[:2]:
@@ -383,9 +406,7 @@ def _add_block_pnt(options: dict[str, Any], key_findings: list[str]) -> None:
     if strike is not None:
         key_findings.append(f"Block/PNT activity appears near {strike:g} with block {block:g} and PNT {pnt:g}.")
     else:
-        key_findings.append(
-            f"Block/PNT activity is present with block {block:g} and PNT {pnt:g}, but no exact level is available."
-        )
+        key_findings.append(f"Block/PNT activity is present with block {block:g} and PNT {pnt:g}, but no exact level is available.")
 
 
 def _add_expiration_summary(options: dict[str, Any], key_findings: list[str]) -> None:
@@ -494,21 +515,18 @@ def _summary(
     if expiry_structures:
         phrases: list[str] = []
         if aggregate_gamma_zero is not None:
-            phrases.append(f"跨月 Gamma Zero 约 {aggregate_gamma_zero:.1f}")
+            phrases.append(
+                f"Selected Expiry Window Proxy Gamma Flip（GC期货坐标）约 {aggregate_gamma_zero:.1f}"
+            )
         if len(expiry_structures) >= 2:
             first = expiry_structures[0]
             second = expiry_structures[1]
             same_structure = first["structure_label"] == second["structure_label"]
-            same_side = (
-                first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"]
-                and first["position_vs_gamma_zero"] != "unknown"
-            )
+            same_side = first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"] and first["position_vs_gamma_zero"] != "unknown"
             if same_structure and same_side:
-                relation = {"below": "均低于", "above": "均高于", "near": "均贴近"}.get(
-                    first["position_vs_gamma_zero"], "均围绕"
-                )
+                relation = {"below": "均低于", "above": "均高于", "near": "均贴近"}.get(first["position_vs_gamma_zero"], "均围绕")
                 phrases.append(
-                    f"{first['expiry']} / {second['expiry']} {relation}各自零轴，且{first['structure_label']}"
+                    f"{first['expiry']} / {second['expiry']} {relation}各自 Proxy Gamma Flip，且{first['structure_label']}"
                 )
             else:
                 phrases.append(_summary_phrase_for_expiry(first))
@@ -522,9 +540,16 @@ def _summary(
             if resistance is not None:
                 sr_parts.append(f"{resistance:g} 上方初阻")
             phrases.append("、".join(sr_parts))
-        prefix = "CME 期权 PRELIM 只读结构" if source_status and source_status != "FINAL" else "CME 期权只读结构"
-        suffix = "，仍需等待 FINAL 确认" if status is AgentStatus.PARTIAL else ""
-        return f"{prefix}：{'；'.join(phrases)}；确信度 {confidence:.2f}{suffix}。"
+        prefix = (
+            "CME 期权 PRELIM 只读结构"
+            if source_status.upper() in {"PRELIM", "PRELIMINARY"}
+            else "CME 期权只读结构"
+        )
+        suffix = f"；PARTIAL 缺口：{_partial_summary_gap(options)}" if status is AgentStatus.PARTIAL else ""
+        return (
+            f"{prefix}：{'；'.join(phrases)}；OI-Signed GEX Proxy，dealer方向未知；"
+            f"确信度 {confidence:.2f}{suffix}。"
+        )
     if status is AgentStatus.PARTIAL:
         return f"CME 期权只读视图 {bias.value}（输入不完整/临时）；确信度 {confidence:.2f}。"
     return f"CME 期权只读视图 {bias.value}；确信度 {confidence:.2f}。"
@@ -603,7 +628,9 @@ def _add_calibration_findings(
                 near = _text(sig_dict.get("near_month", ""))
                 next_m = _text(sig_dict.get("next_month", ""))
                 conf = sig_dict.get("roll_confidence", 0)
-                key_findings.append(f"Expiry roll {activity} ({near} → {next_m}, confidence {conf:.2f}).")
+                key_findings.append(
+                    f"Expiry roll {activity} ({near} → {next_m}, confidence {conf:.2f})."
+                )
 
     # Calibration warnings
     warnings = cal.get("calibration_warnings")
@@ -712,10 +739,7 @@ def _structure_confidence_bonus(expiry_structures: list[dict[str, Any]]) -> floa
         first, second = expiry_structures[0], expiry_structures[1]
         if first["structure_label"] == second["structure_label"]:
             bonus += 0.04
-        if (
-            first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"]
-            and first["position_vs_gamma_zero"] != "unknown"
-        ):
+        if first["position_vs_gamma_zero"] == second["position_vs_gamma_zero"] and first["position_vs_gamma_zero"] != "unknown":
             bonus += 0.03
     if all(item["gamma_zero"] is not None for item in expiry_structures[:2]):
         bonus += 0.03
@@ -728,12 +752,25 @@ def _summary_phrase_for_expiry(item: dict[str, Any]) -> str:
     position = item["position_vs_gamma_zero"]
     gamma_zero = item["gamma_zero"]
     if position == "below" and gamma_zero is not None:
-        return f"{expiry} 当前低于 Gamma Zero {gamma_zero:.1f}，{label}"
+        return f"{expiry} 当前低于 Proxy Gamma Flip {gamma_zero:.1f}，{label}"
     if position == "above" and gamma_zero is not None:
-        return f"{expiry} 当前高于 Gamma Zero {gamma_zero:.1f}，{label}"
+        return f"{expiry} 当前高于 Proxy Gamma Flip {gamma_zero:.1f}，{label}"
     if gamma_zero is not None:
-        return f"{expiry} 围绕 Gamma Zero {gamma_zero:.1f}，{label}"
+        return f"{expiry} 围绕 Proxy Gamma Flip {gamma_zero:.1f}，{label}"
     return f"{expiry} {label}"
+
+
+def _partial_summary_gap(options: dict[str, Any]) -> str:
+    gaps: list[str] = []
+    if not _list_of_dicts(options.get("wall_scores")):
+        gaps.append("wall_scores 缺失")
+    if not _has_numeric_price(options):
+        gaps.append("有效价格/执行价字段缺失")
+    source_status = _source_status(options).upper()
+    if source_status not in {"FINAL", "PRELIM", "PRELIMINARY"}:
+        gaps.append("CME 版本未知")
+    gaps.extend(_data_quality_warnings(options)[:2])
+    return "；".join(dict.fromkeys(gaps)) or "部分辅助字段缺失，详见结构化风险项"
 
 
 def _support_resistance_levels(options: dict[str, Any]) -> tuple[float | None, float | None]:
@@ -741,13 +778,3 @@ def _support_resistance_levels(options: dict[str, Any]) -> tuple[float | None, f
     support = _first_with_number(sr.get("support"), ("strike", "price", "level"))
     resistance = _first_with_number(sr.get("resistance"), ("strike", "price", "level"))
     return support, resistance
-
-
-def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
-    if projection is None:
-        return output
-    from apps.analysis.context_bundle import consume_projection_for_agent_output
-
-    return AgentOutput.model_validate(
-        consume_projection_for_agent_output(projection, output, expected_consumer="options")
-    )

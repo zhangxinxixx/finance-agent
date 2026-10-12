@@ -272,6 +272,8 @@ function normalizeCmeScenarioPath(value: unknown) {
     triggers: asStringArray(raw.triggers),
     targets: Array.isArray(raw.targets) ? raw.targets.map(asNumber).filter((item): item is number => item !== null) : [],
     invalidation: asStringArray(raw.invalidation),
+    coordinate_space: asString(raw.coordinate_space) ?? undefined,
+    execution_scope: asString(raw.execution_scope) ?? undefined,
   };
 }
 
@@ -319,6 +321,9 @@ function normalizeCmePositioning(value: unknown): LiveStrategyCmePositioning {
       repair_detected: asBoolean(structure.repair_detected),
       trend_launch_watch: asBoolean(structure.trend_launch_watch),
       trend_confirmed: asBoolean(structure.trend_confirmed),
+      reference_coordinate_space: asString(structure.reference_coordinate_space) ?? null,
+      execution_scope: asString(structure.execution_scope) ?? null,
+      execution_note: asString(structure.execution_note) ?? null,
     },
     scenario_paths: Array.isArray(raw.scenario_paths) ? raw.scenario_paths.map(normalizeCmeScenarioPath) : [],
   };

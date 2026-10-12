@@ -39,15 +39,16 @@ from database.queries.report import upsert_report_artifact, upsert_report_item
 client = TestClient(app)
 
 _PROJECT_ROOT_PATCH = "apps.api.data_service._PROJECT_ROOT"
-_RS_PROJECT_ROOT_PATCH = "apps.api.services.report_service._PROJECT_ROOT"
+_RS_PROJECT_ROOT_PATCH = "apps.api.services._storage._PROJECT_ROOT"
 _DB_SESSION_PATCH = "apps.api.data_service._try_db_session"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_report_api_from_runtime_db(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_report_api_from_runtime_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Filesystem report tests must not consume the developer database."""
 
     monkeypatch.setattr(_DB_SESSION_PATCH, lambda: None)
+    monkeypatch.setattr("apps.api.services.report_jin10_service._JIN10_EXTERNAL_ROOT", tmp_path / "external-jin10")
 
 
 # ── helpers ──
@@ -197,7 +198,11 @@ def test_get_final_report_latest(tmp_path: Path):
     _make_tree(tmp_path, {
         "storage/outputs/final_report/XAUUSD/2026-05-14/run-1/final_report.md": md,
     })
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    session = _make_report_session()
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, lambda: session),
+    ):
         data = get_final_report_latest()
     assert data is not None
     assert data["asset"] == "XAUUSD"
@@ -215,7 +220,11 @@ def test_get_final_report_latest_multiple_runs(tmp_path: Path):
         "storage/outputs/final_report/XAUUSD/2026-05-14/run-late/final_report.md": md_new,
         "storage/outputs/final_report/XAUUSD/2026-05-10/old/final_report.md": "# Old",
     })
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    session = _make_report_session()
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, lambda: session),
+    ):
         data = get_final_report_latest()
     assert data is not None
     assert data["trade_date"] == "2026-05-14"
@@ -267,7 +276,11 @@ def test_get_strategy_card_latest(tmp_path: Path):
         "storage/outputs/strategy_card/XAUUSD/2026-05-14/run-1/strategy_card.json": sc_json,
         "storage/outputs/strategy_card/XAUUSD/2026-05-14/run-1/strategy_card.md": sc_md,
     })
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    session = _make_report_session()
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, lambda: session),
+    ):
         data = get_strategy_card_latest()
     assert data is not None
     assert data["asset"] == "XAUUSD"
@@ -286,7 +299,11 @@ def test_get_strategy_card_latest_json_only_no_md(tmp_path: Path):
     _make_tree(tmp_path, {
         "storage/outputs/strategy_card/XAUUSD/2026-05-14/run-1/strategy_card.json": sc_json,
     })
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    session = _make_report_session()
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, lambda: session),
+    ):
         data = get_strategy_card_latest()
     assert data is not None
     assert data["json"]["bias"] == "bearish"
@@ -352,7 +369,12 @@ def test_strategy_cards_latest_route(tmp_path: Path):
         "storage/outputs/strategy_card/XAUUSD/2026-05-14/run-route/strategy_card.json": sc_json,
         "storage/outputs/strategy_card/XAUUSD/2026-05-14/run-route/strategy_card.md": "# Route latest",
     })
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch(_RS_PROJECT_ROOT_PATCH, tmp_path), mock.patch(_DB_SESSION_PATCH, return_value=None):
+    session = _make_report_session()
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_RS_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, lambda: session),
+    ):
         data = api_strategy_cards_latest()
     assert data["strategy_card_id"] == "sc-route-latest"
     assert data["run_id"] == "run-route"
@@ -464,7 +486,7 @@ def test_list_reports_index_full(tmp_path: Path):
     reports = index["reports"]
 
     types = {r["type"] for r in reports}
-    assert "final_report" in types
+    assert "final_report" in types  # Readable history has no formal publication authority.
     assert "strategy_card" in types
     assert "options_report" in types
     assert "macro_report" in types
@@ -473,12 +495,8 @@ def test_list_reports_index_full(tmp_path: Path):
     # 验证 final_report
     fr = [r for r in reports if r["type"] == "final_report"]
     assert len(fr) == 1
-    assert fr[0]["trade_date"] == "2026-05-14"
-    assert fr[0]["run_id"] == "run-1"
-    assert fr[0]["available"] is True
-    assert fr[0]["title"] == "XAUUSD 综合报告（2026-05-14）"
-    assert fr[0]["family"] == "final_report_markdown"
-    assert isinstance(fr[0]["generated_at"], str)
+    assert fr[0]["authority"] == "historical_only"
+    assert fr[0]["publish_allowed"] is False
 
     # 验证 strategy_card
     sc = [r for r in reports if r["type"] == "strategy_card"]
@@ -505,7 +523,7 @@ def test_list_reports_index_full(tmp_path: Path):
     assert isinstance(followup[0]["generated_at"], str)
 
 
-def test_list_reports_index_merges_newer_filesystem_final_report_with_older_db(tmp_path: Path):
+def test_list_reports_index_includes_unregistered_filesystem_history(tmp_path: Path):
     db_report = {
         "type": "final_report",
         "trade_date": "2026-05-07",
@@ -530,14 +548,44 @@ def test_list_reports_index_merges_newer_filesystem_final_report_with_older_db(t
     }
 
     with (
-        mock.patch("apps.api.services.report_service._collect_reports_from_db", side_effect=lambda report_type, *_: [db_report] if report_type == "final_report" else []),
-        mock.patch("apps.api.services.report_service._collect_reports", side_effect=lambda base_rel, *_: [filesystem_report] if base_rel == "final_report" else []),
+        mock.patch("apps.api.services.report_index_service._collect_reports_from_db", side_effect=lambda report_type, *_: [db_report] if report_type == "final_report" else []),
+        mock.patch("apps.api.services.report_index_service._collect_reports", side_effect=lambda base_rel, *_: [filesystem_report] if base_rel == "final_report" else []),
         mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
     ):
         index = list_reports_index()
 
     assert any(item["run_id"] == "db-old" for item in index["reports"])
     assert any(item["run_id"] == "fs-new" for item in index["reports"])
+
+
+def test_list_reports_index_orders_same_day_versions_by_generated_at(tmp_path: Path):
+    older = {
+        "type": "final_report",
+        "trade_date": "2026-09-28",
+        "run_id": "zz-older",
+        "report_id": "observation_report:zz-older",
+        "family": "final_report_markdown",
+        "format": "markdown+json",
+        "available": True,
+        "generated_at": "2026-09-28T10:00:00+00:00",
+    }
+    newer = {
+        **older,
+        "run_id": "aa-newer",
+        "report_id": "observation_report:aa-newer",
+        "generated_at": "2026-09-28T11:00:00+00:00",
+    }
+    with (
+        mock.patch("apps.api.services.report_index_service._collect_registered_reports_from_db", return_value=[older, newer]),
+        mock.patch("apps.api.services.report_index_service._collect_reports_from_db", return_value=[]),
+        mock.patch("apps.api.services.report_index_service._collect_reports", return_value=[]),
+        mock.patch("apps.api.services.report_index_service._collect_jin10_reports", return_value=[]),
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+    ):
+        index = list_reports_index()
+
+    observations = [item for item in index["reports"] if item["type"] == "final_report"]
+    assert [item["run_id"] for item in observations] == ["aa-newer", "zz-older"]
 
 
 def test_list_reports_index_includes_db_only_registered_report(tmp_path: Path):
@@ -606,7 +654,78 @@ def test_list_reports_index_includes_db_only_registered_report(tmp_path: Path):
     assert isinstance(item["generated_at"], str)
 
 
-def test_list_reports_index_prefers_registered_report_over_legacy_final_result(tmp_path: Path):
+def test_list_reports_index_hides_registered_observation_report(tmp_path: Path):
+    session = _make_report_session()
+    run_id = "run-observation-index-001"
+    report_id = f"observation_report:{run_id}"
+    upsert_report_item(
+        session,
+        {
+            "report_id": report_id,
+            "family": "observation_report_markdown",
+            "report_type": "observation_report",
+            "title": "XAUUSD 综合研究报告（仅供观察）",
+            "asset": "XAUUSD",
+            "trade_date": "2026-09-08",
+            "run_id": run_id,
+            "snapshot_id": "snapshot-observation-index-001",
+            "data_status": "partial",
+            "lifecycle_status": "generated",
+            "source_refs": [],
+            "metadata": {
+                "publish_allowed": False,
+                "output_mode": "observe",
+                "review_status": "blocked",
+            },
+        },
+    )
+    upsert_report_artifact(
+        session,
+        {
+            "artifact_id": f"{report_id}:md",
+            "report_id": report_id,
+            "artifact_type": "analysis_md",
+            "file_path": f"storage/outputs/observation_report/XAUUSD/2026-09-08/{run_id}/final_report.md",
+            "version": "1",
+            "status": "generated",
+            "content_type": "text/markdown",
+            "is_primary": True,
+        },
+    )
+    upsert_report_artifact(
+        session,
+        {
+            "artifact_id": f"{report_id}:json",
+            "report_id": report_id,
+            "artifact_type": "structured_json",
+            "file_path": f"storage/outputs/observation_report/XAUUSD/2026-09-08/{run_id}/structured_report.json",
+            "version": "1",
+            "status": "generated",
+            "content_type": "application/json",
+        },
+    )
+    session.commit()
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, return_value=session),
+    ):
+        index = list_reports_index()
+
+    matches = [item for item in index["reports"] if item["report_id"] == report_id]
+    assert matches == []
+    # Index filtering does not delete the registered historical item/artifacts.
+    from database.models.report import ReportItem, ReportArtifact
+    assert session.query(ReportItem).filter_by(report_id=report_id).one().family == "observation_report_markdown"
+    assert session.query(ReportArtifact).filter_by(report_id=report_id).count() == 2
+    from apps.api.services.report_service import get_report_detail, get_report_artifacts
+    with mock.patch(_RS_PROJECT_ROOT_PATCH, tmp_path):
+        detail = get_report_detail(session, report_id)
+        assert detail is not None and detail.report_id == report_id
+        assert len(get_report_artifacts(session, report_id)) == 2
+
+
+def test_list_reports_index_rejects_registered_report_without_run_or_snapshot_proof(tmp_path: Path):
     session = _make_report_session()
     run_id = "db-run-dup"
     _make_tree(
@@ -691,7 +810,8 @@ def test_list_reports_index_prefers_registered_report_over_legacy_final_result(t
     ]
     assert len(final_reports) == 1
     assert final_reports[0]["report_id"] == f"final_report:{run_id}"
-    assert final_reports[0]["title"] == "Registered final report"
+    assert final_reports[0]["authority"] == "historical_only"
+    assert final_reports[0]["publish_allowed"] is False
 
 
 def test_get_options_snapshot_prefers_new_cme_output(tmp_path: Path):
@@ -818,7 +938,7 @@ def test_list_reports_index_includes_options_report_from_new_cme_runs(tmp_path: 
 def test_list_reports_index_empty(tmp_path: Path):
     with (
         mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
-        mock.patch("apps.api.services.report_service._collect_jin10_external_weekly_reports", return_value=[]),
+        mock.patch("apps.api.services.report_jin10_service._collect_jin10_external_weekly_reports", return_value=[]),
     ):
         index = list_reports_index()
     assert index["asset"] == "XAUUSD"
@@ -852,6 +972,74 @@ def test_list_unified_dates_combines_modules_and_latest_run(tmp_path: Path):
     }
     assert dates["2026-05-16"]["modules"] == ["macro"]
     assert dates["2026-05-07"]["modules"] == ["options"]
+
+
+def test_list_unified_dates_uses_generated_time_and_observation_runs(tmp_path: Path):
+    older_snapshot = tmp_path / "storage/features/snapshots/XAUUSD/2026-09-28/zz-older/premarket_snapshot.json"
+    newer_snapshot = tmp_path / "storage/features/snapshots/XAUUSD/2026-09-28/aa-newer/premarket_snapshot.json"
+    _make_tree(
+        tmp_path,
+        {
+            str(older_snapshot.relative_to(tmp_path)): json.dumps({"macro": {"status": "available"}}),
+            str(newer_snapshot.relative_to(tmp_path)): json.dumps({"macro": {"status": "available"}}),
+            "storage/outputs/observation_report/XAUUSD/2026-09-28/aa-newer/final_report.md": "observe",
+            "storage/outputs/observation_strategy_card/XAUUSD/2026-09-28/aa-newer/strategy_card.json": "{}",
+        },
+    )
+    os.utime(older_snapshot, (100, 100))
+    os.utime(newer_snapshot, (200, 200))
+
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+        data = list_unified_dates()
+
+    [item] = [entry for entry in data["dates"] if entry["trade_date"] == "2026-09-28"]
+    assert item["latest_run_id"] == "aa-newer"
+    assert "observation_report" in item["modules"]
+    assert "observation_strategy_card" in item["modules"]
+
+
+def test_list_unified_dates_prefers_registered_time_over_copied_file_mtime(tmp_path: Path):
+    copied_old = tmp_path / "storage/features/snapshots/XAUUSD/2026-09-28/zz-old/premarket_snapshot.json"
+    registered_new = tmp_path / "storage/features/snapshots/XAUUSD/2026-09-28/aa-new/premarket_snapshot.json"
+    _make_tree(
+        tmp_path,
+        {
+            str(copied_old.relative_to(tmp_path)): json.dumps({"macro": {"status": "available"}}),
+            str(registered_new.relative_to(tmp_path)): json.dumps({"macro": {"status": "available"}}),
+        },
+    )
+    os.utime(copied_old, (1790600000, 1790600000))
+    os.utime(registered_new, (1790550000, 1790550000))
+    registered_reports = [
+        {
+            "type": "observation_report",
+            "family": "observation_report_markdown",
+            "trade_date": "2026-09-28",
+            "run_id": "zz-old",
+            "available": True,
+            "generated_at": "2026-09-28T01:00:00+00:00",
+        },
+        {
+            "type": "observation_report",
+            "family": "observation_report_markdown",
+            "trade_date": "2026-09-28",
+            "run_id": "aa-new",
+            "available": True,
+            "generated_at": "2026-09-28T02:00:00+00:00",
+        },
+    ]
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(
+            "apps.api.services.report_index_service._collect_registered_reports_from_db",
+            return_value=registered_reports,
+        ),
+    ):
+        data = list_unified_dates()
+
+    [item] = [entry for entry in data["dates"] if entry["trade_date"] == "2026-09-28"]
+    assert item["latest_run_id"] == "aa-new"
 
 
 def test_api_reports_dates_200(tmp_path: Path):
@@ -898,8 +1086,7 @@ def test_get_jin10_report_bundle_latest_prefers_agent_analysis(tmp_path: Path):
     assert data["views"]["agent_analysis"]["available"] is True
     assert data["views"]["agent_analysis"]["asset_base_url"] == "/api/jin10/report-bundle/2026-05-21/219824/asset/"
     assert data["views"]["daily_visual"]["kind"] == "html"
-    assert data["views"]["raw_article"]["kind"] == "markdown"
-    assert data["views"]["raw_article"]["asset_base_url"] == "/api/jin10/report-bundle/2026-05-21/219824/asset/"
+    assert "raw_article" not in data["views"]
 
 
 def test_get_jin10_agent_analysis_latest_requires_accepted_daily_report(tmp_path: Path):
@@ -936,7 +1123,7 @@ def test_get_jin10_report_bundle_keeps_missing_views_explicit(tmp_path: Path):
     assert data is not None
     assert data["default_view"] == "daily_visual"
     assert data["views"]["agent_analysis"]["available"] is False
-    assert data["views"]["raw_article"]["available"] is False
+    assert "raw_article" not in data["views"]
     assert data["views"]["daily_visual"]["available"] is True
 
 
@@ -990,7 +1177,34 @@ def test_list_reports_index_hides_rejected_jin10_report(tmp_path: Path):
 
     with (
         mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
-        mock.patch("apps.api.services.report_service._JIN10_EXTERNAL_ROOT", tmp_path / "jin10-reports"),
+        mock.patch("apps.api.services.report_jin10_service._JIN10_EXTERNAL_ROOT", tmp_path / "jin10-reports"),
+    ):
+        index = list_reports_index()
+
+    assert [report for report in index["reports"] if report["type"] == "jin10_daily_report"] == []
+
+
+def test_list_reports_index_hides_jin10_report_pending_review(tmp_path: Path):
+    _make_tree(tmp_path, {
+        "storage/outputs/jin10/2026-06-12/221593/daily_analysis.html": "<html><body>daily</body></html>",
+        "storage/outputs/jin10/2026-06-12/221593/daily_analysis.json": json.dumps(
+            {
+                "article_id": "221593",
+                "report_type": "daily",
+                "quality_audit": {
+                    "status": "needs_review",
+                    "reasons": [
+                        {"code": "daily_baseline_fallback", "message": "weekly baseline used"},
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+    })
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch("apps.api.services.report_jin10_service._JIN10_EXTERNAL_ROOT", tmp_path / "jin10-reports"),
     ):
         index = list_reports_index()
 
@@ -1009,7 +1223,8 @@ def test_list_reports_index_different_dates(tmp_path: Path):
     fr = [r for r in index["reports"] if r["type"] == "final_report"]
     sc = [r for r in index["reports"] if r["type"] == "strategy_card"]
     assert len(fr) == 1
-    assert fr[0]["trade_date"] == "2026-05-07"
+    assert fr[0]["authority"] == "historical_only"
+    assert fr[0]["publish_allowed"] is False
     assert len(sc) == 1
     assert sc[0]["trade_date"] == "2026-05-14"
 
@@ -1022,7 +1237,11 @@ def test_api_final_report_latest_200(tmp_path: Path):
     _make_tree(tmp_path, {
         "storage/outputs/final_report/XAUUSD/2026-05-14/run-1/final_report.md": md,
     })
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    session = _make_report_session()
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, lambda: session),
+    ):
         resp = client.get("/api/final-report/latest")
     assert resp.status_code == 200
     data = resp.json()
@@ -1058,7 +1277,11 @@ def test_api_strategy_card_latest_200(tmp_path: Path):
     _make_tree(tmp_path, {
         "storage/outputs/strategy_card/XAUUSD/2026-05-14/run-1/strategy_card.json": sc_json,
     })
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    session = _make_report_session()
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_DB_SESSION_PATCH, lambda: session),
+    ):
         resp = client.get("/api/strategy-card/latest")
     assert resp.status_code == 200
     data = resp.json()
@@ -1104,14 +1327,14 @@ def test_api_jin10_report_bundle_latest_200(tmp_path: Path):
 def test_api_jin10_report_bundle_asset_200(tmp_path: Path):
     _make_tree(tmp_path, {
         "storage/outputs/jin10/2026-05-21/219824/raw_article_report.json": "{}",
-        "storage/parsed/jin10/2026-05-21/219824/figures/fig_p2_001.png": "png-bytes",
+        "storage/outputs/jin10/2026-05-21/219824/figures/fig_p2_001.png": "png-bytes",
     })
     with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
         resp = client.get("/api/jin10/report-bundle/2026-05-21/219824/asset/figures/fig_p2_001.png")
     assert resp.status_code == 200
 
 
-def test_api_jin10_report_bundle_asset_serves_canonical_external_jpeg(tmp_path: Path):
+def test_api_jin10_report_bundle_asset_rejects_external_source_jpeg(tmp_path: Path):
     external_root = tmp_path / "external-jin10"
     image_path = external_root / "2026-05-21" / "daily" / "219824" / "images" / "page-001.jpg"
     _make_tree(
@@ -1125,13 +1348,13 @@ def test_api_jin10_report_bundle_asset_serves_canonical_external_jpeg(tmp_path: 
     )
     with (
         mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
-        mock.patch("apps.api.services.report_service._JIN10_EXTERNAL_ROOT", external_root),
+        mock.patch("apps.api.services.report_jin10_service._JIN10_EXTERNAL_ROOT", external_root),
     ):
         resp = client.get("/api/jin10/report-bundle/2026-05-21/219824/asset/images/page-001.jpg")
-    assert resp.status_code == 200
+    assert resp.status_code == 404
 
 
-def test_api_jin10_report_bundle_asset_resolves_article_id_for_suffixed_run(tmp_path: Path):
+def test_api_jin10_report_bundle_asset_does_not_resolve_parsed_or_external_for_suffixed_run(tmp_path: Path):
     external_root = tmp_path / "external-jin10"
     image_path = external_root / "2026-05-21" / "daily" / "219824" / "images" / "page-001.jpg"
     run_id = "219824-benchmark-v2"
@@ -1150,7 +1373,7 @@ def test_api_jin10_report_bundle_asset_resolves_article_id_for_suffixed_run(tmp_
     )
     with (
         mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
-        mock.patch("apps.api.services.report_service._JIN10_EXTERNAL_ROOT", external_root),
+        mock.patch("apps.api.services.report_jin10_service._JIN10_EXTERNAL_ROOT", external_root),
     ):
         figure_resp = client.get(
             f"/api/jin10/report-bundle/2026-05-21/{run_id}/asset/figures/fig_p2_001.png"
@@ -1158,8 +1381,8 @@ def test_api_jin10_report_bundle_asset_resolves_article_id_for_suffixed_run(tmp_
         image_resp = client.get(
             f"/api/jin10/report-bundle/2026-05-21/{run_id}/asset/images/page-001.jpg"
         )
-    assert figure_resp.status_code == 200
-    assert image_resp.status_code == 200
+    assert figure_resp.status_code == 404
+    assert image_resp.status_code == 404
 
 
 def test_api_jin10_report_bundle_exact_404(tmp_path: Path):

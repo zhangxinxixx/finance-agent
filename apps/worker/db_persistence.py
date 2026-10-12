@@ -80,8 +80,12 @@ def db_persist_agent_outputs(
             "watchlist": list(ao.watchlist),
             "invalid_conditions": list(ao.invalid_conditions),
             "summary": ao.summary,
-            "payload": ao.model_dump(mode="json"),
+            "payload": {**ao.model_dump(mode="json"), "input_payload": {
+                **(ao.input_payload or {}), "input_validation": snapshot.get("input_validation")}},
         }
+        cleanup = (ao.input_payload or {}).get("output_cleanup")
+        if isinstance(cleanup, dict) and cleanup.get("schema_version") == 1 and cleanup.get("status") == "purged":
+            payload["payload"]["output_cleanup"] = dict(cleanup)
         _runner_patchable("upsert_agent_output", _default_upsert_agent_output)(db, payload)
         logger.info("DB: persisted agent output %s/%s", agent_name, ao.module)
 
@@ -147,7 +151,8 @@ def db_persist_final_result(
         "invalid_conditions": list(card.invalid_conditions),
         "strategy_card": card.model_dump(mode="json"),
         "run_summaries": {"gold_runtime_summary": gold_runtime_summary} if isinstance(gold_runtime_summary, dict) else {},
-        "payload": card.model_dump(mode="json"),
+        "payload": {**card.model_dump(mode="json"), "structured_report": composite_outputs.get("structured_report"),
+                    "input_validation": snapshot.get("input_validation")},
     }
 
     paths = {
@@ -245,23 +250,16 @@ def ensure_review_items(
                 }
             )
 
-    persist_review_items(db, review_batch)
-
-
-def persist_review_items(db: Any, review_items: list[dict[str, Any]]) -> None:
-    """Persist externally assembled review items through the worker DB boundary."""
-    if not review_items:
-        return
-    for review_item in review_items:
+    for review_item in review_batch:
         try:
             from database.queries import review as review_queries
 
             _runner_patchable("upsert_review_item", review_queries.upsert_review_item)(db, review_item)
         except Exception:
             logger.exception("Failed to upsert review item %s", review_item.get("review_id"))
-    if review_items:
+    if review_batch:
         db.commit()
-        logger.info("Persisted %d review items", len(review_items))
+        logger.info("Auto-created %d review items for run %s", len(review_batch), run_id)
 
 
 def _file_sha256(path: str | None) -> str | None:

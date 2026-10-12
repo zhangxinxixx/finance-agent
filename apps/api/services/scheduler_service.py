@@ -9,11 +9,43 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
+import httpx
 from sqlalchemy import text
 from sqlalchemy.orm import Session, selectinload
 
 from apps.api.services.source_service import get_data_source_statuses
+from apps.runtime.state_machine import map_dagster_status_to_task_status
 from database.models.task import TaskRun
+
+
+_DAGSTER_SCHEDULES_QUERY = """
+query SchedulerOverviewSchedules($repositorySelector: RepositorySelector!) {
+  schedulesOrError(repositorySelector: $repositorySelector) {
+    __typename
+    ... on Schedules {
+      results {
+        name
+        pipelineName
+        cronSchedule
+        executionTimezone
+        scheduleState {
+          status
+          id
+          runs(limit: 1) {
+            runId
+            status
+            creationTime
+          }
+        }
+        futureTicks(limit: 1) {
+          results { timestamp }
+        }
+      }
+    }
+    ... on PythonError { message }
+  }
+}
+"""
 
 
 def utc_now() -> datetime:
@@ -171,8 +203,8 @@ def get_scheduler_overview(
     # 3. 数据源状态
     source_status = _get_data_source_status(db)
 
-    # 4. Cron 作业状态
-    cron_jobs = _get_cron_job_status()
+    # 4. Dagster 调度状态（活动调度唯一事实源）
+    cron_jobs, cron_jobs_error = _get_dagster_schedule_status()
 
     # 5. 产出物摘要
     artifacts_summary = _get_artifacts_summary()
@@ -216,6 +248,8 @@ def get_scheduler_overview(
         "daily_summary": daily_summary,
         "data_source_status": source_status,
         "cron_jobs": cron_jobs,
+        "cron_jobs_source": "dagster",
+        "cron_jobs_error": cron_jobs_error,
         "artifacts_summary": artifacts_summary,
         "flash_stats": flash_stats,
         "input_source_summary": input_source_summary,
@@ -329,43 +363,87 @@ def _get_data_source_status(db: Session) -> dict:
         return {"ok": 0, "error": 0, "not_connected": 0, "total": 0}
 
 
-def _get_cron_job_status() -> list[dict]:
-    """获取本地调度作业状态。"""
+def _dagster_timestamp_iso(value: Any) -> str | None:
     try:
-        from pathlib import Path
-        import json
-        jobs_file = Path(
-            os.getenv(
-                "FINANCE_AGENT_SCHEDULER_JOBS_FILE",
-                str(Path.home() / ".finance-agent" / "cron" / "jobs.json"),
-            )
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def _get_dagster_schedule_status() -> tuple[list[dict[str, Any]], str | None]:
+    """读取 Dagster schedule；失败时显式返回错误，不回退 Hermes 历史配置。"""
+    dagster_url = os.getenv("DAGSTER_GRAPHQL_URL", "http://127.0.0.1:3333/graphql")
+    variables = {
+        "repositorySelector": {
+            "repositoryName": os.getenv("DAGSTER_REPOSITORY_NAME", "__repository__"),
+            "repositoryLocationName": os.getenv(
+                "DAGSTER_REPOSITORY_LOCATION_NAME",
+                "dagster_finance.definitions",
+            ),
+        }
+    }
+    try:
+        response = httpx.post(
+            dagster_url,
+            json={"query": _DAGSTER_SCHEDULES_QUERY, "variables": variables},
+            timeout=3.0,
         )
-        if not jobs_file.exists():
-            return []
-        with open(jobs_file) as f:
-            data = json.load(f)
-        jobs = data if isinstance(data, list) else data.get("jobs", [])
-        return [
-            {
-                "job_id": j.get("job_id", ""),
-                "name": j.get("name", ""),
-                "schedule": j.get("schedule", ""),
-                "enabled": j.get("enabled", False),
-                "last_run_at": j.get("last_run_at"),
-                "last_status": j.get("last_status"),
-                "next_run_at": j.get("next_run_at"),
-            }
-            for j in jobs
-        ]
-    except Exception:
-        return []
+        response.raise_for_status()
+        payload = response.json()
+        graphql_errors = payload.get("errors") or []
+        if graphql_errors:
+            messages = [str(item.get("message") or "unknown GraphQL error") for item in graphql_errors]
+            raise RuntimeError("; ".join(messages))
+
+        result = (payload.get("data") or {}).get("schedulesOrError") or {}
+        if result.get("__typename") != "Schedules":
+            raise RuntimeError(str(result.get("message") or "Dagster schedules unavailable"))
+
+        jobs: list[dict[str, Any]] = []
+        for item in result.get("results") or []:
+            state = item.get("scheduleState") or {}
+            state_status = str(state.get("status") or "UNKNOWN").upper()
+            enabled = state_status == "RUNNING"
+            last_run = next(iter(state.get("runs") or []), {})
+            future_tick = next(iter((item.get("futureTicks") or {}).get("results") or []), {})
+            next_tick_at = _dagster_timestamp_iso(future_tick.get("timestamp"))
+            cron_schedule = str(item.get("cronSchedule") or "")
+            jobs.append(
+                {
+                    "job_id": str(item.get("name") or state.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                    "schedule": {
+                        "kind": "cron",
+                        "expr": cron_schedule,
+                        "display": cron_schedule,
+                    },
+                    "enabled": enabled,
+                    "last_run_at": _dagster_timestamp_iso(last_run.get("creationTime")),
+                    "last_status": (
+                        map_dagster_status_to_task_status(last_run.get("status"))
+                        if last_run.get("status")
+                        else None
+                    ),
+                    "next_run_at": next_tick_at if enabled else None,
+                    "source": "dagster",
+                    "status": state_status,
+                    "pipeline_name": str(item.get("pipelineName") or ""),
+                    "execution_timezone": item.get("executionTimezone"),
+                    "next_tick_at": next_tick_at,
+                }
+            )
+        return jobs, None
+    except Exception as exc:
+        return [], f"Dagster schedule query failed: {exc}"
 
 
 def _get_artifacts_summary() -> dict:
     """获取产出物摘要。"""
     try:
         from pathlib import Path
-        storage = Path(__file__).resolve().parents[3] / "storage"
+        from apps.api.services._storage import _PROJECT_ROOT
+        from apps.runtime.storage_paths import configured_storage_root
+        storage = configured_storage_root() or _PROJECT_ROOT / "storage"
         today = utc_now().strftime("%Y-%m-%d")
 
         def count_files(dirpath: Path, pattern: str) -> int:
@@ -564,9 +642,22 @@ def _build_input_source_matrix(candidate_runs: list[TaskRun]) -> list[dict[str, 
         latest_update_time = _source_latest_update_time(source)
         latest_artifact = _source_latest_artifact(source)
         has_data_evidence = _source_has_data_evidence(source, latest_update_time, latest_artifact)
-        task_log_status = "connected" if latest_task else "data_only" if has_data_evidence else "waiting"
+        currently_configured = bool(source.get("configured")) and str(source.get("status") or "") != "disabled"
+        task_log_status = (
+            "waiting"
+            if not currently_configured
+            else "connected"
+            if latest_task
+            else "data_only"
+            if has_data_evidence
+            else "waiting"
+        )
 
-        if task_log_status == "connected":
+        if not currently_configured and str(source.get("status") or "") == "disabled":
+            task_log_label = "当前已禁用，保留历史任务与数据记录"
+        elif not currently_configured:
+            task_log_label = "当前未配置，保留历史任务与数据记录"
+        elif task_log_status == "connected":
             task_log_label = "任务与日志已接入"
         elif task_log_status == "data_only":
             task_log_label = "仅数据接入，缺任务日志"
@@ -575,6 +666,7 @@ def _build_input_source_matrix(candidate_runs: list[TaskRun]) -> list[dict[str, 
 
         notes_parts = [
             str(source.get("gating_reason") or "").strip(),
+            str((metadata.get("runtime_control") or {}).get("reason") or "").strip(),
             str(metadata.get("notes") or "").strip(),
         ]
         notes = "；".join(part for part in notes_parts if part)

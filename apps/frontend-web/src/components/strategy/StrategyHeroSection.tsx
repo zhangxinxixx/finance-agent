@@ -1,3 +1,4 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type {
@@ -9,6 +10,7 @@ import type {
   StrategyWeekendReportRefViewModel,
 } from "@/types/strategy";
 import { directionIcon, directionTone, formatConfidence, formatDate, sourceLabel, sourceTone, statusTone, strategySentence, strategyValueLabel } from "./strategyFormat";
+import { strategyAssetLabel, strategyEvidenceLabel } from "./strategyDisplayLabels";
 import { SourceRefList } from "./StrategySourceRefs";
 
 export function StrategyHeroSection({
@@ -47,12 +49,12 @@ export function StrategyHeroSection({
       <div className="flex flex-wrap items-center gap-2">
         <FAStatusPill tone={statusTone(hero.status)}>{strategyValueLabel(hero.status)}</FAStatusPill>
         <FAStatusPill tone={sourceTone(source)}>{sourceLabel(source)}</FAStatusPill>
-        <FAStatusPill tone="info">{asset}</FAStatusPill>
+        <FAStatusPill tone="info">{strategyAssetLabel(asset)}</FAStatusPill>
         <FAStatusPill tone={tone}>
           <DirIcon size={12} />
           {strategyValueLabel(hero.direction)}
         </FAStatusPill>
-        <FAStatusPill tone="neutral">置信度 {confidenceLabel}</FAStatusPill>
+        <FAStatusPill tone="neutral">置信度 {confidenceLabel}（非胜率）</FAStatusPill>
         <FAStatusPill tone="neutral">{sampleSize} 样本</FAStatusPill>
         {hasActionableBias ? <FAStatusPill tone="dim">总体判断 {strategySentence(hero.bias)}</FAStatusPill> : null}
       </div>
@@ -69,7 +71,7 @@ export function StrategyHeroSection({
         formalTradeDate={hero.trade_date}
       />
 
-      <SourceRefList refs={hero.source_refs} />
+      <ResearchDetails label="查看依据记录"><SourceRefList refs={hero.source_refs} /></ResearchDetails>
     </FACard>
   );
 }
@@ -95,10 +97,10 @@ function TradingFrameworkSummary({
   weekendContext: StrategyWeekendContextViewModel | null;
   formalTradeDate: string | null;
 }) {
-  const mainScenario = strategySentence(scenario?.main_scenario) || "后端未生成主场景，当前不能给出日内交易框架。";
-  const triggers = normalizeFrameworkItems([...(scenario?.trigger_conditions ?? []), ...(scenario?.confirmation_conditions ?? [])], 4);
-  const invalidations = normalizeFrameworkItems([...(scenario?.invalidation_conditions ?? []), ...(scenario?.risk_points ?? [])], 5);
-  const watchlist = normalizeFrameworkItems(scenario?.watchlist ?? [], 6);
+  const mainScenario = strategyEvidenceLabel(scenario?.main_scenario) || "后端未生成主场景，当前不能给出日内交易框架。";
+  const triggers = normalizeFrameworkItems([...(scenario?.trigger_conditions ?? []), ...(scenario?.confirmation_conditions ?? [])]);
+  const invalidations = normalizeFrameworkItems([...(scenario?.invalidation_conditions ?? []), ...(scenario?.risk_points ?? [])]);
+  const watchlist = normalizeFrameworkItems(scenario?.watchlist ?? []);
   const resistance = scenario?.key_levels.resistance ?? [];
   const support = scenario?.key_levels.support ?? [];
 
@@ -111,7 +113,7 @@ function TradingFrameworkSummary({
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <FAStatusPill tone="neutral">方向 {directionLabel}</FAStatusPill>
-          <FAStatusPill tone="neutral">置信度 {confidenceLabel}</FAStatusPill>
+          <FAStatusPill tone="neutral">置信度 {confidenceLabel}（非胜率）</FAStatusPill>
         </div>
       </div>
 
@@ -151,15 +153,17 @@ function TradingFrameworkSummary({
 function WeekendContextBlock({ context }: { context: StrategyWeekendContextViewModel | null }) {
   if (!context || context.status !== "active") return null;
   const outlook = context.monday_outlook;
-  const recent = (context.recent_context ?? []).filter(Boolean).slice(0, 3);
-  const qualityText = context.quality_flags.length ? context.quality_flags.join(", ") : "上下文可用";
+  const recent = (context.recent_context ?? []).filter(Boolean);
+  const qualityText = context.quality_flags.length ? context.quality_flags.map(strategyEvidenceLabel).join("、") : "上下文可用";
+  const outlookDirection = strategyEvidenceLabel(outlook.direction);
+  const outlookSummary = strategyEvidenceLabel(outlook.summary || context.message);
   return (
     <div className="mb-3 rounded-[var(--radius-md)] border border-[var(--brand-border)] bg-[var(--brand-soft)] px-3 py-2.5">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">周末模式 · 周一开盘预测</div>
-          <div className="mt-0.5 text-[12px] font-semibold text-[var(--fg-1)]">{outlook.direction}</div>
-          <div className="mt-1 max-w-4xl text-[11px] leading-5 text-[var(--fg-3)]">{outlook.summary || context.message}</div>
+          <div className="mt-0.5 text-[12px] font-semibold text-[var(--fg-1)]">{outlookDirection}</div>
+          <div className="mt-1 max-w-4xl text-[11px] leading-5 text-[var(--fg-3)]">{outlookSummary}</div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <FAStatusPill tone="info">最新 {formatDate(context.latest_report_date)}</FAStatusPill>
@@ -200,7 +204,7 @@ function ReportRefLine({
   report?: StrategyWeekendReportRefViewModel | null;
   emptyText?: string;
 }) {
-  const title = report?.title || report?.type || emptyText;
+  const title = strategyEvidenceLabel(report?.title || emptyText);
   return (
     <div className="flex gap-2 text-[10px] leading-5 text-[var(--fg-3)]">
       {label ? <span className="w-10 shrink-0 text-[var(--fg-5)]">{label}</span> : <span className="w-10 shrink-0" />}
@@ -211,7 +215,7 @@ function ReportRefLine({
 }
 
 function CompactList({ label, items, emptyText }: { label: string; items: string[]; emptyText: string }) {
-  const normalized = normalizeFrameworkItems(items ?? [], 3);
+  const normalized = normalizeFrameworkItems(items ?? []);
   return (
     <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
       <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">{label}</div>
@@ -233,7 +237,7 @@ function CompactList({ label, items, emptyText }: { label: string; items: string
 
 function DailyUpdateBlock({ update, formalTradeDate }: { update: StrategyDailyUpdateViewModel | null; formalTradeDate: string | null }) {
   const title = update?.date ? `今日更新层 ${update.date}` : "今日更新层";
-  const message = update?.message || "今日更新层未接入或暂无可读状态。";
+  const message = strategyEvidenceLabel(update?.message || "今日更新层未接入或暂无可读状态。");
   const tone = update?.queue_count ? "var(--warn)" : "var(--up)";
   const hasFormalGenerationGap = Boolean(update?.date && formalTradeDate && !isSameCalendarDate(update.date, formalTradeDate));
   return (
@@ -247,22 +251,22 @@ function DailyUpdateBlock({ update, formalTradeDate }: { update: StrategyDailyUp
           <FAStatusPill tone={update?.queue_count ? "warn" : "up"}>
             待加工 {update?.queue_count ?? 0}
           </FAStatusPill>
-          <FAStatusPill tone="neutral">高优先 {update?.high_priority_count ?? 0}</FAStatusPill>
+          <FAStatusPill tone="neutral">高优先 {update?.high_priority_count ?? "未提供"}</FAStatusPill>
         </div>
       </div>
       {hasFormalGenerationGap ? (
         <div className="mt-2 rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-2.5 py-2 text-[10px] leading-5 text-[var(--fg-3)]">
           <span className="font-semibold text-[var(--warn)]">正式策略缺口：</span>
-          当前只检测到 {update?.date} 的更新层，正式 StrategyCard 仍锚定 {formalTradeDate}。
-          缺少 `premarket` 综合分析生成任务，所以没有当天或前几天的正式分析策略。
+          当前只检测到 {update?.date} 的更新层，正式策略卡仍锚定 {formalTradeDate}。
+          缺少盘前综合分析生成任务，所以没有当天或前几天的正式分析策略。
         </div>
       ) : null}
       {update?.items?.length ? (
         <ul className="mt-2 grid gap-1.5 lg:grid-cols-2">
-          {update.items.slice(0, 4).map((item, idx) => (
+          {update.items.map((item, idx) => (
             <li key={`${item.title}-${idx}`} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-1.5 text-[10px] leading-4 text-[var(--fg-3)]">
               <span className="mr-1 font-semibold" style={{ color: tone }}>{item.priority}</span>
-              {item.title}
+              {strategyEvidenceLabel(item.title)}
               {item.gold_impact ? <span className="ml-1 text-[var(--fg-5)]">· {strategyValueLabel(item.gold_impact)}</span> : null}
             </li>
           ))}
@@ -319,7 +323,7 @@ function LevelRow({ label, values, tone }: { label: string; values: number[]; to
     <div className="mt-2 flex flex-wrap items-center gap-1.5">
       <span className="w-8 text-[10px] text-[var(--fg-5)]">{label}</span>
       {values.length ? (
-        values.slice(0, 5).map((level) => (
+        values.map((level) => (
           <span key={`${label}-${level}`} className={`fa-num rounded-[var(--radius-sm)] border px-1.5 py-0.5 text-[10px] font-semibold ${className}`}>
             {level}
           </span>
@@ -331,15 +335,15 @@ function LevelRow({ label, values, tone }: { label: string; values: number[]; to
   );
 }
 
-function normalizeFrameworkItems(items: string[], maxItems: number): string[] {
+function normalizeFrameworkItems(items: string[], maxItems?: number): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const item of items) {
-    const text = strategySentence(item);
+    const text = strategyEvidenceLabel(item);
     if (!text || seen.has(text)) continue;
     seen.add(text);
     result.push(text);
-    if (result.length >= maxItems) break;
+    if (maxItems !== undefined && result.length >= maxItems) break;
   }
   return result;
 }

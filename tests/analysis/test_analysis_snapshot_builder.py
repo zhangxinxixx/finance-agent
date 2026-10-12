@@ -46,7 +46,7 @@ def _formal_market_snapshots():
     market = build_market_price_snapshot(
         candidates=[
             _formal_bar(
-                asset="XAUUSD", timeframe="5m", source="jin10_mcp_derived_5m",
+                asset="XAUUSD", timeframe="5m", source="fixture_xauusd_primary_5m",
                 source_ref={"provider_symbol": "XAUUSD", "instrument_type": "otc_spot_quote_proxy", "source_role": "market_primary", "reference": "market://xau"},
                 open_time=_FORMAL_AS_OF - timedelta(minutes=10), price=2400,
             ),
@@ -624,11 +624,11 @@ def test_build_analysis_snapshot_carries_fixed_gold_analysis_context() -> None:
     assert any(ref.get("article_id") == "weekly-1" for ref in snapshot["source_refs"])
 
 
-def test_build_technical_snapshot_uses_jin10_quote_ohlc() -> None:
+def test_build_technical_snapshot_uses_twelvedata_quote_ohlc() -> None:
     snapshot = build_analysis_snapshot(
         asset="XAUUSD",
         trade_date="2026-05-14",
-        run_id="jin10-technical",
+        run_id="twelvedata-technical",
         macro_snapshot=None,
         options_snapshot=None,
         collected_points=[
@@ -636,15 +636,16 @@ def test_build_technical_snapshot_uses_jin10_quote_ohlc() -> None:
                 "symbol": "XAUUSD",
                 "date": "2026-05-14",
                 "value": 3300.0,
-                "source": "jin10_quote",
+                "source": "twelvedata_quote",
+                "raw_path": "raw/technical/twelvedata_quote/2026-05-14/XAUUSD.json",
             }
         ],
         source_refs=[
             {
                 "symbol": "XAUUSD",
-                "source": "jin10_quote",
-                "source_url": "https://mcp.jin10.com/mcp",
-                "raw_path": "raw/technical/jin10_quote/2026-05-14/XAUUSD.json",
+                "source": "twelvedata_quote",
+                "source_url": "https://api.twelvedata.com/quote",
+                "raw_path": "raw/technical/twelvedata_quote/2026-05-14/XAUUSD.json",
                 "notes": {"open": 3280.0, "high": 3320.0, "low": 3270.0},
             }
         ],
@@ -652,8 +653,9 @@ def test_build_technical_snapshot_uses_jin10_quote_ohlc() -> None:
 
     assert snapshot["technical"]["status"] == "available"
     assert snapshot["technical"]["data"]["price"] == 3300.0
-    assert snapshot["technical"]["data"]["atr14"] == 50.0
-    assert snapshot["technical"]["data"]["source_refs"][0]["source"] == "jin10_quote"
+    assert snapshot["technical"]["data"]["atr14"] is None
+    assert snapshot["technical"]["data"]["daily_range"] == 50.0
+    assert snapshot["technical"]["data"]["source_refs"][0]["source"] == "twelvedata_quote"
 
 
 @pytest.mark.parametrize("macro_snapshot, options_snapshot", [(None, None), (_macro_snapshot(), None), (None, _options_snapshot())])
@@ -894,7 +896,7 @@ def test_build_excludes_future_market_points_but_keeps_upcoming_news_events():
     assert [flash["url"] for flash in snapshot["news"]["data"]["recent_flashes"]] == [
         "https://example.test/flash-old"
     ]
-    assert set(snapshot["jin10"]["quotes"]) == {"DXY"}
+    assert snapshot["jin10"]["quotes"] == {}
     assert snapshot["jin10"]["counts"]["flash_news"] == 1
     assert snapshot["jin10"]["counts"]["calendar_events"] == 1
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta
 
 from pydantic import ValidationError
 
@@ -15,8 +16,15 @@ from apps.analysis.gold_policy.consistency_schemas import (
     StrategyChangeKind,
     build_analysis_strategy_consistency_decision,
 )
+from apps.analysis.gold_policy.key_level_policy import evaluate_key_level_lifecycle
 from apps.analysis.gold_policy.key_level_schemas import (
+    KeyLevelEvidenceTimeframe,
     KeyLevelLifecycle,
+    KeyLevelLifecycleDecision,
+    KeyLevelReadModel,
+    KeyLevelRole,
+    KeyLevelSourceInstrument,
+    KeyLevelSourceRole,
     KeyLevelTransitionAction,
 )
 from apps.analysis.gold_policy.schemas import SourceReference
@@ -26,6 +34,7 @@ from apps.analysis.gold_policy.strategy_schemas import (
     StrategyDecision,
     StrategyDecisionV2,
     StrategyDirection,
+    StrategyLevelReference,
     StrategyPolicyInput,
     StrategyPolicyInputV2,
     StrategyStatus,
@@ -569,14 +578,168 @@ def _all_changed_candidate_levels_proven(gate_input: AnalysisStrategyConsistency
         if level_id not in previous_by_level or previous_by_level[level_id].state_id != current_ref.state_id
     )
     return bool(changed) and all(
-        _level_chain_reaches(
+        _changed_candidate_level_proven(
             gate_input,
-            level_id=ref.level_id,
-            from_state_id=(previous_by_level[ref.level_id].state_id if ref.level_id in previous_by_level else None),
-            to_state_id=ref.state_id,
+            current_ref=ref,
+            previous_ref=previous_by_level.get(ref.level_id),
         )
         for ref in changed
     )
+
+
+def _changed_candidate_level_proven(
+    gate_input: AnalysisStrategyConsistencyInput,
+    *,
+    current_ref: StrategyLevelReference,
+    previous_ref: StrategyLevelReference | None,
+) -> bool:
+    if previous_ref is not None:
+        return _level_chain_reaches(
+            gate_input,
+            level_id=current_ref.level_id,
+            from_state_id=previous_ref.state_id,
+            to_state_id=current_ref.state_id,
+        )
+
+    previous_input = gate_input.previous_policy_input
+    if previous_input is None:
+        return False
+    prior_states = tuple(level for level in previous_input.key_levels if level.spec.level_id == current_ref.level_id)
+    if not prior_states:
+        return _level_chain_reaches(
+            gate_input,
+            level_id=current_ref.level_id,
+            from_state_id=None,
+            to_state_id=current_ref.state_id,
+        )
+    if len(prior_states) != 1:
+        return False
+    return _confirmed_activation_replayed(
+        gate_input,
+        previous_level=prior_states[0],
+        current_ref=current_ref,
+    )
+
+
+def _confirmed_activation_replayed(
+    gate_input: AnalysisStrategyConsistencyInput,
+    *,
+    previous_level: KeyLevelReadModel,
+    current_ref: StrategyLevelReference,
+) -> bool:
+    previous_input = gate_input.previous_policy_input
+    current_input = gate_input.current_policy_input
+    if previous_input is None:
+        return False
+    spec = previous_level.spec
+    if not (
+        previous_level.lifecycle is KeyLevelLifecycle.CONFIRMED
+        and previous_level.quality_status == "accepted"
+        and not previous_level.strategy_eligible
+        and previous_level.activation_event is None
+        and spec.asset == "XAUUSD"
+        and spec.scope.value == "daily_close"
+        and spec.target_instrument == "XAUUSD_SPOT"
+        and spec.origin_instrument is KeyLevelSourceInstrument.XAUUSD_SPOT
+        and spec.role in {KeyLevelRole.SUPPORT, KeyLevelRole.RESISTANCE}
+        and previous_level.as_of <= previous_input.decision_as_of < current_input.decision_as_of
+    ):
+        return False
+
+    current_levels = tuple(
+        level
+        for level in current_input.key_levels
+        if level.spec.level_id == current_ref.level_id and level.state_id == current_ref.state_id
+    )
+    if len(current_levels) != 1:
+        return False
+    current_level = current_levels[0]
+    if current_level.spec != spec:
+        return False
+
+    activation_proof = tuple(
+        decision
+        for decision in _key_level_proof(gate_input)
+        if decision.event.spec.level_id == spec.level_id
+        and decision.action is KeyLevelTransitionAction.ACTIVATE
+        and decision.from_state_id == previous_level.state_id
+        and decision.to_state_id == current_level.state_id
+    )
+    if len(activation_proof) != 1:
+        return False
+    supplied = activation_proof[0]
+    if not _activation_evidence_matches_current_decision(
+        supplied,
+        previous_level=previous_level,
+        decision_as_of=current_input.decision_as_of,
+    ):
+        return False
+
+    replayed = evaluate_key_level_lifecycle(previous_level, supplied.event)
+    return (
+        replayed.decision == supplied
+        and replayed.state == current_level
+        and current_level.activation_event == supplied.event
+    )
+
+
+def _activation_evidence_matches_current_decision(
+    decision: KeyLevelLifecycleDecision,
+    *,
+    previous_level: KeyLevelReadModel,
+    decision_as_of: datetime,
+) -> bool:
+    event = decision.event
+    evidence = event.evidence
+    receipt = evidence.qualification_receipt
+    fact = evidence.price_fact
+    if not (
+        decision.advance
+        and decision.transition_allowed
+        and decision.from_lifecycle is KeyLevelLifecycle.CONFIRMED
+        and decision.to_lifecycle is KeyLevelLifecycle.ACTIVE
+        and not decision.from_strategy_eligible
+        and decision.to_strategy_eligible
+        and event.spec == previous_level.spec
+        and evidence.source_role is KeyLevelSourceRole.OFFICIAL_MARKET
+        and evidence.source_instrument is KeyLevelSourceInstrument.XAUUSD_SPOT
+        and evidence.timeframe is KeyLevelEvidenceTimeframe.D1
+        and evidence.quality_status == "accepted"
+        and evidence.freshness_status == "fresh"
+        and evidence.alignment_status == "aligned"
+        and evidence.as_of == decision_as_of
+        and evidence.window_start >= previous_level.as_of
+        and evidence.window_end > previous_level.as_of
+        and timedelta(0) <= decision_as_of - evidence.window_end < timedelta(days=1)
+        and evidence.window_end - evidence.window_start == timedelta(days=2)
+        and fact is not None
+        and fact.window_complete
+        and fact.rule_code == "price_structure"
+        and len(fact.window_closes) == 2
+        and fact.window_start == evidence.window_start
+        and fact.window_end == evidence.window_end
+        and receipt.current_snapshot_as_of == evidence.window_end
+        and receipt.previous_snapshot_as_of == receipt.current_snapshot_as_of - timedelta(days=1)
+        and evidence.window_start == receipt.previous_snapshot_as_of - timedelta(days=1)
+        and receipt.previous_snapshot_id is not None
+        and receipt.current_snapshot_id != receipt.previous_snapshot_id
+        and len(receipt.qualified_snapshot_ids) == 2
+        and set(receipt.qualified_snapshot_ids) == {receipt.previous_snapshot_id, receipt.current_snapshot_id}
+        and fact.snapshot_id == receipt.current_snapshot_id
+        and fact.close == fact.window_closes[-1]
+    ):
+        return False
+
+    spec = previous_level.spec
+    lower = spec.reference_price if spec.reference_price is not None else spec.band_lower
+    upper = spec.reference_price if spec.reference_price is not None else spec.band_upper
+    if lower is None or upper is None:
+        return False
+    if spec.role is KeyLevelRole.SUPPORT:
+        return all(close >= lower for close in fact.window_closes)
+    if spec.role is KeyLevelRole.RESISTANCE:
+        return all(close <= upper for close in fact.window_closes)
+    return False
 
 
 def _identities_revalidate(gate_input: AnalysisStrategyConsistencyInput) -> bool:
@@ -697,7 +860,9 @@ def _source_refs(gate_input: AnalysisStrategyConsistencyInput) -> tuple[SourceRe
     return tuple(unique[key] for key in sorted(unique))
 
 
-def _key_level_proof(gate_input: AnalysisStrategyConsistencyInput):
+def _key_level_proof(
+    gate_input: AnalysisStrategyConsistencyInput,
+) -> tuple[KeyLevelLifecycleDecision, ...]:
     decisions = {
         item.decision_hash: item
         for item in (

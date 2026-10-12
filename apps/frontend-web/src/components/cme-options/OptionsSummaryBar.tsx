@@ -3,6 +3,7 @@ import { FACard } from "../shared/FACard";
 import { FAMetricCard } from "../shared/FAMetricCard";
 import { FAStatusPill, type FAStatusTone } from "../shared/FAStatusPill";
 import { FAWarningBanner } from "../shared/FAWarningBanner";
+import { formatCMEExpiryLabel } from "./cmeOptionsFormat";
 
 interface OptionsSummaryBarProps {
   dataSource: CMEOptionsDataSource;
@@ -70,7 +71,7 @@ export function OptionsSummaryBar({ dataSource }: OptionsSummaryBarProps) {
                 key={expiry}
                 className="inline-flex items-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-panel)] px-2 py-1 text-[length:var(--text-10)] font-semibold text-[var(--fg-3)]"
               >
-                {expiry}
+                {formatCMEExpiryLabel(expiry)}
               </span>
             ))
           ) : (

@@ -38,6 +38,7 @@ from apps.documents.parsing import build_parsed_document
 from apps.documents.schemas import SourceAssetRef, SourceDocument
 from apps.extractors.report_fact_extractor import extract_report_facts
 from apps.features.jin10.market_odds_evidence import build_jin10_market_odds_evidence, write_market_odds_evidence
+from apps.features.jin10.schemas.market_odds import Jin10MarketOddsEvidence
 from apps.parsers.jin10.report import build_parsed_index
 from apps.parsers.jin10.report_image_parser import figure_analysis_image_data_url, write_parse_artifacts
 from apps.renderer.html.jin10_daily import render_jin10_daily_html
@@ -143,12 +144,21 @@ def write_jin10_outputs(outputs: dict[str, dict[str, Any]], *, storage_root: Pat
         for item in outputs.get("parsed", {}).get("reports", [])
         if isinstance(item, dict) and item.get("article_id")
     }
-    market_odds_features: dict[str, Any] = {}
+    market_odds_features: dict[str, Jin10MarketOddsEvidence] = {
+        str(report["run_id"]): Jin10MarketOddsEvidence.model_validate(report["market_odds_evidence"])
+        for report in outputs.get("daily_reports", [])
+        if report.get("run_id") and isinstance(report.get("market_odds_evidence"), dict)
+    }
     for article_id, artifacts in parsed_artifacts.items():
         base = root / "parsed" / "jin10" / date / article_id
         write_parse_artifacts(artifacts, base)
         parsed_report = parsed_reports.get(str(article_id)) or {}
-        if _is_market_odds_parsed_report(parsed_report):
+        if str(article_id) in market_odds_features:
+            write_market_odds_evidence(
+                market_odds_features[str(article_id)],
+                output_dir=root / "features" / "jin10" / date / str(article_id),
+            )
+        elif _is_market_odds_parsed_report(parsed_report):
             figures_payload = artifacts.get("figures") if isinstance(artifacts, dict) else {}
             feature = build_jin10_market_odds_evidence(
                 article_id=str(article_id),
@@ -983,6 +993,20 @@ def _read_report_dir(
     return payload
 
 
+def _load_reportory_data(report: dict[str, Any]) -> dict[str, Any] | None:
+    external_dir = str(report.get("external_report_dir") or "").strip()
+    if not external_dir:
+        return None
+    report_data_path = Path(external_dir) / "report_data.json"
+    if not report_data_path.is_file():
+        return None
+    try:
+        payload = json.loads(report_data_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _should_reparse_external_report(
     *,
     meta: dict[str, Any],
@@ -1312,6 +1336,7 @@ def _build_daily_report_bundle(
             parser_version=str((figures_payload or {}).get("parser_version") or "jin10-vlm-parser-unknown"),
             figures=list((figures_payload or {}).get("figures") or []),
             vision_layout=parsed_artifacts.get("vision_layout"),
+            structured_report_data=_load_reportory_data(report),
             markdown_context=str((parsed_report or {}).get("body_text") or parsed_artifacts.get("body_markdown") or ""),
             source_refs=[dict(item) for item in document.source_refs],
         )

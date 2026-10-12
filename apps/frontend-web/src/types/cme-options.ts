@@ -13,7 +13,7 @@ export interface CMEOptionsWallScore {
   oi: number;
   delta_oi: number | null;
   wall_score: number;
-  pnt: number;
+  pnt: number | null;
 }
 
 export interface CMEOptionsLevelItem {
@@ -28,7 +28,7 @@ export interface CMEOptionsSupportResistance {
 }
 
 export interface CMEOptionsGammaZero {
-  price: number;
+  price: number | null;
   method: string;
 }
 
@@ -113,8 +113,8 @@ export interface CMEOptionsRollSignal {
 
 export interface CMEOptionsIntent {
   type: string;
-  confidence: number;
-  score?: number;
+  confidence: number | null;
+  score?: number | null;
   evidence?: string[];
 }
 
@@ -148,7 +148,7 @@ export interface CMEOptionsDataSource {
   product: string;
   status: CMEOptionsDataSourceStatus;
   expiries: string[];
-  row_count: number;
+  row_count: number | null;
   report_date?: string | null;
   source_url?: string | null;
   input_snapshot_ids?: string[];
@@ -310,6 +310,7 @@ export interface CMEOptionsDecisionGammaSummary {
   method: string | null;
   flip_band: { lower: number; upper: number; step: number } | null;
   live_price: number | null;
+  coordinate_space?: string | null;
 }
 
 export interface CMEOptionsDecisionKeyLevel {
@@ -321,6 +322,7 @@ export interface CMEOptionsDecisionKeyLevel {
   evidence: string[];
   invalidation: string[];
   expiry_scope: string;
+  coordinate_space?: string | null;
   distance_pct: number | null;
   structural_role_at_report: string;
   current_relation: "below_price" | "above_price" | "at_price" | null;
@@ -364,6 +366,8 @@ export interface CMEOptionsDecisionStrategy {
   call_oi_change?: number | null;
   put_oi_change?: number | null;
   confidence?: number | null;
+  coordinate_space?: string | null;
+  execution_scope?: string | null;
   risk_notes: string[];
 }
 
@@ -398,6 +402,8 @@ export interface CMEOptionsDecisionScenarioPath {
   triggers: string[];
   targets: number[];
   invalidation: string[];
+  coordinate_space?: string;
+  execution_scope?: string;
 }
 
 export interface CMEOptionsDecisionActivityTotals {
@@ -432,6 +438,12 @@ export interface CMEOptionsDecisionResponse {
     live_price_status: "fresh" | "stale" | "future" | "unavailable";
     live_price_freshness_seconds: number | null;
     live_price_coverage_status: "complete" | "degraded" | "unavailable";
+    live_coordinate_space?: string | null;
+    basis_status?: string | null;
+    basis_reason?: string | null;
+    gc_equivalent_p0?: number | null;
+    live_price_unavailable_reason?: string | null;
+    structure_coordinate_space?: string | null;
     model_f: Record<string, number>;
     price_anchor_rule: string | null;
   };
@@ -475,16 +487,23 @@ export interface CMEOptionsDecisionResponse {
     label: string;
     summary: string;
     reference_price: number | null;
+    reference_price_source?: string | null;
+    reference_coordinate_space?: string | null;
     gamma_zero: number | null;
     below_gamma_zero: boolean;
+    gamma_zero_relation?: "below" | "above" | "unavailable" | string;
     net_gex: number | null;
     net_gex_change: number | null;
     repair_detected: boolean;
     trend_launch_watch: boolean;
     trend_confirmed: boolean;
+    execution_scope?: string | null;
+    execution_note?: string | null;
   };
   scenario_paths: CMEOptionsDecisionScenarioPath[];
   intraday_strategy: CMEOptionsDecisionStrategy;
   swing_strategy: CMEOptionsDecisionStrategy;
   data_quality: { cme_status: string | string[] | null; warnings: string[]; [key: string]: unknown };
+  source_refs: CMEOptionsSourceTraceItem[];
+  artifact_refs: string[];
 }

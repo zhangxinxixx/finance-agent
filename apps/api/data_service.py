@@ -7,6 +7,7 @@ from typing import Any
 
 from apps.api.services import _storage
 from apps.api.services import artifact_service, dashboard_service, macro_service, market_service, options_service, report_service, source_service, task_service
+from apps.api.services import page_jin10_report_service
 
 _PROJECT_ROOT = _storage._PROJECT_ROOT
 _try_db_session = _storage._try_db_session
@@ -14,14 +15,13 @@ _try_db_session = _storage._try_db_session
 
 def _sync_project_root() -> None:
     _storage._PROJECT_ROOT = _PROJECT_ROOT
+    _storage._try_db_session = _try_db_session
     options_service._PROJECT_ROOT = _PROJECT_ROOT
     macro_service._PROJECT_ROOT = _PROJECT_ROOT
     macro_service._try_db_session = _try_db_session
     artifact_service._PROJECT_ROOT = _PROJECT_ROOT
-    report_service._PROJECT_ROOT = _PROJECT_ROOT
     source_service._PROJECT_ROOT = _PROJECT_ROOT
     market_service._PROJECT_ROOT = _PROJECT_ROOT
-    report_service._try_db_session = _try_db_session
     source_service._try_db_session = _try_db_session
 
 
@@ -52,9 +52,15 @@ def get_options_decision(
     *,
     lookback_days: int = 5,
     db: Any | None = None,
+    allow_archived_parse: bool = True,
 ) -> dict[str, Any] | None:
     _sync_project_root()
-    return options_service.get_options_decision(date_str, lookback_days=lookback_days, db=db)
+    return options_service.get_options_decision(
+        date_str,
+        lookback_days=lookback_days,
+        db=db,
+        allow_archived_parse=allow_archived_parse,
+    )
 
 
 def get_options_report_md(date_str: str | None = None) -> str | None:
@@ -144,6 +150,24 @@ def get_jin10_weekly_report_latest() -> dict[str, Any] | None:
 def get_jin10_weekly_report(date: str, run_id: str) -> dict[str, Any] | None:
     _sync_project_root()
     return market_service.get_jin10_weekly_report(date, run_id)
+
+
+def get_page_jin10_report(*, report_type: str, date: str, run_id: str) -> dict[str, Any]:
+    _sync_project_root()
+    return page_jin10_report_service.get_page_jin10_report(
+        report_type=report_type,
+        date=date,
+        run_id=run_id,
+        project_root=_PROJECT_ROOT,
+    )
+
+
+def get_page_jin10_report_latest(*, report_type: str) -> dict[str, Any]:
+    _sync_project_root()
+    return page_jin10_report_service.get_page_jin10_report_latest(
+        report_type=report_type,
+        project_root=_PROJECT_ROOT,
+    )
 
 
 def get_jin10_report_bundle_latest() -> dict[str, Any] | None:

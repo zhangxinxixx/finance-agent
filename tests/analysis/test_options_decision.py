@@ -105,7 +105,14 @@ def test_decision_builds_cross_month_oi_roll_and_negative_gamma() -> None:
         previous_rows=rows["2026-07-14"],
         previous_snapshot=_snapshot(gamma_zero=4146.9, net_gex=-100.0),
         history_rows_by_date=rows,
-        live_price_context={"price": 4130.0, "timestamp": "2026-07-15T12:00:00Z", "source": "canonical"},
+        live_price_context={
+            "price": 4130.0,
+            "gc_equivalent_price": 4130.0,
+            "timestamp": "2026-07-15T12:00:00Z",
+            "source": "canonical",
+            "coordinate_space": "GC futures",
+            "basis_status": "validated",
+        },
         lookback_days=5,
     )
 
@@ -115,6 +122,7 @@ def test_decision_builds_cross_month_oi_roll_and_negative_gamma() -> None:
         "current_trade_date": "2026-07-15",
         "previous_trade_date": "2026-07-14",
         "product": "OG",
+        "generated_at": None,
         "lookback_days": 5,
         "comparison_status": "available",
     }
@@ -176,6 +184,21 @@ def test_decision_builds_cross_month_oi_roll_and_negative_gamma() -> None:
     assert result["source_refs"][-1]["source_ref"].startswith("/api/options/decision")
 
 
+def test_decision_preserves_snapshot_generated_at() -> None:
+    rows = _rows()
+    snapshot = _snapshot()
+    snapshot["generated_at"] = "2026-07-15T18:30:00+08:00"
+
+    result = build_options_decision(
+        snapshot,
+        current_rows=rows["2026-07-15"],
+        previous_rows=rows["2026-07-14"],
+        history_rows_by_date=rows,
+    )
+
+    assert result["meta"]["generated_at"] == snapshot["generated_at"]
+
+
 def test_flip_zone_strategy_does_not_claim_positive_gamma() -> None:
     rows = _rows()
     result = build_options_decision(
@@ -185,9 +208,12 @@ def test_flip_zone_strategy_does_not_claim_positive_gamma() -> None:
         history_rows_by_date=rows,
         live_price_context={
             "price": 4144.7,
+            "gc_equivalent_price": 4144.7,
             "timestamp": "2026-07-15T12:00:00Z",
             "status": "fresh",
             "coverage_status": "complete",
+            "coordinate_space": "GC futures",
+            "basis_status": "validated",
         },
     )
 
@@ -254,10 +280,13 @@ def test_decision_disables_intraday_for_stale_live_price_and_reclassifies_fresh_
         history_rows_by_date=rows,
         live_price_context={
             "price": 4210.0,
+            "gc_equivalent_price": 4210.0,
             "timestamp": "2026-07-15T10:00:00Z",
             "status": "stale",
             "freshness_seconds": 7200,
             "coverage_status": "complete",
+            "coordinate_space": "GC futures",
+            "basis_status": "validated",
         },
     )
     fresh = build_options_decision(
@@ -267,10 +296,13 @@ def test_decision_disables_intraday_for_stale_live_price_and_reclassifies_fresh_
         history_rows_by_date=rows,
         live_price_context={
             "price": 4210.0,
+            "gc_equivalent_price": 4210.0,
             "timestamp": "2026-07-15T12:00:00Z",
             "status": "fresh",
             "freshness_seconds": 30,
             "coverage_status": "complete",
+            "coordinate_space": "GC futures",
+            "basis_status": "validated",
         },
     )
 
@@ -279,3 +311,120 @@ def test_decision_disables_intraday_for_stale_live_price_and_reclassifies_fresh_
     resistance = next(level for level in fresh["key_levels"] if level["structural_role_at_report"] == "primary_resistance")
     assert resistance["current_relation"] == "below_price"
     assert resistance["dynamic_role"] == "retest_support_candidate"
+
+
+def test_unvalidated_spot_price_cannot_drive_gc_regime_or_intraday_levels() -> None:
+    rows = _rows()
+    result = build_options_decision(
+        _snapshot(),
+        current_rows=rows["2026-07-15"],
+        previous_rows=rows["2026-07-14"],
+        history_rows_by_date=rows,
+        live_price_context={
+            "price": 4210.0,
+            "gc_equivalent_price": 4300.0,
+            "timestamp": "2026-07-15T12:00:00Z",
+            "status": "fresh",
+            "coverage_status": "complete",
+            "coordinate_space": "XAUUSD spot",
+            "basis_status": "unvalidated",
+        },
+    )
+
+    assert result["price_context"]["live_p0"] == 4210.0
+    assert result["price_context"]["live_coordinate_space"] == "XAUUSD spot"
+    assert result["price_context"]["gc_equivalent_p0"] is None
+    assert result["price_context"]["basis_status"] == "unvalidated"
+    assert result["gamma_summary"]["regime"] == "unavailable"
+    assert result["gamma_summary"]["live_price"] is None
+    assert result["intraday_strategy"]["status"] == "unavailable"
+    assert "basis" in result["intraday_strategy"]["reason"]
+    assert result["structure_summary"]["reference_price"] == 4052.0
+    assert result["structure_summary"]["reference_coordinate_space"] == "GC futures"
+    assert result["structure_summary"]["execution_scope"] == "gc_report_only"
+    assert all(path["coordinate_space"] == "GC futures" for path in result["scenario_paths"])
+    assert all(path["execution_scope"] == "gc_report_only" for path in result["scenario_paths"])
+
+    snapshot_without_report_anchor = _snapshot()
+    snapshot_without_report_anchor["parameters"].pop("report_p0")
+    snapshot_without_report_anchor["parameters"].pop("report_p0_source")
+    missing_anchor = build_options_decision(
+        snapshot_without_report_anchor,
+        current_rows=rows["2026-07-15"],
+        previous_rows=rows["2026-07-14"],
+        history_rows_by_date=rows,
+        live_price_context={
+            "price": 4210.0,
+            "gc_equivalent_price": 4300.0,
+            "timestamp": "2026-07-15T12:00:00Z",
+            "status": "fresh",
+            "coverage_status": "complete",
+            "coordinate_space": "XAUUSD spot",
+            "basis_status": "unvalidated",
+        },
+    )
+    assert missing_anchor["structure_summary"]["reference_price"] is None
+    assert missing_anchor["structure_summary"]["gamma_zero_relation"] == "unavailable"
+
+
+def test_intent_wording_follows_i4_type_instead_of_stale_i2_audit_text() -> None:
+    rows = _rows()
+    snapshot = _snapshot()
+    snapshot["intent"] = {
+        "type": "I4_trend_launch",
+        "score": 0.5488,
+        "confidence": 0.5488,
+        "evidence": ["call_oi leads put_oi", "call_change leads put_change"],
+    }
+    snapshot["audit"]["intent_audit"].update(
+        {
+            "intent_label": "I4_trend_launch",
+            "intent_confidence": 0.5488,
+            "defense_score": 0.3375,
+            "rebalance_score": 0.4854,
+            "trap_score": 0.3333,
+            "trend_score": 0.5488,
+            "wording": "I2 结构化再平衡，偏防守，置信度中低",
+        }
+    )
+    result = build_options_decision(
+        snapshot,
+        current_rows=rows["2026-07-15"],
+        previous_rows=rows["2026-07-14"],
+        history_rows_by_date=rows,
+    )
+
+    intent = result["intent_summary"]
+    assert intent["type"] == "I4_trend_launch"
+    assert intent["score"] == 0.5488
+    assert intent["wording"].startswith("I4 趋势启动")
+    assert "I2" not in intent["wording"]
+    assert "尚未构成趋势确认" in intent["wording"]
+
+
+def test_report_only_positive_structure_is_not_a_confirmed_live_trend() -> None:
+    rows = _rows()
+    snapshot = _snapshot(gamma_zero=4140.0, net_gex=123.0)
+    snapshot["parameters"]["report_p0"] = 4200.0
+    result = build_options_decision(
+        snapshot,
+        current_rows=rows["2026-07-15"],
+        previous_rows=rows["2026-07-14"],
+        history_rows_by_date=rows,
+        live_price_context={
+            "price": 4210.0,
+            "gc_equivalent_price": 4300.0,
+            "timestamp": "2026-07-15T12:00:00Z",
+            "status": "fresh",
+            "coverage_status": "complete",
+            "coordinate_space": "XAUUSD spot",
+            "basis_status": "unvalidated",
+        },
+    )
+
+    assert result["structure_summary"]["state"] == "gc_report_trend"
+    assert result["structure_summary"]["label"] == "GC报告正 Gamma 结构"
+    assert result["structure_summary"]["trend_confirmed"] is False
+    bullish = next(path for path in result["scenario_paths"] if path["path_id"] == "bullish_acceptance")
+    assert bullish["status"] == "watch"
+    assert bullish["execution_scope"] == "gc_report_only"

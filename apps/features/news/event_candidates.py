@@ -144,12 +144,13 @@ def build_event_candidates(
     *,
     as_of: str,
     source_refs: list[dict[str, Any]] | None = None,
+    preserve_articles: bool = False,
 ) -> EventCandidateBundle:
     standard_items = [_standardize_item(item) for item in items]
     standard_items = _dedupe_raw_items(standard_items)
     standard_items, stale_news_item_count = _filter_current_items(standard_items, as_of=as_of)
-    grouped = _group_items(standard_items)
-    event_candidates = [_build_event_candidate(group_items, as_of=as_of) for group_items in grouped.values()]
+    grouped = _group_items(standard_items, preserve_articles=preserve_articles)
+    event_candidates = [_build_event_candidate(group_items, as_of=as_of, preserve_articles=preserve_articles) for group_items in grouped.values()]
     event_candidates = sorted(event_candidates, key=_event_sort_key, reverse=True)
     top_market_events = [event for event in event_candidates if _can_enter_top_market_events(event)]
     source_mix = _source_mix(standard_items)
@@ -203,7 +204,7 @@ def _standardize_item(item: RawNewsItem | dict[str, Any]) -> StandardNewsItem:
         published_at=raw.get("published_at"),
     )
     raw_payload = dict(raw.get("raw_payload") or {})
-    source_refs = [{
+    item_ref = {
         "source_ref": news_item_id,
         "source": source_key,
         "source_type": raw.get("source_type"),
@@ -216,7 +217,22 @@ def _standardize_item(item: RawNewsItem | dict[str, Any]) -> StandardNewsItem:
         "retrieved_at": _normalized_aware_retrieved_at(raw.get("fetched_at")),
         "raw_path": raw.get("raw_path"),
         "parsed_path": raw.get("parsed_path"),
-    }]
+    }
+    # Preserve the public discovery route and source identity in lineage.  In
+    # particular, a Reuters candidate discovered through Google News must not
+    # look like an authorized Reuters wire article downstream.
+    for key in (
+        "publisher",
+        "publisher_url",
+        "discovery_method",
+        "candidate_scope",
+        "authorized_wire",
+        "content_scope",
+        "full_text_available",
+    ):
+        if key in raw_payload:
+            item_ref[key] = raw_payload[key]
+    source_refs = [item_ref]
     for ref in raw_payload.get("source_refs") or []:
         if isinstance(ref, dict):
             source_refs.append(dict(ref))
@@ -285,28 +301,30 @@ def _is_current_item(item: StandardNewsItem, *, as_of: datetime) -> bool:
     published_at = _parse_iso_datetime(item.published_at)
     if published_at is None:
         return True
-    if item.source_type == "official" or item.verification_status == "official_confirmed":
+    if item.source_key in {"fomc_calendar", "fred_calendar", "bls_calendar", "bea_calendar", "eia_energy"}:
         start = as_of - timedelta(days=OFFICIAL_CALENDAR_PAST_WINDOW_DAYS)
         end = as_of + timedelta(days=OFFICIAL_CALENDAR_FUTURE_WINDOW_DAYS)
         return start <= published_at <= end
     start = as_of - timedelta(days=NEWS_RECENCY_WINDOW_DAYS)
-    end = as_of + timedelta(days=1)
+    end = as_of
     return start <= published_at <= end
 
 
-def _group_items(items: list[StandardNewsItem]) -> dict[str, list[StandardNewsItem]]:
+def _group_items(items: list[StandardNewsItem], *, preserve_articles: bool = False) -> dict[str, list[StandardNewsItem]]:
     grouped: dict[str, list[StandardNewsItem]] = {}
     for item in items:
         event_type = _canonical_event_type(item.event_type)
         time_bucket = _time_bucket(item.published_at)
-        group_key = _group_key(event_type=event_type, normalized_title=item.normalized_title, time_bucket=time_bucket)
+        key_builder = _duplicate_group if preserve_articles else _group_key
+        group_key = key_builder(event_type=event_type, normalized_title=item.normalized_title, time_bucket=time_bucket)
         grouped.setdefault(group_key, []).append(item)
     return grouped
 
 
-def _build_event_candidate(items: list[StandardNewsItem], *, as_of: str) -> EventCandidate:
+def _build_event_candidate(items: list[StandardNewsItem], *, as_of: str, preserve_articles: bool = False) -> EventCandidate:
     canonical_type = _select_event_type(items)
-    duplicate_group = _group_key(
+    key_builder = _duplicate_group if preserve_articles else _group_key
+    duplicate_group = key_builder(
         event_type=canonical_type,
         normalized_title=items[0].normalized_title,
         time_bucket=_time_bucket(items[0].published_at),
@@ -325,10 +343,15 @@ def _build_event_candidate(items: list[StandardNewsItem], *, as_of: str) -> Even
         "independent_source_count": verification["independent_source_count"],
         "independent_domain_count": verification["independent_domain_count"],
         "authoritative_source_count": verification["authoritative_source_count"],
-        "grouping_strategy": "mainline" if _uses_mainline_grouping(canonical_type) else "title_time",
+        "grouping_strategy": "mainline" if not preserve_articles and _uses_mainline_grouping(canonical_type) else "title_time",
         "merged_item_count": len(items),
+        # RSS/GDELT feeds provide discovery metadata, not article bodies.  Keep
+        # that boundary explicit so a headline/snippet cannot be rendered as a
+        # full-text confirmed fact downstream.
+        "evidence_scope": _evidence_scope(items),
+        "full_text_available": _full_text_available(items),
     }
-    event_time = _event_time(items, event_type=canonical_type)
+    event_time = primary.published_at if preserve_articles else _event_time(items, event_type=canonical_type)
     return EventCandidate(
         event_id=_event_id(event_type=canonical_type, duplicate_group=duplicate_group),
         primary_news_item_id=primary.news_item_id,
@@ -446,6 +469,25 @@ def _is_authoritative_source(item: StandardNewsItem) -> bool:
     if item.source_type in {"wire", "wire_public_candidate"}:
         return True
     return bool(item.raw_payload.get("authorized_wire"))
+
+
+def _evidence_scope(items: list[StandardNewsItem]) -> str:
+    scopes = {
+        str(item.raw_payload.get("content_scope") or "").strip()
+        for item in items
+        if str(item.raw_payload.get("content_scope") or "").strip()
+    }
+    if not scopes:
+        return "unspecified"
+    if any(scope == "full_text" for scope in scopes):
+        return "full_text" if scopes == {"full_text"} else "mixed"
+    if scopes <= {"headline_summary_only", "headline_snippet_only", "metadata_only"}:
+        return "headline_or_snippet_only"
+    return "mixed"
+
+
+def _full_text_available(items: list[StandardNewsItem]) -> bool:
+    return any(bool(item.raw_payload.get("full_text_available")) for item in items)
 
 
 def _merge_source_refs(items: list[StandardNewsItem]) -> list[dict[str, Any]]:

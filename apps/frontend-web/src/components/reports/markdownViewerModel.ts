@@ -1,7 +1,7 @@
 export const DATA_CATEGORY_HEADINGS: Record<string, { label: string; tone: string; accent: string }> = {
-  "已确认数据": { label: "CONFIRMED", tone: "border-[var(--up-border)] bg-[var(--up-soft)] text-[var(--up)]", accent: "border-l-[var(--up)]" },
-  "外部观点": { label: "EXTERNAL OPINION", tone: "border-[var(--warn-border)] bg-[var(--warn-soft)] text-[var(--warn)]", accent: "border-l-[var(--warn)]" },
-  "系统推论": { label: "SYSTEM INFERENCE", tone: "border-[var(--info-border)] bg-[var(--info-soft)] text-[var(--info)]", accent: "border-l-[var(--info)]" },
+  "已确认数据": { label: "已确认数据", tone: "border-[var(--up-border)] bg-[var(--up-soft)] text-[var(--up)]", accent: "border-l-[var(--up)]" },
+  "外部观点": { label: "外部观点", tone: "border-[var(--warn-border)] bg-[var(--warn-soft)] text-[var(--warn)]", accent: "border-l-[var(--warn)]" },
+  "系统推论": { label: "研究推论", tone: "border-[var(--info-border)] bg-[var(--info-soft)] text-[var(--info)]", accent: "border-l-[var(--info)]" },
 };
 
 export type MarkdownBlock =

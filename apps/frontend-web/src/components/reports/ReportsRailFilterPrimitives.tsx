@@ -99,6 +99,7 @@ export function ReportsRailColorOptionButton({
   count?: number;
   onClick: () => void;
 }) {
+  const colorMix = `color-mix(in srgb, ${color} 28%, transparent)`;
   return (
     <button
       type="button"
@@ -125,8 +126,8 @@ export function ReportsRailColorOptionButton({
           width: 10,
           height: 10,
           borderRadius: 2,
-          background: isActive ? color : `${color}33`,
-          border: `1px solid ${color}66`,
+          background: isActive ? color : colorMix,
+          border: `1px solid ${colorMix}`,
           flexShrink: 0,
           display: "flex",
           alignItems: "center",

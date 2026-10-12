@@ -15,7 +15,6 @@ _ALEMBIC_INI = _MIGRATIONS_DIR / "alembic.ini"
 
 def alembic_config_value(value: str) -> str:
     """Escape ConfigParser interpolation while preserving the resolved URL."""
-
     return value.replace("%", "%%")
 
 

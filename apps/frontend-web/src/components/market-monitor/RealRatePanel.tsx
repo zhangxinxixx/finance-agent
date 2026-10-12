@@ -2,7 +2,7 @@ import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { MarketMonitorMetric } from "@/types/market-monitor";
-import { findMetric, formatMetricChange, formatMetricValue } from "./format";
+import { findMetric, formatMetricChange, formatMetricValue, marketMonitorMetricLabel, marketMonitorStatusLabel, marketMonitorUnitLabel } from "./format";
 
 export interface RealRatePanelProps {
   metrics: MarketMonitorMetric[];
@@ -27,26 +27,26 @@ export function RealRatePanel({ metrics }: RealRatePanelProps) {
   return (
     <FACard
       title="利率结构约束"
-      eyebrow="Rates Structure"
+      eyebrow="利率结构"
       accent={metric?.status === "warn" || metric?.status === "error" ? "down" : "info"}
-      action={<FAStatusPill tone={metric?.status === "ok" ? "up" : metric?.status === "warn" ? "warn" : metric?.status === "error" ? "down" : "neutral"}>{metric?.status ?? "unavailable"}</FAStatusPill>}
+      action={<FAStatusPill tone={metric?.status === "ok" ? "up" : metric?.status === "warn" ? "warn" : metric?.status === "error" ? "down" : "neutral"}>{marketMonitorStatusLabel(metric?.status)}</FAStatusPill>}
     >
       {metric ? (
         <div className="space-y-3">
           <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-3">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">{metric.label}</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">{marketMonitorMetricLabel(TARGET_KEY, metric.label)}</div>
             <div className="mt-2 flex items-end gap-2">
               <div className="fa-num text-[28px] font-bold leading-none text-[var(--fg-1)]">
                 {formatMetricValue(metric.latest_value, 4)}
               </div>
-              {metric.unit ? <div className="pb-0.5 text-[11px] text-[var(--fg-4)]">{metric.unit}</div> : null}
+              {metric.unit ? <div className="pb-0.5 text-[11px] text-[var(--fg-4)]">{marketMonitorUnitLabel(metric.unit)}</div> : null}
             </div>
           </div>
 
           <div className="grid gap-2 md:grid-cols-3">
-            <StatBox label="Latest Date" value={metric.latest_date || "—"} />
-            <StatBox label="1W Move" value={formatMetricChange(metric.one_week_change)} />
-            <StatBox label="1M Move" value={formatMetricChange(metric.one_month_change)} />
+            <StatBox label="最新观测日" value={metric.latest_date || "—"} />
+            <StatBox label="周变化" value={formatMetricChange(metric.one_week_change)} />
+            <StatBox label="月变化" value={formatMetricChange(metric.one_month_change)} />
           </div>
 
           <div className="grid gap-2">
@@ -58,7 +58,7 @@ export function RealRatePanel({ metrics }: RealRatePanelProps) {
                   className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-panel)] px-3 py-2"
                 >
                   <div className="min-w-0">
-                    <div className="text-[10px] font-semibold text-[var(--fg-3)]">{companion?.label ?? key}</div>
+                    <div className="text-[10px] font-semibold text-[var(--fg-3)]">{marketMonitorMetricLabel(key, companion?.label)}</div>
                     <div className="mt-0.5 font-mono text-[10px] text-[var(--fg-5)]">{companion?.latest_date ?? "—"}</div>
                   </div>
                   <div className="font-mono text-[11px] text-[var(--fg-2)]">
@@ -73,7 +73,7 @@ export function RealRatePanel({ metrics }: RealRatePanelProps) {
           </div>
 
           <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-terminal)] px-3 py-3">
-            <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">Market Readout</div>
+            <div className="text-[9px] font-semibold tracking-[0.08em] text-[var(--fg-5)]">市场读数</div>
             <p className="mt-2 text-[11px] leading-5 text-[var(--fg-3)]">
               {metric.interpretation || "暂无利率结构诊断。"}
             </p>
@@ -82,7 +82,7 @@ export function RealRatePanel({ metrics }: RealRatePanelProps) {
       ) : (
         <FAEmptyState
           title="暂无 REAL_10Y 数据"
-          description="当前快照缺少利率结构主导指标，页面保留工作台结构并显式标记 unavailable。"
+          description="当前快照缺少利率结构主导指标；相关判断暂不可用。"
         />
       )}
     </FACard>

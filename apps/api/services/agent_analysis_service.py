@@ -101,12 +101,15 @@ def build_agent_analysis_inspection(db, target_date, run_id: str | None = None) 
 
 
 def _agent_inspection_item(row, snapshot_payload: dict[str, Any] | None) -> dict[str, Any]:
+    agent_summary = build_agent_output_summary(row)
+    if agent_summary.get("purged"):
+        return _build_purged_agent_inspection_item(row, agent_summary)
+
     payload = row.payload or {}
     prompt_messages = payload.get("prompt_messages")
     input_payload = payload.get("input_payload") or _derive_agent_input(row.agent_name, snapshot_payload)
     generated_by = str(payload.get("generated_by") or "").lower()
     prompt_kind = "rule" if generated_by == "rule" else ("llm" if row.llm_model or prompt_messages else "rule")
-    agent_summary = build_agent_output_summary(row)
     prompt_metadata = prompt_metadata_from_row(row)
     return {
         "agent_output_id": row.id,
@@ -159,6 +162,60 @@ def _agent_inspection_item(row, snapshot_payload: dict[str, Any] | None) -> dict
             "llm_raw_output": payload.get("llm_raw_output"),
         },
         "llm": {"model": row.llm_model, "usage": row.token_usage, "elapsed_seconds": row.llm_elapsed_seconds},
+    }
+
+
+def _build_purged_agent_inspection_item(row, agent_summary: dict[str, Any]) -> dict[str, Any]:
+    """Keep inspection identity while removing every cleaned input/output body."""
+    cleanup = agent_summary.get("output_cleanup") or {}
+    message = agent_summary.get("summary_zh") or "该 Agent 产出已清理，原分析正文不可用。"
+    return {
+        "agent_output_id": agent_summary.get("agent_output_id", row.id),
+        "agent_name": agent_summary.get("agent_name", row.agent_name),
+        "display_name": agent_summary.get("display_name"),
+        "registry_id": agent_summary.get("registry_id"),
+        "role": agent_summary.get("role"),
+        "module": agent_summary.get("module", row.module),
+        "version": agent_summary.get("version", row.version),
+        "run_id": agent_summary.get("run_id", row.run_id),
+        "snapshot_id": agent_summary.get("snapshot_id", row.snapshot_id),
+        "status": agent_summary.get("status", row.status),
+        "bias": "unavailable",
+        "confidence": 0.0,
+        "prompt_version_id": None,
+        "created_at": agent_summary.get("created_at"),
+        "prompt": {
+            "kind": "unavailable",
+            "prompt_id": None,
+            "version": None,
+            "checksum": None,
+            "source_file": None,
+            "available": False,
+            "messages": [],
+            "note": "该 Agent 产出已清理，原 prompt/input/output 不可用。",
+        },
+        "input": {
+            "input_snapshot_ids": {},
+            "source_refs": [],
+            "payload": {"output_cleanup": cleanup},
+        },
+        "output": {
+            "summary": message,
+            "summary_zh": message,
+            "key_findings": [],
+            "risk_points": [],
+            "watchlist": [],
+            "invalid_conditions": [],
+            "claims": [],
+            "claim_reviews": [],
+            "prompt_id": None,
+            "prompt_version": None,
+            "prompt_checksum": None,
+            "prompt_source_file": None,
+            "payload": {"output_cleanup": cleanup},
+            "llm_raw_output": None,
+        },
+        "llm": {"model": None, "usage": None, "elapsed_seconds": None},
     }
 
 

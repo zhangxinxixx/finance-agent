@@ -25,7 +25,7 @@ def _observation(*, source: str, value: float, minutes: int = 0) -> NumericObser
 
 def test_consistency_check_accepts_time_aligned_values_within_tolerance() -> None:
     check = build_numeric_consistency_check(
-        primary=_observation(source="jin10_mcp_market", value=4000.0),
+        primary=_observation(source="twelvedata_quote", value=4000.0),
         secondary=_observation(source="yahoo_finance", value=4008.0, minutes=2),
         rule=RULE,
         observed_at=OBSERVED_AT,
@@ -38,7 +38,7 @@ def test_consistency_check_accepts_time_aligned_values_within_tolerance() -> Non
 
 def test_consistency_check_degrades_warning_divergence() -> None:
     check = build_numeric_consistency_check(
-        primary=_observation(source="jin10_mcp_market", value=4000.0),
+        primary=_observation(source="twelvedata_quote", value=4000.0),
         secondary=_observation(source="yahoo_finance", value=4040.0),
         rule=RULE,
         observed_at=OBSERVED_AT,
@@ -53,7 +53,7 @@ def test_consistency_check_degrades_warning_divergence() -> None:
 
 def test_consistency_check_blocks_critical_divergence() -> None:
     check = build_numeric_consistency_check(
-        primary=_observation(source="jin10_mcp_market", value=4000.0),
+        primary=_observation(source="twelvedata_quote", value=4000.0),
         secondary=_observation(source="openbb_market", value=4100.0),
         rule=RULE,
         observed_at=OBSERVED_AT,
@@ -66,14 +66,14 @@ def test_consistency_check_blocks_critical_divergence() -> None:
 
 def test_consistency_check_skips_stale_or_same_source_comparisons() -> None:
     stale = build_numeric_consistency_check(
-        primary=_observation(source="jin10_mcp_market", value=4000.0),
+        primary=_observation(source="twelvedata_quote", value=4000.0),
         secondary=_observation(source="yahoo_finance", value=4100.0, minutes=30),
         rule=RULE,
         observed_at=OBSERVED_AT,
     )
     same_source = build_numeric_consistency_check(
-        primary=_observation(source="jin10_mcp_market", value=4000.0),
-        secondary=_observation(source="jin10_candle", value=4100.0),
+        primary=_observation(source="yahoo_finance", value=4000.0),
+        secondary=_observation(source="yahoo_chart", value=4100.0),
         rule=RULE,
         observed_at=OBSERVED_AT,
     )
@@ -85,7 +85,7 @@ def test_consistency_check_skips_stale_or_same_source_comparisons() -> None:
     assert same_source.reason_code == "consistency_sources_not_independent"
 
 
-def test_market_consistency_checker_reads_quote_cache_and_candle_payload(tmp_path) -> None:
+def test_market_consistency_checker_rejects_historical_jin10_numeric_cache(tmp_path) -> None:
     storage_root = tmp_path / "storage"
     quote_path = storage_root / "outputs" / "jin10" / "quotes_cache.json"
     quote_path.parent.mkdir(parents=True)
@@ -105,8 +105,10 @@ def test_market_consistency_checker_reads_quote_cache_and_candle_payload(tmp_pat
     checks = checker.run(observed_at=OBSERVED_AT)
 
     assert len(checks) == 1
-    assert checks[0].status == "ok"
-    assert checks[0].artifact_refs[0]["path"] == "outputs/jin10/quotes_cache.json"
+    assert checks[0].status == "waiting"
+    assert checks[0].metadata["comparison_performed"] is False
+    assert checks[0].metadata["missing_observations"] == ["primary"]
+    assert quote_path.exists()
 
 
 def test_market_consistency_checker_contains_candle_loader_failure(tmp_path) -> None:

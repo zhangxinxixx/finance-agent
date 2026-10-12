@@ -4,10 +4,12 @@ import {
   CATEGORY_MAP,
   formatGeneratedAt,
   getMarketObservationSubtype,
+  getReportListStatus,
   getReportTitle,
   inferAssetLabel,
   marketObservationSubtypeLabel,
-  shortRunId,
+  reportAssetLabel,
+  reportTypeLabel,
   TYPE_DESCRIPTIONS,
 } from "@/components/reports/reportListMeta";
 import { handleSelectKeyDown } from "@/components/reports/reportLibraryViewCommon";
@@ -22,15 +24,14 @@ export function ReportCard({
   searchQuery: string;
 }) {
   const cat = CATEGORY_MAP[item.type] ?? {
-    label: item.type,
+    label: reportTypeLabel(item.type),
     color: "#94a3b8",
   };
 
   const dateLabel = item.trade_date || "-";
-  const runLabel = shortRunId(item.run_id);
-  const qualityBlocked = !item.available && item.status === "degraded";
-  const statusLabel = item.available ? "已发布" : qualityBlocked ? "审核未通过" : "草稿";
-  const statusColor = item.available ? "#10b981" : qualityBlocked ? "#ef4444" : "#f59e0b";
+  const status = getReportListStatus(item);
+  const statusLabel = status.label;
+  const statusColor = status.color;
   const generatedAtLabel = formatGeneratedAt(item.generated_at);
   const isOpenable = canOpenReport(item);
   const assetLabel = inferAssetLabel(item);
@@ -70,10 +71,10 @@ export function ReportCard({
       }}
     >
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
-        <span style={{ padding: "3px 7px", background: `${cat.color}1f`, color: cat.color, border: `1px solid ${cat.color}33`, borderRadius: 2, fontSize: "var(--text-10)", fontWeight: 600, lineHeight: "15px" }}>
+        <span style={{ padding: "3px 7px", background: cat.softColor ?? `color-mix(in srgb, ${cat.color} 12%, transparent)`, color: cat.color, border: `1px solid ${cat.borderColor ?? `color-mix(in srgb, ${cat.color} 20%, transparent)`}`, borderRadius: 2, fontSize: "var(--text-10)", fontWeight: 600, lineHeight: "15px" }}>
           {cat.label}
         </span>
-        <span style={{ padding: "3px 7px", background: `${statusColor}1f`, color: statusColor, border: `1px solid ${statusColor}33`, borderRadius: 2, fontSize: "var(--text-10)", fontWeight: 600, lineHeight: "15px" }}>
+        <span style={{ padding: "3px 7px", background: status.softColor ?? `color-mix(in srgb, ${statusColor} 12%, transparent)`, color: statusColor, border: `1px solid ${status.borderColor ?? `color-mix(in srgb, ${statusColor} 20%, transparent)`}`, borderRadius: 2, fontSize: "var(--text-10)", fontWeight: 600, lineHeight: "15px" }}>
           {statusLabel}
         </span>
         {item.type === "options_report" ? (
@@ -88,7 +89,7 @@ export function ReportCard({
         ) : null}
         {item.format ? (
           <span style={{ padding: "3px 7px", background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 2, fontSize: "var(--text-10)", color: "var(--fg-5)", lineHeight: "15px" }}>
-            {item.format}
+            {""}
           </span>
         ) : null}
         {meta.tags.map((tag) => (
@@ -108,10 +109,9 @@ export function ReportCard({
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginBottom: 8, fontSize: "var(--text-11)", color: "var(--fg-4)" }}>
         {[
-          { label: "资产", value: assetLabel, color: cat.color },
+          { label: "资产", value: reportAssetLabel(assetLabel), color: cat.color },
           { label: "日期", value: dateLabel, color: "var(--fg-2)" },
           { label: "生成", value: generatedAtLabel, color: "var(--fg-2)" },
-          { label: "绑定", value: item.run_id ? "Snapshot" : "未绑定", color: item.run_id ? "#60a5fa" : "var(--fg-5)" },
         ].map((metric) => (
           <div key={metric.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ fontSize: "var(--text-10)", color: "var(--fg-5)" }}>{metric.label}</span>
@@ -122,7 +122,7 @@ export function ReportCard({
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, paddingTop: 8, borderTop: "1px solid var(--border-faint)", marginTop: "auto" }}>
         <div className="flex items-center gap-2">
-          <span style={{ fontSize: "var(--text-10)", color: "var(--fg-5)", fontFamily: "var(--font-mono)" }}>{runLabel}</span>
+          <span style={{ fontSize: "var(--text-10)", color: "var(--fg-5)", fontFamily: "var(--font-mono)" }}>{""}</span>
         </div>
         {isOpenable ? (
           <button

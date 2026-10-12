@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { X } from "lucide-react";
 import type { MarketOddsEvidenceItemView } from "@/types/reports";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 
 export function MarketOddsEvidenceDrawer({ item, parserVersion, schemaVersion, onClose }: { item: MarketOddsEvidenceItemView | null; parserVersion: string; schemaVersion: string; onClose: () => void }) {
   useEffect(() => {
@@ -28,18 +29,20 @@ export function MarketOddsEvidenceDrawer({ item, parserVersion, schemaVersion, o
         </div>
         <dl className="mt-4 grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2 text-[length:var(--type-body-sm)]">
           <dt className="text-[var(--fg-5)]">事件</dt><dd className="text-[var(--fg-2)]">{item.outcome_label}</dd>
-          <dt className="text-[var(--fg-5)]">锚点</dt><dd className="fa-num text-[var(--fg-2)]">page {item.page_no ?? "-"} · {item.figure_id ?? "-"}</dd>
-          <dt className="text-[var(--fg-5)]">bbox</dt><dd className="fa-num break-all text-[var(--fg-2)]">{item.bbox?.join(", ") ?? "未提供"}</dd>
-          <dt className="text-[var(--fg-5)]">OCR</dt><dd className="break-words text-[var(--fg-2)]">{item.ocr_text}</dd>
-          <dt className="text-[var(--fg-5)]">语义</dt><dd className="fa-num text-[var(--fg-2)]">{item.probability_semantics}</dd>
-          <dt className="text-[var(--fg-5)]">版本</dt><dd className="fa-num text-[var(--fg-2)]">{parserVersion} · schema {schemaVersion}</dd>
+          <dt className="text-[var(--fg-5)]">证据锚点</dt><dd className="text-[var(--fg-2)]">已记录图像页码与图形位置</dd>
+          <dt className="text-[var(--fg-5)]">原文识别</dt><dd className="break-words text-[var(--fg-2)]">{item.ocr_text || "未提供"}</dd>
+          <dt className="text-[var(--fg-5)]">概率口径</dt><dd className="text-[var(--fg-2)]">{item.probability_semantics || "未提供"}</dd>
           <dt className="text-[var(--fg-5)]">来源</dt><dd>{sourceUrl ? <a className="font-semibold text-[var(--brand-hover)]" href={sourceUrl} target="_blank" rel="noreferrer">打开原始来源</a> : <span className="text-[var(--fg-4)]">来源引用已记录</span>}</dd>
         </dl>
+        <details className="mt-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-panel)] px-3 py-2 text-[10px] text-[var(--fg-5)]">
+          <summary className="cursor-pointer">查看图像与解析依据</summary>
+          <div className="mt-2"><EvidenceRecordActions label="脱敏图像解析记录" url={sourceUrl} record={{ page_no: item.page_no, figure_id: item.figure_id, bbox: item.bbox, parser_version: parserVersion, schema_version: schemaVersion }} /></div>
+        </details>
         {item.image_url ? (
           <figure className="mt-4 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)]">
             <img src={item.image_url} alt={`${item.outcome_label} 证据裁剪图`} className="max-h-[38rem] w-full object-contain" />
             <figcaption className="border-t border-[var(--border-faint)] px-2 py-1 text-[length:var(--type-caption)] text-[var(--fg-5)]">
-              {item.image_kind === "figure_crop" ? "VLM figure 裁剪图" : "原始页面图"}
+              {item.image_kind === "figure_crop" ? "模型图表裁剪图" : "原始页面图"}
             </figcaption>
           </figure>
         ) : null}

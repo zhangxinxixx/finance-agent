@@ -4,30 +4,32 @@ import { FACard } from "@/components/shared/FACard";
 import { FAMetricCard } from "@/components/shared/FAMetricCard";
 import { FASectionHeader } from "@/components/shared/FASectionHeader";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
-import { SourceTrace } from "@/components/shared/SourceTrace";
 import { formatDateTime } from "@/lib/date";
-import { compactId, formatNumber } from "@/lib/format";
+import { formatNumber } from "@/lib/format";
 import type { TaskReviewViewModel, TaskRunViewModel } from "@/types/agent-task";
+import { operationFieldLabel, operationReadableLabel, operationStageLabel } from "@/components/operations/operationsLabels";
 
 export function AgentTaskDetailHero({
   selectedRun,
   source,
   metrics,
   onRefresh,
-  monitorHref,
+  className = "",
 }: {
   selectedRun: TaskRunViewModel;
   source: string;
   metrics: Array<{ label: string; value: string | number; hint: string }>;
   onRefresh: () => void;
-  monitorHref?: string | null;
+  className?: string;
 }) {
   return (
     <FACard
       title={taskTypeLabel(selectedRun.task_type)}
       eyebrow="任务详情"
       accent="brand"
+      className={className}
       action={
         <div className="flex flex-wrap items-center gap-2">
           <Link
@@ -36,14 +38,6 @@ export function AgentTaskDetailHero({
           >
             返回列表
           </Link>
-          {monitorHref ? (
-            <Link
-              to={monitorHref}
-              className="rounded-[var(--radius-md)] border border-[var(--border)] px-3 py-1.5 text-[11px] font-semibold text-[var(--fg-3)]"
-            >
-              回到飞书监控
-            </Link>
-          ) : null}
           <button
             type="button"
             onClick={onRefresh}
@@ -63,24 +57,28 @@ export function AgentTaskDetailHero({
               智能体任务
             </Link>
             <span className="text-[var(--fg-5)]">/</span>
-            <span className="font-mono text-[var(--fg-4)]">{compactId(selectedRun.run_id, 12, 4)}</span>
+            <span className="text-[var(--fg-4)]">{selectedRun.run_id ? "运行记录已登记" : "运行标识未提供"}</span>
           </div>
         }
         description={taskTopicSummary(selectedRun)}
         action={
           <div className="flex flex-wrap items-center gap-2">
             <FAStatusPill tone={taskStatusTone(selectedRun.status)}>{taskStatusLabel(selectedRun.status)}</FAStatusPill>
-            {selectedRun.current_stage ? <FAStatusPill tone="info">{selectedRun.current_stage}</FAStatusPill> : null}
-            <FAStatusPill tone="dim">{source}</FAStatusPill>
+            {selectedRun.current_stage ? <FAStatusPill tone="info">{operationStageLabel(selectedRun.current_stage)}</FAStatusPill> : null}
+            <FAStatusPill tone="dim">{source === "api" ? "真实接口" : source === "fixture" ? "模拟记录" : operationReadableLabel(source, "来源状态待确认")}</FAStatusPill>
           </div>
         }
       />
 
       <div className="flex flex-wrap gap-2">
-        <FASourceTraceBadge source={compactId(selectedRun.run_id, 12, 4)} status="run_id" tone="info" snapshotId={selectedRun.snapshot_id ?? null} />
-        {selectedRun.snapshot_id ? <FASourceTraceBadge source={compactId(selectedRun.snapshot_id, 12, 4)} status="snapshot_id" tone="dim" /> : null}
-        {selectedRun.final_result_id ? <FASourceTraceBadge source={compactId(selectedRun.final_result_id, 12, 4)} status="final_result" tone="dim" /> : null}
+        <FASourceTraceBadge source={selectedRun.run_id ? "运行记录已登记" : "运行标识未提供"} status="运行标识" tone="info" snapshotId={selectedRun.snapshot_id ?? null} />
+        {selectedRun.snapshot_id ? <FASourceTraceBadge source="输入快照已登记" status="快照标识" tone="dim" /> : null}
+        {selectedRun.final_result_id ? <FASourceTraceBadge source="分析结果已登记" status="结果标识" tone="dim" /> : null}
       </div>
+      <EvidenceRecordActions
+        record={{ run_id: selectedRun.run_id, snapshot_id: selectedRun.snapshot_id, final_result_id: selectedRun.final_result_id }}
+        label="任务标识依据"
+      />
 
       <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
         {metrics.map((metric) => (
@@ -99,14 +97,14 @@ export function AgentTaskRuntimeContext({
   reviews: TaskReviewViewModel[];
 }) {
   return (
-    <FACard title="运行上下文" eyebrow="Runtime Context" accent="warn">
+    <FACard title="运行上下文" eyebrow="时间与资源" accent="warn">
       <div className="grid gap-3">
-        <FAMetricCard label="started_at" value={formatDateTime(selectedRun.started_at)} hint="开始时间" />
-        <FAMetricCard label="ended_at" value={formatDateTime(selectedRun.ended_at)} hint="结束时间" />
-        <FAMetricCard label="token_in" value={formatNumber(selectedRun.token_in, 0)} hint="输入 token" />
-        <FAMetricCard label="token_out" value={formatNumber(selectedRun.token_out, 0)} hint="输出 token" />
-        <FAMetricCard label="cost_usd" value={formatNumber(selectedRun.total_cost_usd, 4)} hint="总成本 USD" />
-        <FAMetricCard label="reviews" value={reviews.length} hint="关联复核项" />
+        <FAMetricCard label={operationFieldLabel("started_at")} value={formatDateTime(selectedRun.started_at)} hint="任务开始时间" />
+        <FAMetricCard label={operationFieldLabel("ended_at")} value={formatDateTime(selectedRun.ended_at)} hint="任务结束时间" />
+        <FAMetricCard label={operationFieldLabel("token_in")} value={formatNumber(selectedRun.token_in, 0)} hint="输入资源量" />
+        <FAMetricCard label={operationFieldLabel("token_out")} value={formatNumber(selectedRun.token_out, 0)} hint="输出资源量" />
+        <FAMetricCard label={operationFieldLabel("cost_usd")} value={formatNumber(selectedRun.total_cost_usd, 4)} hint="记录的总成本" />
+        <FAMetricCard label="关联复核项" value={reviews.length} hint="需要人工关注的条目" />
       </div>
     </FACard>
   );
@@ -120,21 +118,26 @@ export function AgentTaskSourceArtifacts({
   return (
     <>
       <FACard title="数据溯源" eyebrow="来源链路" accent="brand">
-        <div className="mb-3 text-[11px] text-[var(--fg-4)]">保留 source refs 与 artifact refs 的只读展示，便于回查 raw / parsed / output 位置。</div>
+        <div className="mb-3 text-[11px] text-[var(--fg-4)]">保留来源引用和产物引用，便于回查原始数据、解析结果与最终输出。</div>
         <div className="max-h-[360px] overflow-y-auto pr-1">
-          <SourceTrace sourceRefs={selectedRun.source_refs} emptyText="当前任务未返回来源引用" />
+          {selectedRun.source_refs.length > 0 ? (
+            <div className="space-y-2">
+              <div className="text-[11px] text-[var(--fg-4)]">{selectedRun.source_refs.length} 条来源记录已登记，详情可复制核对。</div>
+              <EvidenceRecordActions record={selectedRun.source_refs} label="来源引用依据" />
+            </div>
+          ) : <div className="text-[11px] text-[var(--fg-5)]">当前任务未返回来源引用</div>}
         </div>
       </FACard>
 
       {selectedRun.artifact_refs.length > 0 ? (
-        <FACard title="关联产物" eyebrow="Artifacts" accent="none">
+        <FACard title="关联产物" eyebrow="产物引用" accent="none">
           <div className="max-h-[220px] overflow-y-auto pr-1">
             <div className="flex flex-wrap gap-2">
               {selectedRun.artifact_refs.map((artifact) => (
                 <FASourceTraceBadge
                   key={`${artifact.artifact_id}-${artifact.file_path}`}
-                  source={artifact.artifact_type || "artifact"}
-                  status={artifact.file_path || artifact.path || "—"}
+                  source={operationFieldLabel(artifact.artifact_type || "artifact_type")}
+                  status="已登记"
                   tone="dim"
                 />
               ))}

@@ -119,7 +119,7 @@ def _gold_policy_delivery_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         )
         db.commit()
 
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr("apps.api.data_service._PROJECT_ROOT", tmp_path)
     monkeypatch.setattr("apps.api.services._storage._PROJECT_ROOT", tmp_path)
 
@@ -239,7 +239,7 @@ def test_report_analysis_endpoint_hits_analysis_md(_gold_policy_delivery_env) ->
     payload = response.json()
     expected = (bundle_path / "analysis.md").read_text(encoding="utf-8")
     assert payload["content"] == expected
-    assert payload["path"].endswith("analysis.md")
+    assert "path" not in payload
 
 
 def test_report_visual_endpoint_hits_visual_html(_gold_policy_delivery_env) -> None:
@@ -261,7 +261,7 @@ def test_report_visual_endpoint_hits_visual_html(_gold_policy_delivery_env) -> N
     payload = response.json()
     expected = (bundle_path / "visual.html").read_text(encoding="utf-8")
     assert payload["content"] == expected
-    assert payload["path"].endswith("visual.html")
+    assert "path" not in payload
     assert "<section " in payload["content"]
     assert "data-section-id=" in payload["content"]
 
@@ -285,7 +285,7 @@ def test_report_evidence_endpoint_hits_evidence_json(_gold_policy_delivery_env) 
     payload = response.json()
     expected = json.loads((bundle_path / "evidence.json").read_text(encoding="utf-8"))
     assert payload["content"] == expected
-    assert payload["path"].endswith("evidence.json")
+    assert "path" not in payload
     assert payload["content"]["schema_version"] == "gold_policy_report_evidence.v2"
     # The picker must not pick data_quality, manifest, or structured payloads.
     assert payload["content"]["schema_version"] != "gold_policy_report_manifest.v2"
@@ -347,7 +347,7 @@ def test_legacy_structured_json_fallback_when_no_named_files(tmp_path: Path, mon
     legacy_path.parent.mkdir(parents=True, exist_ok=True)
     legacy_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
 
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         client = _client_with_session(db)
@@ -366,4 +366,4 @@ def test_legacy_structured_json_fallback_when_no_named_files(tmp_path: Path, mon
     assert evidence_response.status_code == 200
     evidence = evidence_response.json()
     assert evidence["content"] == legacy_payload
-    assert evidence["path"].endswith("legacy_payload.json")
+    assert "path" not in evidence

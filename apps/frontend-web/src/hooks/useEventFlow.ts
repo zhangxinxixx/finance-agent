@@ -22,6 +22,9 @@ export function useEventFlow(): EventFlowState {
     async function load() {
       setIsLoading(true);
       setError(null);
+      // A refresh must not leave the previous event snapshot on screen while
+      // the next one is unresolved.
+      setData(null);
       try {
         const nextData = await fetchEventFlowOverviewView();
         if (!cancelled) {

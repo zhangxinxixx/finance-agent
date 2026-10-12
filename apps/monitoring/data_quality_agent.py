@@ -44,7 +44,7 @@ class DataQualityMonitorAgent:
         now = observed_at or datetime.now(timezone.utc)
         day = trade_date or now.date().isoformat()
         jin10_is_disabled = jin10_disabled()
-        monitored_sources = () if jin10_is_disabled else MONITORED_JIN10_SOURCES
+        monitored_sources = ("twelvedata_xauusd",) + (() if jin10_is_disabled else MONITORED_JIN10_SOURCES)
         probe_sources = (
             tuple(source_key for source_key in probe_source_keys if not source_key.startswith("jin10_"))
             if jin10_is_disabled

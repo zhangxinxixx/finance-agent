@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FATabOption } from "@/components/shared/FATabBar";
 import { strategyValueLabel } from "@/components/strategy/strategyFormat";
+import { strategyAssetLabel } from "@/components/strategy/strategyDisplayLabels";
 import type { StrategyAssetSummaryViewModel, StrategyHistoryItemViewModel } from "@/types/strategy";
 
 export type StrategyWindowKey = "7d" | "30d" | "90d" | "all";
@@ -9,17 +10,17 @@ export const DEFAULT_STRATEGY_ASSET = "XAUUSD";
 export const STRATEGY_REGIME_ALL = "all";
 
 const KNOWN_STRATEGY_ASSETS: FATabOption[] = [
-  { value: "XAUUSD", label: "XAUUSD" },
-  { value: "BTCUSD", label: "BTCUSD" },
-  { value: "EURUSD", label: "EURUSD" },
-  { value: "DXY", label: "DXY" },
-  { value: "US10Y", label: "US10Y" },
+  { value: "XAUUSD", label: strategyAssetLabel("XAUUSD") },
+  { value: "BTCUSD", label: strategyAssetLabel("BTCUSD") },
+  { value: "EURUSD", label: strategyAssetLabel("EURUSD") },
+  { value: "DXY", label: strategyAssetLabel("DXY") },
+  { value: "US10Y", label: strategyAssetLabel("US10Y") },
 ];
 
 export const STRATEGY_WINDOW_TABS: FATabOption<StrategyWindowKey>[] = [
-  { value: "7d", label: "7D" },
-  { value: "30d", label: "30D" },
-  { value: "90d", label: "90D" },
+  { value: "7d", label: "近7日" },
+  { value: "30d", label: "近30日" },
+  { value: "90d", label: "近90日" },
   { value: "all", label: "全部" },
 ];
 
@@ -39,7 +40,7 @@ export function useStrategyPageState(
   const assetTabs = useMemo(() => {
     const tabs = buildAssetTabs(assetOptions);
     if (selectedAsset && !tabs.some((tab) => tab.value === selectedAsset)) {
-      tabs.push({ value: selectedAsset, label: selectedAsset, count: 0 });
+      tabs.push({ value: selectedAsset, label: strategyAssetLabel(selectedAsset), count: 0 });
     }
     return tabs;
   }, [assetOptions, selectedAsset]);
@@ -116,7 +117,7 @@ function buildAssetTabs(assetOptions: StrategyAssetSummaryViewModel[]): FATabOpt
     if (item.sample_size <= 0) continue;
     tabs.push({
       value: item.asset,
-      label: item.asset,
+      label: strategyAssetLabel(item.asset),
       count: item.sample_size,
     });
   }

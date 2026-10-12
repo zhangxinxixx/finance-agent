@@ -37,7 +37,7 @@ def _ready_bundle(as_of: datetime) -> FormalSnapshotBundle:
             _bar(
                 asset="XAUUSD",
                 timeframe="5m",
-                source="jin10_mcp_derived_5m",
+                source="fixture_xauusd_primary_5m",
                 source_ref={
                     "provider_symbol": "XAUUSD",
                     "instrument_type": "otc_spot_quote_proxy",
@@ -243,6 +243,25 @@ def test_persist_snapshot_materializes_formal_cot_from_macro_points(
             }
         )
     ]
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from apps.parsers.macro.models import MacroPoint
+    from apps.worker.pipelines.macro import persist_macro_points
+    from apps.features.macro.warehouse_input import load_macro_feature_points
+    from database.models.analysis import AnalysisBase
+    from database.models.execution import ExecutionBase
+    from tests.helpers.warehouse import create_collection_schema
+
+    engine = create_engine('sqlite://')
+    AnalysisBase.metadata.create_all(engine)
+    ExecutionBase.metadata.create_all(engine)
+    create_collection_schema(engine)
+    with Session(engine) as db:
+        persist_macro_points(db, storage_root=tmp_path,
+            all_points=[MacroPoint(**point.to_dict()) for point in macro_state.all_points], all_refs=[], run_id=None)
+        macro_state.warehouse_points = load_macro_feature_points(
+            db, record_ids=db.info['macro_warehouse_record_ids'], as_of=run_time)
+    engine.dispose()
     bundle = _ready_bundle(run_time)
     monkeypatch.setattr(runner, "resolve_formal_snapshot_as_of", lambda **_kwargs: run_time)
     monkeypatch.setattr(runner, "load_formal_market_snapshots", lambda *_args, **_kwargs: bundle)
@@ -260,3 +279,19 @@ def test_persist_snapshot_materializes_formal_cot_from_macro_points(
     assert snapshot["cot"]["data"]["readiness"] == "ready"
     assert snapshot["cot"]["data"]["managed_money_net"]["value"] == 116_161.0
     assert snapshot["input_snapshot_ids"]["cot"].startswith("cot_snapshot.v1:")
+
+
+def test_runner_disabled_source_uses_research_workflow_without_jin10(tmp_path, monkeypatch):
+    import apps.analysis.jin10.daily_context as context
+
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "1")
+    monkeypatch.setattr(context, "build_daily_analysis_context", lambda **kwargs: (_ for _ in ()).throw(AssertionError("disabled source called")))
+    macro_state, cme_state = _states()
+    _, snapshot = _persist_analysis_snapshot(
+        tmp_path, "research-runner", macro_state, cme_state,
+        analysis_context_date="2026-07-20", run_time=datetime(2026, 7, 20, 12, tzinfo=UTC),
+    )
+    assert snapshot["daily_research"]["schema_version"] == "daily_research.v1"
+    assert snapshot["gold_workflow"]["schema_version"] == "gold_workflow.v2"
+    assert snapshot["gold_workflow"]["previous_research"]["status"] == "unavailable"
+    assert snapshot["gold_workflow"]["formal_state_authority"] is False

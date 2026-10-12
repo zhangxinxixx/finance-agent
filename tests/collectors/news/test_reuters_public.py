@@ -74,6 +74,8 @@ def test_reuters_public_maps_public_metadata_to_candidate_items(tmp_path: Path) 
     assert item.raw_payload["authorized_wire"] is False
     assert item.raw_payload["discovery_method"] == "google_news_rss_site_filter"
     assert item.raw_payload["publisher_url"] == "https://www.reuters.com/markets/commodities/gold-fed"
+    assert item.raw_payload["content_scope"] == "headline_summary_only"
+    assert item.raw_payload["full_text_available"] is False
     assert item.raw_path.startswith("raw/news/reuters_public/2026-06-10/gold_macro-")
     assert item.parsed_path.startswith("parsed/news/reuters_public/2026-06-10/gold_macro-")
 

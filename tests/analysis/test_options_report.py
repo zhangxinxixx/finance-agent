@@ -241,7 +241,7 @@ class TestReportMarkdown:
         required_headings = [
             "一句话结论",
             "数据口径",
-            "GEX / Gamma Zero",
+            "OI-Signed GEX Proxy / Selected Expiry Window Proxy Gamma Flip",
             "Delta / Vega / Theta Exposure",
             "订单墙 / WallScore",
             "Roll / 换月迁移",
@@ -283,14 +283,14 @@ class TestReportMarkdown:
         report = render_options_report_markdown(result)
         strategy = report.split("## 实盘策略卡片", 1)[1].split("## 主/副剧本", 1)[0]
 
-        assert "- 第一目标：4100" in strategy
-        assert "- 第二目标：4200" in strategy
-        assert "- 第三目标：4200" not in strategy
+        assert "- 第一目标：4200" in strategy
+        assert "- 第二目标：4300" in strategy
+        assert "回踩 4000 不破 → 看 4200 → 4300" in strategy
         assert "- 第一目标：4000" in strategy
         assert "- 第二目标：3969" in strategy
-        assert "价格跌回 Gamma Zero" not in strategy
-        assert "重新站上 Gamma Zero（4078）" in strategy
-        assert "**4000–4100 严格中段不适合追单，边界触发位不属于不交易区。**" in strategy
+        assert "价格跌回 Proxy Gamma Flip" not in strategy
+        assert "重新站上 Proxy Gamma Flip（4053）" in strategy
+        assert "**4000–4200 严格中段不适合追单，边界触发位不属于不交易区。**" in strategy
 
     def test_report_separates_absolute_oi_and_three_path_conditions(self) -> None:
         report = self._report(p0=4200.0)
@@ -331,10 +331,10 @@ class TestReportMarkdown:
 
         report = render_options_report_markdown(result)
 
-        assert "跨月 Gamma Zero 是 AUG26 与 SEP26" in report
-        assert "AUG26 / SEP26 GEX 与 Gamma Zero 可能小幅变化" in report
-        assert "跨月 Gamma Zero 是 JUN26 与 JUL26" not in report
-        assert "JUN26 GEX 与 Gamma Zero 可能小幅变化" not in report
+        assert "Selected Expiry Window Proxy Gamma Flip 是 AUG26 与 SEP26" in report
+        assert "AUG26 / SEP26 OI-Signed GEX Proxy 与 Proxy Gamma Flip 可能小幅变化" in report
+        assert "Selected Expiry Window Proxy Gamma Flip 是 JUN26 与 JUL26" not in report
+        assert "JUN26 OI-Signed GEX Proxy 与 Proxy Gamma Flip 可能小幅变化" not in report
 
 
 # -----------------------------------------------------------------------

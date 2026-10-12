@@ -39,6 +39,8 @@ class ReportDetail(ReportSummary):
     structured_payload: dict | None = None
     report_identity: dict | None = None
     result_identity: dict | None = None
+    research_identity: dict | None = None
+    current_context: dict | None = None
     gold_macro_overview: dict | None = None
     market_odds_evidence: MarketOddsEvidenceViewModel | None = None
     llm_audits: list[LLMAuditSummary] = Field(default_factory=list)

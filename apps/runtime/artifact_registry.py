@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from apps.api.schemas.common import ArtifactType
 from apps.api.schemas.source_trace import ArtifactRef
 from apps.runtime.artifact_storage import LOCAL_FS_STORAGE_BACKEND, LocalFileSystemArtifactStorage, get_artifact_storage
+from apps.runtime.output_disposition import is_output_purged
 from database.models.execution import RunArtifact
 from database.models.task import TaskRun, TaskStep
 
@@ -56,9 +57,6 @@ _ARTIFACT_QUALITY_METADATA_KEYS = frozenset(
         "output_mode",
     }
 )
-_CONTEXT_BUNDLE_ARTIFACT_FAMILY = "analysis_context_bundle"
-_CONTEXT_BUNDLE_SCHEMA_VERSION = "analysis_context_bundle.v3"
-_CONTEXT_BUNDLE_SELECTOR_LIMIT = 128
 
 
 def _artifact_run(db: Session, *, step: TaskStep) -> TaskRun | None:
@@ -93,7 +91,8 @@ def _validate_run_artifact_lineage(*, run_id: str, step: TaskStep) -> uuid.UUID:
 
     if step.task_run_id != run_uuid:
         raise ValueError(
-            f"run artifact lineage conflict: run_id={run_id} does not match step.task_run_id={step.task_run_id}"
+            "run artifact lineage conflict: "
+            f"run_id={run_id} does not match step.task_run_id={step.task_run_id}"
         )
     return run_uuid
 
@@ -159,9 +158,7 @@ def _validate_artifact_snapshot_lineage(
         return
 
     if artifact.artifact_type in _SNAPSHOT_BOUND_ARTIFACT_TYPES:
-        artifact_snapshot = (
-            input_snapshot_ids.get("analysis_snapshot") if isinstance(input_snapshot_ids, dict) else None
-        )
+        artifact_snapshot = input_snapshot_ids.get("analysis_snapshot") if isinstance(input_snapshot_ids, dict) else None
         if isinstance(artifact_snapshot, str) and artifact_snapshot and artifact_snapshot != run.snapshot_id:
             raise ValueError(
                 "run artifact lineage conflict: "
@@ -238,7 +235,6 @@ def register_artifact(
     source_refs: list[dict[str, Any]] | None = None,
     input_snapshot_ids: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
-    registry_artifact_id: uuid.UUID | None = None,
     require_canonical_path: bool = True,
     storage: LocalFileSystemArtifactStorage | None = None,
 ) -> RunArtifact | None:
@@ -251,9 +247,7 @@ def register_artifact(
     if not _run_artifacts_available(db):
         return None
 
-    run_uuid = (
-        _validate_run_artifact_lineage(run_id=run_id, step=step) if step is not None else _coerce_run_uuid(run_id)
-    )
+    run_uuid = _validate_run_artifact_lineage(run_id=run_id, step=step) if step is not None else _coerce_run_uuid(run_id)
     _validate_artifact_source_refs(source_refs)
     run = _artifact_run(db, step=step) if step is not None else _artifact_run_by_id(db, run_id=run_uuid)
     if run is None:
@@ -281,6 +275,9 @@ def register_artifact(
         storage_backend=_optional_str(raw_artifact.get("storage_backend")),
         sha256=_optional_str(raw_artifact.get("sha256")),
     )
+    _validate_artifact_snapshot_lineage(
+        run=run, artifact=artifact, input_snapshot_ids=input_snapshot_ids, source_refs=source_refs
+    )
     return _persist_run_artifact(
         db,
         run_uuid=run_uuid,
@@ -291,7 +288,6 @@ def register_artifact(
         source_refs=source_refs,
         input_snapshot_ids=input_snapshot_ids,
         metadata=metadata,
-        registry_artifact_id=registry_artifact_id,
         storage=effective_storage,
         require_canonical_path=require_canonical_path,
         flush=True,
@@ -308,6 +304,7 @@ def register_step_artifacts(
     output_ref: str | None = None,
     source_refs: list[dict[str, Any]] | None = None,
     input_snapshot_ids: dict[str, Any] | None = None,
+    storage: LocalFileSystemArtifactStorage | None = None,
 ) -> list[RunArtifact]:
     """Persist additive registry rows for a step's artifacts."""
     if not _run_artifacts_available(db):
@@ -315,7 +312,7 @@ def register_step_artifacts(
     run_uuid = _validate_run_artifact_lineage(run_id=run_id, step=step)
     _validate_artifact_source_refs(source_refs)
     run = _artifact_run(db, step=step)
-    storage = get_artifact_storage()
+    storage = storage or get_artifact_storage()
     persisted: list[RunArtifact] = []
     seen: set[tuple[str, str]] = set()
 
@@ -345,7 +342,6 @@ def register_step_artifacts(
             source_refs=source_refs,
             input_snapshot_ids=input_snapshot_ids,
             metadata=_artifact_quality_metadata(raw_artifact),
-            registry_artifact_id=None,
             storage=storage,
             require_canonical_path=False,
             flush=False,
@@ -377,390 +373,6 @@ def list_run_artifacts(db: Session, run_id: str) -> list[ArtifactRef]:
         )
         for row in rows
     ]
-
-
-def select_context_bundle_artifact_for_run(
-    db: Session,
-    *,
-    run_id: str,
-    storage_root: str | Path,
-) -> dict[str, Any] | None:
-    """Return the one validated ContextBundle descriptor registered for ``run_id``.
-
-    The registry row is only an index.  This read boundary revalidates its
-    metadata, immutable file hash, and Bundle payload before returning an
-    explicit recovery descriptor.  Multiple Bundle rows for one run are an
-    authority conflict, never a "latest" choice.
-    """
-
-    if not _run_artifacts_available(db):
-        return None
-    run_uuid = _coerce_run_uuid(run_id)
-    rows = (
-        db.query(RunArtifact)
-        .filter(RunArtifact.run_id == run_uuid)
-        .order_by(RunArtifact.created_at.asc(), RunArtifact.artifact_id.asc())
-        .all()
-    )
-    candidates = [row for row in rows if _is_context_bundle_row(row)]
-    if not candidates:
-        return None
-    if len(candidates) == 1:
-        return _validated_context_bundle_descriptor(
-            candidates[0],
-            storage_root=storage_root,
-            expected_run_id=run_id,
-        )
-    if len(candidates) != 2:
-        raise ValueError("TaskRun has ambiguous ContextBundle registry artifacts")
-    recompute = [
-        row
-        for row in candidates
-        if isinstance(row.artifact_metadata, dict) and row.artifact_metadata.get("artifact_role") == "canary_recompute"
-    ]
-    predecessor = [row for row in candidates if row not in recompute]
-    if len(recompute) != 1 or len(predecessor) != 1:
-        raise ValueError("TaskRun has ambiguous ContextBundle registry artifacts")
-    predecessor_descriptor = _validated_context_bundle_descriptor(
-        predecessor[0],
-        storage_root=storage_root,
-        expected_run_id=run_id,
-    )
-    recompute_descriptor = _validated_context_bundle_descriptor(
-        recompute[0],
-        storage_root=storage_root,
-        expected_run_id=run_id,
-    )
-    _validate_canary_recompute_descriptor(
-        predecessor=predecessor_descriptor,
-        recompute=recompute_descriptor,
-    )
-    return recompute_descriptor
-
-
-def select_canary_terminal_result_for_run(
-    db: Session,
-    *,
-    run_id: str,
-    storage_root: str | Path,
-) -> Any | None:
-    """Recover the one terminal canary outcome for a TaskRun, if committed."""
-
-    run_uuid = _coerce_run_uuid(run_id)
-    rows = db.query(RunArtifact).filter(RunArtifact.run_id == run_uuid).order_by(RunArtifact.created_at.asc()).all()
-    candidates = [
-        row
-        for row in rows
-        if isinstance(row.artifact_metadata, dict)
-        and row.artifact_metadata.get("artifact_family") == "analysis_state_canary_terminal"
-    ]
-    if not candidates:
-        return None
-    if len(candidates) != 1:
-        raise ValueError("TaskRun has ambiguous terminal canary outcomes")
-    row = candidates[0]
-    expected_id = uuid.uuid5(
-        uuid.NAMESPACE_URL,
-        f"finance-agent:analysis-state-canary-terminal:{run_id}",
-    )
-    if row.artifact_id != expected_id or not row.sha256:
-        raise ValueError("terminal canary registry identity is invalid")
-    root = Path(storage_root).resolve()
-    path = Path(row.file_path).resolve()
-    if not path.is_relative_to(root) or not path.is_file():
-        raise ValueError("terminal canary artifact path is unavailable")
-    if hashlib.sha256(path.read_bytes()).hexdigest() != row.sha256:
-        raise ValueError("terminal canary artifact hash is invalid")
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("terminal canary artifact is invalid JSON") from exc
-    from apps.worker.canary_materialization import CanaryMaterializationResult
-
-    result = CanaryMaterializationResult.model_validate(payload)
-    expected_path = (
-        root
-        / "outputs"
-        / "analysis_memory_canary"
-        / result.trade_date.isoformat()
-        / run_id
-        / "terminal-results"
-        / f"{row.sha256}.json"
-    ).resolve()
-    if path != expected_path or result.run_id != run_id or result.status == "recompute_required":
-        raise ValueError("terminal canary artifact lineage is invalid")
-    return result
-
-
-def select_previous_context_bundle_artifact(
-    db: Session,
-    *,
-    current_run_id: str,
-    asset: str,
-    state_scope: str,
-    canonical_state_id: str,
-    cutoff_at: datetime | None,
-    storage_root: str | Path,
-) -> dict[str, Any] | None:
-    """Return the latest validated prior Bundle for one canonical-state lineage.
-
-    Portable SQL JSON predicates first restrict the scan to the requested
-    registry lineage. The bounded matching-candidate scan is stable; exceeding
-    it fails closed rather than silently selecting from an incomplete set.
-    """
-
-    if not _run_artifacts_available(db):
-        return None
-    current_run_uuid = _coerce_run_uuid(current_run_id)
-    normalized_asset = str(asset).strip()
-    normalized_scope = str(state_scope).strip()
-    normalized_state_id = str(canonical_state_id).strip()
-    if not all((normalized_asset, normalized_scope, normalized_state_id)):
-        raise ValueError("ContextBundle selector lineage is incomplete")
-    if cutoff_at is not None and (cutoff_at.tzinfo is None or cutoff_at.utcoffset() is None):
-        raise ValueError("ContextBundle selector cutoff_at must be timezone-aware")
-
-    rows = (
-        db.query(RunArtifact)
-        .filter(
-            RunArtifact.artifact_type == ArtifactType.structured_json.value,
-            RunArtifact.run_id != current_run_uuid,
-            RunArtifact.artifact_metadata["artifact_family"].as_string() == _CONTEXT_BUNDLE_ARTIFACT_FAMILY,
-            RunArtifact.artifact_metadata["asset"].as_string() == normalized_asset,
-            RunArtifact.artifact_metadata["state_scope"].as_string() == normalized_scope,
-            RunArtifact.artifact_metadata["canonical_state_id"].as_string() == normalized_state_id,
-        )
-        .order_by(RunArtifact.created_at.desc(), RunArtifact.artifact_id.desc())
-        .limit(_CONTEXT_BUNDLE_SELECTOR_LIMIT + 1)
-        .all()
-    )
-    if len(rows) > _CONTEXT_BUNDLE_SELECTOR_LIMIT:
-        raise ValueError("ContextBundle selector candidate limit exceeded")
-
-    candidates: list[tuple[datetime, datetime, dict[str, Any]]] = []
-    for row in rows:
-        if not _is_context_bundle_row(row):  # pragma: no cover - SQL predicate
-            continue
-        metadata = row.artifact_metadata
-        if not isinstance(metadata, dict):  # guarded by _is_context_bundle_row
-            continue
-        descriptor = _validated_context_bundle_descriptor(
-            row,
-            storage_root=storage_root,
-            expected_asset=normalized_asset,
-            expected_state_scope=normalized_scope,
-            expected_canonical_state_id=normalized_state_id,
-        )
-        bundle_cutoff_at = _context_bundle_cutoff_at(
-            descriptor,
-            storage_root=storage_root,
-        )
-        if cutoff_at is not None and bundle_cutoff_at > cutoff_at:
-            continue
-        created_at = row.created_at
-        if created_at.tzinfo is None or created_at.utcoffset() is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        candidates.append((bundle_cutoff_at, created_at.astimezone(timezone.utc), descriptor))
-
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: (item[0], item[1], item[2]["file_path"]), reverse=True)
-    latest = candidates[0]
-    if len(candidates) > 1 and candidates[1][:2] == latest[:2]:
-        raise ValueError("ContextBundle selector latest candidate is ambiguous")
-    return latest[2]
-
-
-def select_exact_context_bundle_artifact(
-    db: Session,
-    *,
-    bundle_id: str,
-    content_hash: str,
-    run_id: str,
-    asset: str,
-    state_scope: str,
-    base_canonical_state_id: str,
-    current_run_id: str,
-    storage_root: str | Path,
-) -> dict[str, Any] | None:
-    """Return one immutable Bundle by its complete persisted identity.
-
-    This selector is intentionally different from the historical/latest
-    selector above.  CAS recovery already knows which Bundle produced the
-    current scoped head, so any missing or ambiguous identity must fail closed
-    instead of choosing a nearby artifact.
-    """
-
-    if not _run_artifacts_available(db):
-        return None
-    source_run_uuid = _coerce_run_uuid(run_id)
-    current_run_uuid = _coerce_run_uuid(current_run_id)
-    if source_run_uuid == current_run_uuid:
-        raise ValueError("ContextBundle continuity source must belong to a different run")
-    expected = {
-        "bundle_id": str(bundle_id).strip(),
-        "content_hash": str(content_hash).strip(),
-        "asset": str(asset).strip(),
-        "state_scope": str(state_scope).strip(),
-        "canonical_state_id": str(base_canonical_state_id).strip(),
-    }
-    if any(not value for value in expected.values()) or not _is_lowercase_sha256(expected["content_hash"]):
-        raise ValueError("ContextBundle exact selector identity is incomplete")
-
-    rows = (
-        db.query(RunArtifact)
-        .filter(
-            RunArtifact.run_id == source_run_uuid,
-            RunArtifact.artifact_type == ArtifactType.structured_json.value,
-            RunArtifact.artifact_metadata["artifact_family"].as_string() == _CONTEXT_BUNDLE_ARTIFACT_FAMILY,
-            RunArtifact.artifact_metadata["bundle_id"].as_string() == expected["bundle_id"],
-            RunArtifact.artifact_metadata["content_hash"].as_string() == expected["content_hash"],
-            RunArtifact.artifact_metadata["asset"].as_string() == expected["asset"],
-            RunArtifact.artifact_metadata["state_scope"].as_string() == expected["state_scope"],
-            RunArtifact.artifact_metadata["canonical_state_id"].as_string() == expected["canonical_state_id"],
-        )
-        .order_by(RunArtifact.created_at.asc(), RunArtifact.artifact_id.asc())
-        .limit(2)
-        .all()
-    )
-    if not rows:
-        return None
-    if len(rows) != 1:
-        raise ValueError("ContextBundle exact selector identity is ambiguous")
-    return _validated_context_bundle_descriptor(
-        rows[0],
-        storage_root=storage_root,
-        expected_run_id=run_id,
-        expected_asset=expected["asset"],
-        expected_state_scope=expected["state_scope"],
-        expected_canonical_state_id=expected["canonical_state_id"],
-        expected_bundle_id=expected["bundle_id"],
-        expected_content_hash=expected["content_hash"],
-    )
-
-
-def _is_context_bundle_row(row: RunArtifact) -> bool:
-    metadata = row.artifact_metadata
-    return isinstance(metadata, dict) and metadata.get("artifact_family") == _CONTEXT_BUNDLE_ARTIFACT_FAMILY
-
-
-def _validate_canary_recompute_descriptor(
-    *,
-    predecessor: dict[str, Any],
-    recompute: dict[str, Any],
-) -> None:
-    predecessor_metadata = predecessor["metadata"]
-    recompute_metadata = recompute["metadata"]
-    if recompute_metadata.get("canary_recompute_attempt") != 1:
-        raise ValueError("ContextBundle canary recompute attempt is invalid")
-    expected = {
-        "supersedes_bundle_id": predecessor_metadata.get("bundle_id"),
-        "supersedes_bundle_hash": predecessor_metadata.get("content_hash"),
-        "supersedes_canonical_state_id": predecessor_metadata.get("canonical_state_id"),
-    }
-    for key, value in expected.items():
-        if not value or str(recompute_metadata.get(key) or "") != str(value):
-            raise ValueError(f"ContextBundle canary recompute {key} is invalid")
-    if recompute_metadata.get("canonical_state_id") == predecessor_metadata.get("canonical_state_id"):
-        raise ValueError("ContextBundle canary recompute canonical state is stale")
-
-
-def _validated_context_bundle_descriptor(
-    row: RunArtifact,
-    *,
-    storage_root: str | Path,
-    expected_run_id: str | None = None,
-    expected_asset: str | None = None,
-    expected_state_scope: str | None = None,
-    expected_canonical_state_id: str | None = None,
-    expected_bundle_id: str | None = None,
-    expected_content_hash: str | None = None,
-) -> dict[str, Any]:
-    """Revalidate one registry row and reconstruct its recovery descriptor."""
-
-    from apps.output.context_bundle import load_context_bundle
-
-    metadata = row.artifact_metadata
-    if not isinstance(metadata, dict) or metadata.get("artifact_family") != _CONTEXT_BUNDLE_ARTIFACT_FAMILY:
-        raise ValueError("ContextBundle registry artifact family is invalid")
-    required = {
-        "bundle_id": str(metadata.get("bundle_id") or "").strip(),
-        "content_hash": str(metadata.get("content_hash") or "").strip(),
-        "run_id": str(metadata.get("run_id") or "").strip(),
-        "canonical_state_id": str(metadata.get("canonical_state_id") or "").strip(),
-        "schema_version": str(metadata.get("schema_version") or "").strip(),
-        "asset": str(metadata.get("asset") or "").strip(),
-        "state_scope": str(metadata.get("state_scope") or "").strip(),
-    }
-    if any(not value for value in required.values()) or not _is_lowercase_sha256(required["content_hash"]):
-        raise ValueError("ContextBundle registry metadata identity is incomplete")
-    if required["schema_version"] != _CONTEXT_BUNDLE_SCHEMA_VERSION:
-        raise ValueError("ContextBundle registry schema version is unsupported")
-    if required["run_id"] != str(row.run_id):
-        raise ValueError("ContextBundle registry metadata run_id conflicts with row")
-    if expected_run_id is not None and required["run_id"] != str(expected_run_id):
-        raise ValueError("ContextBundle registry run_id does not match selector")
-    for key, expected in (
-        ("bundle_id", expected_bundle_id),
-        ("content_hash", expected_content_hash),
-        ("asset", expected_asset),
-        ("state_scope", expected_state_scope),
-        ("canonical_state_id", expected_canonical_state_id),
-    ):
-        if expected is not None and required[key] != expected:
-            raise ValueError(f"ContextBundle registry {key} does not match selector")
-    if _artifact_type_value(row.artifact_type) != ArtifactType.structured_json.value:
-        raise ValueError("ContextBundle registry artifact_type is invalid")
-    file_path = str(row.file_path or "").strip()
-    file_sha256 = str(row.sha256 or "").strip()
-    if not file_path or not _is_lowercase_sha256(file_sha256):
-        raise ValueError("ContextBundle registry file identity is incomplete")
-    storage = LocalFileSystemArtifactStorage(root=Path(storage_root).resolve())
-    actual_file_sha256 = storage.compute_sha256(file_path)
-    if actual_file_sha256 is None or actual_file_sha256 != file_sha256:
-        raise ValueError("ContextBundle registry file hash mismatch")
-    bundle = load_context_bundle(storage_root=storage_root, storage_relative_path=file_path)
-    if (
-        bundle.schema_version != _CONTEXT_BUNDLE_SCHEMA_VERSION
-        or bundle.bundle_id != required["bundle_id"]
-        or bundle.content_hash != required["content_hash"]
-        or bundle.run_id != required["run_id"]
-        or bundle.asset != required["asset"]
-        or bundle.state_scope != required["state_scope"]
-        or bundle.canonical_state_id != required["canonical_state_id"]
-    ):
-        raise ValueError("ContextBundle registry payload identity conflicts with metadata")
-    return {
-        "artifact_id": required["bundle_id"],
-        "artifact_type": ArtifactType.structured_json.value,
-        "file_path": file_path,
-        "sha256": file_sha256,
-        "content_type": row.content_type or "application/json",
-        "source_refs": list(row.source_refs_data or []),
-        "metadata": dict(metadata),
-    }
-
-
-def _context_bundle_cutoff_at(
-    descriptor: dict[str, Any],
-    *,
-    storage_root: str | Path,
-) -> datetime:
-    from apps.output.context_bundle import load_context_bundle
-
-    bundle = load_context_bundle(
-        storage_root=storage_root,
-        storage_relative_path=str(descriptor["file_path"]),
-    )
-    return bundle.cutoff_at.astimezone(timezone.utc)
-
-
-def _is_lowercase_sha256(value: str) -> bool:
-    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
-
-
-def _artifact_type_value(value: Any) -> str:
-    return str(value.value) if isinstance(value, ArtifactType) else str(value)
 
 
 def _collect_artifacts(
@@ -810,7 +422,11 @@ def _collect_artifacts(
 
 
 def _artifact_quality_metadata(raw_artifact: dict[str, Any]) -> dict[str, Any] | None:
-    metadata = {key: raw_artifact[key] for key in _ARTIFACT_QUALITY_METADATA_KEYS if key in raw_artifact}
+    metadata = {
+        key: raw_artifact[key]
+        for key in _ARTIFACT_QUALITY_METADATA_KEYS
+        if key in raw_artifact
+    }
     nested = raw_artifact.get("metadata")
     if isinstance(nested, dict):
         for key in _ARTIFACT_QUALITY_METADATA_KEYS:
@@ -830,7 +446,6 @@ def _persist_run_artifact(
     source_refs: list[dict[str, Any]] | None,
     input_snapshot_ids: dict[str, Any] | None,
     metadata: dict[str, Any] | None,
-    registry_artifact_id: uuid.UUID | None,
     storage: LocalFileSystemArtifactStorage,
     require_canonical_path: bool,
     flush: bool,
@@ -846,6 +461,13 @@ def _persist_run_artifact(
         .first()
     )
     if existing is not None:
+        if is_output_purged(existing) or str(existing.structured_status or "").strip().lower() == "purged":
+            raise ValueError(
+                "OUTPUT_PURGED: run artifact "
+                f"{existing.artifact_id} cannot be re-registered"
+            )
+        if flush:
+            db.flush()
         return existing
 
     path_metadata = _extract_path_metadata(
@@ -854,7 +476,6 @@ def _persist_run_artifact(
         require_canonical_path=require_canonical_path,
     )
     row = RunArtifact(
-        artifact_id=registry_artifact_id or uuid.uuid4(),
         run_id=run_uuid,
         task_id=task_id,
         artifact_type=artifact.artifact_type,
@@ -951,7 +572,8 @@ def _extract_path_metadata(
     if path_run_id != str(run_id):
         if require_canonical_path:
             raise ValueError(
-                f"canonical artifact path violation: path run_id={path_run_id} does not match registry run_id={run_id}"
+                "canonical artifact path violation: "
+                f"path run_id={path_run_id} does not match registry run_id={run_id}"
             )
         return {
             "layer": layer,

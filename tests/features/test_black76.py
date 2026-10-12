@@ -274,6 +274,40 @@ def test_netgex_grid_uses_per_expiry_time_to_expiry() -> None:
     assert result.net_gex_values[0] == pytest.approx(expected)
 
 
+def test_netgex_grid_uses_each_expirys_forward_for_iv_inversion() -> None:
+    rows = normalize_option_rows(
+        [
+            _make_row(expiry="JUN26", strike=4200, settlement=100.0, open_interest=1000, option_type="CALL"),
+            _make_row(expiry="JUL26", strike=4300, settlement=100.0, open_interest=1000, option_type="PUT"),
+        ]
+    )[0]
+    forwards = {"JUN26": 4270.0, "JUL26": 4350.0}
+
+    aggregate = compute_netgex_grid(
+        rows,
+        F=forwards["JUN26"],
+        T=calc_time_to_expiry("2026-05-06", expiry="JUN26")[0],
+        grid_min=4250,
+        grid_max=4350,
+        grid_step=50,
+        forward_by_expiry=forwards,
+    )
+    individual = [
+        compute_netgex_grid(
+            [row],
+            F=forwards[row.expiry],
+            T=calc_time_to_expiry(row.trade_date, expiry=row.expiry)[0],
+            grid_min=4250,
+            grid_max=4350,
+            grid_step=50,
+        )
+        for row in rows
+    ]
+
+    expected = [sum(result.net_gex_values[index] for result in individual) for index in range(3)]
+    assert aggregate.net_gex_values == pytest.approx(expected)
+
+
 def test_expiry_codes_sort_chronologically() -> None:
     assert sort_expiry_codes(["DEC26", "JUN26", "FEB27", "JUL26"]) == [
         "JUN26",

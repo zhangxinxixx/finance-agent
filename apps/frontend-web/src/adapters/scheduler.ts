@@ -44,6 +44,11 @@ export interface SchedulerCronJob {
   last_run_at: string | null;
   last_status: string | null;
   next_run_at: string | null;
+  source?: string;
+  status?: string;
+  pipeline_name?: string;
+  execution_timezone?: string | null;
+  next_tick_at?: string | null;
 }
 
 export interface SchedulerOutputItem {
@@ -119,6 +124,8 @@ export interface SchedulerOverviewResponse {
     total: number;
   };
   cron_jobs: SchedulerCronJob[];
+  cron_jobs_source?: string;
+  cron_jobs_error?: string | null;
   artifacts_summary: {
     today_count: number;
     recent_outputs: SchedulerOutputItem[];
@@ -192,12 +199,6 @@ export function getStatusTone(status: string): "up" | "warn" | "down" | "dim" {
   return STATUS_TONES[status.toLowerCase()] ?? "dim";
 }
 
-export async function triggerRunAllCollectors(): Promise<{ status: string; message: string }> {
-  return fetchJson<{ status: string; message: string }>("/api/scheduler/run-all-collectors", {
-    method: "POST",
-  });
-}
-
 // ── Task Detail ──
 
 export interface RunStep {
@@ -245,13 +246,7 @@ export interface RunDetail {
 }
 
 export async function fetchRunDetail(runId: string): Promise<RunDetail> {
-  // 并行拉取 detail + steps + artifacts + events
-  const [detail, stepsRes, artifacts, eventsRes] = await Promise.all([
-    fetchJson<any>(`/api/runs/${runId}`),
-    fetchJson<any>(`/api/runs/${runId}/steps`).catch(() => ({ steps: [] })),
-    fetchJson<any>(`/api/runs/${runId}/artifacts`).catch(() => ({ artifacts: [] })),
-    fetchJson<any>(`/api/runs/${runId}/events`).catch(() => ({ events: [] })),
-  ]);
+  const detail = await fetchJson<any>(`/api/runs/${runId}?view=ads`);
   return {
     run_id: detail.run_id ?? runId,
     name: detail.name ?? detail.task_name ?? "",
@@ -263,20 +258,16 @@ export async function fetchRunDetail(runId: string): Promise<RunDetail> {
     error_summary: detail.error_summary ?? null,
     started_at: detail.started_at ?? null,
     ended_at: detail.ended_at ?? null,
-    events: (eventsRes.events || []).map((event: any) => ({
-      id: String(event.id ?? ""),
-      run_id: String(event.run_id ?? runId),
-      task_id: event.task_id ? String(event.task_id) : null,
-      event_type: String(event.event_type ?? "UNKNOWN"),
-      payload: event.payload && typeof event.payload === "object" ? event.payload : {},
-      created_at: event.created_at ?? null,
-    })),
-    steps: (stepsRes.steps || []).map((s: any) => ({
+    events: [],
+    steps: (detail.steps || []).map((s: any) => ({
       ...s,
-      artifact_refs: s.artifact_refs ?? artifacts.artifacts ?? null,
-      input_json: s.input_json ?? null,
-      output_json: s.output_json ?? null,
-      error_json: s.error_json ?? null,
+      artifact_refs: null,
+      input_refs: null,
+      output_refs: null,
+      source_refs: null,
+      input_json: null,
+      output_json: null,
+      error_json: null,
       duration_ms: s.duration_ms ?? null,
       retry_count: s.retry_count ?? 0,
     })),

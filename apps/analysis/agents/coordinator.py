@@ -1,23 +1,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import ValidationError
 
-from apps.analysis.agents.schemas import (
-    AcceptedStateConclusion,
-    AgentBias,
-    AgentOutput,
-    AgentStatus,
-    DataCategory,
-    state_bias_direction,
-)
-
-if TYPE_CHECKING:
-    from apps.analysis.context_bundle import ConsumerProjection
+from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
 from apps.analysis.confidence import compute_confidence_kernel
 from apps.analysis.gold_policy.analysis_policy import (
     GoldAnalysisDecision,
@@ -70,42 +59,6 @@ def coordinate_agent_outputs(
     market_odds_output: AgentOutput | dict[str, Any] | None = None,
     accepted_state_conclusion: GoldAnalysisDecisionContract | dict[str, Any] | None = None,
     created_at: datetime | None = None,
-    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
-) -> AgentOutput:
-    from apps.analysis.context_bundle import validate_consumer_projection
-
-    projection = (
-        validate_consumer_projection(context_projection, "coordinator") if context_projection is not None else None
-    )
-    return _bind_context_projection(
-        _coordinate_agent_outputs(
-            snapshot,
-            macro_output=macro_output,
-            options_output=options_output,
-            risk_output=risk_output,
-            technical_output=technical_output,
-            positioning_output=positioning_output,
-            news_output=news_output,
-            market_odds_output=market_odds_output,
-            accepted_state_conclusion=accepted_state_conclusion,
-            created_at=created_at,
-        ),
-        projection,
-    )
-
-
-def _coordinate_agent_outputs(
-    snapshot: dict[str, Any],
-    *,
-    macro_output: AgentOutput | dict[str, Any] | None,
-    options_output: AgentOutput | dict[str, Any] | None,
-    risk_output: AgentOutput | dict[str, Any] | None,
-    technical_output: AgentOutput | dict[str, Any] | None = None,
-    positioning_output: AgentOutput | dict[str, Any] | None = None,
-    news_output: AgentOutput | dict[str, Any] | None = None,
-    market_odds_output: AgentOutput | dict[str, Any] | None = None,
-    accepted_state_conclusion: GoldAnalysisDecision | dict[str, Any] | None = None,
-    created_at: datetime | None = None,
 ) -> AgentOutput:
     """Coordinate already-computed pseudo-agent outputs into one read-only AgentOutput."""
 
@@ -139,9 +92,7 @@ def _coordinate_agent_outputs(
     news = _coerce_output(news_output)
     market_odds = _coerce_output(market_odds_output)
     accepted_conclusion = _coerce_gold_analysis_decision(accepted_state_conclusion)
-    prior_outputs = [
-        output for output in (macro, options, risk, technical, positioning, news, market_odds) if output is not None
-    ]
+    prior_outputs = [output for output in (macro, options, risk, technical, positioning, news, market_odds) if output is not None]
 
     input_snapshot_ids = _input_snapshot_ids(snapshot, prior_outputs)
     source_refs = _source_refs(snapshot, prior_outputs)
@@ -174,18 +125,24 @@ def _coordinate_agent_outputs(
     # ── Market odds conflict check with macro/options direction ──────
     if market_odds is not None and market_odds.bias in _DIRECTIONAL_BIASES:
         if macro is not None and macro.bias in _DIRECTIONAL_BIASES and macro.bias != market_odds.bias:
-            risk_points.append(f"宏观/市场赔率方向冲突：宏观 {macro.bias.value}，市场赔率 {market_odds.bias.value}。")
+            risk_points.append(
+                f"宏观/市场赔率方向冲突：宏观 {macro.bias.value}，市场赔率 {market_odds.bias.value}。"
+            )
             invalid_conditions.append(
                 f"宏观/市场赔率偏向冲突 — {macro.bias.value} vs {market_odds.bias.value}；建议交叉验证。"
             )
         if options is not None and options.bias in _DIRECTIONAL_BIASES and options.bias != market_odds.bias:
-            risk_points.append(f"期权/市场赔率方向冲突：期权 {options.bias.value}，市场赔率 {market_odds.bias.value}。")
+            risk_points.append(
+                f"期权/市场赔率方向冲突：期权 {options.bias.value}，市场赔率 {market_odds.bias.value}。"
+            )
 
     bias = _combined_bias(macro, options, risk, risk_points)
     if macro is not None and options is not None:
         if macro.bias in _DIRECTIONAL_BIASES and options.bias in _DIRECTIONAL_BIASES and macro.bias != options.bias:
             status = AgentStatus.PARTIAL
-            invalid_conditions.append(f"宏观/期权方向冲突：宏观 {macro.bias.value}，期权 {options.bias.value}。")
+            invalid_conditions.append(
+                f"宏观/期权方向冲突：宏观 {macro.bias.value}，期权 {options.bias.value}。"
+            )
 
     if unavailable_modules:
         status = AgentStatus.PARTIAL
@@ -199,7 +156,14 @@ def _coordinate_agent_outputs(
         if _contains_any(unavailable_modules, {"market_odds"}):
             risk_points.append("市场赔率不可用；无 CME/Polymarket 概率交叉验证。")
 
-    context_status, context_baseline, context_summary, oil_report_summary = _gold_analysis_context(snapshot)
+    (
+        context_status,
+        context_baseline,
+        context_summary,
+        oil_report_summary,
+        positioning_report_summary,
+        market_odds_report_summary,
+    ) = _gold_analysis_context(snapshot)
     if context_baseline:
         key_findings.append(
             f"统一分析基准：{context_baseline.get('source_kind') or 'unknown'} "
@@ -209,6 +173,10 @@ def _coordinate_agent_outputs(
             key_findings.append(f"前序基准摘要：{context_summary}")
     if oil_report_summary:
         key_findings.append(f"原油报告摘要：{oil_report_summary}")
+    if positioning_report_summary:
+        key_findings.append(f"今日持仓报告摘要：{positioning_report_summary}")
+    if market_odds_report_summary:
+        key_findings.append(f"今日外部赔率报告摘要：{market_odds_report_summary}")
     if context_status not in {None, "ready"}:
         status = AgentStatus.PARTIAL if status is AgentStatus.SUCCESS else status
         risk_points.append(f"统一分析上下文状态为 {context_status or 'missing'}；综合结论保持观察态。")
@@ -255,16 +223,33 @@ def _coordinate_agent_outputs(
         key_findings.append("协调员收到前置输出但方向性发现不足。")
 
     bullish_drivers, bearish_drivers = _directional_drivers(prior_outputs)
-    summary = _summary(bias, status, _clamp(confidence, 0.0, 1.0))
-    state_conclusion = _accepted_state_conclusion(
-        snapshot=snapshot,
-        prior_outputs=prior_outputs,
-        bias=bias,
-        summary=summary,
-        bullish_drivers=bullish_drivers,
-        bearish_drivers=bearish_drivers,
-        accepted_decision=accepted_conclusion,
-    )
+    from apps.analysis.agents.research_context import build_research_assessment
+
+    research_assessment = build_research_assessment(snapshot)
+    research_evidence_refs = []
+    if research_assessment:
+        key_findings.extend(research_assessment["facts"])
+        risk_points.extend(research_assessment["limitations"])
+        adjudication = research_assessment.get("adjudication", {})
+        if adjudication and accepted_conclusion is None:
+            # Research tilt is adjudicated by independent evidence families.
+            # Risk limits conviction; a neutral options model is not a vote
+            # against a rate signal. Formal accepted Gold decisions still win.
+            bias = AgentBias(adjudication["bias"])
+            status = AgentStatus.UNAVAILABLE if bias is AgentBias.UNAVAILABLE else AgentStatus.PARTIAL
+            confidence = adjudication["confidence"]
+            if risk is not None and (risk.active_blockers or risk.status is AgentStatus.UNAVAILABLE):
+                confidence = min(confidence, 0.25)
+            key_findings = [factor["rationale"] for factor in adjudication["factors"]]
+            invalid_conditions.extend(factor["invalidated_by"] for factor in adjudication["factors"] if factor["invalidated_by"])
+            research_evidence_refs = [{"snapshot_id": snapshot_id, "factor_id": factor["factor_id"], "source_refs": factor["source_refs"]} for factor in adjudication["factors"] if factor["source_refs"]]
+            source_refs = _dedupe_refs([*source_refs, *adjudication["source_refs"]])
+            evidence_items = [{**factor, "factor": factor["factor_id"], "direction": factor["bias"],
+                               "directional_vote": factor["role"] == "primary",
+                               "module": "coordinator", "status": "supported_inference"}
+                              for factor in adjudication["factors"] if factor["source_refs"]]
+            bullish_drivers = [factor["rationale"] for factor in adjudication["factors"] if factor["bias"] == "bullish"]
+            bearish_drivers = [factor["rationale"] for factor in adjudication["factors"] if factor["bias"] == "bearish"]
     return AgentOutput(
         version=_VERSION,
         agent_name=_AGENT_NAME,
@@ -277,175 +262,28 @@ def _coordinate_agent_outputs(
         risk_points=risk_points,
         watchlist=list(_WATCHLIST),
         invalid_conditions=invalid_conditions,
-        summary=summary,
+        summary=research_assessment["summary"] if research_assessment and accepted_conclusion is None else _summary(bias, status, _clamp(confidence, 0.0, 1.0)),
         source_refs=source_refs,
         status=status,
         created_at=created_at,
         data_category=DataCategory.SYSTEM_INFERENCE,
         evidence_items=evidence_items,
-        accepted_state_conclusion=state_conclusion,
-        accepted_gold_analysis_decision=accepted_conclusion,
+        evidence_refs=research_evidence_refs,
         input_payload={
-            "confidence_kernel": confidence_kernel.model_dump(mode="json"),
+            "daily_research_assessment": research_assessment,
+            **({"gold_workflow": snapshot["gold_workflow"]} if snapshot.get("gold_workflow") else {}),
+            **({"domain_analyses": [{"agent_name": item.agent_name, "module": item.module, "bias": item.bias.value,
+                                     "status": item.status.value, "confidence": item.confidence, "summary": item.summary,
+                                     "key_findings": item.key_findings[:8], "risk_points": item.risk_points[:5],
+                                     "input_snapshot_ids": item.input_snapshot_ids} for item in prior_outputs]} if snapshot.get("gold_workflow") else {}),
+            "confidence_kernel": None if research_assessment and accepted_conclusion is None else confidence_kernel.model_dump(mode="json"),
+            "confidence_method": "research_evidence_family_coverage" if research_assessment and accepted_conclusion is None else "confidence_kernel",
             "gold_analysis_context": _gold_analysis_context_payload(snapshot),
             "bullish_drivers": bullish_drivers,
             "bearish_drivers": bearish_drivers,
         },
+        accepted_state_conclusion=accepted_conclusion,
     )
-
-
-def _accepted_state_conclusion(
-    *,
-    snapshot: dict[str, Any],
-    prior_outputs: list[AgentOutput],
-    bias: AgentBias,
-    summary: str,
-    bullish_drivers: list[str],
-    bearish_drivers: list[str],
-    accepted_decision: GoldAnalysisDecision | None,
-) -> AcceptedStateConclusion | None:
-    if bias is AgentBias.UNAVAILABLE:
-        return None
-    if accepted_decision is not None:
-        direction_tilt = accepted_decision.direction_tilt
-        tilt = (
-            direction_tilt
-            if direction_tilt != "none" and bias in {AgentBias.MIXED, AgentBias.NEUTRAL}
-            else None
-        )
-        state_bias = bias.value
-        if tilt is not None and bias in {AgentBias.MIXED, AgentBias.NEUTRAL}:
-            state_bias = f"{bias.value}_{tilt}"
-        return AcceptedStateConclusion(
-            direction=bias,
-            direction_tilt=tilt,
-            state_bias=state_bias,
-            market_stage=accepted_decision.market_stage_candidate,
-            core_thesis=(
-                f"{accepted_decision.policy_version}: {accepted_decision.macro_regime}; "
-                f"direction={accepted_decision.direction}."
-            ),
-            dominant_drivers=[
-                {
-                    "driver_id": driver.factor,
-                    "label": driver.factor,
-                    "rank": index,
-                    "score": abs(driver.delta),
-                    "direction": "tailwind" if driver.direction == "bullish" else "headwind",
-                    "coverage_status": "covered",
-                    "rule_code": driver.rule_code,
-                    "source_refs": [ref.model_dump(mode="json") for ref in driver.source_refs],
-                }
-                for index, driver in enumerate(accepted_decision.dominant_drivers, start=1)
-            ],
-        )
-    overview = _gold_macro_overview(snapshot)
-    state_bias, direction_tilt = _state_bias(
-        overview.get("net_bias"),
-        bias=bias,
-        bullish_drivers=bullish_drivers,
-        bearish_drivers=bearish_drivers,
-    )
-    market_stage = str(overview.get("phase") or overview.get("market_stage") or "direction_decision").strip()
-    core_thesis = str(
-        overview.get("one_line_conclusion")
-        or overview.get("core_thesis")
-        or summary
-    ).strip()
-    dominant_drivers = _state_dominant_drivers(overview)
-    if not dominant_drivers:
-        dominant_drivers = _fallback_state_drivers(prior_outputs)
-    return AcceptedStateConclusion(
-        direction=bias,
-        direction_tilt=direction_tilt,
-        state_bias=state_bias,
-        market_stage=market_stage,
-        core_thesis=core_thesis,
-        dominant_drivers=dominant_drivers,
-    )
-
-
-def _gold_macro_overview(snapshot: dict[str, Any]) -> dict[str, Any]:
-    news = snapshot.get("news")
-    news_data = news.get("data") if isinstance(news, dict) else None
-    overview = news_data.get("gold_macro_overview") if isinstance(news_data, dict) else None
-    if isinstance(overview, dict):
-        return dict(overview)
-    direct = snapshot.get("gold_macro_overview")
-    return dict(direct) if isinstance(direct, dict) else {}
-
-
-def _state_bias(
-    value: Any,
-    *,
-    bias: AgentBias,
-    bullish_drivers: list[str],
-    bearish_drivers: list[str],
-) -> tuple[str, str | None]:
-    candidate = str(value or "").strip().lower()
-    candidate_direction, candidate_tilt = state_bias_direction(candidate)
-    if candidate and candidate_direction is bias:
-        return candidate, candidate_tilt
-    if bias is AgentBias.MIXED:
-        if bullish_drivers and not bearish_drivers:
-            return "mixed_bullish", "bullish"
-        if bearish_drivers and not bullish_drivers:
-            return "mixed_bearish", "bearish"
-    return bias.value, None
-
-
-def _state_dominant_drivers(overview: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = overview.get("theme_rankings")
-    if not isinstance(rows, list):
-        return []
-    result: list[dict[str, Any]] = []
-    for index, raw in enumerate(rows[:10], start=1):
-        if not isinstance(raw, dict):
-            continue
-        driver_id = str(raw.get("mainline_id") or raw.get("name") or raw.get("theme") or "").strip()
-        if not driver_id:
-            continue
-        direction = str(raw.get("direction") or "unknown").strip().lower()
-        if direction not in {"tailwind", "headwind", "neutral", "mixed"}:
-            direction = "unknown"
-        coverage = str(raw.get("coverage_status") or "unknown").strip().lower()
-        if coverage not in {"covered", "partial", "missing"}:
-            coverage = "unknown"
-        result.append(
-            {
-                "driver_id": driver_id,
-                "label": str(raw.get("theme") or raw.get("label") or raw.get("name") or driver_id).strip()[:256],
-                "rank": raw.get("rank") or index,
-                "score": raw.get("score"),
-                "direction": direction,
-                "coverage_status": coverage,
-            }
-        )
-    return result
-
-
-def _fallback_state_drivers(outputs: list[AgentOutput]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for index, output in enumerate(outputs[:10], start=1):
-        if output.bias is AgentBias.UNAVAILABLE:
-            continue
-        direction = {
-            AgentBias.BULLISH: "tailwind",
-            AgentBias.BEARISH: "headwind",
-            AgentBias.NEUTRAL: "neutral",
-            AgentBias.MIXED: "mixed",
-        }[output.bias]
-        result.append(
-            {
-                "driver_id": output.agent_name,
-                "label": output.agent_name,
-                "rank": index,
-                "score": output.confidence,
-                "direction": direction,
-                "coverage_status": "covered" if output.status is AgentStatus.SUCCESS else "partial",
-            }
-        )
-    return result
 
 
 def _coerce_output(value: AgentOutput | dict[str, Any] | None) -> AgentOutput | None:
@@ -536,16 +374,35 @@ def _source_refs(snapshot: dict[str, Any], outputs: list[AgentOutput]) -> list[d
     return _dedupe_refs(refs)
 
 
-def _gold_analysis_context(snapshot: dict[str, Any]) -> tuple[str | None, dict[str, Any], str, str]:
+def _gold_analysis_context(
+    snapshot: dict[str, Any],
+) -> tuple[str | None, dict[str, Any], str, str, str, str]:
     section = snapshot.get("gold_analysis_context")
     if not isinstance(section, dict):
-        return None, {}, "", ""
+        return None, {}, "", "", "", ""
+    if section.get("status") == "disabled" and "jin10" in snapshot.get("disabled_sources", []):
+        return None, {}, "", "", "", ""
     data = section.get("data") if isinstance(section.get("data"), dict) else {}
     baseline = data.get("analysis_baseline") if isinstance(data.get("analysis_baseline"), dict) else {}
     summary = str(baseline.get("executive_summary") or "").strip()
     oil_report = data.get("oil_report_summary") if isinstance(data.get("oil_report_summary"), dict) else {}
     oil_summary = str(oil_report.get("one_line_conclusion") or oil_report.get("final_summary") or "").strip()
-    return str(data.get("status") or section.get("status") or ""), baseline, summary[:500], oil_summary[:600]
+    positioning_report = data.get("positioning_report_summary") if isinstance(data.get("positioning_report_summary"), dict) else {}
+    positioning_summary = str(
+        positioning_report.get("one_line_conclusion") or positioning_report.get("final_summary") or ""
+    ).strip()
+    market_odds_report = data.get("market_odds_report_summary") if isinstance(data.get("market_odds_report_summary"), dict) else {}
+    market_odds_summary = str(
+        market_odds_report.get("one_line_conclusion") or market_odds_report.get("final_summary") or ""
+    ).strip()
+    return (
+        str(data.get("status") or section.get("status") or ""),
+        baseline,
+        summary[:500],
+        oil_summary[:600],
+        positioning_summary[:700],
+        market_odds_summary[:700],
+    )
 
 
 def _gold_analysis_context_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -555,20 +412,15 @@ def _gold_analysis_context_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
     data = section.get("data") if isinstance(section.get("data"), dict) else {}
     baseline = data.get("analysis_baseline") if isinstance(data.get("analysis_baseline"), dict) else {}
     oil_report = data.get("oil_report_summary") if isinstance(data.get("oil_report_summary"), dict) else {}
+    positioning_report = data.get("positioning_report_summary") if isinstance(data.get("positioning_report_summary"), dict) else {}
+    market_odds_report = data.get("market_odds_report_summary") if isinstance(data.get("market_odds_report_summary"), dict) else {}
     freshness = data.get("freshness") if isinstance(data.get("freshness"), dict) else {}
     return {
         "status": data.get("status") or section.get("status"),
         "baseline_kind": data.get("baseline_kind"),
         "baseline": {
             key: baseline.get(key)
-            for key in (
-                "source_kind",
-                "trade_date",
-                "article_id",
-                "quality_status",
-                "publication_status",
-                "publish_allowed",
-            )
+            for key in ("source_kind", "trade_date", "article_id", "quality_status", "publication_status", "publish_allowed")
             if baseline.get(key) is not None
         },
         "oil_report_summary": {
@@ -576,6 +428,8 @@ def _gold_analysis_context_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
             for key in ("source_kind", "trade_date", "article_id", "title", "status", "one_line_conclusion")
             if oil_report.get(key) is not None
         },
+        "positioning_report_summary": positioning_report,
+        "market_odds_report_summary": market_odds_report,
         "freshness": freshness,
         "input_snapshot_ids": data.get("input_snapshot_ids") or {},
     }
@@ -661,9 +515,7 @@ def _extend_prefixed(target: list[str], prefix: str, notes: list[str]) -> None:
             target.append(prefix + str(note))
 
 
-def _combined_bias(
-    macro: AgentOutput | None, options: AgentOutput | None, risk: AgentOutput | None, risk_points: list[str]
-) -> AgentBias:
+def _combined_bias(macro: AgentOutput | None, options: AgentOutput | None, risk: AgentOutput | None, risk_points: list[str]) -> AgentBias:
     if risk is not None and risk.bias in {AgentBias.MIXED, AgentBias.NEUTRAL, AgentBias.UNAVAILABLE}:
         return risk.bias
     if risk is not None and risk.bias in _DIRECTIONAL_BIASES:
@@ -754,13 +606,3 @@ def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
-
-
-def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
-    if projection is None:
-        return output
-    from apps.analysis.context_bundle import consume_projection_for_agent_output
-
-    return AgentOutput.model_validate(
-        consume_projection_for_agent_output(projection, output, expected_consumer="coordinator")
-    )
