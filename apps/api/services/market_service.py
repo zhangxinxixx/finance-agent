@@ -2,23 +2,24 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
-from dotenv import dotenv_values
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from apps.api.services._storage import _PROJECT_ROOT
 from apps.api.services.agent_read_model import build_market_regime_agent_summary
-from apps.api.services.macro_service import get_macro_latest
-from apps.api.services.options_service import get_options_snapshot
+from apps.api.services.macro_service import get_market_macro_latest as get_macro_latest
 from apps.features.market_data import is_xauusd_compatible_row
 from database.models.analysis import ensure_analysis_tables
 from database.models.engine import DATABASE_URL
-from database.queries.market import list_market_candles, list_market_candles_by_assets
+from database.queries.warehouse_read import (
+    list_warehouse_candles as list_market_candles,
+    list_warehouse_candles_by_assets as list_market_candles_by_assets,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -363,107 +364,26 @@ def get_market_odds_report(date_str: str | None = None, run_id: str | None = Non
     }
 
 
-_JIN10_MCP_URL = "https://mcp.jin10.com/mcp"
-_JIN10_MCP_KEY_ENV = "JIN10_MCP_KEY"
-
-
-def _get_jin10_mcp_key() -> str:
-    return os.environ.get(_JIN10_MCP_KEY_ENV) or str(dotenv_values(_PROJECT_ROOT / ".env").get(_JIN10_MCP_KEY_ENV) or "")
-
-
-def _coerce_float(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        return float(str(value).replace(",", ""))
-    except (TypeError, ValueError):
-        return None
-
-
 def get_market_tickers() -> dict[str, Any]:
     tickers: dict[str, dict[str, Any]] = {}
     sources: list[str] = []
-    mcp_key = _get_jin10_mcp_key()
-    jin10_success = False
-
-    if mcp_key:
-        try:
-            import httpx
-
-            with httpx.Client(timeout=15.0, headers={"User-Agent": "finance-agent/0.1"}, trust_env=False) as client:
-                init_r = client.post(
-                    _JIN10_MCP_URL,
-                    json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "finance-agent", "version": "0.1"}}},
-                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {mcp_key}"},
-                )
-                init_r.raise_for_status()
-                sid = init_r.headers.get("Mcp-Session-Id", "")
-                if not sid:
-                    logger.warning("Jin10 MCP initialize succeeded without session id; falling back to degraded market tickers", extra={"service": "jin10_mcp", "stage": "initialize", "degraded": True})
-                else:
-                    client.post(
-                        _JIN10_MCP_URL,
-                        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-                        headers={"Content-Type": "application/json", "Authorization": f"Bearer {mcp_key}", "Mcp-Session-Id": sid},
-                    ).raise_for_status()
-                    for symbol in ["XAUUSD", "XAGUSD"]:
-                        try:
-                            resp = client.post(
-                                _JIN10_MCP_URL,
-                                json={"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "get_quote", "arguments": {"code": symbol}}},
-                                headers={"Content-Type": "application/json", "Authorization": f"Bearer {mcp_key}", "Mcp-Session-Id": sid},
-                            )
-                            resp.raise_for_status()
-                            for line in resp.text.split("\n"):
-                                if not line.startswith("data:"):
-                                    continue
-                                result = json.loads(line[5:]).get("result", {})
-                                sc = result.get("structuredContent", {})
-                                if isinstance(sc, dict) and sc.get("status") == 200:
-                                    qdata = sc.get("data", {})
-                                    tickers[symbol.lower()] = {
-                                        "price": _coerce_float(qdata.get("price") or qdata.get("last") or qdata.get("close")),
-                                        "open": _coerce_float(qdata.get("open")),
-                                        "high": _coerce_float(qdata.get("high")),
-                                        "low": _coerce_float(qdata.get("low")),
-                                        "change": _coerce_float(qdata.get("ups_price") or qdata.get("change")),
-                                        "change_pct": _coerce_float(qdata.get("ups_percent") or qdata.get("change_pct") or qdata.get("changePercent")),
-                                        "bid": _coerce_float(qdata.get("bid") or qdata.get("bidPrice")),
-                                        "ask": _coerce_float(qdata.get("ask") or qdata.get("askPrice")),
-                                        "time": qdata.get("time"),
-                                        "name": qdata.get("name"),
-                                        "source": "jin10_mcp_realtime",
-                                    }
-                                    jin10_success = True
-                                break
-                        except Exception as exc:
-                            logger.warning(
-                                "Jin10 MCP quote fetch failed; continuing with degraded market tickers",
-                                exc_info=exc,
-                                extra={"service": "jin10_mcp", "stage": "quote", "symbol": symbol, "degraded": True},
-                            )
-        except Exception as exc:
-            logger.warning(
-                "Jin10 MCP request failed; continuing with degraded market tickers",
-                exc_info=exc,
-                extra={"service": "jin10_mcp", "stage": "initialize", "degraded": True},
-            )
-    else:
-        logger.debug("Jin10 MCP key not configured; using degraded market tickers", extra={"service": "jin10_mcp", "stage": "config", "degraded": True})
-
-    sources.append("jin10_mcp" if jin10_success else "jin10_mcp_error")
+    sources.append("jin10_news_only")
 
     if "xauusd" not in tickers:
         try:
-            snap = get_options_snapshot()
-            if snap:
-                fwd = (snap.get("parameters") or {}).get("f_value")
-                gz_price = (((snap.get("gex") or {}).get("netgex_aggregate") or {}).get("gamma_zero") or {}).get("price")
-                price = fwd or gz_price
-                if price:
-                    tickers["xauusd"] = {"price": float(price), "change_pct": None, "bid": None, "ask": None, "source": "cme_gc_futures"}
+            candles = [
+                candle for timeframe in ("5m", "1h", "1d")
+                if (candle := _latest_market_candle(asset="XAUUSD", timeframe=timeframe)) is not None
+            ]
+            if candles:
+                candle = max(candles, key=lambda item: item["open_time"])
+                tickers["xauusd"] = {
+                    "price": candle["close"], "change_pct": None, "bid": None, "ask": None,
+                    "source": candle["source"], "time": candle["open_time"].isoformat(),
+                }
+                sources.append("market_candles")
         except Exception as exc:
-            logger.debug("Options snapshot fallback failed for market tickers", exc_info=exc, extra={"service": "market_tickers", "stage": "options_fallback"})
+            logger.debug("Spot candle fallback failed for market tickers", exc_info=exc, extra={"service": "market_tickers", "stage": "spot_fallback"})
 
     try:
         macro = get_macro_latest()
@@ -481,7 +401,7 @@ def get_market_tickers() -> dict[str, Any]:
                 for sym_key in sym_keys:
                     if sym_key in indicators:
                         val = indicators[sym_key]
-                        tickers[ticker_key] = {"value": val.get("value") if isinstance(val, dict) else val, "unit": val.get("unit", "") if isinstance(val, dict) else "", "source": "macro_latest"}
+                        tickers[ticker_key] = {"value": val.get("value") if isinstance(val, dict) else val, "unit": val.get("unit", "") if isinstance(val, dict) else "", "date": val.get("date") if isinstance(val, dict) else None, "source": "macro_latest"}
                         break
         sources.append("macro_latest")
     except Exception as exc:
@@ -497,12 +417,28 @@ def get_market_tickers() -> dict[str, Any]:
     }
 
 
+def _indicator_with_aliases(indicators: Any, *keys: str) -> dict[str, Any]:
+    """Select the first usable indicator while retaining the canonical fallback metadata."""
+
+    if not isinstance(indicators, dict):
+        return {}
+    fallback: dict[str, Any] = {}
+    for key in keys:
+        candidate = indicators.get(key)
+        if not isinstance(candidate, dict):
+            continue
+        if not fallback:
+            fallback = candidate
+        if candidate.get("value") is not None:
+            return candidate
+    return fallback
+
+
 def get_market_monitor_overview() -> dict[str, Any]:
     tickers_payload = get_market_tickers()
     macro_payload = get_macro_latest() or {}
     indicators = macro_payload.get("indicators", {}) if isinstance(macro_payload, dict) else {}
     generated_at = tickers_payload.get("generated_at") or datetime.now(timezone.utc).isoformat()
-    latest_date = macro_payload.get("as_of") if isinstance(macro_payload, dict) else None
 
     def metric_item(
         key: str,
@@ -517,7 +453,7 @@ def get_market_monitor_overview() -> dict[str, Any]:
         return {
             "key": key,
             "label": label,
-            "latest_date": latest_date or generated_at.split("T")[0],
+            "latest_date": None,
             "latest_value": value,
             "unit": unit,
             "one_week_change": one_week_change,
@@ -531,7 +467,8 @@ def get_market_monitor_overview() -> dict[str, Any]:
     us10y = indicators.get("US10Y", {}) or indicators.get("DGS10", {})
     us02y = indicators.get("US02Y", {}) or indicators.get("DGS2", {})
     spread_2y_3m = indicators.get("YIELD_SPREAD_2Y_3M", {})
-    real10 = indicators.get("REAL_10Y", {})
+    real10 = _indicator_with_aliases(indicators, "REAL_10Y", "REAL10Y")
+    real10_value = _finite_history_value(real10.get("value"))
     t10yie = indicators.get("T10YIE", {}) or indicators.get("BREAKEVEN_10Y", {})
     tga = indicators.get("TGA", {})
     rrp = indicators.get("ON_RRP_USAGE", {}) or indicators.get("RRP", {})
@@ -545,7 +482,8 @@ def get_market_monitor_overview() -> dict[str, Any]:
             xau = {
                 **xau,
                 "price": latest_xau_candle["close"],
-                "source": "market_candles_latest",
+                "source": latest_xau_candle["source"],
+                "time": latest_xau_candle["open_time"].isoformat(),
             }
 
     metrics = [
@@ -554,7 +492,7 @@ def get_market_monitor_overview() -> dict[str, Any]:
         metric_item("US10Y", "US10Y", us10y.get("value"), us10y.get("unit", "%"), us10y.get("weekly_change"), us10y.get("monthly_change"), "ok" if us10y.get("value") is not None else "unavailable", us10y.get("direction_note", "")),
         metric_item("US02Y", "US02Y", us02y.get("value"), us02y.get("unit", "%"), us02y.get("weekly_change"), us02y.get("monthly_change"), "ok" if us02y.get("value") is not None else "unavailable", us02y.get("direction_note", "")),
         metric_item("YIELD_SPREAD_2Y_3M", "2Y-3M Spread", spread_2y_3m.get("value"), spread_2y_3m.get("unit", "%"), spread_2y_3m.get("weekly_change"), spread_2y_3m.get("monthly_change"), "ok" if spread_2y_3m.get("value") is not None else "unavailable", spread_2y_3m.get("direction_note", "")),
-        metric_item("REAL_10Y", "10Y Real Rate", real10.get("value"), real10.get("unit", "%"), real10.get("weekly_change"), real10.get("monthly_change"), "ok" if real10.get("value") is not None else "unavailable", real10.get("direction_note", "")),
+        metric_item("REAL_10Y", "10Y Real Rate", real10_value, real10.get("unit", "%"), real10.get("weekly_change"), real10.get("monthly_change"), "ok" if real10_value is not None else "unavailable", real10.get("direction_note", "")),
         metric_item("T10YIE", "T10YIE", t10yie.get("value"), t10yie.get("unit", "%"), t10yie.get("weekly_change"), t10yie.get("monthly_change"), "ok" if t10yie.get("value") is not None else "unavailable", t10yie.get("direction_note", "")),
         metric_item("TGA", "TGA", tga.get("value"), tga.get("unit", "B"), tga.get("weekly_change"), tga.get("monthly_change"), "ok" if tga.get("value") is not None else "unavailable", tga.get("direction_note", "")),
         metric_item("RRP", "RRP", rrp.get("value"), rrp.get("unit", "B"), rrp.get("weekly_change"), rrp.get("monthly_change"), "ok" if rrp.get("value") is not None else "unavailable", rrp.get("direction_note", "")),
@@ -562,6 +500,64 @@ def get_market_monitor_overview() -> dict[str, Any]:
         metric_item("EFFR", "EFFR", effr.get("value"), effr.get("unit", "%"), effr.get("weekly_change"), effr.get("monthly_change"), "ok" if effr.get("value") is not None else "unavailable", effr.get("direction_note", "")),
         metric_item("IORB", "IORB", iorb.get("value"), iorb.get("unit", "%"), iorb.get("weekly_change"), iorb.get("monthly_change"), "ok" if iorb.get("value") is not None else "unavailable", iorb.get("direction_note", "")),
     ]
+
+    observations = [xau, dxy, us10y, us02y, spread_2y_3m, real10, t10yie, tga, rrp, sofr, effr, iorb]
+    for metric, observation in zip(metrics, observations):
+        observed_at = observation.get("date") or observation.get("time")
+        metric["latest_date"] = str(observed_at)[:10] if observed_at else None
+
+    # Project collected facts to the keys consumed by the cross-asset table.
+    # Preserve the existing RRP metric and distinguish broad dollar from DXY.
+    for key, label, source_symbol, default_unit in [
+        ("REPO", "逆回购", "ON_RRP_USAGE", "B"),
+        ("FED_BS", "美联储资产负债表", "WALCL", "B"),
+        ("USDX_N", "名义广义美元指数", "BROAD_DOLLAR", "index"),
+        ("VIX", "VIX 波动率指数", "VIX", "index"),
+    ]:
+        if key == "REPO" and not indicators.get(source_symbol):
+            source_symbol = "RRP"
+        observation = indicators.get(source_symbol) or {}
+        value = observation.get("value")
+        available = isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value)
+        item = metric_item(
+            key, label, value if available else None, observation.get("unit", default_unit),
+            observation.get("weekly_change"), observation.get("monthly_change"),
+            "ok" if available else "unavailable", observation.get("direction_note", ""),
+        )
+        item["latest_date"] = observation.get("date") or None
+        item["snapshot_id"] = macro_payload.get("snapshot_id")
+        item["source_symbol"] = source_symbol
+        item["source_refs"] = [f"GET /api/macro/latest#{source_symbol}"] if observation else []
+        metrics.append(item)
+
+    cot = (macro_payload.get("cot_reports") or {}).get("futures_only") or {}
+    managed_money = cot.get("managed_money") or {}
+    cot_net = (managed_money.get("latest") or {}).get("net")
+    etf = macro_payload.get("official_etf") or {}
+    holdings = etf.get("gold_holdings_tonnes")
+    for metric, observed_at, refs in [
+        (
+            metric_item("COT_GOLD_NET", "CFTC 黄金管理基金净多", cot_net, "contracts",
+                        (managed_money.get("delta") or {}).get("net"),
+                        status="ok" if cot_net is not None and cot.get("freshness_status") == "fresh" else "warn" if cot_net is not None else "unavailable",
+                        interpretation="CFTC futures-only 管理基金净持仓；周频报告"),
+            cot.get("report_date"), cot.get("source_refs") or [],
+        ),
+        (
+            metric_item("GLD_HOLDINGS", "SPDR GLD 黄金持有量", holdings, "tonnes",
+                        etf.get("gold_holdings_tonnes_weekly_delta"),
+                        status="info" if holdings is not None else "unavailable",
+                        interpretation="最近可用官方披露；单基金持有量，以观测日为准"),
+            etf.get("gold_holdings_tonnes_reported_on") or etf.get("as_of"), etf.get("source_refs") or [],
+        ),
+    ]:
+        metric["latest_date"] = observed_at
+        metric["snapshot_id"] = macro_payload.get("snapshot_id")
+        metric["source_refs"] = list(dict.fromkeys(
+            str(ref.get("reference") or ref.get("source_url"))
+            for ref in refs if ref.get("reference") or ref.get("source_url")
+        ))
+        metrics.append(metric)
 
     regime = tickers_payload.get("market_regime") or {}
     primary_driver = tickers_payload.get("primary_driver") or {}
@@ -613,9 +609,18 @@ def get_market_monitor_overview() -> dict[str, Any]:
             interpretation=f"实时 regime: {regime_key}",
             drivers=drivers,
         )
+    observed_dates = []
+    for item in metrics:
+        if item.get("latest_value") is None or not item.get("latest_date"):
+            continue
+        try:
+            observed_dates.append(datetime.fromisoformat(str(item["latest_date"])[:10]).date().isoformat())
+        except ValueError:
+            continue
+    latest_date = max(observed_dates, default=None)
     return {
         "generated_at": generated_at,
-        "latest_date": latest_date or generated_at.split("T")[0],
+        "latest_date": latest_date,
         "has_data": any(item.get("latest_value") is not None for item in metrics),
         "source": "api",
         "metrics": metrics,
@@ -640,18 +645,18 @@ def get_market_monitor_overview() -> dict[str, Any]:
         "source_trace": [
             {
                 "name": "Market Tickers API",
-                "trade_date": latest_date or generated_at.split("T")[0],
+                "trade_date": metrics[0]["latest_date"],
                 "file": "api://market/tickers",
                 "snapshot_id": None,
                 "source_ref": "GET /api/market/tickers",
-                "status": "ok",
+                "status": metrics[0]["status"],
             },
             {
-                "name": "Macro Latest API",
-                "trade_date": latest_date or generated_at.split("T")[0],
-                "file": "api://macro/latest",
-                "snapshot_id": None,
-                "source_ref": "GET /api/macro/latest",
+                "name": "采集宏观快照",
+                "trade_date": latest_date,
+                "file": macro_payload.get("artifact_path") or "api://market/monitor",
+                "snapshot_id": macro_payload.get("snapshot_id"),
+                "source_ref": macro_payload.get("snapshot_id") or "GET /api/market/monitor",
                 "status": "ok" if indicators else "unavailable",
             },
         ],
@@ -729,9 +734,26 @@ def _row_value(row: Any, field: str) -> Any:
     return value
 
 
+def _finite_history_value(value: Any) -> Any:
+    """Return ``None`` for numeric values that cannot be represented in JSON."""
+
+    try:
+        return value if isfinite(value) else None
+    except (TypeError, ValueError):
+        return value
+
+
 def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") -> dict[str, Any]:
     macro_base = _PROJECT_ROOT / "storage" / "features" / "macro"
     macro_points_by_date: dict[str, dict[str, Any]] = {}
+    invalid_numeric_fields: set[tuple[str, str]] = set()
+
+    def finite_value(value: Any, *, day: str, field: str) -> Any:
+        sanitized = _finite_history_value(value)
+        if value is not None and sanitized is None:
+            invalid_numeric_fields.add((day, field))
+        return sanitized
+
     if macro_base.exists():
         for date_dir in sorted((d for d in macro_base.iterdir() if d.is_dir()), reverse=True)[:limit]:
             path = date_dir / "macro_snapshot.json"
@@ -742,13 +764,29 @@ def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") ->
             except Exception:
                 continue
             indicators = payload.get("indicators", {}) if isinstance(payload, dict) else {}
+            def indicator_value(*symbols: str) -> Any:
+                item = next((indicators.get(symbol) for symbol in symbols if indicators.get(symbol)), {})
+                return (item or {}).get("value")
+
             macro_points_by_date[date_dir.name] = {
                 "date": date_dir.name,
-                "DXY": (indicators.get("DXY") or {}).get("value"),
-                "US10Y": (indicators.get("US10Y") or indicators.get("DGS10") or {}).get("value"),
-                "REAL_10Y": (indicators.get("REAL_10Y") or {}).get("value"),
-                "T10YIE": (indicators.get("T10YIE") or indicators.get("BREAKEVEN_10Y") or {}).get("value"),
-                "YIELD_SPREAD_2Y_3M": (indicators.get("YIELD_SPREAD_2Y_3M") or {}).get("value"),
+                "DXY": finite_value(indicator_value("DXY"), day=date_dir.name, field="DXY"),
+                "US10Y": finite_value(
+                    indicator_value("US10Y", "DGS10"), day=date_dir.name, field="US10Y"
+                ),
+                "REAL_10Y": finite_value(
+                    _indicator_with_aliases(indicators, "REAL_10Y", "REAL10Y").get("value"),
+                    day=date_dir.name,
+                    field="REAL_10Y",
+                ),
+                "T10YIE": finite_value(
+                    indicator_value("T10YIE", "BREAKEVEN_10Y"), day=date_dir.name, field="T10YIE"
+                ),
+                "YIELD_SPREAD_2Y_3M": finite_value(
+                    indicator_value("YIELD_SPREAD_2Y_3M"),
+                    day=date_dir.name,
+                    field="YIELD_SPREAD_2Y_3M",
+                ),
             }
 
     session_factory = _market_session_factory()
@@ -762,7 +800,7 @@ def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") ->
             continue
         day = row.open_time.date().isoformat()
         prices_by_date.setdefault(day, {})
-        prices_by_date[day][row.asset] = row.close
+        prices_by_date[day][row.asset] = finite_value(row.close, day=day, field=row.asset)
 
     all_dates = sorted(set(macro_points_by_date.keys()) | set(prices_by_date.keys()))
     if limit > 0:
@@ -781,20 +819,23 @@ def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") ->
         points.append(point)
 
     daily_xau_rows = [row for row in price_rows if row.asset == "XAUUSD" and is_xauusd_compatible_row(row)]
-    daily_xau_by_date = {
-        row.open_time.date().isoformat(): {
-            "open": row.open,
-            "high": row.high,
-            "low": row.low,
-            "close": row.close,
+    daily_xau_by_date: dict[str, dict[str, Any] | None] = {}
+    for row in daily_xau_rows:
+        day = row.open_time.date().isoformat()
+        ohlc = {
+            field: finite_value(getattr(row, field), day=day, field=f"xauusd_ohlc.{field}")
+            for field in ("open", "high", "low", "close")
         }
-        for row in daily_xau_rows
-    }
+        daily_xau_by_date[day] = ohlc if all(value is not None for value in ohlc.values()) else None
     for point in points:
         if point["date"] in daily_xau_by_date:
             point["xauusd_ohlc"] = daily_xau_by_date[point["date"]]
 
     gap_dates = _find_missing_daily_dates(points, keys=["XAUUSD", "DXY"])
+
+    message = "历史序列当前基于本地 macro snapshots；若点数不足，则页面应显式提示历史深度不足。"
+    if invalid_numeric_fields:
+        message += f" {len(invalid_numeric_fields)} 个非有限数值已按缺失处理。"
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -803,8 +844,12 @@ def _get_market_monitor_daily_history(limit: int = 30, timeframe: str = "1M") ->
         "series": points,
         "available_points": len(points),
         "available_fields": ["XAUUSD", "DXY", "US10Y", "REAL_10Y", "T10YIE", "YIELD_SPREAD_2Y_3M"],
-        "degraded": len(points) < 5,
-        "message": "历史序列当前基于本地 macro snapshots；若点数不足，则页面应显式提示历史深度不足。",
+        "degraded": len(points) < 5 or bool(invalid_numeric_fields),
+        "message": message,
+        "invalid_numeric_fields": [
+            {"date": day, "field": field, "reason": "non_finite"}
+            for day, field in sorted(invalid_numeric_fields)
+        ],
         "data_gaps": gap_dates,
         "coverage_note": _build_coverage_note(gap_dates),
     }

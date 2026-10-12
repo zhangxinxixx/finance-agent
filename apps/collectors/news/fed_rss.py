@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 import re
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -120,6 +120,8 @@ def _collect_single_feed(
         payload={"feed_key": feed_key, "source_url": feed_url, "fetched_at": fetched_at, "xml": feed_text},
     )
     parsed_items = _parse_rss_items(feed_text=feed_text, feed_key=feed_key, fetched_at=fetched_at)
+    if feed_key == "speeches_testimony":
+        parsed_items = _enrich_recent_speeches(parsed_items, client=client, retrieved_date=retrieved_date, storage_root=storage_root)
     parsed_payload = {
         "source_key": "fed_rss",
         "feed_key": feed_key,
@@ -151,6 +153,44 @@ def _collect_single_feed(
     })
 
 
+def _enrich_recent_speeches(
+    items: list[RawNewsItem], *, client: Any, retrieved_date: str, storage_root: Path,
+) -> list[RawNewsItem]:
+    from apps.parsers.news.fed_article import parse_fed_article
+
+    cutoff = datetime.fromisoformat(retrieved_date).replace(tzinfo=timezone.utc) + timedelta(days=1)
+    attempts = 0
+    enriched = []
+    for item in items:
+        published = datetime.fromisoformat(item.published_at) if item.published_at else None
+        host = (urlparse(item.url).hostname or "").lower()
+        if attempts >= 3 or published is None or not cutoff - timedelta(days=15) <= published < cutoff or host != "www.federalreserve.gov":
+            enriched.append(item)
+            continue
+        attempts += 1
+        payload = dict(item.raw_payload)
+        try:
+            response = client.get(item.url)
+            article_fetched_at = utc_now_iso()
+            article_raw = archive_news_payload(storage_root=storage_root, layer="raw", source_key="fed_article", retrieved_date=retrieved_date,
+                name=Path(urlparse(item.url).path).stem, payload={"url": item.url, "status_code": response.status_code, "fetched_at": article_fetched_at, "html": response.text})
+            response.raise_for_status()
+            parsed = parse_fed_article(response.text)
+            if parsed["status"] != "available":
+                raise ValueError("official_article_body_missing")
+            article_parsed = archive_news_payload(storage_root=storage_root, layer="parsed", source_key="fed_article", retrieved_date=retrieved_date,
+                name=Path(urlparse(item.url).path).stem, payload={"url": item.url, "raw_path": article_raw, "fetched_at": article_fetched_at, **parsed})
+            payload.update(content_scope="full_text", full_text_available=True, article_paragraphs=parsed["paragraphs"],
+                           article_raw_path=article_raw, article_parsed_path=article_parsed)
+            payload["source_refs"] = [{"source": "fed_official_article", "source_url": item.url, "raw_path": article_raw,
+                                       "parsed_path": article_parsed, "retrieved_at": article_fetched_at, "status": "available", "content_scope": "full_text"}]
+        except Exception as exc:
+            payload["article_status"] = "unavailable"
+            payload["article_failure"] = type(exc).__name__
+        enriched.append(RawNewsItem(**{**item.to_dict(), "raw_payload": payload}))
+    return enriched
+
+
 def _parse_rss_items(*, feed_text: str, feed_key: str, fetched_at: str) -> list[RawNewsItem]:
     root = ElementTree.fromstring(feed_text)
     result: list[RawNewsItem] = []
@@ -178,7 +218,11 @@ def _parse_rss_items(*, feed_text: str, feed_key: str, fetched_at: str) -> list[
             event_type=_classify_fed_event(feed_key=feed_key, title=title),
             verification_status="official_confirmed",
             duplicate_key=duplicate_key,
-            raw_payload={"feed_key": feed_key},
+            raw_payload={
+                "feed_key": feed_key,
+                "content_scope": "headline_summary_only",
+                "full_text_available": False,
+            },
         ))
     return result
 

@@ -1,4 +1,5 @@
 import type { KnowledgeItem, KnowledgeItemStatus } from "@/types/knowledge";
+import { knowledgeStatusLabel, knowledgeTagLabel } from "./knowledgeFormat";
 
 interface KnowledgeListItemProps {
   item: KnowledgeItem;
@@ -20,7 +21,7 @@ const TYPE_GLYPH: Record<string, string> = {
   playbook: "▣",
   note: "记",
   review: "复",
-  agent: "A",
+  agent: "智",
   dict: "字",
 };
 
@@ -40,7 +41,7 @@ const TAG_TONE: Record<string, string> = {
 };
 
 function tagTone(tag: string): string {
-  if (["黄金", "期权墙位", "Prompt", "Market Odds"].includes(tag)) return TAG_TONE.gold;
+  if (["黄金", "期权墙位", "Prompt", "Market Odds", "提示词", "市场赔率"].includes(tag)) return TAG_TONE.gold;
   if (["CME", "实际利率", "宏观", "盘中策略"].includes(tag)) return TAG_TONE.cyan;
   if (["流动性", "研究笔记"].includes(tag)) return TAG_TONE.green;
   if (["地缘风险", "复盘"].includes(tag)) return TAG_TONE.orange;
@@ -66,19 +67,19 @@ export function KnowledgeListItem({ item, isActive, onSelect }: KnowledgeListIte
           <div className="truncate text-[12px] font-semibold leading-snug text-[var(--fg-1)]">{item.title}</div>
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
             <span className={`inline-flex items-center rounded-[var(--radius-pill)] px-1.5 py-0.5 text-[9px] font-semibold ${STATUS_TONE[item.status]}`}>
-              {item.status}
+              {knowledgeStatusLabel(item.status)}
             </span>
             <span className={`inline-flex items-center rounded-[var(--radius-pill)] border px-1.5 py-0.5 text-[9px] font-semibold ${tagTone(item.typeLabel)}`}>
-              {item.typeLabel}
+              {knowledgeTagLabel(item.typeLabel)}
             </span>
             <span className={`inline-flex items-center rounded-[var(--radius-pill)] border px-1.5 py-0.5 text-[9px] font-semibold ${tagTone(item.topic)}`}>
-              {item.topic}
+              {knowledgeTagLabel(item.topic)}
             </span>
           </div>
         </div>
       </div>
       <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-[var(--fg-5)]">
-        <span>{item.agentReady ? "Agent 可用" : "仅人工使用"}</span>
+        <span>{item.agentReady ? "智能体可用" : "仅人工使用"}</span>
         <span className="fa-num truncate">引用 {item.citations} / {item.updated}</span>
       </div>
     </button>

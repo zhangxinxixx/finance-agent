@@ -78,13 +78,13 @@ def jin10_report_access_checks(*, storage_root: Path, trade_date: str, observed_
 
 
 def _source_completeness(*, storage_root: Path, trade_date: str, observed_at: datetime, source_key: str) -> DataHealthCheck:
-    if source_key == "jin10_mcp_market":
+    if source_key == "twelvedata_xauusd":
         return _file_check(
             storage_root=storage_root,
             observed_at=observed_at,
             source_key=source_key,
-            paths=[storage_root / "outputs" / "jin10" / "quotes_cache.json"],
-            message_ok="Jin10 market quote cache exists",
+            paths=sorted((storage_root / "raw" / "market" / "twelvedata").glob("**/*.json")),
+            message_ok="Independent market observation archive exists",
         )
     if source_key == "jin10_mcp_flash":
         return _file_check(

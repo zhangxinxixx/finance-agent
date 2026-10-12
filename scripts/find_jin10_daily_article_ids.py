@@ -20,9 +20,7 @@ from apps.collectors.jin10.reportory import (
     reportory_daily_gold_report_date,
 )
 
-DEFAULT_JIN10_BROWSER_PROFILE = Path(
-    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
-).expanduser()
+DEFAULT_JIN10_BROWSER_PROFILE = (Path.home() / ".config" / "finance-agent" / "jin10-browser")
 _JIN10_NON_REPORT_SUFFIXES = ("黄金头条", "投行金评")
 
 

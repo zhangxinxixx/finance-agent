@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from apps.features.options.bulletin_dates import CME_BULLETIN_DATE_POLICY, cme_bulletin_date_eligible
+
 
 CANONICAL_CANDLE_DURATION_SECONDS = 5 * 60
 CANONICAL_15M_CANDLE_DURATION_SECONDS = 15 * 60
@@ -54,6 +56,7 @@ def evaluate_live_input_gates(
     cme = evaluate_cme_gate(
         options_decision,
         expected_trade_date=effective_trade_date,
+        decision_as_of=current_time,
     )
     scope = evaluate_utc_scope_gate(
         effective_trade_date=effective_trade_date,
@@ -138,6 +141,7 @@ def evaluate_cme_gate(
     options_decision: Mapping[str, Any] | None,
     *,
     expected_trade_date: Any,
+    decision_as_of: datetime | None = None,
 ) -> dict[str, Any]:
     """Require the existing options decision to be available and FINAL."""
 
@@ -148,6 +152,8 @@ def evaluate_cme_gate(
     source_status = quality.get("cme_status")
     trade_date = normalize_trade_date(meta.get("current_trade_date"))
     expected_date = normalize_trade_date(expected_trade_date)
+    scope_date = expected_date or (decision_as_of.date().isoformat() if decision_as_of else None)
+    generated_at = _parse_datetime(meta.get("generated_at"))
     reasons: list[str] = []
     if options_status != "available":
         reasons.append("cme_unavailable")
@@ -155,8 +161,13 @@ def evaluate_cme_gate(
         reasons.append("cme_quality_not_final")
     if trade_date is None:
         reasons.append("cme_trade_date_unavailable")
-    elif expected_date is not None and trade_date != expected_date:
+    elif scope_date is not None and not bulletin_date_aligned(trade_date, scope_date):
         reasons.append("cme_gold_trade_date_mismatch")
+    if decision_as_of is not None:
+        if generated_at is None:
+            reasons.append("cme_publication_time_unavailable")
+        elif generated_at > decision_as_of:
+            reasons.append("cme_publication_after_decision")
     return {
         "ready": not reasons,
         "status": "available" if not reasons else "blocked",
@@ -166,6 +177,9 @@ def evaluate_cme_gate(
         "source_status": source_status,
         "trade_date": trade_date,
         "expected_trade_date": expected_date,
+        "date_policy": CME_BULLETIN_DATE_POLICY,
+        "date_aligned": bulletin_date_aligned(trade_date, scope_date),
+        "generated_at": generated_at.isoformat() if generated_at else None,
     }
 
 
@@ -181,11 +195,11 @@ def evaluate_utc_scope_gate(
     cme_date = normalize_trade_date(cme_trade_date)
     candle_date = canonical_5m_close_at.date().isoformat() if canonical_5m_close_at else None
     reasons: list[str] = []
-    if effective_date is not None and cme_date is not None and effective_date != cme_date:
+    if effective_date is not None and cme_date is not None and not bulletin_date_aligned(cme_date, effective_date):
         reasons.append("cme_gold_trade_date_mismatch")
     if effective_date is not None and candle_date is not None and effective_date != candle_date:
         reasons.append("live_candle_scope_mismatch")
-    if cme_date is not None and candle_date is not None and cme_date != candle_date:
+    if cme_date is not None and candle_date is not None and not bulletin_date_aligned(cme_date, candle_date):
         reasons.append("live_candle_cme_scope_mismatch")
     return {
         "ready": not reasons,
@@ -195,7 +209,16 @@ def evaluate_utc_scope_gate(
         "effective_trade_date": effective_date,
         "cme_trade_date": cme_date,
         "canonical_5m_trade_date": candle_date,
+        "date_policy": CME_BULLETIN_DATE_POLICY,
     }
+
+
+def bulletin_date_aligned(bulletin_date: Any, decision_date: Any) -> bool | None:
+    bulletin = normalize_trade_date(bulletin_date)
+    decision = normalize_trade_date(decision_date)
+    if bulletin is None or decision is None:
+        return None
+    return cme_bulletin_date_eligible(date.fromisoformat(bulletin), date.fromisoformat(decision))
 
 
 def normalize_trade_date(value: Any) -> str | None:

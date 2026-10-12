@@ -25,6 +25,8 @@ class StrikeMetrics:
     put_block: int
     call_pnt: int
     put_pnt: int
+    # Positive leg magnitudes.  ``net_gex`` applies the Put sign once, so these
+    # fields must not be interpreted as dealer-signed exposures.
     call_gex: float
     put_gex: float
     net_gex: float
@@ -34,6 +36,10 @@ class StrikeMetrics:
     total_volume: int
     trade_date: str = ""
     data_quality: list[str] = field(default_factory=list)
+    # Contract-counted delta-shape fallback.  It is deliberately separate
+    # from the USD-per-1% Black-76 GEX fields above.
+    call_shape_proxy_oi: float = 0.0
+    put_shape_proxy_oi: float = 0.0
 
 
 class WallType(str, Enum):
@@ -154,7 +160,12 @@ def aggregate_strike_metrics(
     exposures: list[OptionExposure],
 ) -> list[StrikeMetrics]:
     exposure_map: dict[tuple[str, str, int, str], dict[str, object]] = defaultdict(
-        lambda: {"gex_1pct": 0.0, "delta_exposure": 0.0, "data_quality": []}
+        lambda: {
+            "gex_1pct": 0.0,
+            "delta_exposure": 0.0,
+            "shape_proxy_oi": 0.0,
+            "data_quality": [],
+        }
     )
     unscoped_exposures: list[OptionExposure] = []
     for exposure in exposures:
@@ -163,6 +174,7 @@ def aggregate_strike_metrics(
             key = (exposure.trade_date, exposure.expiry, exposure.strike, option_type)
             exposure_map[key]["gex_1pct"] = float(exposure_map[key]["gex_1pct"]) + float(exposure.gex_1pct)
             exposure_map[key]["delta_exposure"] = float(exposure_map[key]["delta_exposure"]) + float(exposure.delta_exposure)
+            exposure_map[key]["shape_proxy_oi"] = float(exposure_map[key]["shape_proxy_oi"]) + float(exposure.shape_proxy_oi or 0.0)
             _unique_extend(exposure_map[key]["data_quality"], exposure.data_quality)
         else:
             unscoped_exposures.append(exposure)
@@ -207,6 +219,8 @@ def aggregate_strike_metrics(
         put_gex = float(exposure_map[put_key]["gex_1pct"])
         call_delta_exposure = float(exposure_map[call_key]["delta_exposure"])
         put_delta_exposure = float(exposure_map[put_key]["delta_exposure"])
+        call_shape_proxy_oi = float(exposure_map[call_key]["shape_proxy_oi"])
+        put_shape_proxy_oi = float(exposure_map[put_key]["shape_proxy_oi"])
         _unique_extend(metric_quality, exposure_map[call_key]["data_quality"])
         _unique_extend(metric_quality, exposure_map[put_key]["data_quality"])
 
@@ -223,9 +237,11 @@ def aggregate_strike_metrics(
                     if option_type == "CALL":
                         call_gex += float(exposure.gex_1pct)
                         call_delta_exposure += float(exposure.delta_exposure)
+                        call_shape_proxy_oi += float(exposure.shape_proxy_oi or 0.0)
                     else:
                         put_gex += float(exposure.gex_1pct)
                         put_delta_exposure += float(exposure.delta_exposure)
+                        put_shape_proxy_oi += float(exposure.shape_proxy_oi or 0.0)
             else:
                 if exposure.strike == strike:
                     _unique_extend(metric_quality, exposure.data_quality)
@@ -254,6 +270,8 @@ def aggregate_strike_metrics(
                 total_volume=call_volume + put_volume,
                 trade_date=trade_date,
                 data_quality=metric_quality,
+                call_shape_proxy_oi=call_shape_proxy_oi,
+                put_shape_proxy_oi=put_shape_proxy_oi,
             )
         )
 

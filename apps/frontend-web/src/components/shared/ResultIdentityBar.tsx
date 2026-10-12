@@ -1,3 +1,5 @@
+import { EvidenceRecordActions } from "./EvidenceRecordActions";
+import { ResearchDetails } from "./ResearchDetails";
 import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPill";
 import {
   isKnownResultIdentity,
@@ -34,12 +36,6 @@ const relationshipLabels: Record<string, { label: string; tone: FAStatusTone }> 
   unavailable: { label: "当前基线不可用", tone: "dim" },
 };
 
-const subjectKindLabels: Record<string, string> = {
-  gold_policy_daily_report: "Gold 日结报告",
-  gold_mainlines: "Gold 主线结果",
-  gold_daily_close_baseline: "Gold 日结有效基线",
-};
-
 const verificationLabels: Record<string, string> = {
   verified: "已核验",
   unverified: "未核验",
@@ -55,47 +51,36 @@ const verificationLabels: Record<string, string> = {
 };
 
 const reasonLabels: Record<string, string> = {
-  gold_daily_close_prebootstrap_hold: "尚未建立首个可核验的 Gold 日结基线",
-  gold_direction_authority_invalid: "Gold 日结方向基线校验未通过",
-  gold_strategy_status_not_directional: "Gold 日结未给出可用方向",
+  gold_daily_close_prebootstrap_hold: "尚未建立首个可核验的 黄金日结基线",
+  gold_direction_authority_invalid: "黄金日结方向基线校验未通过",
+  gold_strategy_status_not_directional: "黄金日结未给出可用方向",
   gold_report_bundle_verified: "报告包及登记身份已核验",
   gold_effective_head_unavailable: "尚无可用正式基准",
-  gold_live_baseline_same_effective_head: "当前 live 基线与有效结果头一致",
-  gold_result_identity_same_effective_head: "正式结果与有效基线属于同一结果头",
+  gold_live_baseline_same_effective_head: "当前策略基准与有效研究结果一致",
+  gold_result_identity_same_effective_head: "正式结果与有效基线属于同一次研究结果",
   gold_result_identity_different_result: "正式结果与有效基线不同",
   gold_legacy_mainline_unverified: "旧黄金主线结果尚未核验",
-  gold_mainline_run_id_unavailable: "黄金主线运行 ID 不可用",
+  gold_mainline_run_id_unavailable: "黄金主线记录不完整",
   gold_mainline_artifact_unavailable: "黄金主线产物不可用",
   gold_report_identity_mismatch: "报告身份不匹配",
-  gold_report_registry_receipt_mismatch: "报告登记收据不匹配",
+  gold_report_registry_receipt_mismatch: "报告登记核验不一致",
   gold_report_bundle_verification_failed: "报告包核验失败",
-  missing_result_identity: "后端没有返回正式结果身份",
-  result_identity_schema_unknown: "正式结果身份 schema 未知",
+  missing_result_identity: "后端没有返回参考资格核验",
+  result_identity_schema_unknown: "参考资格核验信息格式无法识别",
 };
 
 function valueLabel(value: string | null | undefined): string {
   return value?.trim() || "未提供";
 }
 
-function compactId(value: string | null | undefined): string {
-  const text = value?.trim();
-  if (!text) return "未提供";
-  return text.length > 22 ? `${text.slice(0, 10)}…${text.slice(-8)}` : text;
-}
-
 function statusLabel(value: string | null | undefined): string {
-  return value ? verificationLabels[value] ?? value : "未提供";
-}
-
-function subjectKindLabel(value: string | null | undefined): string {
-  if (!value?.trim()) return "未提供";
-  return subjectKindLabels[value] ?? "未识别结果类型";
+  return value ? verificationLabels[value] ?? "待确认" : "未提供";
 }
 
 function reasonLabel(value: string | null | undefined): string {
   if (!value) return "未提供";
   const label = reasonLabels[value];
-  return label ?? "未识别原因";
+  return label ?? "存在尚未解释的限制，参考资格仍待确认";
 }
 
 function fieldRows(subject: ResultIdentitySubject): Array<[string, string]> {
@@ -149,14 +134,14 @@ function identityState(identity: ResultIdentity | null | undefined): {
     return {
       label: "无法核验",
       tone: "warn",
-      description: "后端未提供正式结果身份，无法判断当前结果是否对应同一有效基线。",
+      description: "后端未提供参考资格核验，无法判断当前结果是否对应同一有效基线。",
     };
   }
   if (!isKnownResultIdentity(identity)) {
     return {
       label: "无法核验",
       tone: "warn",
-      description: "正式结果身份 schema 缺失或未知，无法判断当前结果是否对应同一有效基线。",
+      description: "结果核验信息不完整，暂不能确认与当前有效判断一致。",
     };
   }
   const relationship = relationshipLabels[identity.relationship.status] ?? relationshipLabels.unavailable;
@@ -166,9 +151,9 @@ function identityState(identity: ResultIdentity | null | undefined): {
     description: identity.relationship.reason_code
       ? reasonLabel(identity.relationship.reason_code)
       : identity.relationship.status === "same_effective_head"
-        ? "后端已确认当前结果与有效基线属于同一结果头。"
+        ? "后端已确认当前结果与有效基线属于同一次研究结果。"
         : identity.relationship.status === "different_result"
-          ? "当前结果与有效基线不是同一结果头。"
+          ? "当前结果与有效基线不是同一次研究结果。"
           : "后端未确认当前结果与有效基线的关系。",
   };
 }
@@ -192,67 +177,29 @@ export function ResultIdentityBar({
 
   return (
     <section
-      aria-label="正式结果身份"
+      aria-label="参考资格核验"
       className={`rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2.5 ${className}`}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="fa-section-title">正式结果身份</span>
+            <span className="fa-section-title">参考资格核验</span>
             <FAStatusPill tone={state.tone} dot={false}>{state.label}</FAStatusPill>
           </div>
           <p className="mt-1 text-[length:var(--type-body-sm)] leading-5 text-[var(--fg-3)]">{state.description}</p>
         </div>
       </div>
 
-      <div className="mt-2 grid gap-x-4 gap-y-2 border-t border-[var(--border-faint)] pt-2 lg:grid-cols-2">
-        <section className="min-w-0 lg:border-r lg:border-[var(--border-faint)] lg:pr-4" aria-label={subjectLabel}>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="fa-card-title">{subjectLabel}</span>
-            <FAStatusPill tone={known ? "info" : "dim"} dot={false}>{known ? statusLabel(subject?.verification_status) : "未提供"}</FAStatusPill>
-          </div>
-          <div className="mt-1 grid gap-1 text-[length:var(--type-caption)] text-[var(--fg-4)] sm:grid-cols-3">
-            <span>类型：<b className="text-[var(--fg-2)]">{subjectKindLabel(subject?.kind)}</b></span>
-            <span>结果：<b className="fa-num text-[var(--fg-2)]" title={subject?.result_id ?? undefined}>{compactId(subject?.result_id)}</b></span>
-            <span>运行：<b className="fa-num text-[var(--fg-2)]" title={subject?.run_id ?? undefined}>{compactId(subject?.run_id)}</b></span>
-          </div>
-          <p className="mt-1 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">原因：{subjectReason}</p>
-        </section>
-
-        <section className="min-w-0" aria-label={baselineLabel}>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="fa-card-title">{baselineLabel}</span>
-            <FAStatusPill tone={baseline?.authority_ready ? "up" : "warn"} dot={false}>
-              {baseline ? (baseline.held ? "HOLD · 沿用" : statusLabel(baseline.verification_status)) : "未提供"}
-            </FAStatusPill>
-          </div>
-          <div className="mt-1 grid gap-1 text-[length:var(--type-caption)] text-[var(--fg-4)] sm:grid-cols-2">
-            <span>状态：<b className="text-[var(--fg-2)]">{statusLabel(baseline?.status)}</b></span>
-            <span className="text-[var(--fg-2)]">{baseline ? (baseline.authority_ready ? "方向判断可用" : "方向判断不可用") : "方向判断未提供"}</span>
-          </div>
-          <p className="mt-1 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">原因：{baselineReason}</p>
-        </section>
+      <div className="mt-1 flex flex-wrap gap-2 text-[length:var(--type-caption)] text-[var(--fg-4)]">
+        <span>{subjectLabel}：{known ? statusLabel(subject?.verification_status) : "未核验"}</span>
+        <span>{baseline?.authority_ready ? "方向判断可用" : "方向判断不可用"}</span>
+        {baseline?.held ? <span>沿用既有判断，尚未形成新判断</span> : null}
       </div>
-
-      <details className="mt-2 border-t border-[var(--border-faint)] pt-2">
-        <summary className="cursor-pointer text-[length:var(--type-caption)] font-semibold text-[var(--brand-hover)]">展开完整身份 ID</summary>
-        <div className="mt-2 grid gap-3 lg:grid-cols-2">
-          <section className="min-w-0 lg:border-r lg:border-[var(--border-faint)] lg:pr-4">
-            <div className="fa-label mb-2 text-[var(--fg-4)]">{subjectLabel}</div>
-            <ResultFieldGrid rows={subject ? fieldRows(subject) : [["身份", "未提供"]]} />
-          </section>
-          <section className="min-w-0">
-            <div className="fa-label mb-2 text-[var(--fg-4)]">{baselineLabel}</div>
-            <ResultFieldGrid rows={baseline ? baselineRows(baseline) : [["身份", baselineReason]]} />
-          </section>
-        </div>
-        {identity ? (
-          <div className="mt-2 border-t border-[var(--border-faint)] pt-2">
-            <ResultFieldGrid rows={relationshipRows(identity)} />
-          </div>
-        ) : null}
-        <div className="mt-2 fa-label">schema_version：<span className="fa-num normal-case text-[var(--fg-2)]">{valueLabel(identity?.schema_version)}</span></div>
-      </details>
+      <ResearchDetails label="查看核验记录" className="mt-2 border-t border-[var(--border-faint)] pt-2">
+        <p className="leading-5">{subjectLabel}：{subjectReason}</p>
+        <p className="leading-5">{baselineLabel}：{baselineReason}</p>
+        <EvidenceRecordActions record={identity} label="本次结果与有效基准的核验记录" />
+      </ResearchDetails>
     </section>
   );
 }
@@ -260,7 +207,7 @@ export function ResultIdentityBar({
 export function LegacyStrategyIdentityNotice({ className = "" }: { className?: string }) {
   return (
     <div className={`rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-3)] ${className}`}>
-      本页展示独立研究卡或历史审计记录，尚未与正式 Gold 有效基线完成身份核验；不作为当前策略资格依据。
+      本页展示独立研究卡或历史审计记录，尚未与正式 黄金有效基线完成身份核验；不作为当前策略资格依据。
     </div>
   );
 }

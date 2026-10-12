@@ -12,6 +12,8 @@ import { AgentPromptFeedbackHistory } from "./AgentPromptFeedbackHistory";
 import { AgentPromptEmptyState, AgentPromptSummary } from "./AgentPromptSummary";
 import { AgentPromptVersionPanel } from "./AgentPromptVersionPanel";
 import { useAgentPromptFeedbackHistory, useAgentPromptVersions } from "./useAgentPromptResources";
+import { agentNameLabel } from "./settingsFormat";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 interface AgentPromptPanelProps {
   agentId: string | null;
@@ -43,7 +45,7 @@ export function AgentPromptPanel({ agentId, agents, onChanged, onError }: AgentP
   async function handleCreateDraft() {
     const prompt_template = promptTemplatePayload(selectedAgent.prompt);
     if (Object.keys(prompt_template).length === 0) {
-      onError("Prompt 模板为空", "当前 Agent registry 未提供可同步的 Prompt 模板。");
+      onError("提示词模板为空", "当前智能体注册信息未提供可同步的提示词模板。");
       return;
     }
     setIsWritingPrompt(true);
@@ -54,14 +56,14 @@ export function AgentPromptPanel({ agentId, agents, onChanged, onError }: AgentP
         prompt_template,
         status: "draft",
         enabled: true,
-        change_note: "settings page synced registry prompt template",
+        change_note: "设置页同步注册表提示词模板",
         created_by: "codex",
         request_id: `settings-prompt-${selectedAgent.agent_id}-${Date.now()}`,
       });
       await reloadVersions();
-      onChanged("Prompt 草稿已创建", `${selectedAgent.name} 已创建 ${version.version}，历史 AgentOutput 未被修改。`);
+      onChanged("提示词草稿已创建", `${agentNameLabel(selectedAgent.name)} 已创建 ${version.version}，历史运行输出未被修改。`);
     } catch (cause) {
-      onError("创建 Prompt 草稿失败", cause instanceof Error ? cause.message : "无法写入 prompt_versions");
+      onError("创建提示词草稿失败", readingErrorMessage(cause, "无法写入提示词版本记录。"));
     } finally {
       setIsWritingPrompt(false);
     }
@@ -72,12 +74,12 @@ export function AgentPromptPanel({ agentId, agents, onChanged, onError }: AgentP
     try {
       const active = await activateAgentPromptVersion(selectedAgent.agent_id, {
         version: version.version,
-        reason: "settings page activation",
+        reason: "设置页激活提示词版本",
       });
       await reloadVersions();
-      onChanged("Prompt 版本已激活", `${selectedAgent.name} 当前激活版本为 ${active.version}，历史运行继续指向原版本。`);
+      onChanged("提示词版本已激活", `${agentNameLabel(selectedAgent.name)} 当前激活版本为 ${active.version}，历史运行继续指向原版本。`);
     } catch (cause) {
-      onError("激活 Prompt 版本失败", cause instanceof Error ? cause.message : "无法激活 prompt version");
+      onError("激活提示词版本失败", readingErrorMessage(cause, "无法激活提示词版本。"));
     } finally {
       setActivatingVersion(null);
     }
@@ -85,7 +87,7 @@ export function AgentPromptPanel({ agentId, agents, onChanged, onError }: AgentP
 
   async function handleSubmitFeedback() {
     if (!feedbackComment.trim()) {
-      onError("反馈内容为空", "请填写需要修正或复核的 Prompt / 输出问题。");
+      onError("反馈内容为空", "请填写需要修正或复核的提示词或输出问题。");
       return;
     }
     setIsSubmittingFeedback(true);
@@ -101,16 +103,16 @@ export function AgentPromptPanel({ agentId, agents, onChanged, onError }: AgentP
       });
       await reloadFeedbackHistory();
       setFeedbackComment("");
-      onChanged("反馈已提交", "反馈已追加到 Prompt Feedback，不会修改历史 AgentOutput。");
+      onChanged("反馈已提交", "反馈已追加到提示词反馈记录，不会修改历史运行输出。");
     } catch (cause) {
-      onError("反馈提交失败", cause instanceof Error ? cause.message : "无法写入 prompt_feedback");
+      onError("反馈提交失败", readingErrorMessage(cause, "无法写入提示词反馈记录。"));
     } finally {
       setIsSubmittingFeedback(false);
     }
   }
 
   return (
-    <FACard title="Prompt 详情" eyebrow={agent.name} accent="brand" bodyClassName="space-y-3">
+    <FACard title="提示词详情" eyebrow={agentNameLabel(agent.name)} accent="brand" bodyClassName="space-y-3">
       <AgentPromptSummary agent={agent} promptText={promptText} />
 
       <AgentPromptVersionPanel

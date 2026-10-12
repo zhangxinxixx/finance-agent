@@ -23,6 +23,10 @@ from apps.analysis.gold_policy.feature_store import (
     load_previous_feature_snapshot,
 )
 from apps.analysis.gold_policy.schemas import FeatureSnapshotContract
+from apps.features.options.bulletin_dates import (
+    CME_BULLETIN_DATE_POLICY,
+    cme_bulletin_date_eligible,
+)
 
 
 @dataclass(frozen=True)
@@ -38,10 +42,32 @@ class GoldPolicyFormalOptionsInputs:
     artifact_lookup: CMEOptionsArtifactLoadResult
 
     def summary(self) -> dict[str, Any]:
+        bulletin_trade_date = (
+            self.snapshot.trade_date if self.artifact_lookup.payload is not None else None
+        )
         return {
             "status": self.artifact_lookup.status,
             "reason_code": self.artifact_lookup.reason_code,
             "source_status": self.artifact_lookup.source_status,
+            "bulletin_trade_date": (
+                bulletin_trade_date.isoformat() if bulletin_trade_date is not None else None
+            ),
+            "decision_as_of": self.snapshot.as_of.isoformat(),
+            "date_policy": CME_BULLETIN_DATE_POLICY,
+            "regime_policy_version": self.snapshot.policy_version,
+            "generated_at": (
+                self.artifact_lookup.generated_at.isoformat()
+                if self.artifact_lookup.generated_at is not None
+                else None
+            ),
+            "date_aligned": (
+                cme_bulletin_date_eligible(
+                    bulletin_trade_date,
+                    self.snapshot.as_of.date(),
+                )
+                if bulletin_trade_date is not None
+                else None
+            ),
             "quality": self.artifact_lookup.quality,
             "artifact_path": (
                 str(self.artifact_lookup.artifact_path) if self.artifact_lookup.artifact_path is not None else None
@@ -58,9 +84,20 @@ class GoldPolicyFormalOptionsInputs:
 def prepare_gold_policy_runtime_inputs(*, storage_root: Path, snapshot: Mapping[str, Any]) -> GoldPolicyRuntimeInputs:
     """Adapt current structured inputs and resolve the formal prior-day input."""
 
-    current = build_feature_snapshot_from_analysis_snapshot(snapshot)
+    current = prepare_gold_policy_current_feature(snapshot=snapshot)
     lookup = load_previous_feature_snapshot(storage_root=storage_root, current=current)
     return GoldPolicyRuntimeInputs(current=current, previous=lookup.snapshot, lookup=lookup)
+
+
+def prepare_gold_policy_current_feature(*, snapshot: Mapping[str, Any]) -> FeatureSnapshotContract:
+    """Adapt one current analysis snapshot without resolving historical input.
+
+    Formal daily-close callers must resolve predecessors from the durable
+    canonical daily-close head.  Keeping this adapter separate prevents the
+    generic filesystem lookup from being mistaken for that authority.
+    """
+
+    return build_feature_snapshot_from_analysis_snapshot(snapshot)
 
 
 def prepare_gold_policy_formal_options_inputs(
@@ -69,7 +106,7 @@ def prepare_gold_policy_formal_options_inputs(
     current: FeatureSnapshotContract,
     decision_as_of: datetime,
 ) -> GoldPolicyFormalOptionsInputs:
-    """Load and adapt the exact same-session CME artifact, never a cross-day fallback."""
+    """Load the latest eligible published CME bulletin under the T-1 policy."""
 
     if decision_as_of.tzinfo is None or decision_as_of.utcoffset() is None:
         raise ValueError("options decision_as_of must be timezone-aware")
@@ -97,6 +134,7 @@ def prepare_gold_policy_formal_options_inputs(
         payload,
         source_snapshot_id=current.snapshot_id,
         as_of=decision_time,
+        allow_previous_session=True,
     )
     return GoldPolicyFormalOptionsInputs(snapshot=snapshot, artifact_lookup=lookup)
 

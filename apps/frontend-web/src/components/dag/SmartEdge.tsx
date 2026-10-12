@@ -18,18 +18,18 @@ const EDGE_STYLE: Record<SmartEdgeType, { stroke: string; opacity: number; dash:
 };
 
 const EDGE_LABEL: Record<SmartEdgeType, string> = {
-  data_flow:   "data",
-  signal_flow: "signal",
-  dependency:  "dep",
-  override:    "override",
+  data_flow:   "数据流",
+  signal_flow: "信号流",
+  dependency:  "依赖",
+  override:    "覆盖",
 };
 
 const STATUS_EDGE_STYLE: Record<string, { stroke: string; opacity: number; label: string; dash: string }> = {
-  success: { stroke: "var(--up)", opacity: 0.82, label: "ok", dash: "" },
-  running: { stroke: "var(--warn)", opacity: 0.9, label: "run", dash: "8 6" },
-  failed: { stroke: "var(--down)", opacity: 0.92, label: "fail", dash: "5 4" },
-  partial: { stroke: "#f59e0b", opacity: 0.86, label: "partial", dash: "8 5" },
-  pending: { stroke: "var(--fg-5)", opacity: 0.42, label: "wait", dash: "3 7" },
+  success: { stroke: "var(--up)", opacity: 0.82, label: "正常", dash: "" },
+  running: { stroke: "var(--warn)", opacity: 0.9, label: "运行中", dash: "8 6" },
+  failed: { stroke: "var(--down)", opacity: 0.92, label: "失败", dash: "5 4" },
+  partial: { stroke: "#f59e0b", opacity: 0.86, label: "部分可用", dash: "8 5" },
+  pending: { stroke: "var(--fg-5)", opacity: 0.42, label: "等待中", dash: "3 7" },
 };
 
 export const SmartEdge = memo(function SmartEdge({
@@ -73,9 +73,9 @@ export const SmartEdge = memo(function SmartEdge({
   const stroke = lineageStroke ?? statusStyle?.stroke ?? es.stroke;
   const strokeOpacity = lineageDim ? 0.1 : lineageActive ? 0.98 : statusStyle?.opacity ?? es.opacity;
   const strokeDasharray = lineageActive ? (lineageState === "upstream" ? "10 5" : "14 6") : statusStyle?.dash || es.dash;
-  const label = lineageState === "upstream" ? "up"
-    : lineageState === "downstream" ? "down"
-    : lineageState === "selected" ? "focus"
+  const label = lineageState === "upstream" ? "上游"
+    : lineageState === "downstream" ? "下游"
+    : lineageState === "selected" ? "当前"
     : statusStyle?.label ?? EDGE_LABEL[edgeType];
 
   // Arrow color matches edge stroke

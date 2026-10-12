@@ -1,4 +1,4 @@
-"""Fail-closed loader for same-trading-day CME options artifacts.
+"""Fail-closed loader for the latest eligible published CME options artifacts.
 
 This module deliberately returns the persisted payload without adapting it into a
 Gold Policy observation.  The adapter owns the interpretation; the loader owns
@@ -15,6 +15,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import urlparse
+
+from apps.features.options.bulletin_dates import eligible_cme_bulletin_dates
 
 
 CMEOptionsArtifactLoadStatus = Literal["available", "unavailable", "blocked"]
@@ -39,7 +41,7 @@ class CMEOptionsArtifactLoadResult:
 def load_cme_options_artifact(
     *, storage_root: Path, trade_date: date, decision_as_of: datetime
 ) -> CMEOptionsArtifactLoadResult:
-    """Load exactly one valid same-day CME options artifact, or fail closed.
+    """Load the latest eligible bulletin known at decision time, or fail closed.
 
     The three artifact layouts are searched in their documented priority order.
     A lower-priority layout is considered only if no valid artifact exists in a
@@ -58,6 +60,20 @@ def load_cme_options_artifact(
     root = storage_root.resolve()
     if storage_root.is_symlink() or not root.is_dir():
         return _result(status="unavailable", reason_code="cme_options_artifact_storage_root_invalid")
+
+    saw_invalid = False
+    for bulletin_date in eligible_cme_bulletin_dates(trade_date):
+        result = _load_for_date(root=root, trade_date=bulletin_date, decision_as_of=decision_as_of)
+        if result.status != "unavailable":
+            return result
+        saw_invalid |= result.reason_code == "cme_options_artifact_invalid"
+    return _result(
+        status="unavailable",
+        reason_code="cme_options_artifact_invalid" if saw_invalid else "cme_options_artifact_missing",
+    )
+
+
+def _load_for_date(*, root: Path, trade_date: date, decision_as_of: datetime) -> CMEOptionsArtifactLoadResult:
 
     saw_candidate = False
     for candidates in _candidate_layers(root=root, trade_date=trade_date):

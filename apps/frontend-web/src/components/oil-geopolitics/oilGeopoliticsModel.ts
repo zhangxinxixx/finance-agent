@@ -20,7 +20,7 @@ export const OIL_CHAIN_STEPS = [
   { id: "supply_risk", label: "原油供应风险", mainlineId: "geopolitical_war_risk" as GoldMainline },
   { id: "oil_price", label: "WTI / Brent", mainlineId: "oil_prices" as GoldMainline },
   { id: "inflation_expectation", label: "通胀预期", mainlineId: "oil_prices" as GoldMainline },
-  { id: "fed_path", label: "Fed path", mainlineId: "oil_prices" as GoldMainline },
+  { id: "fed_path", label: "美联储政策路径", mainlineId: "oil_prices" as GoldMainline },
   { id: "rates_usd", label: "实际利率 / 美元", mainlineId: "oil_prices" as GoldMainline },
   { id: "gold_response", label: "黄金方向确认", mainlineId: "geopolitical_war_risk" as GoldMainline },
 ];
@@ -33,7 +33,7 @@ export interface TopicMainlineRow {
 }
 
 export function scoreLabel(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return value <= 1 ? `${Math.round(value * 100)}` : `${Math.round(value)}`;
 }
 
@@ -86,30 +86,26 @@ export function topicRows(overview: GoldMacroOverview): TopicMainlineRow[] {
 }
 
 export function coverageStatusLabel(value: TopicMainlineRow["status"]): string {
-  if (value === "covered") return "已覆盖";
+  if (value === "covered") return "有排序记录";
   if (value === "pending") return "待验证";
-  return "待接入";
+  return "未登记";
 }
 
 export function coverageStatusTone(value: TopicMainlineRow["status"]): FAStatusTone {
-  if (value === "covered") return "up";
+  if (value === "covered") return "info";
   if (value === "pending") return "warn";
   return "dim";
 }
 
 export function topicEvents(events: GoldMainlineEventLink[]): GoldMainlineEventLink[] {
-  return events
-    .filter((event) => eventMainlineIds(event).some((id) => OIL_MAINLINES.includes(id)) || event.transmission_path_ids.some((id) => OIL_PATHS.includes(id)))
-    .slice(0, 8);
+  return events.filter((event) => eventMainlineIds(event).some((id) => OIL_MAINLINES.includes(id)) || event.transmission_path_ids.some((id) => OIL_PATHS.includes(id)));
 }
 
 export function topicVerification(overview: GoldMacroOverview): VerificationItem[] {
-  return overview.verification_matrix
-    .filter((item) => {
-      const mainlineId = normalizeGoldMainlineId(item.mainline_id);
-      return mainlineId ? OIL_MAINLINES.includes(mainlineId) : false;
-    })
-    .slice(0, 8);
+  return overview.verification_matrix.filter((item) => {
+    const mainlineId = normalizeGoldMainlineId(item.mainline_id);
+    return mainlineId ? OIL_MAINLINES.includes(mainlineId) : false;
+  });
 }
 
 export function sourceKey(ref: SourceRef, index: number): string {
@@ -130,7 +126,7 @@ export function collectSources(overview: GoldMacroOverview, rankings: GoldMainli
     seen.add(stable);
     unique.push(ref);
   });
-  return unique.slice(0, 8);
+  return unique;
 }
 
 export function chainStepStatus(row: TopicMainlineRow | undefined, hasChain: boolean, hasEvents: boolean): { label: string; tone: FAStatusTone } {
@@ -138,5 +134,5 @@ export function chainStepStatus(row: TopicMainlineRow | undefined, hasChain: boo
   if (!row || row.status === "missing") return { label: "待接入", tone: "dim" };
   if (row.status === "pending") return { label: "待验证", tone: "warn" };
   if (hasEvents) return { label: "已归因", tone: "up" };
-  return { label: "已覆盖", tone: "up" };
+  return { label: "有排序记录", tone: "info" };
 }

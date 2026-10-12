@@ -3,6 +3,18 @@ import { fetchJson } from "../adapters/apiClient";
 import type { DataStatusSummary } from "../types/dashboard";
 
 const POLL_INTERVAL_MS = 30_000;
+let pendingSummary: Promise<DataStatusSummary> | null = null;
+
+export function fetchDataStatusSummary(): Promise<DataStatusSummary> {
+  // Header/footer and StrictMode can request the same expensive read together.
+  // Share only the active request; the next poll still reads fresh server data.
+  if (!pendingSummary) {
+    pendingSummary = fetchJson<DataStatusSummary>("/api/data-status/summary").finally(() => {
+      pendingSummary = null;
+    });
+  }
+  return pendingSummary;
+}
 
 const UNAVAILABLE_SUMMARY: DataStatusSummary = {
   overall_status: "UNAVAILABLE",
@@ -37,7 +49,7 @@ export function useDataStatus(): DataStatusState {
     async function load() {
       setIsLoading(true);
       try {
-        const result = await fetchJson<DataStatusSummary>("/api/data-status/summary");
+        const result = await fetchDataStatusSummary();
         if (!cancelled) {
           setData(result);
           setIsError(false);

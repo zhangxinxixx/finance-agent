@@ -1,6 +1,7 @@
 import { ExternalLink } from "lucide-react";
 import { Link } from "react-router-dom";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
+import { modelDisplayLabel } from "@/components/llm-audit/llmAuditFormat";
 import { formatGoldMainlineLabel, formatGoldNetBiasLabel, goldNetBiasTone, normalizeGoldMainlineId } from "@/components/shared/goldMainlineFormat";
 import { reportFamilyLabel, reportLifecycleLabel, reportTitleLabel, reviewStatusLabel, statusTone } from "@/components/reports/reportDetailMeta";
 import { getDataStatusLabel } from "@/lib/status";
@@ -58,6 +59,10 @@ function formatNullable(value: unknown, fallback = "未记录"): string {
   return fallback;
 }
 
+function formatOptionalCount(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "未提供";
+}
+
 function payloadString(value: unknown): string {
   if (typeof value === "string") return value;
   if (value == null) return "";
@@ -74,7 +79,7 @@ function formatAuditStatus(value: unknown): string {
   if (status === "needs_review") return "需复核";
   if (status === "missing_assets") return "缺资产";
   if (status === "untracked") return "未归档";
-  return status || "未知";
+  return status ? "未解释状态（技术值见详情）" : "未知";
 }
 
 function auditTone(value: unknown): "info" | "neutral" | "warn" {
@@ -128,6 +133,7 @@ export function ReportGoldMacroOverviewCard({ data }: { data: ReportDetailView }
   const topRankings = [...(overview.theme_rankings ?? [])]
     .sort((left, right) => left.rank - right.rank)
     .slice(0, 3);
+  const rankingTotal = overview.theme_rankings?.length ?? 0;
   const pendingVerification = (overview.verification_matrix ?? []).filter((item) => {
     const status = String(item.status ?? "").toLowerCase();
     return status === "pending" || status === "missing" || status === "unverified" || status.includes("needed");
@@ -181,6 +187,7 @@ export function ReportGoldMacroOverviewCard({ data }: { data: ReportDetailView }
           ))}
         </div>
       ) : null}
+      {rankingTotal > topRankings.length ? <p className="mt-1 text-[length:var(--type-caption)] text-[var(--fg-5)]">另有 {rankingTotal - topRankings.length} 条主线排序未在摘要展开。</p> : null}
     </section>
   );
 }
@@ -190,7 +197,6 @@ export function ReportMarketObservationCard({ data }: { data: ReportDetailView }
   const isMarketObservation = data.meta.family === "jin10_market_observation_report" || reportType === "market_observation";
   if (!isMarketObservation) return null;
 
-  const sourceCount = data.source_refs.length;
   const contentText = `${data.meta.title ?? ""} ${payloadString(data.structured_payload)}`;
   const hasOddsTable = /市场赔率|赔率表|odds/i.test(contentText);
   const hasVipObservation = /VIP每日市场观察|每日市场观察|market observation/i.test(contentText);
@@ -218,11 +224,7 @@ export function ReportMarketObservationCard({ data }: { data: ReportDetailView }
             市场赔率表
           </span>
         ) : null}
-        {sourceCount > 0 ? (
-          <span className="rounded-[var(--radius-pill)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">
-            来源 {sourceCount}
-          </span>
-        ) : null}
+
         <span className="fa-num rounded-[var(--radius-pill)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">
           {data.meta.trade_date ?? "日期未知"}
         </span>
@@ -261,8 +263,8 @@ export function ReportGenerationTraceCard({
   const chartIssueCount = qualityAudit?.chart_text_issue_count ?? 0;
   const chartIssues = qualityAudit?.chart_text_issues ?? [];
   const assetCountIssues = assetAudit?.count_issues ?? [];
-  const scenarioCount = strategyHandoff?.scenario_paths?.length ?? 0;
-  const implicationCount = strategyHandoff?.trading_implications?.length ?? 0;
+  const scenarioCount = strategyHandoff?.scenario_paths?.length;
+  const implicationCount = strategyHandoff?.trading_implications?.length;
 
   return (
     <section className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2">
@@ -271,14 +273,14 @@ export function ReportGenerationTraceCard({
           生成链
         </span>
         <FAStatusPill tone={trace.llm?.model ? "info" : "warn"} dot={false} className="text-[length:var(--type-caption)]">
-          LLM {formatNullable(trace.llm?.model)}
+          文本模型：{modelDisplayLabel(trace.llm?.model)}
         </FAStatusPill>
         <FAStatusPill tone={auditTone(trace.vlm?.status)} dot={false} className="text-[length:var(--type-caption)]">
-          VLM {trace.vlm?.model ? trace.vlm.model : formatAuditStatus(trace.vlm?.status)}
+          视觉模型：{trace.vlm?.model ? modelDisplayLabel(trace.vlm.model) : formatAuditStatus(trace.vlm?.status)}
         </FAStatusPill>
         {trace.vlm?.vision_layout_status ? (
           <FAStatusPill tone={auditTone(trace.vlm.vision_layout_status === "present" ? "pass" : "needs_review")} dot={false} className="text-[length:var(--type-caption)]">
-            vision_layout {formatAuditStatus(trace.vlm.vision_layout_status === "present" ? "pass" : "needs_review")}
+            图文布局：{formatAuditStatus(trace.vlm.vision_layout_status === "present" ? "pass" : "needs_review")}
           </FAStatusPill>
         ) : null}
         {data.source_refs.length > 0 ? (
@@ -290,14 +292,14 @@ export function ReportGenerationTraceCard({
           原图 {trace.source_counts?.original_images ?? "-"}
         </span>
         <FAStatusPill tone={auditTone(assetAudit?.status)} dot={false} className="text-[length:var(--type-caption)]">
-          切图 {assetAudit?.figure_files ?? 0}/{assetAudit?.chart_image_refs ?? 0}
-          {typeof assetAudit?.parser_figures_total === "number" ? ` parser ${assetAudit.parser_figures_total}` : ""} {formatAuditStatus(assetAudit?.status)}
+          切图 {formatOptionalCount(assetAudit?.figure_files)}/{formatOptionalCount(assetAudit?.chart_image_refs)}
+          {typeof assetAudit?.parser_figures_total === "number" ? ` 解析图形 ${assetAudit.parser_figures_total}` : ""} {formatAuditStatus(assetAudit?.status)}
         </FAStatusPill>
         <FAStatusPill tone={auditTone(semanticStatus)} dot={false} className="text-[length:var(--type-caption)]">
           图文语义 {formatAuditStatus(semanticStatus)}{chartIssueCount ? ` ${chartIssueCount}` : ""}
         </FAStatusPill>
         <span className="min-w-[14rem] flex-1 truncate text-[length:var(--type-caption)] text-[var(--fg-4)]">
-          后续策略：{scenarioCount} 条剧本、{implicationCount} 条操作含义，需进入策略卡/分析输入继续校准。
+          后续策略：{formatOptionalCount(scenarioCount)} 条剧本、{formatOptionalCount(implicationCount)} 条操作含义，需进入策略卡/分析输入继续校准。
         </span>
         {data.available_tabs.includes("inputs") ? (
           <button
@@ -337,7 +339,7 @@ export function ReportGenerationTraceCard({
               className="inline-flex max-w-[24rem] items-center gap-1 rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-2 py-0.5 text-[var(--warn)]"
               title={payloadString(issue)}
             >
-              <span className="fa-num font-semibold">{String(issue.code ?? "asset_count_issue")}</span>
+              <span className="font-semibold">资产数量需复核</span>
             </span>
           ))}
           {chartIssues.slice(0, 4).map((issue) => (
@@ -346,12 +348,13 @@ export function ReportGenerationTraceCard({
               className="inline-flex max-w-[21rem] items-center gap-1 rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-2 py-0.5 text-[var(--warn)]"
               title={issue.sample ?? undefined}
             >
-              <span className="fa-num font-semibold">{issue.figure_id ?? issue.image_path ?? "chart"}</span>
+              <span className="font-semibold">图表文本需复核</span>
               <span className="truncate">{issue.title ?? "标题缺失"}</span>
               <span className="fa-num">{issue.text_len ?? 0}字</span>
             </span>
           ))}
           {chartIssues.length > 4 ? <span>+{chartIssues.length - 4} 项</span> : null}
+          {assetCountIssues.length > 4 ? <span>另有 {assetCountIssues.length - 4} 项资产计数问题</span> : null}
         </div>
       ) : null}
     </section>
@@ -366,6 +369,8 @@ export function ReportDetailHero({
   activeTab,
   onTabChange,
   summaryChips = [],
+  returnTo = "/reports",
+  isRefreshing = false,
 }: {
   data: ReportDetailView;
   metrics: Array<{ label: string; value: string }>;
@@ -374,6 +379,8 @@ export function ReportDetailHero({
   activeTab: ReportDetailTabKey;
   onTabChange: (value: ReportDetailTabKey) => void;
   summaryChips?: string[];
+  returnTo?: string;
+  isRefreshing?: boolean;
 }) {
   const familyLabel = reportFamilyLabel(data.meta.family);
   const titleLabel = reportTitleLabel(data.meta.title);
@@ -383,6 +390,9 @@ export function ReportDetailHero({
   const isSupplementalReport =
     data.meta.family === "macro_event_followup_supplement" || String(data.meta.title ?? "").includes("宏观事件跟进补充");
   const originalUrl = pickOriginalUrl(data);
+  const observationOnly =
+    data.meta.report_identity?.authority === "observation_only" ||
+    data.meta.report_identity?.output_mode === "observe";
 
   return (
     <section className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2">
@@ -409,6 +419,16 @@ export function ReportDetailHero({
               {reviewStatusLabel(data.meta.review_status)}
             </FAStatusPill>
           ) : null}
+          {observationOnly ? (
+            <>
+              <FAStatusPill tone="warn" className="text-[length:var(--type-caption)]">
+                研究观察
+              </FAStatusPill>
+              <FAStatusPill tone="warn" className="text-[length:var(--type-caption)]">
+                不可发布
+              </FAStatusPill>
+            </>
+          ) : null}
           {originalUrl ? (
             <a
               href={originalUrl}
@@ -422,17 +442,18 @@ export function ReportDetailHero({
             </a>
           ) : null}
           <Link
-            to="/reports"
+            to={returnTo}
             className="rounded-[var(--radius-md)] border border-[var(--border)] px-2 py-0.5 text-[length:var(--type-caption)] font-semibold text-[var(--fg-3)]"
           >
-            返回
+            返回报告中心
           </Link>
           <button
             type="button"
             onClick={onRefresh}
+            disabled={isRefreshing}
             className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 py-0.5 text-[length:var(--type-caption)] font-semibold text-[var(--fg-2)]"
           >
-            刷新
+            {isRefreshing ? "读取中" : "刷新"}
           </button>
         </div>
       </div>

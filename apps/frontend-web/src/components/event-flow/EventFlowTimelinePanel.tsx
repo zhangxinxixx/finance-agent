@@ -1,3 +1,6 @@
+import { readerValue } from "@/lib/readerLabels";
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { Clock3, ExternalLink, List } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
@@ -40,8 +43,8 @@ function toDisplayRow(event: EventFlowTimelineItem): TimelineDisplayRow {
     title: event.title,
     status: event.status,
     importance: event.importance,
-    goldImpact: event.gold_impact ?? getImpactLabel(event.impact),
-    pricing: event.pricing ?? "未定价",
+    goldImpact: translateEventFlowValue(event.gold_impact ?? event.impact),
+    pricing: event.pricing ?? "未核验",
     verificationStatus: translateEventFlowValue(event.verification_status ?? "unavailable"),
     sourceCount: sourceCount(event),
     mainlineLabel: event.primary_mainline ? formatGoldMainlineLabel(event.primary_mainline) : null,
@@ -64,11 +67,11 @@ function RelatedNewsItems({ items }: { items?: EventFlowRelatedNewsItem[] }) {
           const content = (
             <>
               <span className="shrink-0 rounded-[4px] border border-[var(--border)] px-1.5 py-[1px] text-[9px] font-semibold text-[var(--fg-4)]">
-                {item.source_label || item.source}
+                {formatEventFlowSourceLabel(item.source_label || item.source).text}
               </span>
-              <span className="min-w-0 flex-1 truncate text-[10px] leading-4 text-[var(--fg-2)]">{item.title || "未命名快讯"}</span>
+              <span className="min-w-0 flex-1 truncate text-[10px] leading-4 text-[var(--fg-2)]">{formatEventFlowHeadlineSummary(item.title).lead}</span>
               <span className="hidden shrink-0 text-[9px] text-[var(--fg-5)] sm:inline">
-                {item.published_at?.slice(0, 16).replace("T", " ") || item.domain || "待评估"}
+                {item.published_at?.slice(0, 16).replace("T", " ") || "时间未提供"}
               </span>
             </>
           );
@@ -80,17 +83,18 @@ function RelatedNewsItems({ items }: { items?: EventFlowRelatedNewsItem[] }) {
               target="_blank"
               rel="noreferrer"
               className="flex min-w-0 items-center gap-2 rounded-[4px] px-1 py-1 transition-colors hover:bg-[var(--bg-hover)]"
-              title={item.title}
+              title="查看相关快讯原文"
             >
               {content}
             </a>
           ) : (
-            <div key={key} className="flex min-w-0 items-center gap-2 rounded-[4px] px-1 py-1" title={item.title}>
+            <div key={key} className="flex min-w-0 items-center gap-2 rounded-[4px] px-1 py-1" title="相关快讯，原文可从依据记录核对">
               {content}
             </div>
           );
         })}
       </div>
+      <ResearchDetails label="查看相关快讯依据"><EvidenceRecordActions record={items} label="完整相关快讯" /></ResearchDetails>
     </div>
   );
 }
@@ -145,15 +149,15 @@ function TimelineHighlights({
                 <FAStatusPill status={event.impact} domain="event" dot={false} className={STATUS_PILL_CLASS_NAME}>
                   {getImpactLabel(event.impact)}
                 </FAStatusPill>
-                <FAStatusPill status={event.pricing ?? "未定价"} domain="event" dot={false} className={STATUS_PILL_CLASS_NAME}>
-                  {translateEventFlowValue(event.pricing ?? "未定价")}
+                <FAStatusPill status={event.pricing ?? "未核验"} domain="event" dot={false} className={STATUS_PILL_CLASS_NAME}>
+                  {translateEventFlowValue(event.pricing ?? "未核验")}
                 </FAStatusPill>
               </div>
               <div className="mt-2 space-y-1">
                 <div className="text-[13px] font-semibold leading-5 text-[var(--fg-1)]">{headline.lead}</div>
                 {headline.subline ? <div className="line-clamp-1 text-[11px] leading-5 text-[var(--fg-4)]">{headline.subline}</div> : null}
               </div>
-              <div className="mt-1 line-clamp-2 text-[11px] leading-5 text-[var(--fg-3)]">{event.desc || "暂无事件摘要。"}</div>
+              <div className="mt-1 break-words text-[11px] leading-5 text-[var(--fg-3)]">{event.desc ? readerValue(event.desc, "中文摘要尚未提供，影响判断仍待核实。") : "暂无事件摘要。"}</div>
               <div className="mt-2">
                 <EventGoldMainlineTrace event={event} />
               </div>
@@ -179,7 +183,7 @@ function TimelineHighlights({
             </div>
             <div className="inline-flex items-baseline gap-1.5">
               <span className="text-[var(--fg-5)]">黄金影响</span>
-              <span className="font-semibold text-[var(--fg-2)]">{event.gold_impact ?? getImpactLabel(event.impact)}</span>
+              <span className="font-semibold text-[var(--fg-2)]">{translateEventFlowValue(event.gold_impact ?? event.impact)}</span>
             </div>
             <div className="inline-flex items-baseline gap-1.5">
               <span className="text-[var(--fg-5)]">来源数</span>
@@ -192,6 +196,7 @@ function TimelineHighlights({
             <FASourceTraceBadge source={formatEventFlowSourceLabel(event.source ?? "事件流", 16).text} status="来源" tone="dim" />
             {event.assets ? <FASourceTraceBadge source={event.assets} status="asset" tone="info" /> : null}
           </div>
+          <ResearchDetails label="查看本事件完整依据"><EvidenceRecordActions record={event} label="本事件原始记录" /></ResearchDetails>
         </article>
         );
       })}
@@ -230,7 +235,7 @@ function TimelineTable({
           disabled={!onOpenDetail}
         >
           <span className="fa-num text-[10px] text-[var(--fg-5)]">{row.time}</span>
-          <span className="min-w-0 space-y-0.5" title={row.title}>
+          <span className="min-w-0 space-y-0.5" title={headline.lead}>
             <span className="block truncate text-[11px] font-semibold leading-5 text-[var(--fg-2)]">{headline.lead}</span>
             {headline.subline ? <span className="block truncate text-[10px] leading-4 text-[var(--fg-4)]">{headline.subline}</span> : null}
             {row.mainlineLabel || row.pathLabel ? (
@@ -276,7 +281,7 @@ export function EventFlowTimelinePanel({
     : (table ?? []).map(tableRowToDisplayRow);
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+    <div className="grid gap-4">
       <FACard
         title={
           <div className="flex items-center gap-2">
@@ -290,13 +295,13 @@ export function EventFlowTimelinePanel({
         bodyClassName="space-y-3"
       >
         {timeline.length === 0 ? (
-          <FAEmptyState title="暂无事件流" description="当前读模型没有返回时间线事件。" className="py-6" />
+          <FAEmptyState title="暂无事件流" description="当前结果没有返回时间线事件。" className="py-6" />
         ) : (
           <TimelineHighlights timeline={timeline} onOpenDetail={onOpenDetail} />
         )}
       </FACard>
 
-      <FACard
+      <ResearchDetails label="查看事件列表"><FACard
         title={
           <div className="flex items-center gap-2">
             <List size={12} className="text-[var(--brand-hover)]" />
@@ -307,11 +312,11 @@ export function EventFlowTimelinePanel({
         accent="brand"
       >
         {displayRows.length === 0 ? (
-          <FAEmptyState title="暂无表格数据" description="timeline 和 table 都没有可展示的事件摘要。" className="py-6" />
+          <FAEmptyState title="暂无表格数据" description="当前时间范围没有可展示的事件摘要。" className="py-6" />
         ) : (
           <TimelineTable rows={displayRows} onOpenDetail={onOpenDetail} />
         )}
-      </FACard>
+      </FACard></ResearchDetails>
     </div>
   );
 }

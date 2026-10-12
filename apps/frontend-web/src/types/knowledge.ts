@@ -46,7 +46,7 @@ export interface KnowledgeItem {
   verifiedAt: string;
   version: string;
   author: string;
-  confidence: number;
+  confidence: number | null;
   citations: number;
   references: number;
   dashboards: number;

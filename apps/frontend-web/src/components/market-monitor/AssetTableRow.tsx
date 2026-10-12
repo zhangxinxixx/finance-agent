@@ -15,7 +15,7 @@ interface AssetTableRowProps {
 }
 
 export function AssetTableRow({ row, metric }: AssetTableRowProps) {
-  const price = metric ? formatMetricValue(metric.latest_value, 4) : "---";
+  const price = metric ? formatMetricValue(metric.latest_value, 4) : "—";
   const changeVal = metric?.one_week_change ?? null;
   const delta = metric?.one_month_change ?? null;
   const impact = interpretStatus(metric);
@@ -70,7 +70,7 @@ export function AssetTableRow({ row, metric }: AssetTableRowProps) {
           color: changeColor(changeVal),
         }}
       >
-        {formatMetricChange(changeVal, "---")}
+        {formatMetricChange(changeVal)}
       </span>
       <span
         className="fa-num"
@@ -80,7 +80,7 @@ export function AssetTableRow({ row, metric }: AssetTableRowProps) {
           color: changeColor(delta),
         }}
       >
-        {formatMetricChange(delta, "---")}
+        {formatMetricChange(delta)}
       </span>
       <span
         style={{

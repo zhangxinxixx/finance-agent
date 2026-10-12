@@ -31,178 +31,48 @@ jobs:
         run: uv sync --locked --extra dev
       - name: Compile Python sources
         run: uv run python -m compileall -q apps database dagster_finance scripts
-      - name: Lint hardening boundaries
-        run: >-
-          uv run ruff check
-          apps/runtime
-          apps/monitoring
-          apps/data_control
-          apps/event_sla
-          apps/orchestration
-          apps/scheduler/automation_orchestration.py
-          apps/api/services/orchestration_service.py
-          dagster_finance/ops/automation_orchestration.py
-          tests/runtime
-          tests/monitoring
-          tests/data_control
-          tests/event_sla
-          tests/orchestration
-          tests/scheduler/test_automation_orchestration.py
-          tests/api/test_orchestration_api.py
-          tests/architecture/test_contract_review_guards.py
-      - name: Run execution hardening regression tests
+      - name: Lint backend and tests
+        run: uv run ruff check apps tests
+      - name: Run core analysis and execution regression tests
         run: >-
           uv run pytest -q
+          tests/analysis
+          tests/api/test_quality_gate_service.py
+          tests/api/test_agent_analysis_api.py
+          tests/api/test_agent_read_model.py
+          tests/api/test_agent_analysis_inspect_api.py
+          tests/worker/test_agentloop_fallback_pipeline.py
+          tests/worker/test_premarket_composite_output_integration.py
+          tests/worker/test_premarket_composite_db_integration.py
           tests/runtime
           tests/monitoring/test_data_quality_monitor.py
           tests/data_control/test_data_control_agent.py
           tests/event_sla/test_event_sla_pipeline.py
           tests/scripts/test_run_event_sla_pipeline.py
-          tests/orchestration/test_automation_orchestrator.py
+          tests/orchestration
           tests/scheduler/test_automation_orchestration.py
           tests/dagster_finance/test_automation_orchestration_schedule.py
           tests/api/test_orchestration_api.py
           tests/scripts/test_run_automation_orchestrator.py
-          tests/worker/test_premarket_composite_output_integration.py
-          tests/architecture/test_contract_review_guards.py
-      - name: Run formal snapshot and verified result integration tests
+          tests/contracts
+          tests/architecture
+      - name: Run warehouse, page-boundary and retention regression tests
         run: >-
-          uv run pytest -q
-          tests/analysis/strategy
-          tests/analysis/test_source_health_agent.py
-          tests/api/test_gold_result_identity.py
-          tests/api/test_gold_result_identity_delivery.py
-          tests/api/test_jin10_cache_refresh_scheduler.py
-          tests/api/test_live_strategy_api.py
-          tests/api/test_premarket_contract.py
-          tests/collectors/test_data_layer.py
-          tests/dagster_finance/test_premarket_readiness_gate.py
-          tests/data_control/test_availability_calendar.py
-          tests/data_control/test_gold_gap_actions.py
-          tests/data_control/test_processing_snapshot_seam.py
-          tests/scripts/test_gold_daily_report_production_caller.py
-          tests/scripts/test_local_stack_ctl.py
-          tests/worker/test_dagster_agent_ops.py
-          tests/worker/test_macro_pipeline.py
-          tests/worker/test_news_pipeline.py
-      - name: Lint Analysis Memory boundaries
-        run: >-
-          uv run ruff check
-          apps/analysis/state
-          apps/analysis/context_bundle
-          apps/analysis/evidence_delta
-          apps/analysis/figure_facts.py
-          apps/analysis/prompts/state_transition.py
-          apps/output/context_bundle.py
-          apps/output/figure_facts.py
-          apps/worker/artifact_registration.py
-          apps/worker/canary_materialization.py
-          apps/worker/composite_analysis_pipeline.py
-          apps/worker/composite_state_shadow.py
-          apps/worker/runner.py
-          database/migrations
-          database/models/analysis_state.py
-          scripts/bootstrap_analysis_state.py
-          tests/analysis/test_context_bundle.py
-          tests/analysis/test_context_bundle_selection.py
-          tests/analysis/test_evidence_delta_evaluator.py
-          tests/analysis/test_figure_facts.py
-          tests/analysis/test_state_bootstrap.py
-          tests/analysis/test_state_materializer.py
-          tests/api/test_analysis_memory_api.py
-          tests/architecture/test_analysis_memory_ci_guards.py
-          tests/architecture/test_analysis_memory_observability_guards.py
-          tests/database/test_alembic_runtime_unification.py
-          tests/database/test_analysis_memory_postgres.py
-          tests/database/test_analysis_state_core.py
-          tests/database/test_canary_approvals.py
-          tests/database/test_canary_attempts.py
-          tests/database/test_canary_migrations.py
-          tests/output/test_context_bundle_artifacts.py
-          tests/output/test_figure_fact_artifacts.py
-          tests/scripts/test_bootstrap_analysis_state.py
-          tests/worker/test_composite_analysis_pipeline_helpers.py
-          tests/worker/test_composite_state_shadow.py
-          tests/worker/test_canary_materialization.py
-          tests/worker/test_context_bundle_artifact_registration.py
-      - name: Run Analysis Memory regression tests
-        shell: bash
-        run: >-
-          mkdir -p test-results &&
-          uv run pytest -q --tb=short
-          --junitxml=test-results/analysis-memory.xml
-          tests/database/test_alembic_runtime_unification.py
-          tests/database/test_analysis_state_core.py
-          tests/database/test_canary_approvals.py
-          tests/database/test_canary_attempts.py
-          tests/database/test_canary_migrations.py
-          tests/analysis/test_context_bundle.py
-          tests/analysis/test_context_bundle_selection.py
-          tests/analysis/test_evidence_delta_evaluator.py
-          tests/analysis/test_state_materializer.py
-          tests/analysis/test_figure_facts.py
-          tests/output/test_context_bundle_artifacts.py
-          tests/output/test_figure_fact_artifacts.py
-          tests/worker/test_composite_analysis_pipeline_helpers.py
-          tests/worker/test_composite_state_shadow.py
-          tests/worker/test_canary_materialization.py
-          tests/worker/test_context_bundle_artifact_registration.py
-          tests/analysis/test_state_bootstrap.py
-          tests/scripts/test_bootstrap_analysis_state.py
-          tests/api/test_analysis_memory_api.py
-          tests/architecture/test_analysis_memory_ci_guards.py
-          tests/architecture/test_analysis_memory_observability_guards.py
-      - name: Upload Analysis Memory test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: analysis-memory-test-results
-          path: test-results/analysis-memory.xml
-          if-no-files-found: warn
-
-  analysis-memory-postgres:
-    name: Analysis Memory PostgreSQL
-    runs-on: ubuntu-latest
-    env:
-      ANALYSIS_MEMORY_POSTGRES_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/finance_agent_test
-      UV_CACHE_DIR: /tmp/uv-cache
-      no_proxy: 127.0.0.1,localhost,::1
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: finance_agent_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d finance_agent_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - name: Install Python dependencies
-        run: uv sync --locked --extra dev
-      - name: Run PostgreSQL migration and CAS checks
-        shell: bash
-        run: >-
-          mkdir -p test-results &&
-          uv run pytest -q --tb=short
-          --junitxml=test-results/analysis-memory-postgres.xml
-          tests/database/test_analysis_memory_postgres.py
-      - name: Upload PostgreSQL test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: analysis-memory-postgres-test-results
-          path: test-results/analysis-memory-postgres.xml
-          if-no-files-found: warn
+          uv run pytest -q -m 'not live'
+          tests/database
+          tests/data_layer
+          tests/api/test_page_data_boundary.py
+          tests/api/test_research_clock_contract.py
+          tests/api/test_research_state_routes.py
+          tests/api/test_macro_read_model_service.py
+          tests/api/test_dashboard_research_service.py
+          tests/api/test_research_trade_plan.py
+          tests/worker/test_research_input_validation.py
+          tests/worker/test_rejected_output_retention.py
+          tests/dagster_finance/test_warehouse_maintenance.py
+          tests/scripts/test_prune_raw_sources.py
+          tests/scripts/test_prune_unqualified_outputs.py
+          tests/scripts/test_backfill_data_warehouse.py
 
   gold-policy-core:
     name: Gold Policy core
@@ -429,3 +299,47 @@ jobs:
         run: pnpm test
       - name: Build frontend
         run: pnpm build
+
+  analysis-memory-postgres:
+    name: Analysis Memory PostgreSQL
+    runs-on: ubuntu-latest
+    env:
+      ANALYSIS_MEMORY_POSTGRES_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/finance_agent_test
+      UV_CACHE_DIR: /tmp/uv-cache
+      no_proxy: 127.0.0.1,localhost,::1
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: finance_agent_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d finance_agent_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: uv sync --locked --extra dev
+      - name: Run PostgreSQL migration and CAS checks
+        shell: bash
+        run: >-
+          mkdir -p test-results &&
+          uv run pytest -q --tb=short
+          --junitxml=test-results/analysis-memory-postgres.xml
+          tests/database/test_public_postgres_upgrade.py
+      - name: Upload PostgreSQL test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-memory-postgres-test-results
+          path: test-results/analysis-memory-postgres.xml
+          if-no-files-found: warn

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -172,23 +173,27 @@ def test_treasury_collector_marks_unavailable_when_http_fails(tmp_path: Path) ->
 
 
 def test_dxy_collector_parses_tradingview_scanner(tmp_path: Path) -> None:
-    payload = json.dumps({"data": [{"d": [98.504, 0.21, -1.04, "ICE US Dollar Index"]}]})
-    with patch("httpx.Client.post", return_value=httpx.Response(200, content=payload.encode(), request=httpx.Request("POST", "https://test/"))):
+    payload = json.dumps({"data": [{"d": [98.504, 0.21, -1.04, "ICE US Dollar Index", datetime(2026, 5, 13, tzinfo=UTC).timestamp()]}]})
+    with patch("httpx.Client.post", return_value=httpx.Response(200, content=payload.encode(), request=httpx.Request("POST", "https://test/"))), patch("httpx.Client.get", side_effect=httpx.ConnectError("CNBC unavailable")):
         result = collect_dxy_series(retrieved_date="2026-05-13", storage_root=tmp_path)
     assert not result.unavailable_symbols
-    assert len(result.points) == 3
+    assert len(result.points) == 1  # Provider performance percentages are not historical observations.
     latest = [p for p in result.points if p.date == "2026-05-13"][0]
     assert latest.value == pytest.approx(98.504, rel=1e-4)
 
 
 def test_dxy_collector_falls_back_to_cnbc(tmp_path: Path) -> None:
     tv_fail = httpx.Response(500, content=b"{}", request=httpx.Request("POST", "https://test/"))
-    cnbc_ok = httpx.Response(200, content=json.dumps({"QuickQuoteResult": {"QuickQuote": [{"symbol": ".DXY", "last": "97.927"}]}}).encode(), request=httpx.Request("GET", "https://test/"))
+    cnbc_ok = httpx.Response(200, content=json.dumps({"QuickQuoteResult": {"QuickQuote": [{"symbol": ".DXY", "last": "97.927", "last_time": "2026-05-08T14:00:00+00:00", "previous_day_closing": "98.104", "change": "-0.177"}]}}).encode(), request=httpx.Request("GET", "https://test/"))
     with patch("httpx.Client.post", return_value=tv_fail), patch("httpx.Client.get", return_value=cnbc_ok):
         result = collect_dxy_series(retrieved_date="2026-05-08", storage_root=tmp_path)
     assert not result.unavailable_symbols
+    assert len(result.points) == 1
     assert result.points[0].value == pytest.approx(97.927, rel=1e-4)
     assert result.points[0].source == "cnbc"
+    assert result.points[0].date == "2026-05-08"
+    assert result.source_refs[0]["previous_observation_date"] is None
+    assert float(result.source_refs[0]["reported_daily_change"]) == -0.177
 
 
 def test_dxy_collector_marks_unavailable_when_all_sources_fail(tmp_path: Path) -> None:

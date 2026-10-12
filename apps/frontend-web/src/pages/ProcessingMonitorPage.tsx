@@ -5,7 +5,6 @@ import { ArrowRight, CircleX, Network, RefreshCw, Search, ShieldCheck, Workflow 
 import {
   fetchProcessingOverview,
   fetchProcessingTrace,
-  fetchArtifactSourceTrace,
   fetchProcessingTraceByChain,
   fetchProcessingTraceByEvent,
   fetchProcessingTraceByInput,
@@ -14,8 +13,6 @@ import {
 } from "@/adapters/processingMonitor";
 import type { AppShellOutletContext } from "@/components/AppShell";
 import { TraceDetailPanels } from "@/components/processing-monitor/TraceDetailPanels";
-import { AnalysisMemoryPanel } from "@/components/analysis-memory/AnalysisMemoryPanel";
-import { ArtifactSourceTracePanel } from "@/components/processing-monitor/ArtifactSourceTracePanel";
 import { ErrorState } from "@/components/shared/ErrorState";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
@@ -23,6 +20,7 @@ import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPill";
 import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
 import { LoadingSkeleton } from "@/components/shared/LoadingSkeleton";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import type {
   ProcessingOverviewResponse,
   ProcessingExecutionSummary,
@@ -30,17 +28,24 @@ import type {
   ProcessingTraceMode,
   ProcessingTracePathNode,
   ProcessingTraceResponse,
-  ArtifactSourceTraceLookup,
 } from "@/types/processing-monitor";
+import {
+  evidenceLabel,
+  operationFieldLabel,
+  operationMainlineLabel,
+  operationReadableLabel,
+  operationReasonLabel,
+  operationStageLabel,
+  operationStatusLabel,
+} from "@/components/operations/operationsLabels";
 
 const TRACE_MODE_OPTIONS: Array<{ value: ProcessingTraceMode; label: string; placeholder: string }> = [
-  { value: "processing_trace_id", label: "Trace ID", placeholder: "trace:oil" },
-  { value: "event_id", label: "Event ID", placeholder: "event:oil" },
-  { value: "source_ref", label: "Source Ref", placeholder: "jin10:flash:001" },
-  { value: "input_id", label: "Input ID", placeholder: "input:oil" },
-  { value: "mainline", label: "主线", placeholder: "geopolitical_war" },
-  { value: "transmission_chain", label: "传导链", placeholder: "war_oil_rate_chain" },
-  { value: "artifact_id", label: "Artifact ID", placeholder: "artifact UUID" },
+  { value: "processing_trace_id", label: "加工链路标识", placeholder: "输入链路标识" },
+  { value: "event_id", label: "事件标识", placeholder: "输入事件标识" },
+  { value: "source_ref", label: "来源引用", placeholder: "输入来源引用" },
+  { value: "input_id", label: "输入标识", placeholder: "输入数据标识" },
+  { value: "mainline", label: "主线", placeholder: "输入主线名称或标识" },
+  { value: "transmission_chain", label: "传导链", placeholder: "输入传导链标识" },
 ];
 
 function statusTone(value: string | null | undefined): FAStatusTone {
@@ -72,7 +77,7 @@ function statusLabel(value: string | null | undefined): string {
     observe: "观察等待",
     accepted: "已采用",
   };
-  return labels[value ?? ""] ?? value ?? "未知";
+  return labels[value ?? ""] ?? operationStatusLabel(value);
 }
 
 function fieldLabel(value: string): string {
@@ -81,19 +86,19 @@ function fieldLabel(value: string): string {
     report_input_count: "报告输入",
     followup_count: "追问输入",
     article_brief_count: "文章摘要",
-    source_ref_count: "Source Ref",
-    artifact_ref_count: "Artifact Ref",
-    without_source_ref_count: "缺 Source Ref",
+    source_ref_count: "来源引用",
+    artifact_ref_count: "产物引用",
+    without_source_ref_count: "缺少来源引用",
     source_freshness: "源新鲜度",
     feature_freshness: "特征新鲜度",
     analysis_freshness: "分析新鲜度",
     frontend_freshness: "前端绑定",
   };
-  return labels[value] ?? value;
+  return labels[value] ?? operationFieldLabel(value);
 }
 
 function idLabel(value: string | null | undefined): string {
-  return value && value.trim().length > 0 ? value : "—";
+  return evidenceLabel(value, "未提供");
 }
 
 function dagFocusPath(nodeId: string | null | undefined): string {
@@ -114,14 +119,26 @@ function preferredDagFocusPath(nodes: ProcessingTracePathNode[]): string {
 
 function traceNodeRefSummary(node: ProcessingTracePathNode): string {
   const parts = [];
-  if (node.source_ref_count > 0) parts.push(`src ${node.source_ref_count}`);
-  if (node.artifact_ref_count > 0) parts.push(`art ${node.artifact_ref_count}`);
+  if (node.source_ref_count > 0) parts.push(`来源 ${node.source_ref_count}`);
+  if (node.artifact_ref_count > 0) parts.push(`产物 ${node.artifact_ref_count}`);
   return parts.length ? parts.join(" · ") : "无引用";
+}
+
+function traceNodeLabel(node: ProcessingTracePathNode): string {
+  if (node.label && /[\u3400-\u9fff]/.test(node.label)) return node.label;
+  return operationMainlineLabel(node.node_id);
+}
+
+function readableFreshnessValue(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return "状态尚未说明";
+  if (/^\d{4}-\d{2}-\d{2}(?:[T ]|$)/.test(value)) return value;
+  if (/[\u3400-\u9fff]/.test(value)) return value;
+  return operationReadableLabel(value, "状态尚未说明");
 }
 
 function TracePathStrip({ nodes }: { nodes: ProcessingTracePathNode[] }) {
   if (!nodes.length) {
-    return <FAEmptyState title="暂无路径节点" description="后端暂未返回 processing trace path。" />;
+    return <FAEmptyState title="暂无路径节点" description="后端暂未返回加工链路路径。" />;
   }
 
   return (
@@ -133,9 +150,9 @@ function TracePathStrip({ nodes }: { nodes: ProcessingTracePathNode[] }) {
               to={dagFocusPath(node.node_id)}
               className="w-[164px] rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2 no-underline transition hover:border-[var(--info-border)] hover:bg-[var(--bg-hover)]"
             >
-              <div className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{node.label || node.node_id}</div>
+              <div className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{traceNodeLabel(node)}</div>
               <div className="mt-1 flex items-center justify-between gap-2 text-[9px] uppercase text-[var(--fg-5)]">
-                <span className="truncate">{node.stage}</span>
+                <span className="truncate">{operationStageLabel(node.stage)}</span>
                 <span className="fa-num">#{index + 1}</span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-2">
@@ -174,7 +191,7 @@ function OverviewSummary({ overview }: { overview: ProcessingOverviewResponse })
     <div className="grid gap-3 md:grid-cols-4">
       <SummaryMetric label="主线覆盖" value={`${coveredMainlines}/${overview.mainline_coverage.length}`} tone={missingMainlines ? "warn" : "up"} />
       <SummaryMetric label="输入事件" value={coverage.news_input_count} />
-      <SummaryMetric label="Source Ref" value={coverage.source_ref_count} tone={coverage.without_source_ref_count ? "warn" : "up"} />
+    <SummaryMetric label="来源引用" value={coverage.source_ref_count} tone={coverage.without_source_ref_count ? "warn" : "up"} />
       <SummaryMetric label="视图绑定" value={`${boundViews}/${overview.view_bindings.length}`} tone={boundViews === overview.view_bindings.length ? "up" : "warn"} />
     </div>
   );
@@ -192,6 +209,15 @@ function outputModeLabel(mode: ProcessingExecutionSummary["final_output"]["mode"
   return "不可用";
 }
 
+function ArtifactPathList({ paths }: { paths: string[] }) {
+  if (paths.length === 0) return <span>未登记</span>;
+  return (
+    <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-1">
+      <div>{paths.length} 项最终输出已登记；页面不展示文件路径。</div>
+    </div>
+  );
+}
+
 function ExecutionSummaryPanel({ summary }: { summary: ProcessingExecutionSummary }) {
   const inputCount = Object.keys(summary.used_data.input_snapshot_ids).length;
   const reportPaths = artifactPaths(summary.final_output.report_artifact_refs);
@@ -200,22 +226,23 @@ function ExecutionSummaryPanel({ summary }: { summary: ProcessingExecutionSummar
   return (
     <FACard
       title="本次执行摘要"
-      eyebrow="Execution Summary"
+      eyebrow="执行摘要"
       accent={summary.status === "failed" || summary.status === "blocked" ? "down" : summary.status === "partial" ? "warn" : "up"}
       action={<FAStatusPill tone={statusTone(summary.status)}>{statusLabel(summary.status)}</FAStatusPill>}
     >
       <div className="grid gap-3 lg:grid-cols-[0.85fr_1.15fr]">
         <div className="grid gap-2">
           <div className="grid grid-cols-3 gap-2">
-            <SummaryMetric label="Input Snapshot" value={inputCount} />
-            <SummaryMetric label="Source Ref" value={summary.used_data.source_refs.length} />
-            <SummaryMetric label="Agent Artifact" value={summary.used_data.agent_artifact_refs.length} />
+            <SummaryMetric label="输入快照" value={inputCount} />
+            <SummaryMetric label="来源引用" value={summary.used_data.source_refs.length} />
+            <SummaryMetric label="分析产物" value={summary.used_data.agent_artifact_refs.length} />
           </div>
           <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2 text-[length:var(--type-caption)] leading-4">
             <div className="font-semibold text-[var(--fg-5)]">失败步骤</div>
             <div className={`mt-1 break-words ${summary.failed_steps.length ? "text-[var(--danger)]" : "text-[var(--fg-3)]"}`}>
-              {summary.failed_steps.length ? summary.failed_steps.join(" / ") : "无失败步骤"}
+              {summary.failed_steps.length ? `${summary.failed_steps.length} 个步骤失败` : "无失败步骤"}
             </div>
+            {summary.failed_steps.length ? <div className="mt-2"><EvidenceRecordActions record={summary.failed_steps} label="失败步骤依据" /></div> : null}
           </div>
         </div>
 
@@ -233,12 +260,12 @@ function ExecutionSummaryPanel({ summary }: { summary: ProcessingExecutionSummar
           </div>
           <div className="mt-3 grid gap-2 text-[length:var(--type-caption)] leading-4 md:grid-cols-2">
             <div>
-              <div className="font-semibold text-[var(--fg-5)]">Report</div>
-              <div className="mt-1 break-all text-[var(--fg-3)]">{reportPaths.length ? reportPaths.join(" / ") : "—"}</div>
+                <div className="font-semibold text-[var(--fg-5)]">报告产物</div>
+                <div className="mt-1 text-[var(--fg-3)]"><ArtifactPathList paths={reportPaths} /></div>
             </div>
             <div>
-              <div className="font-semibold text-[var(--fg-5)]">Strategy Card</div>
-              <div className="mt-1 break-all text-[var(--fg-3)]">{strategyCardPaths.length ? strategyCardPaths.join(" / ") : "—"}</div>
+                <div className="font-semibold text-[var(--fg-5)]">策略卡片产物</div>
+                <div className="mt-1 text-[var(--fg-3)]"><ArtifactPathList paths={strategyCardPaths} /></div>
             </div>
           </div>
         </div>
@@ -248,10 +275,8 @@ function ExecutionSummaryPanel({ summary }: { summary: ProcessingExecutionSummar
 }
 
 function acceptedOutputSummary(outputs: Record<string, unknown>): string {
-  const values = Object.values(outputs)
-    .flatMap((value) => (Array.isArray(value) ? value : [value]))
-    .filter((value): value is string => typeof value === "string" && value.length > 0);
-  return values.length ? values.slice(0, 3).join(" / ") : "—";
+  const count = Object.values(outputs).reduce<number>((total, value) => total + (Array.isArray(value) ? value.length : value == null ? 0 : 1), 0);
+  return count ? `${count} 项最终输出已登记` : "—";
 }
 
 function QualityGatePanel({ qualityGate }: { qualityGate: ProcessingQualityGate }) {
@@ -262,7 +287,7 @@ function QualityGatePanel({ qualityGate }: { qualityGate: ProcessingQualityGate 
   return (
     <FACard
       title="质量门控"
-      eyebrow="AgentLoop"
+      eyebrow="质量门控流程"
       accent={qualityGate.status === "blocked" ? "down" : qualityGate.status === "needs_review" ? "warn" : "up"}
       action={<FAStatusPill tone={statusTone(qualityGate.status)}>{statusLabel(qualityGate.status)}</FAStatusPill>}
     >
@@ -271,10 +296,10 @@ function QualityGatePanel({ qualityGate }: { qualityGate: ProcessingQualityGate 
           <div className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
             <div className="flex min-w-0 items-center gap-2">
               <ShieldCheck size={14} className="shrink-0 text-[var(--warn)]" />
-              <span className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{qualityGate.quality_gate_action ?? "—"}</span>
+              <span className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{operationReasonLabel(qualityGate.quality_gate_action)}</span>
             </div>
             <FAStatusPill tone={review.fallback_used ? "warn" : "up"} dot={false}>
-              {review.fallback_used ? "Fallback" : "Primary"}
+              {review.fallback_used ? "回退结果" : "主结果"}
             </FAStatusPill>
           </div>
           <div className="grid grid-cols-2 gap-2 text-[10px] text-[var(--fg-4)]">
@@ -289,7 +314,8 @@ function QualityGatePanel({ qualityGate }: { qualityGate: ProcessingQualityGate 
           </div>
           <div className="rounded-[var(--radius-sm)] bg-[var(--bg-card-inner)] px-3 py-2 text-[10px] leading-4 text-[var(--fg-4)]">
             <div className="font-semibold text-[var(--fg-5)]">原因</div>
-            <div className="mt-1 break-words">{review.reasons.length ? review.reasons.join(" / ") : qualityGate.fallback_reasons.join(" / ") || "—"}</div>
+            <div className="mt-1 break-words">{review.reasons.length ? review.reasons.map(operationReasonLabel).join(" / ") : qualityGate.fallback_reasons.map(operationReasonLabel).join(" / ") || "—"}</div>
+            {(review.reasons.length || qualityGate.fallback_reasons.length) ? <div className="mt-2"><EvidenceRecordActions record={{ reasons: review.reasons, fallback_reasons: qualityGate.fallback_reasons }} label="质量门控原因依据" /></div> : null}
           </div>
         </div>
 
@@ -297,29 +323,33 @@ function QualityGatePanel({ qualityGate }: { qualityGate: ProcessingQualityGate 
           <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
             <div className="grid gap-2 text-[10px] leading-4 text-[var(--fg-4)] md:grid-cols-2">
               <div>
-                <div className="font-semibold text-[var(--fg-5)]">Primary</div>
-                <div className="mt-1 break-all text-[var(--fg-2)]">{review.primary_outputs.length ? review.primary_outputs.join(" / ") : "—"}</div>
+                <div className="font-semibold text-[var(--fg-5)]">主结果</div>
+                <div className="mt-1 break-all text-[var(--fg-2)]">{review.primary_outputs.length ? `${review.primary_outputs.length} 项主结果已登记` : "—"}</div>
+                {review.primary_outputs.length ? <div className="mt-2"><EvidenceRecordActions record={review.primary_outputs} label="主结果依据" /></div> : null}
               </div>
               <div>
-                <div className="font-semibold text-[var(--fg-5)]">Accepted</div>
-                <div className="mt-1 break-all text-[var(--fg-2)]">{review.accepted_output ?? acceptedOutputSummary(review.accepted_outputs)}</div>
+                <div className="font-semibold text-[var(--fg-5)]">最终采用</div>
+                <div className="mt-1 break-all text-[var(--fg-2)]">{review.accepted_output ? "最终结果已登记" : acceptedOutputSummary(review.accepted_outputs)}</div>
+                {(review.accepted_output || Object.keys(review.accepted_outputs).length) ? <div className="mt-2"><EvidenceRecordActions record={review.accepted_output ?? review.accepted_outputs} label="最终结果依据" /></div> : null}
               </div>
             </div>
           </div>
           {task ? (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2 text-[10px]">
-              <span className="font-semibold text-[var(--fg-2)]">{task.task_type}</span>
-              <span className="text-[var(--fg-5)]">{task.fallback_output_agent ?? task.fallback_of ?? task.reason}</span>
+              <span className="font-semibold text-[var(--fg-2)]">{operationReasonLabel(task.task_type)}</span>
+              <span className="text-[var(--fg-5)]">{task.fallback_output_agent || task.fallback_of || task.reason ? "回退依据已登记" : "未提供回退说明"}</span>
+              <EvidenceRecordActions record={task} label="回退任务依据" />
               <FAStatusPill tone={statusTone(task.status)} dot={false}>{statusLabel(task.status)}</FAStatusPill>
             </div>
           ) : null}
           {fallbackOutput ? (
             <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold text-[var(--fg-2)]">{fallbackOutput.agent_name}</span>
+                <span className="text-[11px] font-semibold text-[var(--fg-2)]">回退结果已登记</span>
                 <span className="fa-num text-[10px] text-[var(--fg-5)]">{fallbackOutput.confidence ?? "—"}</span>
               </div>
-              <div className="mt-2 line-clamp-2 text-[10px] leading-4 text-[var(--fg-4)]">{fallbackOutput.summary ?? fallbackOutput.snapshot_id ?? "—"}</div>
+              <div className="mt-2 line-clamp-2 text-[10px] leading-4 text-[var(--fg-4)]">{fallbackOutput.summary ? "已返回摘要" : "未返回摘要"}</div>
+              <div className="mt-2"><EvidenceRecordActions record={fallbackOutput} label="回退结果依据" /></div>
             </div>
           ) : null}
         </div>
@@ -330,7 +360,7 @@ function QualityGatePanel({ qualityGate }: { qualityGate: ProcessingQualityGate 
 
 function CoverageMatrix({ overview }: { overview: ProcessingOverviewResponse }) {
   return (
-    <FACard title="九主线覆盖矩阵" eyebrow="Mainline Coverage" accent="brand" bodyClassName="!p-0">
+    <FACard title="九主线覆盖矩阵" eyebrow="主线覆盖" accent="brand" bodyClassName="!p-0">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] table-fixed text-left text-[11px]">
           <colgroup>
@@ -352,14 +382,15 @@ function CoverageMatrix({ overview }: { overview: ProcessingOverviewResponse }) 
           <tbody>
             {overview.mainline_coverage.map((row) => (
               <tr key={row.mainline_id} className="border-b border-[var(--border-faint)] last:border-0">
-                <td className="px-3 py-2 font-semibold text-[var(--fg-2)]">{row.mainline_id}</td>
+                <td className="px-3 py-2 font-semibold text-[var(--fg-2)]">{operationMainlineLabel(row.mainline_id)}</td>
                 <td className="px-3 py-2">
                   <FAStatusPill tone={statusTone(row.status)} dot={false}>{statusLabel(row.status)}</FAStatusPill>
                 </td>
                 <td className="px-3 py-2 fa-num text-[var(--fg-2)]">{row.event_count}</td>
                 <td className="px-3 py-2 fa-num text-[var(--fg-2)]">{row.source_ref_count}</td>
                 <td className="px-3 py-2 text-[var(--fg-4)]">
-                  <div className="line-clamp-1 break-words">{row.missing_data.length ? row.missing_data.join(" / ") : "—"}</div>
+                  <div className="line-clamp-1 break-words">{row.missing_data.length ? `${row.missing_data.length} 项缺口已登记` : "—"}</div>
+                  {row.missing_data.length ? <EvidenceRecordActions record={row.missing_data} label="主线缺口依据" /> : null}
                 </td>
               </tr>
             ))}
@@ -372,16 +403,17 @@ function CoverageMatrix({ overview }: { overview: ProcessingOverviewResponse }) 
 
 function ChainCoverage({ overview }: { overview: ProcessingOverviewResponse }) {
   return (
-    <FACard title="传导链覆盖" eyebrow="Transmission Chains" accent="info">
+    <FACard title="传导链覆盖" eyebrow="影响路径" accent="info">
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {overview.transmission_chain_coverage.map((row) => (
           <div key={row.chain_id} className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
             <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0 text-[11px] font-semibold text-[var(--fg-2)]">{row.chain_id}</div>
+              <div className="min-w-0 text-[11px] font-semibold text-[var(--fg-2)]">{operationMainlineLabel(row.chain_id)}</div>
               <FAStatusPill tone={statusTone(row.status)} dot={false}>{statusLabel(row.status)}</FAStatusPill>
             </div>
             <div className="mt-2 line-clamp-2 min-h-[34px] text-[10px] leading-4 text-[var(--fg-5)]">
-              {row.verification_needed.length ? row.verification_needed.join(" / ") : "无额外验证缺口"}
+              {row.verification_needed.length ? `${row.verification_needed.length} 项验证要求已登记` : "无额外验证缺口"}
+              {row.verification_needed.length ? <div className="mt-2"><EvidenceRecordActions record={row.verification_needed} label="验证要求依据" /></div> : null}
             </div>
           </div>
         ))}
@@ -397,7 +429,7 @@ function HealthAndBindings({ overview, trace }: { overview: ProcessingOverviewRe
 
   return (
     <div className="grid gap-3 xl:grid-cols-[0.95fr_1.05fr]">
-      <FACard title="混合驱动健康度" eyebrow="Mixed Driver Health" accent="warn">
+      <FACard title="混合驱动健康度" eyebrow="驱动完整性" accent="warn">
         <div className="flex items-center justify-between gap-3">
           <FAStatusPill tone={statusTone(overview.mixed_health.status)}>{statusLabel(overview.mixed_health.status)}</FAStatusPill>
           <div className="fa-num text-[18px] font-semibold text-[var(--fg-1)]">{overview.mixed_health.mixed_events_total}</div>
@@ -411,33 +443,34 @@ function HealthAndBindings({ overview, trace }: { overview: ProcessingOverviewRe
         <div className="mt-4 grid gap-2">
           <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
             <div className="flex items-center justify-between gap-3">
-              <span className="text-[10px] font-semibold text-[var(--fg-5)]">SourceHealth</span>
+              <span className="text-[10px] font-semibold text-[var(--fg-5)]">来源健康度</span>
               <FAStatusPill tone={statusTone(sourceHealth.overall_status)} dot={false}>
                 {statusLabel(sourceHealth.overall_status)}
               </FAStatusPill>
             </div>
             <div className="mt-2 grid gap-1 text-[10px] leading-4 text-[var(--fg-4)]">
-              <div>P0 缺口：{sourceHealth.p0_missing.length ? sourceHealth.p0_missing.join(" / ") : "无"}</div>
+              <div>P0 缺口：{sourceHealth.p0_missing.length ? `${sourceHealth.p0_missing.length} 项关键来源缺口已登记` : "无"}</div>
+              {sourceHealth.p0_missing.length ? <div><EvidenceRecordActions record={sourceHealth.p0_missing} label="关键来源缺口依据" /></div> : null}
               <div>可构建总览：{sourceHealth.can_build_gold_macro_overview ? "是" : "否"}</div>
               {sourceHealth.blocking_reasons.length > 0 ? (
-                <div className="line-clamp-2 text-[var(--danger)]">{sourceHealth.blocking_reasons.join(" / ")}</div>
+                <div className="space-y-2 text-[var(--danger)]"><div>存在 {sourceHealth.blocking_reasons.length} 项阻断原因。</div><EvidenceRecordActions record={sourceHealth.blocking_reasons} label="阻断原因依据" /></div>
               ) : null}
             </div>
           </div>
           {freshness.map(([key, value]) => (
             <div key={key} className="flex items-center justify-between gap-3 rounded-[var(--radius-sm)] bg-[var(--bg-card-inner)] px-3 py-2 text-[10px]">
               <span className="font-semibold text-[var(--fg-5)]">{fieldLabel(key)}</span>
-              <span className="truncate text-[var(--fg-3)]">{value}</span>
+              <span className="truncate text-[var(--fg-3)]">{readableFreshnessValue(value)}</span>
             </div>
           ))}
         </div>
       </FACard>
 
-      <FACard title="视图绑定" eyebrow={trace ? "Trace Scope" : "Overview Scope"} accent="up">
+      <FACard title="视图绑定" eyebrow={trace ? "链路范围" : "总览范围"} accent="up">
         <div className="grid gap-2 sm:grid-cols-2">
           {bindings.map((binding) => (
             <div key={binding.view} className="flex items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
-              <span className="text-[11px] font-semibold text-[var(--fg-2)]">{binding.view}</span>
+              <span className="text-[11px] font-semibold text-[var(--fg-2)]">{operationMainlineLabel(binding.view)}</span>
               <FAStatusPill tone={statusTone(binding.status)} dot={false}>{statusLabel(binding.status)}</FAStatusPill>
             </div>
           ))}
@@ -453,34 +486,26 @@ function RefsPanel({ overview, trace }: { overview: ProcessingOverviewResponse; 
 
   return (
     <div className="grid gap-3 xl:grid-cols-2">
-      <FACard title="Source Refs" eyebrow={`${sourceRefs.length} refs`} accent="info">
+      <FACard title="来源摘要" eyebrow={`${sourceRefs.length} 条`} accent="info">
         {sourceRefs.length ? (
           <div className="grid gap-2">
             {sourceRefs.slice(0, 8).map((ref, index) => (
               <div key={`${ref.source_ref}-${index}`} className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
-                <div className="break-all text-[11px] font-semibold text-[var(--fg-2)]">{idLabel(ref.source_ref)}</div>
-                <div className="mt-1 text-[10px] text-[var(--fg-5)]">{ref.provider || ref.endpoint || ref.status || "source"}</div>
+                <div className="text-[11px] font-semibold text-[var(--fg-2)]">来源引用已登记</div>
+                <div className="mt-1 text-[10px] text-[var(--fg-5)]">{ref.provider ? "来源方已登记" : (ref.endpoint ? "接口来源已登记" : operationStatusLabel(ref.status))}</div>
+                {ref.generated_at || ref.asOf ? <div className="mt-1 text-[10px] text-[var(--fg-5)]">截至 {ref.generated_at || ref.asOf}</div> : null}
               </div>
             ))}
           </div>
         ) : (
-          <FAEmptyState title="暂无 Source Ref" description="当前范围未绑定可追溯源引用。" />
+          <FAEmptyState title="暂无来源引用" description="当前范围未绑定可追溯源引用。" />
         )}
       </FACard>
 
-      <FACard title="Artifact Refs" eyebrow={`${artifactRefs.length} refs`} accent="emphasis">
-        {artifactRefs.length ? (
-          <div className="grid gap-2">
-            {artifactRefs.slice(0, 8).map((ref, index) => (
-              <div key={`${ref.file_path || ref.path || index}`} className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2">
-                <div className="break-all text-[11px] font-semibold text-[var(--fg-2)]">{idLabel(ref.file_path || ref.path)}</div>
-                <div className="mt-1 text-[10px] text-[var(--fg-5)]">{ref.artifact_type || ref.format || "artifact"}</div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <FAEmptyState title="暂无 Artifact Ref" description="当前范围未绑定产物引用。" />
-        )}
+      <FACard title="输出登记" eyebrow={`${artifactRefs.length} 项`} accent="emphasis">
+        {artifactRefs.length
+          ? <p className="fa-muted-text">最终输出已登记；文件名、文件路径与原始产物内容不在页面层提供。</p>
+          : <FAEmptyState title="暂无输出登记" description="当前范围未返回最终输出摘要。" />}
       </FACard>
     </div>
   );
@@ -489,38 +514,38 @@ function RefsPanel({ overview, trace }: { overview: ProcessingOverviewResponse; 
 function TraceDetail({ trace }: { trace: ProcessingTraceResponse | null }) {
   if (!trace) {
     return (
-      <FACard title="Trace 查询结果" eyebrow="Trace Lookup" accent="none">
-        <FAEmptyState title="尚未查询 Trace" description="选择查询模式并输入标识后，可查看事件、主线、传导链和追溯路径绑定。" />
+      <FACard title="链路查询结果" eyebrow="链路查询" accent="none">
+        <FAEmptyState title="尚未查询链路" description="选择查询模式并输入标识后，可查看事件、主线、传导链和追溯路径绑定。" />
       </FACard>
     );
   }
 
   return (
     <FACard
-      title="Trace 查询结果"
-      eyebrow="Trace Lookup"
+      title="链路查询结果"
+      eyebrow="链路查询"
       accent={trace.status === "matched" ? "up" : "warn"}
       action={<FAStatusPill tone={statusTone(trace.status)}>{statusLabel(trace.status)}</FAStatusPill>}
     >
       {trace.matched_event ? (
         <div className="grid gap-3">
           <div className="grid gap-3 md:grid-cols-4">
-            <SummaryMetric label="Event ID" value={idLabel(trace.matched_event.event_id)} />
-            <SummaryMetric label="Input ID" value={idLabel(trace.matched_event.input_id)} />
-            <SummaryMetric label="Trace ID" value={idLabel(trace.matched_event.processing_trace_id)} />
-            <SummaryMetric label="Primary Mainline" value={idLabel(trace.matched_event.primary_mainline)} />
+            <SummaryMetric label="事件标识" value={idLabel(trace.matched_event.event_id)} />
+            <SummaryMetric label="输入标识" value={idLabel(trace.matched_event.input_id)} />
+            <SummaryMetric label="加工链路标识" value={idLabel(trace.matched_event.processing_trace_id)} />
+            <SummaryMetric label="主要主线" value={operationMainlineLabel(trace.matched_event.primary_mainline)} />
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
               <div className="text-[10px] font-semibold text-[var(--fg-5)]">主线集合</div>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {trace.mainlines.map((item) => <FAStatusPill key={item} tone="info" dot={false}>{item}</FAStatusPill>)}
+                {trace.mainlines.map((item) => <FAStatusPill key={item} tone="info" dot={false}>{operationMainlineLabel(item)}</FAStatusPill>)}
               </div>
             </div>
             <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
               <div className="text-[10px] font-semibold text-[var(--fg-5)]">传导链集合</div>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {trace.transmission_chains.map((item) => <FAStatusPill key={item} tone="neutral" dot={false}>{item}</FAStatusPill>)}
+                {trace.transmission_chains.map((item) => <FAStatusPill key={item} tone="neutral" dot={false}>{operationMainlineLabel(item)}</FAStatusPill>)}
               </div>
             </div>
           </div>
@@ -564,7 +589,6 @@ function traceQueryFromSearchParams(params: URLSearchParams): { mode: Processing
     ["input_id", "input_id"],
     ["mainline", "mainline"],
     ["transmission_chain", "transmission_chain"],
-    ["artifact_id", "artifact_id"],
   ];
   for (const [key, nextMode] of aliases) {
     const value = params.get(key)?.trim();
@@ -578,7 +602,6 @@ export function ProcessingMonitorPage() {
   const [searchParams] = useSearchParams();
   const [overview, setOverview] = useState<ProcessingOverviewResponse | null>(null);
   const [trace, setTrace] = useState<ProcessingTraceResponse | null>(null);
-  const [artifactTraceLookup, setArtifactTraceLookup] = useState<ArtifactSourceTraceLookup | null>(null);
   const [mode, setMode] = useState<ProcessingTraceMode>("processing_trace_id");
   const [queryValue, setQueryValue] = useState("");
   const [loadingOverview, setLoadingOverview] = useState(true);
@@ -601,7 +624,7 @@ export function ProcessingMonitorPage() {
   }, []);
 
   useEffect(() => {
-    shell.setHeaderContent(<HeaderBreadcrumb rootLabel="调度中心" title="加工监控" meta="Processing Monitor" />);
+    shell.setHeaderContent(<HeaderBreadcrumb rootLabel="调度中心" title="加工监控" meta="加工链路" />);
     return () => shell.setHeaderContent(null);
   }, [shell]);
 
@@ -619,20 +642,11 @@ export function ProcessingMonitorPage() {
     setLoadingTrace(true);
     setTraceError(null);
     setTrace(null);
-    setArtifactTraceLookup(null);
-    const query = initialQuery.mode === "artifact_id"
-      ? fetchArtifactSourceTrace(initialQuery.value)
-      : queryTrace(initialQuery.mode, initialQuery.value);
+    const query = queryTrace(initialQuery.mode, initialQuery.value);
     query
       .then((result) => {
         if (cancelled) return;
-        if (initialQuery.mode === "artifact_id") {
-          setTrace(null);
-          setArtifactTraceLookup(result as ArtifactSourceTraceLookup);
-        } else {
-          setArtifactTraceLookup(null);
-          setTrace(result as ProcessingTraceResponse);
-        }
+        setTrace(result as ProcessingTraceResponse);
       })
       .catch((error) => {
         if (!cancelled) setTraceError(error instanceof Error ? error.message : "Trace 查询失败");
@@ -654,13 +668,8 @@ export function ProcessingMonitorPage() {
     setLoadingTrace(true);
     setTraceError(null);
     setTrace(null);
-    setArtifactTraceLookup(null);
     try {
-      if (mode === "artifact_id") {
-        setArtifactTraceLookup(await fetchArtifactSourceTrace(value));
-      } else {
-        setTrace(await queryTrace(mode, value));
-      }
+      setTrace(await queryTrace(mode, value));
     } catch (error) {
       setTraceError(error instanceof Error ? error.message : "Trace 查询失败");
     } finally {
@@ -672,14 +681,12 @@ export function ProcessingMonitorPage() {
     setMode(nextMode);
     setQueryValue("");
     setTrace(null);
-    setArtifactTraceLookup(null);
     setTraceError(null);
   }
 
   function clearTraceQuery() {
     setQueryValue("");
     setTrace(null);
-    setArtifactTraceLookup(null);
     setTraceError(null);
   }
 
@@ -694,7 +701,7 @@ export function ProcessingMonitorPage() {
   if (overviewError || !overview) {
     return (
       <FAPageScaffold>
-        <ErrorState title="加工监控不可用" message={overviewError ?? "后端未返回加工监控概览。"} onRetry={loadOverview} />
+      <ErrorState title="加工监控不可用" message="加工监控概览暂时无法读取，请稍后重试。" onRetry={loadOverview} />
       </FAPageScaffold>
     );
   }
@@ -709,7 +716,7 @@ export function ProcessingMonitorPage() {
             </div>
             <div className="min-w-0">
               <div className="whitespace-nowrap text-[18px] font-semibold leading-tight text-[var(--fg-1)]">加工监控</div>
-              <div className="mt-1 hidden text-[11px] text-[var(--fg-5)] sm:block">Gold v3 输入、主线、传导链与前端绑定追溯</div>
+              <div className="mt-1 hidden text-[11px] text-[var(--fg-5)] sm:block">黄金分析输入、主线、传导链与前端绑定追溯</div>
             </div>
           </div>
         </div>
@@ -717,7 +724,8 @@ export function ProcessingMonitorPage() {
       status={
         <div className="flex flex-wrap items-center justify-end gap-2">
           <FAStatusPill tone={statusTone(overview.status)}>{statusLabel(overview.status)}</FAStatusPill>
-          <span className="fa-num hidden text-[11px] text-[var(--fg-4)] sm:inline">{overview.date ?? "—"} · {overview.run_id ?? "—"}</span>
+          <span className="fa-num hidden text-[11px] text-[var(--fg-4)] sm:inline">{overview.date ?? "—"} · {overview.run_id ? "运行记录已登记" : "运行标识未提供"}</span>
+          {overview.run_id ? <EvidenceRecordActions record={overview.run_id} label="运行记录依据" /> : null}
         </div>
       }
       actions={
@@ -735,7 +743,7 @@ export function ProcessingMonitorPage() {
         <form onSubmit={handleSubmit} className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] p-3 md:flex-row md:items-center">
           <div className="flex items-center gap-2 text-[11px] font-semibold text-[var(--fg-4)]">
             <Network size={14} className="text-[var(--info)]" />
-            <span className="whitespace-nowrap">Trace Lookup</span>
+            <span className="whitespace-nowrap">链路查询</span>
           </div>
           <select
             value={mode}
@@ -752,11 +760,11 @@ export function ProcessingMonitorPage() {
             placeholder={selectedMode.placeholder}
             className="h-8 min-w-0 flex-1 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 text-[11px] text-[var(--fg-2)] outline-none placeholder:text-[var(--fg-5)] focus:border-[var(--brand-border)]"
           />
-          {queryValue || trace || artifactTraceLookup ? (
+          {queryValue || trace ? (
             <button
               type="button"
-              aria-label="清空 Trace 查询"
-              title="清空 Trace 查询"
+              aria-label="清空链路查询"
+              title="清空链路查询"
               onClick={clearTraceQuery}
               className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] text-[var(--fg-4)] transition hover:border-[var(--brand-border)] hover:text-[var(--fg-1)]"
             >
@@ -777,17 +785,17 @@ export function ProcessingMonitorPage() {
       <div className="grid gap-3">
         {overview.warnings.length ? (
           <div className="break-all rounded-[var(--radius-lg)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-4 py-3 text-[11px] leading-5 text-[var(--warn)]">
-            {overview.warnings.join("；")}
+            存在 {overview.warnings.length} 项运行提醒。
+            <div className="mt-2"><EvidenceRecordActions record={overview.warnings} label="运行提醒依据" /></div>
           </div>
         ) : null}
 
         <OverviewSummary overview={overview} />
         <ExecutionSummaryPanel summary={overview.execution_summary} />
-        <AnalysisMemoryPanel />
 
         <FACard
           title="加工链路"
-          eyebrow="Processing Path"
+          eyebrow="加工链路"
           accent="info"
           action={
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -801,15 +809,9 @@ export function ProcessingMonitorPage() {
           <TracePathStrip nodes={overview.trace_path} />
         </FACard>
 
-        {traceError ? <ErrorState title="Trace 查询失败" message={traceError} className="!p-4" /> : null}
-        {mode !== "artifact_id" ? <TraceDetail trace={trace} /> : null}
+        {traceError ? <ErrorState title="链路查询失败" message="链路查询暂时无法读取，请核对查询条件后重试。" className="!p-4" /> : null}
+        <TraceDetail trace={trace} />
         {trace ? <TraceDetailPanels trace={trace} /> : null}
-        {artifactTraceLookup?.status === "matched" ? <ArtifactSourceTracePanel trace={artifactTraceLookup.trace} /> : null}
-        {artifactTraceLookup?.status === "not_found" ? (
-          <FACard title="Artifact Source Trace" eyebrow="SourceTraceResponse" accent="none">
-            <FAEmptyState title="未找到 Artifact Source Trace" description="该 artifact_id 未命中后端 source trace；请核对标识或确认产物已登记。" />
-          </FACard>
-        ) : null}
 
         <QualityGatePanel qualityGate={overview.quality_gate} />
         <CoverageMatrix overview={overview} />

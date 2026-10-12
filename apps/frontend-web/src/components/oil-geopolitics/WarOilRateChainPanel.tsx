@@ -1,7 +1,9 @@
+import { readableWarning } from "@/lib/researchReading";
 import { GitBranch } from "lucide-react";
 
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
+import { getStatusLabel } from "@/components/shared/statusMeta";
 import {
   formatGoldNetBiasLabel,
   formatTransmissionPathLabel,
@@ -40,21 +42,23 @@ export function WarOilRateChainPanel({ chain, rows, events }: WarOilRateChainPan
   return (
     <FACard
       title={chain ? formatTransmissionPathLabel(chain.path_id) : "战争-石油-利率链"}
-      eyebrow="Chain Board"
+      eyebrow="传导链"
       accent="warn"
       className="shrink-0"
       action={chain ? <FAStatusPill tone={goldNetBiasTone(chain.net_effect)} dot={false}>{formatGoldNetBiasLabel(chain.net_effect)}</FAStatusPill> : null}
     >
       {chain ? (
         <div className="grid gap-3">
-          <p className="text-[length:var(--type-caption)] leading-5 text-[var(--fg-3)]">{chain.summary}</p>
+          <p className="text-[length:var(--type-caption)] leading-5 text-[var(--fg-3)]">{readableWarning(chain.summary)}</p>
           <div className="grid gap-1.5">
             {chain.steps.map((step, index) => (
               <div key={step.id} className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-1.5 text-[length:var(--type-caption)]">
                 <GitBranch size={11} className="text-[var(--warn)]" />
                 <span className="fa-num text-[length:var(--type-caption)] text-[var(--fg-5)]">{String(index + 1).padStart(2, "0")}</span>
                 <span className="min-w-0 flex-1 truncate font-semibold text-[var(--fg-2)]">{step.label}</span>
-                <FAStatusPill tone={statusTone(step.status ?? chain.status)} dot={false}>{step.status ?? chain.status}</FAStatusPill>
+                <FAStatusPill tone={statusTone(step.status ?? chain.status)} dot={false}>
+                  {getStatusLabel(step.status ?? chain.status, "data")}
+                </FAStatusPill>
               </div>
             ))}
           </div>
@@ -62,7 +66,7 @@ export function WarOilRateChainPanel({ chain, rows, events }: WarOilRateChainPan
       ) : (
         <div className="grid gap-3">
           <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
-            当前 artifact 未返回完整战争-石油-利率传导链，以下显示专题应覆盖的链条节点和数据接入状态。
+            当前主线结果未返回完整战争-石油-利率传导链，以下显示专题应覆盖的链条节点和数据接入状态。
           </div>
           <div className="grid gap-1.5">
             {fallbackSteps.map((step, index) => (

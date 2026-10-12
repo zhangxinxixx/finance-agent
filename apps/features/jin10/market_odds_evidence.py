@@ -47,6 +47,7 @@ def build_jin10_market_odds_evidence(
     parser_version: str,
     figures: list[dict[str, Any]],
     vision_layout: dict[str, Any] | None = None,
+    structured_report_data: dict[str, Any] | None = None,
     markdown_context: str = "",
     source_refs: list[dict[str, Any]] | None = None,
     generated_at: str | None = None,
@@ -57,7 +58,9 @@ def build_jin10_market_odds_evidence(
     only emitted from text attached to a concrete page/figure anchor.
     """
     generated = generated_at or datetime.now(timezone.utc).isoformat()
-    anchors = _anchored_inputs(figures=figures, vision_layout=vision_layout or {})
+    anchors = _structured_reportory_anchors(structured_report_data or {})
+    if not anchors:
+        anchors = _anchored_inputs(figures=figures, vision_layout=vision_layout or {})
     items: list[MarketOddsEvidenceItem] = []
     for anchor in anchors:
         for panel_index, panel_text in enumerate(_split_panels(anchor["text"]), start=1):
@@ -95,6 +98,33 @@ def build_jin10_market_odds_evidence(
         items=items,
         source_refs=source_refs or [],
     )
+
+
+def _structured_reportory_anchors(report_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert protected Reportory card data into deterministic evidence anchors."""
+
+    anchors: list[dict[str, Any]] = []
+    for page_no, item in enumerate(report_data.get("items") or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        odds_lines = []
+        for odds in item.get("odds") or []:
+            if not isinstance(odds, dict) or odds.get("probability") is None:
+                continue
+            label = str(odds.get("label") or odds.get("outcome_label") or "").strip()
+            if label:
+                odds_lines.append(f'{label} {odds["probability"]}%')
+        if not odds_lines:
+            continue
+        category = str(item.get("category") or "").strip()
+        title = str(item.get("title") or item.get("event_slug") or "").strip()
+        anchors.append({
+            "page_no": page_no,
+            "figure_id": f"reportory_item_{page_no:03d}",
+            "bbox": None,
+            "text": "\n".join(part for part in (f"{category}：{title}".strip("："), *odds_lines) if part),
+        })
+    return anchors
 
 
 def write_market_odds_evidence(feature: Jin10MarketOddsEvidence, *, output_dir: Path) -> Path:
@@ -279,7 +309,7 @@ def _semantics(label: str, asset: str, unit: str) -> tuple[str, str, str, float 
     target = float(level.group("value")) if level else None
     if any(token in label for token in ("向下", "下方", "跌破", "低于")):
         return "price_level", "touch_below", "down", target, unit, "ever_touch_before_horizon"
-    if any(token in label for token in ("向上", "上方", "触及", "升破", "高于")):
+    if any(token in label for token in ("向上", "上方", "触及", "升破", "上破", "高于")):
         return "price_level", "touch_above", "up", target, unit, "ever_touch_before_horizon"
     return "price_level", "", "neutral", target, unit, ""
 

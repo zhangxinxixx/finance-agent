@@ -30,11 +30,20 @@ def _bar(*, asset: str, timeframe: str, source: str, open_time: datetime, source
 
 
 def _spot_bar(open_time: datetime) -> dict:
-    return _bar(asset="XAUUSD", timeframe="5m", source="jin10_mcp_derived_5m", open_time=open_time, source_ref={"provider_symbol": "XAUUSD", "instrument_type": "otc_spot_quote_proxy", "source_role": "market_primary", "source_url": "https://example.test/xau"}, price=2400)
+    return _bar(asset="XAUUSD", timeframe="5m", source="canonical_xauusd_5m", open_time=open_time, source_ref={"provider_symbol": "XAUUSD", "instrument_type": "otc_spot_quote_proxy", "source_role": "market_primary", "source_url": "https://example.test/xau"}, price=2400)
 
 
 def _gc_bar(open_time: datetime) -> dict:
     return _bar(asset="GC", timeframe="1d", source="yahoo_finance_gc_f", open_time=open_time, source_ref={"provider_symbol": "GC=F", "instrument_type": "futures_continuous_proxy", "source_role": "futures_continuous_proxy"}, price=2410)
+
+
+def test_elapsed_clock_does_not_finalize_a_bar_captured_before_its_close():
+    bar = _gc_bar(AS_OF - timedelta(days=2))
+    bar['retrieved_at'] = (bar['open_time'] + timedelta(hours=1)).isoformat()
+    snapshot = build_market_price_snapshot(as_of=AS_OF, candidates=[bar])
+    assert snapshot.gc_futures.value is None
+    assert snapshot.gc_futures.quality_status == 'blocked'
+    assert any(ref.qualification_reason == 'captured_before_bar_close' for ref in snapshot.gc_futures.source_refs)
 
 
 def _oil_bar(asset: str, open_time: datetime) -> dict:
@@ -94,7 +103,7 @@ def test_xauusd_canonical_primary_wins_over_same_bar_fallback() -> None:
     )
 
     assert snapshot.xauusd_spot.quality_status == "accepted"
-    assert snapshot.xauusd_spot.source_refs[0].source == "jin10_mcp_derived_5m"
+    assert snapshot.xauusd_spot.source_refs[0].source == "canonical_xauusd_5m"
 
 
 def test_oil_snapshot_accepts_explicit_wti_and_brent_daily_bars() -> None:
@@ -295,3 +304,22 @@ def test_contract_rejects_declared_readiness_that_disagrees_with_observations() 
 def test_naive_as_of_is_rejected() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
         build_oil_snapshot(candidates=[], as_of=datetime(2026, 7, 20, 21, 0))
+
+
+@pytest.mark.parametrize('pollution', ['direct', 'nested', 'raw_path', 'ref_raw_path'])
+def test_jin10_history_cannot_supply_formal_spot(pollution):
+    row = _spot_bar(AS_OF - timedelta(minutes=10))
+    if pollution == 'direct':
+        row['source'] = 'jin10_quote'
+    elif pollution == 'nested':
+        row['source_ref']['component_source_refs'] = [{'history': {'provider': 'jin10_mcp'}}]
+    elif pollution == 'raw_path':
+        row['raw_path'] = 'raw/jin10/history.json'
+    else:
+        row['raw_path'] = None
+        row['source_ref']['raw_path'] = 'raw/jin10/history.json'
+    snapshot = build_market_price_snapshot(candidates=[row, _gc_bar(AS_OF - timedelta(days=2))], as_of=AS_OF)
+    assert snapshot.xauusd_spot.value is None
+    assert snapshot.xauusd_spot.quality_status == 'blocked'
+    assert snapshot.readiness == 'blocked'
+    assert snapshot.gc_futures.value == 2411.0

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.main import app
 from apps.api.services.gold_mainline_service import (
+    get_gold_macro_overview_latest,
     get_gold_mainlines,
     get_gold_mainlines_latest,
 )
@@ -374,6 +375,25 @@ def test_get_gold_mainlines_latest_uses_artifact_time_not_run_id_order(tmp_path:
 
     assert payload["run_id"] == "a-actually-latest"
     assert payload["artifact_path"] == newer_path.relative_to(tmp_path).as_posix()
+
+
+def test_get_gold_macro_overview_latest_reads_persisted_artifact_without_full_normalization(tmp_path: Path) -> None:
+    overview_path, _ = _write_gold_artifacts(
+        tmp_path,
+        date="2026-06-11",
+        run_id="run-dashboard",
+        dominant_mainline="real_rates_usd",
+    )
+    persisted = json.loads(overview_path.read_text(encoding="utf-8"))
+    persisted["dashboard_probe"] = {"source_refs": [{"content": "kept-in-artifact"}]}
+    overview_path.write_text(json.dumps(persisted, ensure_ascii=False), encoding="utf-8")
+
+    payload = get_gold_macro_overview_latest(project_root=tmp_path)
+
+    assert payload is not None
+    assert payload["run_id"] == "run-dashboard"
+    assert payload["dominant_mainline"] == "real_rates_usd"
+    assert payload["dashboard_probe"] == {"source_refs": [{"content": "kept-in-artifact"}]}
 
 
 def test_get_gold_mainlines_returns_read_time_source_health_without_overriding_artifact(tmp_path: Path) -> None:

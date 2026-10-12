@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-from fastapi import APIRouter
-
-from apps.api.services.agent_analysis_run_service import run_event_impact_async, run_market_regime_async
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
 
@@ -17,12 +13,10 @@ def api_run_agent_analysis(
     date: str | None = None,
     force: bool = False,
 ):
-    """手动触发 agent 分析。"""
-    target_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    if agent in ("market_regime", "all"):
-        run_market_regime_async(target_date)
-    if agent in ("event_impact", "all"):
-        run_event_impact_async(target_date)
-
-    return {"status": "dispatched", "agent": agent, "date": target_date}
+    """Compatibility response for the retired untracked manual runner."""
+    raise HTTPException(status_code=410, detail={
+        "code": "manual_analysis_retired",
+        "message": "旧手动分析入口已停用，请通过正式盘前流程创建可追溯的分析任务。",
+        "preflight_url": "/api/tasks/premarket/preflight",
+        "run_url": "/api/tasks/premarket",
+    })

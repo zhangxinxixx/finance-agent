@@ -1,3 +1,6 @@
+import { readerValue } from "@/lib/readerLabels";
+import { EvidenceRecordActions } from "./EvidenceRecordActions";
+import { ResearchDetails } from "./ResearchDetails";
 import type { ComponentType, ReactNode } from "react";
 import { FATabBar, type FATabOption } from "./FATabBar";
 
@@ -23,10 +26,11 @@ interface FAWorkspaceHeaderProps<TValue extends string = string> {
 }
 
 function Chip({ item }: { item: FAWorkspaceHeaderChip }) {
+  if (typeof item.label === "string" && /来源|快照(?!时间|日期)|运行|批次|snapshot|source_ref|run|版本|引擎/i.test(item.label)) return <ResearchDetails label="查看数据记录"><EvidenceRecordActions record={{label:item.label,value:item.value}} label="页面数据记录" /></ResearchDetails>;
   return (
-    <span className="fa-workspace-context-chip" title={item.title}>
+    <span className="fa-workspace-context-chip" title={item.title ? readerValue(item.title) : undefined}>
       <span className="fa-workspace-context-chip-label">{item.label}</span>
-      <span className="fa-workspace-context-chip-value">{item.value}</span>
+      <span className="fa-workspace-context-chip-value">{typeof item.value === "string" ? readerValue(item.value) : item.value}</span>
     </span>
   );
 }

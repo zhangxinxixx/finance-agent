@@ -5,6 +5,7 @@ import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import type { StrategyAssetSummaryViewModel, StrategyHistoryItemViewModel, StrategyViewModel } from "@/types/strategy";
 import { biasTone, formatConfidence, formatDate, statusTone, strategyValueLabel } from "./strategyFormat";
+import { strategyAssetLabel } from "./strategyDisplayLabels";
 
 export function StrategyHistoryListSection({
   items,
@@ -61,11 +62,14 @@ export function StrategyHistoryListSection({
                       {strategyValueLabel(item.bias)}
                     </FAStatusPill>
                     <span className="fa-num text-[10px] text-[var(--fg-3)]">
-                      {formatConfidence(item.confidence)}
+                      置信度 {formatConfidence(item.confidence)}（非胜率）
                     </span>
                   </div>
                   {item.market_regime ? (
-                    <div className="mt-1 truncate text-[10px] text-[var(--fg-4)]" title={item.market_regime}>
+                    <div
+                      className="mt-1 truncate text-[10px] text-[var(--fg-4)]"
+                      title={`市场状态：${strategyValueLabel(item.market_regime)}`}
+                    >
                       {strategyValueLabel(item.market_regime)}
                     </div>
                   ) : null}
@@ -109,7 +113,7 @@ export function StrategyCalibrationPanel({
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
           <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">资产</div>
-          <div className="mt-1 text-[13px] font-semibold text-[var(--fg-2)]">{asset}</div>
+          <div className="mt-1 text-[13px] font-semibold text-[var(--fg-2)]">{strategyAssetLabel(asset)}</div>
         </div>
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
           <div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">样本</div>

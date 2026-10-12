@@ -78,6 +78,7 @@ def test_llm_web_search_defaults_to_available_jojocode_provider(tmp_path: Path) 
         api_key="existing-key",
         base_url="https://max.jojocode.com/v1",
         timeout=60.0,
+        max_retries=0,
     )
     assert result.source_refs[0]["provider"] == "jojocode"
 

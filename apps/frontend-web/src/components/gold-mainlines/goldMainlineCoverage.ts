@@ -28,11 +28,9 @@ export function scoreLabel(value: number | null | undefined): string {
 
 export function scoreFormulaLabel(item: GoldMainlineRanking | null): string {
   if (!item) return "--";
-  const direction = item.direction_score ?? 0;
-  const impact = item.impact_score ?? 1;
-  const confidence = item.confidence_score ?? 1;
-  const freshness = item.freshness_score ?? 1;
-  return `${direction}/${impact}/${confidence}/${freshness}`;
+  return [item.direction_score, item.impact_score, item.confidence_score, item.freshness_score]
+    .map((value) => typeof value === "number" && Number.isFinite(value) ? String(value) : "未提供")
+    .join(" / ");
 }
 
 export function rankingMainlineId(item: GoldMainlineRanking): GoldMainline | null {
@@ -71,13 +69,13 @@ export function mainlineCoverageRows(overview: GoldMacroOverview): MainlineCover
 }
 
 export function coverageStatusLabel(value: MainlineCoverageStatus): string {
-  if (value === "covered") return "已覆盖";
+  if (value === "covered") return "有排序记录";
   if (value === "pending") return "待验证";
-  return "待接入";
+  return "未登记";
 }
 
 export function coverageStatusTone(value: MainlineCoverageStatus): FAStatusTone {
-  if (value === "covered") return "up";
+  if (value === "covered") return "info";
   if (value === "pending") return "warn";
   return "dim";
 }

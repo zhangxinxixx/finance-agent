@@ -1,3 +1,9 @@
+import { formatGoldVerificationReasonLabel } from "@/components/shared/goldMainlineFormat";
+import { readableWarning } from "@/lib/researchReading";
+import { readerSource } from "@/lib/readerLabels";
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
+import { GoldTopicPage } from "@/components/gold-workspace/GoldTopicPage";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { useEffect } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import { ArrowRight, GitBranch, RefreshCw } from "lucide-react";
@@ -11,7 +17,13 @@ import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import { HeaderBreadcrumb } from "@/components/shared/HeaderBreadcrumb";
-import { GoldTopicOverviewCard, GoldTopicStatusBar } from "@/components/gold-mainlines/GoldMainlinePageFrame";
+import {
+  GoldReadTimeSourceHealthBanner,
+  GoldTopicOverviewCard,
+  GoldTopicStatusBar,
+  goldDecisionTrustLabel,
+  goldDecisionTrustNote,
+} from "@/components/gold-mainlines/GoldMainlinePageFrame";
 import {
   GOLD_MAINLINE_META,
   formatGoldDriverLabel,
@@ -38,16 +50,28 @@ import type { SourceRef } from "@/types/common";
 const RATE_MAINLINES: GoldMainline[] = ["fed_policy_path", "real_rates_usd"];
 const RATE_PATHS = ["inflation_to_real_rates", "usd_pressure"];
 const RATE_CHAIN_STEPS = [
-  { id: "macro_inputs", label: "通胀 / 就业 / FOMC", mainlineId: "fed_policy_path" as GoldMainline },
-  { id: "fed_path", label: "Fed path", mainlineId: "fed_policy_path" as GoldMainline },
+  { id: "macro_inputs", label: "通胀 / 就业 / 美联储议息会议（FOMC）", mainlineId: "fed_policy_path" as GoldMainline },
+  { id: "fed_path", label: "美联储政策路径", mainlineId: "fed_policy_path" as GoldMainline },
   { id: "nominal_rates", label: "名义利率", mainlineId: "fed_policy_path" as GoldMainline },
   { id: "real_rates", label: "实际利率", mainlineId: "real_rates_usd" as GoldMainline },
-  { id: "usd_pressure", label: "DXY / 美元压力", mainlineId: "real_rates_usd" as GoldMainline },
+  { id: "usd_pressure", label: "美元指数（DXY）/ 美元压力", mainlineId: "real_rates_usd" as GoldMainline },
   { id: "gold_response", label: "黄金价格确认", mainlineId: "real_rates_usd" as GoldMainline },
 ];
 
+const RATE_EVENT_LABELS: Record<string, string> = {
+  fed_speech: "美联储讲话",
+  fed_hawkish: "美联储偏紧信号",
+  macro_release: "宏观数据发布",
+  inflation_surprise: "通胀意外",
+};
+
+function readableRateEventLabel(eventId: string | null | undefined): string {
+  const kind = eventId?.split(":")[1] ?? "";
+  return RATE_EVENT_LABELS[kind] ? `${RATE_EVENT_LABELS[kind]}（事件记录）` : "事件记录待确认";
+}
+
 function scoreLabel(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return value <= 1 ? `${Math.round(value * 100)}` : `${Math.round(value)}`;
 }
 
@@ -56,7 +80,7 @@ function warningLabel(value: string): string {
     "gold_macro_overview artifact unavailable": "黄金主线总览产物暂不可用",
     "gold_event_mainlines artifact unavailable": "黄金事件主线产物暂不可用",
   };
-  return exact[value] ?? value;
+  return exact[value] ?? readableWarning(value);
 }
 
 function warningText(values: string[]): string {
@@ -118,30 +142,26 @@ function topicRows(overview: GoldMacroOverview): TopicMainlineRow[] {
 }
 
 function coverageStatusLabel(value: TopicMainlineRow["status"]): string {
-  if (value === "covered") return "已覆盖";
+  if (value === "covered") return "有排序记录";
   if (value === "pending") return "待验证";
-  return "待接入";
+  return "未登记";
 }
 
 function coverageStatusTone(value: TopicMainlineRow["status"]): FAStatusTone {
-  if (value === "covered") return "up";
+  if (value === "covered") return "info";
   if (value === "pending") return "warn";
   return "dim";
 }
 
 function topicEvents(events: GoldMainlineEventLink[]): GoldMainlineEventLink[] {
-  return events
-    .filter((event) => eventMainlineIds(event).some((id) => RATE_MAINLINES.includes(id)) || event.transmission_path_ids.some((id) => RATE_PATHS.includes(id)))
-    .slice(0, 8);
+  return events.filter((event) => eventMainlineIds(event).some((id) => RATE_MAINLINES.includes(id)) || event.transmission_path_ids.some((id) => RATE_PATHS.includes(id)));
 }
 
 function topicVerification(overview: GoldMacroOverview): VerificationItem[] {
-  return overview.verification_matrix
-    .filter((item) => {
-      const mainlineId = normalizeGoldMainlineId(item.mainline_id);
-      return mainlineId ? RATE_MAINLINES.includes(mainlineId) : false;
-    })
-    .slice(0, 8);
+  return overview.verification_matrix.filter((item) => {
+    const mainlineId = normalizeGoldMainlineId(item.mainline_id);
+    return mainlineId ? RATE_MAINLINES.includes(mainlineId) : false;
+  });
 }
 
 function sourceKey(ref: SourceRef, index: number): string {
@@ -162,28 +182,40 @@ function collectSources(overview: GoldMacroOverview, rankings: GoldMainlineRanki
     seen.add(stable);
     unique.push(ref);
   });
-  return unique.slice(0, 8);
+  return unique;
 }
 
-function RatesHeader({ overview, rows }: { overview: GoldMacroOverview; rows: TopicMainlineRow[] }) {
+function RatesHeader({
+  overview,
+  rows,
+  decisionTrustLabel,
+  decisionTrustNote,
+}: {
+  overview: GoldMacroOverview;
+  rows: TopicMainlineRow[];
+  decisionTrustLabel: string;
+  decisionTrustNote: string | null;
+}) {
   const leading = rows.find((row) => row.ranking)?.ranking ?? null;
   const coveredCount = rows.filter((row) => row.ranking).length;
 
   return (
     <GoldTopicOverviewCard
       title="利率与美元"
-      eyebrow="Rate / Dollar"
+      eyebrow="利率与美元主题"
+      decisionTrustLabel={decisionTrustLabel}
+      decisionTrustNote={decisionTrustNote}
       description={leading?.summary || overview.one_line_conclusion || "等待后端主线总览返回利率与美元摘要。"}
       accent="info"
       metrics={[
-        { label: "专题覆盖", value: `${coveredCount}/2`, meta: "Fed path / Real rates", tone: coveredCount === 2 ? "up" : "warn" },
+        { label: "已登记主线", value: `${coveredCount}/2`, meta: "有排序记录，不等同可靠覆盖", tone: coveredCount ? "info" : "warn" },
         {
           label: "主导主线",
           value: formatGoldMainlineLabel(rankingMainlineId(leading) ?? overview.dominant_mainline),
-          meta: leading ? formatGoldPricingLayerLabel(leading.pricing_layer) : "dominant",
+          meta: leading ? formatGoldPricingLayerLabel(leading.pricing_layer) : "主线未提供",
         },
-        { label: "主线分数", value: scoreLabel(leading?.theme_score ?? leading?.score), meta: "Theme score", tone: goldNetBiasTone(leading?.direction ?? overview.net_bias) },
-        { label: "置信度", value: scoreLabel(leading?.confidence_score ?? leading?.confidence), meta: leading?.verification_status ?? "confidence" },
+        { label: "主线分数", value: scoreLabel(leading?.theme_score ?? leading?.score), meta: "主线影响评分", tone: goldNetBiasTone(leading?.direction ?? overview.net_bias) },
+        { label: "置信度", value: scoreLabel(leading?.confidence_score ?? leading?.confidence), meta: formatGoldVerificationStatusLabel(leading?.verification_status) },
       ]}
     />
   );
@@ -201,7 +233,7 @@ function MainlineGrid({ rows }: { rows: TopicMainlineRow[] }) {
         <FACard
           key={row.id}
           title={item?.label || meta.label}
-          eyebrow={item ? `Rank #${item.rank}` : formatGoldPricingLayerLabel(meta.pricingLayer)}
+          eyebrow={item ? `排序第 ${item.rank}` : formatGoldPricingLayerLabel(meta.pricingLayer)}
           accent={row.id === "fed_policy_path" ? "info" : "brand"}
           className="shrink-0"
           action={<FAStatusPill tone={coverageStatusTone(row.status)} dot={false}>{coverageStatusLabel(row.status)}</FAStatusPill>}
@@ -212,20 +244,20 @@ function MainlineGrid({ rows }: { rows: TopicMainlineRow[] }) {
                 <FAStatusPill tone={goldNetBiasTone(item?.direction ?? "unknown")} dot={false}>{formatGoldNetBiasLabel(item?.direction ?? "unknown")}</FAStatusPill>
                 <FAStatusPill tone={goldVerificationStatusTone(verificationStatus)} dot={false}>{formatGoldVerificationStatusLabel(verificationStatus)}</FAStatusPill>
               </div>
-              <p className="mt-2 text-[12px] leading-5 text-[var(--fg-3)]">{item?.summary || meta.description}</p>
+              <p className="mt-2 text-[12px] leading-5 text-[var(--fg-3)]">{readableWarning(item?.summary || meta.description)}</p>
             </div>
             <div className="grid grid-cols-3 gap-2">
               <div className="rounded border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
-                <div className="text-[10px] text-[var(--fg-5)]">Score</div>
+                <div className="text-[10px] text-[var(--fg-5)]">影响评分</div>
                 <div className="fa-num mt-1 text-[14px] font-semibold text-[var(--fg-2)]">{scoreLabel(item?.score)}</div>
               </div>
               <div className="rounded border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
-                <div className="text-[10px] text-[var(--fg-5)]">Confidence</div>
+                <div className="text-[10px] text-[var(--fg-5)]">判断把握</div>
                 <div className="fa-num mt-1 text-[14px] font-semibold text-[var(--fg-2)]">{scoreLabel(item?.confidence)}</div>
               </div>
               <div className="rounded border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
-                <div className="text-[10px] text-[var(--fg-5)]">Events</div>
-                <div className="fa-num mt-1 text-[14px] font-semibold text-[var(--fg-2)]">{item?.event_ids.length ?? 0}</div>
+                <div className="text-[10px] text-[var(--fg-5)]">相关事件</div>
+                <div className="fa-num mt-1 text-[14px] font-semibold text-[var(--fg-2)]">{item ? item.event_ids.length : "—"}</div>
               </div>
             </div>
             <div className="grid gap-2 md:grid-cols-2">
@@ -235,7 +267,7 @@ function MainlineGrid({ rows }: { rows: TopicMainlineRow[] }) {
                   {((item?.bullish_drivers.length ? item.bullish_drivers : [])).map((driver) => (
                     <FAStatusPill key={driver} tone="up" dot={false}>{formatGoldDriverLabel(driver)}</FAStatusPill>
                   ))}
-                  {!item?.bullish_drivers.length ? <span className="text-[11px] text-[var(--fg-4)]">未形成后端驱动拆解</span> : null}
+                  {!item?.bullish_drivers.length ? <span className="text-[11px] text-[var(--fg-4)]">暂无明确驱动判断</span> : null}
                 </div>
               </div>
               <div>
@@ -244,7 +276,7 @@ function MainlineGrid({ rows }: { rows: TopicMainlineRow[] }) {
                   {((item?.bearish_drivers.length ? item.bearish_drivers : [])).map((driver) => (
                     <FAStatusPill key={driver} tone="down" dot={false}>{formatGoldDriverLabel(driver)}</FAStatusPill>
                   ))}
-                  {!item?.bearish_drivers.length ? <span className="text-[11px] text-[var(--fg-4)]">未形成后端驱动拆解</span> : null}
+                  {!item?.bearish_drivers.length ? <span className="text-[11px] text-[var(--fg-4)]">暂无明确驱动判断</span> : null}
                 </div>
               </div>
             </div>
@@ -269,7 +301,7 @@ function chainStepStatus(row: TopicMainlineRow | undefined, hasEvents: boolean):
   if (row.status === "missing") return { label: "待接入", tone: "dim" };
   if (row.status === "pending") return { label: "待验证", tone: "warn" };
   if (hasEvents) return { label: "已归因", tone: "up" };
-  return { label: "已覆盖", tone: "up" };
+  return { label: "有排序记录", tone: "info" };
 }
 
 function TransmissionCard({ rows, events }: { rows: TopicMainlineRow[]; events: GoldMainlineEventLink[] }) {
@@ -277,7 +309,7 @@ function TransmissionCard({ rows, events }: { rows: TopicMainlineRow[]; events: 
   const hasEvents = events.length > 0;
 
   return (
-    <FACard title="利率链 / 美元链" eyebrow="Transmission" accent="none" className="shrink-0">
+    <FACard title="利率链 / 美元链" eyebrow="传导链" accent="none" className="shrink-0">
       <div className="grid gap-1.5">
         {RATE_CHAIN_STEPS.map((step, index) => {
           const status = chainStepStatus(rowById.get(step.mainlineId), hasEvents);
@@ -297,13 +329,13 @@ function TransmissionCard({ rows, events }: { rows: TopicMainlineRow[]; events: 
 
 function EvidencePanel({ events }: { events: GoldMainlineEventLink[] }) {
   return (
-    <FACard title="事件证据" eyebrow="Event Evidence" accent="none" className="shrink-0">
+    <ResearchDetails label="查看事件归因记录"><FACard title="事件证据" eyebrow="事件依据" accent="none" className="shrink-0">
       {events.length ? (
         <div className="grid gap-2">
           {events.map((event) => (
             <div key={event.event_id} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
               <div className="flex items-center justify-between gap-2">
-                <div className="fa-num min-w-0 truncate text-[11px] font-semibold text-[var(--fg-2)]">{event.event_id}</div>
+                <div className="min-w-0 truncate text-[11px] font-semibold text-[var(--fg-2)]">{readableRateEventLabel(event.event_id)}</div>
                 <FAStatusPill tone={goldNetBiasTone(event.direction_by_asset?.XAUUSD ?? "unknown")} dot={false}>
                   {formatGoldNetBiasLabel(event.direction_by_asset?.XAUUSD ?? "unknown")}
                 </FAStatusPill>
@@ -316,28 +348,29 @@ function EvidencePanel({ events }: { events: GoldMainlineEventLink[] }) {
                   <FAStatusPill key={id} tone="dim" dot={false}>{formatTransmissionPathLabel(id)}</FAStatusPill>
                 ))}
               </div>
+              <EvidenceRecordActions record={{ event_id: event.event_id }} label="事件关联记录" />
             </div>
           ))}
         </div>
       ) : (
         <div className="text-[11px] text-[var(--fg-4)]">当前主线产物未返回利率与美元相关事件链接。</div>
       )}
-    </FACard>
+    </FACard></ResearchDetails>
   );
 }
 
 function VerificationPanel({ items }: { items: VerificationItem[] }) {
   return (
-    <FACard title="待验证" eyebrow="Verification" accent="info" className="shrink-0">
+    <FACard title="待验证" eyebrow="核验清单" accent="info" className="shrink-0">
       {items.length ? (
         <div className="grid gap-2">
-          {items.map((item) => (
+          {items.filter((item, index, all) => all.findIndex((other) => `${other.label || other.reason}|${other.status}|${other.mainline_id}` === `${item.label || item.reason}|${item.status}|${item.mainline_id}`) === index).map((item) => (
             <div key={item.id} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
               <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 truncate text-[11px] font-semibold text-[var(--fg-2)]">{item.label || item.reason || item.required_source || item.id}</div>
-                <FAStatusPill tone={statusTone(item.status)} dot={false}>{item.status}</FAStatusPill>
+                <div className="min-w-0 truncate text-[11px] font-semibold text-[var(--fg-2)]">{formatGoldVerificationReasonLabel(item.label || item.reason || item.required_source)}</div>
+                <FAStatusPill tone={statusTone(item.status)} dot={false}>{formatGoldVerificationStatusLabel(item.status)}</FAStatusPill>
               </div>
-              <div className="mt-1 text-[10px] text-[var(--fg-5)]">{item.required_source || formatGoldMainlineLabel(item.mainline_id)}</div>
+              <div className="mt-1 text-[10px] text-[var(--fg-5)]">{formatGoldMainlineLabel(item.mainline_id)}</div>
             </div>
           ))}
         </div>
@@ -351,43 +384,54 @@ function VerificationPanel({ items }: { items: VerificationItem[] }) {
 function SourcesPanel({ refs }: { refs: SourceRef[] }) {
   if (!refs.length) return null;
   return (
-    <FACard title="证据来源" eyebrow="Source Trace" accent="none" className="shrink-0">
+    <FACard title="证据来源" eyebrow="来源记录" accent="none" className="shrink-0">
       <div className="flex flex-wrap gap-1.5">
         {refs.map((ref, index) => (
-          <FASourceTraceBadge key={sourceKey(ref, index)} source={ref.label || ref.source_ref} status={ref.status ?? "trace"} snapshotId={ref.snapshot_id} />
+          <FASourceTraceBadge key={sourceKey(ref, index)} source={readerSource(ref.label || ref.source_ref)} status={ref.status ?? "trace"} snapshotId={ref.snapshot_id} />
         ))}
       </div>
     </FACard>
   );
 }
 
-export function RatesDollarPage() {
-  const { data, isLoading, isError, error, refetch } = useGoldMainlines();
+function RatesDollarEvidenceDetails({ embedded = false }: { embedded?: boolean }) {
+  const {
+    data,
+    isLoading,
+    isRefreshing,
+    isError,
+    error,
+    lastSuccessfulAt,
+    refetch,
+  } = useGoldMainlines();
   const shell = useOutletContext<AppShellOutletContext | null>() ?? { setHeaderContent: () => undefined };
 
   useEffect(() => {
+    if (embedded) return;
     shell.setHeaderContent(
       <HeaderBreadcrumb
         title="利率与美元"
         meta={
           <>
-            <span className="dashboard-header-summary-item">Fed path</span>
+            <span className="dashboard-header-summary-item">美联储政策路径</span>
             <span className="dashboard-header-summary-item">实际利率</span>
-            <span className="dashboard-header-summary-item">DXY</span>
+            <span className="dashboard-header-summary-item">美元指数（DXY）</span>
           </>
         }
       />,
     );
     return () => shell.setHeaderContent(null);
-  }, [shell]);
+  }, [shell, embedded]);
 
-  if (isLoading) {
+  if (isLoading && !data) {
     return <div className="finance-page-shell"><LoadingSkeleton variant="page" /></div>;
   }
 
-  if (isError || !data) {
+  if (isError && !data) {
     return <div className="finance-page-shell"><ErrorState message={error?.message ?? "利率与美元数据加载失败"} onRetry={refetch} /></div>;
   }
+
+  if (!data) return null;
 
   const overview = data.gold_macro_overview;
 
@@ -420,15 +464,39 @@ export function RatesDollarPage() {
   const events = topicEvents(data.gold_mainlines.event_links ?? []);
   const verification = topicVerification(overview);
   const sources = collectSources(overview, rankings);
+  const refreshError = isError ? error?.message : null;
+  const decisionTrustLabel = goldDecisionTrustLabel(data.read_time_source_health, { isRefreshing, refreshError });
+  const decisionTrustNote = goldDecisionTrustNote(data.read_time_source_health, { isRefreshing, refreshError });
 
   return (
     <FAPageScaffold
       toolbar={(
-        <GoldTopicStatusBar status={data.status} date={data.date || overview.as_of?.slice(0, 10)} runId={data.run_id} netBias={overview.net_bias} phase={overview.phase} riskScore={overview.risk_score} onRefresh={refetch} />
+        <GoldTopicStatusBar
+          status={data.status}
+          date={data.date || overview.as_of?.slice(0, 10)}
+          runId={data.run_id}
+          netBias={overview.net_bias}
+          phase={overview.phase}
+          riskScore={overview.risk_score}
+          sourceHealth={data.read_time_source_health}
+          isRefreshing={isRefreshing}
+          refreshError={refreshError}
+          lastSuccessfulAt={lastSuccessfulAt}
+          onRefresh={refetch}
+        />
       )}
     >
       {data.warnings.length ? <FAWarningBanner title="降级提示" description={warningText(data.warnings)} tone="info" /> : null}
-      <RatesHeader overview={overview} rows={rows} />
+      <GoldReadTimeSourceHealthBanner
+        health={data.read_time_source_health}
+        warnings={data.read_time_warnings}
+      />
+      <RatesHeader
+        overview={overview}
+        rows={rows}
+        decisionTrustLabel={decisionTrustLabel}
+        decisionTrustNote={decisionTrustNote}
+      />
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
         <div className="grid content-start gap-3">
           <MainlineGrid rows={rows} />
@@ -437,11 +505,17 @@ export function RatesDollarPage() {
           <TransmissionCard rows={rows} events={events} />
           <EvidencePanel events={events} />
           <VerificationPanel items={verification} />
-          <SourcesPanel refs={sources} />
+          <ResearchDetails label="查看来源记录"><SourcesPanel refs={sources} /></ResearchDetails>
         </div>
       </div>
     </FAPageScaffold>
   );
+}
+
+export function RatesDollarPage() {
+  return <GoldTopicPage title="利率与美元" group="macro"
+    description="政策路径、名义与实际利率、长债承接、美元以及黄金的实际响应"
+    evidence={<RatesDollarEvidenceDetails embedded />} />;
 }
 
 export default RatesDollarPage;

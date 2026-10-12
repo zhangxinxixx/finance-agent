@@ -299,6 +299,30 @@ def test_render_final_report_markdown_includes_gold_macro_overview_context():
                     "status": "accepted",
                     "one_line_conclusion": "供应冲击支撑近月油价，但高油价的需求反噬仍待确认。",
                 },
+                "positioning_report_summary": {
+                    "trade_date": "2026-07-22",
+                    "article_id": "225350",
+                    "status": "accepted",
+                    "one_line_conclusion": "4150 Call 增仓，4050 Put 保护扩张。",
+                    "cme_validation": {
+                        "validation_status": "confirmed",
+                        "cme_trade_date": "2026-07-21",
+                        "summary": {"matched_count": 12, "comparison_count": 12},
+                    },
+                },
+                "market_odds_report_summary": {
+                    "trade_date": "2026-07-22",
+                    "article_id": "20260722T062313Z-a706a018",
+                    "status": "accepted",
+                    "one_line_conclusion": "黄金上沿赔率修复，但仍需持仓确认。",
+                    "structured_evidence": {
+                        "gold_items": [{
+                            "predicate": "touch_above",
+                            "target_value": 4300,
+                            "probability": 0.1725,
+                        }],
+                    },
+                },
             },
         },
         "gold_macro_overview": {
@@ -357,6 +381,10 @@ def test_render_final_report_markdown_includes_gold_macro_overview_context():
     assert "油价 freshness：missing" in markdown
     assert "原油报告：2026-07-13 / ref=224998 / quality=accepted" in markdown
     assert "原油报告摘要：供应冲击支撑近月油价" in markdown
+    assert "今日持仓报告：2026-07-22 / ref=225350 / quality=accepted" in markdown
+    assert "持仓/CME 交叉校验：confirmed；matched=12/12" in markdown
+    assert "今日外部赔率报告：2026-07-22 / ref=20260722T062313Z-a706a018" in markdown
+    assert "黄金外部触价赔率：touch_above 4300=17.25%" in markdown
     assert "FOMC window prioritizes Fed path." in markdown
     assert "ready 4/9" in markdown
     assert "战争-石油-利率链: C / 两者抵消，黄金震荡" in markdown
@@ -548,6 +576,33 @@ def test_render_final_report_markdown_does_not_emit_trade_execution_instructions
     assert all(term not in markdown for term in forbidden)
     assert "本报告仅为研究分析输出" in markdown
     assert "不构成投资建议" in markdown
+
+
+def test_detailed_reader_is_used_by_public_markdown_and_structured_entrypoints():
+    from copy import deepcopy
+    from tests.analysis.test_gold_detailed_report import snapshot as detailed_fixture, response
+
+    snapshot = detailed_fixture()
+    snapshot['daily_research']['schema_version'] = 'daily_research.v1'
+    snapshot['benchmark_replay'] = {'mode': 'engineering_replay'}
+    import json
+    from apps.analysis.agents.research_synthesis import enrich_research_coordinator
+    coordinator = enrich_research_coordinator(snapshot, _coordinator(), gateway=lambda **kwargs: {"content": json.dumps(response())})
+    before = deepcopy(snapshot)
+    kwargs = dict(snapshot=snapshot, coordinator_output=coordinator,
+                  macro_output=_macro(), options_output=_options(), risk_output=_risk(),
+                  research_assessment={'mode': 'fixture'}, created_at=_CREATED_AT)
+    markdown = render_final_report_markdown(**kwargs)
+    structured = build_structured_report(**kwargs)
+    assert '分析回放说明' in markdown
+    assert '核心判断与改变判断的条件' in markdown
+    assert markdown.index('核心判断') < markdown.index('数据护照')
+    assert '上行路径' in markdown and '下行路径' in markdown
+    assert 'Accepted尚未初始化' in markdown
+    assert structured.version.report_version == '2.6.0'
+    ids = {s.section_id for s in structured.sections}
+    assert {'detailed_options', 'detailed_state', 'detailed_levels', 'detailed_observation'} <= ids
+    assert snapshot == before
 
 
 def test_gold_silver_etf_holdings_line_renders_both_metals() -> None:

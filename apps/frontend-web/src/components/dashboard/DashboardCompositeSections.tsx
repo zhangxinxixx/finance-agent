@@ -1,3 +1,5 @@
+import { readerSource } from "@/lib/readerLabels";
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { useNavigate } from "react-router-dom";
 import { ExternalLink, FileText, Layers as LayersIcon, Newspaper, Star, Target } from "lucide-react";
 
@@ -7,6 +9,10 @@ import {
   DashboardCompositeSummaryBlock,
 } from "./DashboardCompositeAnalysisBlocks";
 import { translateText } from "./judgmentFormat";
+import {
+  buildMinimalStrategyNavigationState,
+  type StrategyNavigationState,
+} from "@/components/strategy/StrategyEntryContext";
 
 interface DashboardCompositeHeaderProps {
   dataDate: string;
@@ -15,6 +21,7 @@ interface DashboardCompositeHeaderProps {
     source_ref: string;
     status?: string | null;
   }>;
+  strategyNavigation?: StrategyNavigationState | null;
 }
 
 interface DashboardCompositeBodyProps {
@@ -31,8 +38,12 @@ interface DashboardCompositeBodyProps {
   }>;
 }
 
-export function DashboardCompositeHeader({ dataDate, hasFullReport, sourceTrace }: DashboardCompositeHeaderProps) {
+export function DashboardCompositeHeader({ dataDate, hasFullReport, sourceTrace, strategyNavigation }: DashboardCompositeHeaderProps) {
   const navigate = useNavigate();
+  const fallbackStrategyNavigation = buildMinimalStrategyNavigationState({
+    dataDate,
+    sourceRefs: sourceTrace.map((trace) => trace.source_ref),
+  });
 
   return (
     <div className="fa-card-header gap-2">
@@ -41,7 +52,7 @@ export function DashboardCompositeHeader({ dataDate, hasFullReport, sourceTrace 
       </span>
       <div className="min-w-0 flex-1">
         <div className="fa-compact-label">
-          今日综合分析摘要
+          所选日期综合分析
         </div>
         <div className="truncate text-[12px] font-semibold leading-none text-[var(--fg-2)]">
           综合分析
@@ -51,9 +62,9 @@ export function DashboardCompositeHeader({ dataDate, hasFullReport, sourceTrace 
         {dataDate}
       </span>
       <span className="fa-compact-label shrink-0 rounded border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-1.5 py-0.5">
-        Summary Only
+        研究摘要
       </span>
-      {sourceTrace.length > 0 && (
+      <ResearchDetails label="查看依据记录">{sourceTrace.length > 0 && (
         <div className="hidden shrink-0 items-center gap-1 xl:flex">
           {sourceTrace.map((trace) => (
             <span
@@ -67,12 +78,12 @@ export function DashboardCompositeHeader({ dataDate, hasFullReport, sourceTrace 
                     trace.status === "ok" ? "var(--up)" : trace.status === "warn" ? "var(--warn)" : trace.status === "error" ? "var(--down)" : "var(--fg-6)",
                 }}
               />
-              {translateText(trace.source_ref)}
+              {readerSource(trace.source_ref)}
             </span>
           ))}
         </div>
       )}
-      <div className="flex shrink-0 items-center gap-1">
+      </ResearchDetails><div className="flex shrink-0 items-center gap-1">
         {[
           { label: "综合日报", icon: FileText, path: "/reports", color: "var(--brand-hover)", disabled: !hasFullReport },
           { label: "CME期权", icon: LayersIcon, path: "/cme-options", color: "var(--chart-5)", disabled: false },
@@ -83,7 +94,9 @@ export function DashboardCompositeHeader({ dataDate, hasFullReport, sourceTrace 
           return (
             <button
               key={btn.label}
-              onClick={() => navigate(btn.path)}
+              onClick={() => btn.path === "/strategy"
+                ? navigate(btn.path, { state: strategyNavigation ?? fallbackStrategyNavigation })
+                : navigate(btn.path)}
               disabled={btn.disabled}
               className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border px-2 py-1 text-[9px] font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-40"
               style={{

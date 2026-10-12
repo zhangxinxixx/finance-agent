@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import type { ReactNode } from "react";
 
 interface FACardProps {
@@ -49,9 +50,9 @@ export function FACard({
         <header className={`fa-card-header ${headerClassName}`}>
           <span className={`h-3.5 w-[2px] rounded-[var(--radius-xs)] ${accentClass[accent]}`} />
           <div className="min-w-0 flex-1">
-            {eyebrow ? <div className="fa-eyebrow">{eyebrow}</div> : null}
+            {typeof eyebrow === "string" && /[\u3400-\u9fff]/.test(eyebrow) && eyebrow !== title ? <div className="fa-eyebrow">{eyebrow}</div> : null}
             {title ? <div className="fa-module-title break-words text-[14px] font-semibold leading-tight">{title}</div> : null}
-            {description ? <div className="fa-card-description mt-1">{description}</div> : null}
+            {description ? <div className="fa-card-description mt-1">{typeof description === "string" ? readableWarning(description) : description}</div> : null}
           </div>
           {action ? <div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">{action}</div> : null}
         </header>

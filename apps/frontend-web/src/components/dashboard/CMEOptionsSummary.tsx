@@ -1,3 +1,6 @@
+import { readerSource, readerValue } from "@/lib/readerLabels";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
 
@@ -6,7 +9,7 @@ import { getStatusLabel } from "@/components/shared/statusMeta";
 import type { DashboardSummary } from "@/types/dashboard";
 
 import { buildOptionsEvidenceSummary } from "./DashboardIntegratedMacroModel";
-import { formatOptionalNumber, getConfidenceColor, getWallBias, translateIntent } from "./CMEOptionsSummaryFormat";
+import { formatOptionalNumber, getConfidenceColor, getWallStrength, translateIntent } from "./CMEOptionsSummaryFormat";
 
 interface CMEOptionsSummaryProps {
   options: DashboardSummary["cme_options"];
@@ -61,16 +64,17 @@ function strongestWall(walls: DashboardSummary["cme_options"]["upper_resistance_
 }
 
 export function CMEOptionsSummary({ options, summary }: CMEOptionsSummaryProps) {
-  const confidenceScore = Math.max(0, Math.min(1, options.confidence?.score ?? options.intent_score ?? 0));
   const confidenceLevel = options.confidence?.level ?? "low";
   const confidenceColor = getConfidenceColor(confidenceLevel);
-  const wallBias = getWallBias(options.wall_score);
+  const wallBias = getWallStrength(options.wall_score);
   const dataStatus = options.data_status || options.confidence?.data_status || "UNAVAILABLE";
   const mainResistance = strongestWall(options.upper_resistance_walls);
   const mainSupport = strongestWall(options.lower_support_walls);
-  const confidencePct = `${Math.round(confidenceScore * 100)}%`;
-  const ageDays = options.confidence?.age_days;
+  const calendarDays = options.confidence?.calendar_days ?? options.confidence?.age_days;
+  const tradingDays = options.confidence?.trading_days;
+  const evidenceWeight = options.confidence?.weight_multiplier;
   const evidence = buildOptionsEvidenceSummary(summary);
+  const confidencePct = evidence.confidencePct;
 
   return (
     <div className="fa-card">
@@ -80,7 +84,7 @@ export function CMEOptionsSummary({ options, summary }: CMEOptionsSummaryProps) 
           <div className="dashboard-cme-micro-label">期权结构摘要</div>
           <div className="mt-0.5 flex flex-wrap items-center gap-2">
             <span className="truncate" style={{ fontSize: "12px", fontWeight: 600, color: "var(--fg-2)" }}>
-              {evidence.reportType}
+              芝商所期权估计结构
             </span>
             <span className="fa-num text-[10px] text-[var(--fa-text-label)]">{options.trade_date || "日期未知"}</span>
             <FAStatusPill tone="neutral" dot={false} className="whitespace-nowrap" title={wallBias.label}>
@@ -105,30 +109,45 @@ export function CMEOptionsSummary({ options, summary }: CMEOptionsSummaryProps) 
         </div>
 
         <div className="grid grid-cols-2 gap-2">
-          <SummaryTile label="Gamma Zero" value={formatOptionalNumber(options.gamma_zero, 1)} />
-          <SummaryTile label="Pin" value={formatOptionalNumber(options.pin_level, 1)} />
+          <SummaryTile label="伽马翻转估计位（黄金期货）" value={formatOptionalNumber(options.gamma_zero, 1)} />
+          <SummaryTile label="持仓与伽马集中位（估计）" value={formatOptionalNumber(options.pin_level, 1)} />
         </div>
 
         <div className="grid grid-cols-2 gap-2">
-          <MainLevelRow label="Call Wall" value={mainResistance} tone="down" />
-          <MainLevelRow label="Put Wall" value={mainSupport} tone="up" />
+          <MainLevelRow label="看涨持仓墙" value={mainResistance} tone="down" />
+          <MainLevelRow label="看跌持仓墙" value={mainSupport} tone="up" />
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <FAStatusPill status={dataStatus} domain="source" dot={false} className="whitespace-nowrap">
             {getStatusLabel(dataStatus, "source")}
           </FAStatusPill>
-          {typeof ageDays === "number" ? (
+          {typeof tradingDays === "number" ? (
             <FAStatusPill tone="dim" dot={false} className="whitespace-nowrap">
-              {`距今 ${ageDays} 天`}
+              {`交易日龄 ${tradingDays}`}
             </FAStatusPill>
           ) : null}
+          {typeof calendarDays === "number" ? (
+            <FAStatusPill tone="dim" dot={false} className="whitespace-nowrap">
+              {`自然日龄 ${calendarDays}`}
+            </FAStatusPill>
+          ) : null}
+          {typeof evidenceWeight === "number" ? (
+            <FAStatusPill tone="dim" dot={false} className="whitespace-nowrap">
+              {`研究证据系数 ${evidenceWeight.toFixed(1)}`}
+            </FAStatusPill>
+          ) : null}
+        </div>
+
+        <div className="dashboard-options-report-note">
+          <span>伽马敞口口径</span>
+          <strong>{options.gex_semantics_label === "OI-Signed GEX Proxy" ? "持仓加权伽马敞口估计" : readerValue(options.gex_semantics_label, "敞口估计口径待中文说明")} · GC期货坐标 · 做市商方向未知</strong>
         </div>
 
         {evidence.analysisSummary ? (
           <section className="dashboard-options-analysis" aria-label="期权结构总结性分析">
             <div className="dashboard-options-analysis-title">结构结论</div>
-            <p>{evidence.analysisSummary}</p>
+            <p>{readerValue(evidence.analysisSummary, "结构结论的中文说明尚未提供，请查看已保存的来源记录。")}</p>
             {evidence.upgradeCondition ? (
               <div className="dashboard-options-condition dashboard-options-condition--upgrade">
                 <span>升级条件</span>
@@ -149,15 +168,16 @@ export function CMEOptionsSummary({ options, summary }: CMEOptionsSummaryProps) 
 
         <div className="dashboard-options-usage-note">{evidence.usageNote}</div>
 
-        {evidence.sourceRefs.length ? (
+        <ResearchDetails label="查看结构依据记录">{evidence.sourceRefs.length ? (
           <div className="dashboard-options-source-list">
+            <EvidenceRecordActions record={evidence.sourceRefs} label="结构依据记录" />
             {evidence.sourceRefs.map((trace, index) => (
-              <span key={`${trace.source_ref}-${trace.snapshot_id ?? index}`} title={trace.source_ref}>
-                {trace.name || trace.source_ref}
+              <span key={`${trace.source_ref}-${trace.snapshot_id ?? index}`}>
+                {readerSource(trace.name || trace.source_ref)}
               </span>
             ))}
           </div>
-        ) : null}
+        ) : null}</ResearchDetails>
 
         <div className="flex justify-end">
           <Link

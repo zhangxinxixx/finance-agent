@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,9 +137,6 @@ def get_live_strategy_latest(
 
 
 def _load_quote_cache(project_root: Path) -> dict[str, Any] | None:
-    path = project_root / "storage" / "outputs" / "jin10" / "quotes_cache.json"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+    # Historical Jin10 prices cannot acquire numeric eligibility through cache
+    # freshness. Canonical candles remain the live strategy's price authority.
+    return None

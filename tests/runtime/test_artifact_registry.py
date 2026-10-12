@@ -539,14 +539,7 @@ def test_register_step_artifacts_persists_structured_registry_metadata() -> None
                 "generated_at": "2026-05-26T10:00:00+00:00",
             }
         ],
-        source_refs=[
-            {
-                "source_id": "src-report-001",
-                "source_name": "analysis_snapshot",
-                "source_type": "snapshot",
-                "snapshot_id": "snap-registry-001",
-            }
-        ],
+        source_refs=[{"source_id": "src-report-001", "source_name": "analysis_snapshot", "source_type": "snapshot", "snapshot_id": "snap-registry-001"}],
         input_snapshot_ids={"analysis_snapshot": "snap-registry-001"},
     )
     session.commit()
@@ -556,12 +549,7 @@ def test_register_step_artifacts_persists_structured_registry_metadata() -> None
     assert saved.byte_size == 2048
     assert saved.generated_at.isoformat() == "2026-05-26T10:00:00"
     assert saved.source_refs_data == [
-        {
-            "source_id": "src-report-001",
-            "source_name": "analysis_snapshot",
-            "source_type": "snapshot",
-            "snapshot_id": "snap-registry-001",
-        }
+        {"source_id": "src-report-001", "source_name": "analysis_snapshot", "source_type": "snapshot", "snapshot_id": "snap-registry-001"}
     ]
     assert saved.artifact_metadata["artifact_id"] == "art-structured-registry-001"
     assert saved.artifact_metadata["input_snapshot_ids"] == {"analysis_snapshot": "snap-registry-001"}

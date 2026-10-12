@@ -38,7 +38,7 @@ def _sqlite_session_factory():
 
 
 def _seed_storage(storage_root: Path) -> None:
-    _write_json(storage_root / "outputs" / "jin10" / "quotes_cache.json", {"observed_at": "2026-07-08T10:14:00+00:00"})
+    _write_json(storage_root / "raw" / "market" / "twelvedata" / "quote.json", {"observed_at": "2026-07-08T10:14:00+00:00"})
     _write_json(storage_root / "outputs" / "jin10" / "flash_cache.json", {"observed_at": "2026-07-08T09:30:00+00:00"})
     _write_json(storage_root / "raw" / "jin10" / "2026-07-08" / "index.json", {"items": ["223556"]})
     _write_json(storage_root / "parsed" / "jin10" / "2026-07-08" / "index.json", {"items": ["223556"]})
@@ -93,7 +93,8 @@ def test_data_control_agent_writes_hourly_plans_and_notification_request(tmp_pat
 
     availability = json.loads((storage_root / artifacts["data_availability_snapshot"]).read_text(encoding="utf-8"))
     states = {item["source_key"]: item["state"] for item in availability["items"]}
-    assert states["jin10_mcp_market"] == "available"
+    assert "jin10_mcp_market" not in states
+    assert states["twelvedata_xauusd"] == "available"
     assert states["jin10_mcp_flash"] == "stale"
     assert states["jin10_daily_report"] == "waiting"
     assert states["jin10_datacenter_reports"] == "missing"

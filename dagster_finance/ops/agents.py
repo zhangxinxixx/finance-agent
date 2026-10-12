@@ -3,6 +3,7 @@
 Wraps the C3 agents, coordinator, and strategy card builder.
 """
 
+import uuid
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,10 @@ class AgentConfig(Config):
     storage_root: str = "./storage"
 
 
-@op(tags={"pipeline": "canonical_analysis", "step": "canonical_composite_analysis"})
+@op(
+    required_resource_keys={"db_session"},
+    tags={"pipeline": "canonical_analysis", "step": "canonical_composite_analysis"},
+)
 def canonical_composite_analysis_op(
     context,
     config: AgentConfig,
@@ -69,16 +73,106 @@ def canonical_composite_analysis_op(
         **runtime_kwargs,
     )
     summaries = {**summaries, "gold_policy_runtime": runtime_summary}
+    snapshot = outputs.get("analysis_snapshot") or snapshot
+    _persist_canonical_composite_outputs(
+        context,
+        snapshot=snapshot,
+        composite_outputs=outputs,
+    )
+    final_summary = summaries["final_report"]
+    blocked = final_summary.get("status") == "blocked"
+    quality_gate = _to_dict(outputs.get("quality_gate_decision"))
+    if blocked:
+        quality_gate = {**quality_gate, "action": "block_publish",
+                        "reason_codes": final_summary.get("reason_codes") or ["research_generation_blocked"]}
     return {
         "premarket_readiness_gate": readiness_gate,
         "summaries": summaries,
         "gold_policy_runtime": runtime_summary,
-        "quality_gate_decision": _to_dict(outputs["quality_gate_decision"]),
+        "quality_gate_decision": quality_gate,
         "agent_loop_decision": _to_dict(outputs["agent_loop_decision"]),
-        "output_mode": summaries["final_report"]["output_mode"],
+        "output_mode": "blocked" if blocked else final_summary["output_mode"],
+        "diagnostic_result": outputs.get("diagnostic_result"),
+        "input_validation": snapshot.get("input_validation"),
         "report_result": outputs["report_result"],
         "card_result": outputs["card_result"],
     }
+
+
+def _persist_canonical_composite_outputs(
+    context: Any,
+    *,
+    snapshot: dict[str, Any],
+    composite_outputs: dict[str, Any],
+) -> None:
+    """Persist Dagster composite outputs through the established worker sinks.
+
+    The canonical composite implementation is shared with the worker runner,
+    but Dagster reaches it through this adapter. Keeping persistence at this
+    boundary ensures the same run owns the AgentOutput, report artifacts, and
+    accepted report registry rows as the files written by the composite.
+    """
+
+    db = getattr(context.resources, "db_session", None)
+    if db is None:
+        # Direct unit invocation of this op has no DB resource. A real
+        # premarket job always supplies it via premarket_job.resource_defs.
+        context.log.warning("Canonical composite persistence skipped: db_session resource unavailable")
+        return
+
+    from apps.worker.artifact_registration import register_composite_output_artifacts
+    from apps.worker.db_persistence import (
+        db_persist_agent_outputs,
+        db_persist_final_result,
+        ensure_review_items,
+    )
+    from apps.worker.report_registry_sink import register_composite_report_registry_entries
+    from database.models.task import TaskStep
+
+    run_id = str(context.run_id)
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        # Dagster's direct invocation context uses the sentinel EPHEMERAL id;
+        # a real job run always has the UUID that owns the TaskRun steps.
+        steps = []
+    else:
+        steps = (
+            db.query(TaskStep)
+            .filter(TaskStep.task_run_id == run_uuid)
+            .all()
+        )
+    agents = composite_outputs["agents"]
+    snapshot = composite_outputs.get("analysis_snapshot") or snapshot
+    snapshot_db_id = db_persist_agent_outputs(db, snapshot, agents, run_id)
+
+    agent_loop_decision = composite_outputs.get("agent_loop_decision")
+    publish_allowed = bool(agent_loop_decision.get("publish_allowed", False)) if isinstance(agent_loop_decision, dict) else bool(getattr(agent_loop_decision, "publish_allowed", False))
+    if publish_allowed:
+        db_persist_final_result(db, snapshot, composite_outputs, snapshot_db_id)
+    elif composite_outputs.get("strategy_card") is not None:
+        ensure_review_items(
+            db,
+            run_id=run_id,
+            trade_date=str(snapshot.get("trade_date") or ""),
+            card=composite_outputs["strategy_card"],
+            agents=agents,
+        )
+
+    register_composite_output_artifacts(
+        db,
+        run_id=run_id,
+        steps=steps,
+        composite_outputs=composite_outputs,
+        analysis_snapshot=snapshot,
+    )
+    register_composite_report_registry_entries(
+        db,
+        run_id=run_id,
+        composite_outputs=composite_outputs,
+        analysis_snapshot=snapshot,
+    )
+    db.commit()
 
 
 def _gold_policy_runtime_kwargs(*, storage_root: Path, snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -158,6 +252,8 @@ def _parse_snapshot_datetime(value: Any, *, field_name: str) -> datetime:
 
 def _to_dict(result: Any) -> dict[str, Any]:
     """Serialize AgentOutput (Pydantic) to dict for Dagster IO."""
+    if result is None:
+        return {}
     if hasattr(result, "model_dump"):
         return result.model_dump(mode="json")
     if isinstance(result, dict):

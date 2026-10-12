@@ -1,7 +1,9 @@
+import { readableWarning } from "@/lib/researchReading";
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import {
   formatGoldDriverLabel,
+  formatGoldConflictStatusLabel,
   goldConflictTone,
 } from "@/components/shared/goldMainlineFormat";
 import type { DriverConflict } from "@/types/gold-mainlines";
@@ -14,14 +16,14 @@ export function SafeHavenVsInflationSplit({ conflict }: SafeHavenVsInflationSpli
   return (
     <FACard
       title="多空冲突拆解"
-      eyebrow="Conflict Split"
+      eyebrow="驱动冲突"
       accent={conflict?.status === "aligned" ? "up" : "warn"}
       className="shrink-0"
-      action={<FAStatusPill tone={goldConflictTone(conflict?.status)} dot={false}>{conflict?.status ?? "unknown"}</FAStatusPill>}
+      action={<FAStatusPill tone={goldConflictTone(conflict?.status)} dot={false}>{formatGoldConflictStatusLabel(conflict?.status)}</FAStatusPill>}
     >
       {conflict ? (
         <div className="grid gap-3">
-          {conflict.explanation ? <p className="text-[length:var(--type-caption)] leading-5 text-[var(--fg-3)]">{conflict.explanation}</p> : null}
+          {conflict.explanation ? <p className="text-[length:var(--type-caption)] leading-5 text-[var(--fg-3)]">{readableWarning(conflict.explanation)}</p> : null}
           <div className="grid gap-2 md:grid-cols-2">
             <div>
               <div className="text-[length:var(--type-caption)] font-semibold text-[var(--fg-5)]">避险利多</div>

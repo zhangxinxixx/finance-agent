@@ -1,3 +1,4 @@
+import { readerValue } from "@/lib/readerLabels";
 import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 
@@ -71,12 +72,12 @@ export function GoldMacroSummaryCard({ overview }: GoldMacroSummaryCardProps) {
           </FAStatusPill>
         ) : null}
       </div>
-      <p className="mt-2 line-clamp-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-3)]">
-        {overview.one_line_conclusion || conflict?.explanation || "后端暂未返回主线结论。"}
+      <p className="mt-2 break-words text-[length:var(--type-caption)] leading-5 text-[var(--fg-3)]">
+        {overview.one_line_conclusion ? readerValue(overview.one_line_conclusion, "主线结论的中文说明尚未提供，当前判断仍需核实。") : "本次结果未提供主线结论。"}
       </p>
       {overview.priority_reason ? (
-        <p className="mt-1 line-clamp-2 text-[length:var(--type-caption)] leading-4 text-[var(--fg-5)]">
-          {overview.priority_reason}
+        <p className="mt-1 break-words text-[length:var(--type-caption)] leading-4 text-[var(--fg-5)]">
+          {readerValue(overview.priority_reason, "主线优先级的中文依据尚未提供。")}
         </p>
       ) : null}
     </div>

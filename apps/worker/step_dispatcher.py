@@ -30,7 +30,7 @@ def create_step_dispatch_state() -> StepDispatchState:
 
     return StepDispatchState(
         cme=CmePipelineState(),
-        macro=MacroPipelineState(),
+        macro=MacroPipelineState(research_enabled=True),
         news=NewsPipelineState(),
     )
 

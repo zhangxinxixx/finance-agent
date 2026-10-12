@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,10 +11,13 @@ from unittest.mock import Mock, patch
 
 from dagster import build_op_context
 import pytest
+
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
+from apps.analysis.snapshots.builder import build_analysis_snapshot
 from apps.runtime.premarket_snapshot_authority import (
     resolve_authoritative_premarket_snapshot,
     stage_premarket_snapshot_authority,
@@ -45,7 +49,28 @@ from dagster_finance.ops.task_run_lifecycle import (
     ensure_premarket_task_run,
 )
 
+@pytest.fixture(autouse=True)
+def _isolate_adaptive_collection(monkeypatch):
+    monkeypatch.setattr("apps.worker.execution_research.refresh_execution_snapshot", lambda snapshot, **kwargs: snapshot)
+    monkeypatch.setattr("apps.worker.fedwatch.enrich_fedwatch_snapshot", lambda snapshot, **kwargs: snapshot)
+    monkeypatch.setattr("apps.worker.adaptive_research.enrich_research_snapshot", lambda snapshot, **kwargs: snapshot)
+    monkeypatch.setattr("apps.worker.cross_asset_research.enrich_cross_asset_snapshot", lambda snapshot, **kwargs: snapshot)
+    monkeypatch.setattr("apps.worker.mainstream_news.enrich_mainstream_news_snapshot", lambda snapshot, **kwargs: snapshot)
+
+
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
+
+
+@contextmanager
+def _mock_research_merge_persistence():
+    """Keep routing tests on real snapshot/features with isolated DB seams."""
+    with (
+        patch("apps.analysis.snapshots.research_previous.load_previous_research", return_value={"status": "unavailable"}),
+        patch("database.queries.market_state.load_accepted_state", return_value={}),
+        patch("database.queries.market_state.stage_state_proposal"),
+        patch("database.queries.data_source_status.upsert_data_source_status"),
+    ):
+        yield
 
 
 def _empty_formal_bundle(as_of: datetime = _CREATED_AT) -> FormalSnapshotBundle:
@@ -195,6 +220,7 @@ def test_premarket_graph_contains_readiness_gate_before_canonical_analysis_subgr
     node_names = {node.name for node in premarket_graph.node_defs}
     assert {
         "premarket_task_run_init_op",
+        "refresh_premarket_readiness_op",
         "premarket_readiness_gate_op",
         "canonical_analysis_pipeline",
         "premarket_task_run_complete_op",
@@ -206,6 +232,19 @@ def test_premarket_graph_contains_readiness_gate_before_canonical_analysis_subgr
             if invocation.name == pipeline_name
         )
         assert pipeline_dependencies["task_run_ready"].node == "premarket_task_run_init_op"
+    refresh_dependencies = next(
+        dependencies
+        for invocation, dependencies in premarket_graph.dependencies.items()
+        if invocation.name == "refresh_premarket_readiness_op"
+    )
+    assert refresh_dependencies["snapshot"].node == "merge_analysis_snapshot_op"
+    gate_dependencies = next(
+        dependencies
+        for invocation, dependencies in premarket_graph.dependencies.items()
+        if invocation.name == "premarket_readiness_gate_op"
+    )
+    assert gate_dependencies["snapshot"].node == "merge_analysis_snapshot_op"
+    assert gate_dependencies["readiness_refresh"].node == "refresh_premarket_readiness_op"
     analysis_dependencies = next(
         dependencies
         for invocation, dependencies in premarket_graph.dependencies.items()
@@ -220,7 +259,17 @@ def test_premarket_graph_contains_readiness_gate_before_canonical_analysis_subgr
     assert completion_dependencies["analysis_result"].node == "canonical_analysis_pipeline"
 
 
-def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
+def test_dagster_merge_preserves_current_context_when_research_is_blocked(tmp_path, monkeypatch) -> None:
+    def research(snapshot, **kwargs):
+        raise AssertionError("missing trusted spot must block model research")
+
+    def refresh(snapshot, **kwargs):
+        assert datetime.fromisoformat(snapshot["snapshot_time"]).tzinfo is not None
+        snapshot["snapshot_time"] = "2026-07-21T10:20:01+00:00"
+        return snapshot
+
+    monkeypatch.setattr("apps.worker.adaptive_research.enrich_research_snapshot", research)
+    monkeypatch.setattr("apps.worker.execution_research.refresh_execution_snapshot", refresh)
     db = Mock()
     context = build_op_context(resources={"db_session": db})
     macro_state = SimpleNamespace(
@@ -244,7 +293,7 @@ def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
         ) as context_mock,
         patch(
             "apps.analysis.snapshots.builder.build_analysis_snapshot",
-            return_value={"trade_date": "2026-07-21", "snapshot_id": "XAUUSD:test"},
+            wraps=build_analysis_snapshot,
         ) as build_mock,
         patch(
             "apps.analysis.snapshots.builder.write_analysis_snapshot",
@@ -255,8 +304,9 @@ def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
             return_value=(formal_bundle, None),
         ) as formal_loader,
         patch("apps.runtime.premarket_snapshot_authority.stage_premarket_snapshot_authority") as authority_mock,
+        _mock_research_merge_persistence(),
     ):
-        merge_analysis_snapshot_op(
+        snapshot = merge_analysis_snapshot_op(
             context,
             MergeSnapshotConfig(storage_root=str(tmp_path)),
             macro_state,
@@ -265,6 +315,7 @@ def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
         )
 
     assert context_mock.call_args.kwargs["preferred_run_id"] == context.run_id
+    assert snapshot["gold_workflow"]["analysis_time"] == "2026-07-21T10:20:01+00:00"
     assert build_mock.call_args.kwargs["market_price_snapshot"] is formal_bundle.market_prices
     assert build_mock.call_args.kwargs["market_context_snapshot"] is formal_bundle.market_context
     assert build_mock.call_args.kwargs["oil_snapshot"] is formal_bundle.oil
@@ -273,11 +324,12 @@ def test_dagster_merge_prefers_current_run_analysis_context(tmp_path) -> None:
     assert build_mock.call_args.kwargs["snapshot_time"] == formal_loader.call_args.kwargs["run_time"].isoformat()
     assert authority_mock.call_args.kwargs == {
         "run_id": context.run_id,
-        "snapshot": {"trade_date": "2026-07-21", "snapshot_id": "XAUUSD:test"},
+        "snapshot": snapshot,
         "snapshot_path": tmp_path / "premarket_snapshot.json",
         "storage_root": tmp_path,
     }
     assert authority_mock.call_args.args == (db,)
+    assert authority_mock.call_args.kwargs["snapshot"]["gold_workflow"]["state_record"]["transition_status"] == "INITIALIZATION_REQUIRED"
     db.commit.assert_called_once_with()
     db.rollback.assert_not_called()
 
@@ -302,7 +354,7 @@ def test_dagster_merge_skips_jin10_analysis_context_when_disabled(tmp_path, monk
         ) as context_mock,
         patch(
             "apps.analysis.snapshots.builder.build_analysis_snapshot",
-            return_value={"trade_date": "2026-07-21", "snapshot_id": "XAUUSD:test"},
+            wraps=build_analysis_snapshot,
         ) as build_mock,
         patch(
             "apps.analysis.snapshots.builder.write_analysis_snapshot",
@@ -313,6 +365,7 @@ def test_dagster_merge_skips_jin10_analysis_context_when_disabled(tmp_path, monk
             return_value=(formal_bundle, None),
         ),
         patch("apps.runtime.premarket_snapshot_authority.stage_premarket_snapshot_authority"),
+        _mock_research_merge_persistence(),
     ):
         merge_analysis_snapshot_op(
             context,
@@ -336,7 +389,7 @@ def test_dagster_merge_passes_explicit_empty_formal_snapshots_when_loader_degrad
         patch("apps.analysis.jin10.daily_context.build_daily_analysis_context", return_value={"status": "ready"}),
         patch(
             "apps.analysis.snapshots.builder.build_analysis_snapshot",
-            return_value={"trade_date": "2026-07-21", "snapshot_id": "XAUUSD:test"},
+            wraps=build_analysis_snapshot,
         ) as build_mock,
         patch(
             "apps.analysis.snapshots.builder.write_analysis_snapshot", return_value=tmp_path / "premarket_snapshot.json"
@@ -346,6 +399,7 @@ def test_dagster_merge_passes_explicit_empty_formal_snapshots_when_loader_degrad
             return_value=(empty_bundle, "RuntimeError: read failed"),
         ),
         patch("apps.runtime.premarket_snapshot_authority.stage_premarket_snapshot_authority"),
+        _mock_research_merge_persistence(),
     ):
         merge_analysis_snapshot_op(
             context, MergeSnapshotConfig(storage_root=str(tmp_path)), macro_state, cme_state, None
@@ -374,7 +428,7 @@ def test_dagster_merge_uses_shanghai_date_when_sources_have_no_trade_date(tmp_pa
         patch("apps.analysis.jin10.daily_context.build_daily_analysis_context", return_value={}),
         patch(
             "apps.analysis.snapshots.builder.build_analysis_snapshot",
-            return_value={"trade_date": "2026-07-21", "snapshot_id": "XAUUSD:test"},
+            wraps=build_analysis_snapshot,
         ),
         patch("apps.analysis.snapshots.builder.write_analysis_snapshot", return_value=tmp_path / "snapshot.json"),
         patch(
@@ -382,6 +436,7 @@ def test_dagster_merge_uses_shanghai_date_when_sources_have_no_trade_date(tmp_pa
             return_value=(formal_bundle, None),
         ) as formal_loader,
         patch("apps.runtime.premarket_snapshot_authority.stage_premarket_snapshot_authority"),
+        _mock_research_merge_persistence(),
     ):
         merge_analysis_snapshot_op(
             context,
@@ -446,7 +501,9 @@ def test_dagster_merge_commits_real_premarket_snapshot_authority(tmp_path: Path)
         artifacts = list(session.scalars(select(RunArtifact)).all())
 
         assert snapshot["snapshot_id"] == f"XAUUSD:2026-08-11:{context.run_id}"
-        assert snapshot["options"]["data"]["calibration"]["wall_map"] == {"4100": {"call_oi": 12}}
+        assert snapshot["options"]["status"] == "unavailable"
+        assert snapshot["input_validation"]["can_analyze"] is False
+        assert cme_state.snapshot_dict["calibration"]["wall_map"] == {4100: {"call_oi": 12}}
         assert json.loads(expected_path.read_text(encoding="utf-8")) == snapshot
         assert saved_run is not None
         assert saved_run.trade_date == "2026-08-11"
@@ -669,7 +726,7 @@ def test_canonical_composite_analysis_op_delegates_to_gated_pipeline() -> None:
         return_value=(fake_summaries, fake_outputs),
     ) as canonical_mock:
         result = canonical_composite_analysis_op(
-            build_op_context(),
+            build_op_context(resources={"db_session": None}),
             AgentConfig(storage_root="/tmp/dagster-canonical-test"),
             {**_snapshot(), "trade_date": "2026-05-14"},
             _allow_readiness_gate(),
@@ -679,6 +736,47 @@ def test_canonical_composite_analysis_op_delegates_to_gated_pipeline() -> None:
     assert canonical_mock.call_count == 1
     assert canonical_mock.call_args.kwargs["storage_root"].as_posix() == "/tmp/dagster-canonical-test"
     assert canonical_mock.call_args.kwargs["created_at"] == datetime(2026, 5, 14, tzinfo=timezone.utc)
+
+
+def test_canonical_composite_analysis_op_persists_outputs_and_report_artifacts() -> None:
+    agent = _agent_output(module="macro", agent_name="macro_liquidity_agent")
+    db = Mock()
+    db.query.return_value.filter.return_value.all.return_value = []
+    context = build_op_context(resources={"db_session": db})
+    snapshot = {**_snapshot(), "trade_date": "2026-05-14"}
+    fake_outputs = {
+        "agents": {"macro_liquidity_agent": agent},
+        "strategy_card": SimpleNamespace(),
+        "quality_gate_decision": {"action": "pass"},
+        "agent_loop_decision": SimpleNamespace(publish_allowed=True),
+        "report_result": {"paths": ["final_report.md"]},
+        "card_result": {"paths": ["strategy_card.json"]},
+    }
+    fake_summaries = {"final_report": {"output_mode": "accepted"}}
+
+    with (
+        patch(
+            "apps.worker.composite_analysis_pipeline.run_composite_analysis_pipeline",
+            return_value=(fake_summaries, fake_outputs),
+        ),
+        patch("apps.worker.db_persistence.db_persist_agent_outputs", return_value="snapshot-db-id") as persist_agents,
+        patch("apps.worker.db_persistence.db_persist_final_result") as persist_final,
+        patch("apps.worker.artifact_registration.register_composite_output_artifacts") as register_artifacts,
+        patch("apps.worker.report_registry_sink.register_composite_report_registry_entries") as register_reports,
+    ):
+        result = canonical_composite_analysis_op(
+            context,
+            AgentConfig(storage_root="/tmp/dagster-canonical-test"),
+            snapshot,
+            _allow_readiness_gate(),
+        )
+
+    assert result["output_mode"] == "accepted"
+    persist_agents.assert_called_once_with(db, snapshot, {"macro_liquidity_agent": agent}, context.run_id)
+    persist_final.assert_called_once_with(db, snapshot, fake_outputs, "snapshot-db-id")
+    register_artifacts.assert_called_once()
+    register_reports.assert_called_once()
+    db.commit.assert_called_once_with()
 
 
 def test_canonical_composite_analysis_op_passes_shadow_runtime_with_previous_snapshot(monkeypatch) -> None:
@@ -709,7 +807,10 @@ def test_canonical_composite_analysis_op_passes_shadow_runtime_with_previous_sna
         return_value=({"final_report": {"output_mode": "accepted"}}, fake_outputs),
     ) as pipeline:
         result = canonical_composite_analysis_op(
-            build_op_context(), AgentConfig(), {**_snapshot(), "trade_date": "2026-05-14"}, _allow_readiness_gate()
+            build_op_context(resources={"db_session": None}),
+            AgentConfig(),
+            {**_snapshot(), "trade_date": "2026-05-14"},
+            _allow_readiness_gate(),
         )
 
     assert pipeline.call_args.kwargs["gold_feature_snapshot_prebuilt"] == runtime.current
@@ -753,7 +854,10 @@ def test_canonical_composite_analysis_op_continues_legacy_pipeline_when_runtime_
         return_value=({"final_report": {"output_mode": "accepted"}}, fake_outputs),
     ) as pipeline:
         result = canonical_composite_analysis_op(
-            build_op_context(), AgentConfig(), {**_snapshot(), "trade_date": "2026-05-14"}, _allow_readiness_gate()
+            build_op_context(resources={"db_session": None}),
+            AgentConfig(),
+            {**_snapshot(), "trade_date": "2026-05-14"},
+            _allow_readiness_gate(),
         )
 
     assert pipeline.call_count == 1
@@ -769,7 +873,7 @@ def test_canonical_composite_analysis_op_does_not_start_agents_when_readiness_bl
     }
     with patch("apps.worker.composite_analysis_pipeline.run_composite_analysis_pipeline") as canonical_mock:
         result = canonical_composite_analysis_op(
-            build_op_context(),
+            build_op_context(resources={"db_session": None}),
             AgentConfig(),
             {**_snapshot(), "trade_date": "2026-05-14"},
             blocked_gate,
@@ -793,7 +897,7 @@ def test_canonical_composite_analysis_op_retries_with_stable_snapshot_created_at
         "apps.worker.composite_analysis_pipeline.run_composite_analysis_pipeline",
         return_value=(fake_summaries, fake_outputs),
     ) as canonical_mock:
-        context = build_op_context()
+        context = build_op_context(resources={"db_session": None})
         canonical_composite_analysis_op(context, AgentConfig(), snapshot, _allow_readiness_gate())
         canonical_composite_analysis_op(context, AgentConfig(), snapshot, _allow_readiness_gate())
 
@@ -806,12 +910,15 @@ def test_canonical_composite_analysis_op_retries_with_stable_snapshot_created_at
 def test_canonical_composite_analysis_op_rejects_missing_or_invalid_snapshot_time() -> None:
     with pytest.raises(ValueError, match="requires snapshot_time or as_of"):
         canonical_composite_analysis_op(
-            build_op_context(), AgentConfig(), {"snapshot_id": "missing-time"}, _allow_readiness_gate()
+            build_op_context(resources={"db_session": None}),
+            AgentConfig(),
+            {"snapshot_id": "missing-time"},
+            _allow_readiness_gate(),
         )
 
     with pytest.raises(ValueError, match="invalid snapshot_time"):
         canonical_composite_analysis_op(
-            build_op_context(),
+            build_op_context(resources={"db_session": None}),
             AgentConfig(),
             {**_snapshot(), "snapshot_time": "not-a-timestamp"},
             _allow_readiness_gate(),

@@ -22,6 +22,7 @@ from apps.api.services._trace_refs import (
     parse_source_refs,
 )
 from apps.runtime.artifact_storage import LOCAL_FS_STORAGE_BACKEND
+from apps.runtime.output_disposition import is_output_purged
 from database.models.execution import RunArtifact
 from database.models.report import ReportArtifact, ReportItem
 from database.models.task import TaskRun, TaskStep
@@ -36,10 +37,20 @@ def get_artifact_detail_response(db: Session, artifact_id: str) -> ArtifactDetai
     if parsed_uuid is not None:
         row = db.query(RunArtifact).filter(RunArtifact.artifact_id == parsed_uuid).first()
         if row is not None:
+            if is_output_purged(row) or is_output_purged(_parse_metadata(row.metadata_json)):
+                return None
             return _build_registry_artifact_detail(db, row)
 
     report_artifact = db.get(ReportArtifact, artifact_id)
     if report_artifact is not None:
+        if is_output_purged(report_artifact):
+            return None
+        report_item = db.get(ReportItem, report_artifact.report_id)
+        if report_item is not None and (
+            is_output_purged(report_item)
+            or str(report_item.lifecycle_status or "").lower() == "purged"
+        ):
+            return None
         return _build_report_artifact_detail(db, report_artifact)
 
     return None
@@ -92,6 +103,14 @@ def _build_registry_artifact_detail(db: Session, row: RunArtifact) -> ArtifactDe
 
 def _build_report_artifact_detail(db: Session, report_artifact: ReportArtifact) -> ArtifactDetailResponse:
     report_item = db.get(ReportItem, report_artifact.report_id)
+    if is_output_purged(report_artifact) or (
+        report_item is not None
+        and (
+            is_output_purged(report_item)
+            or str(report_item.lifecycle_status or "").lower() == "purged"
+        )
+    ):
+        raise LookupError("purged artifact is not readable")
     artifact = ArtifactRef(
         artifact_id=report_artifact.artifact_id,
         artifact_type=coerce_artifact_type(report_artifact.artifact_type, report_artifact.file_path),
@@ -117,6 +136,7 @@ def _build_report_artifact_detail(db: Session, report_artifact: ReportArtifact) 
             .filter(ReportArtifact.report_id == report_item.report_id)
             .order_by(ReportArtifact.is_primary.desc(), ReportArtifact.generated_at.desc(), ReportArtifact.artifact_id.asc())
             .all()
+            if not is_output_purged(item)
         ]
     lineage = (
         resolve_report_lineage_context(

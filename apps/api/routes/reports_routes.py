@@ -10,8 +10,14 @@ from apps.api.schemas.common import ArtifactType
 from apps.api.schemas.report import ReportAnalysisInputs, ReportArtifact, ReportDetail
 from apps.api.data_service import list_reports_index, list_unified_dates
 from apps.api.services.report_service import (
-    get_report_analysis, get_report_analysis_inputs, get_report_artifact_asset_path, get_report_artifacts,
-    get_report_detail, get_report_evidence, get_report_source, get_report_visual,
+    get_report_analysis,
+    get_report_analysis_inputs,
+    get_report_artifact_asset_path,
+    get_report_artifacts,
+    get_report_detail,
+    get_report_evidence,
+    get_report_source,
+    get_report_visual,
 )
 from database.models.engine import get_db
 
@@ -64,7 +70,11 @@ def api_report_analysis(report_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/api/reports/{report_id}/asset/{artifact_type}/{asset_path:path}")
-def api_report_artifact_asset(report_id: str, artifact_type: ArtifactType, asset_path: str, db: Session = Depends(get_db)):
+def api_report_artifact_asset(
+    report_id: str, artifact_type: ArtifactType, asset_path: str, db: Session = Depends(get_db)
+):
+    if artifact_type not in {ArtifactType.source_md, ArtifactType.analysis_md, ArtifactType.visual_html}:
+        raise HTTPException(status_code=404, detail="Report artifact asset not found")
     path = get_report_artifact_asset_path(db, report_id, artifact_type, asset_path)
     if path is None:
         raise HTTPException(status_code=404, detail="Report artifact asset not found")

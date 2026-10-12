@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from apps.api.services._storage import _PROJECT_ROOT, _latest_date_dir, _try_db_session
+from apps.runtime.source_controls import jin10_disabled
 
 _KNOWN_SOURCE_DEFS: list[dict[str, Any]] = [
     {"source_key": "fred", "source_name": "FRED", "source_group": "macro", "source_type": "api", "access_method": "fred_api", "metadata": {"provider_role": "official_primary", "fallback_for": [], "fallback_sources": ["openbb_macro", "jin10_news"], "frontend_label": "FRED 官方宏观主源", "notes": "官方宏观时间序列主源；异常时由 OpenBB 补充，并由 Jin10 提供事件/快讯上下文。"}},
@@ -720,11 +721,13 @@ def _latest_cooldown_metadata(source_runtime: dict[str, Any]) -> dict[str, Any]:
 
 def _source_health_state(source: dict[str, Any]) -> str:
     metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    status = str(source.get("status") or "").strip().lower()
+    if status == "disabled":
+        return "unavailable"
     cooldown = metadata.get("latest_cooldown") if isinstance(metadata.get("latest_cooldown"), dict) else {}
     if cooldown.get("active"):
         return "cooldown"
 
-    status = str(source.get("status") or "").strip().lower()
     if status == "ok" and (source.get("analysis_ready") or source.get("parsed") or source.get("raw_ingested")):
         return "healthy"
     if status in {"partial", "stale", "warn", "rate_limited"}:
@@ -1304,6 +1307,42 @@ def _row_to_source_status(row: Any) -> dict[str, Any]:
     }
 
 
+def _source_is_jin10(source: dict[str, Any]) -> bool:
+    source_key = str(source.get("source_key") or "").strip().lower()
+    source_name = str(source.get("source_name") or "").strip().lower()
+    access_method = str(source.get("access_method") or "").strip().lower()
+    return source_key.startswith("jin10_") or source_name.startswith("jin10") or access_method.startswith("jin10_")
+
+
+def _apply_runtime_source_controls(source: dict[str, Any]) -> dict[str, Any]:
+    retired_numeric = source.get("source_key") in {"technical_yahoo", "jin10_mcp_market"}
+    if not retired_numeric and (not jin10_disabled() or not _source_is_jin10(source)):
+        return source
+
+    result = dict(source)
+    metadata = dict(result.get("metadata") or {})
+    metadata["runtime_control"] = {
+        "enabled": False,
+        "reason": "jin10_news_only" if retired_numeric else "disabled_by_settings: FINANCE_AGENT_DISABLE_JIN10",
+    }
+    if retired_numeric:
+        metadata["notes"] = "旧数值入口已停用；历史缓存不提供当前数值资格。"
+        metadata["polling_strategy"] = {"mode": "disabled", "query": "jin10_news_only"}
+        result["next_run_time"] = None
+    metadata["historical_projection"] = {
+        "configured": bool(result.get("configured")),
+        "status": result.get("status"),
+        "raw_ingested": bool(result.get("raw_ingested")),
+        "parsed": bool(result.get("parsed")),
+        "analysis_ready": bool(result.get("analysis_ready")),
+    }
+    result["configured"] = False
+    result["analysis_ready"] = False
+    result["status"] = "disabled"
+    result["metadata"] = metadata
+    return result
+
+
 def _merge_known_source_contract(existing_sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_key = {src["source_key"]: src for src in existing_sources}
     merged: list[dict[str, Any]] = []
@@ -1320,7 +1359,12 @@ def _merge_known_source_contract(existing_sources: list[dict[str, Any]]) -> list
             src = dict(by_key[source_key])
             src["metadata"] = _normalize_source_metadata(source_key, src.get("metadata"), source_name=src.get("source_name"))
             merged.append(src)
-    return [_augment_source_observability(_augment_news_source_status(src)) for src in merged]
+    return [
+        _augment_source_observability(
+            _apply_runtime_source_controls(_augment_news_source_status(src))
+        )
+        for src in merged
+    ]
 
 
 def get_data_source_statuses() -> dict[str, Any]:

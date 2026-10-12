@@ -1,3 +1,13 @@
-from apps.collectors.positioning.collector import collect_positioning_cot
+"""Official CFTC positioning collectors."""
 
-__all__ = ["collect_positioning_cot"]
+from apps.collectors.positioning.collector import (
+    cftc_cot_url,
+    collect_positioning_cot,
+    collect_positioning_cot_combined,
+)
+
+__all__ = [
+    "cftc_cot_url",
+    "collect_positioning_cot",
+    "collect_positioning_cot_combined",
+]

@@ -23,7 +23,7 @@ interface MainlineRankingTableProps {
 
 export function MainlineRankingTable({ rows }: MainlineRankingTableProps) {
   return (
-    <FACard title="九主线覆盖矩阵" eyebrow="Theme Coverage" accent="brand" bodyClassName="!p-0" className="shrink-0">
+    <FACard title="九主线登记与验证矩阵" eyebrow="Theme Registration / Verification" accent="brand" bodyClassName="!p-0" className="shrink-0">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[940px] table-fixed text-left text-[length:var(--type-caption)]">
           <colgroup>
@@ -39,10 +39,10 @@ export function MainlineRankingTable({ rows }: MainlineRankingTableProps) {
           </colgroup>
           <thead className="border-b border-[var(--border-faint)] bg-[var(--bg-card-inner)] text-[var(--fg-5)]">
             <tr>
-              <th className="px-3 py-2 font-semibold">Rank</th>
+              <th className="px-3 py-2 font-semibold">排序</th>
               <th className="px-3 py-2 font-semibold">主线</th>
               <th className="px-3 py-2 font-semibold">定价层</th>
-              <th className="px-3 py-2 font-semibold">覆盖</th>
+              <th className="px-3 py-2 font-semibold">登记状态</th>
               <th className="px-3 py-2 font-semibold">方向</th>
               <th className="px-3 py-2 font-semibold">评分</th>
               <th className="px-3 py-2 font-semibold">验证</th>
@@ -71,16 +71,20 @@ export function MainlineRankingTable({ rows }: MainlineRankingTableProps) {
                   </td>
                   <td className="px-3 py-2">
                     <div className="fa-num font-semibold text-[var(--fg-2)]">{scoreLabel(item?.theme_score ?? item?.score)}</div>
-                    <div className="mt-0.5 text-[length:var(--type-caption)] text-[var(--fg-5)]">D/I/C/F {scoreFormulaLabel(item)}</div>
+                    <details className="mt-0.5 text-[length:var(--type-caption)] text-[var(--fg-5)]">
+                      <summary className="cursor-pointer">评分明细</summary>
+                      <p className="break-words">方向 / 影响 / 置信 / 新鲜度：{scoreFormulaLabel(item)}</p>
+                      <p>后端模型评分，非概率；缺失项不补值。</p>
+                    </details>
                   </td>
                   <td className="px-3 py-2">
                     <FAStatusPill tone={goldVerificationStatusTone(verificationStatus)} dot={false}>{formatGoldVerificationStatusLabel(verificationStatus)}</FAStatusPill>
                   </td>
                   <td className="px-3 py-2">
-                    <div className="fa-num text-[var(--fg-2)]">{row.eventIds.length}E / {row.sourceCount}S</div>
+                    <div className="fa-num text-[var(--fg-2)]">{row.eventIds.length} 事件 / {row.sourceCount} 来源</div>
                   </td>
                   <td className="min-w-0 px-3 py-2 text-[var(--fg-3)]">
-                    <div className="line-clamp-2 max-w-full break-words leading-5">
+                    <div className="max-w-full break-words leading-5">
                       {item?.summary || `待接入：${meta.evidenceTargets.slice(0, 3).join(" / ")}`}
                     </div>
                   </td>

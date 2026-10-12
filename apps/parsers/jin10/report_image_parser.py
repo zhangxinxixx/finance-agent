@@ -377,6 +377,11 @@ def parse_report_images(
                 published_at=published_at,
                 vision_markdown=vision_markdown_payload,
             )
+        figures = _normalize_positioning_paired_panel_titles(
+            figures=figures,
+            layout_payload=vision_layout_payload,
+            report_type=report_type,
+        )
         if not figures and vision_layout_payload is None and not layout_failed:
             figures = _fallback_detect_visual_figures(
                 page_payloads=page_payloads,
@@ -2017,6 +2022,83 @@ def _layout_chart_blocks_with_bound_titles(layout_blocks: list[Any]) -> list[dic
 
 def _layout_chart_title(chart: dict[str, Any]) -> str:
     return _clean_layout_block_text(str(chart.get("title") or chart.get("text") or ""))
+
+
+def _normalize_positioning_paired_panel_titles(
+    *,
+    figures: list[dict[str, Any]],
+    layout_payload: dict[str, Any] | None,
+    report_type: str | None,
+) -> list[dict[str, Any]]:
+    """Bind the new positioning-report call/put panels to their asset heading.
+
+    The 2026 card layout places two adjacent panels under one asset title. OCR
+    fallback can otherwise attach the asset title to the left panel and the
+    legend or a duplicated call label to the right panel.
+    """
+
+    if str(report_type or "").strip().lower() != "positioning" or not figures:
+        return figures
+    layout_pages = {
+        int(page.get("page_no") or 0): page
+        for page in (layout_payload or {}).get("pages") or []
+        if isinstance(page, dict)
+    }
+    by_page: dict[int, list[dict[str, Any]]] = {}
+    for figure in figures:
+        by_page.setdefault(int(figure.get("page_no") or 0), []).append(figure)
+
+    normalized = [dict(figure) for figure in figures]
+    normalized_by_id = {str(figure.get("figure_id") or ""): figure for figure in normalized}
+    for page_no, page_figures in by_page.items():
+        if len(page_figures) < 2:
+            continue
+        page = layout_pages.get(page_no) or {}
+        asset_title = _positioning_asset_title(page=page, figures=page_figures)
+        if not asset_title:
+            continue
+        ordered = sorted(page_figures, key=lambda item: ((item.get("bbox") or [0, 0, 0, 0])[0], item.get("figure_id") or ""))
+        if len(ordered) == 2:
+            paired_titles = ("看涨期权", "看跌期权")
+        else:
+            paired_titles = tuple(_positioning_panel_title_from_layout(figure=figure, page=page) for figure in ordered)
+        for figure, panel_title in zip(ordered, paired_titles):
+            if not panel_title:
+                continue
+            target = normalized_by_id.get(str(figure.get("figure_id") or ""))
+            if target is not None:
+                target["title"] = f"{asset_title} · {panel_title}"
+    return normalized
+
+
+def _positioning_asset_title(*, page: dict[str, Any], figures: list[dict[str, Any]]) -> str:
+    markdown = str(page.get("markdown") or "")
+    match = re.search(r"(?m)^#{1,3}\s*([^\n]*持仓报告)\s*$", markdown)
+    if match:
+        return match.group(1).strip()
+    for figure in figures:
+        title = str(figure.get("title") or "").strip()
+        match = re.search(r"([^·]*持仓报告)", title)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _positioning_panel_title_from_layout(*, figure: dict[str, Any], page: dict[str, Any]) -> str:
+    figure_bbox = figure.get("bbox") or []
+    best_title = ""
+    best_overlap = 0.0
+    for chart in page.get("charts") or []:
+        if not isinstance(chart, dict):
+            continue
+        title = str(chart.get("title") or "").strip()
+        if title not in {"看涨期权", "看跌期权"}:
+            continue
+        overlap = _bbox_overlap_ratio(figure_bbox, chart.get("bbox") or [])
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_title = title
+    return best_title
 
 
 def _is_page_sized_bbox(*, bbox: list[int], page: dict[str, Any]) -> bool:

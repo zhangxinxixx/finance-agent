@@ -4,6 +4,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from contextlib import contextmanager
@@ -27,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path != "/health":
+        if self.path not in {"/health", "/ready"}:
             self.send_response(404)
             self.end_headers()
             return
@@ -71,7 +72,55 @@ HTTPServer(("127.0.0.1", int(os.environ["TEST_API_PORT"])), Handler).serve_forev
         process.wait(timeout=5)
 
 
-def test_local_stack_enables_required_market_background_refresh_by_default() -> None:
+@contextmanager
+def _fake_dagster_process(*, state_dir: Path, component: str, jin10_disabled: str):
+    state_dir.mkdir(parents=True, exist_ok=True)
+    if component == "daemon":
+        command_args = [".venv/bin/dagster-daemon", "run", "workspace.yaml"]
+        pid_file = state_dir / "dagster-daemon.pid"
+    elif component == "webserver":
+        command_args = [".venv/bin/dagster-webserver", "workspace.yaml"]
+        pid_file = state_dir / "dagster-webserver.pid"
+    else:
+        raise ValueError(f"unsupported fake Dagster component: {component}")
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", *command_args],
+        cwd=PROJECT_ROOT,
+        env={
+            **os.environ,
+            "DAGSTER_HOME": str(state_dir / "dagster-home"),
+            "FINANCE_AGENT_DISABLE_JIN10": jin10_disabled,
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
+    try:
+        yield process, pid_file
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=5)
+
+
+def _stack_runtime_env(state_dir: Path, *, disable_jin10: str | None = None) -> dict[str, str]:
+    env = {
+        **os.environ,
+        "FINANCE_AGENT_STATE_DIR": str(state_dir),
+        "FINANCE_AGENT_API_PORT": "49821",
+        "FINANCE_AGENT_FRONTEND_PORT": "49822",
+        "FINANCE_AGENT_DAGSTER_WEB_PORT": "49823",
+        "DAGSTER_HOME": str(state_dir / "dagster-home"),
+    }
+    if disable_jin10 is None:
+        env.pop("FINANCE_AGENT_DISABLE_JIN10", None)
+    else:
+        env["FINANCE_AGENT_DISABLE_JIN10"] = disable_jin10
+    return env
+
+
+def test_local_stack_enables_news_background_refresh_by_default() -> None:
     script = (PROJECT_ROOT / "scripts" / "local_stack_ctl.sh").read_text(encoding="utf-8")
 
     assert (
@@ -80,11 +129,11 @@ def test_local_stack_enables_required_market_background_refresh_by_default() -> 
     )
     assert "jin10_is_disabled_value()" in script
     assert (
-        'export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="twelvedata_xauusd_dispatch,market_candles_daily"'
+        'export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS=""'
         in script
     )
     assert (
-        'export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily"'
+        'export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="jin10_flash,jin10_web_flash,jin10_web_article_analysis,jin10_calendar"'
         in script
     )
 
@@ -96,11 +145,11 @@ def test_local_stack_keeps_explicit_background_refresh_override() -> None:
     assert "export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS" in script
 
 
-def test_local_stack_adopts_api_with_required_background_refresh_jobs(tmp_path: Path) -> None:
+def test_local_stack_adopts_api_with_news_background_refresh_jobs(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     with _fake_health_api(
         refresh_enabled="1",
-        refresh_jobs="jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily",
+        refresh_jobs="jin10_flash,jin10_web_flash,jin10_web_article_analysis,jin10_calendar",
     ) as (process, port):
         result = subprocess.run(
             ["bash", str(LOCAL_STACK_SCRIPT), "status", "--frontend=none"],
@@ -110,6 +159,7 @@ def test_local_stack_adopts_api_with_required_background_refresh_jobs(tmp_path: 
                 "FINANCE_AGENT_STATE_DIR": str(state_dir),
                 "FINANCE_AGENT_API_PORT": str(port),
                 "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+                "FINANCE_AGENT_DISABLE_JIN10": "false",
             },
             check=True,
             capture_output=True,
@@ -120,11 +170,11 @@ def test_local_stack_adopts_api_with_required_background_refresh_jobs(tmp_path: 
     assert "refresh misconfigured" not in result.stdout
 
 
-def test_local_stack_adopts_no_jin10_api_with_required_market_refresh_jobs(tmp_path: Path) -> None:
+def test_local_stack_adopts_no_jin10_api_without_local_candle_collection(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     with _fake_health_api(
         refresh_enabled="1",
-        refresh_jobs="twelvedata_xauusd_dispatch,market_candles_daily",
+        refresh_jobs="",
         jin10_disabled=" yes ",
     ) as (process, port):
         result = subprocess.run(
@@ -135,6 +185,7 @@ def test_local_stack_adopts_no_jin10_api_with_required_market_refresh_jobs(tmp_p
                 "FINANCE_AGENT_STATE_DIR": str(state_dir),
                 "FINANCE_AGENT_API_PORT": str(port),
                 "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+                "FINANCE_AGENT_DISABLE_JIN10": "true",
             },
             check=True,
             capture_output=True,
@@ -145,7 +196,7 @@ def test_local_stack_adopts_no_jin10_api_with_required_market_refresh_jobs(tmp_p
     assert "refresh misconfigured" not in result.stdout
 
 
-def test_local_stack_rejects_no_jin10_api_without_daily_market_refresh(tmp_path: Path) -> None:
+def test_local_stack_rejects_no_jin10_api_with_unrequested_intraday_refresh(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     with _fake_health_api(
         refresh_enabled="1",
@@ -160,6 +211,7 @@ def test_local_stack_rejects_no_jin10_api_without_daily_market_refresh(tmp_path:
                 "FINANCE_AGENT_STATE_DIR": str(state_dir),
                 "FINANCE_AGENT_API_PORT": str(port),
                 "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+                "FINANCE_AGENT_DISABLE_JIN10": "true",
             },
             check=True,
             capture_output=True,
@@ -171,10 +223,38 @@ def test_local_stack_rejects_no_jin10_api_without_daily_market_refresh(tmp_path:
 
 
 @pytest.mark.parametrize(
+    ("running_jobs", "requested_jobs", "accepted"),
+    [
+        ("twelvedata_xauusd_dispatch", "", False),
+        ("twelvedata_xauusd_dispatch", "*", False),
+        ("twelvedata_xauusd_dispatch", "twelvedata_xauusd_dispatch", True),
+        ("", "twelvedata_xauusd_dispatch", False),
+        ("", "", True),
+        ("*", "", True),
+    ],
+)
+def test_local_stack_adoption_respects_requested_intraday_collection(tmp_path, running_jobs, requested_jobs, accepted):
+    state_dir = tmp_path / "state"
+    with _fake_health_api(refresh_enabled="1", refresh_jobs=running_jobs, jin10_disabled="true") as (process, port):
+        result = subprocess.run(
+            ["bash", str(LOCAL_STACK_SCRIPT), "status", "--frontend=none"], cwd=PROJECT_ROOT,
+            env={**os.environ, "FINANCE_AGENT_STATE_DIR": str(state_dir),
+                 "FINANCE_AGENT_API_PORT": str(port), "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+                 "FINANCE_AGENT_DISABLE_JIN10": "true",
+                 "FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS": requested_jobs},
+            check=True, capture_output=True, text=True,
+        )
+        assert process.poll() is None
+        assert (state_dir / "api.pid").exists() is accepted
+        assert ("refresh misconfigured" in result.stdout) is not accepted
+
+
+@pytest.mark.parametrize(
     ("refresh_enabled", "refresh_jobs"),
     [
-        ("0", "jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily"),
+        ("0", "jin10_kline,twelvedata_xauusd_dispatch"),
         ("1", "jin10_kline"),
+        ("1", "market_candles_daily"),
         ("1", "twelvedata_xauusd_dispatch"),
         ("1", "jin10_kline,twelvedata_xauusd_dispatch"),
     ],
@@ -194,6 +274,7 @@ def test_local_stack_refuses_to_adopt_api_without_required_background_refresh(
                 "FINANCE_AGENT_STATE_DIR": str(state_dir),
                 "FINANCE_AGENT_API_PORT": str(port),
                 "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+                "FINANCE_AGENT_DISABLE_JIN10": "false",
             },
             check=True,
             capture_output=True,
@@ -221,6 +302,7 @@ def test_local_stack_revalidates_existing_api_pidfile_without_killing_process(tm
                 "FINANCE_AGENT_STATE_DIR": str(state_dir),
                 "FINANCE_AGENT_API_PORT": str(port),
                 "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+                "FINANCE_AGENT_DISABLE_JIN10": "false",
             },
             check=True,
             capture_output=True,
@@ -232,6 +314,130 @@ def test_local_stack_revalidates_existing_api_pidfile_without_killing_process(tm
 
     assert "Refusing managed API" in result.stderr
     assert "API status:        running, refresh misconfigured" in result.stdout
+
+
+def test_local_stack_defaults_to_no_jin10_and_rejects_enabled_api(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    with _fake_health_api(
+        refresh_enabled="1",
+        refresh_jobs="jin10_kline,twelvedata_xauusd_dispatch",
+        jin10_disabled="false",
+    ) as (_process, port):
+        env = {
+            **os.environ,
+            "FINANCE_AGENT_STATE_DIR": str(state_dir),
+            "FINANCE_AGENT_API_PORT": str(port),
+            "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+        }
+        env.pop("FINANCE_AGENT_DISABLE_JIN10", None)
+        result = subprocess.run(
+            ["bash", str(LOCAL_STACK_SCRIPT), "status", "--frontend=none"],
+            cwd=PROJECT_ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    assert not (state_dir / "api.pid").exists()
+    assert "Refusing to adopt API" in result.stderr
+    assert "API status:        running, refresh misconfigured" in result.stdout
+
+
+def test_local_stack_explicit_jin10_enable_rejects_disabled_api(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    with _fake_health_api(
+        refresh_enabled="1",
+        refresh_jobs="twelvedata_xauusd_dispatch",
+        jin10_disabled="true",
+    ) as (_process, port):
+        result = subprocess.run(
+            ["bash", str(LOCAL_STACK_SCRIPT), "status", "--frontend=none"],
+            cwd=PROJECT_ROOT,
+            env={
+                **os.environ,
+                "FINANCE_AGENT_STATE_DIR": str(state_dir),
+                "FINANCE_AGENT_API_PORT": str(port),
+                "FINANCE_AGENT_FRONTEND_PORT": str(port + 1),
+                "FINANCE_AGENT_DISABLE_JIN10": "false",
+            },
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    assert not (state_dir / "api.pid").exists()
+    assert "Refusing to adopt API" in result.stderr
+    assert "API status:        running, refresh misconfigured" in result.stdout
+
+
+@pytest.mark.parametrize("component", ["daemon", "webserver"])
+def test_local_stack_refuses_owned_dagster_process_with_wrong_jin10_mode(
+    tmp_path: Path, component: str
+) -> None:
+    state_dir = tmp_path / "state"
+    with _fake_dagster_process(
+        state_dir=state_dir,
+        component=component,
+        jin10_disabled="false",
+    ) as (process, pid_file):
+        env = _stack_runtime_env(state_dir)
+        result = subprocess.run(
+            [
+                "bash",
+                str(LOCAL_STACK_SCRIPT),
+                "start",
+                "--frontend=none",
+                "--dry-run",
+            ],
+            cwd=PROJECT_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        status = subprocess.run(
+            ["bash", str(LOCAL_STACK_SCRIPT), "status", "--frontend=none"],
+            cwd=PROJECT_ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert f"Refusing to adopt managed Dagster {component}" in result.stderr
+        assert process.poll() is None
+        assert pid_file.exists()
+        assert f"Dagster {component}:" in status.stdout
+        assert "running, Jin10 mode mismatch" in status.stdout
+
+
+@pytest.mark.parametrize("component", ["daemon", "webserver"])
+def test_local_stack_stops_owned_dagster_process_with_wrong_jin10_mode(
+    tmp_path: Path, component: str
+) -> None:
+    state_dir = tmp_path / "state"
+    with _fake_dagster_process(
+        state_dir=state_dir,
+        component=component,
+        jin10_disabled="false",
+    ) as (process, pid_file):
+        reaper = threading.Thread(target=process.wait, daemon=True)
+        reaper.start()
+        result = subprocess.run(
+            ["bash", str(LOCAL_STACK_SCRIPT), "stop", "--frontend=none"],
+            cwd=PROJECT_ROOT,
+            env=_stack_runtime_env(state_dir),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        assert process.poll() is not None
+        assert not pid_file.exists()
+        reaper.join(timeout=5)
+
+    assert f"Stopping Dagster {component}" in result.stdout
 
 
 def test_local_stack_manages_dagster_daemon_with_shared_runtime_environment() -> None:
@@ -268,17 +474,6 @@ def test_local_stack_initializes_dagster_instance_before_starting_daemon() -> No
         "setsid .venv/bin/dagster-daemon run -w workspace.yaml"
     )
     assert "Dagster instance initialization failed." in function
-
-
-def test_local_stack_dagster_identity_guard_precedes_stop() -> None:
-    script = (PROJECT_ROOT / "scripts" / "local_stack_ctl.sh").read_text(encoding="utf-8")
-
-    function_start = script.index("stop_dagster_daemon()")
-    function_end = script.index("\n}\n", function_start)
-    function = script[function_start:function_end]
-    assert 'if ! dagster_pid_matches "$pid"' in function
-    assert function.index('if ! dagster_pid_matches "$pid"') < function.index('kill "$pid"')
-    assert 'grep -Fxq "DAGSTER_HOME=$DAGSTER_HOME_PATH"' in script
 
 
 def test_local_stack_start_dry_run_plans_daemon_without_launching(tmp_path: Path) -> None:

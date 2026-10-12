@@ -27,7 +27,7 @@ function readInitialSidebarCollapsed(): boolean {
 export function AppShell() {
   const location = useLocation();
   const contentRef = useRef<HTMLElement | null>(null);
-  const routeContentKey = `${location.pathname}${location.search}`;
+  const routeContentKey = location.pathname;
   const [theme, setTheme] = useState<AppTheme>(readInitialTheme);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readInitialSidebarCollapsed);
   const [headerContent, setHeaderContent] = useState<ReactNode | null>(null);
@@ -37,6 +37,15 @@ export function AppShell() {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("finance-agent-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 840px)");
+    const resize = () => {
+      setSidebarCollapsed(media.matches || window.localStorage.getItem("finance-agent-sidebar-collapsed") === "true");
+    };
+    media.addEventListener("change", resize);
+    return () => media.removeEventListener("change", resize);
+  }, []);
 
   function toggleSidebarCollapsed() {
     setSidebarCollapsed((current) => {
@@ -59,7 +68,7 @@ export function AppShell() {
       window.cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
-  }, [location.pathname, location.search]);
+  }, [location.pathname]);
 
   return (
     <div className={`app-frame text-finance-text-primary ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>

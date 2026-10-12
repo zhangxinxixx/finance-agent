@@ -1,7 +1,29 @@
-import { textOrDash } from "@/components/market-monitor/format";
 import { formatDateTime } from "@/lib/date";
 import type { MarketMonitorMockFile } from "@/types/market-monitor";
 import type { Jin10CalendarFreshness, Jin10CalendarStats } from "@/hooks/useJin10Calendar";
+import { textOrDash } from "./format";
+
+const REALTIME_REGIME_LABELS: Record<string, string> = {
+  dovish_gold_friendly: "宽松环境，黄金偏友好",
+  hawkish_gold_pressure: "鹰派环境，黄金承压",
+  neutral_soft: "中性偏宽松",
+  neutral_firm: "中性偏紧",
+  neutral: "中性阶段",
+};
+
+export function formatRealtimeRegimeLabel(
+  realtimeRegime: MarketMonitorMockFile["realtime_regime"] | null | undefined,
+): string {
+  if (realtimeRegime?.available !== true) return "待确认";
+  return REALTIME_REGIME_LABELS[realtimeRegime.regime] ?? "阶段待确认";
+}
+
+function formatRealtimeConfidence(
+  realtimeRegime: MarketMonitorMockFile["realtime_regime"] | null | undefined,
+): string {
+  if (realtimeRegime?.available !== true || typeof realtimeRegime.confidence !== "number") return "未量化";
+  return `${(realtimeRegime.confidence * 100).toFixed(0)}%`;
+}
 
 export function OverviewHero({
   title,
@@ -49,15 +71,17 @@ export function CalendarEventBrief({
     { label: "来源", value: sourceLabel },
     { label: "快照", value: latestDate },
     { label: "缓存", value: generatedAt ? formatDateTime(generatedAt) : "—" },
-    { label: "待公布", value: String(calendarStats?.upcoming ?? 0) },
-    { label: "已公布", value: String(calendarStats?.released ?? 0) },
-    { label: "高影响", value: String(calendarStats?.high_impact ?? 0) },
+    { label: "待公布", value: textOrDash(calendarStats?.upcoming) },
+    { label: "已公布", value: textOrDash(calendarStats?.released) },
+    { label: "高影响", value: textOrDash(calendarStats?.high_impact) },
     { label: "溯源", value: `${sourceTraceCount}` },
   ];
   const freshnessText = calendarFreshness?.is_stale
     ? "当前窗口偏旧，优先看下方事件列表。"
     : "优先看事件列表，摘要只保留扫描信息。";
   const freshnessTone = calendarFreshness?.is_stale || calendarStatus === "stale" ? "text-[var(--warn)]" : "text-[var(--fg-4)]";
+  const realtimeRegimeLabel = formatRealtimeRegimeLabel(realtimeRegime);
+  const realtimeConfidence = formatRealtimeConfidence(realtimeRegime);
 
   return (
     <section className="market-monitor-calendar-brief">
@@ -76,12 +100,12 @@ export function CalendarEventBrief({
           </div>
         ))}
         <div className="market-monitor-calendar-brief-chip market-monitor-calendar-brief-chip--wide">
-          <span className="market-monitor-calendar-brief-chip-label">实时状态</span>
-          <span className="market-monitor-calendar-brief-chip-value">{textOrDash(realtimeRegime?.regime ?? null)}</span>
+          <span className="market-monitor-calendar-brief-chip-label">实时阶段</span>
+          <span className="market-monitor-calendar-brief-chip-value">{realtimeRegimeLabel}</span>
         </div>
       </div>
       <div className={`market-monitor-calendar-brief-footnote ${freshnessTone}`}>
-        置信度 {typeof realtimeRegime?.confidence === "number" ? `${(realtimeRegime.confidence * 100).toFixed(0)}%` : "—"} · {sourceLabel} · {sourceTraceCount} 条溯源{generatedAt ? ` · 缓存 ${formatDateTime(generatedAt)}` : ""}
+        阶段把握程度 {realtimeConfidence} · {sourceLabel} · {sourceTraceCount} 条溯源{generatedAt ? ` · 缓存 ${formatDateTime(generatedAt)}` : ""}
       </div>
     </section>
   );

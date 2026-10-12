@@ -20,13 +20,17 @@ from database.queries.cme import (
 )
 
 
-PDF_PATH = Path("storage/raw/cme/daily_bulletin/2026-05-06/Section64_Metals_Option_Products_2026-05-06.pdf")
+PDF_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "cme_repository"
+    / "Section64_Metals_Option_Products_2026-05-06.pdf"
+)
 
 
 def _resolve_pdf_path() -> Path:
-    if PDF_PATH.exists():
-        return PDF_PATH
-    pytest.skip("CME PDF fixture is not shipped in the public repository")
+    assert PDF_PATH.is_file(), PDF_PATH
+    return PDF_PATH
 
 
 def _make_session(tmp_path: Path):

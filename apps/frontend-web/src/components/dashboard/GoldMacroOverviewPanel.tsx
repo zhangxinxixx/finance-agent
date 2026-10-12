@@ -60,6 +60,7 @@ export function GoldMacroOverviewPanel({ overview }: GoldMacroOverviewPanelProps
       </header>
 
       <div className="fa-card-body space-y-3" style={{ padding: "9px 12px" }}>
+        <p className="fa-muted-text text-[var(--warn)]">主线摘要尚未提供当前可参考资格核验；请进入黄金主线查看数据缺口与验证条件。</p>
         <GoldMacroSummaryCard overview={overview} />
         <TopMainlinesStrip rankings={overview.theme_rankings ?? []} />
         <DriverConflictCard conflict={overview.driver_conflict} />

@@ -7,7 +7,7 @@ from typing import Any, Mapping
 from apps.analysis.agents.weekly_context_revision_prompt import build_weekly_context_revision_prompt_template
 from apps.renderer.contracts import WeeklyContextRevisionPayload
 
-_DEFAULT_PROVIDER = "jojocode"
+_DEFAULT_PROVIDER = "cockpit"
 _DEFAULT_MODEL = "gpt-5.6-sol"
 _DEFAULT_REASONING_EFFORT = "high"
 _PROMPT_VERSION = "weekly_context_revision_agent_v1"

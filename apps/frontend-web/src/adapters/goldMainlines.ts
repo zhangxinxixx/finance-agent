@@ -20,6 +20,7 @@ import type {
   GoldPhase,
   GoldPricingLayer,
   GoldReadinessStatus,
+  GoldReadTimeSourceHealth,
   GoldSchemaVersion,
   GoldVerificationStatus,
   MainlineRequirement,
@@ -94,6 +95,8 @@ export interface GoldMainlinesResponse {
   gold_mainlines: GoldMainlinesViewModel;
   source_refs: SourceRef[];
   warnings: string[];
+  read_time_source_health: GoldReadTimeSourceHealth | null;
+  read_time_warnings: string[];
   result_identity: ResultIdentity | null;
 }
 
@@ -108,6 +111,8 @@ interface RawGoldMainlinesResponse {
   gold_mainlines?: unknown;
   source_refs?: SourceRef[];
   warnings?: string[];
+  read_time_source_health?: unknown;
+  read_time_warnings?: unknown;
   result_identity?: unknown;
 }
 
@@ -333,6 +338,28 @@ function normalizeAnalysisReadiness(value: unknown): AnalysisReadiness | undefin
   };
 }
 
+function normalizeReadTimeSourceHealth(value: unknown): GoldReadTimeSourceHealth | null {
+  const item = asRecord(value);
+  if (Object.keys(item).length === 0) return null;
+  return {
+    overall_status: stringValue(item.overall_status, "unknown"),
+    as_of: nullableString(item.as_of),
+    p0_missing: normalizeStringList(item.p0_missing),
+    p1_missing: normalizeStringList(item.p1_missing),
+    p2_missing: normalizeStringList(item.p2_missing),
+    stale_sources: normalizeStringList(item.stale_sources),
+    fresh_sources: normalizeStringList(item.fresh_sources),
+    source_freshness: asRecord(item.source_freshness),
+    mainline_impact: asRecord(item.mainline_impact),
+    can_build_gold_macro_overview: typeof item.can_build_gold_macro_overview === "boolean" ? item.can_build_gold_macro_overview : null,
+    can_emit_strong_conclusion: typeof item.can_emit_strong_conclusion === "boolean" ? item.can_emit_strong_conclusion : null,
+    blocked_mainlines: normalizeStringList(item.blocked_mainlines),
+    degraded_mainlines: normalizeStringList(item.degraded_mainlines),
+    blocking_reasons: normalizeStringList(item.blocking_reasons),
+    warnings: normalizeStringList(item.warnings),
+  };
+}
+
 function normalizeProcessingTraceList(value: unknown): ProcessingTrace[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return recordList(value).map((trace) => ({
@@ -445,6 +472,8 @@ function normalizeGoldMainlinesResponse(raw: RawGoldMainlinesResponse): GoldMain
     gold_mainlines: normalizeGoldMainlinesViewModel(raw.gold_mainlines),
     source_refs: normalizeSourceRefs(raw.source_refs),
     warnings: normalizeStringList(raw.warnings),
+    read_time_source_health: normalizeReadTimeSourceHealth(raw.read_time_source_health),
+    read_time_warnings: normalizeStringList(raw.read_time_warnings),
     result_identity: normalizeResultIdentity(raw.result_identity),
   };
 }

@@ -11,9 +11,10 @@ from apps.analysis.agents import source_health
 from apps.analysis.agents.gold_v3_prompts import GOLD_V3_MAINLINES, GOLD_V3_TRANSMISSION_CHAINS
 from apps.analysis.agents.registry import get_agent_registry
 from apps.analysis.gold_mainline_engine import build_gold_macro_overview
-from apps.api.services import event_flow_service, report_service
+from apps.api.services import event_flow_service
 from apps.api.services import gold_mainline_service
 from apps.api.services import processing_monitor_service
+from apps.features.news import report_quality
 from apps.features.news.gold_event_mainlines import MAINLINE_ORDER, build_gold_event_mainlines
 from apps.contracts.gold import (
     GOLD_MAINLINE_IDS,
@@ -416,15 +417,15 @@ def test_jin10_asset_audit_normalizes_equivalent_image_references() -> None:
         r"figures\fig_p1_001.png",
     }
 
-    assert {report_service._normalize_jin10_image_ref(ref) for ref in refs} == {"figures/fig_p1_001.png"}
+    assert {report_quality._normalize_jin10_image_ref(ref) for ref in refs} == {"figures/fig_p1_001.png"}
 
 
 def test_jin10_chart_text_audit_does_not_flag_dense_chart_text_by_length_only() -> None:
     dense_chart_text = "A" * 121
     article_like_text = "黄金价格继续震荡。" * 24
 
-    assert report_service._jin10_chart_text_issues([{"figure_id": "dense", "recognized_text": dense_chart_text}]) == []
-    issues = report_service._jin10_chart_text_issues(
+    assert report_quality._jin10_chart_text_issues([{"figure_id": "dense", "recognized_text": dense_chart_text}]) == []
+    issues = report_quality._jin10_chart_text_issues(
         [{"figure_id": "article", "recognized_text": article_like_text}]
     )
     assert issues[0]["figure_id"] == "article"

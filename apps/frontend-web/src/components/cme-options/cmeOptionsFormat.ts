@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import type { CMEOptionsDecisionResponse, CMEOptionsResponse } from "@/types/cme-options";
 
 export const CME_META_TEXT = "var(--fa-text-label)";
@@ -19,6 +20,33 @@ export function toneStyle(kind: string) {
 export function formatNumber(value: number | null | undefined, digits = 0) {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   return value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+const CME_EXPIRY_MONTHS: Record<string, string> = {
+  JAN: "1月", FEB: "2月", MAR: "3月", APR: "4月", MAY: "5月", JUN: "6月",
+  JUL: "7月", AUG: "8月", SEP: "9月", OCT: "10月", NOV: "11月", DEC: "12月",
+};
+
+/** Keep exchange contract codes as evidence, but lead with a human-readable expiry label. */
+export function formatCMEExpiryLabel(value: string | null | undefined) {
+  if (!value) return "到期月未提供";
+  const normalized = value.trim();
+  const monthCode = normalized.match(/^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})$/i);
+  if (monthCode) {
+    const code = monthCode[1].toUpperCase();
+    return `${2000 + Number(monthCode[2])}年${CME_EXPIRY_MONTHS[code]}合约（${code}${monthCode[2]}）`;
+  }
+  if (/^[0-9]{4}-[0-9]{2}(-[0-9]{2})?$/.test(normalized)) return `到期日 ${normalized}`;
+  if (/^[0-9]{6,}$/.test(normalized)) return `到期合约（${normalized}）`;
+  return /[\u3400-\u9fff]/.test(normalized) ? normalized : `到期范围待确认（${normalized}）`;
+}
+
+export function formatCMEProductLabel(value: string | null | undefined) {
+  if (!value) return "黄金期权产品未提供";
+  const normalized = value.trim();
+  if (normalized.toUpperCase() === "OG") return "COMEX 黄金期权（OG）";
+  if (/CME|OPTIONS/i.test(normalized)) return "CME 黄金期权";
+  return /[\u3400-\u9fff]/.test(normalized) ? normalized : `黄金期权产品待确认（${normalized}）`;
 }
 
 export function formatCompactNumber(
@@ -47,15 +75,9 @@ export function summarizeDecision(decision: CMEOptionsDecisionResponse | null | 
     return translateDecisionText(decision.intraday_strategy.summary);
   }
 
-  const resolvedRegime = decision.gamma_summary.regime === "negative_gamma" || decision.gamma_summary.regime === "positive_gamma" || decision.gamma_summary.regime === "flip_zone"
-    ? decision.gamma_summary.regime
-    : decision.gamma_summary.net_gex === null
-      ? "unavailable"
-      : decision.gamma_summary.net_gex < 0
-        ? "negative_gamma"
-        : decision.gamma_summary.net_gex > 0
-          ? "positive_gamma"
-          : "flip_zone";
+  // `net_gex` is a structural exposure metric.  It cannot replace the
+  // backend's freshness and coordinate-aware regime decision.
+  const resolvedRegime = decision.gamma_summary.regime;
   const regime = resolvedRegime === "negative_gamma"
     ? "负伽马环境"
     : resolvedRegime === "positive_gamma"
@@ -138,7 +160,10 @@ export function resolveDirectionalWall(
     };
   }
 
-  const currentPrice = snapshot.parameters?.f_value ?? snapshot.gex?.netgex_aggregate?.gamma_zero?.price ?? null;
+  const currentPrice = snapshot.parameters?.report_p0
+    ?? snapshot.parameters?.p0
+    ?? snapshot.gex?.netgex_aggregate?.gamma_zero?.price
+    ?? null;
   const supportResistanceLevels = side === "CALL"
     ? snapshot.support_resistance?.resistance ?? []
     : snapshot.support_resistance?.support ?? [];
@@ -204,8 +229,8 @@ export function translateIntent(text: string | null | undefined): string {
     bullish: "偏多",
     bearish: "偏空",
     neutral: "中性",
-    "Pin Compression": "Pin 压缩",
-    "Gamma Squeeze": "Gamma 挤压",
+    "Pin Compression": "吸附位压缩（Pin Compression）",
+    "Gamma Squeeze": "伽马挤压（Gamma Squeeze）",
     I1_defensive: "防守结构",
     i1_defensive: "防守结构",
     l1_defensive: "防守结构",
@@ -278,7 +303,7 @@ export function translateEvidence(text: string | null | undefined): string {
   translated = translated.replace(/\brows_missing_delta:\s*([0-9.,]+)\s*行/gi, "Delta 缺口 $1 行");
   translated = translated.replace(/\bProxy\b/gi, "代理");
   translated = translated.replace(/\bproxy_strikes\b/gi, "代理行权价");
-  translated = translated.replace(/\bGamma Proxy\b/gi, "Gamma 代理");
+  translated = translated.replace(/\bGamma Proxy\b/gi, "伽马代理（Gamma Proxy）");
   translated = translated.replace(/\bstrike\b/gi, "行权价");
   translated = translated.replace(/\bexpiry_date_estimated_from_delivery_month\b/gi, "到期日由交割月份估算");
   translated = translated.replace(/\bgrid_skipped_rows_without_iv\b/gi, "波动率网格已跳过缺 IV 行");
@@ -286,6 +311,7 @@ export function translateEvidence(text: string | null | undefined): string {
   translated = translated.replace(/\bcall OI\b/gi, "看涨持仓");
   translated = translated.replace(/\bsupport\/resistance\b/gi, "支撑/阻力");
   translated = translated.replace(/\bconviction\b/gi, "置信度");
+  translated = translated.replace(/\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})\b/gi, (_, month: string, year: string) => formatCMEExpiryLabel(`${month}${year}`));
   translated = translated.replace(/\bmissing\b/gi, "缺失");
   translated = translated.replace(/\b(i1_defensive|l1_defensive)\b/gi, "防守结构");
   translated = translated.replace(/\b(i2_structured_rebalance|l2_structured_rebalance|structured_rebalance)\b/gi, "结构再平衡");
@@ -324,7 +350,7 @@ export function translateDecisionText(text: string | null | undefined): string {
     negative_gamma: "负伽马",
     positive_gamma: "正伽马",
     flip_zone: "伽马翻转区",
-    flip_watch: "Gamma 翻转观察",
+    flip_watch: "伽马翻转观察（Gamma Flip）",
     watch: "观察",
     confirmed: "已确认",
     "weighted-average": "加权平均",
@@ -334,19 +360,25 @@ export function translateDecisionText(text: string | null | undefined): string {
   const normalized = text.trim();
   if (exactLabels[normalized]) return exactLabels[normalized];
 
-  let translated = translateEvidence(normalized);
+  let translated = normalized;
   const replacements: Array<[RegExp, string]> = [
     [/Model negative-gamma regime: wait for boundary confirmation because breaks may extend\.?/gi, "负伽马环境：先等待边界确认，突破后的波动可能延续。"],
-    [/Model gamma-flip regime: wait for price acceptance outside the flip band\.?/gi, "Gamma 翻转区：等待价格在翻转带外形成有效接受。"],
+    [/Model gamma-flip regime: wait for price acceptance outside the flip band\.?/gi, "伽马翻转区（Gamma Flip）：等待价格在翻转带外形成有效接受。"],
     [/Model positive-gamma regime: prefer range reversion until price acceptance confirms a break\.?/gi, "正伽马环境：突破被有效接受前，优先按区间回归处理。"],
     [/primary support remains defended while price rotates toward (?:the )?Gamma Flip band/gi, "主支撑未失守，价格向伽马翻转带回归"],
     [/primary support\s+([0-9.,]+)\s+breaks with acceptance/gi, "主支撑 $1 被有效跌破"],
     [/subsequent CME trade dates retain or improve (?:Call OI|看涨持仓|看涨 OI) participation/gi, "后续 CME 交易日看涨 OI 参与度保持或增强"],
     [/price falls back below Gamma Flip\s+([0-9.,]+)/gi, "价格跌回伽马翻转位 $1 下方"],
     [/the reclaimed structure cannot hold on retest/gi, "收复后回踩无法守住"],
-    [/Put protection and downside skew strengthen again/gi, "看跌保护与下行 Skew 重新增强"],
+    [/Put protection and downside skew strengthen again/gi, "看跌保护与下行偏度（Skew）重新增强"],
     [/broken support\s+([0-9.,]+)\s+is reclaimed and held/gi, "重新收复并守住已跌破支撑 $1"],
     [/live_p0 unavailable/gi, "实时价格不可用"],
+    [/Canonical XAUUSD 5m live price is stale\.?/gi, "规范化现货黄金（XAUUSD）5分钟行情已过期。"],
+    [/Canonical XAUUSD 5m live price is unavailable\.?/gi, "规范化现货黄金（XAUUSD）5分钟行情不可用。"],
+    [/XAUUSD spot→GC futures basis is unvalidated; live spot cannot drive the GC gamma regime or intraday levels\.?/gi, "XAUUSD 现货到 GC 期货基差未验证；实时现货不驱动 GC 伽马环境或日内价位。"],
+    [/Validated basis did not provide a GC-equivalent live price\.?/gi, "已验证基差未提供可用的 GC 等价实时价格。"],
+    [/GC futures structure may be compared with the validated GC-equivalent live price\.?/gi, "GC 期货结构可与已验证的 GC 等价实时价格比较。"],
+    [/Do not fabricate an intraday decision without a validated GC-equivalent live price and gamma regime\.?/gi, "缺少已验证的 GC 等价实时价格和伽马环境时，不生成日内决策。"],
     [/Do not fabricate an intraday decision without canonical live price and gamma regime\.?/gi, "缺少标准实时价格和伽马环境时，不生成日内决策。"],
     [/primary support rejects a break and price reclaims the level/gi, "主支撑拒绝跌破，价格重新站回该价位"],
     [/price accepts above the Gamma Flip band and confirms on retest/gi, "价格有效站上伽马翻转区间，并在回踩时确认"],
@@ -358,10 +390,11 @@ export function translateDecisionText(text: string | null | undefined): string {
     [/broken support is reclaimed and held/gi, "重新收复并守住已跌破的支撑"],
     [/price acceptance beyond Gamma Flip/gi, "价格有效突破伽马翻转位"],
     [/OI expansion persists across subsequent CME trade dates/gi, "后续 CME 交易日持仓继续扩张"],
-    [/Static decision card only; this is not the #63 intraday state machine\.?/gi, "仅为静态决策卡，不代表 #63 日内状态机。"],
+    [/Static decision card only; this is not the #63 intraday state machine\.?/gi, "仅为当日研究参考，盘中触发条件尚需另外核验。"],
     [/Avoid chasing the first move through a two-sided volatility hub\.?/gi, "双向波动枢纽被首次穿越时，避免追价。"],
     [/This multi-day view uses observed OI history and does not infer dealer inventory\.?/gi, "该多日视图仅使用已观察的持仓历史，不推断做市商库存。"],
-    [/Model GEX is a Black-76\/proxy estimate, not real dealer inventory\.?/gi, "模型 GEX 为 Black-76 代理估算，不代表真实做市商库存。"],
+    [/Block volume has no non-zero observed rows; treat Block totals as not verified\.?/gi, "未观测到非零的大宗成交，不能把显示的零值视为已核验的成交量。"],
+    [/Model GEX is a Black-76\/(?:proxy|代理) estimate, not real dealer inventory\.?/gi, "模型 GEX 为 Black-76 代理估算，不代表真实做市商库存。"],
     [/25D Skew=/gi, "25Δ 偏度="],
     [/10D Tail Skew=/gi, "10Δ 尾部偏度="],
     [/\bPut 偏贵/gi, "看跌期权偏贵"],
@@ -391,8 +424,13 @@ export function translateDecisionText(text: string | null | undefined): string {
   replacements.forEach(([pattern, replacement]) => {
     translated = translated.replace(pattern, replacement);
   });
+  // Translate complete explanations before generic token replacements can break a phrase.
+  translated = translateEvidence(translated);
+  replacements.forEach(([pattern, replacement]) => {
+    translated = translated.replace(pattern, replacement);
+  });
   translated = translated.replace(/(?:net_gex|净伽马)=(-?[0-9.]+)/gi, (_, raw: string) => `净伽马=${formatCompactNumber(Number(raw))}`);
   translated = translated.replace(/持仓=(-?[0-9]+)/g, (_, raw: string) => `持仓=${formatNumber(Number(raw))} 张`);
   translated = translated.replace(/-?[0-9]+\.[0-9]{4,}/g, (raw) => formatNumber(Number(raw), 1));
-  return translated.replace(/\s+/g, " ").trim() || "—";
+  return readableWarning(translated.replace(/\s+/g, " ").trim()) || "—";
 }

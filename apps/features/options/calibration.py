@@ -13,6 +13,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
+from apps.features.options.black76 import sort_expiry_codes
+
 
 @dataclass(frozen=True)
 class OiDelta:
@@ -194,6 +196,11 @@ def calibrate_walls(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _normalise_expiry(value: Any) -> str:
+    """Canonicalize a CME month code before ordering or comparing it."""
+    return str(value or "").strip().upper()
+
+
 def _compute_oi_deltas(
     prev_rows: list[dict[str, Any]],
     curr_rows: list[dict[str, Any]],
@@ -311,8 +318,9 @@ def _detect_expiry_rolls(
     if not curr_rows:
         return []
 
-    # Find all expiries
-    expiries = sorted(set(str(r.get("expiry", "")) for r in curr_rows if r.get("expiry")))
+    # Find all expiries in maturity order.  Lexical ordering puts NOV26 before
+    # OCT26, which reverses the near/next-month roll signal.
+    expiries = sort_expiry_codes({_normalise_expiry(r.get("expiry")) for r in curr_rows if r.get("expiry")})
     if len(expiries) < 2:
         return []
 
@@ -321,7 +329,7 @@ def _detect_expiry_rolls(
 
     # Compute total OI for each month
     def _total_oi(rows: list[dict[str, Any]], expiry: str) -> int:
-        return sum(int(r.get("open_interest", 0)) for r in rows if str(r.get("expiry", "")) == expiry)
+        return sum(int(r.get("open_interest", 0)) for r in rows if _normalise_expiry(r.get("expiry")) == expiry)
 
     near_curr = _total_oi(curr_rows, near_month)
     next_curr = _total_oi(curr_rows, next_month)
@@ -369,18 +377,18 @@ def _compare_near_next_month(
     if not rows:
         return {}
 
-    expiries = sorted(set(str(r.get("expiry", "")) for r in rows if r.get("expiry")))
+    expiries = sort_expiry_codes({_normalise_expiry(r.get("expiry")) for r in rows if r.get("expiry")})
     if len(expiries) < 2:
         return {"near_month": expiries[0] if expiries else "", "next_month": "", "oi_ratio": None}
 
     near_month = expiries[0]
     next_month = expiries[1]
 
-    near_total = sum(int(r.get("open_interest", 0)) for r in rows if str(r.get("expiry", "")) == near_month)
-    next_total = sum(int(r.get("open_interest", 0)) for r in rows if str(r.get("expiry", "")) == next_month)
+    near_total = sum(int(r.get("open_interest", 0)) for r in rows if _normalise_expiry(r.get("expiry")) == near_month)
+    next_total = sum(int(r.get("open_interest", 0)) for r in rows if _normalise_expiry(r.get("expiry")) == next_month)
 
-    near_vol = sum(int(r.get("total_volume", 0)) for r in rows if str(r.get("expiry", "")) == near_month)
-    next_vol = sum(int(r.get("total_volume", 0)) for r in rows if str(r.get("expiry", "")) == next_month)
+    near_vol = sum(int(r.get("total_volume", 0)) for r in rows if _normalise_expiry(r.get("expiry")) == near_month)
+    next_vol = sum(int(r.get("total_volume", 0)) for r in rows if _normalise_expiry(r.get("expiry")) == next_month)
 
     return {
         "near_month": near_month,

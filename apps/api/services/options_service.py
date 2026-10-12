@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import datetime, timezone
+from datetime import date as _date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from apps.analysis.options.decision import build_options_decision
 from apps.api.services.market_candle_service import get_market_candles
@@ -13,11 +14,166 @@ from apps.api.services.agent_output_service import build_agent_output_summary
 from apps.api.services.review_service import build_review_item_response
 from database.queries.analysis import list_agent_outputs
 from database.queries.review import list_review_items
-from database.queries.cme import get_available_cme_trade_dates, get_cme_option_rows
+from database.queries.warehouse_cme import WarehouseCmeReadError, get_available_cme_trade_dates, get_cme_option_rows
+from database.models.execution import RunArtifact
+from database.models.task import TaskRun, TaskStatus
 
 
-from datetime import date as _date, timedelta
 from sqlalchemy.orm import Session
+
+
+_VALID_OPTION_RUN_STATUSES = {
+    TaskStatus.success,
+    TaskStatus.partial_success,
+    TaskStatus.degraded,
+    "success",
+    "partial_success",
+    "degraded",
+}
+
+
+def _as_utc_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif value:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def _same_artifact_path(candidate: Path, registered_path: Any) -> bool:
+    if not registered_path:
+        return False
+    try:
+        registered = Path(str(registered_path))
+        if not registered.is_absolute():
+            registered = _PROJECT_ROOT / registered
+        return registered.resolve() == candidate.resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+def _verified_run_time(path: Path, payload: dict[str, Any], *, db: Session | None) -> tuple[datetime | None, str, int]:
+    """Return the strongest verifiable timestamp for one stored options run.
+
+    RunArtifact/TaskRun timestamps are authoritative when available.  The
+    artifact payload timestamp and file mtime remain compatibility fallbacks
+    for legacy filesystem-only runs.  A UUID is never used as a recency key.
+    """
+    run_id = path.parent.name
+    run_uuid: UUID | None = None
+    try:
+        run_uuid = UUID(run_id)
+    except (TypeError, ValueError):
+        pass
+
+    if db is not None and run_uuid is not None:
+        try:
+            registry_rows = (
+                db.query(RunArtifact)
+                .filter(RunArtifact.run_id == run_uuid)
+                .all()
+            )
+            matching_rows = [row for row in registry_rows if _same_artifact_path(path, row.file_path)]
+            registry_times = [
+                timestamp
+                for row in matching_rows
+                for timestamp in (
+                    _as_utc_datetime(getattr(row, "generated_at", None)),
+                    _as_utc_datetime(getattr(row, "created_at", None)),
+                )
+                if timestamp is not None
+            ]
+            if registry_times:
+                return max(registry_times), "run_artifacts", 3
+        except Exception:
+            # Older local databases may not have the additive registry table.
+            pass
+
+        try:
+            run = db.get(TaskRun, run_uuid)
+            if run is not None and run.status in _VALID_OPTION_RUN_STATUSES:
+                for field in ("ended_at", "updated_at", "started_at", "created_at"):
+                    timestamp = _as_utc_datetime(getattr(run, field, None))
+                    if timestamp is not None:
+                        return timestamp, f"task_runs.{field}", 2
+        except Exception:
+            pass
+
+    payload_time = _as_utc_datetime(payload.get("generated_at"))
+    if payload_time is not None:
+        return payload_time, "payload.generated_at", 1
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc), "filesystem.mtime", 0
+    except OSError:
+        return None, "unverified", -1
+
+
+def _versioned_option_candidates(date_dir: Path, trade_date: str, *, db: Session | None) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    if not date_dir.is_dir():
+        return candidates
+    for run_dir in (item for item in date_dir.iterdir() if item.is_dir()):
+        path = run_dir / "options_analysis.json"
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        resolved_trade_date = str(payload.get("trade_date") or trade_date)
+        if resolved_trade_date != trade_date:
+            continue
+        verified_at, verified_by, verification_priority = _verified_run_time(path, payload, db=db)
+        candidates.append(
+            {
+                "path": path,
+                "payload": payload,
+                "verified_at": verified_at,
+                "verified_by": verified_by,
+                "verification_priority": verification_priority,
+            }
+        )
+    return candidates
+
+
+def _latest_versioned_option_candidate(date_dir: Path, trade_date: str, *, db: Session | None) -> dict[str, Any] | None:
+    candidates = _versioned_option_candidates(date_dir, trade_date, db=db)
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            item["verified_at"] or datetime.min.replace(tzinfo=timezone.utc),
+            item["verification_priority"],
+            str(item["path"]),
+        ),
+    )
+
+
+def _fast_option_report_dates() -> list[str]:
+    """List date-directory candidates without parsing historical JSON files."""
+    bases = (
+        _PROJECT_ROOT / "storage" / "outputs" / "cme",
+        _PROJECT_ROOT / "storage" / "outputs" / "cme_options",
+        _PROJECT_ROOT / "storage" / "features" / "cme",
+        _PROJECT_ROOT / "storage" / "features" / "snapshots" / "XAUUSD",
+    )
+    dates: set[str] = set()
+    for base in bases:
+        if not base.is_dir():
+            continue
+        try:
+            dates.update(item.name for item in base.iterdir() if item.is_dir())
+        except OSError:
+            continue
+    return sorted(dates, reverse=True)
 
 
 def _get_t1_trade_date() -> str:
@@ -40,32 +196,31 @@ def get_options_snapshot(date_str: str | None = None, db: Session | None = None)
     cme_base = _PROJECT_ROOT / "storage" / "outputs" / "cme_options"
     cme_features = _PROJECT_ROOT / "storage" / "features" / "cme"
     snap_base = _PROJECT_ROOT / "storage" / "features" / "snapshots" / "XAUUSD"
+    # Request-local only: never retain a stale research artifact across reads.
+    parsed_snapshots: dict[Path, dict[str, Any] | None] = {}
 
     def _load_new_cme_output(date: str) -> dict[str, Any] | None:
-        # Prefer features directory (near-month-only data) over outputs
-        features_date_dir = cme_features / date
-        if features_date_dir.exists():
-            for run_dir in sorted((d for d in features_date_dir.iterdir() if d.is_dir()), reverse=True):
-                path = run_dir / "options_analysis.json"
-                if not path.exists():
-                    continue
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                    return _finalize_snapshot_payload(payload, trade_date=date, run_id=run_dir.name)
-                except Exception:
-                    continue
-        date_dir = cme_new / date
-        if date_dir.exists():
-            for run_dir in sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True):
-                path = run_dir / "options_analysis.json"
-                if not path.exists():
-                    continue
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                    return _finalize_snapshot_payload(payload, trade_date=date, run_id=run_dir.name)
-                except Exception:
-                    continue
-        return None
+        # Features remain preferred on a timestamp tie, but freshness is
+        # evaluated across both layers.  UUID lexical order is not a run
+        # chronology and must not decide the view.
+        candidates: list[dict[str, Any]] = []
+        for layer_priority, date_dir in enumerate((cme_features / date, cme_new / date), start=1):
+            for candidate in _versioned_option_candidates(date_dir, date, db=db):
+                candidate["layer_priority"] = layer_priority
+                candidates.append(candidate)
+        if not candidates:
+            return None
+        candidate = max(
+            candidates,
+            key=lambda item: (
+                item["verified_at"] or datetime.min.replace(tzinfo=timezone.utc),
+                item["verification_priority"],
+                -item["layer_priority"],
+                str(item["path"]),
+            ),
+        )
+        payload = dict(candidate["payload"])
+        return _finalize_snapshot_payload(payload, trade_date=date, run_id=candidate["path"].parent.name)
 
     def _load_standalone(date: str) -> dict[str, Any] | None:
         path = cme_base / date / "options_analysis.json"
@@ -79,18 +234,35 @@ def get_options_snapshot(date_str: str | None = None, db: Session | None = None)
 
     def _load_from_snapshot(date: str) -> dict[str, Any] | None:
         if snap_base.exists():
-            date_dirs = sorted((d for d in snap_base.iterdir() if d.is_dir()), reverse=True)
+            # A research snapshot may reuse older CME data, but cannot contain
+            # market facts from after its own as-of date. Avoid parsing years
+            # of large frozen snapshots to look for a missing current bulletin.
+            date_dirs = sorted((d for d in snap_base.iterdir() if d.is_dir() and d.name >= date), reverse=True)
             direct_date_dir = snap_base / date
             if direct_date_dir in date_dirs:
                 date_dirs.remove(direct_date_dir)
                 date_dirs.insert(0, direct_date_dir)
             for date_dir in date_dirs:
-                for run_dir in sorted((d for d in date_dir.iterdir() if d.is_dir()), reverse=True):
+                candidates: list[dict[str, Any]] = []
+                for run_dir in (item for item in date_dir.iterdir() if item.is_dir()):
                     snap_path = run_dir / "premarket_snapshot.json"
                     if not snap_path.exists():
                         continue
                     try:
-                        snap = json.loads(snap_path.read_text(encoding="utf-8"))
+                        if snap_path not in parsed_snapshots:
+                            parsed_snapshots[snap_path] = None
+                            raw_snapshot = json.loads(snap_path.read_text(encoding="utf-8"))
+                            if isinstance(raw_snapshot, dict):
+                                # Macro/news payloads can be large; only these
+                                # fields participate in this options read.
+                                parsed_snapshots[snap_path] = {
+                                    "options": raw_snapshot.get("options"),
+                                    "generated_at": raw_snapshot.get("generated_at"),
+                                }
+                            del raw_snapshot
+                        snap = parsed_snapshots[snap_path]
+                        if not isinstance(snap, dict):
+                            continue
                         options_raw = snap.get("options")
                         if not isinstance(options_raw, dict) or options_raw.get("status") != "available":
                             continue
@@ -100,21 +272,41 @@ def get_options_snapshot(date_str: str | None = None, db: Session | None = None)
                         options_trade_date = str(options.get("trade_date") or date_dir.name)
                         if options_trade_date != date:
                             continue
-                        return _finalize_snapshot_payload(options, trade_date=date, run_id=run_dir.name)
+                        verified_at, _, priority = _verified_run_time(snap_path, snap, db=db)
+                        candidates.append(
+                            {
+                                "options": options,
+                                "run_id": run_dir.name,
+                                "verified_at": verified_at,
+                                "priority": priority,
+                                "path": snap_path,
+                            }
+                        )
                     except Exception:
                         continue
+                if candidates:
+                    candidate = max(
+                        candidates,
+                        key=lambda item: (
+                            item["verified_at"] or datetime.min.replace(tzinfo=timezone.utc),
+                            item["priority"],
+                            str(item["path"]),
+                        ),
+                    )
+                    return _finalize_snapshot_payload(
+                        dict(candidate["options"]),
+                        trade_date=date,
+                        run_id=candidate["run_id"],
+                    )
         # Also check features directory (option_wall step output)
         features_date_dir = cme_features / date
-        if features_date_dir.exists():
-            for run_dir in sorted((d for d in features_date_dir.iterdir() if d.is_dir()), reverse=True):
-                path = run_dir / "options_analysis.json"
-                if not path.exists():
-                    continue
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                    return _finalize_snapshot_payload(payload, trade_date=date, run_id=run_dir.name)
-                except Exception:
-                    continue
+        candidate = _latest_versioned_option_candidate(features_date_dir, date, db=db)
+        if candidate is not None:
+            return _finalize_snapshot_payload(
+                dict(candidate["payload"]),
+                trade_date=date,
+                run_id=candidate["path"].parent.name,
+            )
 
     def _attach_analysis(payload: dict[str, Any] | None) -> dict[str, Any] | None:
         if payload is None:
@@ -127,18 +319,26 @@ def get_options_snapshot(date_str: str | None = None, db: Session | None = None)
         _enrich_options_snapshot_lineage(payload, agent_rows=agent_rows)
         return payload
 
-    all_dates = list_options_report_dates()
-    if not all_dates:
-        return None
     if date_str:
         return _attach_analysis(_load_new_cme_output(date_str) or _load_standalone(date_str) or _load_from_snapshot(date_str))
-    # 优先 T-1 交易日
+
+    # The no-date endpoint is hot on the dashboard.  Resolve the likely
+    # current date from directory names first; parse the full historical index
+    # only when the fast path cannot produce a valid snapshot (for example,
+    # legacy nested snapshot trade dates).
+    fast_dates = _fast_option_report_dates()
     t1 = _get_t1_trade_date()
-    if t1 in all_dates:
-        loaded = _load_new_cme_output(t1) or _load_standalone(t1) or _load_from_snapshot(t1)
+    candidate_dates = [t1, *[candidate for candidate in fast_dates if candidate != t1]]
+    for candidate_date in candidate_dates:
+        if candidate_date not in fast_dates and candidate_date != t1:
+            continue
+        loaded = _load_new_cme_output(candidate_date) or _load_standalone(candidate_date) or _load_from_snapshot(candidate_date)
         if loaded is not None:
             return _attach_analysis(loaded)
-    # T-1 无数据，降级到最新可用
+
+    # Compatibility fallback for snapshot-only stores whose parent directory
+    # date differs from the nested options trade date.
+    all_dates = list_options_report_dates()
     for candidate_date in all_dates:
         loaded = _load_new_cme_output(candidate_date) or _load_standalone(candidate_date) or _load_from_snapshot(candidate_date)
         if loaded is not None:
@@ -151,6 +351,7 @@ def get_options_decision(
     *,
     lookback_days: int = 5,
     db: Session | None = None,
+    allow_archived_parse: bool = True,
 ) -> dict[str, Any] | None:
     """Read the decision ViewModel from a stored snapshot and local DB inputs."""
     snapshot = get_options_snapshot(date_str, db=db)
@@ -169,15 +370,17 @@ def get_options_decision(
     live_context: dict[str, Any] = {}
     database_dates: list[str] = []
     if db is not None:
-        database_dates = [
-            item
-            for item in get_available_cme_trade_dates(
+        try:
+            available_dates = get_available_cme_trade_dates(
                 db,
                 product=product,
                 limit=max(lookback_days + 5, 20),
             )
-            if item <= trade_date
-        ]
+        except WarehouseCmeReadError as exc:
+            if str(exc) != "DWD_CME_FACTS_MISSING":
+                raise
+            available_dates = []
+        database_dates = [item for item in available_dates if item <= trade_date]
         try:
             candles = get_market_candles(asset="XAUUSD", timeframe="5m", limit=1, session=db)
             latest = (candles.get("candles") or [])[-1:]
@@ -193,15 +396,27 @@ def get_options_decision(
                     "status": live_status,
                     "freshness_seconds": freshness_seconds,
                     "coverage_status": coverage_status,
+                    "coordinate_space": "XAUUSD spot",
+                    "basis_status": "unvalidated",
+                    "basis_reason": (
+                        "XAUUSD spot→GC futures basis is unvalidated; live spot cannot drive the GC gamma regime or intraday levels."
+                    ),
                 }
         except Exception:
             # An unavailable local candle must degrade only intraday fields.
             live_context = {}
 
+    # OI comparisons need parsed rows, not report dates. Scanning research
+    # JSON cannot add a usable row source, and misses parsed dates whose
+    # report has not been rendered yet.
+    archive_dates: list[str] = []
+    if allow_archived_parse:
+        archive_root = _PROJECT_ROOT / "storage" / "parsed" / "cme"
+        archive_dates = [item.name for item in archive_root.iterdir() if item.is_dir()] if archive_root.is_dir() else []
     candidate_dates = sorted(
         {
             candidate
-            for candidate in [*database_dates, *list_options_report_dates()]
+            for candidate in [*database_dates, *archive_dates]
             if candidate <= trade_date
         },
         reverse=True,
@@ -219,18 +434,20 @@ def get_options_decision(
         )
         if rows:
             source_ref = {
-                "name": "cme_option_rows",
-                "source_ref": f"database://cme_option_rows/{candidate}",
+                "name": "dwh_fact_cme_option",
+                "source_ref": f"database://dwh_fact_cme_option/{candidate}",
                 "status": "ok",
                 "trade_date": candidate,
                 "source_kind": "database",
             }
-        else:
+        elif allow_archived_parse:
             rows, source_ref = _load_archived_cme_rows(
                 candidate,
                 product=product,
                 expiries=expiries,
             )
+        else:
+            rows, source_ref = [], None
         if not rows:
             continue
         history_rows_by_date[candidate] = rows
@@ -291,7 +508,10 @@ def _load_archived_cme_rows(
         return [], None
 
     candidates: list[tuple[int, Path, dict[str, Any]]] = []
-    for path in sorted(date_dir.glob("*/cme_parse_result.json"), reverse=True):
+    # The worker archives by run; the supported PDF parser CLI writes a
+    # flat <product>_<expiries>_detail_<date>_<version>.json in this date dir.
+    paths = [*date_dir.glob("*/cme_parse_result.json"), *date_dir.glob("*_detail_*.json")]
+    for path in sorted(paths, reverse=True):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):

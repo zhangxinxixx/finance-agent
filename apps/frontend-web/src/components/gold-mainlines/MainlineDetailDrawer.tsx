@@ -36,10 +36,10 @@ function MissingCoveragePanel({ rows }: { rows: MainlineCoverageRow[] }) {
   const pendingRows = rows.filter((row) => row.status === "pending");
 
   return (
-    <FACard title="覆盖缺口" eyebrow="Coverage Gaps" accent="warn" className="shrink-0">
+    <FACard title="登记与验证缺口" eyebrow="Registration / Verification Gaps" accent="warn" className="shrink-0">
       <div className="grid gap-3">
         <div>
-          <div className="text-[length:var(--type-caption)] font-semibold text-[var(--fg-5)]">未覆盖主线</div>
+          <div className="text-[length:var(--type-caption)] font-semibold text-[var(--fg-5)]">未登记主线</div>
           {missingRows.length ? (
             <div className="mt-1.5 grid gap-2">
               {missingRows.map((row) => {
@@ -60,7 +60,7 @@ function MissingCoveragePanel({ rows }: { rows: MainlineCoverageRow[] }) {
               })}
             </div>
           ) : (
-            <div className="mt-1.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">九条主线均已有后端覆盖。</div>
+            <div className="mt-1.5 text-[length:var(--type-caption)] text-[var(--fg-4)]">九条主线均有排序记录；当前可靠性仍以数据源和验证状态为准。</div>
           )}
         </div>
         <div>
@@ -78,7 +78,7 @@ function MissingCoveragePanel({ rows }: { rows: MainlineCoverageRow[] }) {
 }
 
 function VerificationPanel({ overview }: { overview: GoldMacroOverview }) {
-  const verification = overview.verification_matrix.slice(0, 8);
+  const verification = overview.verification_matrix;
   const conflictChecks = overview.driver_conflict?.verification_needed ?? [];
 
   return (
@@ -94,7 +94,7 @@ function VerificationPanel({ overview }: { overview: GoldMacroOverview }) {
           {verification.map((item) => (
             <div key={item.id} className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-2">
               <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 truncate text-[length:var(--type-caption)] font-semibold text-[var(--fg-2)]">{verificationLabel(item)}</div>
+                <div className="min-w-0 break-words text-[length:var(--type-body-sm)] font-semibold text-[var(--fg-2)]">{verificationLabel(item)}</div>
                 <FAStatusPill tone={statusTone(item.status)} dot={false}>{formatGoldVerificationStatusLabel(item.status)}</FAStatusPill>
               </div>
               <div className="mt-1 flex flex-wrap gap-1.5 text-[length:var(--type-caption)] text-[var(--fg-5)]">
@@ -118,7 +118,6 @@ function ConflictPanel({ overview }: { overview: GoldMacroOverview }) {
   return (
     <FACard
       title="多空冲突"
-      eyebrow="Driver Conflict"
       accent={conflict.status === "aligned" ? "up" : "warn"}
       className="shrink-0"
       action={<FAStatusPill tone={goldConflictTone(conflict.status)} dot={false}>{formatGoldConflictStatusLabel(conflict.status)}</FAStatusPill>}
@@ -152,7 +151,6 @@ function ChainPanel({ overview }: { overview: GoldMacroOverview }) {
   return (
     <FACard
       title={formatTransmissionPathLabel(chain.path_id)}
-      eyebrow="Transmission Chain"
       accent="warn"
       className="shrink-0"
       action={<FAStatusPill tone={goldNetBiasTone(chain.net_effect)} dot={false}>{formatGoldNetBiasLabel(chain.net_effect)}</FAStatusPill>}
@@ -163,8 +161,8 @@ function ChainPanel({ overview }: { overview: GoldMacroOverview }) {
           {chain.steps.map((step) => (
             <div key={step.id} className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-1.5 text-[length:var(--type-caption)]">
               <GitBranch size={11} className="text-[var(--warn)]" />
-              <span className="min-w-0 flex-1 truncate text-[var(--fg-2)]">{step.label}</span>
-              <FAStatusPill tone={statusTone(step.status ?? "partial")} dot={false}>{step.status ?? "partial"}</FAStatusPill>
+              <span className="min-w-0 flex-1 break-words text-[var(--fg-2)]">{step.label}</span>
+              <FAStatusPill tone={statusTone(step.status)} dot={false}>{step.status === "partial" ? "部分待补证" : step.status === "available" ? "已有数据" : step.status === "stale" ? "数据过期" : formatGoldVerificationStatusLabel(step.status ?? "unknown")}</FAStatusPill>
             </div>
           ))}
         </div>
@@ -176,10 +174,10 @@ function ChainPanel({ overview }: { overview: GoldMacroOverview }) {
 export function MainlineDetailDrawer({ overview, rows }: MainlineDetailDrawerProps) {
   return (
     <div className="grid content-start gap-3">
-      <MissingCoveragePanel rows={rows} />
-      <VerificationPanel overview={overview} />
       <ConflictPanel overview={overview} />
       <ChainPanel overview={overview} />
+      <VerificationPanel overview={overview} />
+      <MissingCoveragePanel rows={rows} />
     </div>
   );
 }

@@ -28,6 +28,24 @@ def get_gold_mainlines_latest(*, project_root: Path | None = None) -> dict[str, 
     return payload
 
 
+def get_gold_macro_overview_latest(*, project_root: Path | None = None) -> dict[str, Any] | None:
+    """Load the latest overview artifact without rebuilding the full mainlines read model.
+
+    Dashboard only needs fields already persisted in ``gold_macro_overview.json``.
+    The full endpoint still uses ``get_gold_mainlines_latest`` so its normalization,
+    source-health, and result-identity contract remains unchanged.
+    """
+
+    root = project_root or _PROJECT_ROOT
+    base = root / "storage" / "analysis" / "gold_mainlines"
+    for _date, _run_id, overview_path in _latest_artifact_paths(base=base, filename=_OVERVIEW_FILENAME):
+        return _load_json_dict(overview_path)
+
+    inferred = _load_latest_inferred_gold_mainlines(project_root=root)
+    overview = inferred.get("gold_macro_overview") if isinstance(inferred, dict) else None
+    return overview if isinstance(overview, dict) else None
+
+
 def _get_gold_mainlines_latest(*, project_root: Path) -> dict[str, Any]:
     root = project_root or _PROJECT_ROOT
     base = root / "storage" / "analysis" / "gold_mainlines"

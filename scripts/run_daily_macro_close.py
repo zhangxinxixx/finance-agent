@@ -17,10 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apps.analysis.jin10.daily_context import build_daily_analysis_context
 from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+from database.models.engine import SessionLocal
+from scripts.gold_key_level_market_inputs import load_gold_key_level_market_inputs
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -108,6 +112,7 @@ def _gold_policy_runtime_kwargs(
     snapshot: dict[str, Any],
     decision_as_of: datetime,
     run_id: str | None = None,
+    db: Session | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Prepare typed controls for the authoritative daily-close runtime."""
 
@@ -136,6 +141,12 @@ def _gold_policy_runtime_kwargs(
             raise RuntimeError(f"canonical daily-close lookup failed: {canonical.reason_code}")
         head = canonical.head if canonical.status == "found" else None
         previous_feature = head.feature_snapshot if head is not None else runtime.previous
+        formal_key_levels = load_gold_key_level_market_inputs(
+            head=head,
+            db=db,
+            storage_root=storage_root,
+            decision_as_of=decision_as_of,
+        )
         formal_options = prepare_gold_policy_formal_options_inputs(
             storage_root=storage_root,
             current=runtime.current,
@@ -147,6 +158,7 @@ def _gold_policy_runtime_kwargs(
             previous_transition=(head.transition_decision if head is not None else None),
             decision_as_of=decision_as_of,
             options_regime_snapshot=formal_options.snapshot,
+            key_level_controls_input=formal_key_levels.controls_input,
         )
         return (
             {
@@ -164,6 +176,8 @@ def _gold_policy_runtime_kwargs(
                     "reason_code": canonical.reason_code,
                 },
                 "formal_options": formal_options.summary(),
+                "formal_key_levels": formal_key_levels.summary.model_dump(mode="json"),
+                "formal_key_level_reasons": list(formal_key_levels.summary.reason_codes),
                 "control_reason_codes": list(controls.reason_codes),
             },
         )
@@ -214,7 +228,12 @@ def _authoritative_output_paths(*, storage_root: Path, outputs: dict[str, Any]) 
 
 
 def run_daily_macro_close(
-    *, trade_date: str, storage_root: Path, asset: str = "XAUUSD", run_id: str | None = None
+    *,
+    trade_date: str,
+    storage_root: Path,
+    asset: str = "XAUUSD",
+    run_id: str | None = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     context = build_daily_analysis_context(trade_date=trade_date, storage_root=storage_root, asset=asset)
     premarket, premarket_path = _latest_premarket_snapshot(storage_root, trade_date=trade_date, asset=asset)
@@ -260,6 +279,7 @@ def run_daily_macro_close(
         snapshot=premarket,
         decision_as_of=decision_as_of,
         run_id=close_run_id,
+        db=db,
     )
     if gold_policy_runtime["status"] != "ready":
         return {
@@ -321,12 +341,14 @@ def run_daily_macro_close(
 
 def main() -> int:
     args = _parser().parse_args()
-    result = run_daily_macro_close(
-        trade_date=args.date,
-        storage_root=Path(args.storage_root).expanduser(),
-        asset=args.asset,
-        run_id=args.run_id,
-    )
+    with SessionLocal() as db:
+        result = run_daily_macro_close(
+            trade_date=args.date,
+            storage_root=Path(args.storage_root).expanduser(),
+            asset=args.asset,
+            run_id=args.run_id,
+            db=db,
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return 0 if result.get("status") in {"completed", "complete"} else 2
 

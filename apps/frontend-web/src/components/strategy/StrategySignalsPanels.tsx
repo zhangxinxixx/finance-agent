@@ -1,14 +1,16 @@
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { Crosshair } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { StrategyModuleSignal, StrategyPlaybookMatch } from "@/types/strategy";
-import { moduleIcon, moduleStatusTone, strategySentence, strategyValueLabel } from "./strategyFormat";
+import { moduleIcon, moduleStatusTone, strategyValueLabel } from "./strategyFormat";
+import { strategyEvidenceLabel } from "./strategyDisplayLabels";
 import { SourceRefList } from "./StrategySourceRefs";
 
 export function StrategyModuleSignalsSection({ signals }: { signals: StrategyModuleSignal[] }) {
   if (!signals.length) return null;
   return (
-    <FACard title="模块信号" eyebrow="Modules" bodyClassName="space-y-2">
+    <FACard title="模块信号" eyebrow="分析模块" bodyClassName="space-y-2">
       {signals.map((signal) => {
         const Icon = moduleIcon(signal.module);
         const tone = moduleStatusTone(signal.status);
@@ -24,9 +26,9 @@ export function StrategyModuleSignalsSection({ signals }: { signals: StrategyMod
                 <FAStatusPill tone={tone} dot={false}>{strategyValueLabel(signal.status)}</FAStatusPill>
               </div>
               {signal.summary ? (
-                <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--fg-4)]">{strategySentence(signal.summary)}</p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--fg-4)]">{strategyEvidenceLabel(signal.summary)}</p>
               ) : null}
-              <SourceRefList refs={signal.source_refs} />
+              <ResearchDetails label="查看依据记录"><SourceRefList refs={signal.source_refs} /></ResearchDetails>
             </div>
           </div>
         );
@@ -55,7 +57,7 @@ export function StrategyPlaybookMatchesSection({ matches }: { matches: StrategyP
             {match.rule_id ? (
               <div className="mt-0.5 text-[9px] text-[var(--fg-5)]">规则编号：{match.rule_id}</div>
             ) : null}
-            <SourceRefList refs={match.source_refs} />
+            <ResearchDetails label="查看依据记录"><SourceRefList refs={match.source_refs} /></ResearchDetails>
           </div>
         </div>
       ))}

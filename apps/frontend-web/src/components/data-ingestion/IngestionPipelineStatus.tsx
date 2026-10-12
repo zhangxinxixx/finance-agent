@@ -17,6 +17,13 @@ const layerDescriptions: Record<PipelineLayerStatus["id"], string> = {
   analysis_ready: "可供分析层消费",
 };
 
+const layerLabels: Record<PipelineLayerStatus["id"], string> = {
+  configured: "数据源配置",
+  raw_ingested: "原始数据落地",
+  parsed: "结构化解析",
+  analysis_ready: "分析层可用",
+};
+
 function toStageStatus(status: DataStatus): FAPipelineStageStatus {
   switch (status) {
     case "available":
@@ -39,7 +46,7 @@ export function IngestionPipelineStatus({ layers, updatedAt }: IngestionPipeline
   const totalCount = layers[0]?.total_count ?? 0;
   const stages = layers.map((layer) => ({
     id: layer.id,
-    label: layer.label,
+    label: layerLabels[layer.id],
     description: `${layerDescriptions[layer.id]} · ${layer.completed_count}/${layer.total_count}`,
     status: toStageStatus(layer.status),
   }));
@@ -55,10 +62,10 @@ export function IngestionPipelineStatus({ layers, updatedAt }: IngestionPipeline
       <FAPipelineStepper stages={stages} />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <FAMetricCard label="source_count" value={totalCount.toLocaleString("en-US")} hint="当前纳管数据源" />
-        <FAMetricCard label="raw_ingested" value={valueForLayer(layers, "raw_ingested").toLocaleString("en-US")} hint="原始层已接入" />
-        <FAMetricCard label="parsed" value={valueForLayer(layers, "parsed").toLocaleString("en-US")} hint="结构化解析完成" />
-        <FAMetricCard label="analysis_ready" value={valueForLayer(layers, "analysis_ready").toLocaleString("en-US")} hint="分析层可消费" />
+        <FAMetricCard label="纳管数据源" value={totalCount.toLocaleString("en-US")} hint="当前纳管数据源总数" />
+        <FAMetricCard label="原始数据已接入" value={valueForLayer(layers, "raw_ingested").toLocaleString("en-US")} hint="原始层已接入" />
+        <FAMetricCard label="结构化解析" value={valueForLayer(layers, "parsed").toLocaleString("en-US")} hint="结构化解析完成" />
+        <FAMetricCard label="分析层可用" value={valueForLayer(layers, "analysis_ready").toLocaleString("en-US")} hint="分析层可消费" />
       </div>
     </FACard>
   );

@@ -252,6 +252,8 @@ def _parse_reuters_public_items(
                 "publisher_url": publisher_url or None,
                 "authorized_wire": False,
                 "discovery_method": "google_news_rss_site_filter",
+                "content_scope": "headline_summary_only",
+                "full_text_available": False,
             },
         ))
         if len(result) >= max_items:

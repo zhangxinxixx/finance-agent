@@ -1,8 +1,9 @@
+import { readerValue } from "@/lib/readerLabels";
 import { GitMerge } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { formatEventFlowHeadlineSummary } from "./eventFlowFormat";
-import type { EventFlowChainStep, EventFlowTimelineItem, PricingStatus } from "@/types/event-flow";
+import type { EventFlowChainStep, EventFlowTimelineItem } from "@/types/event-flow";
 
 const KIND_COLORS: Record<string, string> = {
   blue: "#60a5fa",
@@ -34,24 +35,6 @@ const KIND_BORDER: Record<string, string> = {
   purp: "rgba(168,85,247,0.28)",
 };
 
-const PRICING_COLOR: Record<string, string> = {
-  "已定价": "#10b981",
-  "部分定价": "#f59e0b",
-  "未定价": "#f05252",
-};
-
-const PRICING_BG: Record<string, string> = {
-  "已定价": "rgba(16,185,129,0.14)",
-  "部分定价": "rgba(245,158,11,0.14)",
-  "未定价": "rgba(240,82,82,0.14)",
-};
-
-const PRICING_BORDER: Record<string, string> = {
-  "已定价": "rgba(16,185,129,0.32)",
-  "部分定价": "rgba(245,158,11,0.30)",
-  "未定价": "rgba(240,82,82,0.32)",
-};
-
 function extractStepNumber(num: string): string {
   const map: Record<string, string> = { "①": "1", "②": "2", "③": "3", "④": "4", "⑤": "5", "⑥": "6" };
   return map[num] ?? num;
@@ -62,11 +45,6 @@ function ChainBox({ step }: { step: EventFlowChainStep }) {
   const bg = KIND_BG[step.kind] ?? KIND_BG.grey;
   const border = KIND_BORDER[step.kind] ?? KIND_BORDER.grey;
   const isPricing = Boolean(step.pricing);
-  const pricingColor = step.pricing ? (PRICING_COLOR[step.pricing] ?? "#f59e0b") : "#f59e0b";
-  const pricingBg = step.pricing ? (PRICING_BG[step.pricing] ?? "rgba(245,158,11,0.14)") : "";
-  const pricingBorder = step.pricing ? (PRICING_BORDER[step.pricing] ?? "rgba(245,158,11,0.30)") : "";
-  const R = 22;
-  const circumference = 2 * Math.PI * R;
 
   return (
     <div
@@ -86,47 +64,18 @@ function ChainBox({ step }: { step: EventFlowChainStep }) {
         >
           {extractStepNumber(step.num)}
         </span>
-        <span className="text-[10px] font-semibold text-[var(--fg-3)]">{step.title}</span>
+        <span className="text-[10px] font-semibold text-[var(--fg-3)]">{readerValue(step.title, "传导步骤待说明")}</span>
       </div>
 
       {isPricing ? (
-        <div className="flex flex-col items-center gap-1">
-          <svg width={52} height={52} viewBox="0 0 52 52">
-            <circle cx={26} cy={26} r={R} fill="none" stroke="var(--border)" strokeWidth={7} />
-            <circle
-              cx={26}
-              cy={26}
-              r={R}
-              fill="none"
-              stroke={pricingColor}
-              strokeWidth={7}
-              strokeDasharray={`${circumference * 0.45} ${circumference * 0.55}`}
-              strokeLinecap="round"
-              transform="rotate(-90 26 26)"
-            />
-            <text
-              x={26}
-              y={30}
-              textAnchor="middle"
-              fontSize={9}
-              fill={pricingColor}
-              fontWeight="700"
-              fontFamily="var(--font-mono)"
-            >
-              45%
-            </text>
-          </svg>
+        <div className="space-y-1.5">
           {step.items.map((item, i) => (
-            <div key={i} className="text-center text-[10px] leading-[1.4] text-[var(--fg-5)]">{item}</div>
+            <div key={i} className="text-[length:var(--type-body-sm)] leading-[1.4] text-[var(--fg-5)]">{readerValue(item, "本步骤尚未提供中文分析，请查阅源记录。")}</div>
           ))}
-          {step.pricing ? (
-            <span
-              className="rounded-[3px] border px-2 py-[2px] text-[10px] font-semibold"
-              style={{ background: pricingBg, borderColor: pricingBorder, color: pricingColor }}
-            >
-              {step.pricing}
-            </span>
-          ) : null}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[length:var(--type-label)] text-[var(--fg-5)]">定价程度</span>
+            <span className="fa-label font-semibold text-[var(--warn)]">{step.pricing ? readerValue(step.pricing, "定价程度待说明") : "未提供定价程度"}</span>
+          </div>
         </div>
       ) : (
         step.items.map((item, i) => (
@@ -134,7 +83,7 @@ function ChainBox({ step }: { step: EventFlowChainStep }) {
             key={i}
             className={`leading-[1.45] ${i === 0 ? "text-[11px] font-semibold text-[var(--fg-2)]" : "text-[10px] text-[var(--fg-5)]"}`}
           >
-            {item}
+            {readerValue(item, "本步骤尚未提供中文分析，请查阅源记录。")}
           </div>
         ))
       )}
@@ -152,7 +101,7 @@ export function EventChainAnalysis({ chain, activeEvent }: EventChainAnalysisPro
 
   if (chain.length === 0) {
     return (
-      <FACard title="事件传导链分析" eyebrow="链路" accent="brand">
+      <FACard title="事件传导框架" eyebrow="链路" accent="brand">
         <FAEmptyState title="暂无传导链" description="当前事件没有传导链分析数据。" className="p-4" />
       </FACard>
     );
@@ -163,7 +112,7 @@ export function EventChainAnalysis({ chain, activeEvent }: EventChainAnalysisPro
       title={
         <div className="flex items-center gap-2">
           <GitMerge size={12} className="text-[var(--brand-hover)]" />
-          <span>事件传导链分析</span>
+          <span>事件传导框架</span>
         </div>
       }
       eyebrow="事件链"
@@ -183,6 +132,7 @@ export function EventChainAnalysis({ chain, activeEvent }: EventChainAnalysisPro
         </div>
       }
     >
+      <p className="mb-3 fa-muted-text">这里是事件库返回的传导框架。当前事件是否匹配此框架、是否被市场确认，须进入对应影响分析与行情窗口核验。</p>
       {activeEvent ? (
         <div className="mb-2 inline-flex items-center gap-2 rounded-[3px] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 py-1">
           <span className="text-[10px] text-[var(--fg-5)]">当前事件：</span>

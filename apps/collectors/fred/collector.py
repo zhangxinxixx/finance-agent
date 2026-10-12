@@ -16,22 +16,74 @@ FRED_SERIES = (
     "RRPONTSYD",
     "RRPONTSYAWARD",
     "WRESBAL",
+    "WTREGEN",
+    "WALCL",
     "SOFR",
     "EFFR",
     "IORB",
     "DGS2",
     "DGS3MO",
+    "DGS5",
     "DGS10",
     "DGS30",
     "DFII10",
+    "DFII5",
+    "DFII30",
+    "T5YIE",
+    "T5YIFR",
     "T10YIE",
     "DTWEXBGS",
+    "BAMLH0A0HYM2",
+    "DCOILWTICO",
+    "DCOILBRENTEU",
+    "VIXCLS",
+    # Official FRED macro releases used as dated context.  These are kept in
+    # the raw/parsed chain even when a release is stale at the run cutoff;
+    # the feature layer decides whether they can support a current signal.
+    "CPIAUCSL", "CPILFESL", "CPIAUCNS", "CPILFENS", "PCEPILFE",
+    "CPIENGSL", "CPIUFDSL", "CUSR0000SAH1", "CUSR0000SEHA", "CUSR0000SEHC",
+    "CUSR0000SACL1E", "CUSR0000SASLE",
+    "PPIFIS",
+    "PPIACO",
+    "PCEPI",
+    "JTSJOL",
+    "ICSA",
+    "NAPM",
 )
-FRED_MILLIONS_TO_BILLIONS = frozenset({"WRESBAL"})
+FRED_MILLIONS_TO_BILLIONS = frozenset({"WRESBAL", "WTREGEN", "WALCL"})
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
 FRED_GRAPH_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FRED_DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 FRED_DEFAULT_MAX_WORKERS = 6
+FRED_DEFAULT_OBSERVATION_WINDOW_DAYS = 90
+FRED_MONTHLY_OBSERVATION_WINDOW_DAYS = 450
+FRED_MONTHLY_SERIES = frozenset({
+    "PAYEMS", "CES0500000003", "UNRATE", "CIVPART",
+    "CPILFESL", "CPIAUCNS", "CPILFENS", "PCEPILFE", "CPIENGSL", "CPIUFDSL",
+    "CUSR0000SAH1", "CUSR0000SEHA", "CUSR0000SEHC", "CUSR0000SACL1E", "CUSR0000SASLE",
+    "CPIAUCSL", "PPIFIS", "PPIACO", "PCEPI", "JTSJOL", "NAPM",
+})
+
+
+class FredFetchError(RuntimeError):
+    """A safe-to-render FRED failure that never includes request URLs."""
+
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        reason_code: str,
+        error_type: str,
+        http_status: int | None = None,
+    ) -> None:
+        self.symbol = symbol
+        self.reason_code = reason_code
+        self.error_type = error_type
+        self.http_status = http_status
+        details = [f"series_id={symbol}", f"error_type={error_type}"]
+        if http_status is not None:
+            details.append(f"http_status={http_status}")
+        super().__init__(f"FRED request failed: {reason_code}; {'; '.join(details)}")
 
 
 def collect_fred_series_from_payload(*, symbol: str, payload: dict, retrieved_date: str, storage_root: Path, source_url: str, retrieved_at: str | None = None) -> CollectorResult:
@@ -85,7 +137,13 @@ def collect_fred_series(*, retrieved_date: str, storage_root: Path, symbols: tup
                 result = futures[symbol].result()
             except Exception as exc:
                 unavailable.append(symbol)
-                refs.append({"symbol": symbol, "source": "fred", "source_url": fred_source_url(symbol) if api_key else fred_graph_csv_url(symbol), "reason": f"FRED request failed: {type(exc).__name__}: {exc}"})
+                refs.append(
+                    _fred_failure_ref(
+                        symbol=symbol,
+                        source_url=fred_source_url(symbol) if api_key else fred_graph_csv_url(symbol),
+                        exc=exc,
+                    )
+                )
                 continue
             all_points.extend(result.points)
             unavailable.extend(result.unavailable_symbols)
@@ -153,7 +211,7 @@ def _fred_max_workers() -> int:
 
 def _fetch_fred_payload_with_retry(client, *, symbol: str, api_key: str, retrieved_date: str, attempts: int = 3) -> dict:
     last_exc: Exception | None = None
-    start_date = (date.fromisoformat(retrieved_date) - timedelta(days=90)).isoformat()
+    start_date = _fred_observation_start(symbol=symbol, retrieved_date=retrieved_date)
     for attempt in range(attempts):
         try:
             response = client.get(
@@ -174,13 +232,13 @@ def _fetch_fred_payload_with_retry(client, *, symbol: str, api_key: str, retriev
             if attempt < attempts - 1:
                 time.sleep(0.5 * (attempt + 1))
     if last_exc is not None:
-        raise last_exc
+        raise _safe_fred_fetch_error(symbol=symbol, exc=last_exc) from None
     raise RuntimeError("FRED request failed without exception")
 
 
 def _fetch_fred_graph_csv_payload_with_retry(client, *, symbol: str, retrieved_date: str, attempts: int = 2) -> dict:
     last_exc: Exception | None = None
-    start_date = (date.fromisoformat(retrieved_date) - timedelta(days=90)).isoformat()
+    start_date = _fred_observation_start(symbol=symbol, retrieved_date=retrieved_date)
     for attempt in range(attempts):
         try:
             response = client.get(FRED_GRAPH_CSV_URL, params={"id": symbol, "cosd": start_date, "coed": retrieved_date})
@@ -191,7 +249,7 @@ def _fetch_fred_graph_csv_payload_with_retry(client, *, symbol: str, retrieved_d
             if attempt < attempts - 1:
                 time.sleep(0.5 * (attempt + 1))
     if last_exc is not None:
-        raise last_exc
+        raise _safe_fred_fetch_error(symbol=symbol, exc=last_exc) from None
     raise RuntimeError("FRED CSV request failed without exception")
 
 
@@ -218,3 +276,43 @@ def fred_graph_csv_url(symbol: str) -> str:
 
 def _safe_fred_source_url(symbol: str) -> str:
     return fred_source_url(symbol)
+
+
+def _safe_fred_fetch_error(*, symbol: str, exc: Exception) -> FredFetchError:
+    import httpx
+
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        reason_code = "http_error"
+    elif isinstance(exc, httpx.TransportError):
+        reason_code = "transport_error"
+    else:
+        reason_code = "request_error"
+    return FredFetchError(
+        symbol=symbol,
+        reason_code=reason_code,
+        error_type=type(exc).__name__,
+        http_status=status_code if isinstance(status_code, int) else None,
+    )
+
+
+def _fred_failure_ref(*, symbol: str, source_url: str, exc: Exception) -> dict[str, str]:
+    failure = exc if isinstance(exc, FredFetchError) else _safe_fred_fetch_error(symbol=symbol, exc=exc)
+    ref = {
+        "symbol": symbol,
+        "source": "fred",
+        "source_url": source_url,
+        "status": "unavailable",
+        "reason_code": failure.reason_code,
+        "error_type": failure.error_type,
+        "reason": str(failure),
+    }
+    if failure.http_status is not None:
+        ref["http_status"] = str(failure.http_status)
+    return ref
+
+
+def _fred_observation_start(*, symbol: str, retrieved_date: str) -> str:
+    window_days = FRED_MONTHLY_OBSERVATION_WINDOW_DAYS if symbol in FRED_MONTHLY_SERIES else FRED_DEFAULT_OBSERVATION_WINDOW_DAYS
+    return (date.fromisoformat(retrieved_date) - timedelta(days=window_days)).isoformat()

@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import type { CMEOptionsResponse } from "@/types/cme-options";
 import { CME_META_TEXT, formatNumber, toneStyle } from "./cmeOptionsFormat";
 
@@ -9,25 +10,35 @@ export type PriceLadderLevel = {
   current?: boolean;
 };
 
+function distanceNote(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "距离未提供";
+  return `距接口参考价 ${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
 export function buildPriceLadderLevels(
   supportResistance: CMEOptionsResponse["support_resistance"],
-  currentPrice: number,
+  currentPrice: number | null,
+  currentLabel = "黄金期货（GC）报告锚点",
+  currentNote = "黄金期货（GC）报告基准（非实时现货）",
 ): PriceLadderLevel[] {
   const resistances = [...(supportResistance?.resistance ?? [])].sort((a, b) => b.strike - a.strike);
   const supports = [...(supportResistance?.support ?? [])].sort((a, b) => b.strike - a.strike);
+  const anchor = currentPrice !== null && Number.isFinite(currentPrice)
+    ? [{ strike: currentPrice, label: currentLabel, tone: "info" as const, note: currentNote, current: true }]
+    : [];
   return [
     ...resistances.map((item) => ({
       strike: item.strike,
       label: "阻力",
       tone: "down" as const,
-      note: `墙位评分 ${item.wall_score.toFixed(2)}`,
+      note: `墙位评分 ${item.wall_score.toFixed(2)} · ${distanceNote(item.distance_pct)}`,
     })),
-    { strike: currentPrice, label: "当前价", tone: "info" as const, note: "现价参照", current: true },
+    ...anchor,
     ...supports.map((item) => ({
       strike: item.strike,
       label: "支撑",
       tone: "up" as const,
-      note: `墙位评分 ${item.wall_score.toFixed(2)}`,
+      note: `墙位评分 ${item.wall_score.toFixed(2)} · ${distanceNote(item.distance_pct)}`,
     })),
   ].sort((a, b) => b.strike - a.strike);
 }
@@ -58,7 +69,7 @@ export function PriceLadderLevelRow({
         <div className="fa-num" style={{ fontSize: "var(--text-10)", color: "var(--fg-1)", fontWeight: 700 }}>
           {formatNumber(level.strike)}
         </div>
-        <div style={{ fontSize: "var(--text-9)", color: CME_META_TEXT, marginTop: 2 }}>{level.note}</div>
+        <div style={{ fontSize: "var(--text-9)", color: CME_META_TEXT, marginTop: 2 }}>{readableWarning(level.note)}</div>
       </div>
       <span
         style={{

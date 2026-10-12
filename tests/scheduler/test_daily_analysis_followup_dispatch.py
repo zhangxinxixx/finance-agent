@@ -1,49 +1,44 @@
 from __future__ import annotations
 
+import threading
 import uuid
 from pathlib import Path
 
-from database.models.task import TaskStatus
+import pytest
 
 
-class _FakeSession:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-
-class _ImmediateThread:
-    def __init__(self, *, target, daemon, name):
-        self._target = target
-        self.daemon = daemon
-        self.name = name
-
-    def start(self) -> None:
-        self._target()
-
-
-def test_dispatch_daily_analysis_followup_task_calls_worker(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "function_name",
+    ["dispatch_premarket_task", "dispatch_daily_analysis_followup_task"],
+)
+def test_retired_scheduler_dispatches_fail_before_starting_worker(
+    function_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     from apps.scheduler import runner
+    from apps.worker import runner as worker_runner
     from apps.worker.pipelines import daily_analysis_followup
     from database.models import engine
 
     task_id = uuid.uuid4()
-    calls: dict[str, object] = {}
+    calls: list[str] = []
 
-    def fake_run(db, received_task_id, *, storage_root):
-        calls["db"] = db
-        calls["task_id"] = received_task_id
-        calls["storage_root"] = storage_root
-        return TaskStatus.pending
+    def _unexpected_thread(*_args, **_kwargs):
+        calls.append("thread")
 
-    monkeypatch.setattr(runner.threading, "Thread", _ImmediateThread)
-    monkeypatch.setattr(engine, "SessionLocal", lambda: _FakeSession())
-    monkeypatch.setattr(daily_analysis_followup, "run_daily_analysis_followup_task", fake_run)
+    def _unexpected_session(*_args, **_kwargs):
+        calls.append("session")
 
-    runner.dispatch_daily_analysis_followup_task(task_id, storage_root=tmp_path)
+    def _unexpected_worker(*_args, **_kwargs):
+        calls.append("worker")
 
-    assert isinstance(calls["db"], _FakeSession)
-    assert calls["task_id"] == task_id
-    assert calls["storage_root"] == tmp_path
+    monkeypatch.setattr(threading, "Thread", _unexpected_thread)
+    monkeypatch.setattr(engine, "SessionLocal", _unexpected_session)
+    monkeypatch.setattr(worker_runner, "run_premarket", _unexpected_worker)
+    monkeypatch.setattr(daily_analysis_followup, "run_daily_analysis_followup_task", _unexpected_worker)
+
+    with pytest.raises(runner.LegacySchedulerDispatchDisabled, match="Dagster"):
+        getattr(runner, function_name)(task_id, storage_root=tmp_path)
+
+    assert calls == []

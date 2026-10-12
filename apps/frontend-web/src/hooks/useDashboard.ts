@@ -12,34 +12,42 @@ interface DashboardState {
 
 const DASHBOARD_AUTO_REFRESH_MS = 60_000;
 
-export function useDashboard(date?: string | null): DashboardState {
+export function useDashboard(date?: string | null, enabled = true): DashboardState {
   const [data, setData] = useState<DashboardDataResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [loadedDate, setLoadedDate] = useState(date);
+  const [isLoading, setIsLoading] = useState(enabled);
   const [error, setError] = useState<Error | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-  const hasLoadedRef = useRef(false);
+  const pending = useRef(enabled);
+  const refresh = () => {
+    if (!enabled || pending.current) return;
+    pending.current = true;
+    setReloadToken(value => value + 1);
+  };
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
 
     async function loadDashboard() {
-      if (!hasLoadedRef.current) setIsLoading(true);
+      pending.current = true;
+      setIsLoading(true);
       setError(null);
 
       try {
         const nextData = await fetchDashboardData(date);
 
         if (!cancelled) {
+          setLoadedDate(date);
           setData(nextData);
-          hasLoadedRef.current = true;
         }
       } catch (cause) {
         if (!cancelled) {
           setError(cause instanceof Error ? cause : new Error("加载 Dashboard 数据失败"));
-          setData(null);
         }
       } finally {
         if (!cancelled) {
+          pending.current = false;
           setIsLoading(false);
         }
       }
@@ -49,11 +57,12 @@ export function useDashboard(date?: string | null): DashboardState {
 
     return () => {
       cancelled = true;
+      pending.current = false;
     };
-  }, [date, reloadToken]);
+  }, [date, reloadToken, enabled]);
 
   useEffect(() => {
-    const refresh = () => setReloadToken((value) => value + 1);
+    if (!enabled) return;
     const intervalId = window.setInterval(refresh, DASHBOARD_AUTO_REFRESH_MS);
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") refresh();
@@ -66,13 +75,13 @@ export function useDashboard(date?: string | null): DashboardState {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, []);
+  }, [enabled]);
 
   return {
-    data,
-    isLoading,
+    data: loadedDate === date ? data : null,
+    isLoading: enabled && (isLoading || (error === null && loadedDate !== date)),
     isError: error !== null,
     error,
-    refetch: () => setReloadToken((value) => value + 1),
+    refetch: refresh,
   };
 }

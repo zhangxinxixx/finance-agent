@@ -1,9 +1,10 @@
 import type { EventImpact } from "@/types/event-flow";
 
 export function getImpactLabel(impact: EventImpact): string {
-  if (impact === "利多黄金") return "利多";
-  if (impact === "利空黄金") return "利空";
-  return impact;
+  const label = translateEventFlowValue(impact);
+  if (label === "利多黄金") return "利多";
+  if (label === "利空黄金") return "利空";
+  return label;
 }
 
 const EVENT_FLOW_VALUE_MAP: Record<string, string> = {
@@ -27,10 +28,11 @@ const EVENT_FLOW_VALUE_MAP: Record<string, string> = {
   needs_verification: "待验证",
   verification_pending: "待验证",
   javascript_required: "需浏览器渲染",
-  vip_locked: "VIP受限",
+  vip_locked: "会员内容受限",
   single_source: "单一来源",
   multi_source: "多来源",
   unpriced: "未定价",
+  "未核验": "未核验",
   high: "高",
   medium: "中",
   low: "低",
@@ -56,11 +58,11 @@ const EVENT_FLOW_VALUE_MAP: Record<string, string> = {
   markdown: "文稿",
   json: "结构化数据",
   html: "网页",
-  pdf: "PDF",
+  pdf: "公告文档",
   options_report: "期权分析",
   jin10_daily_report: "金十日报",
   jin10_weekly_report: "金十周报",
-  vip_market_reference: "VIP预览",
+  vip_market_reference: "会员预览",
   gold_macro_market_reference: "重点分析",
   market_reference: "市场参考",
   hormuz_risk: "霍尔木兹风险",
@@ -76,9 +78,9 @@ const EVENT_FLOW_VALUE_MAP: Record<string, string> = {
   source_refs: "来源引用",
   confirmed_events: "已确认事件",
   source_count: "来源数",
-  run_id: "运行 ID",
-  review_id: "复核 ID",
-  input_id: "输入 ID",
+  run_id: "运行记录",
+  review_id: "复核记录",
+  input_id: "输入记录",
   source_url: "来源链接",
   rule_version: "规则版本",
   brief_count: "摘要数量",
@@ -101,6 +103,9 @@ const EVENT_FLOW_VALUE_MAP: Record<string, string> = {
   processed: "已处理",
   queued_not_implemented: "待实现",
   mixed: "混合",
+  bullish: "利多黄金",
+  bearish: "利空黄金",
+  neutral: "中性",
   oil_up: "原油上行",
   dollar_strength: "美元走强",
   yield_up: "收益率上行",
@@ -268,7 +273,7 @@ const SOURCE_LABEL_MAP: Record<string, string> = {
   reuters_public_news: "路透快讯",
   bloomberg: "彭博",
   ap: "美联社",
-  cnbc: "CNBC",
+  cnbc: "美国财经电视台",
   wsj: "华尔街日报",
   ft: "金融时报",
   jin10: "金十",
@@ -312,18 +317,18 @@ export function translateEventFlowValue(value: string | null | undefined): strin
   if (lower.includes("flash")) return "快讯";
   if (lower.includes("analysis")) return "分析";
   if (lower.includes("reference")) return "参考";
-  return normalized;
+  return "分类尚未说明";
 }
 
 export function translateEventFlowFieldLabel(label: string): string {
   const normalized = label.trim().toLowerCase();
-  return EVENT_FLOW_VALUE_MAP[normalized] ?? humanizeKey(label);
+  return EVENT_FLOW_VALUE_MAP[normalized] ?? (/[\u3400-\u9fff]/.test(label) ? label : "记录说明");
 }
 
 export function translateEventFlowGroupLabel(group: string): string {
   const normalized = group.trim().toLowerCase();
   if (EVENT_FLOW_VALUE_MAP[normalized]) return EVENT_FLOW_VALUE_MAP[normalized];
-  return group.includes("_") ? humanizeKey(group) : group;
+  return /[\u3400-\u9fff]/.test(group) ? group : "其他记录";
 }
 
 export function formatEventFlowTagLabel(tag: string | null | undefined): string {
@@ -337,7 +342,7 @@ export function formatEventFlowTagLabel(tag: string | null | undefined): string 
 
   const snake = normalized.toLowerCase().replace(/\s+/g, "_");
   if (EVENT_FLOW_VALUE_MAP[snake]) return EVENT_FLOW_VALUE_MAP[snake];
-  return humanizeKey(normalized);
+  return "分类尚未说明";
 }
 
 export function formatEventFlowSourceLabel(source: string | null | undefined, maxLength = 24): { text: string; raw: string; foreign: boolean } {
@@ -365,7 +370,7 @@ export function formatEventFlowSourceLabel(source: string | null | undefined, ma
   const mapped = labelFromCode(normalized) ?? translateEventFlowValue(normalized);
   const foreign = isMostlyLatinText(normalized) && !/[\u4e00-\u9fff]/.test(mapped);
   return {
-    text: truncateEventFlowText(mapped, maxLength),
+    text: foreign ? "外文来源，名称待说明" : truncateEventFlowText(mapped, maxLength),
     raw: normalized,
     foreign,
   };
@@ -377,7 +382,7 @@ export function formatEventFlowArtifactLabel(path: string | null | undefined): s
   if (!normalized) return "工件";
   if (normalized.includes("daily_market_brief")) return "日报输入快照";
   if (normalized.includes("daily_brief_input_snapshot")) return "日报输入快照";
-  if (normalized.includes("daily_brief.md")) return "日报 Markdown";
+  if (normalized.includes("daily_brief.md")) return "日报文稿";
   if (normalized.includes("daily_brief.json")) return "日报结构化工件";
   if (normalized.includes("jin10_article_briefs")) return "金十文章摘要工件";
   if (normalized.includes("daily_analysis_triggers")) return "重点事件进展工件";
@@ -387,13 +392,14 @@ export function formatEventFlowArtifactLabel(path: string | null | undefined): s
   if (normalized.includes("impact_assessments")) return "影响评估工件";
   if (normalized.includes("raw/")) return "原始采集快照";
   if (normalized.includes("parsed/")) return "解析快照";
-  if (normalized.endsWith(".md")) return "Markdown 工件";
+  if (normalized.endsWith(".md")) return "文稿记录";
   if (normalized.endsWith(".json")) return "结构化工件";
   return "工件";
 }
 
 export function formatEventFlowHeadline(value: string | null | undefined, maxLength = 56): { text: string; raw: string; foreign: boolean } {
-  return displayText(value, maxLength);
+  const result = displayText(value, maxLength);
+  return { ...result, text: result.foreign ? "外文事件，中文标题尚未提供" : result.text };
 }
 
 export function formatEventFlowHeadlineSummary(value: string | null | undefined, maxLength = 56): {
@@ -405,7 +411,8 @@ export function formatEventFlowHeadlineSummary(value: string | null | undefined,
   const headline = displayText(value, maxLength);
   if (headline.foreign) {
     return {
-      lead: "原文事件",
+      // Keep the original in the result for source access; do not invent a translation.
+      lead: "外文事件，中文标题尚未提供",
       subline: null,
       raw: headline.raw,
       foreign: true,

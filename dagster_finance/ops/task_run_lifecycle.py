@@ -223,6 +223,9 @@ def premarket_task_run_failure_hook(context) -> None:
 
     db = context.resources.db_session
     try:
+        # The failing op may leave SQLAlchemy's transaction unusable. Clear
+        # that failed transaction before recording the independent failure.
+        db.rollback()
         run_uuid = uuid.UUID(context.run_id)
         run = db.query(TaskRun).filter(TaskRun.id == run_uuid).first()
         if run is None or run.status not in {TaskStatus.pending, TaskStatus.running}:

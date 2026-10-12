@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from apps.analysis.macro.conclusion import MacroConclusion, build_macro_conclusion
@@ -38,6 +37,8 @@ _PHASE_LABELS = {
     "policy_event_cycle": "政策事件窗口",
 }
 
+_VERIFIED_SPOT_PRICE_SOURCES = frozenset({"twelvedata_xauusd_quote", "research_snapshot_spot"})
+
 
 def build_dashboard_integrated_analysis(
     *,
@@ -57,11 +58,16 @@ def build_dashboard_integrated_analysis(
         return None
 
     macro_conclusion = _macro_conclusion(macro_snapshot)
-    indicators = (macro_snapshot or {}).get("indicators") or {}
+    indicators = _normalize_rate_aliases((macro_snapshot or {}).get("indicators") or {})
     conflict = (gold_macro_overview or {}).get("driver_conflict") or {}
     readiness = (gold_macro_overview or {}).get("analysis_readiness") or {}
     current_price = _market_price(market_tickers, "xauusd")
-    options_context = _options_context(options_snapshot, current_price=current_price)
+    current_price_source = _market_price_source(market_tickers, "xauusd")
+    options_context = _options_context(
+        options_snapshot,
+        current_price=current_price,
+        current_price_source=current_price_source,
+    )
 
     overall_bias = _overall_bias(macro_conclusion, gold_macro_overview)
     direction = _direction(overall_bias)
@@ -105,7 +111,7 @@ def build_dashboard_integrated_analysis(
         "confidence": confidence,
         "reasoning": reasoning,
         "trade_implication": _trade_implication(options_context),
-        "quick_supports": _quick_supports(options_context, jin10_analysis),
+        "quick_supports": _quick_supports(options_context),
         "trigger_upgrade": trigger_upgrade,
         "trigger_downgrade": trigger_downgrade,
         "invalidation": invalidation,
@@ -124,9 +130,8 @@ def build_dashboard_integrated_analysis(
 
 def _quick_supports(
     options_context: dict[str, Any],
-    jin10_analysis: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    current_price = _optional_float(options_context.get("current_price"))
+    gc_price = _optional_float(options_context.get("current_price"))
     supports: list[dict[str, Any]] = []
 
     cme_levels = options_context.get("supports") or []
@@ -136,65 +141,18 @@ def _quick_supports(
             supports.append(
                 {
                     "level": cme_level,
-                    "label": "CME 快支撑",
+                    "label": "CME GC 期货快支撑",
                     "source": "cme_options",
                     "source_label": "CME",
                     "trade_date": options_context.get("trade_date"),
                     "timeframe": None,
-                    "basis": "CME 期权快照第三档支撑",
-                    "status": _level_status(current_price, cme_level),
+                    "basis": "CME 期权快照第三档支撑（GC 期货坐标）",
+                    "status": _level_status(gc_price, cme_level),
                     "source_ref": "GET /api/options/snapshot",
                 }
             )
 
-    jin10_level = _jin10_near_support(jin10_analysis)
-    if jin10_level is not None:
-        level, basis = jin10_level
-        trade_date = (jin10_analysis or {}).get("trade_date")
-        run_id = (jin10_analysis or {}).get("run_id")
-        supports.append(
-            {
-                "level": level,
-                "label": "Jin10 近端防线",
-                "source": "jin10_daily_report",
-                "source_label": "Jin10",
-                "trade_date": trade_date,
-                "timeframe": "4H",
-                "basis": basis,
-                "status": _level_status(current_price, level),
-                "source_ref": (
-                    f"storage/outputs/jin10/{trade_date}/{run_id}/agent_analysis_report.json"
-                    if trade_date and run_id
-                    else "agent_analysis_report.json"
-                ),
-            }
-        )
     return supports
-
-
-def _jin10_near_support(payload: dict[str, Any] | None) -> tuple[float, str] | None:
-    if not isinstance(payload, dict):
-        return None
-    levels = payload.get("key_levels")
-    if not isinstance(levels, list):
-        return None
-    for item in levels:
-        if not isinstance(item, dict):
-            continue
-        asset = str(item.get("asset") or "")
-        category = str(item.get("source_category") or "")
-        meaning = str(item.get("meaning") or "")
-        if "黄金" not in asset or "短中线交易位" not in asset or category != "图表事实":
-            continue
-        if not any(marker in meaning for marker in ("近端", "保卫", "低点", "防线")):
-            continue
-        match = re.search(r"\d[\d,]*(?:\.\d+)?", str(item.get("value") or ""))
-        if match is None:
-            continue
-        level = _optional_float(match.group(0))
-        if level is not None:
-            return level, meaning
-    return None
 
 
 def _level_status(current_price: float | None, level: float) -> str:
@@ -212,7 +170,7 @@ def _macro_conclusion(payload: dict[str, Any] | None) -> MacroConclusion | None:
 
     indicators: dict[str, MacroIndicator] = {}
     try:
-        for symbol, raw in raw_indicators.items():
+        for symbol, raw in _normalize_rate_aliases(raw_indicators).items():
             if not isinstance(raw, dict) or raw.get("value") is None:
                 continue
             indicators[str(symbol)] = MacroIndicator(
@@ -244,6 +202,18 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_rate_aliases(indicators: dict[str, Any]) -> dict[str, Any]:
+    """Expose archived rate names to existing consumers without changing facts."""
+    normalized = dict(indicators)
+    for canonical, alias in (("REAL_10Y", "REAL10Y"), ("BREAKEVEN_10Y", "T10YIE")):
+        if canonical not in normalized and alias in indicators:
+            normalized[canonical] = indicators[alias]
+        # Legacy conclusion consumers may otherwise retry an alias after an
+        # explicitly empty canonical value. This is only a consumer-side copy.
+        normalized.pop(alias, None)
+    return normalized
 
 
 def _indicator(indicators: dict[str, Any], symbol: str) -> dict[str, Any]:
@@ -282,7 +252,7 @@ def _rates_state(indicators: dict[str, Any], conclusion: MacroConclusion | None)
     return (
         f"资金价格层{price_layer}：10Y 美债 {_fmt(nominal.get('value'))}%（周{_signed(nominal.get('weekly_change'), suffix='%')}），"
         f"10Y 盈亏平衡通胀 {_fmt(breakeven.get('value'))}%（周{_signed(breakeven.get('weekly_change'), suffix='%')}），"
-        f"推导实际利率 {_fmt(real.get('value'))}%（周{_signed(real.get('weekly_change'), suffix='%')}）。"
+        f"10Y 实际利率 {_fmt(real.get('value'))}%（{real.get('date') or '日期待核验'}，周{_signed(real.get('weekly_change'), suffix='%')}）。"
         f"{causal_read}"
     )
 
@@ -304,31 +274,44 @@ def _dollar_state(indicators: dict[str, Any], conclusion: MacroConclusion | None
     dxy = _indicator(indicators, "DXY")
     layer = conclusion.dollar_layer if conclusion else "待确认"
     return (
-        f"美元层{layer}：DXY {_fmt(dxy.get('value'))}。101 上方仍是黄金逆风区；"
-        "跌破 100.8 才构成更明确缓和，重新上破 101.8 则说明美元压制加强。"
+        f"美元层{layer}：DXY {_fmt(dxy.get('value'))}（{dxy.get('date') or '日期待核验'}）。"
+        "美元走强通常增加黄金压力，走弱则缓和压力；需要同窗口利率和金价验证。"
     )
 
 
-def _options_context(options: dict[str, Any] | None, *, current_price: float | None) -> dict[str, Any]:
+def _options_context(
+    options: dict[str, Any] | None,
+    *,
+    current_price: float | None,
+    current_price_source: str,
+) -> dict[str, Any]:
     if not isinstance(options, dict):
-        return {"available": False, "current_price": current_price}
+        return {"available": False, "current_price": None, "spot_price": current_price}
     support_resistance = options.get("support_resistance")
     if not isinstance(support_resistance, dict):
         support_resistance = {}
     supports = _distinct_strikes(support_resistance.get("support"), reverse=True)
     resistances = _distinct_strikes(support_resistance.get("resistance"), reverse=False)
     gex = options.get("gex") if isinstance(options.get("gex"), dict) else {}
+    gamma_flip = gex.get("gamma_flip") if isinstance(gex.get("gamma_flip"), dict) else {}
     aggregate = gex.get("netgex_aggregate") if isinstance(gex.get("netgex_aggregate"), dict) else {}
     gamma_zero = aggregate.get("gamma_zero") if isinstance(aggregate.get("gamma_zero"), dict) else {}
     data_source = options.get("data_source") if isinstance(options.get("data_source"), dict) else {}
     intent = options.get("intent") if isinstance(options.get("intent"), dict) else {}
+    parameters = options.get("parameters") if isinstance(options.get("parameters"), dict) else {}
+    forward_price = _optional_float(parameters.get("f_value"))
+    quote_is_gc_futures = current_price_source == "cme_gc_futures"
     return {
         "available": True,
         "trade_date": options.get("trade_date"),
         "data_status": str(data_source.get("status") or "UNKNOWN"),
         "intent": str(intent.get("type") or "unknown"),
-        "current_price": current_price,
-        "gamma_zero": _optional_float(gamma_zero.get("price")),
+        "current_price": current_price if quote_is_gc_futures else forward_price,
+        "current_price_source": current_price_source if quote_is_gc_futures else "cme_options_f_value" if forward_price is not None else "unavailable",
+        "spot_price": current_price if current_price_source in _VERIFIED_SPOT_PRICE_SOURCES else None,
+        "coordinate_space": "GC futures",
+        "xauusd_mapping": "unavailable_without_verified_basis",
+        "gamma_flip": _optional_float(gamma_flip.get("price") if gamma_flip.get("price") is not None else gamma_zero.get("price")),
         "supports": supports,
         "resistances": resistances,
     }
@@ -351,18 +334,18 @@ def _options_alignment(context: dict[str, Any]) -> str:
     if not context.get("available"):
         return "CME 期权结构不可用，当前综合判断不使用期权确认。"
     price = context.get("current_price")
-    gamma = context.get("gamma_zero")
+    gamma_flip = context.get("gamma_flip")
     supports = context.get("supports") or []
     resistances = context.get("resistances") or []
     status = context.get("data_status")
     support_text = "/".join(_fmt_level(item) for item in supports[:2]) or "暂无"
     resistance_text = _fmt_level(resistances[0]) if resistances else "暂无"
-    gamma_text = _fmt_level(gamma) if gamma is not None else "暂无"
+    gamma_text = _fmt_level(gamma_flip) if gamma_flip is not None else "暂无"
     relative = _price_structure_text(
         price=price,
         supports=supports[:2],
         resistance=resistances[0] if resistances else None,
-        gamma=gamma,
+        gamma_flip=gamma_flip,
     )
     status_note = (
         "当前使用最新 PRELIM 数据，可直接参与结构分析，但墙位和置信度仍可能修订。"
@@ -370,8 +353,9 @@ def _options_alignment(context: dict[str, Any]) -> str:
         else "当前期权数据可用于结构确认。"
     )
     return (
-        f"{status_note} 现价 {_fmt_level(price)}，下方支撑带 {support_text}，上方第一阻力 {resistance_text}，"
-        f"Gamma Zero {gamma_text}。{relative}"
+        f"{status_note} 以下墙位与 Proxy Flip 均为 GC 期货坐标；未提供可核验的 GC-XAUUSD 基差，"
+        f"不能映射为 XAUUSD 现货确认位。GC 期货代理价 {_fmt_level(price)}，下方支撑带 {support_text}，"
+        f"上方第一阻力 {resistance_text}，Selected Expiry Window Proxy Gamma Flip {gamma_text}。{relative}"
     )
 
 
@@ -380,10 +364,10 @@ def _price_structure_text(
     price: float | None,
     supports: list[float],
     resistance: float | None,
-    gamma: float | None,
+    gamma_flip: float | None,
 ) -> str:
     if price is None:
-        return "缺少实时现价，期权仅保留墙位观察。"
+        return "缺少 GC 期货代理价，期权仅保留 GC 墙位与 Proxy Flip 观察。"
     parts: list[str] = []
     support_band = supports[:2]
     support_text = "/".join(_fmt_level(item) for item in support_band)
@@ -392,26 +376,25 @@ def _price_structure_text(
     support_broken = support_floor is not None and price < support_floor
     if support_broken:
         parts.append(
-            f"现价已跌破 {support_text} 支撑带，较下沿低约 {_distance_pct(price, support_floor):.1f}%"
+            f"GC 期货代理价已跌破 {support_text} 支撑带，较下沿低约 {_distance_pct(price, support_floor):.1f}%"
         )
     elif support_floor is not None and support_ceiling is not None and price <= support_ceiling:
-        parts.append(f"现价位于 {support_text} 支撑带内，承接仍在验证")
+        parts.append(f"GC 期货代理价位于 {support_text} 支撑带内，期货结构承接仍在验证")
     elif support_ceiling is not None:
-        parts.append(f"现价位于 {support_text} 支撑带上方，距上沿约 {_distance_pct(price, support_ceiling):.1f}%")
+        parts.append(f"GC 期货代理价位于 {support_text} 支撑带上方，距上沿约 {_distance_pct(price, support_ceiling):.1f}%")
     if resistance is not None:
         parts.append(f"距第一阻力约 {_distance_pct(price, resistance):.1f}%")
-    if gamma is not None:
-        gamma_side = "下方" if price < gamma else "上方"
-        parts.append(f"位于 Gamma Zero {gamma_side}")
+    if gamma_flip is not None:
+        gamma_side = "下方" if price < gamma_flip else "上方"
+        parts.append(f"位于 Proxy Flip {gamma_side}")
     conclusion = "；".join(parts)
     if support_broken:
         return (
-            f"{conclusion}。短线承接验证失败，重新收复支撑带前按弱势下破处理；"
-            "重新站上阻力与 Gamma Zero 才能提高修复级别。"
+            f"{conclusion}。GC 期货结构承接转弱；Proxy Flip 仅作结构观察，不能单独定义趋势闸门。"
         )
     if not support_band:
-        return f"{conclusion}。缺少有效支撑带，当前只保留阻力与 Gamma Zero 观察，不判定短线承接。"
-    return f"{conclusion}。支撑带未失效只说明短线结构尚在，重新站上阻力与 Gamma Zero 才能提高修复级别。"
+        return f"{conclusion}。缺少有效支撑带，当前只保留 GC 阻力与 Proxy Flip 观察，不判定趋势。"
+    return f"{conclusion}。GC 支撑带未失效只说明期货结构尚在；Proxy Flip 不能单独定义趋势闸门。"
 
 
 def _distance_pct(price: float, level: float) -> float:
@@ -429,8 +412,8 @@ def _fmt_level(value: Any) -> str:
 
 def _confirmation_levels(context: dict[str, Any]) -> list[float]:
     resistances = context.get("resistances") or []
-    gamma = _optional_float(context.get("gamma_zero"))
-    candidates = [resistances[0] if resistances else None, gamma]
+    # Proxy Flip remains descriptive evidence; it is not a mandatory trend gate.
+    candidates = [resistances[0] if resistances else None]
     return sorted({level for item in candidates if (level := _optional_float(item)) is not None})
 
 
@@ -442,6 +425,14 @@ def _market_price(market_tickers: dict[str, Any], symbol: str) -> float | None:
     if not isinstance(item, dict):
         return None
     return _optional_float(item.get("price") if item.get("price") is not None else item.get("value"))
+
+
+def _market_price_source(market_tickers: dict[str, Any], symbol: str) -> str:
+    tickers = market_tickers.get("tickers") if isinstance(market_tickers, dict) else None
+    if not isinstance(tickers, dict):
+        return ""
+    item = tickers.get(symbol) or tickers.get(symbol.upper())
+    return str(item.get("source") or "") if isinstance(item, dict) else ""
 
 
 def _integrated_reasoning(
@@ -522,8 +513,8 @@ def _analysis_confidence(
 
 def _upgrade_conditions(indicators: dict[str, Any], context: dict[str, Any]) -> list[str]:
     conditions = [
-        "DXY 跌破 100.8，美元逆风明显缓和。",
-        "10Y 实际利率回落至 2.10% 下方，黄金机会成本下降。",
+        "美元持续走弱且与金价处于可比观察窗口。",
+        "10Y 实际利率持续回落，黄金机会成本下降。",
     ]
     supports = context.get("supports") or []
     price = _optional_float(context.get("current_price"))
@@ -532,12 +523,15 @@ def _upgrade_conditions(indicators: dict[str, Any], context: dict[str, Any]) -> 
         support_band = supports[:2]
         support_text = "/".join(_fmt_level(item) for item in support_band)
         if price is not None and price < min(support_band):
-            conditions.append(f"XAUUSD 重新收复 {support_text} 支撑带并站稳，确认下破失败。")
+            conditions.append(f"GC 期货代理价重新收复 {support_text} 支撑带并站稳，确认 GC 结构下破失败。")
         else:
-            conditions.append(f"XAUUSD 守住 {_fmt_level(supports[0])} 附近支撑，并出现现货确认。")
+            conditions.append(f"GC 期货代理价守住 {_fmt_level(supports[0])} 附近支撑，仅确认 GC 期货结构。")
     if confirmation_levels:
         levels = [_fmt_level(item) for item in confirmation_levels]
-        conditions.append(f"XAUUSD 重新站上 {'/'.join(levels)} 确认区，期权结构由承接转为上行确认。")
+        conditions.append(
+            f"GC 期货代理价重新站上 {'/'.join(levels)} 阻力，期权结构改善；"
+            "Proxy Flip 不单独构成趋势闸门。"
+        )
     conditions.append("10Y 美债收益率回落至 4.35% 下方，且不是由通胀预期更快下跌造成。")
     return conditions
 
@@ -545,8 +539,8 @@ def _upgrade_conditions(indicators: dict[str, Any], context: dict[str, Any]) -> 
 def _downgrade_conditions(indicators: dict[str, Any], context: dict[str, Any]) -> list[str]:
     real = _optional_float(_indicator(indicators, "REAL_10Y").get("value"))
     conditions = [
-        "DXY 重新上破 101.8，美元压制进一步加强。",
-        f"10Y 实际利率由当前 {_fmt(real)}% 继续向 2.40% 附近抬升。" if real is not None else "10Y 实际利率继续上行。",
+        "美元持续走强且与金价处于可比观察窗口。",
+        f"10Y 实际利率由当前 {_fmt(real)}% 继续上行。" if real is not None else "10Y 实际利率继续上行。",
     ]
     supports = context.get("supports") or []
     if supports:
@@ -554,9 +548,9 @@ def _downgrade_conditions(indicators: dict[str, Any], context: dict[str, Any]) -
         zone = "/".join(_fmt_level(item) for item in support_band)
         price = _optional_float(context.get("current_price"))
         if price is not None and price < min(support_band):
-            conditions.append(f"XAUUSD 维持在 {zone} 支撑带下方，说明期权承接未能转化为现货支撑。")
+            conditions.append(f"GC 期货代理价维持在 {zone} 支撑带下方，说明 GC 期货结构承接转弱。")
         else:
-            conditions.append(f"XAUUSD 跌破 {zone} 支撑带，说明期权承接未能转化为现货支撑。")
+            conditions.append(f"GC 期货代理价跌破 {zone} 支撑带，说明 GC 期货结构承接转弱。")
     return conditions
 
 
@@ -571,12 +565,15 @@ def _invalidation_conditions(context: dict[str, Any]) -> list[str]:
         support_floor = min(supports[:2])
         price = _optional_float(context.get("current_price"))
         if price is not None and price < support_floor:
-            items.append(f"现价已有效跌破 {_fmt_level(support_floor)}，短线支撑结构已失效；重新收复前保持降级。")
+            items.append(
+                f"GC 期货参考价低于 {_fmt_level(support_floor)}；是否破位仍需收盘与回测确认，"
+                "不能由代理价直接确认趋势。"
+            )
         else:
-            items.append(f"价格有效跌破 {_fmt_level(support_floor)}，短线支撑结构失效。")
+            items.append(f"GC 期货代理价有效跌破 {_fmt_level(support_floor)}，GC 短线支撑结构失效。")
     if confirmation_levels:
         levels = [_fmt_level(item) for item in confirmation_levels]
-        items.append(f"价格站稳 {'/'.join(levels)} 且利率回落，区间修复判断失效并转入更强修复评估。")
+        items.append(f"GC 期货代理价站稳 {'/'.join(levels)} 且利率回落，可上调 GC 结构评估；仍需独立现货证据。")
     return items
 
 
@@ -584,7 +581,7 @@ def _risk_items(context: dict[str, Any], readiness: dict[str, Any]) -> list[str]
     items: list[str] = []
     status = str(context.get("data_status") or "")
     if status.upper().startswith("PRELIM"):
-        items.append("CME 为最新 PRELIM 数据，可用于当前结构分析，但后续版本可能调整墙位、Gamma Zero 与置信度。")
+        items.append("CME 为最新 PRELIM 数据，可用于当前结构分析，但后续版本可能调整墙位、Proxy Flip 与置信度。")
     if readiness.get("status") and readiness.get("status") != "ready":
         items.append(
             f"Gold 主线覆盖仍为 {readiness.get('status')}："
@@ -593,7 +590,7 @@ def _risk_items(context: dict[str, Any], readiness: dict[str, Any]) -> list[str]
     items.extend(
         [
             "CPI、FOMC 表态或油价冲击可能同时改变通胀预期、名义利率和实际利率，需在事件后重算。",
-            "期权墙位是结构证据，不是方向预测；现货未确认时不能把支撑主导解释为趋势看多。",
+            "GC 期货期权墙位与 Proxy Flip 是结构证据，不是方向预测；缺少可核验基差时不能映射为 XAUUSD 现货确认。",
         ]
     )
     return items
@@ -614,19 +611,18 @@ def _trade_implication(context: dict[str, Any]) -> str:
     support_band = supports[:2]
     if price is not None and support_band and price < min(support_band):
         return (
-            f"现价 {_fmt_level(price)} 已跌破 {support_text} 短线承接带，区间修复条件失效。"
-            f"重新收复 {support_text} 前按弱势下破处理；只有重新站上 {confirmation_text} 且"
-            "美元/实际利率同步转弱，才提高方向置信度。"
+            f"GC 期货代理价 {_fmt_level(price)} 已跌破 {support_text} 承接带，GC 结构转弱。"
+            f"重新收复 {support_text} 并站上 {confirmation_text} 可改善 GC 结构；"
+            "缺少可核验基差时不能映射为 XAUUSD 现货确认。"
         )
     if price is not None and support_band and price <= max(support_band):
         return (
-            f"现价 {_fmt_level(price)} 正在 {support_text} 支撑带内接受承接验证，"
-            f"未重新站上 {confirmation_text} 前仍按区间修复处理；"
-            "只有美元/实际利率同步转弱，才提高方向置信度。"
+            f"GC 期货代理价 {_fmt_level(price)} 正在 {support_text} 支撑带内接受结构验证；"
+            f"站上 {confirmation_text} 可改善 GC 结构，但 Proxy Flip 不单独构成趋势闸门。"
         )
     return (
-        f"以 {support_text} 作为短线承接验证，以 {confirmation_text} 作为修复升级确认。"
-        "守住支撑但未站上确认区时仍按区间修复处理；只有美元/实际利率同步转弱，才提高方向置信度。"
+        f"以 {support_text} 作为 GC 期货承接观察，以 {confirmation_text} 作为 GC 阻力观察。"
+        "Proxy Flip 不单独构成趋势闸门；缺少可核验基差时不能映射为 XAUUSD 现货确认。"
     )
 
 

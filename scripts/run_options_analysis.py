@@ -20,8 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shlex
 import subprocess
 import sys
 import zipfile
@@ -383,31 +381,69 @@ def _infer_forward_p0(raw_rows: list[dict], *, product: str, trade_date: str, ex
     return f_value, [f"forward_p0_expiry:{active_expiries[0]}", *warnings]
 
 
-def _resolve_analysis_expiries(args: argparse.Namespace, raw_rows: list[dict]) -> list[str] | None:
+def _resolve_analysis_expiry_selection(
+    args: argparse.Namespace,
+    raw_rows: list[dict],
+) -> tuple[list[str] | None, dict | None]:
     if args.expiries:
-        return [e.strip().upper() for e in args.expiries.split(",") if e.strip()]
+        selected = [e.strip().upper() for e in args.expiries.split(",") if e.strip()]
+        return selected, {
+            "selected_expiries": selected,
+            "selected_expiry_window": selected,
+            "all_expiries": selected,
+            "eligible_expiries": selected,
+            "selection_policy": {
+                "version": "expiry_window.v2",
+                "name": "caller_supplied",
+                "required_nearest_eligible": False,
+                "selected_is_full_chain": False,
+            },
+            "coverage": {
+                "open_interest": None,
+                "rows": None,
+                "selected_expiries": len(selected),
+                "eligible_expiries": len(selected),
+                "all_expiries": len(selected),
+            },
+        }
     if args.all_expiries:
-        return None
-    from apps.features.options.black76 import sort_expiry_codes
+        return None, None
+    from apps.features.options.selection import select_expiry_window
 
-    expiries = {
-        str(row.get("expiry") or "").strip().upper()
+    scoped_rows = [
+        row
         for row in raw_rows
-        if str(row.get("product_code") or "") == args.product and str(row.get("trade_date") or "") == args.trade_date
-    }
-    selected = sort_expiry_codes(expiries)[:2]
-    return selected or None
+        if str(row.get("product_code") or "") == args.product
+        and str(row.get("trade_date") or "") == args.trade_date
+    ]
+    # Keep the nearest eligible option expiry and the two largest-OI expiry
+    # buckets as a union.  A cap of two would silently drop one OI leader when
+    # it differs from the nearest contract.
+    selection = select_expiry_window(
+        scoped_rows,
+        trade_date=args.trade_date,
+        max_expiries=3,
+        top_n_oi=2,
+    )
+    return selection.selected_expiries or None, selection.to_dict()
+
+
+def _resolve_analysis_expiries(args: argparse.Namespace, raw_rows: list[dict]) -> list[str] | None:
+    """Backward-compatible expiry-only wrapper for callers/tests."""
+
+    return _resolve_analysis_expiry_selection(args, raw_rows)[0]
 
 
 def _fetch_jin10_quote_p0(code: str, field: str) -> tuple[float | None, str | None, list[str]]:
-    """Fetch a quote through a configured JSON-producing command."""
-    configured_command = os.getenv("JIN10_QUOTE_COMMAND", "").strip()
-    if not configured_command:
-        return None, None, ["jin10_mcp_not_configured"]
-    command = [*shlex.split(configured_command), code, field]
+    """Fetch realtime/open P0 via configured Hermes Jin10 MCP."""
+    hermes_python = Path.home() / ".hermes/hermes-agent/venv/bin/python"
+    if not hermes_python.exists():
+        return None, None, ["jin10_mcp_hermes_python_missing"]
+    probe_path = Path("/tmp/finance_agent_jin10_quote_probe.py")
+    probe_path.write_text("import asyncio, json, sys, yaml\nfrom datetime import timedelta\nfrom pathlib import Path\nfrom mcp.client.streamable_http import streamablehttp_client\nfrom mcp import ClientSession\ncode=sys.argv[1]\nfield=sys.argv[2]\ncfg=yaml.safe_load((Path.home()/'.hermes/config.yaml').read_text())\nserver=(cfg.get('mcp_servers') or {}).get('jin10')\nif not server:\n    print(json.dumps({'error':'jin10_mcp_not_configured'})); raise SystemExit(0)\nasync def main():\n    async with streamablehttp_client(server['url'], headers=server.get('headers') or {}, timeout=timedelta(seconds=60)) as (read, write, _):\n        async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=60)) as session:\n            await session.initialize()\n            res=await session.call_tool('get_quote', {'code': code})\n            payload=res.model_dump(mode='json', exclude_none=True) if hasattr(res,'model_dump') else {}\n            data=(payload.get('structuredContent') or {}).get('data') or {}\n            print(json.dumps({'value':data.get(field),'time':data.get('time'),'code':data.get('code'),'name':data.get('name'),'field':field}, ensure_ascii=False))\nasyncio.run(main())\n", encoding="utf-8")
     try:
         proc = subprocess.run(
-            command,
+            [str(hermes_python), str(probe_path), code, field],
             check=False,
             text=True,
             capture_output=True,
@@ -493,7 +529,7 @@ def main() -> None:
         print(f"ERROR: unable to load input rows: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    expiries = _resolve_analysis_expiries(args, raw_rows)
+    expiries, expiry_selection = _resolve_analysis_expiry_selection(args, raw_rows)
     report_p0, report_p0_source, report_p0_timestamp, report_p0_warnings = _resolve_report_p0(args, raw_rows, expiries)
     live_p0, live_p0_source, live_p0_timestamp, live_p0_warnings = _resolve_live_p0(args)
 
@@ -533,6 +569,7 @@ def main() -> None:
         analysis_range_mode=args.analysis_range_mode,
         analysis_range_sigma=args.analysis_range_sigma,
         analysis_range_min_half_width=args.analysis_range_min_half_width,
+        expiry_selection=expiry_selection,
     )
 
     if args.out_dir:

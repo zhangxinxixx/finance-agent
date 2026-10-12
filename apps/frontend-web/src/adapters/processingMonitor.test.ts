@@ -1,4 +1,4 @@
-import { fetchArtifactSourceTrace, normalizeArtifactSourceTrace, normalizeProcessingTrace } from "./processingMonitor";
+import { normalizeArtifactSourceTrace, normalizeProcessingTrace } from "./processingMonitor";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -214,27 +214,3 @@ assert(normalizedArtifactTrace.artifact_refs[0].artifact_id === "artifact-50", "
 assert(normalizedArtifactTrace.input_snapshots[0].snapshot_id === "input-50", "preserves input snapshots");
 assert(normalizedArtifactTrace.related_artifacts[0].artifact_id === "artifact-related-50", "preserves related artifacts");
 assert(normalizedArtifactTrace.warnings[0].code === "snapshot-drift", "preserves backend lineage warnings without inventing a second field");
-
-const originalFetch = globalThis.fetch;
-const requestedPaths: string[] = [];
-globalThis.fetch = async (input) => {
-  requestedPaths.push(String(input));
-  return new Response(JSON.stringify(artifactPayload), { status: 200, headers: { "Content-Type": "application/json" } });
-};
-const artifactMatch = await fetchArtifactSourceTrace("artifact/50");
-assert(artifactMatch.status === "matched", "maps artifact source trace success to matched");
-assert(requestedPaths[0] === "/api/source-trace/by-artifact/artifact%2F50", "uses the source trace artifact authority with encoded id");
-
-globalThis.fetch = async () => new Response("not found", { status: 404 });
-const artifactNotFound = await fetchArtifactSourceTrace("missing-artifact");
-assert(artifactNotFound.status === "not_found", "maps artifact source trace 404 to not found");
-
-globalThis.fetch = async () => new Response("service unavailable", { status: 503 });
-let non404Error: unknown = null;
-try {
-  await fetchArtifactSourceTrace("broken-artifact");
-} catch (error) {
-  non404Error = error;
-}
-assert(non404Error instanceof Error, "preserves non-404 artifact source trace errors");
-globalThis.fetch = originalFetch;

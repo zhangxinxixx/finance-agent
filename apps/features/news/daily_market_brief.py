@@ -92,6 +92,10 @@ def build_daily_market_brief(
         "risk_points": risk_points,
         **_supplemental_report_inputs(report_input_artifacts or []),
     }
+    from apps.features.news.research_focus import build_research_news_focus
+
+    raw_items = event_bundle.get("raw_news_items", []) if isinstance(event_bundle, dict) else getattr(event_bundle, "raw_news_items", [])
+    report_inputs["research_focus"] = build_research_news_focus(events, [_dict(item) for item in raw_items])
     return DailyMarketBrief(
         as_of=as_of,
         market_mainline=_market_mainline(news_highlights=news_highlights, unconfirmed_risks=unconfirmed_risks, confirmed_events=confirmed_events),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
@@ -31,6 +32,25 @@ _MACRO_SOURCE_SYMBOLS: dict[str, str] = {
     "REAL10Y": "DFII10",
     "BROAD_DOLLAR": "DTWEXBGS",
 }
+
+# ``collect_treasury_rate_curves`` archives one CSV per curve under this
+# layout and emits the same URL in the point and provenance records.  Keep the
+# mapping here explicit: a Treasury nominal curve cannot vouch for a TIPS
+# curve (and neither curve publishes T10YIE).  The adapter must therefore
+# accept the current official Treasury source for the symbols it emits while
+# continuing to require FRED for T10YIE.
+_TREASURY_CURVE_TYPES: dict[str, tuple[str, str]] = {
+    "DGS2": ("nominal", "daily_treasury_yield_curve"),
+    "DGS10": ("nominal", "daily_treasury_yield_curve"),
+    "DGS30": ("nominal", "daily_treasury_yield_curve"),
+    "DFII10": ("real", "daily_treasury_real_yield_curve"),
+}
+_TREASURY_REFERENCE_PATH = "/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv"
+_TREASURY_RAW_PATH_RE = re.compile(
+    r"^raw/macro/treasury_rates/(?P<retrieved_date>\d{4}-\d{2}-\d{2})/"
+    r"(?P<curve>nominal|real)-(?P<year>\d{4})-"
+    r"(?P<retrieved_stamp>\d{8}T\d{12}Z)-(?P<nonce>[0-9a-f]{12})\.csv$"
+)
 
 _OPTIONAL: tuple[tuple[str, str, str, str], ...] = (
     ("gc_futures", "GC_FUTURES", "futures", "price"),
@@ -429,9 +449,25 @@ def _strict_macro_source_reference(
     expected_symbol: str,
     snapshot_time: datetime,
 ) -> SourceReference | None:
+    """Validate a macro provenance record before it enters formal features.
+
+    FRED remains the historical source contract.  The current macro worker
+    prefers the official Treasury curve for nominal and direct TIPS yields,
+    so those records follow a separate, symbol-to-curve URL and raw-archive
+    contract.  Merely accepting ``source=treasury_rates`` would allow a
+    mirror or a mismatched curve to become a formal Gold input.
+    """
+
     if not isinstance(value, Mapping):
         return None
     source = value.get("source")
+    if source == "treasury_rates":
+        return _strict_treasury_source_reference(
+            value,
+            expected_symbol=expected_symbol,
+            snapshot_time=snapshot_time,
+        )
+
     reference = value.get("source_url")
     raw_path = value.get("raw_path")
     retrieved_at = _parse_formal_time(value.get("retrieved_at"))
@@ -454,6 +490,114 @@ def _strict_macro_source_reference(
     ):
         return None
     return SourceReference(source=source, reference=reference, retrieved_at=retrieved_at)
+
+
+def _strict_treasury_source_reference(
+    value: Mapping[str, Any],
+    *,
+    expected_symbol: str,
+    snapshot_time: datetime,
+) -> SourceReference | None:
+    """Validate one provenance record emitted by the Treasury rate collector.
+
+    The Treasury collector currently emits only ``DGS*`` nominal and
+    ``DFII*`` real-curve symbols.  ``T10YIE`` is still a FRED series and is
+    deliberately rejected here when labelled as Treasury data.
+    """
+
+    curve_info = _TREASURY_CURVE_TYPES.get(expected_symbol)
+    if curve_info is None:
+        return None
+    curve, curve_type = curve_info
+    reference = value.get("source_url")
+    raw_path = value.get("raw_path")
+    retrieved_at = _parse_formal_time(value.get("retrieved_at"))
+    if (
+        not isinstance(reference, str)
+        or not reference.strip()
+        or not _safe_macro_raw_path(raw_path, suffix=".csv")
+        or retrieved_at is None
+        or retrieved_at > snapshot_time
+    ):
+        return None
+
+    parsed_reference = urlparse(reference)
+    try:
+        reference_port = parsed_reference.port
+    except ValueError:
+        return None
+    if (
+        parsed_reference.scheme != "https"
+        or parsed_reference.hostname != "home.treasury.gov"
+        or reference_port is not None
+        or parsed_reference.username is not None
+        or parsed_reference.password is not None
+        or parsed_reference.fragment
+        or parsed_reference.path == ""
+    ):
+        return None
+
+    path_match = re.fullmatch(
+        rf"{re.escape(_TREASURY_REFERENCE_PATH)}/(?P<year>\d{{4}})/all",
+        parsed_reference.path,
+    )
+    if path_match is None:
+        return None
+    year = path_match.group("year")
+    query = parse_qs(parsed_reference.query, keep_blank_values=True)
+    if query != {
+        "_format": ["csv"],
+        "field_tdr_date_value": [year],
+        "page": [""],
+        "type": [curve_type],
+    }:
+        return None
+
+    raw_match = _TREASURY_RAW_PATH_RE.fullmatch(str(raw_path))
+    if raw_match is None:
+        return None
+    raw_date = _parse_date(raw_match.group("retrieved_date"))
+    if raw_date is None or raw_date > snapshot_time.date():
+        return None
+    if raw_match.group("curve") != curve or raw_match.group("year") != year:
+        return None
+    try:
+        archived_at = datetime.strptime(
+            raw_match.group("retrieved_stamp"), "%Y%m%dT%H%M%S%fZ"
+        ).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    if (
+        retrieved_at.date() != raw_date
+        or archived_at > snapshot_time
+    ):
+        return None
+    # The raw directory and annual URL use request start, even when the HTTP
+    # response is archived after midnight.
+    # This also prevents a valid-looking current URL from being paired with a
+    # raw archive from a different vintage.
+    if raw_date.year != int(year):
+        return None
+
+    # The collector records retrieved_at before the HTTP request, then stamps
+    # the archive after the response arrives. Use the later instant so data
+    # cannot appear available before it was actually downloaded.
+    return SourceReference(
+        source="treasury_rates", reference=reference,
+        retrieved_at=max(retrieved_at, archived_at),
+    )
+
+
+def _safe_macro_raw_path(value: object, *, suffix: str) -> bool:
+    """Accept only relative archived-file references, never URLs or traversal."""
+
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        return False
+    normalized = value.replace("\\", "/")
+    if normalized != value or normalized.startswith("/") or "://" in normalized:
+        return False
+    parts = normalized.split("/")
+    return all(part not in {"", ".", ".."} for part in parts) and normalized.endswith(suffix)
 
 
 def _daily_observation_freshness(observed_at: datetime, snapshot_time: datetime) -> str:

@@ -13,6 +13,14 @@ from apps.api.data_service import (
 router = APIRouter()
 
 
+@router.get("/api/gold/workspace")
+def api_gold_workspace():
+    """黄金核心工作台；行情观测和注册研究分别标注截止。"""
+    from apps.api.services.gold_workspace_service import get_gold_workspace
+
+    return get_gold_workspace()
+
+
 @router.get("/api/market/tickers")
 def api_market_tickers():
     """返回市场指标实时快照（XAUUSD/DXY/宏观指标）。"""

@@ -9,11 +9,8 @@ export function formatGoldScore(value: number | null | undefined): string {
 }
 
 export function scoreFormulaLabel(item: GoldMainlineRanking): string {
-  const direction = item.direction_score ?? 0;
-  const impact = item.impact_score ?? 1;
-  const confidence = item.confidence_score ?? 1;
-  const freshness = item.freshness_score ?? 1;
-  return `${direction}/${impact}/${confidence}/${freshness}`;
+  const value = (input: number | null | undefined) => typeof input === "number" && Number.isFinite(input) ? String(input) : "未提供";
+  return [item.direction_score, item.impact_score, item.confidence_score, item.freshness_score].map(value).join(" / ");
 }
 
 export function rankingMainlineId(item: GoldMainlineRanking): string | null {

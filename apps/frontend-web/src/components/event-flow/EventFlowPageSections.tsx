@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import { FileText, SearchCheck, ShieldAlert } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
@@ -5,7 +6,7 @@ import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { formatDateTime } from "@/lib/date";
 import type { EventFlowBriefSummary } from "@/types/event-flow";
-import { formatEventFlowSourceLabel, translateEventFlowValue } from "./eventFlowFormat";
+import { formatEventFlowHeadlineSummary, formatEventFlowSourceLabel, translateEventFlowValue } from "./eventFlowFormat";
 
 export function FilterDropdown({
   label,
@@ -89,8 +90,8 @@ export function BriefSummaryStrip({
         bodyClassName="space-y-3"
       >
         <div className="space-y-1.5">
-          <div className="text-[13px] font-semibold text-[var(--fg-1)]">{summary.headline}</div>
-          <div className="text-[11px] leading-5 text-[var(--fg-3)]">{summary.summary}</div>
+          <div className="text-[13px] font-semibold text-[var(--fg-1)]">{formatEventFlowHeadlineSummary(summary.headline).lead}</div>
+          <div className="text-[11px] leading-5 text-[var(--fg-3)]">{readableWarning(summary.summary)}</div>
         </div>
         <div className="flex flex-wrap gap-2">
           {summary.verificationStatus ? <FAStatusPill tone="info">{translateEventFlowValue(summary.verificationStatus)}</FAStatusPill> : null}
@@ -124,7 +125,7 @@ export function EventImpactBanner({
 }: {
   summary: {
     bias: string;
-    confidence: number;
+    confidence: number | null;
     llmModel?: string | null;
     llmElapsedSeconds?: number | null;
     summary: string;
@@ -138,15 +139,15 @@ export function EventImpactBanner({
       <div className="flex items-center gap-2">
         <span className="text-[10px] font-semibold text-[var(--fg-5)]">模型事件分析</span>
         <span className="text-[10px] font-mono text-[var(--fg-4)]">
-          {summary.bias} · {(summary.confidence * 100).toFixed(0)}%
+          {translateEventFlowValue(summary.bias)} · 判断把握程度 {typeof summary.confidence === "number" && Number.isFinite(summary.confidence) ? `${(summary.confidence * 100).toFixed(0)}/100（非胜率）` : "未提供"}
         </span>
         {summary.llmModel && (
           <span className="text-[9px] text-[var(--fg-5)]">
-            {summary.llmModel} · {summary.llmElapsedSeconds?.toFixed(1)}s
+            分析用时 {summary.llmElapsedSeconds?.toFixed(1) ?? "未提供"} 秒
           </span>
         )}
       </div>
-      <div className="mt-1 text-[11px] text-[var(--fg-3)]">{summary.summary}</div>
+      <div className="mt-1 text-[11px] text-[var(--fg-3)]">{readableWarning(summary.summary)}</div>
     </div>
   );
 }
@@ -168,7 +169,7 @@ export function EventFlowBriefInputsCard({
             <ul className="space-y-1.5">
               {summary.newsHighlights.map((item, index) => (
                 <li key={`highlight-${index}`} className="leading-5 text-[var(--fg-2)]">
-                  {item}
+                  {readableWarning(item)}
                 </li>
               ))}
             </ul>
@@ -184,7 +185,7 @@ export function EventFlowBriefInputsCard({
             <ul className="space-y-1.5">
               {summary.watchlist.map((item, index) => (
                 <li key={`watch-${index}`} className="leading-5 text-[var(--fg-2)]">
-                  {item}
+                  {readableWarning(item)}
                 </li>
               ))}
             </ul>
@@ -200,7 +201,7 @@ export function EventFlowBriefInputsCard({
             <ul className="space-y-1.5">
               {summary.riskPoints.map((item, index) => (
                 <li key={`risk-${index}`} className="leading-5 text-[var(--fg-2)]">
-                  {item}
+                  {readableWarning(item)}
                 </li>
               ))}
             </ul>

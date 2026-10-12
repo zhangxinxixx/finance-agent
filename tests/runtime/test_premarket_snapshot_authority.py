@@ -63,6 +63,13 @@ def _running_run(session: Session, *, trade_date: str | None = None) -> TaskRun:
     return run
 
 
+def test_canonical_snapshot_normalizes_signed_zero_without_mutating_input():
+    payload = {"nested": [{"gamma": -0.0, "other": -1.2}]}
+    canonical = canonicalize_premarket_snapshot_payload(payload)
+    assert json.dumps(canonical) == '{"nested": [{"gamma": 0.0, "other": -1.2}]}'
+    assert json.dumps(payload) == '{"nested": [{"gamma": -0.0, "other": -1.2}]}'
+
+
 def _stage_success(session: Session, root: Path, *, trade_date: str = "2026-08-11") -> tuple[TaskRun, dict, Path]:
     run = _running_run(session)
     payload = _snapshot(str(run.id), trade_date)
@@ -393,6 +400,41 @@ def test_selector_finds_exact_committed_authority(tmp_path: Path) -> None:
     assert result.run_id == str(run.id)
     assert result.snapshot_id == payload["snapshot_id"]
     assert result.file_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("path_form", ["absolute", "storage_relative", "project_relative"])
+def test_selector_accepts_existing_authority_path_representations(
+    tmp_path: Path,
+    path_form: str,
+) -> None:
+    factory = _factory(tmp_path, f"path-{path_form}.db")
+    root = tmp_path / "storage"
+    with factory() as session:
+        run, payload, path = _stage_success(session, root)
+        snapshot_row = session.scalar(select(AnalysisSnapshot))
+        artifact = session.scalar(select(RunArtifact))
+        assert snapshot_row is not None and artifact is not None
+        expected = path.resolve()
+        if path_form == "absolute":
+            stored_path = str(expected)
+        elif path_form == "storage_relative":
+            stored_path = expected.relative_to(root.resolve()).as_posix()
+        else:
+            stored_path = expected.relative_to(root.resolve().parent).as_posix()
+        snapshot_row.artifact_path = stored_path
+        artifact.file_path = stored_path
+        session.commit()
+
+        result = resolve_authoritative_premarket_snapshot(
+            session,
+            storage_root=root.resolve(),
+            trade_date="2026-08-11",
+        )
+
+    assert result.status == "found"
+    assert result.snapshot_path == expected
+    assert result.run_id == str(run.id)
+    assert result.snapshot_id == payload["snapshot_id"]
 
 
 def test_selector_reports_missing_and_excludes_non_success_runs(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import type { ArtifactRef } from "@/types/artifact";
 import type { SourceRef } from "@/types/common";
 import { traceStatusTone } from "./strategyFormat";
+import { strategySourceLabel } from "./strategyDisplayLabels";
 
 const MAX_GROUPED_SOURCE_REFS = 8;
 
@@ -11,7 +12,7 @@ export function SourceRefList({ refs }: { refs: SourceRef[] }) {
   const grouped = new Map<string, SourceRef[]>();
   for (const ref of refs) {
     const raw = ref as unknown as Record<string, unknown>;
-    const key = (raw.source as string) ?? ref.source_ref ?? ref.endpoint ?? "unknown";
+    const key = strategySourceLabel((raw.source as string) ?? ref.source_ref ?? ref.endpoint ?? "unknown");
     const arr = grouped.get(key) ?? [];
     arr.push(ref);
     grouped.set(key, arr);
@@ -23,7 +24,7 @@ export function SourceRefList({ refs }: { refs: SourceRef[] }) {
         {refs.map((ref, idx) => (
           <FASourceTraceBadge
             key={`${ref.source_ref}-${idx}`}
-            source={ref.label ?? ref.source_ref}
+            source={strategySourceLabel(ref.label ?? ref.source_ref)}
             status={ref.status ?? "trace"}
             tone={traceStatusTone(typeof ref.status === "string" ? ref.status : null)}
             snapshotId={ref.snapshot_id}

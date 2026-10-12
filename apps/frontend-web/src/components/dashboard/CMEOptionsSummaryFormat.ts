@@ -16,6 +16,7 @@ export function translateIntent(text: string | null | undefined): string {
     structured_rebalance: "结构再平衡",
     I3_breakout: "突破结构",
     I4_squeeze: "挤压结构",
+    I4_trend_launch: "趋势启动结构",
   };
 
   return map[text] ?? text;
@@ -25,11 +26,9 @@ export function getConfidenceColor(confidenceLevel: string): string {
   return confidenceLevel === "high" ? "var(--up)" : confidenceLevel === "medium" ? "var(--warn)" : "var(--down)";
 }
 
-export function getWallBias(wallScore: number | null): { label: string; color: string } {
-  if (wallScore == null) return { label: "未知", color: "var(--fg-5)" };
-  if (wallScore > 0.6) return { label: "阻力主导", color: "var(--down)" };
-  if (wallScore < 0.4) return { label: "支撑主导", color: "var(--up)" };
-  return { label: "均衡", color: "var(--fg-5)" };
+export function getWallStrength(wallScore: number | null): { label: string; color: string } {
+  if (wallScore == null || !Number.isFinite(wallScore)) return { label: "墙位强度未知", color: "var(--fg-5)" };
+  return { label: `墙位强度 ${wallScore.toFixed(2)}`, color: "var(--fg-5)" };
 }
 
 export function formatOptionalNumber(

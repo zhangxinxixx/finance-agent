@@ -101,6 +101,8 @@ def main() -> None:
         raise SystemExit("GC is supported as 1d or 1h GC=F candles")
     if asset == "XAUUSD" and timeframe != "1m":
         raise SystemExit("XAUUSD backfill only supports Jin10 1m staging; use --asset GC for GC=F")
+    if timeframe == "1m" and not (args.dry_run and (args.input_json or args.repair_gaps)):
+        raise SystemExit("jin10_numeric_source_forbidden: retired numeric import; only offline --dry-run history inspection is available")
 
     storage_root = Path(args.storage_root).resolve()
     database_url = args.database_url or DATABASE_URL

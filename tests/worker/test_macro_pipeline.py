@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +32,7 @@ from database.models.analysis import DataSourceStatus, FeatureSnapshot, MacroObs
 from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
 from database.models.report import ReportArtifact, ReportItem, ensure_report_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
+from tests.helpers.warehouse import create_collection_schema, run_macro_feature_from_dwd
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +47,7 @@ def _make_db_session(tmp_path: Path):
     ensure_analysis_tables(engine)
     ensure_execution_tables(engine)
     ensure_report_tables(engine)
+    create_collection_schema(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
@@ -120,37 +123,11 @@ def _make_empty_result() -> CollectorResult:
     return CollectorResult(points=[], unavailable_symbols=[], source_refs=[])
 
 
-def test_latest_dxy_kline_close_can_feed_macro_snapshot_fallback() -> None:
-    from apps.features.macro.snapshot import build_macro_snapshot
-    from apps.worker.pipelines.macro import _promote_latest_kline_close
-
-    points = [
-        MacroPoint(
-            symbol=f"KLINE:DXY:{timestamp}",
-            date="2026-07-21",
-            value=value,
-            source="jin10_mcp",
-            source_url="raw/macro/kline_DXY.json",
-            retrieved_at="2026-07-21T05:23:11+00:00",
-            raw_path="raw/macro/kline_DXY.json",
-        )
-        for timestamp, value in ((1784603500, 100.9), (1784603560, 101.1))
-    ]
-
-    fallback = _promote_latest_kline_close(points, code="DXY")
-
-    assert fallback is not None
-    assert fallback.symbol == "DXY"
-    assert fallback.value == 101.1
-    snapshot = build_macro_snapshot([fallback.to_dict()], as_of="2026-07-21")
-    assert snapshot.indicators["DXY"].value == 101.1
-    assert snapshot.source_refs["DXY"]["raw_path"] == "raw/macro/kline_DXY.json"
-
-
 @pytest.fixture(autouse=True)
 def _mock_jin10_mcp_collectors():
     """Keep macro pipeline unit tests isolated from live Jin10 MCP collectors."""
     with (
+        patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
         patch("apps.collectors.jin10.quotes.collect_quotes", return_value=_make_empty_result()),
         patch("apps.collectors.jin10.kline.collect_kline", return_value=_make_empty_result()),
         patch("apps.collectors.jin10.articles.collect_articles", return_value=_make_empty_result()),
@@ -229,6 +206,7 @@ class TestMacroPipelineState:
         assert state.all_unavailable == []
         assert state.all_source_refs == []
         assert state.as_of == ""
+        assert state.run_time is None
         assert state.snapshot_dict is None
         assert state.conclusion_dict is None
         assert state.report_md is None
@@ -259,6 +237,7 @@ class TestRunMacroStepDispatch:
 class TestStepCollect:
     def test_collect_skips_jin10_collectors_when_disabled(self, tmp_path):
         state = MacroPipelineState()
+        db = _make_db_session(tmp_path)
         with (
             patch("apps.worker.pipelines.macro.jin10_disabled", return_value=True),
             patch("apps.collectors.fred.collector.collect_fred_series", return_value=_make_fred_result()) as fred,
@@ -267,6 +246,7 @@ class TestStepCollect:
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()) as dxy,
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()) as positioning,
             patch("apps.collectors.technical.collector.collect_technical") as technical,
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()) as spot_history,
             patch("apps.collectors.news.collector.collect_news") as news,
             patch("apps.collectors.jin10.quotes.collect_quotes") as quotes,
             patch("apps.collectors.jin10.kline.collect_kline") as kline,
@@ -274,15 +254,36 @@ class TestStepCollect:
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=_make_data_layer_fred_result()),
             patch("apps.data_layer.service.MacroDataService.collect_market_prices", return_value=_make_data_layer_market_result()),
         ):
-            summary = run_macro_step("macro_collect", state, storage_root=tmp_path)
+            summary = run_macro_step("macro_collect", state, storage_root=tmp_path, db_session=db)
 
         for collector in (technical, news, quotes, kline, articles):
             collector.assert_not_called()
         for collector in (fred, fed, treasury, dxy, positioning):
             collector.assert_called_once()
+        spot_history.assert_called_once()
         statuses = {item["collector"]: item for item in summary["collectors"]}
-        for name in ("technical", "news", "jin10_quotes", "jin10_kline", "jin10_articles"):
+        assert statuses["technical"]["status"] == "success"
+        assert statuses["technical"]["source_key"] == "twelvedata_xauusd_daily"
+        assert statuses["technical_yahoo"] == {
+            "collector": "technical_yahoo",
+            "source_key": "technical_yahoo",
+            "status": "skipped",
+            "reason": "jin10_news_only",
+        }
+        for name in ("news", "jin10_articles"):
             assert statuses[name] == {"collector": name, "status": "skipped", "reason": "jin10_disabled"}
+
+        for name in ("jin10_quotes", "jin10_kline"):
+            assert statuses[name]["reason"] == "jin10_news_only"
+
+        db.commit()
+        rows = {row.source_key: row for row in db.query(DataSourceStatus).all()}
+        assert summary["data_source_status_upserts"] == 9
+        assert rows["twelvedata_xauusd_daily"].source_metadata["provider_symbol"] == "XAU/USD"
+        assert rows["twelvedata_xauusd_daily"].status == "ok"
+        assert rows["technical_yahoo"].status == "disabled"
+        assert rows["technical_yahoo"].analysis_ready is False
+        assert rows["jin10_news"].status == "disabled"
 
     def test_collect_aggregates_all_sources(self, tmp_path):
         """Verify that macro_collect calls all 3 collectors and merges results."""
@@ -293,7 +294,7 @@ class TestStepCollect:
             patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_fed_result()),
             patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_treasury_result()),
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_news_result()),
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=_make_data_layer_fred_result()) as fred_fallback,
@@ -333,7 +334,7 @@ class TestStepCollect:
             "requested_symbols": [],
         }
 
-    def test_collect_promotes_jin10_dxy_kline_when_primary_dxy_is_unavailable(self, tmp_path):
+    def test_collect_rejects_jin10_dxy_kline_when_primary_dxy_is_unavailable(self, tmp_path):
         state = MacroPipelineState()
         kline_result = CollectorResult(
             points=[
@@ -363,7 +364,7 @@ class TestStepCollect:
             patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_fed_result()),
             patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_treasury_result()),
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_news_result()),
             patch("apps.collectors.jin10.kline.collect_kline", return_value=kline_result),
@@ -372,14 +373,10 @@ class TestStepCollect:
         ):
             summary = run_macro_step("macro_collect", state, storage_root=tmp_path)
 
-        promoted = [point for point in state.all_points if point.symbol == "DXY"]
-        assert len(promoted) == 1
-        assert promoted[0].value == 101.1
-        assert promoted[0].source == "jin10_mcp"
-        assert promoted[0].raw_path == "storage/raw/jin10_mcp/2026-07-21/kline_DXY.json"
-        assert "DXY" not in state.all_unavailable
+        assert not [point for point in state.all_points if point.symbol == "DXY"]
+        assert "DXY" in state.all_unavailable
         kline_status = next(item for item in summary["collectors"] if item["collector"] == "jin10_kline")
-        assert kline_status["dxy_fallback_promoted"] is True
+        assert kline_status == {"collector": "jin10_kline", "status": "skipped", "reason": "jin10_news_only"}
 
     def test_collect_upserts_data_source_status_rows(self, tmp_path):
         """macro_collect persists real collector status when a DB session is provided."""
@@ -391,7 +388,7 @@ class TestStepCollect:
             patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_fed_result()),
             patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_treasury_result()),
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_news_result()),
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=_make_data_layer_fred_result()),
@@ -399,7 +396,7 @@ class TestStepCollect:
         ):
             summary = run_macro_step("macro_collect", state, storage_root=tmp_path, run_id="run-status-001", db_session=db)
 
-        assert summary["data_source_status_upserts"] == 8
+        assert summary["data_source_status_upserts"] == 9
         assert summary["macro_observation_upserts"] == 5
         assert summary["raw_artifact_registry_upserts"] == 0
 
@@ -424,8 +421,9 @@ class TestStepCollect:
         assert rows["jin10_news"].status == "ok"
         assert rows["jin10_news"].analysis_ready is True
 
-        assert rows["technical_yahoo"].source_metadata["frontend_label"] == "Jin10 黄金实时/技术补充源"
-        assert rows["technical_yahoo"].status == "ok"
+        assert rows["technical_yahoo"].source_metadata["frontend_label"] == "金十旧数值入口（已停用）"
+        assert rows["technical_yahoo"].status == "disabled"
+        assert rows["twelvedata_xauusd_daily"].status == "ok"
         assert rows["technical_yahoo"].raw_ingested is False
         assert rows["positioning_cot"].status == "ok"
         assert rows["positioning_cot"].raw_ingested is False
@@ -503,7 +501,7 @@ class TestStepCollect:
             patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_empty_result()),
             patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_empty_result()),
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_empty_result()),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_empty_result()),
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=_make_data_layer_fred_result()),
@@ -590,7 +588,7 @@ class TestStepCollect:
                 unavailable_symbols=[],
                 source_refs=[{"symbol": "DXY", "source": "tradingview"}],
             )),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_empty_result()),
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=data_layer_fred) as fred_fallback,
@@ -653,7 +651,7 @@ class TestStepCollect:
             patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_fed_result()),
             patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_treasury_result()),
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_empty_result()),
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=_make_data_layer_fred_result()),
@@ -710,7 +708,7 @@ class TestStepCollect:
             patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_fed_result()),
             patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_treasury_result()),
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_empty_result()),
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=fallback_fred),
@@ -750,7 +748,7 @@ class TestStepCollect:
             patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_fed_result()),
             patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_treasury_result()),
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_empty_result()),
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=fallback_fred),
@@ -773,7 +771,7 @@ class TestStepCollect:
             patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_fed_result()),
             patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_treasury_result()),
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_empty_result()),
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", side_effect=RuntimeError("OpenBB service down")),
@@ -799,7 +797,7 @@ class TestStepFeature:
             {"symbol": "TGA", "source": "treasury", "reason": "offline"},
         ]
 
-        summary = run_macro_step("macro_feature", state, storage_root=tmp_path)
+        summary = run_macro_feature_from_dwd(state, storage_root=tmp_path)
 
         assert summary["step"] == "macro_feature"
         assert summary["status"] == "success"
@@ -812,7 +810,64 @@ class TestStepFeature:
         """Feature step raises if collect hasn't set as_of."""
         state = MacroPipelineState()
         with pytest.raises(RuntimeError, match="macro_collect"):
-            run_macro_step("macro_feature", state, storage_root=tmp_path)
+            run_macro_feature_from_dwd(state, storage_root=tmp_path)
+
+    def test_research_cot_reports_share_collection_cutoff_and_reject_future_sources(self, tmp_path):
+        cutoff = datetime(2026, 7, 24, 21, 0, tzinfo=UTC)
+        future_retrieval = "2026-07-25T01:00:00+00:00"
+        state = MacroPipelineState(
+            as_of="2026-07-24",
+            run_time=cutoff,
+            research_enabled=True,
+        )
+        state.all_points = [
+            MacroPoint(
+                symbol="COT_GOLD_mm_long",
+                date="2026-07-23",
+                value=120_000,
+                source="cftc",
+                source_url="https://www.cftc.gov/files/dea/history/fut_disagg_txt_2026.zip",
+                retrieved_at=future_retrieval,
+                raw_path="raw/positioning/futures.json",
+            ),
+            MacroPoint(
+                symbol="COT_GOLD_combined_mm_long",
+                date="2026-07-23",
+                value=120_000,
+                source="cftc",
+                source_url="https://www.cftc.gov/files/dea/history/com_disagg_txt_2026.zip",
+                retrieved_at=future_retrieval,
+                raw_path="raw/positioning/combined.json",
+            ),
+        ]
+        state.all_source_refs = [
+            {
+                "source": "cftc",
+                "source_url": "https://www.cftc.gov/files/dea/history/fut_disagg_txt_2026.zip",
+                "raw_path": "raw/positioning/futures.json",
+                "raw_archive_path": "raw/positioning/futures.zip",
+                "report_type": "futures_only",
+                "retrieved_at": future_retrieval,
+            },
+            {
+                "source": "cftc",
+                "source_url": "https://www.cftc.gov/files/dea/history/com_disagg_txt_2026.zip",
+                "raw_path": "raw/positioning/combined.json",
+                "raw_archive_path": "raw/positioning/combined.zip",
+                "report_type": "combined",
+                "retrieved_at": future_retrieval,
+            },
+        ]
+
+        run_macro_feature_from_dwd(state, storage_root=tmp_path)
+
+        reports = state.snapshot_dict["cot_reports"]
+        assert set(reports) == {"futures_only", "combined"}
+        for report in reports.values():
+            assert datetime.fromisoformat(report["as_of"].replace("Z", "+00:00")) == cutoff
+            assert report["readiness"] == "blocked"
+            assert report["alignment_status"] == "misaligned"
+            assert "retrieval_time_after_as_of" in report["reason_codes"]
 
 
 class TestStepRender:
@@ -825,7 +880,7 @@ class TestStepRender:
         state.all_source_refs = []
 
         # Run feature first to populate snapshot_dict
-        run_macro_step("macro_feature", state, storage_root=tmp_path)
+        run_macro_feature_from_dwd(state, storage_root=tmp_path)
 
         summary = run_macro_step("report_render", state, storage_root=tmp_path, run_id="run-a")
 
@@ -893,7 +948,7 @@ class TestStepRender:
             ],
         )
 
-        run_macro_step("macro_feature", state, storage_root=tmp_path)
+        run_macro_feature_from_dwd(state, storage_root=tmp_path)
         run_macro_step("report_render", state, storage_root=tmp_path, run_id="run-real10y")
 
         full_report = (
@@ -918,7 +973,7 @@ class TestStepRender:
         state.all_source_refs = [{"symbol": "DGS10", "source": "fred", "source_url": "https://api.stlouisfed.org/"}]
         db = _make_db_session(tmp_path)
 
-        run_macro_step("macro_feature", state, storage_root=tmp_path)
+        run_macro_feature_from_dwd(state, storage_root=tmp_path)
         summary = run_macro_step(
             "report_render",
             state,
@@ -989,7 +1044,7 @@ class TestStepRender:
         db.add(run)
         db.flush()
 
-        run_macro_step("macro_feature", state, storage_root=tmp_path)
+        run_macro_feature_from_dwd(state, storage_root=tmp_path)
         summary = run_macro_step(
             "report_render",
             state,
@@ -1042,7 +1097,7 @@ class TestFullMacroPipelineChain:
             patch("apps.collectors.fed.collector.collect_fed_series", return_value=_make_fed_result()),
             patch("apps.collectors.treasury.collector.collect_treasury_series", return_value=_make_treasury_result()),
             patch("apps.collectors.dxy.collector.collect_dxy_series", return_value=_make_dxy_empty_result()),
-            patch("apps.collectors.technical.collector.collect_technical", return_value=_make_empty_result()),
+            patch("apps.collectors.technical.spot_history.collect_spot_history", return_value=_make_empty_result()),
             patch("apps.collectors.positioning.collector.collect_positioning_cot", return_value=_make_empty_result()),
             patch("apps.collectors.news.collector.collect_news", return_value=_make_empty_result()),
             patch("apps.data_layer.service.MacroDataService.collect_fred_rates", return_value=_make_data_layer_fred_result()),
@@ -1052,7 +1107,7 @@ class TestFullMacroPipelineChain:
         assert s1["status"] == "success"
         assert len(state.all_points) == 4  # FRED: 4 pts; DXY/tech/positioning/news mocked empty
 
-        s2 = run_macro_step("macro_feature", state, storage_root=tmp_path)
+        s2 = run_macro_feature_from_dwd(state, storage_root=tmp_path)
         assert s2["status"] == "success"
         assert state.snapshot_dict is not None
 
@@ -1082,7 +1137,7 @@ class TestFullMacroPipelineChain:
         state_a.all_points = _make_fred_result().points
         state_a.all_unavailable = []
         state_a.all_source_refs = []
-        run_macro_step("macro_feature", state_a, storage_root=tmp_path)
+        run_macro_feature_from_dwd(state_a, storage_root=tmp_path)
         summary_a = run_macro_step("report_render", state_a, storage_root=tmp_path, run_id="run-a")
 
         state_b = MacroPipelineState()
@@ -1090,7 +1145,7 @@ class TestFullMacroPipelineChain:
         state_b.all_points = _make_fred_result().points
         state_b.all_unavailable = []
         state_b.all_source_refs = []
-        run_macro_step("macro_feature", state_b, storage_root=tmp_path)
+        run_macro_feature_from_dwd(state_b, storage_root=tmp_path)
         summary_b = run_macro_step("report_render", state_b, storage_root=tmp_path, run_id="run-b")
 
         json_a = Path(summary_a["json_path"])
@@ -1160,7 +1215,8 @@ class TestRunPremarketWithMacro:
         db.refresh(task)
         assert task.status == TaskStatus.partial_success
         for step in task.steps:
-            assert step.status == StepStatus.success
+            assert step.status == (StepStatus.blocked if step.name == "report_render" else StepStatus.success)
+        assert not list(tmp_path.rglob("final_report.md"))
 
         events = (
             db.query(ExecutionEvent)
@@ -1254,7 +1310,8 @@ class TestRunPremarketWithMacro:
         assert steps_by_name["cme_download"].status == StepStatus.failed
         assert steps_by_name["macro_collect"].status == StepStatus.success
         assert steps_by_name["macro_feature"].status == StepStatus.success
-        assert steps_by_name["report_render"].status == StepStatus.success
+        assert steps_by_name["report_render"].status == StepStatus.blocked
+        assert not list(tmp_path.rglob("final_report.md"))
 
     def test_source_readiness_blocks_macro_pipeline_before_execution(self, tmp_path):
         """Blocked source readiness should stop the macro pipeline before macro execution starts."""
@@ -1403,7 +1460,9 @@ class TestRunPremarketWithMacro:
 
         db.refresh(task)
         assert task.status == TaskStatus.degraded
-        assert all(step.status == StepStatus.success for step in task.steps)
+        assert all(step.status == (StepStatus.blocked if step.name == "report_render" else StepStatus.success)
+                   for step in task.steps)
+        assert not list(tmp_path.rglob("final_report.md"))
         events = (
             db.query(ExecutionEvent)
             .filter(ExecutionEvent.run_id == task.id)

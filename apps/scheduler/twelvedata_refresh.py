@@ -165,6 +165,7 @@ def refresh_twelvedata_xauusd(
             comparison_bps: list[float] = []
             fallback_count = 0
             fallback_open_times: list[str] = []
+            persisted_ids: list[str] = []
 
             for candle in closed:
                 local = local_by_time.get(candle.open_time)
@@ -179,12 +180,12 @@ def refresh_twelvedata_xauusd(
                     **result.source_ref(),
                     "quality_status": "accepted_fallback" if is_fallback else "accepted_validation",
                     "source_role": "fallback" if is_fallback else "validation",
-                    "fallback_reason": "jin10_incomplete_or_stale" if is_fallback else None,
+                    "fallback_reason": "independent_primary_unavailable" if is_fallback else None,
                     "provider_timestamp": candle.open_time.isoformat(),
                     "provider_grace_seconds": PROVIDER_GRACE_SECONDS,
                     "volume_semantics": "unavailable",
                 }
-                upsert_market_candle(
+                row = upsert_market_candle(
                     session,
                     asset="XAUUSD",
                     timeframe=timeframe,
@@ -198,6 +199,15 @@ def refresh_twelvedata_xauusd(
                     source_ref=source_ref,
                     raw_path=result.raw_path,
                 )
+                persisted_ids.append(row.id)
+
+            from apps.data_layer.collection_ingestion import ingest_collection_records
+
+            warehouse_ingestion = ingest_collection_records(
+                session, "candles", record_ids=persisted_ids, storage_root=root,
+                raw_sources=[{"raw_path": result.raw_path, "source_key": f"twelvedata_xauusd_{timeframe}",
+                              "collected_at": result.retrieved_at, "expected_records": len(persisted_ids)}],
+            )
 
             diagnostics = {
                 "status": "ok" if closed else "no_closed_bars",
@@ -215,6 +225,7 @@ def refresh_twelvedata_xauusd(
                 "credits_left": result.credits_left,
                 "credit_scope": "minute",
                 "raw_path": result.raw_path,
+                "warehouse": warehouse_ingestion,
             }
             diagnostics_path = _archive_diagnostics(root, diagnostics, collected_at=collected_at)
             diagnostics["diagnostics_path"] = diagnostics_path
@@ -253,7 +264,7 @@ def _local_primary_rows(session: Any, *, timeframe: str, limit: int) -> list[Any
             asset="XAUUSD",
             timeframe="5m",
             limit=limit,
-            source="jin10_mcp_derived_5m",
+            source="canonical_xauusd_5m",
         )
 
     five_minute_rows = list_market_candles(
@@ -262,7 +273,7 @@ def _local_primary_rows(session: Any, *, timeframe: str, limit: int) -> list[Any
         timeframe="5m",
         limit=(limit + 2) * (TWELVE_DATA_INTERVALS[_provider_interval(timeframe)][1] // 300),
     )
-    canonical = select_canonical_xauusd_rows(five_minute_rows)
+    canonical = select_canonical_xauusd_rows([row for row in five_minute_rows if not str(row.source).startswith("twelvedata")])
     return aggregate_complete_candles(
         canonical,
         source_timeframe="5m",

@@ -211,7 +211,7 @@ def _select(rows: tuple[dict[str, Any], ...], *, asset: str, series_id: str, rol
 def _checked_row(row: dict[str, Any], *, asset: str, timeframe: str, as_of: datetime) -> dict[str, Any]:
     source = str(row.get("source") or "")
     source_ref = row.get("source_ref") if isinstance(row.get("source_ref"), Mapping) else {}
-    qualification = qualify_market_source(asset=asset, source=source, source_ref=source_ref)
+    qualification = qualify_market_source(asset=asset, source=source, source_ref={**source_ref, "row_raw_path": row.get("raw_path")})
     retrieved_at = _retrieval_time(row, source_ref)
     ref = _source_ref(row, qualification_reason=qualification.reason_code, normalized_role=qualification.normalized_role, retrieved_at=retrieved_at)
     open_time = _parse_time(row.get("open_time"))
@@ -220,7 +220,8 @@ def _checked_row(row: dict[str, Any], *, asset: str, timeframe: str, as_of: date
     if close_time is None and open_time is not None:
         close_time = open_time + expected_duration
     retrieval_after_as_of = retrieved_at is not None and retrieved_at > as_of
-    future_or_incomplete = (close_time is not None and close_time > as_of) or retrieval_after_as_of
+    captured_before_close = retrieved_at is not None and close_time is not None and retrieved_at < close_time
+    future_or_incomplete = (close_time is not None and close_time > as_of) or retrieval_after_as_of or captured_before_close
     ohlc = tuple(_number(row.get(name)) for name in ("open", "high", "low", "close"))
     reason = "eligible"
     eligible = qualification.quality_status != "blocked"
@@ -230,6 +231,8 @@ def _checked_row(row: dict[str, Any], *, asset: str, timeframe: str, as_of: date
         eligible, reason = False, "retrieval_time_missing"
     elif retrieval_after_as_of:
         eligible, reason = False, "retrieval_time_after_as_of"
+    elif captured_before_close:
+        eligible, reason = False, "captured_before_bar_close"
     elif any(value is None for value in ohlc):
         eligible, reason = False, "ohlc_missing"
     elif open_time is None or close_time is None:

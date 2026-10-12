@@ -25,11 +25,11 @@ def _factory():
     return factory
 
 
-def _seed_5m(session, *, day: date, jin10: bool, twelve: bool, count: int = 288) -> None:
+def _seed_5m(session, *, day: date, primary: bool, twelve: bool, count: int = 288) -> None:
     start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
     for index in range(count):
         open_time = start + timedelta(minutes=5 * index)
-        if jin10:
+        if primary:
             upsert_market_candle(
                 session,
                 asset="XAUUSD",
@@ -39,8 +39,8 @@ def _seed_5m(session, *, day: date, jin10: bool, twelve: bool, count: int = 288)
                 high=4201 + index,
                 low=4199 + index,
                 close=4200.5 + index,
-                source="jin10_mcp_derived_5m",
-                raw_path="raw/market/jin10.json",
+                source="canonical_xauusd_5m",
+                raw_path="raw/market/independent.json",
             )
         if twelve:
             upsert_market_candle(
@@ -78,7 +78,7 @@ def test_complete_summary_has_real_percentiles_and_boundary_diagnostics(tmp_path
     factory = _factory()
     day = date(2026, 7, 16)
     with factory() as session:
-        _seed_5m(session, day=day, jin10=True, twelve=True)
+        _seed_5m(session, day=day, primary=True, twelve=True)
         session.commit()
         for timeframe in ("5m", "15m", "1h", "4h"):
             _diagnostic(tmp_path, day=day, timeframe=timeframe)
@@ -90,7 +90,7 @@ def test_complete_summary_has_real_percentiles_and_boundary_diagnostics(tmp_path
         )
 
     assert payload["status"] == "pass"
-    assert payload["jin10"]["success"] is True
+    assert payload["primary_5m"]["success"] is True
     assert payload["canonical_5m"]["completeness"]["status"] == "complete"
     assert payload["twelvedata"]["request_count"] == 4
     assert payload["twelvedata"]["fallback_count"] == 8
@@ -107,7 +107,7 @@ def test_partial_and_empty_samples_do_not_create_fake_percentiles(tmp_path):
     partial_day = date(2026, 7, 15)
     empty_day = date(2026, 7, 14)
     with factory() as session:
-        _seed_5m(session, day=partial_day, jin10=True, twelve=True, count=1)
+        _seed_5m(session, day=partial_day, primary=True, twelve=True, count=1)
         session.commit()
         partial = build_xauusd_shadow_summary(
             session,
@@ -136,7 +136,7 @@ def test_fallback_and_quota_exhaustion_are_explicit(tmp_path):
     factory = _factory()
     day = date(2026, 7, 13)
     with factory() as session:
-        _seed_5m(session, day=day, jin10=False, twelve=True, count=1)
+        _seed_5m(session, day=day, primary=False, twelve=True, count=1)
         session.commit()
         _diagnostic(tmp_path, day=day, status="minute_quota_exhausted", request_count=0, credits_left=0)
         payload = build_xauusd_shadow_summary(
@@ -147,7 +147,7 @@ def test_fallback_and_quota_exhaustion_are_explicit(tmp_path):
         )
 
     assert payload["status"] == "fail"
-    assert payload["jin10"]["success"] is False
+    assert payload["primary_5m"]["success"] is False
     assert payload["canonical_5m"]["source_breakdown"] == {"twelvedata_xauusd_5m": 1}
     assert payload["twelvedata"]["quota"]["exhausted"] is True
     assert "twelvedata_quota_exhausted" in payload["reasons"]
@@ -178,7 +178,7 @@ def test_ten_day_rollup_uses_only_explicit_daily_artifacts(tmp_path):
         )
     day = trade_days[9]
     with factory() as session:
-        _seed_5m(session, day=day, jin10=True, twelve=True)
+        _seed_5m(session, day=day, primary=True, twelve=True)
         session.commit()
         for timeframe in ("5m", "15m", "1h", "4h"):
             _diagnostic(tmp_path, day=day, timeframe=timeframe)
@@ -215,7 +215,7 @@ def test_intraday_preview_is_not_counted_or_writable(tmp_path):
     factory = _factory()
     day = date(2026, 7, 17)
     with factory() as session:
-        _seed_5m(session, day=day, jin10=True, twelve=True, count=2)
+        _seed_5m(session, day=day, primary=True, twelve=True, count=2)
         session.commit()
         payload = build_xauusd_shadow_summary(
             session,
@@ -237,7 +237,7 @@ def test_boundary_diagnostics_compare_canonical_and_native_starts(tmp_path):
     factory = _factory()
     day = date(2026, 7, 16)
     with factory() as session:
-        _seed_5m(session, day=day, jin10=True, twelve=True, count=3)
+        _seed_5m(session, day=day, primary=True, twelve=True, count=3)
         upsert_market_candle(
             session,
             asset="XAUUSD",

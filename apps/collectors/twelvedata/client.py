@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from math import isfinite
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ TWELVE_DATA_API_KEY_ENV = "TWELVE_DATA_API_KEY"
 TWELVE_DATA_SOURCE_KEY = "twelvedata_xauusd"
 TWELVE_DATA_SYMBOL = "XAU/USD"
 SUPPORTED_INTERVALS: dict[str, str] = {
+    "1day": "1d",
     "5min": "5m",
     "15min": "15m",
     "1h": "1h",
@@ -156,6 +158,12 @@ class TwelveDataClient:
             message = payload.get("message") if isinstance(payload, dict) else "non-object response"
             raise TwelveDataPayloadError(f"Twelve Data returned an error payload: {message}; raw={raw_path}")
 
+        metadata = payload.get("meta") or {}
+        if not isinstance(metadata, dict) or (metadata.get("symbol") and metadata["symbol"] != symbol):
+            raise TwelveDataPayloadError(f"Twelve Data returned a mismatched instrument; raw={raw_path}")
+        if metadata.get("interval") and metadata["interval"] != interval:
+            raise TwelveDataPayloadError(f"Twelve Data returned a mismatched interval; raw={raw_path}")
+
         candles = self._parse_candles(payload.get("values"), raw_path=raw_path)
         return TwelveDataFetchResult(
             symbol=symbol,
@@ -204,6 +212,8 @@ class TwelveDataClient:
                 raise TwelveDataPayloadError(f"Twelve Data candle fields are invalid; raw={raw_path}") from exc
             if open_time in seen:
                 raise TwelveDataPayloadError(f"Twelve Data returned a duplicate timestamp; raw={raw_path}")
+            if not all(isfinite(value) for value in (open_, high, low, close)):
+                raise TwelveDataPayloadError(f"Twelve Data returned non-finite OHLC; raw={raw_path}")
             if high < max(open_, close) or low > min(open_, close) or high < low:
                 raise TwelveDataPayloadError(f"Twelve Data returned invalid OHLC; raw={raw_path}")
             seen.add(open_time)

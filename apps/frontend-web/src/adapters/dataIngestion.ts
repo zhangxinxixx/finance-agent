@@ -2,7 +2,6 @@ import { fetchJson, ApiError } from "@/adapters/apiClient";
 import type { DataStatus, SourceRef } from "@/types/common";
 import type { DataStatusSummary } from "@/types/dashboard";
 import type {
-  DataIngestionMockFile,
   DataIngestionResponse,
   DataIngestionResponseSource,
   DataIngestionStatus,
@@ -32,8 +31,7 @@ import type {
   NewsFeatureSummaryViewModel,
 } from "@/types/data-ingestion";
 
-const DATA_INGESTION_MOCK_URL = new URL("../mocks/data-ingestion.json", import.meta.url);
-const DATA_INGESTION_STATUS_PATH = "/api/data-sources/status";
+const DATA_INGESTION_STATUS_PATH = "/api/data-sources/status?view=ads";
 const DATA_STATUS_SUMMARY_PATH = "/api/data-status/summary";
 const DATA_INGESTION_RETRY_PATH = "/api/ingestion/sources";
 
@@ -274,6 +272,7 @@ function normalizeApiStatuses(payload: ApiDataSourceStatuses): DataSourceStatuse
         source_group: source.source_group,
         source_type: source.source_type,
         endpoint: source.access_method ?? null,
+        source_url: source.source_url ?? null,
         configured: Boolean(source.configured),
         raw_ingested: Boolean(source.raw_ingested),
         parsed: Boolean(source.parsed),
@@ -283,7 +282,7 @@ function normalizeApiStatuses(payload: ApiDataSourceStatuses): DataSourceStatuse
         latest_update_time: source.latest_update_time ?? source.latest_parsed_time ?? source.latest_raw_time ?? null,
         freshness_status: source.freshness_status ?? null,
         freshness_reason: source.freshness_reason ?? null,
-        row_count: source.row_count ?? 0,
+        row_count: source.row_count ?? null,
         status: toUiStatus(source.status),
         error_message: source.error_message ?? null,
         source_refs: [`GET ${DATA_INGESTION_STATUS_PATH}#${source.source_key}`],
@@ -299,54 +298,6 @@ function normalizeApiStatuses(payload: ApiDataSourceStatuses): DataSourceStatuse
         pipeline_health: normalizeBackendPipelineHealth(source.pipeline_health, normalizedSource),
       };
     }),
-  };
-}
-
-function normalizeSourceItem(source: DataSourceItem): DataSourceItem {
-  return {
-    ...source,
-    latest_update_time: source.latest_update_time ?? source.latest_parsed_time ?? source.latest_raw_time ?? null,
-    freshness_status: source.freshness_status ?? null,
-    freshness_reason: source.freshness_reason ?? null,
-    last_run_id: source.last_run_id ?? null,
-    next_run_time: source.next_run_time ?? null,
-    metadata: normalizeMetadata(source.metadata, source.source_name),
-    affected_modules: normalizeStringArray(source.affected_modules),
-    artifact_evidence: source.artifact_evidence ?? null,
-    pipeline_health: source.pipeline_health ?? null,
-  };
-}
-
-function createEmptyStatuses(): DataSourceStatuses {
-  return {
-    generated_at: "unavailable",
-    last_refresh_at: null,
-    sources: [],
-  };
-}
-
-function createEmptySummary(): DataIngestionSummary {
-  return {
-    generated_at: "unavailable",
-    source_count: 0,
-    configured_count: 0,
-    raw_ingested_count: 0,
-    parsed_count: 0,
-    analysis_ready_count: 0,
-    status_counts: {
-      ok: 0,
-      warn: 0,
-      error: 0,
-      unavailable: 0,
-    },
-    source_groups: [],
-    pipeline: {
-      configured: "unavailable",
-      raw_ingested: "unavailable",
-      parsed: "unavailable",
-      analysis_ready: "unavailable",
-    },
-    source_trace: [],
   };
 }
 
@@ -449,6 +400,7 @@ function sourceToSourceRef(source: DataSourceItem, responseSource: DataIngestion
   return {
     source_ref: source.source_refs[0] ?? `GET ${DATA_INGESTION_STATUS_PATH}#${source.source_key}`,
     endpoint: responseSource === "mock" ? "mocks/data-ingestion.json" : source.endpoint ?? DATA_INGESTION_STATUS_PATH,
+    source_url: source.source_url ?? undefined,
     artifact_path: sourceArtifactPath(source),
     snapshot_id: source.snapshot_id,
     run_id: source.last_run_id ?? null,
@@ -1077,43 +1029,6 @@ function buildDataIngestionViewModel(
   };
 }
 
-function createUnavailableResponse(reason: string): DataIngestionResponse {
-  const summary = createEmptySummary();
-  const statuses = createEmptyStatuses();
-  return {
-    summary,
-    statuses,
-    has_data: false,
-    source: "unavailable",
-    error_reason: reason,
-    view_model: buildDataIngestionViewModel(summary, statuses, "unavailable", null),
-  };
-}
-
-async function loadMockDataIngestion(): Promise<DataIngestionResponse> {
-  const response = await fetch(DATA_INGESTION_MOCK_URL);
-
-  if (!response.ok) {
-    throw new Error(`加载 Data Ingestion mock 失败：${response.status}`);
-  }
-
-  const payload = (await response.json()) as DataIngestionMockFile;
-
-  const statuses = {
-    ...payload.statuses,
-    sources: payload.statuses.sources.map(normalizeSourceItem),
-  };
-  const summary = payload.summary;
-
-  return {
-    summary,
-    statuses,
-    has_data: statuses.sources.length > 0,
-    source: "mock",
-    view_model: buildDataIngestionViewModel(summary, statuses, "mock", null),
-  };
-}
-
 export async function fetchDataIngestionData(): Promise<DataIngestionResponse> {
   try {
     const [payload, systemStatus] = await Promise.all([
@@ -1142,20 +1057,10 @@ export async function fetchDataIngestionData(): Promise<DataIngestionResponse> {
       view_model: buildDataIngestionViewModel(summary, statuses, "api", systemStatus),
     };
   } catch (apiCause) {
-    const apiError = apiCause instanceof Error ? apiCause.message : "Data Ingestion API 请求失败";
-
-    try {
-      const mockData = await loadMockDataIngestion();
-      return {
-        ...mockData,
-        source: "mock",
-        error_reason: apiError,
-        view_model: buildDataIngestionViewModel(mockData.summary, mockData.statuses, "mock", null),
-      };
-    } catch (mockCause) {
-      const mockError = mockCause instanceof Error ? mockCause.message : "Data Ingestion mock 请求失败";
-      return createUnavailableResponse(`${apiError}; ${mockError}`);
-    }
+    // A failed source read must remain unavailable.  Never substitute the
+    // local fixture here: the page is a production read surface and a mock
+    // status can be mistaken for a real source health result.
+    throw apiCause instanceof Error ? apiCause : new Error("数据接入状态暂时无法读取");
   }
 }
 

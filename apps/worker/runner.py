@@ -17,18 +17,13 @@ import json
 import logging
 import traceback
 import uuid
-from collections.abc import Callable
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session as DBSession
-from sqlalchemy.orm import sessionmaker
 
 from apps.analysis.snapshots.builder import build_analysis_snapshot, write_analysis_snapshot
-from apps.analysis.context_bundle.snapshot_evidence import build_state_shadow_input
 from apps.analysis.gold_policy.runtime_inputs import prepare_gold_policy_runtime_inputs
 from apps.features.market_data import (
     build_market_context_snapshot,
@@ -37,7 +32,6 @@ from apps.features.market_data import (
     load_formal_market_snapshots,
     resolve_formal_snapshot_as_of,
 )
-from apps.output.context_bundle import load_context_bundle, write_context_bundle
 from apps.output.artifacts import artifact_run_dir
 from apps.premarket import (
     evaluate_premarket_step_readiness,
@@ -45,13 +39,7 @@ from apps.premarket import (
     sort_premarket_steps,
 )
 from apps.runtime.state_machine import derive_task_run_status, transition_task_run, transition_task_step
-from apps.runtime.immutable_artifact import immutable_json_item, write_immutable_artifact_bundle
-from apps.runtime.artifact_registry import (
-    register_artifact,
-    select_canary_terminal_result_for_run,
-    select_context_bundle_artifact_for_run,
-    select_previous_context_bundle_artifact,
-)
+from apps.runtime.execution_event_bridge import emit_task_event
 from apps.worker.artifact_registration import (
     coerce_lineage_input_snapshot_ids as _coerce_lineage_input_snapshot_ids,
     coerce_lineage_source_refs as _coerce_lineage_source_refs,
@@ -59,7 +47,6 @@ from apps.worker.artifact_registration import (
     merge_lineage_input_snapshot_ids as _merge_lineage_input_snapshot_ids,
     merge_lineage_source_refs as _merge_lineage_source_refs,
     register_composite_output_artifacts as _register_composite_output_artifacts,
-    register_context_bundle_artifact as _register_context_bundle_artifact,
     register_run_support_artifacts as _register_run_support_artifacts,
     register_runner_step_artifacts as _register_runner_step_artifacts,
 )
@@ -67,34 +54,11 @@ from apps.worker.composite_analysis_pipeline import (
     accepted_coordinator_output as _accepted_coordinator_output,
     run_composite_analysis_pipeline as _run_composite_analysis_pipeline,
 )
-from apps.worker.composite_state_shadow import (
-    CANARY_CONTEXT_MODE,
-    LEGACY_CONTEXT_MODE,
-    STATE_DELTA_CONTEXT_MODE,
-    StateDeltaAnalyzer,
-    resolve_analysis_context_mode,
-)
-from apps.worker.canary_materialization import (
-    CanaryActivation,
-    CanaryAuthorityPayload,
-    CanaryMaterializationRequest,
-    CanaryMaterializationResult,
-    build_canary_recompute_registry_descriptor,
-    failed_canary_materialization_result,
-    mark_canary_recompute_result,
-    materialize_canary_request,
-    prepare_canary_recompute_shadow_input,
-    resolve_canary_activation,
-)
-from apps.analysis.agents.quality_gate import AgentLoopDecision
-from apps.analysis.agents.quality_gate_evaluator import QualityGateDecision
-from apps.analysis.agents.schemas import AgentOutput
 from apps.worker.db_persistence import (
     db_persist_agent_outputs as _db_persist_agent_outputs,
     db_persist_analysis_snapshot as _db_persist_analysis_snapshot,
     db_persist_final_result as _db_persist_final_result,
     ensure_review_items as _ensure_review_items,
-    persist_review_items as _persist_review_items,
 )
 from apps.worker.error_policy import (
     classify_error_type as _classify_error_type,
@@ -115,26 +79,13 @@ from apps.analysis.agents.quality_gate_evaluator import evaluate_quality_gate
 from database.models.task import StepStatus, TaskRun, TaskStatus
 
 # ── DB persistence imports ────────────────────────────────────────────────
-from database.models.analysis import AnalysisSnapshot, ensure_analysis_tables
-from database.models.analysis_state import AnalysisState, AnalysisStateHead
+from database.models.analysis import ensure_analysis_tables
 from database.models.report import ensure_report_tables
 from database.models.task import ensure_task_tables
 from database.queries.analysis import (
     upsert_analysis_snapshot,
     upsert_agent_output,
     upsert_final_analysis_result,
-)
-from database.queries.canary_approvals import (
-    consume_canary_approval,
-    load_canary_approval,
-)
-from database.queries.canary_attempts import (
-    CanaryAttemptError,
-    authorize_canary_recompute,
-    create_or_resume_canary_attempt,
-    load_canary_attempt,
-    mark_canary_attempt_audit_persisted,
-    mark_canary_attempt_terminal,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,7 +108,6 @@ __all__ = [
     "_db_persist_analysis_snapshot",
     "_db_persist_final_result",
     "_ensure_review_items",
-    "_persist_review_items",
     "_register_composite_output_artifacts",
     "_register_composite_report_registry_entries",
     "_register_run_support_artifacts",
@@ -183,929 +133,6 @@ _STEP_STATUS_SUCCESS = "success"
 _STEP_STATUS_SKIPPED = "skipped"
 _STEP_STATUS_FAILED = "failed"
 _STEP_STATUS_PARTIAL_SUCCESS = "partial_success"
-CanaryAttemptSessionFactory = Callable[[], DBSession]
-
-
-def _canary_attempt_session_factory(db: DBSession) -> CanaryAttemptSessionFactory:
-    """Build a truly separate short-session boundary for durable attempt checkpoints."""
-
-    bind = db.get_bind()
-    engine: Engine = bind.engine if isinstance(bind, Connection) else bind
-    if engine.dialect.name == "sqlite" and str(engine.url.database or "") in {"", ":memory:"}:
-        raise CanaryAttemptError("in-memory SQLite cannot provide an independent durable CanaryAttempt transaction")
-    return sessionmaker(bind=engine, expire_on_commit=False)
-
-
-def _durably_start_canary_attempt(
-    factory: CanaryAttemptSessionFactory,
-    *,
-    activation: CanaryActivation,
-    attempt_no: int,
-    started_at: datetime,
-) -> str:
-    """Commit started in a short session without touching the Runner transaction."""
-
-    with factory() as attempt_db, attempt_db.begin():
-        attempt = create_or_resume_canary_attempt(
-            attempt_db,
-            run_id=activation.run_id,
-            approval_id=activation.approval_id,
-            approval_hash=activation.approval_hash,
-            attempt_no=attempt_no,
-            asset=activation.asset,
-            state_scope=activation.state_scope,
-            trade_date=activation.trade_date,
-            requested_canonical_state_id=activation.canonical_state_id,
-            expected_head_version=activation.expected_head_version,
-            started_at=started_at,
-        )
-        attempt_id = attempt.attempt_id
-    return attempt_id
-
-
-def _canary_attempt_root(
-    storage_root: Path,
-    *,
-    trade_date: str,
-    run_id: str,
-    attempt: int,
-    attempt_id: str,
-) -> Path:
-    if attempt not in {0, 1}:
-        raise ValueError("canary attempt must be 0 or 1")
-    return (
-        artifact_run_dir(
-            storage_root,
-            layer="outputs",
-            domain="analysis_memory_canary",
-            date=trade_date,
-            run_id=run_id,
-        )
-        / f"attempt-{attempt}"
-        / str(attempt_id)
-        / "sandbox"
-    )
-
-
-def _run_canary_sidecar_attempt(
-    *,
-    storage_root: Path,
-    snapshot: dict[str, Any],
-    run_id: str,
-    created_at: datetime,
-    state_shadow_input: dict[str, Any],
-    state_delta_analyzer: StateDeltaAnalyzer | None,
-    canary_activation: CanaryActivation,
-    attempt: int,
-    attempt_id: str,
-) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    """Run canary consumers in an isolated artifact namespace.
-
-    Only the immutable ContextBundle is copied into the canonical Bundle store;
-    report/card and agent artifacts remain sidecars and cannot replace legacy
-    official outputs for the TaskRun.
-    """
-
-    trade_date = str(snapshot.get("trade_date") or "").strip()
-    if not trade_date:
-        raise ValueError("canary sidecar requires analysis snapshot trade_date")
-    attempt_root = _canary_attempt_root(
-        storage_root,
-        trade_date=trade_date,
-        run_id=run_id,
-        attempt=attempt,
-        attempt_id=attempt_id,
-    )
-    summaries, outputs = _run_composite_analysis_pipeline(
-        storage_root=attempt_root,
-        snapshot=snapshot,
-        run_id=run_id,
-        created_at=created_at,
-        analysis_context_mode=CANARY_CONTEXT_MODE,
-        state_shadow_input=state_shadow_input,
-        state_delta_analyzer=state_delta_analyzer,
-        canary_sidecar_attempt=attempt,
-        canary_activation=canary_activation,
-    )
-    raw_descriptor = outputs.get("context_bundle_registry_artifact")
-    if not isinstance(raw_descriptor, dict):
-        return summaries, outputs
-    sidecar_path = raw_descriptor.get("file_path")
-    if not isinstance(sidecar_path, str) or not sidecar_path:
-        raise ValueError("canary sidecar Bundle descriptor path is missing")
-    bundle = load_context_bundle(
-        storage_root=attempt_root,
-        storage_relative_path=sidecar_path,
-    )
-    outputs["context_bundle_registry_artifact"] = write_context_bundle(
-        storage_root=storage_root,
-        bundle=bundle,
-    ).registry_artifact
-    outputs["canary_attempt_root"] = attempt_root
-    outputs["canary_attempt_number"] = attempt
-    outputs["canary_attempt_id"] = attempt_id
-    return summaries, outputs
-
-
-def _resolve_canary_runner_activation(
-    db: DBSession,
-    *,
-    attempt_session_factory: CanaryAttemptSessionFactory,
-    storage_root: Path,
-    analysis_snapshot: dict[str, Any],
-    run_id: str,
-    state_shadow_input: dict[str, Any] | None,
-    canary_approval_id: str | None,
-    now: datetime,
-) -> tuple[
-    CanaryMaterializationResult | None,
-    CanaryActivation | None,
-    dict[str, Any] | None,
-]:
-    """Recover terminal evidence or validate persistent authority before any LLM call."""
-
-    if not isinstance(state_shadow_input, dict):
-        raise ValueError("canary sidecar requires state_shadow_input")
-    normalized_approval_id = str(canary_approval_id or "").strip()
-    if not normalized_approval_id:
-        raise ValueError("canary_approval_id is required for canary context")
-    forbidden_controls = {
-        "canary_trade_dates",
-        "canary_run_ids",
-        "canary_manual_request",
-        "canary_enabled",
-    }.intersection(state_shadow_input)
-    if forbidden_controls:
-        raise ValueError(
-            "caller-owned canary activation controls are forbidden: " + ", ".join(sorted(forbidden_controls))
-        )
-    with attempt_session_factory() as attempt_db:
-        attempt0 = load_canary_attempt(attempt_db, run_id=run_id, attempt_no=0)
-        attempt1 = load_canary_attempt(attempt_db, run_id=run_id, attempt_no=1)
-        checkpoint = attempt1 or attempt0
-        if attempt0 is not None:
-            attempt_db.expunge(attempt0)
-        if checkpoint is not None:
-            if checkpoint is not attempt0:
-                attempt_db.expunge(checkpoint)
-    recovered = select_canary_terminal_result_for_run(
-        db,
-        run_id=run_id,
-        storage_root=storage_root,
-    )
-    if checkpoint is None and recovered is not None:
-        raise ValueError("terminal canary result has no persistent Attempt")
-    if checkpoint is not None and recovered is not None:
-        if recovered.approval_id != normalized_approval_id:
-            raise ValueError("terminal canary approval_id does not match restart request")
-        candidate, candidate_hash = _validate_canary_terminal_checkpoint(
-            checkpoint,
-            recovered=recovered,
-            storage_root=storage_root,
-            run_id=run_id,
-            require_terminal_binding=checkpoint.status == "terminal",
-        )
-        if checkpoint.status != "terminal":
-            with attempt_session_factory() as attempt_db, attempt_db.begin():
-                checkpoint = mark_canary_attempt_terminal(
-                    attempt_db,
-                    attempt_id=checkpoint.attempt_id,
-                    terminal_status=recovered.status,
-                    artifact_path=str(candidate),
-                    artifact_sha256=candidate_hash,
-                    updated_at=_now(),
-                )
-        _validate_canary_terminal_checkpoint(
-            checkpoint,
-            recovered=recovered,
-            storage_root=storage_root,
-            run_id=run_id,
-            require_terminal_binding=True,
-        )
-        return recovered, None, None
-    recovered_attempt: dict[str, Any] | None = None
-    if checkpoint is not None:
-        if checkpoint.approval_id != normalized_approval_id:
-            raise ValueError("persistent CanaryAttempt approval_id does not match restart request")
-        if checkpoint.status == "failed":
-            raise ValueError(f"persistent CanaryAttempt failed: {checkpoint.failure_code}")
-        if checkpoint.status in {"audit_persisted", "recompute_authorized"}:
-            recovered_attempt = _recover_canary_attempt_audit(
-                checkpoint,
-                storage_root=storage_root,
-            )
-        elif checkpoint.status == "started":
-            recovered_attempt = {
-                "attempt_id": checkpoint.attempt_id,
-                "attempt_no": checkpoint.attempt_no,
-            }
-        else:
-            raise ValueError("persistent CanaryAttempt is not safely resumable")
-        if checkpoint.attempt_no == 1:
-            if attempt0 is None or attempt0.status != "recompute_authorized":
-                raise ValueError("attempt 1 has no durable recompute predecessor")
-            conflict = _reconstruct_canary_recompute_conflict(
-                attempt0,
-                checkpoint,
-                storage_root=storage_root,
-            )
-            recovered_attempt["conflict_result"] = conflict
-            if checkpoint.status == "started":
-                recovered_attempt["shadow_input"] = prepare_canary_recompute_shadow_input(
-                    db,
-                    conflict_result=conflict,
-                    shadow_input=state_shadow_input,
-                    created_at=now,
-                    current_run_id=run_id,
-                    storage_root=str(storage_root),
-                )
-
-    raw_trade_date = analysis_snapshot.get("trade_date")
-    approval_trade_date = (
-        raw_trade_date if isinstance(raw_trade_date, date) else date.fromisoformat(str(raw_trade_date))
-    )
-    approval = load_canary_approval(
-        db,
-        approval_id=normalized_approval_id,
-        asset=str(analysis_snapshot.get("asset") or ""),
-        state_scope=str(state_shadow_input.get("state_scope") or ""),
-        trade_date=approval_trade_date,
-        run_id=run_id,
-        now=now,
-    )
-    activation = resolve_canary_activation(
-        snapshot_asset=analysis_snapshot.get("asset"),
-        snapshot_trade_date=approval_trade_date,
-        run_id=run_id,
-        shadow_input=state_shadow_input,
-        approval=approval,
-    )
-    if checkpoint is not None:
-        if (
-            checkpoint.asset != activation.asset
-            or checkpoint.state_scope != activation.state_scope
-            or checkpoint.trade_date != activation.trade_date
-            or checkpoint.approval_hash != activation.approval_hash
-        ):
-            raise ValueError("persistent CanaryAttempt authority identity changed")
-        activation = activation.model_copy(
-            update={
-                "canonical_state_id": checkpoint.requested_canonical_state_id,
-                "expected_head_version": checkpoint.expected_head_version,
-            }
-        )
-    return None, activation, recovered_attempt
-
-
-def _validate_canary_terminal_checkpoint(
-    checkpoint: Any,
-    *,
-    recovered: CanaryMaterializationResult,
-    storage_root: Path,
-    run_id: str,
-    require_terminal_binding: bool,
-) -> tuple[Path, str]:
-    """Bind a recovered terminal payload to its exact Attempt and artifact."""
-
-    payload = recovered.model_dump(mode="json")
-    content = (
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
-    digest = hashlib.sha256(content).hexdigest()
-    expected_path = (
-        artifact_run_dir(
-            storage_root,
-            layer="outputs",
-            domain="analysis_memory_canary",
-            date=recovered.trade_date.isoformat(),
-            run_id=run_id,
-        )
-        / "terminal-results"
-        / f"{digest}.json"
-    ).resolve()
-    if not expected_path.is_file() or hashlib.sha256(expected_path.read_bytes()).hexdigest() != digest:
-        raise ValueError("committed terminal artifact cannot be reconciled")
-    expected_attempt_no = recovered.recompute_attempt_count
-    expected_identity = {
-        "run_id": run_id,
-        "attempt_no": expected_attempt_no,
-        "asset": recovered.asset,
-        "state_scope": recovered.state_scope,
-        "trade_date": recovered.trade_date,
-        "approval_id": recovered.approval_id,
-        "approval_hash": recovered.approval_hash,
-        "requested_canonical_state_id": recovered.requested_canonical_state_id,
-        "expected_head_version": recovered.expected_head_version,
-        "context_bundle_id": recovered.context_bundle_id,
-        "context_bundle_hash": recovered.context_bundle_hash,
-        "authority_hash": recovered.authority_hash,
-    }
-    for field, value in expected_identity.items():
-        if getattr(checkpoint, field) != value:
-            raise ValueError(f"terminal CanaryAttempt identity mismatch: {field}")
-    if recovered.run_id != run_id:
-        raise ValueError("terminal canary run_id does not match restart request")
-    if require_terminal_binding:
-        if checkpoint.status != "terminal" or checkpoint.terminal_status != recovered.status:
-            raise ValueError("terminal CanaryAttempt lifecycle identity is invalid")
-        if (
-            Path(str(checkpoint.terminal_artifact_path or "")).resolve() != expected_path
-            or checkpoint.terminal_artifact_sha256 != digest
-        ):
-            raise ValueError("terminal CanaryAttempt artifact binding is invalid")
-    return expected_path, digest
-
-
-def _verify_canary_attempt_audit(attempt: Any, *, storage_root: Path) -> Path:
-    """Verify the exact content-addressed audit before a fail-closed recovery."""
-
-    raw_path = str(attempt.audit_artifact_path or "")
-    digest = str(attempt.audit_artifact_sha256 or "")
-    path = Path(raw_path).resolve()
-    root = storage_root.resolve()
-    expected = (
-        root
-        / "outputs"
-        / "analysis_memory_canary"
-        / attempt.trade_date.isoformat()
-        / attempt.run_id
-        / f"attempt-{attempt.attempt_no}"
-        / attempt.attempt_id
-        / f"{digest}.json"
-    ).resolve()
-    if (
-        not raw_path
-        or path != expected
-        or not path.is_relative_to(root)
-        or not path.is_file()
-        or hashlib.sha256(path.read_bytes()).hexdigest() != digest
-    ):
-        raise ValueError("persistent CanaryAttempt audit artifact is invalid")
-    return path
-
-
-def _recover_canary_attempt_audit(attempt: Any, *, storage_root: Path) -> dict[str, Any]:
-    """Rehydrate the exact audited authority without another LLM invocation."""
-
-    path = _verify_canary_attempt_audit(attempt, storage_root=storage_root)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("persistent CanaryAttempt audit JSON is invalid") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("persistent CanaryAttempt audit payload is invalid")
-    if payload.get("schema_version") != "analysis_state_canary_attempt.v2":
-        raise ValueError("persistent CanaryAttempt audit schema_version is unsupported")
-    raw_agent_loop = payload.get("agent_loop")
-    if isinstance(raw_agent_loop, dict):
-        raw_agent_loop = dict(raw_agent_loop)
-        raw_agent_loop.pop("accepted_outputs", None)
-    request = CanaryMaterializationRequest.model_validate(payload.get("materialization_request"))
-    if (
-        request.run_id != attempt.run_id
-        or request.approval_id != attempt.approval_id
-        or request.approval_hash != attempt.approval_hash
-        or request.context_bundle_id != attempt.context_bundle_id
-        or request.context_bundle_hash != attempt.context_bundle_hash
-        or request.authority_hash != attempt.authority_hash
-    ):
-        raise ValueError("persistent CanaryAttempt audit authority is mismatched")
-    authority = CanaryAuthorityPayload.model_validate(payload.get("authority_payload"))
-    if authority.authority_hash != request.authority_hash:
-        raise ValueError("persistent CanaryAttempt authority payload is mismatched")
-    consumer_outputs = payload.get("consumer_outputs")
-    if not isinstance(consumer_outputs, dict):
-        raise ValueError("persistent CanaryAttempt consumer outputs are invalid")
-    for agent_name, bound_output in authority.agent_outputs.items():
-        raw_output = consumer_outputs.get(agent_name)
-        if raw_output is None or AgentOutput.model_validate(raw_output) != bound_output:
-            raise ValueError(f"persistent CanaryAttempt consumer output is mismatched: {agent_name}")
-    if AgentOutput.model_validate(payload.get("fact_review_output")) != authority.fact_review_output:
-        raise ValueError("persistent CanaryAttempt FactReview output is mismatched")
-    outputs = {
-        "context_bundle_registry_artifact": payload.get("context_bundle"),
-        "canary_materialization_request": request,
-        "canary_authority_payload": authority,
-        "agents": consumer_outputs,
-        "post_coordinator_quality_gate_decision": QualityGateDecision.model_validate(payload.get("quality_gate")),
-        "agent_loop_decision": AgentLoopDecision.model_validate(raw_agent_loop),
-        "canary_attempt_number": attempt.attempt_no,
-        "canary_attempt_id": attempt.attempt_id,
-        "canary_attempt_audit": {
-            "file_path": str(path),
-            "sha256": attempt.audit_artifact_sha256,
-            "attempt": attempt.attempt_no,
-            "attempt_id": attempt.attempt_id,
-        },
-        "canary_attempt_audit_recovered": True,
-    }
-    summaries = payload.get("summaries")
-    if not isinstance(summaries, dict):
-        raise ValueError("persistent CanaryAttempt summaries are invalid")
-    return {
-        "attempt_id": attempt.attempt_id,
-        "attempt_no": attempt.attempt_no,
-        "summaries": summaries,
-        "outputs": outputs,
-    }
-
-
-def _reconstruct_canary_recompute_conflict(
-    predecessor_attempt: Any,
-    recompute_attempt: Any,
-    *,
-    storage_root: Path,
-) -> CanaryMaterializationResult:
-    predecessor = _recover_canary_attempt_audit(
-        predecessor_attempt,
-        storage_root=storage_root,
-    )
-    request = CanaryMaterializationRequest.model_validate(predecessor["outputs"]["canary_materialization_request"])
-    return CanaryMaterializationResult(
-        status="recompute_required",
-        asset=request.asset,
-        trade_date=request.trade_date,
-        run_id=request.run_id,
-        state_scope=request.state_scope,
-        approval_id=request.approval_id,
-        approval_hash=request.approval_hash,
-        activation_source=request.activation_source,
-        activation_identity=request.activation_identity,
-        context_bundle_id=request.context_bundle_id,
-        context_bundle_hash=request.context_bundle_hash,
-        requested_canonical_state_id=request.canonical_state_id,
-        expected_head_version=request.expected_head_version,
-        recompute_required=True,
-        latest_canonical_state_id=recompute_attempt.requested_canonical_state_id,
-        latest_head_version=recompute_attempt.expected_head_version,
-        authority_hash=request.authority_hash,
-        attempt_audit_path=predecessor_attempt.audit_artifact_path,
-        attempt_audit_sha256=predecessor_attempt.audit_artifact_sha256,
-    )
-
-
-def _failed_terminal_from_durable_attempt(
-    factory: CanaryAttemptSessionFactory,
-    *,
-    run_id: str,
-    storage_root: Path,
-    reason: str,
-) -> tuple[str, CanaryMaterializationResult] | None:
-    """Build a failed terminal only when an exact durable audit can authorize it."""
-
-    with factory() as attempt_db:
-        attempt0 = load_canary_attempt(attempt_db, run_id=run_id, attempt_no=0)
-        attempt1 = load_canary_attempt(attempt_db, run_id=run_id, attempt_no=1)
-        checkpoint = attempt1 or attempt0
-        if attempt0 is not None:
-            attempt_db.expunge(attempt0)
-        if checkpoint is not None and checkpoint is not attempt0:
-            attempt_db.expunge(checkpoint)
-    if checkpoint is None or checkpoint.status not in {
-        "audit_persisted",
-        "recompute_authorized",
-    }:
-        return None
-    recovered = _recover_canary_attempt_audit(checkpoint, storage_root=storage_root)
-    request = CanaryMaterializationRequest.model_validate(recovered["outputs"]["canary_materialization_request"])
-    failed = failed_canary_materialization_result(request, reason=reason).model_copy(
-        update={
-            "attempt_audit_path": checkpoint.audit_artifact_path,
-            "attempt_audit_sha256": checkpoint.audit_artifact_sha256,
-        }
-    )
-    if checkpoint.attempt_no == 1:
-        if attempt0 is None or attempt0.status != "recompute_authorized":
-            return None
-        conflict = _reconstruct_canary_recompute_conflict(
-            attempt0,
-            checkpoint,
-            storage_root=storage_root,
-        )
-        failed = mark_canary_recompute_result(
-            failed,
-            superseded=conflict,
-            trace={
-                "failed_attempt_id": checkpoint.attempt_id,
-                "failed_after_durable_audit": True,
-            },
-        )
-    return checkpoint.attempt_id, failed
-
-
-def _json_safe(value: Any) -> Any:
-    if hasattr(value, "model_dump"):
-        return _json_safe(value.model_dump(mode="json"))
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
-
-
-def _persist_canary_attempt_audit(
-    db: DBSession,
-    *,
-    attempt_session_factory: CanaryAttemptSessionFactory,
-    storage_root: Path,
-    analysis_snapshot: dict[str, Any],
-    run_id: str,
-    report_step: Any,
-    summaries: dict[str, dict[str, Any]],
-    outputs: dict[str, Any],
-) -> dict[str, Any]:
-    """Seal and register the complete sidecar authority before any CAS write."""
-
-    attempt = outputs.get("canary_attempt_number")
-    if isinstance(attempt, bool) or attempt not in {0, 1}:
-        raise ValueError("canary audit attempt is invalid")
-    attempt_id = str(outputs.get("canary_attempt_id") or "").strip()
-    if not attempt_id:
-        raise ValueError("canary audit attempt_id is invalid")
-    request = CanaryMaterializationRequest.model_validate(outputs.get("canary_materialization_request"))
-    authority_payload = outputs.get("canary_authority_payload")
-    agents = outputs.get("agents")
-    fact_review_output = (
-        agents.get("fact_review_agent")
-        if isinstance(agents, dict)
-        else getattr(authority_payload, "fact_review_output", None)
-    )
-    trade_date = str(analysis_snapshot.get("trade_date") or request.trade_date.isoformat())
-    out_dir = artifact_run_dir(
-        storage_root,
-        layer="outputs",
-        domain="analysis_memory_canary",
-        date=trade_date,
-        run_id=run_id,
-    )
-    payload = {
-        "schema_version": "analysis_state_canary_attempt.v2",
-        "attempt": attempt,
-        "attempt_id": attempt_id,
-        "run_id": run_id,
-        "asset": request.asset,
-        "trade_date": request.trade_date.isoformat(),
-        "state_scope": request.state_scope,
-        "official_output_isolated": True,
-        "analysis_snapshot_id": analysis_snapshot.get("snapshot_id"),
-        "context_bundle": outputs.get("context_bundle_registry_artifact"),
-        "materialization_request": request,
-        "authority_payload": authority_payload,
-        "consumer_outputs": agents,
-        "fact_review_output": fact_review_output,
-        "quality_gate": outputs.get("post_coordinator_quality_gate_decision"),
-        "agent_loop": outputs.get("agent_loop_decision"),
-        "summaries": summaries,
-    }
-    safe_payload = _json_safe(payload)
-    serialized = (
-        json.dumps(safe_payload, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    ).encode("utf-8")
-    payload_sha256 = hashlib.sha256(serialized).hexdigest()
-    audit_path = out_dir / f"attempt-{attempt}" / attempt_id / f"{payload_sha256}.json"
-    [written] = write_immutable_artifact_bundle(
-        [immutable_json_item(audit_path, safe_payload)],
-        storage_root=storage_root,
-    )
-    if written.content_sha256 != payload_sha256:
-        raise ValueError("canary attempt audit content hash mismatch")
-    with attempt_session_factory() as attempt_db, attempt_db.begin():
-        mark_canary_attempt_audit_persisted(
-            attempt_db,
-            attempt_id=attempt_id,
-            context_bundle_id=request.context_bundle_id,
-            context_bundle_hash=request.context_bundle_hash,
-            authority_hash=str(request.authority_hash or ""),
-            artifact_path=written.target_path,
-            artifact_sha256=written.content_sha256,
-            updated_at=_now(),
-        )
-    _register_run_support_artifacts(
-        db,
-        run_id=run_id,
-        steps=[report_step],
-        artifacts=[
-            {
-                "artifact_id": f"{run_id}:analysis_state_canary_attempt:{attempt}:{attempt_id}",
-                "artifact_type": "structured_json",
-                "file_path": written.target_path,
-                "sha256": written.content_sha256,
-                "execution_mode": "analysis_state_canary_sidecar",
-                "publish_allowed": False,
-                "output_mode": "canary",
-            }
-        ],
-        source_refs=_coerce_lineage_source_refs(analysis_snapshot.get("source_refs")),
-        input_snapshot_ids=_coerce_lineage_input_snapshot_ids(analysis_snapshot.get("input_snapshot_ids")),
-    )
-    descriptor = {
-        "artifact_id": f"{run_id}:analysis_state_canary_attempt:{attempt}:{attempt_id}",
-        "file_path": written.target_path,
-        "sha256": written.content_sha256,
-        "attempt": attempt,
-        "attempt_id": attempt_id,
-    }
-    outputs["canary_attempt_audit"] = descriptor
-    return descriptor
-
-
-def _persist_canary_terminal_result(
-    db: DBSession,
-    *,
-    storage_root: Path,
-    run_id: str,
-    report_step: Any,
-    result: CanaryMaterializationResult,
-) -> dict[str, Any]:
-    """Persist the terminal outcome in the same transaction as scoped CAS."""
-
-    if result.status == "recompute_required":
-        raise ValueError("recompute_required is not a terminal canary outcome")
-    out_dir = artifact_run_dir(
-        storage_root,
-        layer="outputs",
-        domain="analysis_memory_canary",
-        date=result.trade_date.isoformat(),
-        run_id=run_id,
-    )
-    result_payload = result.model_dump(mode="json")
-    serialized = (
-        json.dumps(
-            result_payload,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
-    payload_sha256 = hashlib.sha256(serialized).hexdigest()
-    target = out_dir / "terminal-results" / f"{payload_sha256}.json"
-    [written] = write_immutable_artifact_bundle(
-        [immutable_json_item(target, result_payload)],
-        storage_root=storage_root,
-    )
-    registry_id = uuid.uuid5(
-        uuid.NAMESPACE_URL,
-        f"finance-agent:analysis-state-canary-terminal:{run_id}",
-    )
-    row = register_artifact(
-        db,
-        run_id=run_id,
-        step=report_step,
-        artifact_id=f"{run_id}:analysis_state_canary_terminal",
-        artifact_type="structured_json",
-        file_path=written.target_path,
-        sha256=written.content_sha256,
-        content_type="application/json",
-        metadata={
-            "artifact_family": "analysis_state_canary_terminal",
-            "status": result.status,
-            "recompute_attempt_count": result.recompute_attempt_count,
-            "context_bundle_id": result.context_bundle_id,
-            "authority_hash": result.authority_hash,
-        },
-        registry_artifact_id=registry_id,
-        require_canonical_path=False,
-    )
-    if row is None or row.artifact_id != registry_id or row.sha256 != written.content_sha256:
-        raise ValueError("canary terminal outcome registry identity mismatch")
-    metadata = row.artifact_metadata or {}
-    if metadata.get("artifact_family") != "analysis_state_canary_terminal":
-        raise ValueError("canary terminal outcome registry metadata mismatch")
-    return {
-        "artifact_id": str(row.artifact_id),
-        "file_path": written.target_path,
-        "sha256": written.content_sha256,
-        "status": result.status,
-    }
-
-
-def _materialize_canary_attempt(
-    db: DBSession,
-    *,
-    request: CanaryMaterializationRequest,
-    composite_outputs: dict[str, Any],
-    run_id: str,
-    snapshot_db_id: str | None,
-) -> CanaryMaterializationResult:
-    if snapshot_db_id is None:
-        return failed_canary_materialization_result(
-            request,
-            reason="analysis_snapshot_db_id_unavailable",
-        )
-    registry_status = composite_outputs.get("context_bundle_registry_status")
-    if not isinstance(registry_status, dict) or registry_status.get("status") != "registered":
-        return failed_canary_materialization_result(
-            request,
-            reason="context_bundle_registry_not_authoritative",
-        )
-    if registry_status.get("bundle_id") != request.context_bundle_id:
-        return failed_canary_materialization_result(
-            request,
-            reason="context_bundle_registry_identity_mismatch",
-        )
-    result = materialize_canary_request(
-        db,
-        request=request,
-        quality_gate=composite_outputs["post_coordinator_quality_gate_decision"],
-        agent_loop=composite_outputs["agent_loop_decision"],
-        task_run_id=run_id,
-        analysis_snapshot_db_id=snapshot_db_id,
-        authority_payload=composite_outputs.get("canary_authority_payload"),
-    )
-    audit = composite_outputs.get("canary_attempt_audit")
-    if isinstance(audit, dict):
-        audit_path = str(audit.get("file_path") or "").strip()
-        audit_sha256 = str(audit.get("sha256") or "").strip()
-        if audit_path and len(audit_sha256) == 64:
-            result = result.model_copy(
-                update={
-                    "attempt_audit_path": audit_path,
-                    "attempt_audit_sha256": audit_sha256,
-                }
-            )
-    return result
-
-
-def _consume_canary_recompute_once(
-    db: DBSession,
-    *,
-    conflict_result: CanaryMaterializationResult,
-    analysis_snapshot: dict[str, Any],
-    run_id: str,
-    storage_root: Path,
-    created_at: datetime,
-    state_shadow_input: dict[str, Any],
-    state_delta_analyzer: StateDeltaAnalyzer | None,
-    canary_activation: CanaryActivation,
-    report_step: Any,
-    snapshot_db_id: str | None,
-    attempt_session_factory: CanaryAttemptSessionFactory,
-    superseded_attempt_id: str,
-) -> CanaryMaterializationResult:
-    """Run one complete fresh-Bundle canary attempt after a scoped CAS conflict."""
-
-    refreshed_input = prepare_canary_recompute_shadow_input(
-        db,
-        conflict_result=conflict_result,
-        shadow_input=state_shadow_input,
-        created_at=created_at,
-        current_run_id=run_id,
-        storage_root=str(storage_root),
-    )
-    refreshed_activation = canary_activation.model_copy(
-        update={
-            "canonical_state_id": refreshed_input["canonical_state_id"],
-            "expected_head_version": refreshed_input["expected_head_version"],
-        }
-    )
-    with attempt_session_factory() as attempt_db, attempt_db.begin():
-        authorize_canary_recompute(
-            attempt_db,
-            attempt_id=superseded_attempt_id,
-            updated_at=_now(),
-        )
-        fresh_attempt = create_or_resume_canary_attempt(
-            attempt_db,
-            run_id=refreshed_activation.run_id,
-            approval_id=refreshed_activation.approval_id,
-            approval_hash=refreshed_activation.approval_hash,
-            attempt_no=1,
-            asset=refreshed_activation.asset,
-            state_scope=refreshed_activation.state_scope,
-            trade_date=refreshed_activation.trade_date,
-            requested_canonical_state_id=refreshed_activation.canonical_state_id,
-            expected_head_version=refreshed_activation.expected_head_version,
-            started_at=_now(),
-        )
-        fresh_attempt_id = fresh_attempt.attempt_id
-    fresh_summaries, fresh_outputs = _run_canary_sidecar_attempt(
-        storage_root=storage_root,
-        snapshot=analysis_snapshot,
-        run_id=run_id,
-        created_at=created_at,
-        state_shadow_input=refreshed_input,
-        state_delta_analyzer=state_delta_analyzer,
-        canary_activation=refreshed_activation,
-        attempt=1,
-        attempt_id=fresh_attempt_id,
-    )
-    raw_descriptor = fresh_outputs.get("context_bundle_registry_artifact")
-    if not isinstance(raw_descriptor, dict):
-        return _failed_canary_recompute_result(
-            conflict_result,
-            reason="fresh_context_bundle_descriptor_missing",
-        )
-    descriptor = build_canary_recompute_registry_descriptor(
-        raw_descriptor,
-        conflict_result=conflict_result,
-    )
-    row = _register_context_bundle_artifact(
-        db,
-        run_id=run_id,
-        step=report_step,
-        descriptor=descriptor,
-        storage_root=storage_root,
-        allow_canary_recompute=True,
-    )
-    if row is None:
-        return _failed_canary_recompute_result(
-            conflict_result,
-            reason="fresh_context_bundle_registry_unavailable",
-        )
-    fresh_outputs["context_bundle_registry_status"] = {
-        "status": "registered",
-        "bundle_id": descriptor["metadata"]["bundle_id"],
-    }
-    raw_request = fresh_outputs.get("canary_materialization_request")
-    if raw_request is None:
-        return _failed_canary_recompute_result(
-            conflict_result,
-            reason="fresh_canary_attempt_not_authoritative",
-            descriptor=descriptor,
-        )
-    fresh_request = CanaryMaterializationRequest.model_validate(raw_request)
-    _persist_canary_attempt_audit(
-        db,
-        attempt_session_factory=attempt_session_factory,
-        storage_root=storage_root,
-        analysis_snapshot=analysis_snapshot,
-        run_id=run_id,
-        report_step=report_step,
-        summaries=fresh_summaries,
-        outputs=fresh_outputs,
-    )
-    fresh_result = _materialize_canary_attempt(
-        db,
-        request=fresh_request,
-        composite_outputs=fresh_outputs,
-        run_id=run_id,
-        snapshot_db_id=snapshot_db_id,
-    )
-    return mark_canary_recompute_result(
-        fresh_result,
-        superseded=conflict_result,
-        trace={
-            "fresh_context_bundle_id": fresh_request.context_bundle_id,
-            "fresh_context_bundle_hash": fresh_request.context_bundle_hash,
-            "fresh_consumer_projection_hashes": dict(fresh_request.consumer_projection_hashes),
-            "fresh_fact_review_snapshot_id": fresh_request.fact_review_snapshot_id,
-            "fresh_quality_gate_hash": fresh_request.quality_gate_hash,
-            "fresh_agent_loop_hash": fresh_request.agent_loop_hash,
-            "fresh_attempt_audit": fresh_outputs["canary_attempt_audit"],
-            "superseded_attempt_audit": {
-                "file_path": conflict_result.attempt_audit_path,
-                "sha256": conflict_result.attempt_audit_sha256,
-            },
-        },
-    )
-
-
-def _failed_canary_recompute_result(
-    conflict_result: CanaryMaterializationResult,
-    *,
-    reason: str,
-    descriptor: dict[str, Any] | None = None,
-) -> CanaryMaterializationResult:
-    metadata = descriptor.get("metadata") if isinstance(descriptor, dict) else None
-    payload = {
-        **conflict_result.model_dump(mode="json"),
-        "status": "failed",
-        "recompute_required": False,
-        "recompute_attempt_count": 1,
-        "superseded_context_bundle_id": conflict_result.context_bundle_id,
-        "superseded_context_bundle_hash": conflict_result.context_bundle_hash,
-        "superseded_canonical_state_id": conflict_result.requested_canonical_state_id,
-        "context_bundle_id": (
-            str(metadata.get("bundle_id")) if isinstance(metadata, dict) else conflict_result.context_bundle_id
-        ),
-        "context_bundle_hash": (
-            str(metadata.get("content_hash")) if isinstance(metadata, dict) else conflict_result.context_bundle_hash
-        ),
-        "requested_canonical_state_id": (
-            str(metadata.get("canonical_state_id"))
-            if isinstance(metadata, dict)
-            else conflict_result.latest_canonical_state_id or conflict_result.requested_canonical_state_id
-        ),
-        "expected_head_version": conflict_result.latest_head_version or conflict_result.expected_head_version,
-        "reason": str(reason)[:200],
-        "recompute_trace": {"status": "failed", "reason": str(reason)[:200]},
-    }
-    return CanaryMaterializationResult.model_validate(payload)
 
 
 def run_premarket(
@@ -1114,14 +141,11 @@ def run_premarket(
     *,
     storage_root: Path = Path("./storage"),
     product: str = "OG",
-    analysis_context_mode: str | None = None,
-    state_shadow_input: dict[str, Any] | None = None,
-    state_delta_analyzer: StateDeltaAnalyzer | None = None,
-    canary_approval_id: str | None = None,
-    canary_attempt_session_factory: CanaryAttemptSessionFactory | None = None,
 ) -> TaskStatus:
-    """Execute the premarket pipeline.
+    """Execute the compatibility premarket pipeline.
 
+    The production API and schedule use Dagster ``premarket_job``.  This
+    retained worker cannot stage or accept the S1-SX Production Shadow ledger.
     - CME steps use the real CME pipeline (download → parse → ingest → options analysis).
     - Macro steps use the real macro pipeline (collect → feature → render).
     - Other steps remain as stubs (immediate success).
@@ -1167,7 +191,7 @@ def run_premarket(
     had_degraded_readiness = False
     had_partial_summary = False
     had_non_failed_step = False
-    terminal_attempt_reconciliation: tuple[str, dict[str, Any], str] | None = None
+    deferred_report_summaries = {}
 
     for idx, step in enumerate(ordered_steps):
         # ── P4-03: record step_order and input context ─────────────────
@@ -1178,7 +202,9 @@ def run_premarket(
             default=str,
         )
         # ── T1.6: compute input_hash for idempotency ────────────────
-        step.input_hash = hashlib.sha256(step.input_json.encode("utf-8")).hexdigest()
+        step.input_hash = hashlib.sha256(
+            step.input_json.encode("utf-8")
+        ).hexdigest()
         step.retry_count = 0
 
         # ── T1.4: check upstream failure/blocking → block this step ──────
@@ -1246,9 +272,13 @@ def run_premarket(
                         step.output_ref = str(ref)
                         break
 
-            summary_status = _apply_step_summary_status(db, step, summary)
+            if step.name in {"report_render", "strategy_card"} and (summary is None or str(summary.get("status", "success")) in {"success", "partial_success"}):
+                deferred_report_summaries[step.name] = summary
+                summary_status = str((summary or {}).get("status", "success"))
+            else:
+                summary_status = _apply_step_summary_status(db, step, summary)
             if step.status in {StepStatus.success, StepStatus.skipped}:
-                _register_runner_step_artifacts(db, run_id=run_id, step=step, summary=summary)
+                _register_runner_step_artifacts(db, run_id=run_id, step=step, summary=summary, storage_root=storage_root)
             # ── T1.3: successful steps are not retryable ───────────
             step.retryable = False
             if summary_status == _STEP_STATUS_FAILED:
@@ -1287,7 +317,8 @@ def run_premarket(
         if step.status != StepStatus.failed:
             had_non_failed_step = True
 
-        step.finished_at = _now()
+        if step.status != StepStatus.running:
+            step.finished_at = _now()
         db.commit()
 
     # Persist unified Analysis Snapshot before generic provenance so failures are reflected.
@@ -1348,11 +379,7 @@ def run_premarket(
         pre_analysis_gate = _load_pre_analysis_gate(storage_root=storage_root, analysis_snapshot=analysis_snapshot)
         if _pre_analysis_gate_blocks(pre_analysis_gate):
             had_partial_summary = True
-            blocked_outputs = (
-                pre_analysis_gate.get("blocked_outputs")
-                if isinstance(pre_analysis_gate.get("blocked_outputs"), list)
-                else []
-            )
+            blocked_outputs = pre_analysis_gate.get("blocked_outputs") if isinstance(pre_analysis_gate.get("blocked_outputs"), list) else []
             macro_state.step_summaries["pre_analysis_gate"] = {
                 "step": "pre_analysis_gate",
                 "status": "blocked",
@@ -1392,6 +419,9 @@ def run_premarket(
                         "previous_lookup": gold_policy_runtime_inputs.lookup.summary(),
                     }
                 except Exception as gold_policy_exc:
+                    # Shadow preparation must never suppress the established
+                    # composite report path.  Its failure remains durable and
+                    # observable in step summaries only.
                     logger.exception("Gold policy shadow runtime preparation failed")
                     macro_state.step_summaries["gold_policy_runtime"] = {
                         "step": "gold_policy_runtime",
@@ -1399,176 +429,40 @@ def run_premarket(
                         "execution_mode": "shadow",
                         "error": str(gold_policy_exc),
                     }
-                resolved_shadow_input = state_shadow_input
-                if resolve_analysis_context_mode(analysis_context_mode) in {
-                    STATE_DELTA_CONTEXT_MODE,
-                    CANARY_CONTEXT_MODE,
-                }:
-                    if resolved_shadow_input is None:
-                        resolved_shadow_input = _build_persisted_state_shadow_input(
-                            db=db,
-                            analysis_snapshot=analysis_snapshot,
-                        )
-                    resolved_shadow_input = _resolve_state_shadow_registry_inputs(
-                        db=db,
-                        run_id=run_id,
-                        storage_root=storage_root,
-                        state_shadow_input=resolved_shadow_input,
-                    )
-                context_mode = resolve_analysis_context_mode(analysis_context_mode)
-                canary_summaries: dict[str, dict[str, Any]] = {}
-                canary_outputs: dict[str, Any] | None = None
-                canary_setup_error: str | None = None
-                recovered_canary_result: CanaryMaterializationResult | None = None
-                canary_activation: CanaryActivation | None = None
-                canary_attempt_factory: CanaryAttemptSessionFactory | None = None
-                canary_attempt_id: str | None = None
-                canary_attempt_recovery: dict[str, Any] | None = None
-                if context_mode == CANARY_CONTEXT_MODE:
-                    try:
-                        canary_attempt_factory = canary_attempt_session_factory or _canary_attempt_session_factory(db)
-                        recovered_canary_result, canary_activation, canary_attempt_recovery = (
-                            _resolve_canary_runner_activation(
-                                db,
-                                attempt_session_factory=canary_attempt_factory,
-                                storage_root=storage_root,
-                                analysis_snapshot=analysis_snapshot,
-                                run_id=run_id,
-                                state_shadow_input=resolved_shadow_input,
-                                canary_approval_id=canary_approval_id,
-                                now=composite_created_at,
-                            )
-                        )
-                    except Exception as canary_exc:
-                        logger.exception("AnalysisState canary approval failed; legacy output remains authoritative")
-                        canary_setup_error = f"{type(canary_exc).__name__}:canary_approval_failed"
-                    composite_summaries, composite_outputs = _run_composite_analysis_pipeline(
-                        storage_root=storage_root,
-                        snapshot=analysis_snapshot,
-                        run_id=run_id,
-                        created_at=composite_created_at,
-                        analysis_context_mode=LEGACY_CONTEXT_MODE,
-                        gold_feature_snapshot_prebuilt=(
-                            gold_policy_runtime_inputs.current
-                            if gold_policy_runtime_inputs is not None
-                            else None
-                        ),
-                        previous_gold_feature_snapshot_prebuilt=(
-                            gold_policy_runtime_inputs.previous
-                            if gold_policy_runtime_inputs is not None
-                            else None
-                        ),
-                        gold_policy_execution_mode="shadow",
-                    )
-                    if canary_setup_error is None and recovered_canary_result is None:
-                        try:
-                            if canary_activation is None:  # pragma: no cover - approval boundary
-                                raise ValueError("validated canary activation is unavailable")
-                            if canary_attempt_recovery is not None:
-                                canary_attempt_id = str(canary_attempt_recovery["attempt_id"])
-                                recovered_outputs = canary_attempt_recovery.get("outputs")
-                                recovered_summaries = canary_attempt_recovery.get("summaries")
-                                if isinstance(recovered_outputs, dict) and isinstance(recovered_summaries, dict):
-                                    canary_outputs = recovered_outputs
-                                    canary_summaries = recovered_summaries
-                                else:
-                                    resume_attempt = int(canary_attempt_recovery["attempt_no"])
-                                    resume_shadow = canary_attempt_recovery.get("shadow_input", resolved_shadow_input)
-                                    canary_summaries, canary_outputs = _run_canary_sidecar_attempt(
-                                        storage_root=storage_root,
-                                        snapshot=analysis_snapshot,
-                                        run_id=run_id,
-                                        created_at=composite_created_at,
-                                        state_shadow_input=resume_shadow,
-                                        state_delta_analyzer=state_delta_analyzer,
-                                        canary_activation=canary_activation,
-                                        attempt=resume_attempt,
-                                        attempt_id=canary_attempt_id,
-                                    )
-                            else:
-                                canary_attempt_id = _durably_start_canary_attempt(
-                                    canary_attempt_factory,
-                                    activation=canary_activation,
-                                    attempt_no=0,
-                                    started_at=composite_created_at,
-                                )
-                                canary_summaries, canary_outputs = _run_canary_sidecar_attempt(
-                                    storage_root=storage_root,
-                                    snapshot=analysis_snapshot,
-                                    run_id=run_id,
-                                    created_at=composite_created_at,
-                                    state_shadow_input=resolved_shadow_input,
-                                    state_delta_analyzer=state_delta_analyzer,
-                                    canary_activation=canary_activation,
-                                    attempt=0,
-                                    attempt_id=canary_attempt_id,
-                                )
-                        except Exception as canary_exc:
-                            logger.exception("AnalysisState canary sidecar failed; legacy output remains authoritative")
-                            canary_setup_error = f"{type(canary_exc).__name__}:canary_sidecar_failed"
-                else:
-                    composite_summaries, composite_outputs = _run_composite_analysis_pipeline(
-                        storage_root=storage_root,
-                        snapshot=analysis_snapshot,
-                        run_id=run_id,
-                        created_at=composite_created_at,
-                        analysis_context_mode=analysis_context_mode,
-                        state_shadow_input=resolved_shadow_input,
-                        state_delta_analyzer=state_delta_analyzer,
-                        gold_feature_snapshot_prebuilt=(
-                            gold_policy_runtime_inputs.current
-                            if gold_policy_runtime_inputs is not None
-                            else None
-                        ),
-                        previous_gold_feature_snapshot_prebuilt=(
-                            gold_policy_runtime_inputs.previous
-                            if gold_policy_runtime_inputs is not None
-                            else None
-                        ),
-                        gold_policy_execution_mode="shadow",
-                    )
+                composite_summaries, composite_outputs = _run_composite_analysis_pipeline(
+                    storage_root=storage_root,
+                    snapshot=analysis_snapshot,
+                    run_id=run_id,
+                    created_at=composite_created_at,
+                    gold_feature_snapshot_prebuilt=(
+                        gold_policy_runtime_inputs.current
+                        if gold_policy_runtime_inputs is not None
+                        else None
+                    ),
+                    previous_gold_feature_snapshot_prebuilt=(
+                        gold_policy_runtime_inputs.previous
+                        if gold_policy_runtime_inputs is not None
+                        else None
+                    ),
+                    gold_policy_execution_mode="shadow",
+                )
+                analysis_snapshot = composite_outputs.get("analysis_snapshot", analysis_snapshot)
                 macro_state.step_summaries.update(composite_summaries)
-                if recovered_canary_result is not None:
-                    macro_state.step_summaries["analysis_state_canary"] = {
-                        "step": "analysis_state_canary",
-                        **recovered_canary_result.model_dump(mode="json"),
-                        "recovered_terminal_outcome": True,
-                    }
-                elif canary_setup_error is not None:
-                    macro_state.step_summaries["analysis_state_canary"] = {
-                        "step": "analysis_state_canary",
-                        "status": "failed",
-                        "reason": canary_setup_error,
-                        "legacy_output_preserved": True,
-                    }
-                elif canary_outputs is not None:
-                    canary_trace = canary_outputs.get("state_delta_shadow")
-                    macro_state.step_summaries["analysis_state_canary_sidecar"] = {
-                        "step": "analysis_state_canary_sidecar",
-                        "status": "success",
-                        "legacy_output_preserved": True,
-                        "official_output_isolated": True,
-                        "shadow_status": (canary_trace.get("status") if isinstance(canary_trace, dict) else None),
-                        "domain_status": canary_summaries.get("domain_agents", {}).get("status"),
-                    }
+                if composite_outputs.get("diagnostic_result"):
+                    had_partial_summary = True
 
                 # DB sink: persist agent outputs (additive, after file writes)
-                snapshot_db_id: str | None = None
                 try:
                     snapshot_db_id = _db_persist_agent_outputs(
                         db, analysis_snapshot, composite_outputs["agents"], run_id
                     )
-                    shadow_reviews = (
-                        composite_outputs.get("state_delta_shadow", {}).get("review_items", [])
-                        if isinstance(composite_outputs.get("state_delta_shadow"), dict)
-                        else []
-                    )
-                    _persist_review_items(db, shadow_reviews)
                     agent_loop_decision = composite_outputs.get("agent_loop_decision")
                     publish_allowed = bool(getattr(agent_loop_decision, "publish_allowed", False))
                     if publish_allowed:
-                        _db_persist_final_result(db, analysis_snapshot, composite_outputs, snapshot_db_id)
-                    else:
+                        _db_persist_final_result(
+                            db, analysis_snapshot, composite_outputs, snapshot_db_id
+                        )
+                    elif composite_outputs.get("strategy_card") is not None:
                         _ensure_review_items(
                             db,
                             run_id=run_id,
@@ -1596,200 +490,21 @@ def run_premarket(
                     steps=ordered_steps,
                     composite_outputs=composite_outputs,
                     analysis_snapshot=analysis_snapshot,
-                    storage_root=storage_root,
                 )
-                canary_materialization_outputs = canary_outputs or composite_outputs
-                if canary_outputs is not None:
-                    raw_canary_descriptor = canary_outputs.get("context_bundle_registry_artifact")
-                    if isinstance(raw_canary_descriptor, dict):
-                        report_step = next(
-                            (step for step in ordered_steps if step.name == "report_render"),
-                            None,
-                        )
-                        if report_step is not None:
-                            try:
-                                bundle_row = _register_context_bundle_artifact(
-                                    db,
-                                    run_id=run_id,
-                                    step=report_step,
-                                    descriptor=raw_canary_descriptor,
-                                    storage_root=storage_root,
-                                )
-                                canary_outputs["context_bundle_registry_status"] = {
-                                    "status": ("registered" if bundle_row is not None else "skipped_unavailable"),
-                                    "bundle_id": (raw_canary_descriptor.get("metadata") or {}).get("bundle_id"),
-                                }
-                            except Exception as registry_exc:
-                                logger.exception("Canary ContextBundle registry failed; legacy output remains valid")
-                                canary_outputs["context_bundle_registry_status"] = {
-                                    "status": "failed",
-                                    "bundle_id": (raw_canary_descriptor.get("metadata") or {}).get("bundle_id"),
-                                    "reason": (f"{type(registry_exc).__name__}:{str(registry_exc)[:200]}"),
-                                }
-                bundle_registry_status = canary_materialization_outputs.get("context_bundle_registry_status")
-                if isinstance(bundle_registry_status, dict):
-                    macro_state.step_summaries["context_bundle_registry"] = {
-                        "step": "context_bundle_registry",
-                        **bundle_registry_status,
+                try:
+                    _register_composite_report_registry_entries(
+                        db,
+                        run_id=run_id,
+                        composite_outputs=composite_outputs,
+                        analysis_snapshot=analysis_snapshot,
+                    )
+                except Exception as db_exc:
+                    logger.exception("Report registry persist of composite analysis outputs failed (file artifacts are safe)")
+                    macro_state.step_summaries["db_persist_composite_report_registry"] = {
+                        "step": "db_persist_composite_report_registry",
+                        "status": "failed",
+                        "error": str(db_exc),
                     }
-                raw_canary_request = canary_materialization_outputs.get("canary_materialization_request")
-                if raw_canary_request is not None:
-                    canary_result: CanaryMaterializationResult
-                    validated_canary_request = CanaryMaterializationRequest.model_validate(raw_canary_request)
-                    try:
-                        report_step = next(
-                            (step for step in ordered_steps if step.name == "report_render"),
-                            None,
-                        )
-                        if report_step is None:
-                            raise ValueError("canary report step is unavailable")
-                        with db.begin_nested():
-                            if canary_attempt_factory is None or canary_attempt_id is None:
-                                raise ValueError("durable canary attempt identity is unavailable")
-                            if not canary_materialization_outputs.get("canary_attempt_audit_recovered"):
-                                _persist_canary_attempt_audit(
-                                    db,
-                                    attempt_session_factory=canary_attempt_factory,
-                                    storage_root=storage_root,
-                                    analysis_snapshot=analysis_snapshot,
-                                    run_id=run_id,
-                                    report_step=report_step,
-                                    summaries=canary_summaries,
-                                    outputs=canary_materialization_outputs,
-                                )
-                            canary_result = _materialize_canary_attempt(
-                                db,
-                                request=validated_canary_request,
-                                composite_outputs=canary_materialization_outputs,
-                                run_id=run_id,
-                                snapshot_db_id=snapshot_db_id,
-                            )
-                            recovered_conflict = (
-                                canary_attempt_recovery.get("conflict_result")
-                                if isinstance(canary_attempt_recovery, dict)
-                                else None
-                            )
-                            if isinstance(recovered_conflict, CanaryMaterializationResult):
-                                canary_result = mark_canary_recompute_result(
-                                    canary_result,
-                                    superseded=recovered_conflict,
-                                    trace={
-                                        "recovered_attempt_id": canary_attempt_id,
-                                        "recovered_after_started": True,
-                                    },
-                                )
-                            if canary_result.status == "recompute_required":
-                                if not isinstance(state_shadow_input, dict):
-                                    canary_result = failed_canary_materialization_result(
-                                        validated_canary_request,
-                                        reason="canary_recompute_shadow_input_unavailable",
-                                    )
-                                else:
-                                    canary_result = _consume_canary_recompute_once(
-                                        db,
-                                        conflict_result=canary_result,
-                                        analysis_snapshot=analysis_snapshot,
-                                        run_id=run_id,
-                                        storage_root=storage_root,
-                                        created_at=composite_created_at,
-                                        state_shadow_input=state_shadow_input,
-                                        state_delta_analyzer=state_delta_analyzer,
-                                        canary_activation=canary_activation,
-                                        report_step=report_step,
-                                        snapshot_db_id=snapshot_db_id,
-                                        attempt_session_factory=canary_attempt_factory,
-                                        superseded_attempt_id=canary_attempt_id,
-                                    )
-                            if canary_result.status == "canonical_advanced":
-                                consume_canary_approval(
-                                    db,
-                                    approval_id=validated_canary_request.approval_id,
-                                    expected_approval_hash=validated_canary_request.approval_hash,
-                                    run_id=run_id,
-                                    consumed_at=_now(),
-                                )
-                            terminal_descriptor = _persist_canary_terminal_result(
-                                db,
-                                storage_root=storage_root,
-                                run_id=run_id,
-                                report_step=report_step,
-                                result=canary_result,
-                            )
-                            terminal_attempt_reconciliation = (
-                                (
-                                    str(canary_materialization_outputs.get("canary_attempt_id") or canary_attempt_id)
-                                    if canary_result.recompute_attempt_count == 0
-                                    else str(
-                                        uuid.uuid5(
-                                            uuid.NAMESPACE_URL,
-                                            f"finance-agent:analysis-state-canary-attempt:{run_id}:1",
-                                        )
-                                    )
-                                ),
-                                terminal_descriptor,
-                                canary_result.status,
-                            )
-                    except Exception as canary_exc:
-                        logger.exception("Canary runner integration failed; legacy output remains valid")
-                        canary_result = failed_canary_materialization_result(
-                            validated_canary_request,
-                            reason=f"{type(canary_exc).__name__}:canary_runner_integration_failed",
-                        )
-                        terminal_descriptor = None
-                        try:
-                            durable_failed_terminal = (
-                                _failed_terminal_from_durable_attempt(
-                                    canary_attempt_factory,
-                                    run_id=run_id,
-                                    storage_root=storage_root,
-                                    reason=(f"{type(canary_exc).__name__}:canary_runner_integration_failed"),
-                                )
-                                if canary_attempt_factory is not None
-                                else None
-                            )
-                        except Exception:
-                            logger.exception("Canary failure has no valid durable audit checkpoint")
-                            durable_failed_terminal = None
-                        if durable_failed_terminal is not None:
-                            failed_attempt_id, canary_result = durable_failed_terminal
-                            try:
-                                with db.begin_nested():
-                                    terminal_descriptor = _persist_canary_terminal_result(
-                                        db,
-                                        storage_root=storage_root,
-                                        run_id=run_id,
-                                        report_step=report_step,
-                                        result=canary_result,
-                                    )
-                                    terminal_attempt_reconciliation = (
-                                        failed_attempt_id,
-                                        terminal_descriptor,
-                                        canary_result.status,
-                                    )
-                            except Exception:
-                                logger.exception("Failed to persist audit-bound canary terminal outcome")
-                    macro_state.step_summaries["analysis_state_canary"] = {
-                        "step": "analysis_state_canary",
-                        **canary_result.model_dump(mode="json"),
-                        "terminal_outcome_artifact": terminal_descriptor,
-                    }
-                if bool(getattr(composite_outputs.get("agent_loop_decision"), "publish_allowed", False)):
-                    try:
-                        _register_composite_report_registry_entries(
-                            db,
-                            run_id=run_id,
-                            composite_outputs=composite_outputs,
-                            analysis_snapshot=analysis_snapshot,
-                        )
-                    except Exception as db_exc:
-                        logger.exception(
-                            "Report registry persist of composite analysis outputs failed (file artifacts are safe)"
-                        )
-                        macro_state.step_summaries["db_persist_composite_report_registry"] = {
-                            "step": "db_persist_composite_report_registry",
-                            "status": "failed",
-                            "error": str(db_exc),
-                        }
             except Exception as exc:
                 logger.exception("Composite analysis pipeline failed")
                 had_failure = True
@@ -1798,11 +513,24 @@ def run_premarket(
                     "status": "failed",
                     "error": str(exc),
                     "partial_summary": "Composite analysis pipeline failed after analysis snapshot was persisted; "
-                    "no final report or strategy card was written.",
+                                      "no final report or strategy card was written.",
                 }
 
     # Persist step summaries and run provenance as durable artifacts
     try:
+        for step in ordered_steps:
+            if step.name not in deferred_report_summaries or step.status != StepStatus.running:
+                continue
+            composite_summary = macro_state.step_summaries.get("final_report" if step.name == "report_render" else "strategy_card")
+            if not composite_summary and macro_state.step_summaries.get("composite_analysis_pipeline", {}).get("status") in {"blocked", "failed"}:
+                composite_summary = {"status": "blocked", "reason_codes": ["composite_analysis_unavailable"]}
+            effective_summary = composite_summary or deferred_report_summaries[step.name]
+            _apply_step_summary_status(db, step, effective_summary)
+            step.output_json = json.dumps(effective_summary or {}, ensure_ascii=False, default=str)
+            if step.status == StepStatus.blocked:
+                step.output_ref = None
+            _register_runner_step_artifacts(db, run_id=run_id, step=step, summary=effective_summary, storage_root=storage_root)
+        db.commit()
         step_summaries_path = _persist_step_summaries(
             storage_root,
             run_id,
@@ -1870,145 +598,13 @@ def run_premarket(
         final_status = TaskStatus.failed
     elif had_failure and final_status == TaskStatus.success:
         final_status = TaskStatus.partial_success
-    transition_task_run(db, task, final_status, source="worker", reason="step_rollup")
+    research_generation = macro_state.step_summaries.get("research_generation") or {}
+    if research_generation.get("status") == "blocked":
+        final_status = TaskStatus.blocked
+    transition_task_run(db, task, final_status, source="worker", reason="step_rollup",
+        error_message=",".join(research_generation.get("reason_codes") or []) or None)
     db.commit()
-    if terminal_attempt_reconciliation is not None:
-        attempt_id, descriptor, terminal_status = terminal_attempt_reconciliation
-        factory = canary_attempt_session_factory or _canary_attempt_session_factory(db)
-        try:
-            with factory() as attempt_db, attempt_db.begin():
-                mark_canary_attempt_terminal(
-                    attempt_db,
-                    attempt_id=attempt_id,
-                    terminal_status=terminal_status,
-                    artifact_path=str(descriptor["file_path"]),
-                    artifact_sha256=str(descriptor["sha256"]),
-                    updated_at=_now(),
-                )
-        except Exception:
-            logger.exception("Canary terminal transaction committed but Attempt reconciliation failed")
     return final_status
-
-
-def _resolve_state_shadow_registry_inputs(
-    *,
-    db: DBSession,
-    run_id: str,
-    storage_root: Path,
-    state_shadow_input: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Resolve restart/prior Bundle authority from RunArtifact, never a path scan."""
-
-    if state_shadow_input is None:
-        return None
-    resolved = dict(state_shadow_input)
-    for field in (
-        "context_bundle_artifact",
-        "previous_context_bundle_artifact",
-        "previous_bundle_path",
-    ):
-        resolved.pop(field, None)
-
-    same_run = select_context_bundle_artifact_for_run(
-        db,
-        run_id=run_id,
-        storage_root=storage_root,
-    )
-    if same_run is not None:
-        resolved["context_bundle_artifact"] = same_run
-        return resolved
-
-    canonical_state = resolved.get("canonical_state")
-    asset = str(canonical_state.get("asset") or "").strip() if isinstance(canonical_state, dict) else ""
-    state_scope = str(resolved.get("state_scope") or "").strip()
-    canonical_state_id = str(resolved.get("canonical_state_id") or "").strip()
-    if not all((asset, state_scope, canonical_state_id)):
-        return resolved
-    previous = select_previous_context_bundle_artifact(
-        db,
-        current_run_id=run_id,
-        asset=asset,
-        state_scope=state_scope,
-        canonical_state_id=canonical_state_id,
-        cutoff_at=_optional_aware_datetime(resolved.get("cutoff_at")),
-        storage_root=storage_root,
-    )
-    if previous is not None:
-        for field in (
-            "previous_semantic_hashes",
-            "deferred_queue",
-            "processed_above_frontier",
-            "freshness_sla_seconds",
-            "default_freshness_sla_seconds",
-        ):
-            resolved.pop(field, None)
-        resolved["previous_context_bundle_artifact"] = previous
-    return resolved
-
-
-def _build_persisted_state_shadow_input(
-    *,
-    db: DBSession,
-    analysis_snapshot: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Build trusted state+delta input from persisted canonical/snapshot history.
-
-    Missing history returns ``None`` so shadow mode remains readiness-blocked and
-    Canary fails closed without affecting the legacy authoritative pipeline.
-    """
-
-    asset = str(analysis_snapshot.get("asset") or "").strip()
-    run_id = str(analysis_snapshot.get("run_id") or "").strip()
-    if not asset or not run_id:
-        return None
-    current = db.scalar(
-        select(AnalysisSnapshot).where(
-            AnalysisSnapshot.asset == asset,
-            AnalysisSnapshot.run_id == run_id,
-        )
-    )
-    head = db.scalar(
-        select(AnalysisStateHead).where(
-            AnalysisStateHead.asset == asset,
-            AnalysisStateHead.state_scope == "daily_close",
-        )
-    )
-    if current is None or head is None:
-        return None
-    canonical = db.get(AnalysisState, head.canonical_state_id)
-    if canonical is None or canonical.quality_gate_action != "pass" or not canonical.publish_allowed:
-        return None
-    previous = db.scalar(
-        select(AnalysisSnapshot)
-        .where(
-            AnalysisSnapshot.asset == asset,
-            AnalysisSnapshot.run_id != run_id,
-            AnalysisSnapshot.trade_date <= current.trade_date,
-        )
-        .order_by(
-            AnalysisSnapshot.trade_date.desc(),
-            AnalysisSnapshot.snapshot_time.desc(),
-            AnalysisSnapshot.created_at.desc(),
-            AnalysisSnapshot.id.desc(),
-        )
-        .limit(1)
-    )
-    if previous is None:
-        return None
-    return build_state_shadow_input(
-        previous_snapshot=previous,
-        current_snapshot=current,
-        canonical_state=canonical,
-    )
-
-
-def _optional_aware_datetime(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError("state shadow cutoff_at must be timezone-aware")
-    return parsed.astimezone(timezone.utc)
 
 
 def _load_pre_analysis_gate(*, storage_root: Path, analysis_snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -2079,6 +675,15 @@ def _apply_step_summary_status(db: DBSession, step, summary: dict[str, object] |
     if status == _STEP_STATUS_SKIPPED:
         step.error = None
         transition_task_step(db, step, StepStatus.skipped, source="worker", reason="step_skipped", retryable=False)
+    elif status in {"blocked", "needs_review"}:
+        was_running = step.status == StepStatus.running
+        transition_task_step(db, step, StepStatus.blocked, source="worker", reason="research_generation_blocked",
+            blocked_reason=",".join(str(reason) for reason in summary.get("reason_codes", [])) or "研究生成门禁阻断", retryable=False)
+        if was_running:
+            emit_task_event(db, str(step.task_run_id), str(step.id), "TASK_FINISHED",
+                {"status": "blocked", "step_name": step.name, "stage": step.stage,
+                 "task_kind": step.task_kind, "step_order": step.step_order, "source": "worker",
+                 "reason": "research_generation_blocked", "blocked_reason": step.blocked_reason})
     elif status == _STEP_STATUS_FAILED:
         error_message = str(summary.get("error")) if summary.get("error") is not None else None
         transition_task_step(
@@ -2184,16 +789,21 @@ def _persist_analysis_snapshot(
     source_refs = list(getattr(macro_state, "all_source_refs", []) or [])
     source_refs.extend(_cme_source_refs(cme_state))
     source_refs.extend(getattr(news_state, "source_refs", []) or [])
-    collected_points = [p.to_dict() for p in getattr(macro_state, "all_points", [])]
+    collected_points = list(getattr(macro_state, "warehouse_points", []))
     news_snapshot = getattr(news_state, "snapshot_dict", None) if news_state is not None else None
-    from apps.analysis.jin10.daily_context import build_daily_analysis_context
+    from apps.runtime.source_controls import jin10_disabled
 
-    gold_analysis_context = build_daily_analysis_context(
-        trade_date=trade_date,
-        storage_root=storage_root,
-        asset="XAUUSD",
-        preferred_run_id=run_id,
-    )
+    disabled = jin10_disabled()
+    gold_analysis_context = None
+    if not disabled:
+        from apps.analysis.jin10.daily_context import build_daily_analysis_context
+
+        gold_analysis_context = build_daily_analysis_context(
+            trade_date=trade_date,
+            storage_root=storage_root,
+            asset="XAUUSD",
+            preferred_run_id=run_id,
+        )
 
     snapshot = build_analysis_snapshot(
         asset="XAUUSD",
@@ -2209,7 +819,29 @@ def _persist_analysis_snapshot(
         market_price_snapshot=market_price_snapshot,
         oil_snapshot=oil_snapshot,
         snapshot_time=snapshot_run_time.isoformat(),
+        disabled_sources=("jin10",) if disabled else (),
+        include_daily_research=True,
     )
+    if not snapshot.get("daily_research"):
+        from apps.analysis.snapshots.input_validation import prepare_analysis_inputs
+        snapshot = prepare_analysis_inputs(snapshot, storage_root=storage_root)
+        return write_analysis_snapshot(snapshot, storage_root=storage_root), snapshot
+    from apps.analysis.snapshots.research_previous import load_previous_research
+    from apps.features.research.workflow import build_gold_workflow
+
+    previous_research = {"status": "unavailable", "reason": "previous_research_session_unavailable"}
+    if db_session is not None and hasattr(db_session, "scalars"):
+        previous_research = load_previous_research(db_session, storage_root=storage_root, snapshot=snapshot)
+    from apps.analysis.snapshots.input_validation import prepare_analysis_inputs
+    snapshot = prepare_analysis_inputs(snapshot, storage_root=storage_root)
+    snapshot["gold_workflow"] = build_gold_workflow(snapshot, previous=previous_research)
+    snapshot = prepare_analysis_inputs(snapshot, storage_root=storage_root)
+    if snapshot["gold_workflow"].get("production_shadow"):
+        raise RuntimeError("legacy runner cannot emit Production Shadow state; use Dagster premarket_job")
+    if previous_research.get("status") == "verified":
+        snapshot["input_snapshot_ids"]["previous_research"] = previous_research["snapshot_id"]
+        snapshot["source_refs"].extend(previous_research.get("source_refs", []))
+    snapshot = prepare_analysis_inputs(snapshot, storage_root=storage_root)
     path = write_analysis_snapshot(snapshot, storage_root=storage_root)
     return path, snapshot
 

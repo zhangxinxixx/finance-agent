@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import {
   AlertTriangle,
   FileStack,
@@ -96,7 +97,7 @@ function eventWeight(event: EventFlowTimelineItem): number {
   else score += 8;
   if (event.risk_level === "high") score += 18;
   else if (event.risk_level === "medium") score += 10;
-  if (event.pricing === "未定价") score += 12;
+  if (event.pricing === "未定价" || event.pricing === "未核验") score += 12;
   else if (event.pricing === "部分定价") score += 6;
   if (event.verification_status === "needs_verification") score += 4;
   if (event.event_kind === "confirmed_event") score += 8;
@@ -146,7 +147,7 @@ function collectResearchItems(
 
     const parsed = parseResearchLine(normalized);
     const display = formatEventFlowHeadline(parsed.body, 96);
-    const displayText = display.foreign ? display.raw : display.text;
+    const displayText = display.text;
     const key = normalizedMainlineKey(displayText);
     if (!key || seenDisplayKeys.has(key)) continue;
 
@@ -175,10 +176,10 @@ function collectTopEvents(data: EventFlowViewModel, timeline: EventFlowTimelineI
       type: "市场事件",
       importance: "中",
       status: "发展中",
-      impact: "混合",
+      impact: "未评估",
       source: "金十快讯摘要",
       assets: brief.asset_tags.join(", "),
-      pricing: "未定价",
+      pricing: "未核验",
       source_refs: [],
       affected_assets: brief.asset_tags,
     }));
@@ -293,7 +294,7 @@ function impactTone(impact: string): string {
 }
 
 function isOpenMainline(event: EventFlowTimelineItem): boolean {
-  if (event.importance === "高" && (event.pricing === "未定价" || event.pricing === "部分定价")) return true;
+  if (event.importance === "高" && (event.pricing === "未定价" || event.pricing === "未核验" || event.pricing === "部分定价")) return true;
   if (event.risk_level === "high" && event.pricing !== "已定价") return true;
   return false;
 }
@@ -527,7 +528,7 @@ function GoldEvidenceOverview({
                 >
                   <div className="mb-1.5 flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="line-clamp-1 text-[11px] font-semibold text-[var(--fg-2)]">{event.title}</div>
+                      <div className="line-clamp-1 text-[11px] font-semibold text-[var(--fg-2)]">{formatEventFlowHeadlineSummary(event.title).lead}</div>
                       <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[9px] text-[var(--fg-5)]">
                         <span>{event.source ?? "事件流"}</span>
                         <span>{event.date || formatDateTime(event.time)}</span>
@@ -555,9 +556,9 @@ function traceTitle(ref: SourceRef): string {
 
 function traceMeta(ref: SourceRef): string[] {
   return [
-    ref.provider?.trim(),
+    ref.provider ? formatEventFlowSourceLabel(ref.provider).text : null,
     ref.trade_date?.trim() || ref.dataDate?.trim() || ref.asOf?.trim(),
-    ref.snapshot_id?.trim(),
+
   ].filter((value): value is string => Boolean(value));
 }
 
@@ -593,7 +594,7 @@ function ResearchList({
                 {(() => {
                   const body = formatEventFlowHeadline(parsed.body, warn ? 88 : 96);
                   return (
-                    <div className="text-[11px] leading-5 text-[var(--fg-2)]" title={body.raw}>
+                    <div className="text-[11px] leading-5 text-[var(--fg-2)]" >
                       {body.foreign ? "原文条目（见来源）" : body.text}
                     </div>
                   );
@@ -650,7 +651,7 @@ export function EventFlowOverviewPanel({
   const researchDisplayKeys = new Set<string>();
   const highlightItems = collectResearchItems(summary?.newsHighlights ?? [], 2, researchDisplayKeys);
   const watchItems = collectResearchItems(summary?.watchlist ?? [], 2, researchDisplayKeys);
-  const riskItems = collectResearchItems(summary?.riskPoints ?? [], 2, researchDisplayKeys);
+  const riskItems = collectResearchItems(summary?.riskPoints ?? [], Math.max(1, summary?.riskPoints.length ?? 0), researchDisplayKeys);
   const mainHeadline = formatEventFlowHeadlineSummary(summary?.headline ?? topEvents[0]?.title ?? "事件主线待补充", 72);
   const mainSummary = formatEventFlowHeadline(summary?.summary ?? topEvents[0]?.desc ?? overviewStatus.description, 92);
   const mainSource = formatEventFlowSourceLabel(data.source, 18);
@@ -673,7 +674,7 @@ export function EventFlowOverviewPanel({
       >
         <FAEmptyState
           title="暂无可展示总览"
-          description={`${overviewStatus.description} 数据源：${data.source} · 更新时间：${formatDateTime(data.updated_at)}`}
+          description={`${readableWarning(overviewStatus.description)} 数据源：${data.source} · 更新时间：${formatDateTime(data.updated_at)}`}
           className="py-6"
         />
       </FACard>
@@ -697,11 +698,11 @@ export function EventFlowOverviewPanel({
             <div className="flex items-start justify-between gap-2">
               <div className="space-y-1 min-w-0">
                 <div className="text-[10px] font-semibold tracking-[0.04em] text-[var(--fg-5)]">主导主线</div>
-                <div className="min-w-0 text-[12px] font-semibold leading-5 text-[var(--fg-1)]" title={mainHeadline.raw}>
+                <div className="min-w-0 text-[12px] font-semibold leading-5 text-[var(--fg-1)]" >
                   {mainHeadline.foreign ? "原文事件主线" : mainHeadline.lead}
                 </div>
                 {mainHeadline.subline ? (
-                  <div className="line-clamp-1 text-[10px] leading-4 text-[var(--fg-4)]" title={mainHeadline.raw}>
+                  <div className="line-clamp-1 text-[10px] leading-4 text-[var(--fg-4)]" >
                     {mainHeadline.subline}
                   </div>
                 ) : null}
@@ -712,7 +713,7 @@ export function EventFlowOverviewPanel({
                 </span>
               ) : null}
             </div>
-            <div className="line-clamp-1 text-[11px] leading-5 text-[var(--fg-3)]" title={mainSummary.raw}>
+            <div className="line-clamp-1 text-[11px] leading-5 text-[var(--fg-3)]" >
               {mainSummary.foreign ? "当前主线摘要来自英文原文，详情请进入事件或快讯查看。" : mainSummary.text}
             </div>
             <div className="flex flex-wrap gap-2">
@@ -749,10 +750,10 @@ export function EventFlowOverviewPanel({
                     className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-default"
                   >
                     <div className="min-w-0 space-y-1">
-                      <div className="text-[11px] font-semibold leading-5 text-[var(--fg-2)]" title={item.title.raw}>
+                      <div className="text-[11px] font-semibold leading-5 text-[var(--fg-2)]" >
                         {item.title.foreign ? "原文事件主线" : item.title.lead}
                       </div>
-                      <div className="line-clamp-1 text-[10px] leading-4 text-[var(--fg-4)]" title={item.desc.raw}>
+                      <div className="line-clamp-1 text-[10px] leading-4 text-[var(--fg-4)]" >
                         {item.desc.foreign ? "详情请进入事件查看原文与来源。" : item.desc.text}
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5 text-[9px] text-[var(--fg-5)]">
@@ -777,7 +778,7 @@ export function EventFlowOverviewPanel({
         </div>
         {overviewStatus.tone !== "up" ? (
           <div className="rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[10px] leading-5 text-[var(--warn)]">
-            {overviewStatus.description}
+            {readableWarning(overviewStatus.description)}
           </div>
         ) : null}
       </FACard>
@@ -812,11 +813,11 @@ export function EventFlowOverviewPanel({
                 <div className="min-w-0 space-y-1 px-3 py-3">
                   <div className="flex flex-wrap items-start gap-1.5">
                     <div className="min-w-0 flex-1 space-y-0.5">
-                      <span className="block line-clamp-2 text-[10.5px] font-semibold leading-5 text-[var(--fg-2)]" title={event.displayTitle.raw}>
+                      <span className="block line-clamp-2 text-[10.5px] font-semibold leading-5 text-[var(--fg-2)]" >
                         {event.displayTitle.foreign ? "原文事件" : event.displayTitle.lead}
                       </span>
                       {event.displayTitle.subline ? (
-                        <span className="block line-clamp-1 text-[10px] leading-4 text-[var(--fg-4)]" title={event.displayTitle.raw}>
+                        <span className="block line-clamp-1 text-[10px] leading-4 text-[var(--fg-4)]" >
                           {event.displayTitle.foreign ? "详情请查看来源链接" : event.displayTitle.subline}
                         </span>
                       ) : null}
@@ -828,11 +829,11 @@ export function EventFlowOverviewPanel({
                     ) : null}
                     <FAStatusPill tone={pillTone(event.risk_level)}>{translateEventFlowValue(event.risk_level ?? event.importance)}</FAStatusPill>
                   </div>
-                  <div className="line-clamp-2 text-[10px] leading-5 text-[var(--fg-4)]" title={event.displayDesc.raw}>
+                  <div className="line-clamp-2 text-[10px] leading-5 text-[var(--fg-4)]" >
                     {event.displayDesc.foreign ? "当前仅返回英文原文，详情请查看来源或进入事件详情。" : event.displayDesc.text}
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-[10px] text-[var(--fg-5)]">
-                    <span title={event.displaySource.raw}>来源：{event.displaySource.text}</span>
+                    <span >来源：{event.displaySource.text}</span>
                     <span>·</span>
                     <span>{event.date || formatDateTime(event.time)}</span>
                     {event.assets ? <span>· {event.assets}</span> : null}
@@ -909,10 +910,10 @@ export function EventFlowOverviewPanel({
                 <div className="text-[10px] leading-5 text-[var(--fg-4)]">当前事件流没有稳定的资产映射。</div>
               )}
             </div>
-            <div className="text-[10px] leading-5 text-[var(--fg-4)]">{radarStatus.description}</div>
+            <div className="text-[10px] leading-5 text-[var(--fg-4)]">{readableWarning(radarStatus.description)}</div>
           </>
         ) : (
-          <FAEmptyState title="暂无风险雷达摘要" description={radarStatus.description} className="py-5" />
+          <FAEmptyState title="暂无风险雷达摘要" description={readableWarning(radarStatus.description)} className="py-5" />
         )}
       </FACard>
 
@@ -939,7 +940,7 @@ export function EventFlowOverviewPanel({
           <div className="space-y-3 rounded-[var(--radius-sm)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-3">
             <ResearchList title="风险提示" items={riskItems} emptyText="当前未返回风险提示。" warn />
             <div className="border-t border-[var(--warn-border)] pt-3 text-[10px] leading-5 text-[var(--warn)]">
-              高风险提示保留在首屏，其余原始引用已下沉到快讯、输入和详情页。
+              风险提示逐条展示；原始来源引用仍保留在快讯、输入和详情页。
             </div>
           </div>
 

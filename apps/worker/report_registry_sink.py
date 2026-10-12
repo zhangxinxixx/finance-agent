@@ -25,9 +25,30 @@ def register_composite_report_registry_entries(
     composite_outputs: dict[str, Any],
     analysis_snapshot: dict[str, Any] | None = None,
 ) -> None:
-    agent_loop_decision = composite_outputs.get("agent_loop_decision") if isinstance(composite_outputs, dict) else None
-    if not bool(getattr(agent_loop_decision, "publish_allowed", False)):
+    from apps.analysis.snapshots.input_validation import research_report_rejection_reasons
+    agents = composite_outputs.get("agents") or {}
+    coordinator = agents.get("coordinator_agent")
+    validation = composite_outputs.get("input_validation") or (analysis_snapshot or {}).get("input_validation") or {}
+    failed_results = any((composite_outputs.get(key) or {}).get("status") in {"failed", "blocked", "invalid"} for key in ("report_result", "card_result"))
+    if validation.get("can_analyze") is False or failed_results or composite_outputs.get("diagnostic_result") or research_report_rejection_reasons(analysis_snapshot or {}, coordinator):
         return
+    # Register the composite bundle atomically; a surviving single file is not completion.
+    for key, primary in (("report_result", "final_report.md"), ("card_result", "strategy_card.json")):
+        result = composite_outputs.get(key)
+        if not isinstance(result, dict) or not any(
+            isinstance(path, str) and Path(path).name == primary and Path(path).is_file()
+            for path in result.get("paths") or []
+        ):
+            return
+    agent_loop_decision = composite_outputs.get("agent_loop_decision") if isinstance(composite_outputs, dict) else None
+    publish_allowed = bool(getattr(agent_loop_decision, "publish_allowed", False))
+    research = analysis_snapshot.get("daily_research", {}) if isinstance(analysis_snapshot, dict) else {}
+    research_observation = not publish_allowed and isinstance(research, dict) and research.get("schema_version") == "daily_research.v1"
+    if not publish_allowed and not research_observation:
+        return
+    output_mode = "accepted" if publish_allowed else "observe"
+    report_type = "final_report" if publish_allowed else "observation_report"
+    strategy_type = "strategy_card" if publish_allowed else "observation_strategy_card"
 
     report_result = composite_outputs.get("report_result") if isinstance(composite_outputs, dict) else None
     card_result = composite_outputs.get("card_result") if isinstance(composite_outputs, dict) else None
@@ -53,34 +74,34 @@ def register_composite_report_registry_entries(
 
     report_specs = [
         {
-            "report_id": f"final_report:{run_id}",
-            "family": "final_report_markdown",
-            "report_type": "final_report",
-            "title": f"{asset} 综合报告（{trade_date}）" if trade_date else f"{asset} 综合报告",
+            "report_id": f"{report_type}:{run_id}",
+            "family": f"{report_type}_markdown",
+            "report_type": report_type,
+            "title": f"{asset} {'综合报告' if publish_allowed else '综合研究报告（仅供观察）'}" + (f"（{trade_date}）" if trade_date else ""),
             "paths": report_result.get("paths") if isinstance(report_result, dict) else None,
             "primary_name": "final_report.md",
             "metadata": {
                 "input_snapshot_ids": input_snapshot_ids,
                 "writer": "run_premarket",
-                "publish_allowed": True,
+                "publish_allowed": publish_allowed,
                 "review_status": getattr(agent_loop_decision, "review_status", "pass"),
-                "output_mode": "accepted",
+                "output_mode": output_mode,
             },
         },
         {
-            "report_id": f"strategy_card:{run_id}",
-            "family": "strategy_card",
-            "report_type": "strategy_card",
-            "title": f"{asset} 策略卡片（{trade_date}）" if trade_date else f"{asset} 策略卡片",
+            "report_id": f"{strategy_type}:{run_id}",
+            "family": strategy_type,
+            "report_type": strategy_type,
+            "title": f"{asset} {'策略卡片' if publish_allowed else '观察策略卡片'}" + (f"（{trade_date}）" if trade_date else ""),
             "paths": card_result.get("paths") if isinstance(card_result, dict) else None,
             "primary_name": "strategy_card.json",
             "metadata": {
                 "input_snapshot_ids": input_snapshot_ids,
                 "writer": "run_premarket",
                 "strategy_card_id": getattr(card, "strategy_card_id", None),
-                "publish_allowed": True,
+                "publish_allowed": publish_allowed,
                 "review_status": getattr(agent_loop_decision, "review_status", "pass"),
-                "output_mode": "accepted",
+                "output_mode": output_mode,
             },
         },
     ]
@@ -106,7 +127,7 @@ def register_composite_report_registry_entries(
                     "trade_date": trade_date,
                     "run_id": run_id,
                     "snapshot_id": snapshot_id,
-                    "data_status": "live",
+                    "data_status": "live" if publish_allowed else "partial",
                     "lifecycle_status": "generated",
                     "source_refs": source_refs,
                     "metadata": spec["metadata"],

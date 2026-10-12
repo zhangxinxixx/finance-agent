@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,17 +12,29 @@ from sqlalchemy.orm import sessionmaker
 from database.models.execution import RunArtifact, ensure_execution_tables
 from database.models.report import ReportArtifact, ReportItem, ensure_report_tables
 from database.models.task import Base, StepStatus, TaskRun, TaskStatus, TaskStep
-from apps.worker.canary_materialization import CanaryActivation
 
 _CREATED_AT = datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc)
 _TRADE_DATE = "2026-05-14"
 
 
 @pytest.fixture(autouse=True)
-def _mock_source_status_index():
+def _mock_source_status_index(request, monkeypatch):
     """Keep composite analysis output integration tests isolated from source gating by default."""
+    # These original persistence tests exercise the explicitly non-research contract.
+    # The research refusal and positive paths are covered separately with sourced bars.
+    if request.node.name != "test_db_sink_does_not_persist_observation_as_final_analysis_result":
+        import apps.worker.runner as runner
+        builder = runner.build_analysis_snapshot
+        def legacy_builder(**kwargs):
+            return builder(**{**kwargs, "include_daily_research": False})
+        monkeypatch.setattr(runner, "build_analysis_snapshot", legacy_builder)
     with (
+        patch("apps.worker.adaptive_research.enrich_research_snapshot", side_effect=lambda snapshot, **kwargs: snapshot),
         patch("apps.api.services.source_service.get_data_source_status_index", return_value={}),
+        patch(
+            "apps.analysis.agents.research_synthesis._call_gateway",
+            side_effect=RuntimeError("LLM disabled in integration fixture"),
+        ),
         patch(
             "apps.worker.runner._evaluate_premarket_readiness",
             return_value={"decision": "allow", "reason_code": None, "source_ref": "test:readiness"},
@@ -150,609 +162,6 @@ def _make_rich_snapshot(
     }
 
 
-def _make_noop_state_shadow_input() -> dict:
-    return {
-        "state_scope": "daily_close",
-        "canonical_state_id": "state-shadow-root",
-        "canonical_state": {
-            "asset": "XAUUSD",
-            "as_of": (_CREATED_AT - timedelta(hours=1)).isoformat(),
-            "market_stage": "direction_decision",
-            "core_thesis": "等待突破",
-            "net_bias": "mixed_bullish",
-            "dominant_drivers": [],
-            "key_levels": [{"price": 3300, "role": "support"}],
-            "scenario_states": [],
-            "unresolved_items": [],
-            "invalidation_conditions": [],
-            "evidence_cursors": {},
-            "input_snapshot_ids": {"market": "market-shadow-1"},
-            "source_refs": [{"snapshot_id": "market-shadow-1"}],
-        },
-        "evidence": [],
-        "evidence_cursors": {},
-        "cutoff_at": _CREATED_AT.isoformat(),
-        "assembled_at": _CREATED_AT.isoformat(),
-    }
-
-
-def _make_canary_input(*, run_id: str) -> tuple[dict, dict]:
-    evidence_ref = {"snapshot_id": "market-canary-2"}
-    return (
-        {
-            "asset": "XAUUSD",
-            "trade_date": _TRADE_DATE,
-            "state_scope": "daily_close",
-            "canonical_state_id": "state-canary-root",
-            "expected_head_version": 1,
-            "canonical_state": {
-                "schema_version": "1.1",
-                "state_scope": "daily_close",
-                "state_machine_version": "analysis_state.v1.1",
-                "session": "daily_close",
-                "trade_date": _TRADE_DATE,
-                "asset": "XAUUSD",
-                "as_of": (_CREATED_AT - timedelta(hours=1)).isoformat(),
-                "market_stage": "direction_decision",
-                "core_thesis": "等待突破",
-                "net_bias": "mixed_bullish",
-                "dominant_drivers": [],
-                "key_levels": [{"value": 3300, "role": "support", "source": "market"}],
-                "scenario_states": [],
-                "unresolved_items": [],
-                "invalidation_conditions": [],
-                "evidence_cursors": {},
-                "input_snapshot_ids": {"market": "market-canary-1"},
-                "source_refs": [{"snapshot_id": "market-canary-1"}],
-            },
-            "evidence": [
-                {
-                    "source": "market",
-                    "evidence_id": "market-canary-2",
-                    "business_time": (_CREATED_AT - timedelta(minutes=2)).isoformat(),
-                    "ingested_at": (_CREATED_AT - timedelta(minutes=1)).isoformat(),
-                    "payload": {
-                        "evidence_type": "key_level_event",
-                        "asset": "XAUUSD",
-                        "source_quality": "validated",
-                        "level_id": "resistance-3350",
-                        "level_role": "resistance",
-                        "level_value": 3350,
-                        "observed_value": 3355,
-                        "event": "confirmed_break",
-                        "confirmation_status": "confirmed",
-                    },
-                    "source_ref": evidence_ref,
-                }
-            ],
-            "evidence_cursors": {},
-            "cutoff_at": _CREATED_AT.isoformat(),
-            "assembled_at": _CREATED_AT.isoformat(),
-        },
-        evidence_ref,
-    )
-
-
-def _persistent_canary_activation(*, run_id: str, canary_input: dict) -> CanaryActivation:
-    return CanaryActivation(
-        asset="XAUUSD",
-        trade_date=_TRADE_DATE,
-        run_id=run_id,
-        state_scope="daily_close",
-        canonical_state_id=canary_input["canonical_state_id"],
-        expected_head_version=canary_input["expected_head_version"],
-        approval_id=f"approval-{run_id}",
-        approval_hash="f" * 64,
-        activation_identity=f"approval-{run_id}",
-    )
-
-
-def _canary_analyzer(evidence_ref: dict):
-    def analyzer(bundle):
-        from apps.analysis.state import TransitionCandidate
-        from apps.analysis.state.transition_generator import ScopedTransitionCandidate
-
-        candidate = TransitionCandidate.model_validate(
-            {
-                "previous_state_id": bundle.canonical_state_id,
-                "summary": "canary transition",
-                "changes": [
-                    {
-                        "target": "core_thesis",
-                        "action": "strengthen",
-                        "reason": "canary price confirmation",
-                        "evidence_refs": [evidence_ref],
-                    },
-                ],
-                "state_patch": {
-                    "core_thesis": "canary 突破确认",
-                },
-                "evidence_refs": [evidence_ref],
-            }
-        )
-        return ScopedTransitionCandidate(
-            asset=bundle.asset,
-            state_scope=bundle.state_scope,
-            run_id=bundle.run_id,
-            canonical_state_id=bundle.canonical_state_id,
-            context_bundle_id=bundle.bundle_id,
-            context_bundle_hash=bundle.content_hash,
-            candidate=candidate,
-        )
-
-    return analyzer
-
-
-def test_canary_request_is_bound_to_all_fresh_bundle_consumers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from apps.analysis.state.hashing import content_hash
-    from apps.worker import runner
-    from apps.worker.runner import _run_canary_sidecar_attempt
-
-    run_id = "run-canary-ready"
-    canary_input, evidence_ref = _make_canary_input(run_id=run_id)
-    actual_gate_inputs: list[list] = []
-    original_gate = runner.evaluate_quality_gate
-
-    def record_gate(**kwargs):
-        actual_gate_inputs.append(list(kwargs["agent_outputs"]))
-        return original_gate(**kwargs)
-
-    monkeypatch.setattr(runner, "evaluate_quality_gate", record_gate)
-    _, outputs = _run_canary_sidecar_attempt(
-        storage_root=tmp_path,
-        snapshot=_make_rich_snapshot(run_id=run_id),
-        run_id=run_id,
-        created_at=_CREATED_AT,
-        state_shadow_input=canary_input,
-        state_delta_analyzer=_canary_analyzer(evidence_ref),
-        canary_activation=_persistent_canary_activation(run_id=run_id, canary_input=canary_input),
-        attempt=0,
-        attempt_id="9e91da42-c596-5f09-a010-440e7250cc6d",
-    )
-
-    trace = outputs["state_delta_shadow"]
-    request = outputs["canary_materialization_request"]
-    authority = outputs["canary_authority_payload"]
-    assert trace["status"] == "candidate_accepted_shadow_only"
-    assert "_review_result" not in trace
-    assert len(trace["bundle_consumers"]) == 9
-    assert request.context_bundle_id == trace["bundle_id"]
-    assert request.context_bundle_hash == trace["bundle_content_hash"]
-    assert request.run_id == run_id
-    assert request.activation_source == "persistent_approval"
-    assert request.approval_id == f"approval-{run_id}"
-    assert authority.transition_consistency.status == "unverifiable"
-    post_gate_inputs = actual_gate_inputs[-1]
-    assert [output.agent_name for output in post_gate_inputs] == list(authority.agent_outputs)
-    assert authority.quality_gate_input_hashes == [
-        content_hash(
-            output.model_dump(mode="json", exclude_computed_fields=True),
-            exclude_keys=frozenset(),
-        )
-        for output in post_gate_inputs
-    ]
-    assert authority.fact_review_output_hash == authority.agent_output_hashes["fact_review_agent"]
-    assert set(authority.transition_consistency.unverifiable_fields) == {
-        "net_bias",
-        "market_stage",
-        "core_thesis",
-        "dominant_drivers",
-    }
-    assert set(request.consumer_projection_hashes) == {
-        "macro",
-        "options",
-        "risk",
-        "technical",
-        "positioning",
-        "news",
-        "market_odds",
-        "fact_review",
-        "coordinator",
-    }
-    for agent_name, agent_output in outputs["agents"].items():
-        if agent_name in trace["bundle_consumers"]:
-            consumer = agent_output.input_payload["context_bundle_consumer"]
-            assert (
-                request.consumer_projection_hashes[consumer]
-                == agent_output.input_snapshot_ids["context_bundle_projection_hash"]
-            )
-
-
-def test_canary_advances_trade_date_from_current_bundle_cutoff(tmp_path: Path) -> None:
-    from apps.worker.runner import _run_canary_sidecar_attempt
-
-    run_id = "run-canary-next-trade-date"
-    canary_input, evidence_ref = _make_canary_input(run_id=run_id)
-    canary_input["canonical_state"]["trade_date"] = "2026-05-13"
-    canary_input["canonical_state"]["as_of"] = "2026-05-13T08:00:00+00:00"
-    canary_input["trade_date"] = _TRADE_DATE
-    canary_input["cutoff_at"] = _CREATED_AT.isoformat()
-    canary_input["assembled_at"] = _CREATED_AT.isoformat()
-
-    _, outputs = _run_canary_sidecar_attempt(
-        storage_root=tmp_path,
-        snapshot=_make_rich_snapshot(run_id=run_id),
-        run_id=run_id,
-        created_at=_CREATED_AT,
-        state_shadow_input=canary_input,
-        state_delta_analyzer=_canary_analyzer(evidence_ref),
-        canary_activation=_persistent_canary_activation(run_id=run_id, canary_input=canary_input),
-        attempt=0,
-        attempt_id="00000000-0000-0000-0000-000000000082",
-    )
-
-    request = outputs["canary_materialization_request"]
-    assert request.review.next_state.trade_date.isoformat() == _TRADE_DATE
-
-
-def test_state_delta_primary_remains_readiness_blocked(tmp_path: Path) -> None:
-    from apps.worker.runner import _run_composite_analysis_pipeline
-
-    def unexpected(_bundle):
-        raise AssertionError("state_delta_primary must remain disabled")
-
-    _, outputs = _run_composite_analysis_pipeline(
-        storage_root=tmp_path,
-        snapshot=_make_rich_snapshot(run_id="run-primary-blocked"),
-        run_id="run-primary-blocked",
-        created_at=_CREATED_AT,
-        analysis_context_mode="state_delta_primary",
-        state_delta_analyzer=unexpected,
-    )
-    trace = outputs["state_delta_shadow"]
-    assert trace["status"] == "readiness_blocked"
-    assert trace["reason"] == "state_delta_primary_not_ready"
-    assert trace["model_invocation"] == "skipped"
-    assert "canary_materialization_request" not in outputs
-
-
-def test_canary_sidecar_cannot_overwrite_legacy_report_or_card(tmp_path: Path) -> None:
-    from apps.worker import runner
-
-    run_id = "run-canary-isolated"
-    snapshot = _make_rich_snapshot(run_id=run_id)
-    canary_input, evidence_ref = _make_canary_input(run_id=run_id)
-    _, legacy_outputs = runner._run_composite_analysis_pipeline(
-        storage_root=tmp_path,
-        snapshot=snapshot,
-        run_id=run_id,
-        created_at=_CREATED_AT,
-        analysis_context_mode="legacy",
-    )
-    official_paths = [
-        *legacy_outputs["report_result"]["paths"],
-        *legacy_outputs["card_result"]["paths"],
-    ]
-    before = {path: Path(path).read_bytes() for path in official_paths}
-
-    _, canary_outputs = runner._run_canary_sidecar_attempt(
-        storage_root=tmp_path,
-        snapshot=snapshot,
-        run_id=run_id,
-        created_at=_CREATED_AT,
-        state_shadow_input=canary_input,
-        state_delta_analyzer=_canary_analyzer(evidence_ref),
-        canary_activation=_persistent_canary_activation(run_id=run_id, canary_input=canary_input),
-        attempt=0,
-        attempt_id="60e89ac3-4cc0-59c7-8508-d825dddf487f",
-    )
-
-    assert {path: Path(path).read_bytes() for path in official_paths} == before
-    attempt_root = Path(canary_outputs["canary_attempt_root"]).resolve()
-    sidecar_paths = [
-        *canary_outputs["report_result"]["paths"],
-        *canary_outputs["card_result"]["paths"],
-    ]
-    assert sidecar_paths
-    assert all(Path(path).resolve().is_relative_to(attempt_root) for path in sidecar_paths)
-    descriptor = canary_outputs["context_bundle_registry_artifact"]
-    assert descriptor["file_path"].startswith("outputs/context_bundles/")
-    assert (tmp_path / descriptor["file_path"]).is_file()
-    assert canary_outputs["canary_materialization_request"].authority_hash
-
-
-def test_canary_composite_rejects_non_sidecar_storage(tmp_path: Path) -> None:
-    from apps.worker.runner import _run_composite_analysis_pipeline
-
-    run_id = "run-canary-unsafe-root"
-    canary_input, evidence_ref = _make_canary_input(run_id=run_id)
-    with pytest.raises(ValueError, match="requires sidecar attempt"):
-        _run_composite_analysis_pipeline(
-            storage_root=tmp_path,
-            snapshot=_make_rich_snapshot(run_id=run_id),
-            run_id=run_id,
-            created_at=_CREATED_AT,
-            analysis_context_mode="canary",
-            state_shadow_input=canary_input,
-            state_delta_analyzer=_canary_analyzer(evidence_ref),
-        )
-
-
-def test_composite_state_delta_shadow_shares_one_bundle_without_canonical_write(
-    tmp_path: Path,
-) -> None:
-    from apps.worker.runner import _run_composite_analysis_pipeline
-
-    run_id = "run-state-delta-shadow"
-    snapshot = _make_rich_snapshot(run_id=run_id)
-    evidence_ref = {"snapshot_id": "market-shadow-2"}
-    shadow_input = {
-        "state_scope": "daily_close",
-        "canonical_state_id": "state-shadow-root",
-        "canonical_state": {
-            "asset": "XAUUSD",
-            "as_of": (_CREATED_AT - timedelta(hours=1)).isoformat(),
-            "market_stage": "direction_decision",
-            "core_thesis": "等待突破",
-            "net_bias": "mixed_bullish",
-            "dominant_drivers": [],
-            "key_levels": [{"price": 3300, "role": "support"}],
-            "scenario_states": [],
-            "unresolved_items": [],
-            "invalidation_conditions": [],
-            "evidence_cursors": {},
-            "input_snapshot_ids": {"market": "market-shadow-1"},
-            "source_refs": [{"snapshot_id": "market-shadow-1"}],
-        },
-        "evidence": [
-            {
-                "source": "market",
-                "evidence_id": "market-shadow-2",
-                "business_time": (_CREATED_AT - timedelta(minutes=2)).isoformat(),
-                "ingested_at": (_CREATED_AT - timedelta(minutes=1)).isoformat(),
-                # Minimal typed payload conforming to the published #76 EvidenceDelta
-                # contract (validated key_level_event) so the v3 bundle can evaluate
-                # and retain it for the shadow analyzer.
-                "payload": {
-                    "evidence_type": "key_level_event",
-                    "asset": "XAUUSD",
-                    "source_quality": "validated",
-                    "level_id": "support-3300",
-                    "level_role": "support",
-                    "level_value": 3300,
-                    "observed_value": 3350,
-                    "event": "confirmed_break",
-                    "confirmation_status": "confirmed",
-                },
-                "source_ref": evidence_ref,
-            }
-        ],
-        "evidence_cursors": {},
-        "cutoff_at": _CREATED_AT.isoformat(),
-        "assembled_at": _CREATED_AT.isoformat(),
-    }
-
-    def analyzer(bundle):
-        return {
-            "previous_state_id": bundle.canonical_state_id,
-            "summary": "shadow transition",
-            "changes": [
-                {
-                    "target": "core_thesis",
-                    "action": "strengthen",
-                    "reason": "shadow price confirmation",
-                    "evidence_refs": [evidence_ref],
-                },
-            ],
-            "state_patch": {
-                "core_thesis": "shadow 突破确认",
-            },
-            "evidence_refs": [evidence_ref],
-        }
-
-    summaries, outputs = _run_composite_analysis_pipeline(
-        storage_root=tmp_path,
-        snapshot=snapshot,
-        run_id=run_id,
-        created_at=_CREATED_AT,
-        analysis_context_mode="state_delta_context",
-        state_shadow_input=shadow_input,
-        state_delta_analyzer=analyzer,
-    )
-
-    shadow = outputs["state_delta_shadow"]
-    assert summaries["state_delta_shadow"]["status"] == "success"
-    assert summaries["state_delta_shadow"]["shadow_status"] == ("candidate_accepted_shadow_only")
-    assert shadow["production_canonical_write_allowed"] is False
-    assert shadow["shadow_review_status"] == "accepted"
-    bundle_ids = set(shadow["bundle_consumers"].values())
-    assert bundle_ids == {shadow["bundle_id"]}
-    for name in (
-        "macro_liquidity_agent",
-        "cme_options_agent",
-        "risk_agent",
-        "technical_agent",
-        "positioning_agent",
-        "news_agent",
-        "market_odds_agent",
-        "fact_review_agent",
-        "coordinator_agent",
-    ):
-        agent_output = outputs["agents"][name]
-        lineage = agent_output.input_snapshot_ids
-        assert lineage["context_bundle_id"] == shadow["bundle_id"]
-        assert lineage["context_bundle_hash"] == shadow["bundle_content_hash"]
-        assert lineage["canonical_state_id"] == shadow["canonical_state_id"]
-        assert lineage["state_scope"] == "daily_close"
-        assert "retained_evidence_ids" in lineage
-        assert lineage["evidence_delta_decision_id"] == shadow["evidence_delta_decision_id"]
-        assert (
-            agent_output.input_payload["context_bundle_summary"]["decision_id"] == shadow["evidence_delta_decision_id"]
-        )
-    assert outputs["context_bundle_registry_artifact"]["metadata"]["bundle_id"] == shadow["bundle_id"]
-    assert (tmp_path / shadow["bundle_path"]).is_file()
-
-
-def test_state_delta_pipeline_rejects_consumer_bypass_and_prebuilt_outputs(tmp_path: Path, monkeypatch) -> None:
-    from apps.worker import composite_analysis_pipeline as pipeline
-
-    original = pipeline.analyze_market_odds
-
-    def bypass_projection(snapshot, *, created_at=None, context_projection=None):
-        assert context_projection is not None
-        return original(snapshot, created_at=created_at)
-
-    monkeypatch.setattr(pipeline, "analyze_market_odds", bypass_projection)
-    with pytest.raises(ValueError, match="market_odds_agent did not return auditable"):
-        pipeline.run_composite_analysis_pipeline(
-            storage_root=tmp_path,
-            snapshot=_make_rich_snapshot(run_id="run-consumer-bypass"),
-            run_id="run-consumer-bypass",
-            created_at=_CREATED_AT,
-            analysis_context_mode="state_delta_context",
-            state_shadow_input=_make_noop_state_shadow_input(),
-        )
-
-    def forge_projection_content(snapshot, *, created_at=None, context_projection=None):
-        assert context_projection is not None
-        output = original(
-            snapshot,
-            created_at=created_at,
-            context_projection=context_projection,
-        )
-        input_payload = dict(output.input_payload)
-        input_payload["context_bundle_projection"] = {"forged": True}
-        return output.model_copy(update={"input_payload": input_payload})
-
-    monkeypatch.setattr(pipeline, "analyze_market_odds", forge_projection_content)
-    with pytest.raises(ValueError, match="did not consume its exact typed projection"):
-        pipeline.run_composite_analysis_pipeline(
-            storage_root=tmp_path,
-            snapshot=_make_rich_snapshot(run_id="run-consumer-forgery"),
-            run_id="run-consumer-forgery",
-            created_at=_CREATED_AT,
-            analysis_context_mode="state_delta_context",
-            state_shadow_input=_make_noop_state_shadow_input(),
-        )
-
-    monkeypatch.setattr(pipeline, "analyze_market_odds", original)
-    with pytest.raises(ValueError, match="forbids unverified prebuilt Agent outputs"):
-        pipeline.run_composite_analysis_pipeline(
-            storage_root=tmp_path,
-            snapshot=_make_rich_snapshot(run_id="run-prebuilt-bypass"),
-            run_id="run-prebuilt-bypass",
-            created_at=_CREATED_AT,
-            macro_output_prebuilt=object(),
-            analysis_context_mode="state_delta_context",
-            state_shadow_input=_make_noop_state_shadow_input(),
-        )
-
-
-def test_composite_manual_review_keeps_review_item_and_skips_transition_analyzer(
-    tmp_path: Path,
-) -> None:
-    from apps.worker.runner import _run_composite_analysis_pipeline
-
-    run_id = "run-state-delta-manual-review"
-    calls = 0
-    shadow_input = {
-        "state_scope": "daily_close",
-        "canonical_state_id": "state-shadow-root",
-        "canonical_state": {
-            "asset": "XAUUSD",
-            "as_of": (_CREATED_AT - timedelta(hours=1)).isoformat(),
-            "market_stage": "direction_decision",
-            "core_thesis": "等待宏观确认",
-            "net_bias": "mixed_bullish",
-            "dominant_drivers": [],
-            "key_levels": [{"price": 3300, "role": "support"}],
-            "scenario_states": [],
-            "unresolved_items": [],
-            "invalidation_conditions": [],
-            "evidence_cursors": {},
-            "input_snapshot_ids": {"market": "market-shadow-1"},
-            "source_refs": [{"snapshot_id": "market-shadow-1"}],
-        },
-        "evidence": [
-            {
-                "source": "unverified_macro",
-                "evidence_id": "dxy-unverified-material",
-                "business_time": (_CREATED_AT - timedelta(minutes=2)).isoformat(),
-                "ingested_at": (_CREATED_AT - timedelta(minutes=1)).isoformat(),
-                "payload": {
-                    "evidence_type": "macro_metric",
-                    "asset": "XAUUSD",
-                    "source_quality": "unverified",
-                    "metric": "dxy",
-                    "current_value": 101.0,
-                    "previous_value": 100.0,
-                    "unit": "index",
-                },
-                "source_ref": {"snapshot_id": "macro-shadow-unverified"},
-            }
-        ],
-        "evidence_cursors": {},
-        "cutoff_at": _CREATED_AT.isoformat(),
-        "assembled_at": _CREATED_AT.isoformat(),
-    }
-
-    def analyzer(_bundle):
-        nonlocal calls
-        calls += 1
-        raise AssertionError("manual review must skip transition analyzer")
-
-    _summaries, outputs = _run_composite_analysis_pipeline(
-        storage_root=tmp_path,
-        snapshot=_make_rich_snapshot(run_id=run_id),
-        run_id=run_id,
-        created_at=_CREATED_AT,
-        analysis_context_mode="state_delta_context",
-        state_shadow_input=shadow_input,
-        state_delta_analyzer=analyzer,
-    )
-
-    shadow = outputs["state_delta_shadow"]
-    assert calls == 0
-    assert shadow["schema_version"] == "composite_state_shadow.v3"
-    assert shadow["status"] == "manual_review_required"
-    assert shadow["evidence_delta_action"] == "manual_review"
-    assert shadow["review_items"][0]["run_id"] == run_id
-
-
-def test_composite_shadow_setup_failure_does_not_break_legacy_outputs(tmp_path: Path) -> None:
-    from apps.worker.runner import _run_composite_analysis_pipeline
-
-    summaries, outputs = _run_composite_analysis_pipeline(
-        storage_root=tmp_path,
-        snapshot=_make_rich_snapshot(run_id="run-shadow-setup-failure"),
-        run_id="run-shadow-setup-failure",
-        created_at=_CREATED_AT,
-        analysis_context_mode="state_delta_context",
-        state_shadow_input={"state_scope": {"untrusted": "must-not-enter-trace"}},
-    )
-
-    assert summaries["final_report"]["status"] == "success"
-    assert outputs["report_result"]["paths"]
-    assert outputs["state_delta_shadow"]["status"] == "shadow_setup_failed"
-    assert outputs["state_delta_shadow"]["schema_version"] == "composite_state_shadow.v3"
-    assert outputs["state_delta_shadow"]["evidence_delta_action"] == "manual_review"
-    assert outputs["state_delta_shadow"]["requested_state_scope"] is None
-    assert "must-not-enter-trace" not in str(outputs["state_delta_shadow"])
-    assert outputs["state_delta_shadow"]["production_canonical_write_allowed"] is False
-    review = outputs["state_delta_shadow"]["review_items"][0]
-    assert review == {
-        "review_id": "state_delta_setup:run-shadow-setup-failure:78a572444077af19",
-        "run_id": "run-shadow-setup-failure",
-        "source_module": "state_delta_shadow",
-        "source_step_id": "state_delta_shadow_setup",
-        "severity": "error",
-        "reason": "State-delta shadow setup failed: ValueError",
-        "impact_modules": ["analysis_state", "state_delta_shadow"],
-        "suggested_action": "Review the trusted state-delta setup inputs before retrying shadow analysis.",
-        "status": "pending",
-        "evidence_refs": [],
-    }
-    assert "must-not-enter-trace" not in str(review)
-
-    _, replay_outputs = _run_composite_analysis_pipeline(
-        storage_root=tmp_path,
-        snapshot=_make_rich_snapshot(run_id="run-shadow-setup-failure"),
-        run_id="run-shadow-setup-failure",
-        created_at=_CREATED_AT,
-        analysis_context_mode="state_delta_context",
-        state_shadow_input={"state_scope": {"untrusted": "must-not-enter-trace"}},
-    )
-    assert replay_outputs["state_delta_shadow"]["review_items"][0]["review_id"] == review["review_id"]
 def _gold_policy_fixture(name: str) -> dict:
     fixture_path = Path(__file__).parents[1] / "fixtures" / "gold_policy" / name
     return json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -863,12 +272,9 @@ def test_composite_pipeline_uses_v2_artifact_names_and_typed_coordinator_contrac
 
     assert isinstance(outputs["gold_analysis_decision"], GoldAnalysisDecisionV2)
     assert isinstance(outputs["gold_price_attribution"], GoldPriceAttributionV2)
-    coordinator = outputs["agents"]["coordinator_agent"]
-    decision = outputs["gold_analysis_decision"]
-    assert coordinator.accepted_gold_analysis_decision == decision
-    assert coordinator.accepted_state_conclusion is not None
-    assert coordinator.accepted_state_conclusion.direction.value == decision.direction
-    assert coordinator.accepted_state_conclusion.market_stage == decision.market_stage_candidate
+    assert outputs["agents"]["coordinator_agent"].accepted_state_conclusion == outputs[
+        "gold_analysis_decision"
+    ]
     paths = summaries["gold_policy"]
     assert paths["feature_snapshot_path"].endswith("feature_snapshot.v2.json")
     assert paths["gold_analysis_decision_path"].endswith(
@@ -1189,9 +595,9 @@ def test_composite_analysis_pipeline_writes_final_report_and_strategy_card(tmp_p
     assert json.loads(source_health_path.read_text(encoding="utf-8")) == outputs["source_health"]
     persisted_gate = json.loads(quality_gate_result_path.read_text(encoding="utf-8"))
     assert persisted_gate["publish_allowed"] is outputs["agent_loop_decision"].publish_allowed
-    assert persisted_gate["quality_gate_decision"] == outputs["post_coordinator_quality_gate_decision"].model_dump(
-        mode="json"
-    )
+    assert persisted_gate["quality_gate_decision"] == outputs[
+        "post_coordinator_quality_gate_decision"
+    ].model_dump(mode="json")
 
     assert "strategy_card" in summaries
     assert summaries["strategy_card"]["status"] == "success"
@@ -1301,7 +707,9 @@ def test_composite_runtime_summary_merges_seven_gold_agents_with_report_render(
             "gold_agent_execution": {
                 "snapshot_id": execution["snapshot_id"],
                 "declared_agents": execution["declared_agents"],
-                "materialized_stage_envelopes": execution["materialized_stage_envelopes"],
+                "materialized_stage_envelopes": execution[
+                    "materialized_stage_envelopes"
+                ],
                 "executed_agents": execution["executed_agents"],
                 "artifact_paths": execution["artifact_paths"],
             }
@@ -1328,7 +736,9 @@ def test_composite_runtime_summary_merges_seven_gold_agents_with_report_render(
         "report_render_agent",
     ]
     assert runtime["materialized_stage_envelopes"] == runtime["declared_agents"]
-    assert set(runtime["agent_artifact_refs"]) == set(runtime["materialized_stage_envelopes"])
+    assert set(runtime["agent_artifact_refs"]) == set(
+        runtime["materialized_stage_envelopes"]
+    )
 
 
 def test_composite_analysis_pipeline_returns_final_report_quality_gate_metadata(tmp_path: Path) -> None:
@@ -1548,6 +958,11 @@ def test_composite_analysis_pipeline_synthesizes_from_coordinator_after_post_gat
     assert "fallback_synthesis_agent" in composite_outputs["agents"]
     assert "fact_review_agent" in composite_outputs["agents"]
     fallback = composite_outputs["agents"]["fallback_synthesis_agent"]
+    projection = composite_outputs["agents"]["report_observation_projection"]
+    assert projection.module == "report_observation_projection"
+    assert projection.summary.startswith("Observe and wait.")
+    assert projection is not fallback
+    assert not fallback.summary.startswith("Observe and wait.")
     assert fallback.input_payload["fallback_of"]["agent_name"] == "coordinator_agent"
     assert summaries["final_report"]["pre_coordinator_quality_gate_decision"]["action"] == "fallback"
     assert summaries["final_report"]["post_coordinator_quality_gate_decision"]["action"] == "fallback"
@@ -1556,7 +971,10 @@ def test_composite_analysis_pipeline_synthesizes_from_coordinator_after_post_gat
     assert summaries["final_report"]["publish_allowed"] is False
     assert composite_outputs["strategy_card"].bias.value == "neutral"
     assert "No strong conclusion" in composite_outputs["strategy_card"].scenario_summary
-    assert composite_outputs["observe_outputs"]["final_report_paths"] == summaries["final_report"]["paths"]
+    assert (
+        composite_outputs["observe_outputs"]["final_report_paths"]
+        == summaries["final_report"]["paths"]
+    )
     assert composite_outputs["gold_runtime_summary"]["accepted_outputs"] == {}
 
 
@@ -1615,10 +1033,9 @@ def test_composite_analysis_pipeline_post_gate_can_reject_coordinator_after_pre_
     assert summaries["final_report"]["quality_gate_decision"]["action"] == "block_publish"
     assert summaries["final_report"]["publish_allowed"] is False
     assert composite_outputs["agent_loop_decision"].accepted_output.source == "none"
-    assert (
-        composite_outputs["agents"]["fallback_synthesis_agent"].input_payload["fallback_of"]["agent_name"]
-        == "coordinator_agent"
-    )
+    assert composite_outputs["agents"]["fallback_synthesis_agent"].input_payload["fallback_of"][
+        "agent_name"
+    ] == "coordinator_agent"
 
 
 def test_composite_analysis_pipeline_executes_cme_options_reparse_when_gate_requires_reparse(
@@ -2062,6 +1479,9 @@ def test_run_premarket_with_composite_analysis_writes_all_artifacts(tmp_path: Pa
     assert report_path.exists(), f"Missing: {report_path}"
     report = report_path.read_text(encoding="utf-8")
     assert "# XAUUSD 相关报告" in report
+    research_report = json.loads(report_path.with_name("structured_report.json").read_text())
+    assert research_report["version"]["report_version"] == "1.0.0"
+    assert len(research_report["sections"]) == 11
 
     # Strategy card may use build_strategy_card's extracted/fallback date.
     sc_json_candidates = list(base.glob(f"strategy_card/XAUUSD/*/{run_id}/strategy_card.json"))
@@ -2278,6 +1698,60 @@ def test_report_registry_sink_refuses_observation_outputs() -> None:
         composite_outputs={"agent_loop_decision": ObservationDecision()},
         analysis_snapshot={"snapshot_id": "observe-snapshot"},
     )
+
+
+def test_v4_composite_keeps_diagnostic_when_model_generation_is_unavailable(tmp_path: Path):
+    from copy import deepcopy
+    from apps.features.research.daily import build_daily_research_features
+    from apps.features.research.workflow import build_gold_workflow
+    from apps.features.research.production_shadow import apply_production_shadow_features
+    from apps.features.research.state import build_state_proposal
+    from apps.worker.composite_analysis_pipeline import run_composite_analysis_pipeline
+
+    snapshot = _make_rich_snapshot()
+    snapshot['daily_research'] = build_daily_research_features(snapshot)
+    flow = apply_production_shadow_features(snapshot, build_gold_workflow(snapshot))
+    flow['reader_report_version'] = 'gold_reader.v4'
+    flow['state_record'] = build_state_proposal(snapshot, flow)
+    snapshot['gold_workflow'] = flow
+    before = deepcopy(snapshot)
+    _, outputs = run_composite_analysis_pipeline(storage_root=tmp_path,
+        snapshot=snapshot, run_id=snapshot['run_id'], created_at=_CREATED_AT)
+    assert outputs["report_result"] is None
+    assert outputs["card_result"] is None
+    diagnostic = json.loads(Path(outputs["diagnostic_result"]["paths"][0]).read_text())
+    assert diagnostic["status"] == "blocked"
+    assert diagnostic["snapshot_id"] == snapshot["snapshot_id"]
+    assert diagnostic["run_id"] == snapshot["run_id"]
+    assert not list((tmp_path / "outputs").rglob("final_report.md"))
+    assert snapshot == before
+
+
+def test_report_registry_sink_rejects_failed_research_even_with_existing_file(tmp_path: Path):
+    from types import SimpleNamespace
+    from apps.worker.report_registry_sink import register_composite_report_registry_entries
+    from database.models.analysis import ensure_analysis_tables
+
+    db = _make_db_session(tmp_path)
+    ensure_analysis_tables(db)
+    ensure_report_tables(db)
+    report = tmp_path / "final_report.md"
+    report.write_text("# Research observation\n")
+    structured = tmp_path / "structured_report.json"
+    structured.write_text('{"sections": []}')
+    snapshot = {"snapshot_id": "research-input", "trade_date": _TRADE_DATE,
+                "source_refs": [{"source": "fred", "raw_path": "raw/source.json"}],
+                "input_snapshot_ids": {"macro": "macro-input"},
+                "daily_research": {"schema_version": "daily_research.v1"}}
+    register_composite_report_registry_entries(
+        db, run_id="research-run", analysis_snapshot=snapshot,
+        composite_outputs={"agent_loop_decision": SimpleNamespace(publish_allowed=False, review_status="blocked"),
+                           "report_result": {"paths": [str(report), str(structured)]}},
+    )
+    rows = db.query(ReportItem).all()
+    assert rows == []
+    assert db.query(ReportArtifact).all() == []
+    assert report.read_text() == "# Research observation\n"
 
 
 def test_run_premarket_blocks_composite_analysis_when_pre_analysis_gate_blocks(tmp_path: Path) -> None:

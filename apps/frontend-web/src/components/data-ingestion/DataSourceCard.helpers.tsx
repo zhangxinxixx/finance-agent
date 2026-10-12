@@ -38,7 +38,7 @@ export function roleLabel(role: string) {
     case "derived":
       return "衍生数据";
     default:
-      return role;
+      return "来源角色尚未说明";
   }
 }
 

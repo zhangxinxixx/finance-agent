@@ -146,8 +146,12 @@ export interface ApiReviewsResponse {
 export interface TaskLogViewModel {
   task_id: string;
   step_id?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
   lines: string[];
   status: DataStatus;
+  /** The complete source step stays available through the evidence action, not the reading layer. */
+  source_record?: ApiTaskStepResponse;
 }
 
 export interface TaskRunEventViewModel {
@@ -156,6 +160,8 @@ export interface TaskRunEventViewModel {
   event_type: string;
   task_id?: string | null;
   payload: Record<string, unknown>;
+  /** The complete source event stays available through the evidence action, not the reading layer. */
+  source_record?: ApiTaskRunEventResponse;
 }
 
 export interface TaskStepViewModel {
@@ -176,6 +182,8 @@ export interface TaskStepViewModel {
   artifact_refs: ArtifactRef[];
   input_refs: ArtifactRef[];
   output_refs: ArtifactRef[];
+  /** The complete source step stays available through the evidence action, not the reading layer. */
+  source_record?: ApiTaskStepResponse;
 }
 
 export interface TaskRunSummaryViewModel {

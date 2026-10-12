@@ -17,6 +17,8 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from apps.features.options.bulletin_dates import cme_bulletin_date_eligible
+
 from apps.analysis.gold_policy.schemas import (
     AlignmentStatus,
     FreshnessStatus,
@@ -112,7 +114,7 @@ class CMEOptionsRegimeSnapshotInput(FrozenContract):
     """Hashable formal input before deterministic identity is attached."""
 
     schema_version: Literal["cme_options_regime.v1"] = "cme_options_regime.v1"
-    policy_version: Literal["cme_options_regime_policy.v1"] = "cme_options_regime_policy.v1"
+    policy_version: Literal["cme_options_regime_policy.v1", "cme_options_regime_policy.v2"] = "cme_options_regime_policy.v1"
     source_snapshot_id: str = Field(pattern=r"^feature_snapshot\.v[12]:[0-9a-f]{64}$")
     options_snapshot_id: str | None = None
     trade_date: date | None
@@ -228,6 +230,7 @@ def build_cme_options_regime_snapshot(
     *,
     source_snapshot_id: str | None = None,
     as_of: datetime | None = None,
+    allow_previous_session: bool = False,
 ) -> CMEOptionsRegimeSnapshot:
     """Build a deterministic formal snapshot without I/O or input mutation.
 
@@ -253,6 +256,7 @@ def build_cme_options_regime_snapshot(
             options_analysis,
             source_snapshot_id=source_snapshot_id,
             as_of=as_of,
+            allow_previous_session=allow_previous_session,
         )
     normalized = value.model_copy(
         update={
@@ -278,6 +282,7 @@ def adapt_options_analysis_to_cme_options_regime(
     *,
     source_snapshot_id: str,
     as_of: datetime,
+    allow_previous_session: bool = False,
 ) -> CMEOptionsRegimeSnapshot:
     """Explicit adapter alias for callers crossing the legacy-output boundary."""
 
@@ -285,11 +290,13 @@ def adapt_options_analysis_to_cme_options_regime(
         options_analysis,
         source_snapshot_id=source_snapshot_id,
         as_of=as_of,
+        allow_previous_session=allow_previous_session,
     )
 
 
 def _adapt_options_analysis(
-    payload: Mapping[str, Any], *, source_snapshot_id: str, as_of: datetime
+    payload: Mapping[str, Any], *, source_snapshot_id: str, as_of: datetime,
+    allow_previous_session: bool = False,
 ) -> CMEOptionsRegimeSnapshotInput:
     normalized_as_of = _aware_utc(as_of)
     reasons: set[str] = set()
@@ -400,7 +407,7 @@ def _adapt_options_analysis(
     if quality_degraded:
         reasons.add("OPTIONS_QUALITY_DEGRADED")
 
-    freshness = _freshness(trade_date, normalized_as_of)
+    freshness = _freshness(trade_date, normalized_as_of, allow_previous_session=allow_previous_session)
     if freshness != "fresh":
         reasons.add("CME_DATA_NOT_FRESH")
 
@@ -475,6 +482,7 @@ def _adapt_options_analysis(
         reasons.add("FINAL_TWO_SIDED_OPTIONS_STRUCTURE_ACCEPTED")
 
     return CMEOptionsRegimeSnapshotInput(
+        policy_version="cme_options_regime_policy.v2" if allow_previous_session else "cme_options_regime_policy.v1",
         source_snapshot_id=source_snapshot_id,
         options_snapshot_id=options_snapshot_id,
         trade_date=trade_date,
@@ -741,9 +749,11 @@ def _regime(
     return CMEOptionsRegime.NORMAL
 
 
-def _freshness(trade_date: date | None, as_of: datetime) -> FreshnessStatus:
+def _freshness(trade_date: date | None, as_of: datetime, *, allow_previous_session: bool = False) -> FreshnessStatus:
     if trade_date is None or trade_date > as_of.date():
         return "missing"
+    if allow_previous_session:
+        return "fresh" if cme_bulletin_date_eligible(trade_date, as_of.date()) else "stale"
     return "fresh" if trade_date == as_of.date() else "stale"
 
 

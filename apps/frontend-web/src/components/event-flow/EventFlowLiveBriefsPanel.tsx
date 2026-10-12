@@ -1,3 +1,6 @@
+import { readerValue } from "@/lib/readerLabels";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { ResearchDetails } from "@/components/shared/ResearchDetails";
 import { ExternalLink } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
@@ -45,7 +48,7 @@ function relatedNewsKey(item: EventFlowRelatedNewsItem): string {
 }
 
 function isJinshiRelatedNews(item: EventFlowRelatedNewsItem): boolean {
-  const text = [item.source, item.source_label, item.source_ref, item.url, item.domain, item.raw_path, item.parsed_path].join(" ").toLowerCase();
+  const text = [item.source, item.source_label, item.source_ref, item.url, item.domain].join(" ").toLowerCase();
   return text.includes("jin10") || text.includes("xnews.jin10.com") || text.includes("flash.jin10.com") || text.includes("金十");
 }
 
@@ -77,24 +80,22 @@ function collectRelatedNewsItems(timeline: EventFlowTimelineItem[] | undefined, 
 
 function RelatedNewsCard({ item }: { item: EventFlowRelatedNewsItem }) {
   const headline = formatEventFlowHeadlineSummary(item.title, 58);
-  const meta = [item.source_label || item.source, item.published_at ? formatDateTime(item.published_at) : null, item.domain].filter(Boolean);
   const summary = (item.summary ?? "").trim();
 
   const content = (
     <>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-[var(--fg-5)]">
-          <FAStatusPill tone="info">{item.source_label || item.source || "新闻源"}</FAStatusPill>
+          <FAStatusPill tone="info">{formatEventFlowSourceLabel(item.source_label || item.source).text}</FAStatusPill>
           {item.importance ? <FAStatusPill tone={priorityTone(item.importance)}>{priorityLabel(item.importance)}</FAStatusPill> : null}
           {item.published_at ? <span>{formatDateTime(item.published_at)}</span> : null}
-          {item.domain ? <span>{item.domain}</span> : null}
         </div>
         <div className="mt-2 space-y-1">
-          <div className="text-[12px] font-semibold leading-5 text-[var(--fg-1)]" title={headline.raw}>
+          <div className="text-[12px] font-semibold leading-5 text-[var(--fg-1)]" >
             {headline.lead}
           </div>
           {headline.subline ? <div className="line-clamp-1 text-[11px] leading-5 text-[var(--fg-4)]">{headline.subline}</div> : null}
-          {summary ? <div className="line-clamp-2 text-[11px] leading-5 text-[var(--fg-3)]">{summary}</div> : null}
+          {summary ? <div className="text-[11px] leading-5 text-[var(--fg-3)]">{readerValue(summary, "中文摘要尚未提供，请核对原文依据。")}</div> : null}
         </div>
         {item.source_ref ? (
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -112,11 +113,11 @@ function RelatedNewsCard({ item }: { item: EventFlowRelatedNewsItem }) {
   );
 
   return item.url ? (
-    <a href={item.url} target="_blank" rel="noreferrer" className="flex items-start justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3 transition-colors hover:bg-[var(--bg-hover)]" title={meta.join(" · ")}>
+    <a href={item.url} target="_blank" rel="noreferrer" className="flex items-start justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3 transition-colors hover:bg-[var(--bg-hover)]" title="查看相关新闻原文">
       {content}
     </a>
   ) : (
-    <article className="flex items-start justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3" title={meta.join(" · ")}>
+    <article className="flex items-start justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
       {content}
     </article>
   );
@@ -125,7 +126,7 @@ function RelatedNewsCard({ item }: { item: EventFlowRelatedNewsItem }) {
 function ProgressTriggerCard({ item }: { item: EventFlowProgressTriggerBundle["triggers"][number] }) {
   const headline = formatEventFlowHeadlineSummary(item.source_title, 58);
   const summary = item.evidence_text?.trim() && item.evidence_text.trim() !== item.source_title.trim() ? item.evidence_text.trim() : "";
-  const meta = [item.published_at ? formatDateTime(item.published_at) : item.created_at ? formatDateTime(item.created_at) : null, item.source_domain].filter(Boolean);
+  const meta = [item.published_at ? formatDateTime(item.published_at) : item.created_at ? formatDateTime(item.created_at) : null, item.source_domain ? formatEventFlowSourceLabel(item.source_domain).text : null].filter(Boolean);
 
   const content = (
     <>
@@ -138,11 +139,11 @@ function ProgressTriggerCard({ item }: { item: EventFlowProgressTriggerBundle["t
           ))}
         </div>
         <div className="mt-2 space-y-1">
-          <div className="text-[12px] font-semibold leading-5 text-[var(--fg-1)]" title={headline.raw}>
+          <div className="text-[12px] font-semibold leading-5 text-[var(--fg-1)]" >
             {headline.lead}
           </div>
           {headline.subline ? <div className="line-clamp-1 text-[11px] leading-5 text-[var(--fg-4)]">{headline.subline}</div> : null}
-          {summary ? <div className="line-clamp-2 text-[11px] leading-5 text-[var(--fg-3)]">{summary}</div> : null}
+          {summary ? <div className="text-[11px] leading-5 text-[var(--fg-3)]">{readerValue(summary, "中文说明尚未提供，请核对快讯依据。")}</div> : null}
         </div>
         <div className="mt-3 flex flex-wrap gap-1.5">
           {item.source_url ? <FASourceTraceBadge source={`来源 ${formatEventFlowSourceLabel(item.source_url, 18).text}`} status="source_url" tone="info" /> : null}
@@ -189,20 +190,6 @@ function webFlashStatusLabel(value: string | null | undefined): string {
   return normalized;
 }
 
-function webFlashStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-}
-
-function webFlashNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-  return 0;
-}
-
 function webFlashFormatLabel(value: unknown): string | null {
   const normalized = String(value ?? "").trim();
   if (!normalized) return null;
@@ -215,13 +202,8 @@ function WebFlashBriefCard({ brief }: { brief: Jin10WebFlashBrief }) {
   const headline = formatEventFlowHeadlineSummary(brief.headline, 58);
   const summary = (brief.summary ?? "").trim();
   const tags = Array.isArray(brief.tags) ? brief.tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0) : [];
-  const imageUrls = webFlashStringArray(brief.data_quality?.image_urls);
-  const linkedUrls = webFlashStringArray(brief.data_quality?.linked_urls);
-  const imageCount = Math.max(webFlashNumber(brief.data_quality?.image_count), imageUrls.length);
-  const linkedUrlCount = Math.max(webFlashNumber(brief.data_quality?.linked_url_count), linkedUrls.length);
   const contentFormatLabel = webFlashFormatLabel(brief.data_quality?.content_format);
-  const previewImageUrl = imageUrls[0] ?? null;
-  const directUrl = brief.url || linkedUrls[0] || null;
+  const directUrl = brief.url || null;
 
   const content = (
     <>
@@ -235,7 +217,7 @@ function WebFlashBriefCard({ brief }: { brief: Jin10WebFlashBrief }) {
           {brief.published_at ? <span>{formatDateTime(brief.published_at)}</span> : null}
         </div>
         <div className="mt-2 space-y-1">
-          <div className="text-[12px] font-semibold leading-5 text-[var(--fg-1)]" title={headline.raw}>
+          <div className="text-[12px] font-semibold leading-5 text-[var(--fg-1)]" >
             {headline.lead}
           </div>
           {headline.subline ? <div className="line-clamp-1 text-[11px] leading-5 text-[var(--fg-4)]">{headline.subline}</div> : null}
@@ -250,17 +232,9 @@ function WebFlashBriefCard({ brief }: { brief: Jin10WebFlashBrief }) {
             ))}
           </div>
         ) : null}
-        {(imageCount > 0 || linkedUrlCount > 0) ? (
-          <div className="mt-2 flex flex-wrap gap-1.5 text-[9px] text-[var(--fg-5)]">
-            {imageCount > 0 ? <span className="rounded-[var(--radius-xs)] border border-[var(--border-faint)] px-1.5 py-0.5">图片 {imageCount}</span> : null}
-            {linkedUrlCount > 0 ? <span className="rounded-[var(--radius-xs)] border border-[var(--border-faint)] px-1.5 py-0.5">链接 {linkedUrlCount}</span> : null}
-          </div>
-        ) : null}
       </div>
 
-      {previewImageUrl ? (
-        <img src={previewImageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" className="h-16 w-20 shrink-0 rounded-[var(--radius-sm)] border border-[var(--border-faint)] object-cover" />
-      ) : directUrl ? (
+      {directUrl ? (
         <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border)] text-[var(--fg-4)]">
           <ExternalLink size={13} />
         </span>
@@ -281,34 +255,36 @@ function WebFlashBriefCard({ brief }: { brief: Jin10WebFlashBrief }) {
 
 function Jin10WebFlashBriefsSection() {
   const { data, isLoading, error } = useJin10WebFlashBriefs();
-  const totalBriefCount = data?.brief_count ?? data?.briefs?.length ?? 0;
+  const totalBriefCount = data?.brief_count ?? data?.briefs?.length ?? null;
   const briefs = (data?.briefs ?? []).slice(0, 6);
   const updatedAt = data?.as_of || data?.retrieved_date || null;
   const hasVipPreview = briefs.some((brief) => String(brief.access_status ?? "").toLowerCase().includes("vip"));
 
   return (
     <FACard
-      title="金十 Web 重点/VIP"
+      title="金十重点与会员快讯"
       eyebrow="补充快讯"
       accent="info"
       className="event-flow-live-card"
-      action={<FAStatusPill tone={totalBriefCount > 0 ? "info" : "dim"}>{isLoading ? "加载中" : `${totalBriefCount} 条`}</FAStatusPill>}
+      action={<FAStatusPill tone={totalBriefCount !== null && totalBriefCount > 0 ? "info" : "dim"}>{isLoading ? "加载中" : error ? "读取失败" : totalBriefCount === null ? "未提供条数" : `${totalBriefCount} 条`}</FAStatusPill>}
       bodyClassName="space-y-2"
     >
       <div className="flex flex-wrap items-center gap-2 text-[10px] text-[var(--fg-5)]">
         <span>日期：{data?.date ?? "未返回"}</span>
         <span>更新：{updatedAt ? formatDateTime(updatedAt) : "未返回"}</span>
-        {data?.run_id ? <span>Run：{data.run_id}</span> : null}
-        {totalBriefCount > briefs.length ? <span>预览：{briefs.length} 条{hasVipPreview ? "（含 VIP）" : ""}</span> : null}
-        {data?.artifact_path ? <span className="font-mono">Artifact：{data.artifact_path}</span> : null}
+        {data ? <ResearchDetails label="查看快讯状态摘要"><EvidenceRecordActions record={data} label="快讯状态摘要" /></ResearchDetails> : null}
+        {totalBriefCount !== null && totalBriefCount > briefs.length ? <span>预览：{briefs.length} 条{hasVipPreview ? "（含会员内容）" : ""}</span> : null}
       </div>
 
       {isLoading ? (
-        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3 text-[11px] text-[var(--fg-5)]">正在加载金十 Web 重点/VIP 快讯...</div>
+        <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3 text-[11px] text-[var(--fg-5)]">正在加载金十重点与会员快讯 快讯...</div>
       ) : error ? (
-        <div className="rounded-[var(--radius-md)] border border-[var(--down-border)] bg-[var(--down-soft)] p-3 text-[11px] text-[var(--down)]">{error || "金十 Web 快讯加载失败"}</div>
+        <div className="rounded-[var(--radius-md)] border border-[var(--down-border)] bg-[var(--down-soft)] p-3 text-[11px] text-[var(--down)]">
+          金十快讯读取失败，请稍后重试；当前缺少此来源的快讯依据。
+          <ResearchDetails label="查看读取失败记录"><EvidenceRecordActions record={{ error }} label="快讯读取失败记录" /></ResearchDetails>
+        </div>
       ) : briefs.length === 0 ? (
-        <FAEmptyState title="暂无金十 Web 重点/VIP 快讯" description="后端尚未生成 jin10_web_flash_briefs.json，或最新 artifact 为空。" />
+        <FAEmptyState title="暂无金十重点与会员快讯 快讯" description="当前尚无已归档的重点快讯。" />
       ) : (
         <div className="space-y-2">
           {briefs.map((brief) => (
@@ -372,6 +348,8 @@ export function EventFlowLiveBriefsPanel({ progressBundle, timeline }: EventFlow
           </div>
         )}
       </FACard>
+
+      {progressBundle || relatedNewsItems.length > 0 ? <ResearchDetails label="查看全部相关新闻记录"><EvidenceRecordActions record={{ progress_bundle: progressBundle, related_news: relatedNewsItems }} label="完整相关新闻依据" /></ResearchDetails> : null}
 
       <Jin10WebFlashBriefsSection />
     </div>

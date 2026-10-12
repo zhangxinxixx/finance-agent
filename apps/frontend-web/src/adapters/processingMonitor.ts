@@ -1,6 +1,5 @@
-import { ApiError, fetchJson } from "@/adapters/apiClient";
+import { fetchJson } from "@/adapters/apiClient";
 import type {
-  ArtifactSourceTraceLookup,
   ArtifactSourceTraceResponse,
   ProcessingInputCoverage,
   KnownProcessingCoverageStatus,
@@ -475,41 +474,29 @@ export function normalizeProcessingTrace(raw: unknown): ProcessingTraceResponse 
 }
 
 export async function fetchProcessingOverview(): Promise<ProcessingOverviewResponse> {
-  return normalizeProcessingOverview(await fetchJson<unknown>(OVERVIEW_PATH));
+  return normalizeProcessingOverview(await fetchJson<unknown>(`${OVERVIEW_PATH}?view=ads`));
 }
 
 export async function fetchProcessingTrace(traceId: string): Promise<ProcessingTraceResponse> {
-  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace/${encodeURIComponent(traceId)}`));
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace/${encodeURIComponent(traceId)}?view=ads`));
 }
 
 export async function fetchProcessingTraceByEvent(eventId: string): Promise<ProcessingTraceResponse> {
-  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-event/${encodeURIComponent(eventId)}`));
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-event/${encodeURIComponent(eventId)}?view=ads`));
 }
 
 export async function fetchProcessingTraceBySourceRef(sourceRef: string): Promise<ProcessingTraceResponse> {
-  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-source-ref/${encodeURIComponent(sourceRef)}`));
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-source-ref/${encodeURIComponent(sourceRef)}?view=ads`));
 }
 
 export async function fetchProcessingTraceByInput(inputId: string): Promise<ProcessingTraceResponse> {
-  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-input/${encodeURIComponent(inputId)}`));
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-input/${encodeURIComponent(inputId)}?view=ads`));
 }
 
 export async function fetchProcessingTraceByMainline(mainline: string): Promise<ProcessingTraceResponse> {
-  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-mainline/${encodeURIComponent(mainline)}`));
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-mainline/${encodeURIComponent(mainline)}?view=ads`));
 }
 
 export async function fetchProcessingTraceByChain(chainId: string): Promise<ProcessingTraceResponse> {
-  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-chain/${encodeURIComponent(chainId)}`));
-}
-
-export async function fetchArtifactSourceTrace(artifactId: string): Promise<ArtifactSourceTraceLookup> {
-  try {
-    const raw = await fetchJson<unknown>(`/api/source-trace/by-artifact/${encodeURIComponent(artifactId)}`);
-    return { status: "matched", trace: normalizeArtifactSourceTrace(raw) };
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) {
-      return { status: "not_found", trace: null };
-    }
-    throw error;
-  }
+  return normalizeProcessingTrace(await fetchJson<unknown>(`/api/processing/trace-by-chain/${encodeURIComponent(chainId)}?view=ads`));
 }

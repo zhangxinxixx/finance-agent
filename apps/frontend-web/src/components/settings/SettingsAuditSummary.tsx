@@ -24,8 +24,8 @@ export function SettingsAuditSummary({
 }) {
   return (
     <FACard
-      title="Settings 审计页"
-      eyebrow="Audit Center"
+      title="设置审计页"
+      eyebrow="变更审计"
       accent="warn"
       action={
         <Link
@@ -41,7 +41,7 @@ export function SettingsAuditSummary({
       <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-4">
         <MetricCard label="总事件数" value={String(entriesCount)} mono />
         <MetricCard label="可回滚" value={String(rollbackableCount)} mono />
-        <MetricCard label="选中事件" value={selectedAuditId ?? "无"} />
+        <MetricCard label="选中事件" value={selectedAuditId ? "已选择" : "无"} />
         <MetricCard label="范围" value={scopeLabel} />
       </div>
     </FACard>

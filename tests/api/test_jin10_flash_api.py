@@ -1,71 +1,47 @@
 from __future__ import annotations
 
 import json
-import os
-import time
+
+import pytest
 
 from apps.api import main
-from apps.api.services import jin10_market_service
+from apps.api.routes import jin10_market_routes
 
 
-def test_jin10_flash_api_refreshes_stale_cache(monkeypatch, tmp_path):
-    cache_path = tmp_path / "flash_cache.json"
-    cache_path.write_text(
-        json.dumps(
-            {
-                "generated_at": "2026-06-13T01:48:21+00:00",
-                "items": [{"id": "old", "time": "2026-06-13T09:33:22+08:00", "content": "old headline"}],
-            }
-        ),
-        encoding="utf-8",
+def test_jin10_flash_api_reports_disabled_without_refresh(monkeypatch):
+    monkeypatch.setattr(jin10_market_routes, "jin10_disabled", lambda: True)
+    monkeypatch.setattr(jin10_market_routes, "get_jin10_web_flash_briefs_latest", lambda: pytest.fail("disabled"))
+    monkeypatch.setattr(
+        "apps.scheduler.jin10_refresh.refresh_jin10_flash_cache",
+        lambda: pytest.fail("disabled read must not refresh raw cache"),
     )
-    old_mtime = time.time() - 3600
-    os.utime(cache_path, (old_mtime, old_mtime))
-
-    monkeypatch.setattr(jin10_market_service, "JIN10_FLASH_CACHE_PATH", cache_path)
-    monkeypatch.setattr(jin10_market_service, "JIN10_FLASH_CACHE_MAX_AGE_SECONDS", 60)
-
-    def refresh() -> None:
-        cache_path.write_text(
-            json.dumps(
-                {
-                    "generated_at": "2026-06-13T11:50:23+00:00",
-                    "items": [{"id": "new", "time": "2026-06-13T19:38:55+08:00", "content": "new headline", "summary_zh": "新快讯摘要。"}],
-                }
-            ),
-            encoding="utf-8",
-        )
-
-    monkeypatch.setattr("apps.scheduler.jin10_refresh.refresh_jin10_flash_cache", refresh)
-
     result = main.api_jin10_flash()
+    assert result["status"] == "disabled"
+    assert result["items"] == []
+    assert "FINANCE_AGENT_DISABLE_JIN10" in result["reason"]
 
-    assert result["generated_at"] == "2026-06-13T11:50:23+00:00"
-    assert result["items"][0]["id"] == "new"
-    assert result["items"][0]["summary_zh"] == "新快讯摘要。"
 
-
-def test_jin10_flash_api_keeps_fresh_cache(monkeypatch, tmp_path):
-    cache_path = tmp_path / "flash_cache.json"
-    cache_path.write_text(
-        json.dumps(
-            {
-                "generated_at": "2026-06-13T11:50:23+00:00",
-                "items": [{"id": "fresh", "time": "2026-06-13T19:38:55+08:00", "content": "fresh headline"}],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(jin10_market_service, "JIN10_FLASH_CACHE_PATH", cache_path)
-    monkeypatch.setattr(jin10_market_service, "JIN10_FLASH_CACHE_MAX_AGE_SECONDS", 60)
-
-    def refresh() -> None:
-        raise AssertionError("fresh cache should not refresh")
-
-    monkeypatch.setattr("apps.scheduler.jin10_refresh.refresh_jin10_flash_cache", refresh)
-
+def test_jin10_flash_api_uses_dws_brief_and_preserves_eligibility(monkeypatch):
+    monkeypatch.setattr(jin10_market_routes, "jin10_disabled", lambda: False)
+    monkeypatch.setattr("apps.scheduler.jin10_refresh.refresh_jin10_flash_cache", lambda: pytest.fail("page collection"))
+    brief = {"brief_id": "new", "summary_zh": "新快讯摘要。", "verification_status": "unverified", "actionable": False}
+    monkeypatch.setattr(jin10_market_routes, "get_jin10_web_flash_briefs_latest", lambda: {
+        "status": "partial", "as_of": "2026-06-13T11:50:23+00:00", "briefs": [brief], "brief_count": 1,
+    })
     result = main.api_jin10_flash()
+    assert result["as_of"] == "2026-06-13T11:50:23+00:00"
+    assert result["status"] == "partial"
+    assert result["items"] == [brief]
 
-    assert result["generated_at"] == "2026-06-13T11:50:23+00:00"
-    assert result["items"][0]["id"] == "fresh"
+
+def test_jin10_flash_api_does_not_fall_back_to_fresh_raw_cache(monkeypatch, tmp_path):
+    cache = tmp_path / "storage" / "outputs" / "jin10" / "flash_cache.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"items": [{"content": "unprocessed source"}]}))
+    monkeypatch.setattr(jin10_market_routes, "jin10_disabled", lambda: False)
+    monkeypatch.setattr(jin10_market_routes, "get_jin10_web_flash_briefs_latest", lambda: None)
+    monkeypatch.setattr("apps.scheduler.jin10_refresh.refresh_jin10_flash_cache", lambda: pytest.fail("page collection"))
+    result = main.api_jin10_flash()
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "dws_flash_unavailable"
+    assert result["items"] == []

@@ -88,6 +88,108 @@ def _seed_report(session: Session) -> None:
     session.commit()
 
 
+def _seed_final_report_markdown(session: Session, *, artifact_types: tuple[str, ...]) -> None:
+    from database.models.report import ensure_report_tables
+    from database.queries.report import upsert_report_artifact, upsert_report_item
+
+    ensure_report_tables(session)
+    report_id = "report-final-markdown-001"
+    upsert_report_item(
+        session,
+        {
+            "report_id": report_id,
+            "family": "final_report_markdown",
+            "report_type": "final_report",
+            "title": "XAUUSD 综合报告",
+            "asset": "XAUUSD",
+            "trade_date": "2026-05-26",
+            "run_id": report_id,
+            "snapshot_id": "snap-final-markdown-001",
+            "data_status": "live",
+            "lifecycle_status": "generated",
+            "source_refs": [
+                {
+                    "source_id": "src-final-markdown-001",
+                    "source_name": "Composite Report",
+                    "source_type": "report",
+                    "status": "available",
+                }
+            ],
+            "metadata": {"writer": "run_premarket"},
+        },
+    )
+    artifact_specs = {
+        "analysis_md": ("final_report.md", "text/markdown", True),
+        "structured_json": ("structured_report.json", "application/json", False),
+    }
+    for index, artifact_type in enumerate(artifact_types):
+        filename, content_type, is_primary = artifact_specs[artifact_type]
+        upsert_report_artifact(
+            session,
+            {
+                "artifact_id": f"{report_id}:{index}",
+                "report_id": report_id,
+                "artifact_type": artifact_type,
+                "file_path": f"storage/outputs/final_report/XAUUSD/2026-05-26/{report_id}/{filename}",
+                "version": "1",
+                "status": "generated",
+                "content_type": content_type,
+                "is_primary": is_primary,
+            },
+        )
+    session.commit()
+
+
+def _seed_observation_report(session: Session) -> None:
+    from database.models.report import ensure_report_tables
+    from database.queries.report import upsert_report_artifact, upsert_report_item
+
+    ensure_report_tables(session)
+    report_id = "observation_report:run-observation-001"
+    upsert_report_item(
+        session,
+        {
+            "report_id": report_id,
+            "family": "observation_report_markdown",
+            "report_type": "observation_report",
+            "title": "XAUUSD 综合研究报告（仅供观察）",
+            "asset": "XAUUSD",
+            "trade_date": "2026-09-08",
+            "run_id": "run-observation-001",
+            "snapshot_id": "snapshot-observation-001",
+            "data_status": "partial",
+            "lifecycle_status": "generated",
+            "source_refs": [],
+            "metadata": {
+                "input_snapshot_ids": {"coordinator": "snapshot-observation-001"},
+                "publish_allowed": False,
+                "output_mode": "observe",
+                "review_status": "blocked",
+            },
+        },
+    )
+    for index, (artifact_type, filename, content_type) in enumerate(
+        (
+            ("analysis_md", "final_report.md", "text/markdown"),
+            ("structured_json", "structured_report.json", "application/json"),
+        )
+    ):
+        upsert_report_artifact(
+            session,
+            {
+                "artifact_id": f"{report_id}:{index}",
+                "report_id": report_id,
+                "artifact_type": artifact_type,
+                "file_path": f"storage/outputs/observation_report/XAUUSD/2026-09-08/run-observation-001/{filename}",
+                "version": "1",
+                "status": "generated",
+                "content_type": content_type,
+                "is_primary": index == 0,
+            },
+        )
+    session.commit()
+
+
 def _seed_legacy_final(session: Session) -> None:
     from database.queries.analysis import upsert_final_analysis_result
 
@@ -168,7 +270,7 @@ def test_report_detail_returns_standard_four_artifacts(tmp_path: Path, monkeypat
             "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_detail("report-std-001", db=db).model_dump(mode="json")
@@ -181,6 +283,119 @@ def test_report_detail_returns_standard_four_artifacts(tmp_path: Path, monkeypat
         "visual_html",
         "structured_json",
     }
+
+
+def test_report_detail_final_report_markdown_accepts_markdown_and_structured_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_final_report_markdown(session, artifact_types=("analysis_md", "structured_json"))
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/final_report/XAUUSD/2026-05-26/report-final-markdown-001/final_report.md": "# Final\n",
+            "storage/outputs/final_report/XAUUSD/2026-05-26/report-final-markdown-001/structured_report.json": json.dumps(
+                {"summary": "ready"}
+            ),
+        },
+    )
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_report_detail("report-final-markdown-001", db=db).model_dump(mode="json")
+
+    assert payload["family"] == "final_report_markdown"
+    assert payload["data_status"] == "partial"
+    assert not any(item["code"] == "report-artifacts-partial" for item in payload["warnings"])
+    assert payload["structured_payload"] == {"summary": "ready"}
+
+
+@pytest.mark.parametrize("artifact_types", [("analysis_md",), ("structured_json",)])
+def test_report_detail_final_report_markdown_missing_required_artifact_is_partial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_types: tuple[str, ...],
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_final_report_markdown(session, artifact_types=artifact_types)
+
+    files = {}
+    if "analysis_md" in artifact_types:
+        files["storage/outputs/final_report/XAUUSD/2026-05-26/report-final-markdown-001/final_report.md"] = "# Final\n"
+    if "structured_json" in artifact_types:
+        files[
+            "storage/outputs/final_report/XAUUSD/2026-05-26/report-final-markdown-001/structured_report.json"
+        ] = json.dumps({"summary": "partial"})
+    _make_tree(tmp_path, files)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_report_detail("report-final-markdown-001", db=db).model_dump(mode="json")
+
+    assert payload["data_status"] == "partial"
+    assert any(item["code"] == "report-artifacts-partial" for item in payload["warnings"])
+
+
+def test_report_detail_observation_report_is_readable_but_non_authoritative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.api import main as api_main
+    from apps.api.services import report_service
+
+    factory = _make_session_factory()
+    with factory() as session:
+        _seed_observation_report(session)
+
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/observation_report/XAUUSD/2026-09-08/run-observation-001/final_report.md": "# Observe\n",
+            "storage/outputs/observation_report/XAUUSD/2026-09-08/run-observation-001/structured_report.json": json.dumps(
+                {"output_mode": "observe", "summary": "partial"}
+            ),
+            # A same-run legacy macro artifact must not make the bare id
+            # resolve to the wrong report family.
+            "storage/outputs/macro/2026-09-08/run-observation-001/macro_snapshot.md": "# Macro fallback\n",
+        },
+    )
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
+
+    with factory() as db:
+        payload = api_main.api_report_detail("observation_report:run-observation-001", db=db).model_dump(
+            mode="json"
+        )
+
+        with pytest.raises(HTTPException) as final_exc:
+            api_main.api_report_detail("final_report:run-observation-001", db=db)
+        bare_detail = api_main.api_report_detail("run-observation-001", db=db)
+
+    assert payload["report_id"] == "observation_report:run-observation-001"
+    assert payload["family"] == "observation_report_markdown"
+    assert payload["data_status"] == "partial"
+    assert payload["lifecycle_status"] == "needs_review"
+    assert payload["review_status"] == "pending"
+    assert payload["input_snapshot_ids"] == ["snapshot-observation-001"]
+    assert payload["report_identity"] == {
+        "report_type": "observation_report",
+        "family": "observation_report_markdown",
+        "output_mode": "observe",
+        "publish_allowed": False,
+        "review_status": "blocked",
+        "authority": "observation_only",
+    }
+    assert any(item["code"] == "observation-report-non-authoritative" for item in payload["warnings"])
+    assert payload["structured_payload"]["output_mode"] == "observe"
+    assert getattr(final_exc.value, "status_code", None) == 404
+    assert bare_detail.family == "macro_report"
 
 
 def test_report_detail_includes_gold_macro_overview_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -200,9 +415,9 @@ def test_report_detail_includes_gold_macro_overview_context(tmp_path: Path, monk
             "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(
-        report_service,
+        report_service._detail,
         "get_gold_mainlines_latest",
         lambda *, project_root=None: {
             "status": "partial",
@@ -219,10 +434,13 @@ def test_report_detail_includes_gold_macro_overview_context(tmp_path: Path, monk
     with factory() as db:
         payload = api_main.api_report_detail("report-std-001", db=db).model_dump(mode="json")
 
-    assert payload["gold_macro_overview"]["asset"] == "XAUUSD"
-    assert payload["gold_macro_overview"]["dominant_mainline"] == "real_rates_usd"
-    assert payload["gold_macro_overview"]["theme_rankings"][0]["mainline_id"] == "real_rates_usd"
+    assert payload["current_context"]["gold_macro_overview"]["asset"] == "XAUUSD"
+    assert payload["current_context"]["gold_macro_overview"]["dominant_mainline"] == "real_rates_usd"
+    assert payload["current_context"]["gold_macro_overview"]["theme_rankings"][0]["mainline_id"] == "real_rates_usd"
 
+
+    assert payload["gold_macro_overview"] is None
+    assert payload["current_context"]["relationship"] == "current_context_only"
 
 def test_report_subroutes_read_standard_source_and_analysis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from apps.api import main as api_main
@@ -241,7 +459,7 @@ def test_report_subroutes_read_standard_source_and_analysis(tmp_path: Path, monk
             "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": [{"id": "s1"}]}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         source_payload = api_main.api_report_source("report-std-001", db=db)
@@ -271,7 +489,7 @@ def test_artifact_detail_supports_standard_report_artifact(tmp_path: Path, monke
             "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(artifact_service, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
@@ -318,7 +536,7 @@ def test_artifact_detail_warns_when_standard_report_lineage_drifted(tmp_path: Pa
             "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_artifact_detail("report-std-001:source", db=db).model_dump(mode="json")
@@ -350,7 +568,7 @@ def test_report_detail_warns_when_declared_snapshot_drifted(tmp_path: Path, monk
             "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         payload = api_main.api_report_detail("report-std-001", db=db).model_dump(mode="json")
@@ -378,7 +596,7 @@ def test_report_detail_marks_missing_visual_partial_and_visual_route_404(
             "storage/outputs/reports/2026-05-26/report-std-001/report_structured.json": json.dumps({"sections": []}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         detail = api_main.api_report_detail("report-std-001", db=db).model_dump(mode="json")
@@ -414,7 +632,7 @@ def test_report_detail_legacy_final_report_adapter_reads_markdown_and_structured
             "storage/outputs/run/2026-05-26/run-legacy-001/step_summaries.json": json.dumps({"renderer": "done"}),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
 
     with factory() as db:
         detail = api_main.api_report_detail("run-legacy-001", db=db).model_dump(mode="json")
@@ -445,7 +663,7 @@ def test_report_detail_filesystem_final_report_adapter_reads_markdown_without_db
             ),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
     factory = _make_session_factory()
 
     with factory() as db:
@@ -454,7 +672,7 @@ def test_report_detail_filesystem_final_report_adapter_reads_markdown_without_db
 
     assert detail["family"] == "final_report_markdown"
     assert detail["title"] == "XAUUSD 综合报告"
-    assert detail["data_status"] == "live"
+    assert detail["data_status"] == "partial"
     assert analysis_payload["content"].startswith("# XAUUSD 相关报告")
 
 
@@ -471,7 +689,7 @@ def test_report_detail_macro_report_adapter_prefers_macro_full_report(
             "storage/outputs/macro/2026-06-21/run-macro/macro_snapshot.md": "# XAUUSD 宏观数据报告\n\n## 核心宏观指标",
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
     factory = _make_session_factory()
 
     with factory() as db:
@@ -526,7 +744,7 @@ def test_report_detail_macro_event_followup_adapter_uses_trade_date_scoped_repor
             ),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
     factory = _make_session_factory()
 
     with factory() as db:
@@ -592,7 +810,7 @@ def test_report_detail_reads_weekly_context_revision_artifacts(
         analysis_markdown="# analysis\n",
         structured_payload=payload.model_dump(mode="json"),
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
     factory = _make_session_factory()
 
     with factory() as db:
@@ -683,7 +901,7 @@ def test_report_detail_reads_generated_macro_event_followup_artifacts(
         storage_root=tmp_path / "storage",
         run_id="run-generated",
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
     factory = _make_session_factory()
 
     with factory() as db:
@@ -781,6 +999,7 @@ def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: P
                         "report_theme": "黄金日线底部确认",
                         "verification_status": "confirmed",
                     },
+                    "title": "External Weekly",
                     "trade_date": "2026-05-31",
                     "run_id": "220787",
                 }
@@ -788,8 +1007,21 @@ def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: P
             "storage/parsed/jin10/2026-05-31/220787/figures/fig_p1_001.png": "png",
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(report_service, "_JIN10_EXTERNAL_ROOT", tmp_path / "external-jin10")
+    from apps.features.news.report_quality import materialize_jin10_report_quality
+
+    run_dir = tmp_path / "storage/outputs/jin10/2026-05-31/220787"
+    quality_path = materialize_jin10_report_quality(
+        storage_root=tmp_path / "storage", run_dir=run_dir,
+        raw_payload=json.loads((run_dir / "raw_article_report.json").read_text()),
+        agent_payload=json.loads((run_dir / "agent_analysis_report.json").read_text()),
+        daily_payload=json.loads((run_dir / "daily_analysis.json").read_text()),
+    )
+    assert quality_path.is_relative_to(tmp_path / "storage/features")
+    # The page must retain the audit after the source body is no longer readable.
+    (run_dir / "raw_article_report.json").unlink()
+    (run_dir / "raw_article_report.md").unlink()
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._jin10, "_JIN10_EXTERNAL_ROOT", tmp_path / "external-jin10")
     factory = _make_session_factory()
 
     with factory() as db:
@@ -800,10 +1032,7 @@ def test_report_detail_legacy_jin10_weekly_bundle_maps_weekly_family(tmp_path: P
     assert payload["title"] == "External Weekly"
     assert payload["report_identity"]["classification_label"] == "黄金投资者周报"
     assert payload["report_identity"]["report_theme"] == "黄金日线底部确认"
-    assert source_payload is not None
-    assert source_payload["path"] == "storage/outputs/jin10/2026-05-31/220787/raw_article_report.md"
-    assert "# Weekly Source" in source_payload["content"]
-    assert "# Original Weekly Draft" not in source_payload["content"]
+    assert source_payload is None
     assert payload["data_status"] == "partial"
     assert payload["lifecycle_status"] == "needs_review"
     assert any(item["code"] == "jin10-chart-text-needs-review" for item in payload["warnings"])
@@ -875,8 +1104,21 @@ def test_report_detail_jin10_chart_asset_mismatch_requires_agent_loop_review(
             "storage/parsed/jin10/2026-07-05/223608/figures/fig_p2_001.png": "png",
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(report_service, "_JIN10_EXTERNAL_ROOT", tmp_path / "external-jin10")
+    from apps.features.news.report_quality import materialize_jin10_report_quality
+
+    run_dir = tmp_path / "storage/outputs/jin10/2026-07-05/223608"
+    quality_path = materialize_jin10_report_quality(
+        storage_root=tmp_path / "storage", run_dir=run_dir,
+        raw_payload=json.loads((run_dir / "raw_article_report.json").read_text()),
+        agent_payload=json.loads((run_dir / "agent_analysis_report.json").read_text()),
+        daily_payload=json.loads((run_dir / "daily_analysis.json").read_text()),
+    )
+    assert quality_path.is_relative_to(tmp_path / "storage/features")
+    # The page must retain the audit after the source body is no longer readable.
+    (run_dir / "raw_article_report.json").unlink()
+    (run_dir / "raw_article_report.md").unlink()
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._jin10, "_JIN10_EXTERNAL_ROOT", tmp_path / "external-jin10")
     factory = _make_session_factory()
 
     with factory() as db:
@@ -927,8 +1169,8 @@ def test_report_detail_jin10_insufficient_evidence_blocks_fallback_content(
             ),
         },
     )
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(report_service, "_JIN10_EXTERNAL_ROOT", tmp_path / "external-jin10")
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(report_service._jin10, "_JIN10_EXTERNAL_ROOT", tmp_path / "external-jin10")
     factory = _make_session_factory()
 
     with factory() as db:
@@ -968,8 +1210,10 @@ def test_jin10_asset_audit_normalizes_equivalent_image_refs(
         "generated_from": {"parser_trace": {"figures_total": 2}},
     }
 
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", tmp_path)
-    audit = report_service._build_jin10_asset_audit(run_dir=run_dir, raw_payload=raw_payload)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", tmp_path)
+    from apps.features.news.report_quality import _build_jin10_asset_audit
+
+    audit = _build_jin10_asset_audit(run_dir=run_dir, raw_payload=raw_payload, storage_root=tmp_path / "storage")
 
     assert audit["status"] == "pass"
     assert audit["missing_refs"] == []
@@ -980,7 +1224,7 @@ def test_jin10_asset_audit_normalizes_equivalent_image_refs(
 
 
 def test_jin10_chart_text_audit_uses_compound_noise_signals() -> None:
-    from apps.api.services.report_service import _jin10_chart_text_issues
+    from apps.features.news.report_quality import _jin10_chart_text_issues
 
     dense_table_text = "A" * 121
     article_like_text = "黄金价格继续震荡。" * 24

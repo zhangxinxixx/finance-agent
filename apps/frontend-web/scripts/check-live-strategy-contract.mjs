@@ -39,7 +39,7 @@ assert.match(workspace, /data\.market_state\.level_event/, "workspace must rende
 assert.match(workspace, /data\.market_state\.latest_price_event/, "workspace must render the backend latest price event");
 assert.match(workspace, /data\.market_state\.confirmation_15m/, "workspace must render the backend 15m confirmation");
 assert.match(workspace, /data\.feasibility\[key\]/, "workspace must render backend feasibility flags");
-assert.match(workspace, /Gold 日结基线/, "workspace must show the verified Gold baseline state without inferring a direction");
+assert.match(workspace, /黄金日结基线/, "workspace must show the verified Gold baseline state without inferring a direction");
 assert.match(workspace, /goldBaseline\.reason_code/, "workspace must render the backend Gold baseline fail-closed reason");
 assert.match(workspace, /!goldAuthorityReady/, "workspace must suppress directional display when Gold authority is not verified");
 assert.match(workspace, /hasVerifiedGoldBaseline\(goldBaseline\)/, "workspace must use the shared fail-closed Gold authority display gate");
@@ -66,7 +66,9 @@ assert.match(adapter, /reasons: asReasons\(raw\.reasons\)/, "adapter must preser
 assert.match(page, /selectedAsset === "XAUUSD"/, "live strategy workspace must not contaminate non-XAUUSD strategy views");
 assert.doesNotMatch(adapter, /touch_threshold|0\.2\s*\*|0\.05\s*\*/, "frontend adapter must not calculate live strategy thresholds");
 assert.doesNotMatch(adapter, /Math\.(max|min)|touch_threshold|approach_threshold|break_buffer\s*=|retest_threshold\s*=|entry_buffer|stop_buffer/, "frontend adapter must not calculate event or risk parameters");
-assert.doesNotMatch(workspace, /Math\.(max|min)|touch_threshold|approach_threshold|entry_buffer|stop_buffer/, "workspace must not calculate event or risk parameters");
+// Display-only row counts may use Math.max; the workspace still must not
+// introduce threshold or risk-buffer calculations.
+assert.doesNotMatch(workspace, /touch_threshold|approach_threshold|entry_buffer|stop_buffer/, "workspace must not calculate event or risk parameters");
 assert.doesNotMatch(scenarios, /Math\.(max|min)|touch_threshold|approach_threshold|break_buffer\s*=|retest_threshold\s*=|entry_buffer|stop_buffer/, "scenario cards must not calculate event or risk parameters");
 
 console.log("Live strategy frontend contract OK");

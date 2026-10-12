@@ -1,8 +1,9 @@
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { FAStatusTone } from "@/components/shared/FAStatusPill";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { getStatusLabel, getStatusTone } from "@/components/shared/statusMeta";
 import type { CMEOptionsDecisionResponse, CMEOptionsResponse } from "@/types/cme-options";
-import { shortId, summarizeDecision, translateDecisionText } from "./cmeOptionsFormat";
+import { summarizeDecision, translateDecisionText } from "./cmeOptionsFormat";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
 
 interface CMEOptionsRightColumnProps {
@@ -65,6 +66,9 @@ export function CMEOptionsRightColumn({ snapshot, decision }: CMEOptionsRightCol
     ...(factReview?.risk_points ?? []),
   ].filter((item, index, array) => item && array.indexOf(item) === index);
   const watchlist = synthesis?.watchlist?.length ? synthesis.watchlist : cmeAgent?.watchlist ?? [];
+  const identityRecord = analysis
+    ? { run_id: analysis.run_id, snapshot_id: analysis.snapshot_id }
+    : null;
 
   const topMeta = [
     analysis?.fact_review_status ? (
@@ -98,14 +102,15 @@ export function CMEOptionsRightColumn({ snapshot, decision }: CMEOptionsRightCol
         <p className="cme-options-insight-copy">{translateDecisionText(primarySummary)}</p>
         <div className="cme-options-meta-grid">
           <div className="cme-options-meta-card">
-            <span>运行编号</span>
-            <strong className="fa-num">{shortId(analysis?.run_id)}</strong>
+            <span>运行记录</span>
+            <strong>{analysis?.run_id ? "已关联" : "未提供"}</strong>
           </div>
           <div className="cme-options-meta-card">
-            <span>快照编号</span>
-            <strong className="fa-num">{shortId(analysis?.snapshot_id)}</strong>
+            <span>分析快照</span>
+            <strong>{analysis?.snapshot_id ? "已登记" : "未提供"}</strong>
           </div>
         </div>
+        <EvidenceRecordActions record={identityRecord} label="运行与快照依据" />
       </CMEOptionsSurface>
 
       <CMEOptionsSurface title="审查状态" bodyClassName="cme-options-insight-body">
@@ -119,19 +124,20 @@ export function CMEOptionsRightColumn({ snapshot, decision }: CMEOptionsRightCol
           <div className="cme-options-status-line">
             <span>待处理问题项</span>
             <strong className="fa-num">
-              {analysis?.pending_review_count ?? 0}
+              {analysis?.pending_review_count == null ? "—" : analysis.pending_review_count}
             </strong>
           </div>
         </div>
         {factReview?.claim_reviews?.length ? (
           <div className="cme-options-insight-list">
-            {factReview.claim_reviews.slice(0, 2).map((item) => (
+            {factReview.claim_reviews.map((item) => (
               <div key={`${item.claim_id}-${item.verdict}`} className="cme-options-insight-item">
                 <div className="cme-options-insight-item-header">
-                  <span className="fa-num">{shortId(item.claim_id)}</span>
+                  <span>断言记录</span>
                   <FAStatusPill tone={reviewStatusTone(item.verdict)}>{reviewStatusLabel(item.verdict)}</FAStatusPill>
                 </div>
                 <p>{translateDecisionText(item.reason)}</p>
+                <EvidenceRecordActions record={item} label="断言依据" />
               </div>
             ))}
           </div>
@@ -141,7 +147,7 @@ export function CMEOptionsRightColumn({ snapshot, decision }: CMEOptionsRightCol
       </CMEOptionsSurface>
 
       <CMEOptionsSurface title="综合要点" bodyClassName="cme-options-insight-body">
-        {keyPoints.length > 0 ? keyPoints.slice(0, 5).map((line) => (
+        {keyPoints.length > 0 ? keyPoints.map((line) => (
           <div key={line} className="cme-options-bullet-row">
             <span>•</span>
             <p>{translateDecisionText(line)}</p>
@@ -151,7 +157,7 @@ export function CMEOptionsRightColumn({ snapshot, decision }: CMEOptionsRightCol
         )}
         {watchlist.length > 0 ? (
           <div className="cme-options-watchlist">
-            {watchlist.slice(0, 4).map((item) => (
+            {watchlist.map((item) => (
               <span key={item}>{translateDecisionText(item)}</span>
             ))}
           </div>
@@ -159,16 +165,17 @@ export function CMEOptionsRightColumn({ snapshot, decision }: CMEOptionsRightCol
       </CMEOptionsSurface>
 
       <CMEOptionsSurface title="待复核与降权" bodyClassName="cme-options-insight-body">
-        {analysis?.pending_reviews?.length ? analysis.pending_reviews.slice(0, 2).map((item) => (
+        {analysis?.pending_reviews?.length ? analysis.pending_reviews.map((item) => (
           <div key={item.review_id} className="cme-options-insight-item">
             <div className="cme-options-insight-item-header">
-              <span className="fa-num">{shortId(item.claim_id || item.review_id)}</span>
+              <span>复核记录</span>
               <FAStatusPill tone={severityTone(item.severity)}>{severityLabel(item.severity)}</FAStatusPill>
             </div>
             <p>{translateDecisionText(item.reason)}</p>
+            <EvidenceRecordActions record={item} label="复核依据" />
           </div>
         )) : null}
-        {reviewNotes.length > 0 ? reviewNotes.slice(0, 3).map((line) => (
+        {reviewNotes.length > 0 ? reviewNotes.map((line) => (
           <div key={line} className="cme-options-bullet-row">
             <span>•</span>
             <p>{translateDecisionText(line)}</p>

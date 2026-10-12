@@ -118,7 +118,6 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
   const putLevels = pickTop(supportResistance.support);
   const pinLevel = highestOiStrike(wallScores);
   const breakthroughBase = highestResistance(supportResistance.resistance);
-  const breakthroughStrike = breakthroughBase ? breakthroughBase.strike * 1.03 : null;
 
   return (
     <FACard title="价位轨道" eyebrow="关键价位" accent="brand" bodyClassName="space-y-4">
@@ -132,13 +131,13 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
         />
 
         <FACard
-          title="吸附位"
-          eyebrow="参考价位"
+          title="最高持仓位"
+          eyebrow="结构参考"
           accent="info"
           action={<FAStatusPill tone="info">参考位</FAStatusPill>}
           bodyClassName="space-y-3"
         >
-          <p className="text-[length:var(--text-11)] text-[var(--fg-4)]">由当前墙位中最高持仓行权价推导。</p>
+          <p className="text-[length:var(--text-11)] text-[var(--fg-4)]">由当前墙位中最高持仓行权价推导；未返回可用吸附值时，不把它当作 Pin 点位。</p>
           <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-3">
             {pinLevel ? (
               <>
@@ -174,9 +173,9 @@ export function KeyLevelMap({ supportResistance, wallScores }: KeyLevelMapProps)
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <FAMetricCard label="突破基准" value={breakthroughBase ? formatPrice(breakthroughBase.strike) : "—"} hint="基准阻力位" />
-        <FAMetricCard label="突破门槛" value={breakthroughStrike ? formatPrice(breakthroughStrike) : "—"} hint="最高阻力位上移 3%" />
-        <FAMetricCard label="推导公式" value="最高阻力 × 1.03" hint="解释性推导，不代表确定突破" />
+        <FAMetricCard label="最高阻力参考" value={breakthroughBase ? formatPrice(breakthroughBase.strike) : "—"} hint="当前结构参考位" />
+        <FAMetricCard label="确认门槛" value="未提供" hint="后端未返回可核验触发阈值" />
+        <FAMetricCard label="触发条件" value="未提供" hint="页面不推导固定百分比" />
       </div>
     </FACard>
   );

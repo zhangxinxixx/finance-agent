@@ -1,3 +1,4 @@
+import { ResearchDetails } from "./ResearchDetails";
 import type { ReactNode } from "react";
 import { FACard } from "./FACard";
 import { FAEmptyState } from "./FAEmptyState";
@@ -45,7 +46,7 @@ export function SourceTraceCard({
   );
 
   return (
-    <FACard title={title} eyebrow={eyebrow} accent={accent} action={resolvedAction} bodyClassName="space-y-3">
+    <ResearchDetails label="查看来源记录"><FACard title={title} eyebrow={eyebrow} accent={accent} action={resolvedAction} bodyClassName="space-y-3">
       {description ? <div className="text-[11px] leading-5 text-[var(--fg-4)]">{description}</div> : null}
       {children}
       {hasTrace ? (
@@ -53,6 +54,6 @@ export function SourceTraceCard({
       ) : (
         <FAEmptyState title={emptyTitle} description={emptyDescription} className={emptyClassName ?? (compact ? "py-4" : "py-6")} />
       )}
-    </FACard>
+    </FACard></ResearchDetails>
   );
 }

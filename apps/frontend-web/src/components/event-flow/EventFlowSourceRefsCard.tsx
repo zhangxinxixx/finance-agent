@@ -1,3 +1,4 @@
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
@@ -85,21 +86,7 @@ function SourceRefGroupSection({ group }: { group: SourceRefGroup }) {
                 {formatEventFlowSourceLabel(ref.provider ?? ref.source_ref ?? "来源", 18).text}
               </span>
             </div>
-            <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
-              {sourceRefPairs(ref).filter((pair) => pair.label !== "source_ref").slice(0, 5).map((pair) => {
-                const displayValue = formatSourceRefPairValue(pair.label, pair.value);
-                return (
-                <span
-                  key={`${sourceRefKey(ref)}-${pair.label}`}
-                  className="inline-flex max-w-full items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--border-faint)] px-2 py-0.5 text-[var(--fg-4)]"
-                  title={`${translateSourceRefLabel(pair.label)}: ${displayValue}`}
-                >
-                  <span className="text-[var(--fg-5)]">{translateSourceRefLabel(pair.label)}</span>
-                  <span className="truncate max-w-[180px] font-mono text-[var(--fg-3)]">{displayValue}</span>
-                </span>
-                );
-              })}
-            </div>
+            <div className="mt-2"><EvidenceRecordActions record={ref} url={ref.source_url} label="来源与归档信息" /></div>
           </div>
         ))}
       </div>
@@ -117,11 +104,11 @@ export function EventFlowSourceRefsCard({ eventRefs, briefRefs, pageRefs, embedd
 
   if (totalRefs === 0) {
     if (embedded) {
-      return <FAEmptyState title="暂无来源引用" description="后端尚未给当前页面返回 source_refs。" className="py-5" />;
+      return <FAEmptyState title="暂无来源引用" description="当前页面尚未提供来源引用。" className="py-5" />;
     }
     return (
-      <FACard title="来源与工件" eyebrow="数据溯源" accent="info">
-        <FAEmptyState title="暂无来源引用" description="后端尚未给当前事件返回 source_refs。" className="py-5" />
+      <FACard title="来源与归档" eyebrow="数据溯源" accent="info">
+        <FAEmptyState title="暂无来源引用" description="当前事件尚未提供来源引用。" className="py-5" />
       </FACard>
     );
   }
@@ -147,7 +134,7 @@ export function EventFlowSourceRefsCard({ eventRefs, briefRefs, pageRefs, embedd
   }
 
   return (
-    <FACard title="来源与工件" eyebrow="数据溯源" accent="info" bodyClassName="space-y-3">
+    <FACard title="来源与归档" eyebrow="数据溯源" accent="info" bodyClassName="space-y-3">
       {content}
     </FACard>
   );

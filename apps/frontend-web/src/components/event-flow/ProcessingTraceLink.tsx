@@ -19,14 +19,14 @@ function firstSourceRef(event: EventFlowTimelineItem): string | null {
 
 function traceTarget(event: EventFlowTimelineItem): { mode: ProcessingTraceMode; value: string; label: string } | null {
   if (event.processing_trace_id) {
-    return { mode: "processing_trace_id", value: event.processing_trace_id, label: "Trace ID" };
+    return { mode: "processing_trace_id", value: event.processing_trace_id, label: "查看加工记录" };
   }
   if (event.id) {
-    return { mode: "event_id", value: event.id, label: "Event ID" };
+    return { mode: "event_id", value: event.id, label: "查看事件加工记录" };
   }
   const sourceRef = firstSourceRef(event);
   if (sourceRef) {
-    return { mode: "source_ref", value: sourceRef, label: "Source Ref" };
+    return { mode: "source_ref", value: sourceRef, label: "查看来源加工记录" };
   }
   return null;
 }
@@ -39,7 +39,7 @@ export function ProcessingTraceLink({ event, density = "normal" }: ProcessingTra
     return (
       <div className="flex flex-wrap items-center gap-1.5 text-[length:var(--type-caption)] text-[var(--fg-5)]">
         <SearchCode size={10} />
-        Processing trace 未返回
+        加工记录未提供
       </div>
     );
   }
@@ -54,7 +54,6 @@ export function ProcessingTraceLink({ event, density = "normal" }: ProcessingTra
       >
         <SearchCode size={10} />
         <span>{target.label}</span>
-        {!compact ? <span className="fa-num max-w-[220px] truncate">{target.value}</span> : null}
         <ExternalLink size={10} />
       </Link>
       {event.source_refs?.length ? (

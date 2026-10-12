@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchAgentPromptFeedback, fetchAgentPromptVersions } from "@/adapters/agentRegistry";
 import type { PromptFeedbackItem, PromptVersionItem } from "@/types/agent-registry";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 interface AgentPromptVersionsState {
   versions: PromptVersionItem[];
@@ -54,7 +55,7 @@ export function useAgentPromptVersions(agentId: string | null): AgentPromptVersi
       } catch (cause) {
         if (!cancelled) {
           setVersions([]);
-          setVersionsNote(cause instanceof Error ? cause.message : "无法加载 Prompt 版本");
+          setVersionsNote(readingErrorMessage(cause, "无法加载提示词版本。"));
         }
       } finally {
         if (!cancelled) {
@@ -113,7 +114,7 @@ export function useAgentPromptFeedbackHistory(agentId: string | null): AgentProm
       } catch (cause) {
         if (!cancelled) {
           setFeedbackHistory([]);
-          setFeedbackHistoryError(cause instanceof Error ? cause.message : "无法加载 Prompt Feedback 历史");
+          setFeedbackHistoryError(readingErrorMessage(cause, "无法加载提示词反馈历史。"));
         }
       } finally {
         if (!cancelled) {

@@ -18,8 +18,16 @@ _TRADE_DATE = "2026-05-14"
 
 
 @pytest.fixture(autouse=True)
-def _isolate_source_gating():
+def _isolate_source_gating(request, monkeypatch):
     """Keep composite analysis DB integration tests deterministic unless they opt into source gating explicitly."""
+    # These original persistence tests exercise the explicitly non-research contract.
+    # The research refusal and positive paths are covered separately with sourced bars.
+    if request.node.name != "test_db_sink_does_not_persist_observation_as_final_analysis_result":
+        import apps.worker.runner as runner
+        builder = runner.build_analysis_snapshot
+        def legacy_builder(**kwargs):
+            return builder(**{**kwargs, "include_daily_research": False})
+        monkeypatch.setattr(runner, "build_analysis_snapshot", legacy_builder)
     with (
         patch("apps.api.services.source_service.get_data_source_status_index", return_value={}),
         patch(
@@ -331,11 +339,13 @@ def test_db_sink_does_not_persist_observation_as_final_analysis_result(tmp_path:
 
         result = run_premarket(db, task.id, storage_root=tmp_path)
 
-    assert result == TaskStatus.success
+    assert result == TaskStatus.blocked
     assert db.query(DBFinalResult).all() == []
     assert not list((tmp_path / "outputs" / "final_report").rglob("final_report.md"))
-    assert list((tmp_path / "outputs" / "observation_report").rglob("final_report.md"))
-    assert list((tmp_path / "outputs" / "observation_strategy_card").rglob("strategy_card.json"))
+    assert not list((tmp_path / "outputs" / "observation_report").rglob("final_report.md"))
+    assert not list((tmp_path / "outputs" / "observation_strategy_card").rglob("strategy_card.json"))
+    assert list(tmp_path.rglob("research_diagnostic.json"))
+    assert db.query(TaskStep).filter_by(task_run_id=task.id, name="report_render").one().status == StepStatus.blocked
     observation_artifacts = [
         item
         for item in db.query(RunArtifact).filter(RunArtifact.run_id == task.id).all()
@@ -343,7 +353,7 @@ def test_db_sink_does_not_persist_observation_as_final_analysis_result(tmp_path:
     ]
     assert observation_artifacts
     assert all(item.artifact_metadata["publish_allowed"] is False for item in observation_artifacts)
-    assert all(item.artifact_metadata["output_mode"] == "observe" for item in observation_artifacts)
+    assert all(item.artifact_metadata["output_mode"] == "diagnostic" for item in observation_artifacts)
 
 
 def test_db_sink_preserves_source_refs_and_snapshot_ids(tmp_path: Path) -> None:

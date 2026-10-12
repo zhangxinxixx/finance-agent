@@ -29,6 +29,10 @@ export function isNonEmptyArray(value: unknown): value is unknown[] {
 }
 
 export function diagnosisStatus(metrics: MarketMonitorMetric[]): MarketMonitorStatus {
+  if (!metrics.length) {
+    return "unavailable";
+  }
+
   const xau = findMetric(metrics, "XAUUSD");
   const dxy = findMetric(metrics, "DXY");
   const real = findMetric(metrics, "REAL_10Y");
@@ -36,21 +40,21 @@ export function diagnosisStatus(metrics: MarketMonitorMetric[]): MarketMonitorSt
   if (xau?.status === "error" || dxy?.status === "error" || real?.status === "error") {
     return "error";
   }
-  if (real && typeof real.one_week_change === "number" && real.one_week_change > 0) {
+  if (metrics.some((metric) => metric.status === "warn")) {
     return "warn";
   }
-  if (xau && dxy && xau.status === "ok" && dxy.status === "ok") {
+  if (metrics.some((metric) => metric.status === "ok" && metric.latest_value !== null && metric.latest_value !== undefined)) {
     return "ok";
   }
   return "info";
 }
 
 export function diagnosisText(status: MarketMonitorStatus) {
-  if (status === "ok") return "美元走弱驱动";
-  if (status === "warn") return "过渡释放态";
-  if (status === "error") return "高噪声风险";
+  if (status === "ok") return "观测可用，驱动待确认";
+  if (status === "warn") return "部分观测需复核";
+  if (status === "error") return "观测读取失败";
   if (status === "unavailable") return "数据不可用";
-  return "混合观察";
+  return "等待市场观测";
 }
 
 export function buildMarketMonitorTabOptions() {

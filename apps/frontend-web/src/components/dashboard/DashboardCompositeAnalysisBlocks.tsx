@@ -28,9 +28,9 @@ export function DashboardCompositeSummaryBlock({
           <div className="text-[13px] leading-[1.6] text-[var(--fg-2)]">{compositeSummary}</div>
         </div>
         <div className="flex w-[118px] shrink-0 flex-col justify-center gap-1 border-l border-[var(--border)] pl-3">
-          <span className="fa-compact-label">确信度</span>
+          <span className="fa-compact-label">置信度（非胜率）</span>
           <div className="flex items-end gap-1">
-            <span className="fa-num text-[24px] font-bold leading-none text-[var(--fa-important)]">
+            <span className="tabular-nums text-[length:var(--type-kpi)] font-bold leading-none text-[var(--fa-important)]">
               {confidencePct ?? "—"}
             </span>
             <span className="pb-0.5 text-[10px] text-[var(--fa-text-muted)]">/100</span>
@@ -54,14 +54,14 @@ export function DashboardCompositeResonanceTable({ items }: { items: ResonanceIt
       <div className="mb-2 flex items-center gap-1.5">
         <Layers size={12} className="text-[var(--brand-hover)]" />
         <span className="text-[12px] font-semibold leading-none text-[var(--fg-2)]">关键位速览</span>
-        <span className="fa-compact-meta">基于当前期权结构与综合结论</span>
+        <span className="fa-muted-text">独立的 CME 公告结构证据</span>
       </div>
       <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)]">
         <div className="fa-compact-label grid grid-cols-[112px_1.1fr_1.3fr_1fr] border-b border-[var(--border)] bg-[var(--bg-section)] px-3 py-2">
           <span>价位</span>
-          <span>宏观含义</span>
+          <span>坐标与公告日期</span>
           <span>期权含义</span>
-          <span>综合判断</span>
+          <span>使用限制</span>
         </div>
         {items.map((r, i) => {
           const pxColor = r.kind === "support" ? "var(--up)" : r.kind === "resist" ? "var(--down)" : r.kind === "risk" ? "var(--warn)" : "var(--brand-hover)";

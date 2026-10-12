@@ -9,6 +9,7 @@ import {
   SettingsPageLoadingState,
 } from "@/components/settings/SettingsPageStates";
 import { useSettingsPage } from "@/hooks/useSettingsPage";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 export function SettingsPage() {
   const {
@@ -46,7 +47,7 @@ export function SettingsPage() {
   }
 
   if (isError || !data) {
-    return <SettingsPageErrorState message={error?.message ?? "未知错误"} onRetry={refetch} />;
+    return <SettingsPageErrorState message={readingErrorMessage(error, "设置页加载失败，请稍后重试。")} onRetry={refetch} />;
   }
 
   return (

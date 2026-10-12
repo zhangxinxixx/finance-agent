@@ -5,11 +5,6 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from apps.analysis.context_bundle.schemas import (
-    CONTEXT_BUNDLE_SCHEMA_VERSION,
-    AnalysisContextBundle,
-)
-
 
 KEY_MACRO_SYMBOLS = (
     "US10Y",
@@ -22,114 +17,6 @@ KEY_MACRO_SYMBOLS = (
     "RESERVES",
     "SOFR",
 )
-
-LEGACY_FULL_CONTEXT = "legacy_full_context"
-STATE_DELTA_CONTEXT = "state_delta_context"
-SUPPORTED_ANALYSIS_CONTEXT_MODES = frozenset(
-    {LEGACY_FULL_CONTEXT, STATE_DELTA_CONTEXT}
-)
-
-
-class StateDeltaContextError(ValueError):
-    """Raised when the explicit state-delta prompt input is absent or invalid."""
-
-
-def normalize_analysis_context_mode(value: str | None) -> str:
-    mode = str(value or LEGACY_FULL_CONTEXT).strip()
-    if mode not in SUPPORTED_ANALYSIS_CONTEXT_MODES:
-        raise StateDeltaContextError(f"unsupported analysis context mode: {mode}")
-    return mode
-
-
-def project_context_bundle_for_prompt(
-    bundle: AnalysisContextBundle | dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Project one validated v3 Bundle into provider-independent prompt memory.
-
-    The projection keeps Bundle lineage and decision/selection state intact but
-    intentionally contains no legacy report body or implicit latest lookup.
-    """
-
-    if bundle is None:
-        raise StateDeltaContextError(
-            "state_delta_context requires an explicit AnalysisContextBundle v3"
-        )
-    try:
-        # Revalidate a JSON dump even for typed inputs: Pydantic model_copy and
-        # nested mutable payloads must not bypass the persisted hash contract.
-        payload = bundle.model_dump(mode="json") if isinstance(bundle, AnalysisContextBundle) else bundle
-        validated = AnalysisContextBundle.model_validate(payload)
-    except Exception as exc:
-        raise StateDeltaContextError(
-            f"invalid AnalysisContextBundle: {type(exc).__name__}"
-        ) from exc
-    if validated.schema_version != CONTEXT_BUNDLE_SCHEMA_VERSION:
-        raise StateDeltaContextError(
-            "state_delta_context only accepts AnalysisContextBundle v3"
-        )
-
-    blocks = {block.name: block for block in validated.blocks}
-    if len(validated.blocks) != 3 or set(blocks) != {
-        "canonical_state",
-        "delta_evidence",
-        "facts",
-    }:
-        raise StateDeltaContextError(
-            "AnalysisContextBundle v3 must contain canonical_state, delta_evidence and facts"
-        )
-    delta_block = blocks["delta_evidence"]
-    canonical_state = blocks["canonical_state"].payload
-    if not isinstance(canonical_state, dict):
-        raise StateDeltaContextError("canonical_state block payload must be an object")
-    if (
-        canonical_state.get("asset") != validated.asset
-        or canonical_state.get("state_scope") != validated.state_scope
-    ):
-        raise StateDeltaContextError(
-            "canonical_state block identity does not match AnalysisContextBundle"
-        )
-    retained_refs = [
-        {
-            "source": str(item.get("source") or ""),
-            "evidence_id": str(item.get("evidence_id") or ""),
-        }
-        for item in delta_block.payload
-        if isinstance(item, dict)
-    ]
-    accepted_facts = [
-        dict(item)
-        for item in blocks["facts"].payload
-        if isinstance(item, dict) and item.get("quality_status") == "accepted"
-    ]
-    return {
-        "schema_version": "jin10-state-delta-prompt-context.v1",
-        "context_mode": STATE_DELTA_CONTEXT,
-        "bundle": {
-            "bundle_id": validated.bundle_id,
-            "content_hash": validated.content_hash,
-            "canonical_state_id": validated.canonical_state_id,
-            "state_scope": validated.state_scope,
-            "asset": validated.asset,
-            "run_id": validated.run_id,
-            "cutoff_at": validated.cutoff_at.isoformat(),
-        },
-        "canonical_state": canonical_state,
-        "retained_delta_evidence": delta_block.payload,
-        "retained_evidence_ids": list(delta_block.retained_evidence_ids),
-        "retained_evidence_refs": retained_refs,
-        "accepted_facts": accepted_facts,
-        "evidence_delta_decision": validated.evidence_delta_decision,
-        "selection_trace": validated.selection_trace,
-        "selection_decisions": validated.selection_decisions,
-        "deferred_queue": validated.deferred_queue,
-        "processed_above_frontier": validated.processed_above_frontier,
-        "freshness": validated.freshness,
-        "freshness_sla_seconds": validated.freshness_sla_seconds,
-        "default_freshness_sla_seconds": validated.default_freshness_sla_seconds,
-        "session": validated.session,
-        "alignment": validated.alignment,
-        "bundle_budget_trace": validated.budget_trace.model_dump(mode="json"),
-    }
 
 
 def build_daily_analysis_context(
@@ -177,12 +64,40 @@ def build_daily_analysis_context(
         filename="oil_context.json",
     )
     oil_report, oil_report_path = _load_latest_oil_report(root, trade_date=trade_date)
+    positioning_report, positioning_report_path = _load_latest_jin10_supplement(
+        root,
+        trade_date=trade_date,
+        report_kind="positioning",
+    )
+    market_odds_report, market_odds_report_path = _load_latest_jin10_supplement(
+        root,
+        trade_date=trade_date,
+        report_kind="market_odds",
+    )
 
     latest_market = _compact_market(premarket)
     latest_news = _compact_news(news)
     gold_mainline = _compact_gold_mainline(overview)
     oil_report_summary = _compact_oil_report(oil_report)
     oil_context = _compact_oil(oil) or oil_report_summary
+    positioning_report_summary = _compact_jin10_supplement(
+        positioning_report,
+        source_kind="jin10_positioning_analysis",
+    )
+    market_odds_report_summary = _compact_jin10_supplement(
+        market_odds_report,
+        source_kind="jin10_external_market_odds_analysis",
+    )
+    positioning_validation_path = _attach_positioning_validation(
+        positioning_report_summary,
+        root=root,
+        trade_date=trade_date,
+    )
+    market_odds_evidence_path = _attach_market_odds_evidence(
+        market_odds_report_summary,
+        root=root,
+        trade_date=trade_date,
+    )
 
     anchor_date = str(anchor.get("context_as_of") or anchor.get("trade_date") or "")[:10]
     previous_analysis_date = str(previous_analysis_report.get("trade_date") or "")[:10]
@@ -221,6 +136,16 @@ def build_daily_analysis_context(
         "news": _freshness(news_date, trade_date, max_age_days=1),
         "gold_mainline": _freshness(overview_date, trade_date, max_age_days=1),
         "oil": _freshness(oil_date, trade_date, max_age_days=1),
+        "positioning_report": _freshness(
+            str(positioning_report_summary.get("trade_date") or "")[:10],
+            trade_date,
+            max_age_days=1,
+        ),
+        "market_odds_report": _freshness(
+            str(market_odds_report_summary.get("trade_date") or "")[:10],
+            trade_date,
+            max_age_days=1,
+        ),
     }
     required_ready = all(
         freshness[key]["status"] == "current"
@@ -246,6 +171,10 @@ def build_daily_analysis_context(
         "gold_macro_overview": _relative_path(overview_path, root),
         "oil_context": _relative_path(oil_path, root),
         "oil_report_summary": _relative_path(oil_report_path, root),
+        "positioning_report_summary": _relative_path(positioning_report_path, root),
+        "positioning_cme_validation": _relative_path(positioning_validation_path, root),
+        "market_odds_report_summary": _relative_path(market_odds_report_path, root),
+        "market_odds_evidence": _relative_path(market_odds_evidence_path, root),
     }
     input_snapshot_ids = {key: value for key, value in paths.items() if value}
     source_refs = _dedupe_refs(
@@ -257,6 +186,8 @@ def build_daily_analysis_context(
             *list(gold_mainline.get("source_refs") or []),
             *list(oil_context.get("source_refs") or []),
             *list(oil_report_summary.get("source_refs") or []),
+            *list(positioning_report_summary.get("source_refs") or []),
+            *list(market_odds_report_summary.get("source_refs") or []),
         ]
     )
     return {
@@ -275,6 +206,8 @@ def build_daily_analysis_context(
         "gold_mainline": gold_mainline,
         "oil_context": oil_context,
         "oil_report_summary": oil_report_summary,
+        "positioning_report_summary": positioning_report_summary,
+        "market_odds_report_summary": market_odds_report_summary,
         "freshness": freshness,
         "input_snapshot_ids": input_snapshot_ids,
         "source_refs": source_refs,
@@ -312,47 +245,42 @@ def compact_context_metadata(context: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def compact_context_for_prompt(context: dict[str, Any] | None) -> dict[str, Any]:
-    """Return the single effective baseline plus prompt-relevant evidence.
-
-    The persisted daily context intentionally keeps the weekly anchor and the
-    previous composite report for audit/replay.  The prompt context must not
-    replay both of those historical artifacts after ``analysis_baseline`` has
-    already selected one of them.
-    """
+    """Drop transport-only source lists while preserving analysis evidence."""
 
     if not context:
         return {}
-    baseline = context.get("analysis_baseline") or context.get("weekly_anchor") or {}
+    anchor = dict(context.get("analysis_baseline") or context.get("weekly_anchor") or {})
+    anchor.pop("source_refs", None)
+    news = dict(context.get("latest_news") or {})
+    news.pop("source_refs", None)
+    mainline = dict(context.get("gold_mainline") or {})
+    mainline.pop("source_refs", None)
+    oil = dict(context.get("oil_context") or {})
+    oil.pop("source_refs", None)
+    oil_report = dict(context.get("oil_report_summary") or {})
+    oil_report.pop("source_refs", None)
+    positioning_report = dict(context.get("positioning_report_summary") or {})
+    positioning_report.pop("source_refs", None)
+    market_odds_report = dict(context.get("market_odds_report_summary") or {})
+    market_odds_report.pop("source_refs", None)
     return {
-        "schema_version": "daily-analysis-prompt-context-v2",
         "status": context.get("status"),
         "baseline_kind": context.get("baseline_kind") or "weekly_anchor",
         "continuity_status": context.get("continuity_status"),
         "warnings": context.get("warnings") or [],
-        "analysis_baseline": _without_transport_source_refs(baseline),
-        "latest_market": _without_transport_source_refs(context.get("latest_market") or {}),
-        "latest_news": _without_transport_source_refs(context.get("latest_news") or {}),
-        "gold_mainline": _without_transport_source_refs(context.get("gold_mainline") or {}),
-        "oil_context": _without_transport_source_refs(context.get("oil_context") or {}),
-        "oil_report_summary": _without_transport_source_refs(context.get("oil_report_summary") or {}),
-        "freshness": _without_transport_source_refs(context.get("freshness") or {}),
-        "input_snapshot_ids": _without_transport_source_refs(context.get("input_snapshot_ids") or {}),
+        "analysis_baseline": anchor,
+        "weekly_anchor": context.get("weekly_anchor") or {},
+        "previous_analysis_report": context.get("previous_analysis_report") or context.get("previous_daily") or {},
+        "latest_market": context.get("latest_market") or {},
+        "latest_news": news,
+        "gold_mainline": mainline,
+        "oil_context": oil,
+        "oil_report_summary": oil_report,
+        "positioning_report_summary": positioning_report,
+        "market_odds_report_summary": market_odds_report,
+        "freshness": context.get("freshness") or {},
+        "input_snapshot_ids": context.get("input_snapshot_ids") or {},
     }
-
-
-def _without_transport_source_refs(value: Any) -> Any:
-    """Copy JSON-compatible prompt data while removing bulky lineage lists.
-
-    Canonical lineage remains available through ``input_snapshot_ids`` and the
-    persisted context's top-level ``source_refs``.  Nested source lists are
-    transport detail and often contain repeated URLs or raw paths.
-    """
-
-    if isinstance(value, dict):
-        return {key: _without_transport_source_refs(item) for key, item in value.items() if key != "source_refs"}
-    if isinstance(value, list):
-        return [_without_transport_source_refs(item) for item in value]
-    return value
 
 
 def _load_weekly_anchor(root: Path, *, trade_date: str, asset: str) -> tuple[dict[str, Any], Path | None]:
@@ -682,6 +610,105 @@ def _compact_oil_report(payload: dict[str, Any]) -> dict[str, Any]:
         "final_summary": payload.get("final_summary"),
         "source_refs": _dedupe_refs(list(payload.get("source_refs") or []), limit=12),
     }
+
+
+def _load_latest_jin10_supplement(
+    root: Path,
+    *,
+    trade_date: str,
+    report_kind: str,
+) -> tuple[dict[str, Any], Path | None]:
+    base = root / "outputs" / "jin10" / trade_date
+    if not base.is_dir():
+        return {}, None
+    for path in sorted(base.glob("*/agent_analysis_report.json"), reverse=True):
+        payload = _read_json(path)
+        identity = payload.get("report_identity") if isinstance(payload.get("report_identity"), dict) else {}
+        report_type = str(identity.get("report_type") or "").lower()
+        series = str(identity.get("series") or (payload.get("content_access") or {}).get("series") or "").lower()
+        title = str(payload.get("title") or "")
+        if report_kind == "positioning" and report_type == "positioning":
+            return payload, path
+        if report_kind == "market_odds" and (
+            series == "market_odds" or "市场赔率" in title or "赔率数据表" in title
+        ):
+            return payload, path
+    return {}, None
+
+
+def _compact_jin10_supplement(payload: dict[str, Any], *, source_kind: str) -> dict[str, Any]:
+    if not payload:
+        return {}
+    return {
+        "source_kind": source_kind,
+        "trade_date": payload.get("trade_date"),
+        "article_id": payload.get("article_id") or payload.get("run_id"),
+        "title": payload.get("title"),
+        "status": (payload.get("quality_audit") or {}).get("status") or "unknown",
+        "one_line_conclusion": payload.get("one_line_conclusion"),
+        "final_summary": payload.get("final_summary"),
+        "market_stage": payload.get("market_stage") or {},
+        "key_levels": list(payload.get("key_levels") or [])[:10],
+        "logic_chain": list(payload.get("logic_chain") or [])[:6],
+        "risk_points": list(payload.get("risk_points") or [])[:8],
+        "source_refs": _dedupe_refs(list(payload.get("source_refs") or []), limit=12),
+    }
+
+
+def _attach_positioning_validation(
+    summary: dict[str, Any],
+    *,
+    root: Path,
+    trade_date: str,
+) -> Path | None:
+    article_id = str(summary.get("article_id") or "").strip()
+    if not article_id:
+        return None
+    path = root / "features" / "jin10" / trade_date / article_id / "positioning_cme_validation.json"
+    payload = _read_json(path)
+    if not payload:
+        return None
+    summary["cme_validation"] = {
+        "validation_status": payload.get("validation_status"),
+        "cme_trade_date": payload.get("cme_trade_date"),
+        "summary": payload.get("summary") or {},
+        "interpretation_policy": payload.get("interpretation_policy") or {},
+    }
+    summary["source_refs"] = _dedupe_refs([
+        *list(summary.get("source_refs") or []),
+        *list(payload.get("source_refs") or []),
+    ])
+    return path
+
+
+def _attach_market_odds_evidence(
+    summary: dict[str, Any],
+    *,
+    root: Path,
+    trade_date: str,
+) -> Path | None:
+    article_id = str(summary.get("article_id") or "").strip()
+    if not article_id:
+        return None
+    path = root / "features" / "jin10" / trade_date / article_id / "market_odds_evidence.json"
+    payload = _read_json(path)
+    if not payload:
+        return None
+    gold_items = [
+        item
+        for item in payload.get("items") or []
+        if isinstance(item, dict) and item.get("asset") == "XAUUSD" and item.get("extraction_status") == "accepted"
+    ]
+    summary["structured_evidence"] = {
+        "extraction_status": payload.get("extraction_status"),
+        "panel_count": payload.get("panel_count"),
+        "gold_items": gold_items[:12],
+    }
+    summary["source_refs"] = _dedupe_refs([
+        *list(summary.get("source_refs") or []),
+        *list(payload.get("source_refs") or []),
+    ])
+    return path
 
 
 def _load_latest_json(

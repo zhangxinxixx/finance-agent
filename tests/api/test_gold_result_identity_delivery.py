@@ -58,7 +58,7 @@ def _identity_delivery_env(shared_gold_policy_delivery_env, monkeypatch: pytest.
     root: Path = shared_gold_policy_delivery_env["tmp_path"]
     monkeypatch.setattr(gold_mainline_service, "_PROJECT_ROOT", root)
     monkeypatch.setattr(live_strategy_service, "_PROJECT_ROOT", root)
-    monkeypatch.setattr(report_service, "_PROJECT_ROOT", root)
+    monkeypatch.setattr(report_service._storage, "_PROJECT_ROOT", root)
     monkeypatch.setattr(live_strategy_service, "get_strategy_card_read_model_latest", lambda **_: None)
     monkeypatch.setattr(
         live_strategy_service,

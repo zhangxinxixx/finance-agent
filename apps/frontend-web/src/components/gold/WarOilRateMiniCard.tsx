@@ -1,3 +1,4 @@
+import { readerValue } from "@/lib/readerLabels";
 import { Link } from "react-router-dom";
 import { ArrowRight, GitBranch } from "lucide-react";
 
@@ -25,12 +26,12 @@ export function WarOilRateMiniCard({ chain }: WarOilRateMiniCardProps) {
         </div>
         {chain.conclusion_code ? (
           <FAStatusPill tone={goldNetBiasTone(chain.net_effect)} dot={false} className="shrink-0">
-            {chain.conclusion_code}. {chain.conclusion_label || formatGoldNetBiasLabel(chain.net_effect)}
+            {chain.conclusion_label ? readerValue(chain.conclusion_label) : formatGoldNetBiasLabel(chain.net_effect)}
           </FAStatusPill>
         ) : null}
       </div>
-      <p className="mt-1 line-clamp-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-2)]">
-        {chain.summary}
+      <p className="mt-1 break-words text-[length:var(--type-caption)] leading-5 text-[var(--fg-2)]">
+        {readerValue(chain.summary, "传导链中文说明尚未提供，当前仅供证据复核。")}
       </p>
       <div className="mt-2 flex justify-end">
         <Link to="/oil-geopolitics" className="inline-flex items-center gap-1 text-[length:var(--type-caption)] font-semibold text-[var(--warn)] no-underline hover:text-[var(--fg-1)]">

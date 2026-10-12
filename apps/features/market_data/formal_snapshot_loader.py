@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from apps.features.market_data.formal_snapshots import (
@@ -16,7 +16,7 @@ from apps.features.market_data.formal_snapshots import (
     build_market_price_snapshot,
     build_oil_snapshot,
 )
-from database.queries.market import list_completed_market_candles
+from database.queries.warehouse_read import list_completed_warehouse_candles as list_completed_market_candles
 
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -32,7 +32,7 @@ class FormalSnapshotBundle:
     market_context: MarketContextSnapshot | None = None
 
 
-def resolve_formal_snapshot_as_of(*, trade_date: str, run_time: datetime) -> datetime:
+def resolve_formal_snapshot_as_of(*, trade_date: str, run_time: datetime, mode: Literal["daily_close", "latest_available"] = "daily_close") -> datetime:
     """Resolve the point-in-time cutoff at 21:00 Asia/Shanghai.
 
     The current trade date cannot see data after the worker's actual run time;
@@ -51,6 +51,12 @@ def resolve_formal_snapshot_as_of(*, trade_date: str, run_time: datetime) -> dat
     run_local_date = normalized_run_time.astimezone(_SHANGHAI).date()
     if requested_date > run_local_date:
         raise ValueError("trade_date cannot be in the future")
+    if mode == "latest_available":
+        if requested_date not in {normalized_run_time.date(), run_local_date}:
+            raise ValueError("latest_available requires the current UTC or local context date")
+        return normalized_run_time
+    if mode != "daily_close":
+        raise ValueError("unknown formal snapshot cutoff mode")
     cutoff = datetime.combine(requested_date, time(21, 0), tzinfo=_SHANGHAI).astimezone(UTC)
     return min(cutoff, normalized_run_time) if requested_date == run_local_date else cutoff
 

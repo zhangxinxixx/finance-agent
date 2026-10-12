@@ -3,40 +3,19 @@ import { Link, useParams } from "react-router-dom";
 import {
   AgentTaskDetailHero,
   AgentTaskRuntimeContext,
-  AgentTaskSourceArtifacts,
 } from "@/components/agent-tasks/AgentTaskDetailSections";
 import { AgentTaskDetailContent, AgentTaskDetailTabs, type AgentTaskDetailTabKey } from "@/components/agent-tasks/AgentTaskPanels";
 import { taskTypeLabel } from "@/components/agent-tasks/agentTaskMeta";
 import { FACard } from "@/components/shared/FACard";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import { LoadingSkeleton } from "@/components/shared/LoadingSkeleton";
 import { useAgentTasks } from "@/hooks/useAgentTasks";
 import { formatTradeDate } from "@/lib/date";
-import { compactId, formatPercent } from "@/lib/format";
+import { formatPercent } from "@/lib/format";
 import type { TaskRunViewModel } from "@/types/agent-task";
-
-function normalizeMonitorDate(value?: string | null): string | null {
-  if (!value) return null;
-  const trimmed = value.trim();
-  const ymd = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (ymd) return ymd[1];
-  return null;
-}
-
-function resolveFeishuMonitorHref(selectedRun: TaskRunViewModel | null): string | null {
-  if (!selectedRun) return null;
-  const hasFeishuSource = (selectedRun.source_refs ?? []).some((ref: { source_ref?: string | null; label?: string | null }) => {
-    const raw = `${ref.source_ref ?? ""} ${ref.label ?? ""}`.toLowerCase();
-    return raw.includes("jin10_feishu") || raw.includes("飞书");
-  });
-  const taskType = String(selectedRun.task_type ?? "").toLowerCase();
-  if (!hasFeishuSource && !taskType.includes("daily_analysis_followup") && !taskType.includes("jin10")) {
-    return null;
-  }
-  const date = normalizeMonitorDate(selectedRun.dataDate ?? selectedRun.trading_date ?? null);
-  return date ? `/feishu-monitor?date=${encodeURIComponent(date)}` : "/feishu-monitor";
-}
+import { operationStageLabel } from "@/components/operations/operationsLabels";
 
 export function AgentTaskDetailPage() {
   const { runId } = useParams<{ runId: string }>();
@@ -47,18 +26,17 @@ export function AgentTaskDetailPage() {
   const reviews = agentTasks.data?.reviews ?? [];
   const metrics = useMemo(
     () => [
-      { label: "task_type", value: selectedRun ? taskTypeLabel(selectedRun.task_type) : "—", hint: "任务类型" },
-      { label: "trade_date", value: formatTradeDate(selectedRun?.dataDate), hint: "交易日" },
-      { label: "current_stage", value: selectedRun?.current_stage || "—", hint: "当前阶段" },
-      { label: "progress", value: selectedRun?.progress != null ? formatPercent(selectedRun.progress) : "—", hint: "运行进度" },
-      { label: "run_id", value: compactId(selectedRun?.run_id, 10, 4), hint: "运行标识" },
-      { label: "snapshot_id", value: compactId(selectedRun?.snapshot_id, 10, 4), hint: "快照标识" },
-      { label: "result_id", value: compactId(selectedRun?.final_result_id, 10, 4), hint: "最终结果" },
-      { label: "steps", value: selectedRun?.steps.length ?? 0, hint: "步骤数量" },
+      { label: "任务类型", value: selectedRun ? taskTypeLabel(selectedRun.task_type) : "—", hint: "任务类型" },
+      { label: "交易日", value: formatTradeDate(selectedRun?.dataDate), hint: "交易日" },
+      { label: "当前阶段", value: operationStageLabel(selectedRun?.current_stage), hint: "当前阶段" },
+      { label: "运行进度", value: selectedRun?.progress != null ? formatPercent(selectedRun.progress) : "—", hint: "运行进度" },
+      { label: "运行标识", value: selectedRun?.run_id ? "已登记" : "未提供", hint: "可从任务证据入口复制" },
+      { label: "快照标识", value: selectedRun?.snapshot_id ? "已登记" : "未提供", hint: "可从任务证据入口复制" },
+      { label: "结果标识", value: selectedRun?.final_result_id ? "已登记" : "未提供", hint: "可从任务证据入口复制" },
+      { label: "步骤数", value: selectedRun?.steps.length ?? 0, hint: "已返回的执行步骤" },
     ],
     [selectedRun],
   );
-  const monitorHref = useMemo(() => resolveFeishuMonitorHref(selectedRun), [selectedRun]);
 
   useEffect(() => {
     setActiveTab("summary");
@@ -78,7 +56,7 @@ export function AgentTaskDetailPage() {
         <FACard title="任务详情加载失败" eyebrow="任务详情" accent="down">
           <FAWarningBanner
             title="标准详情页当前不可用"
-            description={agentTasks.error?.message ?? "未知错误"}
+            description="任务运行接口暂时无法读取，当前详情不可用；请稍后重试。"
             tone="down"
             action={
               <div className="flex gap-2">
@@ -98,6 +76,12 @@ export function AgentTaskDetailPage() {
               </div>
             }
           />
+          <div className="mt-3">
+            <EvidenceRecordActions
+              record={agentTasks.error ? { error: agentTasks.error.message, state: "unavailable" } : null}
+              label="读取失败记录"
+            />
+          </div>
         </FACard>
       </div>
     );
@@ -106,7 +90,7 @@ export function AgentTaskDetailPage() {
   if (!selectedRun) {
     return (
       <div className="finance-page-shell">
-        <FAEmptyState title="未找到任务详情" description="当前 run_id 没有命中可展示的任务，请返回任务列表重新选择。" />
+        <FAEmptyState title="未找到任务详情" description="当前运行标识没有命中可展示的任务，请返回任务列表重新选择。" />
       </div>
     );
   }
@@ -115,17 +99,17 @@ export function AgentTaskDetailPage() {
     <div className="finance-page-shell">
       <div className="flex min-h-full flex-col gap-4">
         <AgentTaskDetailHero
+          className="shrink-0"
           selectedRun={selectedRun}
           source={agentTasks.data.source}
           metrics={metrics}
           onRefresh={agentTasks.refetch}
-          monitorHref={monitorHref}
         />
 
         {selectedRun.error_summary ? <FAWarningBanner title="运行异常" description={selectedRun.error_summary} tone="warn" /> : null}
         {agentTasks.data.detail_error ? <FAWarningBanner title="详情降级" description={agentTasks.data.detail_error} tone="warn" /> : null}
 
-        <div className="grid min-h-0 flex-1 gap-4 2xl:grid-cols-[minmax(0,1.6fr)_340px]">
+        <div className="grid flex-none gap-4 2xl:grid-cols-[minmax(0,1.6fr)_340px]">
           <div className="flex min-h-0 flex-col gap-4">
             <FACard
               title="任务详情工作台"
@@ -135,14 +119,13 @@ export function AgentTaskDetailPage() {
               bodyClassName="min-h-0 flex flex-1 flex-col gap-4"
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-[11px] text-[var(--fg-4)]">只读查看步骤、日志、输入输出与来源链路，不在前端推导任何结论。</div>
+                <div className="text-[11px] text-[var(--fg-4)]">只读查看 ADS 运行摘要、步骤状态与复核结果，不展示输入输出、日志正文或产物文件。</div>
                 <AgentTaskDetailTabs activeTab={activeTab} reviewCount={reviews.length} onChange={setActiveTab} />
               </div>
               <div className="min-h-0 flex-1">
                 <AgentTaskDetailContent
                   selectedRun={selectedRun}
                   reviews={reviews}
-                  agentInspection={agentTasks.data.agent_inspection ?? null}
                   activeTab={activeTab}
                 />
               </div>
@@ -151,7 +134,6 @@ export function AgentTaskDetailPage() {
 
           <div className="flex min-h-0 flex-col gap-4">
             <AgentTaskRuntimeContext selectedRun={selectedRun} reviews={reviews} />
-            <AgentTaskSourceArtifacts selectedRun={selectedRun} />
           </div>
         </div>
       </div>

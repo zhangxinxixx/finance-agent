@@ -190,9 +190,48 @@ def test_compare_near_next_month():
         {"strike": 2600, "expiry": "AUG26", "option_type": "C", "open_interest": 300, "total_volume": 30},
     ]
     result = _compare_near_next_month(rows)
-    assert result["near_month"] == "AUG26"  # alphabetically sorted
+    assert result["near_month"] == "JUN26"
+    assert result["next_month"] == "AUG26"
     # Both have data, oi_ratio should be computable
     assert result["oi_ratio"] is not None
+
+
+def test_compare_near_next_month_crosses_calendar_year() -> None:
+    rows = [
+        {"strike": 2500, "expiry": "JAN27", "option_type": "C", "open_interest": 200, "total_volume": 20},
+        {"strike": 2600, "expiry": "DEC26", "option_type": "C", "open_interest": 300, "total_volume": 30},
+        {"strike": 2700, "expiry": "NOV26", "option_type": "C", "open_interest": 500, "total_volume": 50},
+        {"strike": 2800, "expiry": "OCT26", "option_type": "C", "open_interest": 600, "total_volume": 60},
+    ]
+
+    result = _compare_near_next_month(rows)
+
+    assert result["near_month"] == "OCT26"
+    assert result["next_month"] == "NOV26"
+    assert result["near_total_oi"] == 600
+    assert result["next_total_oi"] == 500
+
+
+def test_detect_expiry_rolls_crosses_calendar_year() -> None:
+    rows_by_date = {
+        "2026-12-01": [
+            {"strike": 2500, "expiry": "NOV26", "option_type": "C", "open_interest": 1000},
+            {"strike": 2500, "expiry": "DEC26", "option_type": "C", "open_interest": 500},
+            {"strike": 2500, "expiry": "JAN27", "option_type": "C", "open_interest": 200},
+        ],
+        "2026-12-02": [
+            {"strike": 2500, "expiry": "NOV26", "option_type": "C", "open_interest": 800},
+            {"strike": 2500, "expiry": "DEC26", "option_type": "C", "open_interest": 700},
+            {"strike": 2500, "expiry": "JAN27", "option_type": "C", "open_interest": 300},
+        ],
+    }
+
+    rolls = _detect_expiry_rolls(rows_by_date, "2026-12-02")
+
+    assert len(rolls) == 1
+    assert rolls[0].near_month == "NOV26"
+    assert rolls[0].next_month == "DEC26"
+    assert rolls[0].roll_activity == "active"
 
 
 def test_compare_near_next_month_single():

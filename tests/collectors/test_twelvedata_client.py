@@ -96,3 +96,27 @@ def test_client_requires_configured_key(tmp_path, monkeypatch):
     monkeypatch.setattr("apps.collectors.twelvedata.client.resolve_runtime_secret", lambda _: None)
     with pytest.raises(RuntimeError, match="TWELVE_DATA_API_KEY"):
         TwelveDataClient(storage_root=tmp_path)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_nonfinite_candle_is_rejected_after_raw_archive(tmp_path, value):
+    payload = _ok_payload()
+    payload["values"][0]["close"] = value
+    client = _client(tmp_path, payload=payload)
+
+    with pytest.raises(TwelveDataPayloadError, match="non-finite OHLC"):
+        client.fetch_time_series(interval="5min")
+
+    assert len(list((tmp_path / "raw" / "market" / "twelvedata" / "2026-07-16").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("field,value", [("symbol", "GC"), ("interval", "15min")])
+def test_wrong_provider_coordinates_are_rejected_after_raw_archive(tmp_path, field, value):
+    payload = _ok_payload()
+    payload["meta"][field] = value
+    client = _client(tmp_path, payload=payload)
+
+    with pytest.raises(TwelveDataPayloadError, match="mismatched"):
+        client.fetch_time_series(interval="5min")
+
+    assert len(list((tmp_path / "raw" / "market" / "twelvedata" / "2026-07-16").glob("*.json"))) == 1

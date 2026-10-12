@@ -27,7 +27,7 @@ def test_render_options_visual_html_uses_vm_data_without_template_constants() ->
     html = render_options_visual_html(vm)
 
     assert "2026-05-06" in html
-    assert "Gamma Zero" in html
+    assert "Proxy Gamma Flip" in html
     assert vm.hero_title in html
     assert "WallScore" in html
     assert "const gd=" not in html

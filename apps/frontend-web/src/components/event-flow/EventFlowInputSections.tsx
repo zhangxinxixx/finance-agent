@@ -1,3 +1,5 @@
+import { readerValue } from "@/lib/readerLabels";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { FileJson, FileText, SearchCheck, ShieldAlert } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
@@ -33,7 +35,7 @@ export function EventFlowDailyBriefCard({
           </div>
           <ul className="space-y-1 text-[11px] leading-5 text-[var(--fg-2)]">
             {brief.structured.oneLineInputs.slice(0, 3).map((item) => (
-              <li key={`daily-brief-input-${item}`}>{item}</li>
+              <li key={`daily-brief-input-${item}`}>{readerValue(item, "中文研究材料尚未提供，影响仍待核实。")}</li>
             ))}
           </ul>
         </div>
@@ -45,9 +47,10 @@ export function EventFlowDailyBriefCard({
         </div>
       ) : null}
 
+      <EvidenceRecordActions record={brief} label="日报研究材料" />
       <div className="flex flex-wrap gap-1.5">
         <FAStatusPill tone={brief.status === "available" ? "up" : "warn"}>{brief.status}</FAStatusPill>
-        {brief.qualityFlags.slice(0, 4).map((flag) => (
+        {brief.qualityFlags.map((flag) => (
           <FAStatusPill key={`daily-brief-quality-${flag}`} tone={flag.includes("missing") || flag.includes("single_source") ? "warn" : "info"}>
             {flag}
           </FAStatusPill>
@@ -64,7 +67,7 @@ export function EventFlowDailyBriefCard({
       {brief.sourceRefs.length > 0 ? (
         <div className="flex items-center gap-1.5 text-[10px] text-[var(--fg-5)]">
           <FileJson size={11} />
-          <span>{brief.sourceRefs.length} source refs retained in read model</span>
+          <span>已保留 {brief.sourceRefs.length} 条来源引用</span>
         </div>
       ) : null}
     </FACard>
@@ -127,7 +130,7 @@ export function EventFlowBriefInputsCard({
               Risk Points
             </div>
             <ul className="space-y-1.5">
-              {summary.riskPoints.slice(0, 2).map((item) => (
+              {summary.riskPoints.map((item) => (
                 <li key={`risk-${item}`} className="leading-5 text-[var(--fg-2)]">
                   {item}
                 </li>

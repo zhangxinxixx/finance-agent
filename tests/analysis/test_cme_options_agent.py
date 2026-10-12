@@ -97,16 +97,23 @@ def test_available_options_returns_schema_valid_agent_output_bound_to_snapshot_a
         assert output.input_payload["bearish_drivers"] == ["call/resistance wall at 4300"]
 
 
-def test_prelim_source_uncertainty_reduces_confidence_or_records_risk_note():
+def test_prelim_is_usable_without_extra_version_discount():
+    final_snapshot = _available_snapshot()
+    final_output = analyze_cme_options(
+        final_snapshot,
+        created_at=datetime(2026, 5, 14, tzinfo=timezone.utc),
+    )
     snapshot = _available_snapshot()
     _opt_data(snapshot)["data_source"]["status"] = "PRELIM"
     _opt_data(snapshot)["data_quality"]["categories"]["prelim_data"] = 3
 
     output = analyze_cme_options(snapshot, created_at=datetime(2026, 5, 14, tzinfo=timezone.utc))
 
-    notes = output.risk_points + output.invalid_conditions
-    assert output.status is AgentStatus.PARTIAL
-    assert output.confidence < 0.75 or any("PRELIM" in note or "prelim" in note.lower() for note in notes)
+    assert output.status is AgentStatus.SUCCESS
+    assert output.confidence == final_output.confidence
+    assert "PRELIM" in output.summary
+    assert "等待 FINAL" not in output.summary
+    assert any("without an extra version discount" in item for item in output.key_findings)
 
 
 def test_summary_and_findings_reflect_gex_structure_near_far_and_prelim_risk():
@@ -204,11 +211,15 @@ def test_summary_and_findings_reflect_gex_structure_near_far_and_prelim_risk():
 
     output = analyze_cme_options(snapshot, created_at=datetime(2026, 6, 18, tzinfo=timezone.utc))
 
-    assert "Gamma Zero" in output.summary
+    assert "Selected Expiry Window Proxy Gamma Flip" in output.summary
+    assert "OI-Signed GEX Proxy" in output.summary
+    assert "dealer方向未知" in output.summary
     assert "Put-GEX" in output.summary
     assert "JUL26" in output.summary
     assert "AUG26" in output.summary
     assert "PRELIM" in output.summary
+    assert "仍需等待 FINAL" not in output.summary
+    assert "rows_missing_delta" in output.summary
     assert "4325" in output.summary or "4326" in output.summary
     assert any("JUL26" in finding and "Put-GEX" in finding for finding in output.key_findings)
     assert any("AUG26" in finding and "Put-GEX" in finding for finding in output.key_findings)

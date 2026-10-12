@@ -27,9 +27,7 @@ MIN_VLM_IMAGE_HEIGHT = 300
 MIN_VLM_IMAGE_BYTES = 10_000
 JIN10_DETAIL_SOURCE_KEY = "jin10_detail_pages"
 JIN10_XNEWS_PUBLIC_SOURCE_KEY = "jin10_xnews_public"
-DEFAULT_JIN10_BROWSER_PROFILE = Path(
-    os.getenv("JIN10_BROWSER_PROFILE", "~/.finance-agent/jin10_browser_profile")
-).expanduser()
+DEFAULT_JIN10_BROWSER_PROFILE = (Path.home() / ".config" / "finance-agent" / "jin10-browser")
 LIMITED_ACCESS_STATUSES = {"empty", "javascript_required", "vip_locked"}
 
 VlmRunner = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]

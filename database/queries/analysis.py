@@ -12,7 +12,9 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
+from apps.runtime.output_disposition import is_output_purged
 from database.models.analysis import (
     AgentOutput,
     AnalysisSnapshot,
@@ -155,28 +157,22 @@ def upsert_analysis_snapshot(
     payload: dict[str, Any],
     artifact_path: str,
 ) -> AnalysisSnapshot:
-    """幂等 upsert：按 snapshot_id 查找，存在则返回，不存在则创建。
+    """幂等 upsert：仅身份、内容、路径完全相同时返回；冲突拒绝。
 
     payload 键：
       snapshot_id, asset, trade_date, run_id, snapshot_time, status,
       input_snapshot_ids, source_refs, macro, options, positioning,
       news, technical, payload
     """
-    snapshot_id = payload["snapshot_id"]
-    existing = session.scalar(
-        select(AnalysisSnapshot).where(AnalysisSnapshot.snapshot_id == snapshot_id)
-    )
-    if existing is not None:
-        return existing
-
     core_payload = _coerce_payload(payload.get("payload", {}))
+    snapshot_time = _parse_iso_datetime(payload.get("snapshot_time"))
 
-    snap = AnalysisSnapshot(
-        snapshot_id=snapshot_id,
+    values = dict(
+        snapshot_id=payload["snapshot_id"],
         asset=payload["asset"],
         trade_date=_parse_iso_date(payload["trade_date"]),
         run_id=payload["run_id"],
-        snapshot_time=_parse_iso_datetime(payload.get("snapshot_time")),
+        snapshot_time=snapshot_time.astimezone(timezone.utc) if snapshot_time else None,
         status=payload.get("status", "success"),
         input_snapshot_ids=payload.get("input_snapshot_ids", {}),
         source_refs=payload.get("source_refs", []),
@@ -189,8 +185,36 @@ def upsert_analysis_snapshot(
         payload_sha256=_sha256_hex(core_payload),
         artifact_path=artifact_path,
     )
-    session.add(snap)
-    session.flush()
+    def matching(row: AnalysisSnapshot) -> AnalysisSnapshot:
+        for field, expected in values.items():
+            actual = getattr(row, field)
+            if field == "snapshot_time" and actual is not None:
+                actual = _parse_iso_datetime(actual.isoformat())
+            if actual != expected:
+                raise ValueError(f"analysis snapshot conflict: {values['snapshot_id']} differs in {field}")
+        return row
+
+    query = select(AnalysisSnapshot).where(AnalysisSnapshot.snapshot_id == values["snapshot_id"])
+    existing = session.scalar(query)
+    if existing is not None:
+        return matching(existing)
+    snap = AnalysisSnapshot(**values)
+    try:
+        connection = session.connection()
+        if connection.dialect.name == "sqlite" and not connection.connection.driver_connection.in_transaction:
+            # sqlite3 legacy transaction mode does not BEGIN on SELECT. A
+            # standalone SAVEPOINT would otherwise commit on RELEASE and escape
+            # the caller's rollback (for example a failed task authority write).
+            connection.exec_driver_sql("BEGIN")
+        # A unique-insert race rolls back only this savepoint, not caller work.
+        with session.begin_nested():
+            session.add(snap)
+            session.flush()
+    except IntegrityError:
+        existing = session.scalar(query.execution_options(populate_existing=True))
+        if existing is None:
+            raise
+        return matching(existing)
     return snap
 
 
@@ -260,6 +284,9 @@ def upsert_agent_output(
             AgentOutput.version == version,
         )
     )
+
+    if existing is not None and is_output_purged(existing):
+        raise ValueError(f"OUTPUT_PURGED: agent output {existing.id} cannot be re-registered")
 
     core_payload = _coerce_payload(payload.get("payload", {}))
     prompt_version_id = _resolve_prompt_version_id(session, payload)
@@ -385,6 +412,9 @@ def upsert_final_analysis_result(
             FinalAnalysisResult.run_id == run_id,
         )
     )
+
+    if existing is not None and is_output_purged(existing):
+        raise ValueError(f"OUTPUT_PURGED: final analysis result {existing.id} cannot be re-registered")
 
     core_payload = _coerce_payload(payload.get("payload", {}))
     sha256_val = _sha256_hex(core_payload)

@@ -133,30 +133,66 @@ class TaskRecorder:
         source_refs: list[dict] | None = None,
         artifact_refs: list[dict] | None = None,
         output_ref: str | None = None,
+        step_id: str | None = None,
     ) -> str | None:
-        """记录一个步骤。返回 step_id 字符串。"""
+        """记录或收尾一个步骤。返回 step_id 字符串。
+
+        A caller that needs a running-to-terminal transition can pass the id
+        returned by the first call back as ``step_id``.  This keeps one
+        ``TaskStep`` row and lets the state machine record the transition on
+        the same step instead of appending a second row with the same name.
+        """
         if not self._session or not self._run_id:
             return None
 
         step_status = coerce_step_status(status)
 
-        self._step_order_counter += 1
+        if step_id is None:
+            self._step_order_counter += 1
+            step = TaskStep(
+                task_run_id=self._run_id,
+                name=step_name,
+                stage=stage,
+                task_kind=task_kind,
+                status=StepStatus.pending,
+                step_order=self._step_order_counter,
+                input_refs=json.dumps(input_refs) if input_refs else None,
+                output_refs=json.dumps(output_refs) if output_refs else None,
+                source_refs=json.dumps(source_refs) if source_refs else None,
+                artifact_refs=json.dumps(artifact_refs) if artifact_refs else None,
+                output_ref=output_ref,
+            )
+            self._session.add(step)
+            self._session.flush()
+        else:
+            try:
+                existing_step_id = uuid.UUID(step_id)
+            except (ValueError, AttributeError) as exc:
+                raise ValueError(f"Unknown task step id: {step_id!r}") from exc
+            step = self._session.get(TaskStep, existing_step_id)
+            if step is None or step.task_run_id != self._run_id:
+                raise ValueError(f"Task step {step_id!r} does not belong to this task run")
+            if step.name != step_name:
+                raise ValueError(
+                    f"Task step {step_id!r} name mismatch: {step.name!r} != {step_name!r}"
+                )
+            # Preserve the original order and execution metadata, while
+            # allowing terminal calls to attach their final refs.
+            if stage is not None:
+                step.stage = stage
+            if task_kind is not None:
+                step.task_kind = task_kind
+            if input_refs is not None:
+                step.input_refs = json.dumps(input_refs)
+            if output_refs is not None:
+                step.output_refs = json.dumps(output_refs)
+            if source_refs is not None:
+                step.source_refs = json.dumps(source_refs)
+            if artifact_refs is not None:
+                step.artifact_refs = json.dumps(artifact_refs)
+            if output_ref is not None:
+                step.output_ref = output_ref
 
-        step = TaskStep(
-            task_run_id=self._run_id,
-            name=step_name,
-            stage=stage,
-            task_kind=task_kind,
-            status=StepStatus.pending,
-            step_order=self._step_order_counter,
-            input_refs=json.dumps(input_refs) if input_refs else None,
-            output_refs=json.dumps(output_refs) if output_refs else None,
-            source_refs=json.dumps(source_refs) if source_refs else None,
-            artifact_refs=json.dumps(artifact_refs) if artifact_refs else None,
-            output_ref=output_ref,
-        )
-        self._session.add(step)
-        self._session.flush()
         transition_task_step(
             self._session,
             step,

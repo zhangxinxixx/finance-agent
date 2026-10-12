@@ -9,7 +9,7 @@ export interface Jin10CalendarEvent {
   consensus: string | null;
   previous: string | null;
   affect_txt: string;
-  release_state?: "upcoming" | "released";
+  release_state?: "upcoming" | "released" | "pending";
   event_date?: string | null;
   is_high_impact?: boolean;
 }
@@ -63,14 +63,14 @@ export function useJin10Calendar(): Jin10CalendarState {
 
     async function load() {
       try {
-        const result = await fetchJson<Jin10CalendarResponse>("/api/jin10/calendar");
+        const result = await fetchJson<Jin10CalendarResponse>("/api/events/calendar-summary");
         if (!cancelled) {
           setData(result.events ?? []);
           setGeneratedAt(result.generated_at ?? null);
           setStatus(result.status ?? "ok");
           setStats(result.stats ?? null);
           setFreshness(result.freshness ?? null);
-          setIsError(false);
+          setIsError(result.status === "error");
         }
       } catch {
         if (!cancelled) {

@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import type { ReactNode } from "react";
 import { getStatusMeta, type FAStatusTone, type StatusDomain, type StatusLike } from "./statusMeta";
 
@@ -34,7 +35,7 @@ export function FAStatusPill({ tone, status, domain, label, children, dot = true
       className={`inline-flex items-center gap-1 rounded-[var(--radius-pill)] border px-2 py-0.5 text-[11px] font-semibold leading-[1.35] tracking-[0] ${toneStyles[resolvedTone]} ${className}`}
     >
       {dot ? <span className="h-1.5 w-1.5 rounded-full bg-current" /> : null}
-      <span>{children ?? meta?.label}</span>
+      <span>{typeof children === "string" ? readableWarning(children) : children ?? meta?.label}</span>
     </span>
   );
 }

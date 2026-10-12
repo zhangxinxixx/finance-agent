@@ -1,9 +1,10 @@
+import { readerValue } from "@/lib/readerLabels";
 import { Activity } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { EventFlowTimelineItem } from "@/types/event-flow";
-import { getImpactLabel } from "./eventFlowFormat";
+import { formatEventFlowHeadlineSummary, translateEventFlowValue, getImpactLabel } from "./eventFlowFormat";
 
 interface EventTimelineProps {
   timeline: EventFlowTimelineItem[];
@@ -40,8 +41,8 @@ function EventCard({ event, isActive, onClick, onOpenDetail }: { event: EventFlo
           <span className="fa-num text-[10px] font-semibold text-[var(--fg-4)]">{event.time}</span>
           <span className="text-[9px] text-[var(--fg-6)]">{event.date}</span>
         </div>
-        <div className="mb-[3px] truncate text-[12px] font-semibold leading-[1.3] text-[var(--fg-2)]">{event.title}</div>
-        <div className="mb-[5px] line-clamp-2 text-[10px] leading-[1.45] text-[var(--fg-5)]">{event.desc}</div>
+        <div className="mb-[3px] truncate text-[12px] font-semibold leading-[1.3] text-[var(--fg-2)]">{formatEventFlowHeadlineSummary(event.title).lead}</div>
+        <div className="mb-[5px] line-clamp-2 text-[10px] leading-[1.45] text-[var(--fg-5)]">{readerValue(event.desc, "中文事实摘要尚未提供，请查看来源。")}</div>
         <div className="flex flex-wrap gap-[3px]">
           <FAStatusPill status={event.type} domain="event" dot={false} className={STATUS_PILL_CLASS_NAME}>{event.type}</FAStatusPill>
           <FAStatusPill status={event.importance} domain="event" dot={false} className={STATUS_PILL_CLASS_NAME}>{event.importance}</FAStatusPill>
@@ -71,7 +72,7 @@ export function EventTimeline({ timeline, activeId, onSelect, onOpenDetail }: Ev
         <>
           <div className="flex items-center gap-2 pb-1">
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--up)] shadow-[0_0_4px_rgba(16,185,129,0.5)]" />
-            <span className="text-[10px] font-semibold text-[var(--up)]">实时</span>
+            <span className="text-[10px] font-semibold text-[var(--up)]">事件记录</span>
           </div>
           {timeline.map((event) => (
             <EventCard

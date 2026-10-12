@@ -1,5 +1,7 @@
+import { readableWarning } from "@/lib/researchReading";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { KnowledgeItem, KnowledgeOpsTab, KnowledgeViewModel } from "@/types/knowledge";
+import { knowledgeConfidenceLabel, knowledgeStatusLabel, knowledgeTagLabel } from "./knowledgeFormat";
 
 interface KnowledgeOpsPanelProps {
   stats: KnowledgeViewModel["stats"];
@@ -42,11 +44,11 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
   const recentItems = [...allItems].sort((a, b) => b.citations - a.citations).slice(0, 4);
   const recommendItems = allItems
     .filter((item) => item.id !== selectedItem?.id)
-    .sort((a, b) => b.confidence - a.confidence)
+    .sort((a, b) => (typeof b.confidence === "number" && Number.isFinite(b.confidence) ? b.confidence : -Infinity) - (typeof a.confidence === "number" && Number.isFinite(a.confidence) ? a.confidence : -Infinity))
     .slice(0, 3);
   const statRows = [
     { label: "总资产", value: stats.total || allItems.length, meta: "精选研究资产" },
-    { label: "智能体资产", value: stats.agentReady || allItems.filter((item) => item.agentReady).length, meta: "Prompt / 搜索双入口" },
+    { label: "智能体资产", value: stats.agentReady || allItems.filter((item) => item.agentReady).length, meta: "提示词 / 搜索双入口" },
     { label: "待复核", value: stats.reviewQueueCount || reviewItems.length, meta: "需要人工二次校验" },
     { label: "剧本模板", value: stats.playbookCount || allItems.filter((item) => item.type === "playbook").length, meta: `候选 ${stats.playbookCandidateCount || allItems.filter((item) => item.playbookReady).length}` },
   ];
@@ -67,9 +69,9 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
       </section>
 
       <section className="knowledge-ops-section">
-        <SectionHeading eyebrow="Sync" title="同步健康" />
+        <SectionHeading eyebrow="同步" title="同步健康" />
         <div className="knowledge-row-list">
-          <SyncItem name="本地知识库" status="已同步" color="green" />
+          <SyncItem name="知识库归档" status="已同步" color="green" />
           <SyncItem name="回测样本库" status="待补样本" color="orange" />
         </div>
         {selectedItem && (
@@ -89,7 +91,7 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
                   <span>{item.title}</span>
                   <span className="fa-num">{item.verifiedAt}</span>
                 </div>
-                <FAStatusPill tone="warn" className="mt-1.5">{item.status}</FAStatusPill>
+                <FAStatusPill tone="warn" className="mt-1.5">{knowledgeStatusLabel(item.status)}</FAStatusPill>
               </div>
             ))}
           </div>
@@ -97,7 +99,7 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
       )}
 
       <section className="knowledge-ops-section">
-        <SectionHeading eyebrow="Assets" title="资产与沉淀" />
+        <SectionHeading eyebrow="资产" title="资产与沉淀" />
         <div className="knowledge-ops-tabs">
           {OPS_TABS.map((tab) => (
             <button
@@ -122,7 +124,7 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
         {activeTab === "agent" && (
           <div className="space-y-2">
             {agentItems.map((item) => (
-              <MiniAssetRow key={item.id} item={item} meta={`输入 ${item.inputs.slice(0, 3).join(" / ")}`} />
+              <MiniAssetRow key={item.id} item={item} meta={`输入 ${item.inputs.join(" / ") || "未提供"}`} />
             ))}
           </div>
         )}
@@ -143,7 +145,7 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
                   <span>{item.title}</span>
                   <span className="fa-num">引用 {item.citations}</span>
                 </div>
-                <p className="knowledge-row-copy">{item.summary}</p>
+                <p className="knowledge-row-copy">{readableWarning(item.summary)}</p>
               </div>
             ))}
           </div>
@@ -158,7 +160,7 @@ export function KnowledgeOpsPanel({ stats, selectedItem, allItems, activeTab, on
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[11px] font-semibold text-[var(--fg-2)]">{item.title}</div>
-                  <div className="mt-1 text-[10px] text-[var(--fg-5)]">{item.typeLabel} / 可信度 {item.confidence}% / {item.status}</div>
+                  <div className="mt-1 text-[10px] text-[var(--fg-5)]">{knowledgeTagLabel(item.typeLabel)} / 可信度 {knowledgeConfidenceLabel(item.confidence)} / {knowledgeStatusLabel(item.status)}</div>
                 </div>
               </div>
             ))}

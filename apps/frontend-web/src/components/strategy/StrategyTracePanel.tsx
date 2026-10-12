@@ -2,6 +2,8 @@ import { Loader2 } from "lucide-react";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 import { SourceTrace } from "@/components/shared/SourceTrace";
 import { getDataStatusLabel } from "@/lib/status";
 import type { SnapshotRef } from "@/types/snapshot";
@@ -37,10 +39,13 @@ function SnapshotSummary({ title, snapshot }: { title: string; snapshot: Snapsho
         ) : null}
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
-        <TraceMetric label="snapshot" value={snapshot.snapshot_id} />
-        <TraceMetric label="run" value={snapshot.run_id ?? "未绑定"} />
-        <TraceMetric label="data date" value={snapshot.dataDate ?? "未知"} />
-        <TraceMetric label="inputs" value={String(snapshot.input_snapshot_ids?.length ?? 0)} />
+        <TraceMetric label="快照状态" value="已绑定" />
+        <TraceMetric label="运行关联" value={snapshot.run_id ? "已绑定" : "未绑定"} />
+        <TraceMetric label="数据日期" value={snapshot.dataDate ?? "未知"} />
+        <TraceMetric label="上游输入数量" value={String(snapshot.input_snapshot_ids?.length ?? 0)} />
+      </div>
+      <div className="mt-2">
+        <EvidenceRecordActions label="快照追踪记录" record={{ snapshot_id: snapshot.snapshot_id, run_id: snapshot.run_id, data_date: snapshot.dataDate, input_snapshot_ids: snapshot.input_snapshot_ids }} />
       </div>
     </div>
   );
@@ -63,7 +68,7 @@ function InputSnapshotList({ snapshots }: { snapshots: SnapshotRef[] }) {
           className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3"
         >
           <div className="flex items-center justify-between gap-2">
-            <div className="truncate text-[10px] font-semibold text-[var(--fg-2)]">{snapshot.snapshot_id ?? "未知快照"}</div>
+            <div className="truncate text-[10px] font-semibold text-[var(--fg-2)]">{snapshot.snapshot_id ? "已绑定上游快照" : "未提供上游快照"}</div>
             {snapshot.status ? (
               <FAStatusPill tone="info" dot={false}>
                 {getDataStatusLabel(snapshot.status)}
@@ -71,10 +76,11 @@ function InputSnapshotList({ snapshots }: { snapshots: SnapshotRef[] }) {
             ) : null}
           </div>
           <div className="mt-2 space-y-1 text-[10px] text-[var(--fg-4)]">
-            <div>run: {snapshot.run_id ?? "未绑定"}</div>
-            <div>data date: {snapshot.dataDate ?? "未知"}</div>
-            <div>inputs: {snapshot.input_snapshot_ids?.length ?? 0}</div>
+            <div>运行关联：{snapshot.run_id ? "已绑定" : "未绑定"}</div>
+            <div>数据日期：{snapshot.dataDate ?? "未知"}</div>
+            <div>上游输入：{snapshot.input_snapshot_ids?.length ?? 0} 条</div>
           </div>
+          <div className="mt-2"><EvidenceRecordActions label="上游快照记录" record={{ snapshot_id: snapshot.snapshot_id, run_id: snapshot.run_id, data_date: snapshot.dataDate, input_snapshot_ids: snapshot.input_snapshot_ids }} /></div>
         </div>
       ))}
     </div>
@@ -93,7 +99,7 @@ export function StrategyDataTraceSection({
   const trace = data.source_trace ?? null;
 
   return (
-    <FACard title="数据溯源" eyebrow="Trace" bodyClassName="space-y-3">
+    <FACard title="数据溯源" eyebrow="依据链路" bodyClassName="space-y-3">
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] p-3">
           <div className="text-[9px] font-semibold tracking-[0.08em] text-[var(--fg-5)]">来源引用</div>
@@ -108,9 +114,9 @@ export function StrategyDataTraceSection({
       <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-panel)] p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <div className="text-[10px] font-semibold text-[var(--fg-2)]">结构化 trace drilldown</div>
+            <div className="text-[10px] font-semibold text-[var(--fg-2)]">结构化链路详情</div>
             <div className="mt-1 text-[11px] leading-5 text-[var(--fg-5)]">
-              直接消费 `/api/source-trace/by-strategy/{'{'}strategy_card_id{'}'}`，补足 snapshot、上游 inputs 与关联产物链路。
+              页面消费后端已返回的结构化来源，补足快照、上游输入与关联产物链路；不会在前端重新计算策略。
             </div>
           </div>
           {trace ? (
@@ -129,7 +135,7 @@ export function StrategyDataTraceSection({
 
         {traceError ? (
           <div className="mt-3 rounded-[var(--radius-md)] border border-[rgba(239,68,68,0.18)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-[11px] text-[var(--down)]">
-            结构化 trace 拉取失败：{traceError.message}
+            结构化依据链路读取失败：{readingErrorMessage(traceError, "当前无法读取结构化依据链路，请稍后重试。")}
           </div>
         ) : null}
 
@@ -138,10 +144,10 @@ export function StrategyDataTraceSection({
             <SnapshotSummary title="当前快照" snapshot={trace.snapshot} />
 
             <div className="grid gap-2 sm:grid-cols-4">
-              <TraceMetric label="sources" value={String(trace.source_refs.length)} />
-              <TraceMetric label="artifacts" value={String(trace.artifact_refs.length)} />
-              <TraceMetric label="inputs" value={String(trace.input_snapshots?.length ?? 0)} />
-              <TraceMetric label="related" value={String(trace.related_artifacts?.length ?? 0)} />
+              <TraceMetric label="来源记录" value={String(trace.source_refs.length)} />
+              <TraceMetric label="产物记录" value={String(trace.artifact_refs.length)} />
+              <TraceMetric label="上游输入" value={String(trace.input_snapshots?.length ?? 0)} />
+              <TraceMetric label="关联产物" value={String(trace.related_artifacts?.length ?? 0)} />
             </div>
 
             <div className="grid gap-3 lg:grid-cols-2">
@@ -169,7 +175,7 @@ export function StrategyDataTraceSection({
         ) : !isTraceLoading && !traceError ? (
           <FAEmptyState
             title="暂无结构化 trace"
-            description="当前策略卡还没有独立的 source-trace 结果，页面继续保留 strategy card 自带的 source refs / artifact refs。"
+            description="当前策略卡还没有独立的结构化依据结果；页面继续保留策略卡自带的来源与产物记录。"
             className="mt-3 py-5"
           />
         ) : null}

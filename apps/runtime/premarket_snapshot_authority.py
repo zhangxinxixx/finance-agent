@@ -67,7 +67,18 @@ def canonicalize_premarket_snapshot_payload(snapshot: dict[str, Any]) -> dict[st
         raise ValueError("premarket snapshot payload must be canonical JSON") from exc
     if not isinstance(payload, dict):
         raise ValueError("premarket snapshot payload must be an object")
-    return payload
+    # PostgreSQL JSONB normalizes -0.0 to 0.0. Normalize before hashing and
+    # archiving so an unchanged DB round trip retains the exact digest.
+    def normalize_zero(value):
+        if isinstance(value, dict):
+            return {key: normalize_zero(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [normalize_zero(item) for item in value]
+        if isinstance(value, float) and value == 0:
+            return 0.0
+        return value
+
+    return normalize_zero(payload)
 
 
 def stage_premarket_snapshot_authority(
@@ -122,7 +133,8 @@ def stage_premarket_snapshot_authority(
             trade_date=trade_date,
             run_id=run_id,
             snapshot_id=snapshot_id,
-            persisted_path=persisted_path,
+            expected_path=expected_path,
+            storage_root=storage_root,
             payload=snapshot,
         )
 
@@ -152,7 +164,8 @@ def stage_premarket_snapshot_authority(
         trade_date=trade_date,
         run_id=run_id,
         snapshot_id=snapshot_id,
-        persisted_path=persisted_path,
+        expected_path=expected_path,
+        storage_root=storage_root,
         payload=snapshot,
     )
 
@@ -182,7 +195,8 @@ def stage_premarket_snapshot_authority(
     _validate_artifact_row(
         artifact,
         run_uuid=run_uuid,
-        persisted_path=persisted_path,
+        expected_path=expected_path,
+        storage_root=storage_root,
         file_sha256=file_sha256,
         byte_size=len(raw),
         snapshot_id=snapshot_id,
@@ -245,8 +259,14 @@ def resolve_gold_daily_report_premarket_snapshot(
     storage_root: Path,
     trade_date: str,
     asset: str = _ASSET,
+    premarket_run_id: str | None = None,
 ) -> PremarketSnapshotAuthority:
     """Resolve universal success authority or one explicitly limited Gold daily-report authority."""
+    if premarket_run_id is not None:
+        return _resolve_selected_gold_daily_report_run(
+            db, storage_root=storage_root, trade_date=trade_date,
+            asset=asset, run_id=premarket_run_id,
+        )
     universal = resolve_authoritative_premarket_snapshot(
         db,
         storage_root=storage_root,
@@ -302,6 +322,39 @@ def resolve_gold_daily_report_premarket_snapshot(
         parsed_date=parsed_date,
         asset=asset,
         found_reason="authoritative_gold_daily_report_premarket_snapshot_found",
+    )
+
+
+def _resolve_selected_gold_daily_report_run(
+    db: Session, *, storage_root: Path, trade_date: str, asset: str, run_id: str,
+) -> PremarketSnapshotAuthority:
+    """Pin one declared input without changing the default ambiguous-run policy."""
+    if asset != _ASSET:
+        return _result("invalid", "unsupported_asset")
+    try:
+        parsed_date = date.fromisoformat(trade_date)
+        if parsed_date.isoformat() != trade_date:
+            raise ValueError("noncanonical date")
+        run_uuid = _parse_uuid(run_id)
+    except (ValueError, TypeError):
+        return _result("invalid", "selected_premarket_identity_invalid")
+    try:
+        run = db.get(TaskRun, run_uuid)
+        if run is None:
+            return _result("missing", "selected_premarket_run_missing")
+        if not _is_canonical_premarket_run(run) or run.trade_date != trade_date:
+            return _result("invalid", "selected_premarket_run_scope_mismatch")
+        if run.status == TaskStatus.blocked:
+            if _gold_daily_report_receipt_state(db, run=run, trade_date=trade_date) != "eligible":
+                return _result("invalid", "gold_daily_report_authority_receipt_invalid")
+        elif run.status != TaskStatus.success:
+            return _result("invalid", "selected_premarket_run_not_eligible")
+    except Exception:
+        return _result("unavailable", "authority_database_unavailable")
+    return _resolve_exact_run_authority(
+        db, run=run, storage_root=storage_root, trade_date=trade_date,
+        parsed_date=parsed_date, asset=asset,
+        found_reason="explicit_gold_daily_report_premarket_snapshot_found",
     )
 
 
@@ -379,6 +432,7 @@ def _resolve_exact_run_authority(
     parsed_date: date,
     asset: str,
     found_reason: str,
+    research_comparison: bool = False,
 ) -> PremarketSnapshotAuthority:
     run_id = str(run.id)
     expected_path = _expected_snapshot_path(
@@ -386,7 +440,6 @@ def _resolve_exact_run_authority(
         trade_date=trade_date,
         run_id=run_id,
     )
-    persisted_path = str(expected_path)
     try:
         snapshots = list(
             db.scalars(
@@ -403,18 +456,31 @@ def _resolve_exact_run_authority(
                 select(RunArtifact).where(
                     RunArtifact.run_id == run.id,
                     RunArtifact.artifact_type == _ARTIFACT_TYPE,
-                    RunArtifact.file_path == persisted_path,
                 )
             ).all()
         )
     except Exception:
         return _result("unavailable", "authority_database_unavailable", run_id=run_id)
+    if research_comparison or len(artifacts) > 1:
+        # A research run also archives a Gold feature_snapshot.v2.json. Only
+        # the exact premarket snapshot is the research comparison input. The
+        # other feature artifacts are not competing premarket snapshots.
+        # Duplicate registrations of the exact path still fail closed below.
+        artifacts = [item for item in artifacts if _authority_path_matches(
+            item.file_path, expected_path=expected_path, storage_root=storage_root,
+        )]
     if len(snapshots) != 1:
         return _result("invalid", "analysis_snapshot_not_unique", run_id=run_id)
     if len(artifacts) != 1:
         return _result("invalid", "run_artifact_not_unique", run_id=run_id)
     snapshot_row = snapshots[0]
     artifact = artifacts[0]
+    if not _authority_path_matches(
+        artifact.file_path,
+        expected_path=expected_path,
+        storage_root=storage_root,
+    ):
+        return _result("invalid", "authority_integrity_invalid", run_id=run_id)
     snapshot_id = snapshot_row.snapshot_id
 
     try:
@@ -429,7 +495,8 @@ def _resolve_exact_run_authority(
             trade_date=trade_date,
             run_id=run_id,
             snapshot_id=expected_snapshot_id,
-            persisted_path=persisted_path,
+            expected_path=expected_path,
+            storage_root=storage_root,
             payload=snapshot_row.payload,
         )
         _validate_file_path(expected_path, storage_root=storage_root)
@@ -452,7 +519,8 @@ def _resolve_exact_run_authority(
         _validate_artifact_row(
             artifact,
             run_uuid=run.id,
-            persisted_path=persisted_path,
+            expected_path=expected_path,
+            storage_root=storage_root,
             file_sha256=file_sha256,
             byte_size=len(raw),
             snapshot_id=expected_snapshot_id,
@@ -521,6 +589,35 @@ def _expected_snapshot_path(*, storage_root: Path, trade_date: str, run_id: str)
     return Path(storage_root) / relative
 
 
+def _authority_path_matches(
+    stored_path: str,
+    *,
+    expected_path: Path,
+    storage_root: Path,
+) -> bool:
+    """Match one persisted path to the exact expected file without rewriting it.
+
+    Existing authority rows use three representations: an absolute path, a
+    path relative to ``storage_root`` (``features/...``), or the historical
+    project-root form (``storage/features/...``).  Only exact normalized
+    equality is accepted; unsafe path segments and arbitrary suffix matches
+    remain invalid.
+    """
+
+    try:
+        value = Path(stored_path).expanduser()
+        if not value.parts or any(part in {"", ".", ".."} for part in value.parts):
+            return False
+        root = Path(storage_root).expanduser().resolve(strict=False)
+        expected = Path(expected_path).expanduser().resolve(strict=False)
+        candidates = [value] if value.is_absolute() else [root / value]
+        if not value.is_absolute() and value.parts[0] == root.name:
+            candidates.append(root.parent / value)
+        return any(candidate.resolve(strict=False) == expected for candidate in candidates)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def _validate_file_path(path: Path, *, storage_root: Path) -> None:
     root = Path(storage_root).absolute()
     candidate = path.absolute()
@@ -564,7 +661,8 @@ def _validate_snapshot_row(
     trade_date: str,
     run_id: str,
     snapshot_id: str,
-    persisted_path: str,
+    expected_path: Path,
+    storage_root: Path,
     payload: dict[str, Any],
 ) -> None:
     if (
@@ -573,7 +671,11 @@ def _validate_snapshot_row(
         or row.run_id != run_id
         or row.snapshot_id != snapshot_id
         or row.status != "success"
-        or row.artifact_path != persisted_path
+        or not _authority_path_matches(
+            row.artifact_path,
+            expected_path=expected_path,
+            storage_root=storage_root,
+        )
         or row.payload != payload
         or row.payload_sha256 != _canonical_payload_sha256(payload)
         or row.input_snapshot_ids != payload.get("input_snapshot_ids", {})
@@ -591,7 +693,8 @@ def _validate_artifact_row(
     row: RunArtifact,
     *,
     run_uuid: uuid.UUID,
-    persisted_path: str,
+    expected_path: Path,
+    storage_root: Path,
     file_sha256: str,
     byte_size: int,
     snapshot_id: str,
@@ -606,7 +709,11 @@ def _validate_artifact_row(
         row.run_id != run_uuid
         or row.task_id is not None
         or row.artifact_type != _ARTIFACT_TYPE
-        or row.file_path != persisted_path
+        or not _authority_path_matches(
+            row.file_path,
+            expected_path=expected_path,
+            storage_root=storage_root,
+        )
         or row.sha256 != file_sha256
         or row.byte_size != byte_size
         or row.content_type != "application/json"

@@ -41,6 +41,11 @@ from apps.features.options.structure import (
     score_walls,
 )
 from apps.features.options.calibration import CalibrationResult
+from apps.features.options.semantics import (
+    build_gex_semantics,
+    build_oi_gamma_concentration_zone,
+    signed_gex_components,
+)
 
 # ---------------------------------------------------------------------------
 # Result container
@@ -130,6 +135,15 @@ class OptionsAnalysisResult:
     gex_summary_by_expiry: dict[str, dict[str, Any]] = field(default_factory=dict)
     iv_skew_by_expiry: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    # Explicit v2 semantics/provenance.  These fields are additive; legacy
+    # ``used_real_gex`` and ``gamma_zero`` remain available to old consumers.
+    expiry_selection: dict[str, Any] = field(default_factory=dict)
+    gex_semantics: dict[str, Any] = field(default_factory=dict)
+    oi_gamma_concentration_zone: dict[str, Any] = field(default_factory=dict)
+    reconciliation: dict[str, Any] = field(default_factory=dict)
+    feature_version: str = "cme_options_analysis.v2"
+    feature_revision: str = "cme_options_analysis.v2:unversioned"
+
 
 # ---------------------------------------------------------------------------
 # Public builder
@@ -166,6 +180,10 @@ def build_options_snapshot(
     analysis_range_mode: str = "auto",
     analysis_range_sigma: float = 2.0,
     analysis_range_min_half_width: int = 500,
+    expiry_selection: dict[str, Any] | None = None,
+    reconciliation: dict[str, Any] | None = None,
+    feature_version: str = "cme_options_analysis.v2",
+    feature_revision: str | None = None,
 ) -> OptionsAnalysisResult:
     """Run the full options analysis pipeline and return structured result.
 
@@ -225,6 +243,9 @@ def build_options_snapshot(
     product_rows = [r for r in raw_rows if r.get("product_code", "") == product]
     if trade_date is None and product_rows:
         trade_date = product_rows[0].get("trade_date", "")
+    raw_expiry_codes = sort_expiry_codes(
+        {str(row.get("expiry") or "").strip().upper() for row in product_rows if row.get("expiry")}
+    )
 
     normalized, norm_report = normalize_option_rows(
         product_rows,
@@ -371,6 +392,8 @@ def build_options_snapshot(
             expiry_F = F  # fallback to nearest-expiry F
         exposures.extend(compute_exposures(expiry_rows, expiry_F or 0.0, expiry_T))
     used_real_gex = any(e.method == "black76" for e in exposures)
+    black76_row_count = sum(1 for e in exposures if e.method == "black76")
+    proxy_row_count = sum(1 for e in exposures if e.method == "proxy")
 
     # -----------------------------------------------------------------------
     # 5. Structure analysis
@@ -402,7 +425,15 @@ def build_options_snapshot(
     # -----------------------------------------------------------------------
     # 7. NetGEX grid
     # -----------------------------------------------------------------------
-    netgex = compute_netgex_grid(main_normalized, F, T)
+    netgex = compute_netgex_grid(
+        main_normalized,
+        F,
+        T,
+        forward_by_expiry={
+            expiry: context.get("f_value")
+            for expiry, context in forward_by_expiry.items()
+        },
+    )
 
     # -----------------------------------------------------------------------
     # 8. Per-expiry aggregated views
@@ -414,9 +445,11 @@ def build_options_snapshot(
         exp_exposures = [e for e in main_exposures if e.expiry == expiry]
         # GEX by strike
         gex_by_strike: dict[tuple[int, str], float] = {}
+        shape_proxy_by_strike: dict[tuple[int, str], float] = {}
         for e in exp_exposures:
             key = (e.strike, e.option_type)
             gex_by_strike[key] = gex_by_strike.get(key, 0.0) + e.gex_1pct
+            shape_proxy_by_strike[key] = shape_proxy_by_strike.get(key, 0.0) + float(e.shape_proxy_oi or 0.0)
 
         # Aggregate into per-strike call/put/net
         strikes_set = sorted({k[0] for k in gex_by_strike})
@@ -424,12 +457,21 @@ def build_options_snapshot(
         for strike in strikes_set:
             call_gex = gex_by_strike.get((strike, "CALL"), 0.0)
             put_gex = gex_by_strike.get((strike, "PUT"), 0.0)
+            shape_proxy_oi = sum(
+                shape_proxy_by_strike.get((strike, option_type), 0.0)
+                for option_type in ("CALL", "PUT")
+            )
             gex_rows.append({
                 "strike": strike,
                 "call_gex": round(call_gex, 2),
                 "put_gex": round(put_gex, 2),
                 "net_gex": round(call_gex - put_gex, 2),
                 "total_gex": round(abs(call_gex) + abs(put_gex), 2),
+                "shape_proxy_oi": round(shape_proxy_oi, 4),
+                **{
+                    key: round(value, 2)
+                    for key, value in signed_gex_components(call_gex, put_gex).items()
+                },
             })
         gex_rows.sort(key=lambda x: x["total_gex"], reverse=True)
         gex_top_by_expiry[expiry] = gex_rows[:10]
@@ -447,9 +489,11 @@ def build_options_snapshot(
         )[:10]
         vex_by_strike: dict[int, float] = {}
         theta_by_strike: dict[int, float] = {}
+        shape_proxy_by_strike_total: dict[int, float] = {}
         for e in exp_exposures:
             vex_by_strike[e.strike] = vex_by_strike.get(e.strike, 0.0) + e.vega_exposure_1vol
             theta_by_strike[e.strike] = theta_by_strike.get(e.strike, 0.0) + e.theta_exposure_day
+            shape_proxy_by_strike_total[e.strike] = shape_proxy_by_strike_total.get(e.strike, 0.0) + float(e.shape_proxy_oi or 0.0)
         vex_top_by_strike = sorted(vex_by_strike.items(), key=lambda x: abs(x[1]), reverse=True)[:10]
         theta_top_by_strike = sorted(theta_by_strike.items(), key=lambda x: abs(x[1]), reverse=True)[:10]
         exposure_summary_by_expiry[expiry] = {
@@ -465,6 +509,15 @@ def build_options_snapshot(
             "theta_top_by_leg": [
                 {"strike": s, "option_type": ot, "theta_exposure": round(t, 2)}
                 for s, ot, t in theta_top_by_leg
+            ],
+            "shape_proxy_oi_total": round(sum(shape_proxy_by_strike_total.values()), 4),
+            "shape_proxy_top_by_strike": [
+                {"strike": s, "shape_proxy_oi": round(value, 4)}
+                for s, value in sorted(
+                    shape_proxy_by_strike_total.items(),
+                    key=lambda item: abs(item[1]),
+                    reverse=True,
+                )[:10]
             ],
         }
 
@@ -488,6 +541,8 @@ def build_options_snapshot(
         exp_exposures = [e for e in main_exposures if e.expiry == expiry]
         call_gex_sum = sum(e.gex_1pct for e in exp_exposures if e.option_type == "CALL")
         put_gex_sum = sum(e.gex_1pct for e in exp_exposures if e.option_type == "PUT")
+        call_shape_proxy_oi = sum(float(e.shape_proxy_oi or 0.0) for e in exp_exposures if e.option_type == "CALL")
+        put_shape_proxy_oi = sum(float(e.shape_proxy_oi or 0.0) for e in exp_exposures if e.option_type == "PUT")
         net_gex_sum = call_gex_sum - put_gex_sum
         total_gex_sum = abs(call_gex_sum) + abs(put_gex_sum)
 
@@ -508,7 +563,15 @@ def build_options_snapshot(
             "net_gex": round(net_gex_sum, 2),
             "call_gex": round(call_gex_sum, 2),
             "put_gex": round(put_gex_sum, 2),
+            **{
+                key: round(value, 2)
+                for key, value in signed_gex_components(call_gex_sum, put_gex_sum).items()
+            },
             "total_gex": round(total_gex_sum, 2),
+            "shape_proxy_oi": round(call_shape_proxy_oi + put_shape_proxy_oi, 4),
+            "shape_proxy_call_oi": round(call_shape_proxy_oi, 4),
+            "shape_proxy_put_oi": round(put_shape_proxy_oi, 4),
+            "shape_proxy_unit": "contracts_times_dimensionless_delta_shape",
             "structure": structure,
         }
 
@@ -561,6 +624,55 @@ def build_options_snapshot(
         warnings=unique_warnings,
     )
 
+    # The old field name is retained for compatibility, but the public
+    # semantic contract is explicit: this is an option-type signed OI proxy,
+    # and dealer inventory/position is unknown.
+    if expiry_selection is None:
+        explicit_expiry_selection = expiries is not None
+        selection_universe = raw_expiry_codes if explicit_expiry_selection else list(active_expiries)
+        selected_is_full_chain = set(selection_universe) == set(active_expiries)
+        expiry_selection = {
+            "selected_expiries": list(active_expiries),
+            "selected_expiry_window": list(active_expiries),
+            "all_expiries": selection_universe,
+            "eligible_expiries": selection_universe,
+            "selected_is_full_chain": selected_is_full_chain,
+            "selection_policy": {
+                "version": "expiry_window.v2",
+                "name": "caller_supplied" if explicit_expiry_selection else "all_available_expiries",
+                "max_expiries": len(active_expiries),
+                "required_nearest_eligible": False,
+                "front_active_option_expiry": active_expiries[0] if active_expiries else None,
+                "front_active_future_expiry": None,
+                "front_active_future_status": "unavailable_from_option_rows",
+                "front_active_future_source": "unavailable",
+                "front_active_future_inference": False,
+                "front_active_future_limitation": (
+                    "No independent GC futures expiry source was supplied; option months are not used as futures expiry."
+                ),
+                "selected_is_full_chain": selected_is_full_chain,
+            },
+            "open_interest_coverage": 1.0 if selected_is_full_chain and active_expiries else None,
+            "row_coverage": 1.0 if normalized else None,
+            "coverage": {
+                "open_interest": 1.0 if selected_is_full_chain and active_expiries else None,
+                "rows": 1.0 if normalized else None,
+                "selected_expiries": len(active_expiries),
+                "eligible_expiries": len(selection_universe),
+                "all_expiries": len(selection_universe),
+            },
+        }
+    gex_semantics = build_gex_semantics(
+        selected_expiries=active_expiries,
+        used_settlement_implied_gamma=used_real_gex,
+        proxy_row_count=proxy_row_count,
+        black76_row_count=black76_row_count,
+    )
+    oi_gamma_concentration_zone = build_oi_gamma_concentration_zone(
+        strike_metrics,
+        selected_expiries=active_expiries,
+    )
+
     return OptionsAnalysisResult(
         trade_date=trade_date or "",
         product=product,
@@ -608,6 +720,12 @@ def build_options_snapshot(
         data_source_url=data_source_url,
         input_snapshot_ids=input_snapshot_ids or {},
         data_quality=data_quality,
+        expiry_selection=dict(expiry_selection),
+        gex_semantics=gex_semantics,
+        oi_gamma_concentration_zone=oi_gamma_concentration_zone,
+        reconciliation=dict(reconciliation or {}),
+        feature_version=feature_version,
+        feature_revision=feature_revision or f"{feature_version}:unversioned",
     )
 
 
@@ -713,9 +831,11 @@ def _build_audit_metadata(result: OptionsAnalysisResult) -> dict[str, Any]:
     excluded_outside_analysis_range = valid_pricing_rows - range_rows
     proxy_exposures = [e for e in result.exposures if e.method == "proxy"]
     black76_exposures = [e for e in result.exposures if e.method == "black76"]
-    total_abs_gex = sum(abs(e.gex_1pct) for e in result.exposures)
-    proxy_abs_gex = sum(abs(e.gex_1pct) for e in proxy_exposures)
-    proxy_gex_share = proxy_abs_gex / total_abs_gex if total_abs_gex > 0 else 0.0
+    # Only settlement-implied Black-76 rows have USD-per-1% model GEX.  The
+    # fallback rows carry a separate dimensionless shape proxy and therefore
+    # must never be included in the USD GEX coverage ratio.
+    shape_proxy_oi_total = sum(float(e.shape_proxy_oi or 0.0) for e in proxy_exposures)
+    proxy_gex_share = 0.0
 
     black76_by_expiry: dict[str, int] = {}
     proxy_by_expiry: dict[str, int] = {}
@@ -752,6 +872,10 @@ def _build_audit_metadata(result: OptionsAnalysisResult) -> dict[str, Any]:
     total_gex = sum(summary.get("total_gex", 0.0) for summary in result.gex_summary_by_expiry.values())
     net_gex = sum(summary.get("net_gex", 0.0) for summary in result.gex_summary_by_expiry.values())
     return {
+        "feature_version": result.feature_version,
+        "feature_revision": result.feature_revision,
+        "expiry_selection": result.expiry_selection,
+        "reconciliation": result.reconciliation,
         "price_anchor_audit": {
             "model_f_by_expiry": result.forward_by_expiry,
             "report_p0": result.report_p0,
@@ -789,6 +913,9 @@ def _build_audit_metadata(result: OptionsAnalysisResult) -> dict[str, Any]:
             "proxy_rows": len(proxy_exposures),
             "proxy_strikes": len({(e.expiry, e.strike, e.option_type) for e in proxy_exposures}),
             "proxy_gex_share": _safe_round(proxy_gex_share, 6),
+            "shape_proxy_oi_total": _safe_round(shape_proxy_oi_total, 4),
+            "shape_proxy_unit": "contracts_times_dimensionless_delta_shape",
+            "shape_proxy_note": "Shape proxy is reported separately and is excluded from USD GEX totals, wall GEX, and Gamma Flip fitting.",
             "black76_rows": len(black76_exposures),
             "black76_rows_by_expiry": black76_by_expiry,
             "proxy_rows_by_expiry": proxy_by_expiry,
@@ -796,11 +923,15 @@ def _build_audit_metadata(result: OptionsAnalysisResult) -> dict[str, Any]:
         },
         "black76_audit": black76_audit,
         "gex_audit": {
+            "semantics": result.gex_semantics,
+            "dealer_position_unknown": True,
+            "gamma_flip_label": "Selected Expiry Window Proxy Gamma Flip",
+            "concentration_zone": result.oi_gamma_concentration_zone,
             "gex_scope": "main_analysis_range",
             "analysis_range": [result.analysis_strike_min, result.analysis_strike_max],
-            "gex_unit": "USD per 1% move estimated model gamma exposure",
+            "gex_unit": "USD per 1% move estimated settlement-implied Black-76 model gamma exposure",
             "gex_definition": "Gamma × OI × contract_multiplier × F^2 × 0.01",
-            "notional_warning": "GEX is second-order model exposure, not delta notional and not a direct dealer inventory estimate.",
+            "notional_warning": "GEX is an OI-signed model proxy, not delta notional and not a direct dealer inventory estimate.",
             "total_call_gex": _safe_round(sum(s.get("call_gex", 0.0) for s in result.gex_summary_by_expiry.values()), 2),
             "total_put_gex": _safe_round(sum(s.get("put_gex", 0.0) for s in result.gex_summary_by_expiry.values()), 2),
             "net_gex": _safe_round(net_gex, 2),
@@ -809,7 +940,7 @@ def _build_audit_metadata(result: OptionsAnalysisResult) -> dict[str, Any]:
             "gamma_zero_full": result.netgex.gamma_zero,
             "gamma_zero_range": [result.netgex.price_grid[0], result.netgex.price_grid[-1]] if result.netgex.price_grid else None,
             "proxy_included_in_zero": False,
-            "gamma_zero_note": "Gamma Zero grid uses only rows with settlement-implied Black-76 IV; proxy rows are excluded from zero-axis fitting and used only for static exposure/wall context.",
+            "gamma_zero_note": "Selected Expiry Window Proxy Gamma Flip uses only rows with settlement-implied Black-76 IV; dimensionless shape-proxy rows are excluded from zero-axis fitting and USD GEX totals.",
         },
         "wallscore_audit": {
             **_WALL_SCORE_FORMULA,
@@ -915,6 +1046,9 @@ def snapshot_to_dict(result: OptionsAnalysisResult) -> dict[str, Any]:
 
     return {
         "version": "1.0",
+        "schema_version": "cme_options_analysis.v2",
+        "feature_version": result.feature_version,
+        "feature_revision": result.feature_revision,
         "trade_date": result.trade_date,
         "generated_at": result.generated_at,
         "data_source": {
@@ -925,7 +1059,16 @@ def snapshot_to_dict(result: OptionsAnalysisResult) -> dict[str, Any]:
             "expiries": result.expiries,
             "row_count": len(result.normalized_rows),
             "input_snapshot_ids": result.input_snapshot_ids,
+            "feature_version": result.feature_version,
+            "feature_revision": result.feature_revision,
+            "expiry_selection": result.expiry_selection,
+            "reconciliation": result.reconciliation,
         },
+        "expiry_selection": result.expiry_selection,
+        "reconciliation": result.reconciliation,
+        "gex_semantics": result.gex_semantics,
+        "dealer_position_unknown": True,
+        "oi_gamma_concentration_zone": result.oi_gamma_concentration_zone,
         "parameters": {
             "p0": result.report_p0,
             "p0_source": result.report_p0_source,
@@ -953,6 +1096,9 @@ def snapshot_to_dict(result: OptionsAnalysisResult) -> dict[str, Any]:
             "model": "black-76",
             "used_real_gex": result.used_real_gex,
             "netgex_scope": "aggregate_across_expiries",
+            "selected_expiry_window_scope": "selected_expiry_window",
+            "gex_semantics": result.gex_semantics,
+            "dealer_position_unknown": True,
         },
         "normalization": {
             "total_input_rows": result.norm_report.total_input_rows,
@@ -972,10 +1118,21 @@ def snapshot_to_dict(result: OptionsAnalysisResult) -> dict[str, Any]:
                     "price": result.netgex.gamma_zero,
                     "method": result.netgex.gamma_zero_method,
                     "scope": "aggregate_across_expiries",
+                    "analysis_scope": "selected_expiry_window",
                 },
                 "price_grid": result.netgex.price_grid,
                 "net_gex_values": result.netgex.net_gex_values,
             },
+            "semantics": result.gex_semantics,
+            "gamma_flip": {
+                "label": "Selected Expiry Window Proxy Gamma Flip",
+                "price": result.netgex.gamma_zero,
+                "method": "oi_signed_gex_proxy_grid",
+                "scope": "selected_expiry_window",
+                "dealer_position_unknown": True,
+            },
+            "oi_gamma_concentration_zone": result.oi_gamma_concentration_zone,
+            "dealer_position_unknown": True,
             "by_expiry": {
                 expiry: {
                     "gex_top": result.gex_top_by_expiry.get(expiry, []),
@@ -1032,6 +1189,9 @@ def snapshot_to_dict(result: OptionsAnalysisResult) -> dict[str, Any]:
                 "items": [
                     {"field": "wall_scores", "description": "墙位 OI/Volume/Settlement 评分", "count": len(result.scored_walls)},
                     {"field": "gex.netgex_aggregate", "description": "GEX 聚合（基于 Black-76 模型计算）"},
+                    {"field": "gex_semantics", "description": "OI-Signed GEX Proxy；dealer position unknown"},
+                    {"field": "expiry_selection", "description": "最近有效到期月 + OI 选择窗口及覆盖率"},
+                    {"field": "reconciliation", "description": "PRELIM → FINAL 同报告日行级对账"},
                     {"field": "normalization", "description": "数据规范化报告"},
                     {"field": "data_quality", "description": "数据质量分类统计"},
                 ],

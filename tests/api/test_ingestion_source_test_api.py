@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import uuid
 
+import pytest
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -49,25 +51,6 @@ class _FakeMCPClient:
                 ]
             },
         }
-
-
-class _FakeMarketMCPClient(_FakeMCPClient):
-    quote_payload = {"status": 200, "data": {"code": "XAUUSD", "price": "4072.10"}}
-    kline_payload = {
-        "status": 200,
-        "data": {
-            "klines": [
-                {"time": 1784044200, "close": "4071.24"},
-                {"time": 1784044140, "close": "4071.58"},
-            ]
-        },
-    }
-
-    def get_quote(self, code):
-        return self.quote_payload
-
-    def get_kline(self, code, count):
-        return self.kline_payload
 
 
 def _write_web_flash_briefs_artifact(
@@ -242,60 +225,36 @@ def test_ingestion_source_test_runs_gold_and_silver_etf_probe(monkeypatch, tmp_p
     assert (tmp_path / response.artifacts["parsed_path"]).exists()
 
 
-def test_ingestion_source_test_market_probe_is_live_when_quote_and_kline_exist(monkeypatch, tmp_path: Path) -> None:
-    session = _make_session()
-    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr("apps.api.services.ingestion_source_test_service.Jin10MCPClient", _FakeMarketMCPClient)
-
-    response = main.api_ingestion_source_test("jin10_mcp_market", body=DataSourceTestRequest(limit=2), db=session)
-
-    assert response.status == "ok"
-    assert response.data_status.value == "live"
-    assert response.summary["quote_available"] is True
-    assert response.summary["kline_available"] is True
-    assert response.summary["missing_components"] == []
-
-
-def test_ingestion_source_test_market_probe_is_partial_when_quote_is_missing(monkeypatch, tmp_path: Path) -> None:
-    session = _make_session()
-
-    class PartialMarketClient(_FakeMarketMCPClient):
-        quote_payload = {}
-
-    monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr("apps.api.services.ingestion_source_test_service.Jin10MCPClient", PartialMarketClient)
-
-    response = main.api_ingestion_source_test("jin10_mcp_market", body=DataSourceTestRequest(limit=2), db=session)
-
-    assert response.status == "partial"
-    assert response.data_status.value == "partial"
-    assert response.summary["reason_code"] == "market_probe_partial"
-    assert response.summary["missing_components"] == ["quote"]
-    assert response.preview[0]["price"] is None
-    run = main.api_run_detail(response.run_id, db=session).model_dump(mode="json")
-    assert run["status"] == "partial_success"
-
-
-def test_ingestion_source_test_market_probe_is_unavailable_when_all_components_are_missing(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize("source_key", ["jin10_mcp_market", "technical_yahoo"])
+@pytest.mark.parametrize("jin10_disabled", ["0", "1"])
+def test_retired_numeric_probe_is_disabled_without_network_or_writes(
+    monkeypatch, tmp_path: Path, source_key: str, jin10_disabled: str,
 ) -> None:
     session = _make_session()
-
-    class EmptyMarketClient(_FakeMarketMCPClient):
-        quote_payload = {}
-        kline_payload = {}
-
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", jin10_disabled)
     monkeypatch.setattr("apps.api.services.ingestion_source_test_service._PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr("apps.api.services.ingestion_source_test_service.Jin10MCPClient", EmptyMarketClient)
 
-    response = main.api_ingestion_source_test("jin10_mcp_market", body=DataSourceTestRequest(limit=2), db=session)
+    def forbidden(*args, **kwargs):
+        pytest.fail("Retired numeric probe must not collect, create tasks or archive payloads")
 
-    assert response.status == "unavailable"
+    for name in ("Jin10MCPClient", "ensure_task_tables", "_archive_probe_payloads"):
+        monkeypatch.setattr(f"apps.api.services.ingestion_source_test_service.{name}", forbidden)
+    monkeypatch.setattr(session, "commit", forbidden)
+
+    response = main.api_ingestion_source_test(source_key, body=DataSourceTestRequest(limit=2), db=session)
+
+    assert response.status == "disabled"
+    assert response.source_key == source_key
     assert response.data_status.value == "unavailable"
-    assert response.summary["reason_code"] == "market_probe_unavailable"
-    assert response.summary["missing_components"] == ["quote", "kline"]
-    run = main.api_run_detail(response.run_id, db=session).model_dump(mode="json")
-    assert run["status"] == "failed"
+    assert response.summary["reason_code"] == "jin10_news_only"
+    assert response.run_id is None
+    assert response.audit_id is None
+    assert response.preview == []
+    assert response.artifacts == {}
+    assert response.source_refs == []
+    assert response.artifact_refs == []
+    assert list(tmp_path.iterdir()) == []
+    session.close()
 
 
 def test_ingestion_source_test_reads_web_important_flash_latest_artifact(monkeypatch, tmp_path: Path) -> None:

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { FAPageScaffold } from "@/components/shared/FAPageScaffold";
 import { FATabBar, type FATabOption } from "@/components/shared/FATabBar";
@@ -12,7 +13,7 @@ import { StrategyHeroSection } from "@/components/strategy/StrategyHeroSection";
 import { StrategyScenarioSection } from "@/components/strategy/StrategyScenarioSection";
 import { StrategyModuleSignalsSection, StrategyPlaybookMatchesSection } from "@/components/strategy/StrategySignalsPanels";
 import { StrategyDataTraceSection } from "@/components/strategy/StrategyTracePanel";
-import { LiveStrategyDiagnostics, LiveStrategyWorkspace } from "@/components/strategy/LiveStrategyWorkspace";
+import { LiveStrategyDiagnostics, LiveStrategyTrustNotice, LiveStrategyWorkspace } from "@/components/strategy/LiveStrategyWorkspace";
 import { LiveStrategyScenarios } from "@/components/strategy/LiveStrategyScenarios";
 import { ShadowEvaluationPanel } from "@/components/strategy/ShadowEvaluationPanel";
 import {
@@ -26,6 +27,13 @@ import { useShadowEvaluationHistory } from "@/hooks/useShadowEvaluationHistory";
 import { ShadowEvaluationHistoryPanel } from "@/components/strategy/ShadowEvaluationHistoryPanel";
 import { LegacyStrategyIdentityNotice, ResultIdentityBar } from "@/components/shared/ResultIdentityBar";
 import { hasVerifiedGoldBaseline } from "@/types/live-strategy";
+import { getDisplayLiveStrategyStatus, getLiveStrategyTrustState, isLiveStrategyMarketUsable } from "@/components/strategy/liveStrategyTrust";
+import {
+  readStrategyNavigationState,
+  StrategyEvaluationScopeNotice,
+  StrategySourceNotice,
+} from "@/components/strategy/StrategyEntryContext";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 // ── Page ──
 
@@ -40,8 +48,10 @@ const STRATEGY_VIEW_TABS: FATabOption<StrategyView>[] = [
 ];
 
 export function StrategyPage() {
+  const location = useLocation();
   const [selectedAsset, setSelectedAsset] = useState<string>(DEFAULT_STRATEGY_ASSET);
   const [activeView, setActiveView] = useState<StrategyView>("current");
+  const strategyNavigation = readStrategyNavigationState(location.state);
   const liveStrategy = useLiveStrategy(selectedAsset === "XAUUSD" ? "XAUUSD" : null);
   const shadowEvaluation = useLatestShadowEvaluation(activeView === "evaluation" && selectedAsset === "XAUUSD");
   const shadowEvaluationHistory = useShadowEvaluationHistory(activeView === "evaluation" && selectedAsset === "XAUUSD");
@@ -74,13 +84,32 @@ export function StrategyPage() {
   const hasVerifiedLiveGoldBaseline = liveStrategy.data
     ? hasVerifiedGoldBaseline(liveStrategy.data.data_quality.gold_baseline)
     : false;
+  const liveStrategyTrustState = getLiveStrategyTrustState({
+    isLoading: liveStrategy.isLoading,
+    error: liveStrategy.error,
+  });
+  const liveStrategyDataGateBlocked = liveStrategy.data
+    ? liveStrategy.data.status !== "available"
+      || !liveStrategy.data.feasibility.data_ready
+      || !isLiveStrategyMarketUsable(liveStrategy.data.live_market)
+    : true;
+  const displayLiveStrategyStatus = liveStrategy.data
+    ? getDisplayLiveStrategyStatus({
+        status: liveStrategy.data.strategy_status,
+        availability: liveStrategy.data.status,
+        dataReady: liveStrategy.data.feasibility.data_ready,
+        market: liveStrategy.data.live_market,
+        trustState: liveStrategyTrustState,
+        goldBaselineVerified: hasVerifiedLiveGoldBaseline,
+      })
+    : "SUSPENDED_DATA";
 
   if (isLoading && !data) {
     return <StrategyPageLoadingState />;
   }
 
   if (isError || !data) {
-    return <StrategyPageErrorState message={error?.message ?? "未知错误"} onRetry={refetch} />;
+    return <StrategyPageErrorState message={readingErrorMessage(error, "策略页面加载失败，请稍后重试。")} onRetry={refetch} />;
   }
 
   return (
@@ -106,6 +135,12 @@ export function StrategyPage() {
       ) : undefined}
       bodyClassName="fa-page-stack strategy-page-body"
     >
+      {strategyNavigation ? (
+        <StrategySourceNotice
+          navigation={strategyNavigation}
+          currentIdentity={liveStrategy.data?.result_identity}
+        />
+      ) : null}
       <nav className="strategy-view-nav" aria-label="策略页面内容分页">
         <FATabBar tabs={STRATEGY_VIEW_TABS} value={activeView} onChange={setActiveView} ariaLabel="策略页面分页" />
       </nav>
@@ -115,7 +150,7 @@ export function StrategyPage() {
           <ResultIdentityBar
             identity={liveStrategy.data?.result_identity}
             subjectLabel="策略所用正式结果"
-            baselineLabel="当前有效 Gold 基线"
+            baselineLabel="当前有效黄金日结基线"
           />
           <LiveStrategyWorkspace
             data={liveStrategy.data}
@@ -135,13 +170,21 @@ export function StrategyPage() {
 
       {activeView === "daily" ? (
         <section className="strategy-tab-panel" aria-label="日度研究">
-          {liveStrategy.data && liveStrategy.data.status === "available" && hasVerifiedLiveGoldBaseline ? (
+          {liveStrategy.data ? (
+            <LiveStrategyTrustNotice
+              trustState={liveStrategyTrustState}
+              error={liveStrategy.error}
+              lastResultAt={liveStrategy.data.updated_at}
+              dataGateBlocked={liveStrategyDataGateBlocked}
+            />
+          ) : null}
+          {liveStrategy.data ? (
             <LiveStrategyScenarios
               activeScenario={liveStrategy.data.active_scenario}
               setups={liveStrategy.data.setups}
               noTrade={liveStrategy.data.no_trade}
-              dataBlocked={false}
-              strategyStatus={liveStrategy.data.strategy_status}
+              dataBlocked={liveStrategyTrustState !== "current" || liveStrategyDataGateBlocked}
+              strategyStatus={displayLiveStrategyStatus}
             />
           ) : null}
           <StrategyHeroSection
@@ -192,6 +235,10 @@ export function StrategyPage() {
 
       {activeView === "evaluation" ? (
         <section className="strategy-tab-panel" aria-label="表现评估">
+          <StrategyEvaluationScopeNotice
+            evaluationDate={shadowEvaluation.data?.trade_date}
+            currentStrategyDate={data.hero.trade_date ?? data.trade_date}
+          />
           <ShadowEvaluationPanel data={shadowEvaluation.data} isLoading={shadowEvaluation.isLoading} isUnavailable={shadowEvaluation.isUnavailable} error={shadowEvaluation.error} />
           <ShadowEvaluationHistoryPanel data={shadowEvaluationHistory.data} isLoading={shadowEvaluationHistory.isLoading} isUnavailable={shadowEvaluationHistory.isUnavailable} error={shadowEvaluationHistory.error} />
         </section>
@@ -199,6 +246,14 @@ export function StrategyPage() {
 
       {activeView === "evidence" ? (
         <section className="strategy-tab-panel" aria-label="数据证据">
+          {liveStrategy.data ? (
+            <LiveStrategyTrustNotice
+              trustState={liveStrategyTrustState}
+              error={liveStrategy.error}
+              lastResultAt={liveStrategy.data.updated_at}
+              dataGateBlocked={liveStrategyDataGateBlocked}
+            />
+          ) : null}
           <LiveStrategyDiagnostics data={liveStrategy.data} />
           <StrategyDataTraceSection data={data} isTraceLoading={isTraceLoading} traceError={traceError} />
         </section>

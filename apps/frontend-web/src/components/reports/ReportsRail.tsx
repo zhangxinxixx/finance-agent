@@ -1,5 +1,6 @@
 import type { ReportIndexItem } from "@/types/reports";
-import { reportMatchesAsset } from "./reportListMeta";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
+import { getReportListStatus, reportMatchesAsset } from "./reportListMeta";
 import type { ReportFilters } from "./reportsRailOptions";
 import { REPORTS_RAIL_PANEL_STYLE } from "./reportsRailOptions";
 import {
@@ -52,8 +53,7 @@ export function ReportsRail({ reports, filters, onFilterChange, railLoading, rai
       if (!reportMatchesAsset(item, filters.asset)) return false;
     }
     if (filters.status) {
-      if (filters.status === "published" && !item.available) return false;
-      if (filters.status === "draft" && item.available) return false;
+      if (getReportListStatus(item).key !== filters.status) return false;
     }
     if (filters.dateRange && filters.dateRange !== "all") {
       const now = new Date();
@@ -69,7 +69,7 @@ export function ReportsRail({ reports, filters, onFilterChange, railLoading, rai
   }
 
   if (railError) {
-    return <ReportsRailErrorState message={railError.message} />;
+    return <ReportsRailErrorState message={readingErrorMessage(railError, "报告筛选读取失败，请稍后重试。") } />;
   }
 
   return (

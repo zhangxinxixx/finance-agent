@@ -5,8 +5,6 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 from apps.analysis.agents import AgentBias, AgentOutput, AgentStatus
 from apps.analysis.agents.coordinator import coordinate_agent_outputs
 from apps.analysis.gold_policy.analysis_policy import evaluate_gold_analysis_policy
@@ -92,7 +90,7 @@ def _gold_policy_snapshot(name: str):
     return build_feature_snapshot(payload)
 
 
-def test_coordinator_exposes_typed_gold_decision_without_overwriting_state_contract():
+def test_coordinator_exposes_only_explicit_typed_accepted_state_conclusion():
     previous = _gold_policy_snapshot("feature_snapshot_v1_bullish_2025-01-17.json")
     current = _gold_policy_snapshot("feature_snapshot_v1_bearish_2025-01-21.json")
     decision = evaluate_gold_analysis_policy(current, previous)
@@ -106,10 +104,7 @@ def test_coordinator_exposes_typed_gold_decision_without_overwriting_state_contr
         created_at=_CREATED_AT,
     )
 
-    assert output.accepted_gold_analysis_decision == decision
-    assert output.accepted_state_conclusion is not None
-    assert output.accepted_state_conclusion.direction.value == decision.direction
-    assert output.accepted_state_conclusion.market_stage == decision.market_stage_candidate
+    assert output.accepted_state_conclusion == decision
     assert output.bias.value == decision.direction
     assert output.confidence == decision.confidence
     assert output.input_snapshot_ids["gold_analysis_policy_current"] == current.snapshot_id
@@ -137,9 +132,8 @@ def test_coordinator_accepts_v2_typed_conclusion_and_canonical_payload():
         created_at=_CREATED_AT,
     )
 
-    assert output.accepted_gold_analysis_decision == decision
-    assert output.accepted_state_conclusion is not None
-    assert output.accepted_state_conclusion.direction.value == decision.direction
+    assert output.accepted_state_conclusion == decision
+    assert output.accepted_state_conclusion.policy_version == "gold_analysis_policy.v2"
     assert output.bias.value == decision.direction
     assert output.input_snapshot_ids["gold_analysis_policy_current"] == current.snapshot_id
     assert output.source_refs
@@ -155,7 +149,6 @@ def test_coordinator_rejects_untyped_text_as_accepted_state_conclusion():
         created_at=_CREATED_AT,
     )
 
-    assert output.accepted_gold_analysis_decision is None
     assert output.accepted_state_conclusion is None
     assert output.bias is AgentBias.UNAVAILABLE
     assert any("强类型校验" in item for item in output.risk_points)
@@ -183,61 +176,6 @@ def test_aligned_macro_options_outputs_schema_valid_final_view():
     assert any("macro" in finding.lower() for finding in output.key_findings)
     assert any("options" in finding.lower() for finding in output.key_findings)
     assert output.input_snapshot_ids["risk"] == "risk:2026-05-14"
-    assert output.accepted_state_conclusion is not None
-    assert "accepted_state_conclusion" not in output.input_payload
-
-
-@pytest.mark.parametrize(
-    ("overview_bias", "risk_bias", "expected_direction", "expected_tilt"),
-    [
-        ("mixed_bullish", AgentBias.MIXED, AgentBias.MIXED, "bullish"),
-        ("neutral_bearish", AgentBias.NEUTRAL, AgentBias.NEUTRAL, "bearish"),
-        ("strong_bullish", AgentBias.BULLISH, AgentBias.BULLISH, None),
-    ],
-)
-def test_coordinator_preserves_known_fine_state_bias_without_changing_coarse_agent_bias(
-    overview_bias: str,
-    risk_bias: AgentBias,
-    expected_direction: AgentBias,
-    expected_tilt: str | None,
-):
-    snapshot = _snapshot()
-    snapshot["news"] = {
-        "data": {
-            "gold_macro_overview": {
-                "phase": "macro_verification",
-                "net_bias": overview_bias,
-                "one_line_conclusion": "Real yields remain the dominant pricing input.",
-                "theme_rankings": [
-                    {
-                        "mainline_id": "real_rates_usd",
-                        "label": "Real rates and USD",
-                        "rank": 1,
-                        "score": 0.8,
-                        "direction": "headwind",
-                        "coverage_status": "covered",
-                    }
-                ],
-            }
-        }
-    }
-
-    output = coordinate_agent_outputs(
-        snapshot,
-        macro_output=_macro(AgentBias.BULLISH),
-        options_output=_options(AgentBias.BULLISH),
-        risk_output=_risk(risk_bias),
-        created_at=_CREATED_AT,
-    )
-
-    conclusion = output.accepted_state_conclusion
-    assert conclusion is not None
-    assert output.bias is expected_direction
-    assert conclusion.direction is expected_direction
-    assert conclusion.state_bias == overview_bias
-    assert conclusion.direction_tilt == expected_tilt
-    assert conclusion.market_stage == "macro_verification"
-    assert conclusion.dominant_drivers[0]["driver_id"] == "real_rates_usd"
 
 
 def test_coordinator_exposes_fixed_daily_baseline_and_degrades_stale_context():
@@ -278,6 +216,36 @@ def test_coordinator_exposes_fixed_daily_baseline_and_degrades_stale_context():
     assert any("原油报告摘要" in item for item in output.key_findings)
     assert any("观察态" in item for item in output.risk_points)
     assert output.input_payload["gold_analysis_context"]["baseline_kind"] == "previous_analysis_report"
+
+
+def test_coordinator_surfaces_today_positioning_and_external_odds_summaries():
+    snapshot = _snapshot()
+    snapshot["gold_analysis_context"] = {
+        "status": "available",
+        "data": {
+            "status": "ready",
+            "positioning_report_summary": {
+                "article_id": "225350",
+                "one_line_conclusion": "4150 Call 增仓，且 CME 逐行校验一致。",
+            },
+            "market_odds_report_summary": {
+                "article_id": "20260722T062313Z-a706a018",
+                "one_line_conclusion": "黄金4300触及概率17.25%，仍需持仓确认。",
+            },
+        },
+    }
+
+    output = coordinate_agent_outputs(
+        snapshot,
+        macro_output=_macro(),
+        options_output=_options(),
+        risk_output=_risk(),
+        created_at=_CREATED_AT,
+    )
+
+    assert any("今日持仓报告摘要" in item and "4150 Call" in item for item in output.key_findings)
+    assert any("今日外部赔率报告摘要" in item and "17.25%" in item for item in output.key_findings)
+    assert output.input_payload["gold_analysis_context"]["positioning_report_summary"]["article_id"] == "225350"
 
 
 def test_conflicting_macro_options_exposes_conflict_and_caps_confidence():

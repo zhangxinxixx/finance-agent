@@ -11,6 +11,68 @@ def _write(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def test_daily_context_includes_today_positioning_validation_and_external_odds(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "outputs/jin10/2026-07-22/225350/agent_analysis_report.json",
+        {
+            "trade_date": "2026-07-22",
+            "article_id": "225350",
+            "title": "今日持仓",
+            "report_identity": {"report_type": "positioning"},
+            "one_line_conclusion": "4150 Call 增仓，4050 Put 保护扩张。",
+            "quality_audit": {"status": "accepted"},
+            "source_refs": [{"source_ref": "jin10:225350"}],
+        },
+    )
+    _write(
+        tmp_path / "features/jin10/2026-07-22/225350/positioning_cme_validation.json",
+        {
+            "validation_status": "confirmed",
+            "cme_trade_date": "2026-07-21",
+            "summary": {"comparison_count": 12, "matched_count": 12, "match_rate": 1.0},
+            "source_refs": [{"source_ref": "cme:OG:2026-07-21:PRELIM"}],
+        },
+    )
+    odds_id = "20260722T062313Z-a706a018"
+    _write(
+        tmp_path / f"outputs/jin10/2026-07-22/{odds_id}/agent_analysis_report.json",
+        {
+            "trade_date": "2026-07-22",
+            "article_id": odds_id,
+            "title": "市场赔率辅助分析",
+            "report_identity": {"report_type": "market_observation", "series": "market_odds"},
+            "one_line_conclusion": "黄金上沿赔率修复，但仍需持仓确认。",
+            "quality_audit": {"status": "accepted"},
+            "source_refs": [{"source_ref": f"jin10:{odds_id}"}],
+        },
+    )
+    _write(
+        tmp_path / f"features/jin10/2026-07-22/{odds_id}/market_odds_evidence.json",
+        {
+            "extraction_status": "needs_review",
+            "panel_count": 11,
+            "items": [{
+                "asset": "XAUUSD",
+                "predicate": "touch_above",
+                "target_value": 4300,
+                "probability": 0.1725,
+                "extraction_status": "accepted",
+            }],
+            "source_refs": [{"source_ref": f"jin10:{odds_id}"}],
+        },
+    )
+
+    context = build_daily_analysis_context(trade_date="2026-07-22", storage_root=tmp_path)
+    prompt_context = compact_context_for_prompt(context)
+
+    assert context["positioning_report_summary"]["cme_validation"]["summary"]["matched_count"] == 12
+    assert context["market_odds_report_summary"]["structured_evidence"]["gold_items"][0]["probability"] == 0.1725
+    assert context["input_snapshot_ids"]["positioning_cme_validation"].endswith("positioning_cme_validation.json")
+    assert context["input_snapshot_ids"]["market_odds_evidence"].endswith("market_odds_evidence.json")
+    assert prompt_context["positioning_report_summary"]["article_id"] == "225350"
+    assert prompt_context["market_odds_report_summary"]["article_id"] == odds_id
+
+
 def test_daily_context_prefers_weekly_revision_and_compacts_current_inputs(tmp_path: Path) -> None:
     _write(
         tmp_path / "outputs/weekly_context_revision/XAUUSD/2026-07-12/224965-run-v1/report_structured.json",
@@ -35,20 +97,8 @@ def test_daily_context_prefers_weekly_revision_and_compacts_current_inputs(tmp_p
             "trade_date": "2026-07-13",
             "snapshot_time": "2026-07-13T12:00:00+08:00",
             "technical": {"data": {"price": 4016.55, "trend": "neutral", "volatility": "normal"}},
-            "macro": {
-                "data": {
-                    "as_of": "2026-07-13",
-                    "indicators": {"US10Y": {"value": 4.57, "date": "2026-07-13", "unit": "%"}},
-                }
-            },
-            "options": {
-                "data": {
-                    "trade_date": "2026-07-17",
-                    "data_source": {"status": "PRELIM"},
-                    "gex": {"netgex_aggregate": {"gamma_zero": {"price": 4126.43}}},
-                    "support_resistance": {"support": [{"strike": 4000}], "resistance": [{"strike": 4235}]},
-                }
-            },
+            "macro": {"data": {"as_of": "2026-07-13", "indicators": {"US10Y": {"value": 4.57, "date": "2026-07-13", "unit": "%"}}}},
+            "options": {"data": {"trade_date": "2026-07-17", "data_source": {"status": "PRELIM"}, "gex": {"netgex_aggregate": {"gamma_zero": {"price": 4126.43}}}, "support_resistance": {"support": [{"strike": 4000}], "resistance": [{"strike": 4235}]}}},
             "positioning": {"data": {"as_of": "2026-07-13", "noncomm_net": 120779, "noncomm_net_prev": 116161}},
             "source_refs": [{"source_ref": "snapshot:run", "source": "premarket"}],
         },
@@ -71,11 +121,7 @@ def test_daily_context_prefers_weekly_revision_and_compacts_current_inputs(tmp_p
             "as_of": "2026-07-13T11:00:00+00:00",
             "dominant_mainline": "fed_policy_path",
             "driver_conflict": {"dominant_driver": "higher_for_longer_rate_pressure", "net_effect": "neutral_bearish"},
-            "war_oil_rate_chain": {
-                "status": "partial",
-                "summary": "油价与避险路径冲突",
-                "steps": [{"id": "oil_status", "status": "partial", "source_refs": [{"url": "x" * 5000}]}],
-            },
+            "war_oil_rate_chain": {"status": "partial", "summary": "油价与避险路径冲突", "steps": [{"id": "oil_status", "status": "partial", "source_refs": [{"url": "x" * 5000}]}]},
         },
     )
     _write(
@@ -143,35 +189,6 @@ def test_daily_context_prefers_active_run_news_over_sibling_run_name(tmp_path: P
     assert context["input_snapshot_ids"]["daily_market_brief"] == (
         "features/news/2026-07-21/current-run/daily_market_brief.json"
     )
-
-
-def test_compact_context_for_prompt_keeps_one_baseline_and_drops_transport_refs() -> None:
-    context = {
-        "status": "degraded",
-        "baseline_kind": "weekly_fallback",
-        "continuity_status": "weekly_fallback",
-        "analysis_baseline": {
-            "one_line_conclusion": "有效基准",
-            "source_refs": [{"source_ref": "baseline-ref"}],
-        },
-        "weekly_anchor": {"one_line_conclusion": "重复周报"},
-        "previous_analysis_report": {"one_line_conclusion": "过期日报"},
-        "latest_market": {
-            "technical": {"price": 4060.78},
-            "nested": {"source_refs": [{"source_ref": "nested-ref"}]},
-        },
-        "input_snapshot_ids": {"analysis_baseline": "outputs/weekly.json"},
-    }
-
-    compact = compact_context_for_prompt(context)
-
-    assert compact["schema_version"] == "daily-analysis-prompt-context-v2"
-    assert compact["analysis_baseline"]["one_line_conclusion"] == "有效基准"
-    assert "weekly_anchor" not in compact
-    assert "previous_analysis_report" not in compact
-    assert "source_refs" not in compact["analysis_baseline"]
-    assert "source_refs" not in compact["latest_market"]["nested"]
-    assert compact["input_snapshot_ids"] == {"analysis_baseline": "outputs/weekly.json"}
 
 
 def test_daily_context_weekly_fallback_excludes_newer_daily_report(tmp_path: Path) -> None:

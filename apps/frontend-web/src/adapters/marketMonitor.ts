@@ -3,7 +3,6 @@ import type {
   MarketEnvironmentFilter,
   MarketEnvironmentFilterKey,
   MarketMonitorMetric,
-  MarketMonitorMockFile,
   MarketMonitorResponse,
   MarketMonitorSourceTraceItem,
   MarketAgentRegimeSummary,
@@ -12,7 +11,6 @@ import type {
 } from "@/types/market-monitor";
 import type { MarketOddsEvidenceViewModel } from "@/types/reports";
 
-const MARKET_MONITOR_MOCK_URL = new URL("../mocks/market-monitor.json", import.meta.url);
 const MARKET_MONITOR_OVERVIEW_PATH = "/api/market/monitor";
 const MARKET_MONITOR_HISTORY_PATH = "/api/market/monitor/history";
 const MARKET_TICKERS_PATH = "/api/market/tickers";
@@ -66,6 +64,7 @@ type RawMacroLatestResponse = {
 
 type RawMarketAgentRegimeSummary = {
   agent_name?: unknown;
+  created_at?: unknown;
   regime?: unknown;
   regime_label?: unknown;
   confidence?: unknown;
@@ -73,6 +72,8 @@ type RawMarketAgentRegimeSummary = {
   key_drivers?: unknown;
   llm_model?: unknown;
   llm_elapsed_seconds?: unknown;
+  run_id?: unknown;
+  snapshot_id?: unknown;
 };
 
 function asString(value: unknown, fallback = ""): string {
@@ -92,6 +93,34 @@ function asStringList(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }
 
+function localizedMetricLabel(value: unknown, fallback: string): string {
+  const text = asOptionalString(value);
+  return text && /[\u3400-\u9fff]/.test(text) ? text : fallback;
+}
+
+function primaryDriverLabel(value: string): string {
+  const labels: Record<string, string> = {
+    data_insufficient: "数据不足，主因待确认",
+    rates: "利率驱动",
+    dollar: "美元驱动",
+    liquidity: "流动性驱动",
+    risk: "风险偏好驱动",
+    geopolitics: "地缘驱动",
+  };
+  return labels[value] ?? (/[\u3400-\u9fff]/.test(value) ? value : "主因待确认");
+}
+
+function realtimeRegimeLabel(value: string): string {
+  const labels: Record<string, string> = {
+    dovish_gold_friendly: "宽松、黄金偏友好",
+    hawkish_gold_pressure: "鹰派、黄金承压",
+    neutral_soft: "中性偏宽松",
+    neutral_firm: "中性偏紧",
+    neutral: "中性阶段",
+  };
+  return labels[value] ?? "阶段待确认";
+}
+
 function dateFromTimestamp(value: string): string {
   return value.includes("T") ? value.split("T")[0] : value;
 }
@@ -107,7 +136,7 @@ function emptyMetric(
     key,
     label,
     group,
-    latest_date: "unavailable",
+    latest_date: null,
     latest_value: null,
     unit,
     one_week_change: null,
@@ -122,41 +151,41 @@ function emptyMetric(
 function createUnavailableRegimes(): Record<MarketRegimeKey, MarketRegime> {
   return {
     rate_pressure: {
-      label: "Rate Pressure",
+      label: "利率压力",
       status: "unavailable",
-      confidence: 0,
+      confidence: null,
       description: "",
       interpretation: "",
       drivers: [],
     },
     transition_release: {
-      label: "Transition Release",
+      label: "过渡释放",
       status: "unavailable",
-      confidence: 0,
+      confidence: null,
       description: "",
       interpretation: "",
       drivers: [],
     },
     trend_tailwind: {
-      label: "Trend Tailwind",
+      label: "趋势顺风",
       status: "unavailable",
-      confidence: 0,
+      confidence: null,
       description: "",
       interpretation: "",
       drivers: [],
     },
     liquidity_crunch: {
-      label: "Liquidity Crunch",
+      label: "流动性收缩",
       status: "unavailable",
-      confidence: 0,
+      confidence: null,
       description: "",
       interpretation: "",
       drivers: [],
     },
     monetary_credit_repricing: {
-      label: "Monetary Credit Repricing",
+      label: "货币信用重估",
       status: "unavailable",
-      confidence: 0,
+      confidence: null,
       description: "",
       interpretation: "",
       drivers: [],
@@ -205,59 +234,20 @@ function createUnavailableEnvironmentFilters(): Record<MarketEnvironmentFilterKe
   };
 }
 
-function createUnavailableSourceTrace(): MarketMonitorSourceTraceItem[] {
-  return [];
-}
-
-function createUnavailableResponse(reason: string): MarketMonitorResponse {
-  return {
-    generated_at: "unavailable",
-    latest_date: "unavailable",
-    has_data: false,
-    source: "unavailable",
-    metrics: [],
-    market_regimes: createUnavailableRegimes(),
-    environment_filters: createUnavailableEnvironmentFilters(),
-    source_trace: createUnavailableSourceTrace(),
-    error_reason: reason,
-    realtime_regime: null,
-    primary_driver: null,
-    agent_market_regime: null,
-  };
-}
-
-async function loadMockMarketMonitor(): Promise<MarketMonitorResponse> {
-  const response = await fetch(MARKET_MONITOR_MOCK_URL);
-
-  if (!response.ok) {
-    throw new Error(`加载 Market Monitor mock 失败：${response.status}`);
-  }
-
-  const payload = (await response.json()) as MarketMonitorMockFile;
-
-  return {
-    ...payload,
-    generated_at: payload.generated_at,
-    latest_date: payload.latest_date,
-    has_data: payload.has_data ?? payload.metrics.length > 0,
-    source: "mock",
-  };
-}
-
 function buildXAUUSDMetric(
   tickers: Record<string, RawTickerEntry>,
-  latestDate: string,
+  latestDate: string | null,
 ): MarketMonitorMetric {
   const xauusd = tickers.xauusd ?? {};
   const price = asNumberOrNull(xauusd.price);
   const changePct = asNumberOrNull(xauusd.change_pct);
   const quoteTime = asString(xauusd.time);
   const source = asString(xauusd.source);
-  const name = asString(xauusd.name, "现货黄金");
+  const name = localizedMetricLabel(xauusd.name, "现货黄金");
 
   return {
     key: "XAUUSD",
-    label: "XAUUSD",
+    label: "现货黄金 XAUUSD",
     group: "metals",
     latest_date: quoteTime ? dateFromTimestamp(quoteTime) : latestDate,
     latest_value: price,
@@ -265,7 +255,7 @@ function buildXAUUSDMetric(
     one_week_change: changePct !== null ? `${changePct}%` : null,
     one_month_change: null,
     status: price !== null ? "ok" : "unavailable",
-    interpretation: source === "jin10_mcp_realtime" ? `Jin10 ${name}实时报价` : "",
+    interpretation: source === "jin10_mcp_realtime" ? `金十 ${name}实时报价` : "",
     source_refs: ["GET /api/market/tickers#xauusd"],
     snapshot_id: null,
   };
@@ -274,7 +264,7 @@ function buildXAUUSDMetric(
 function buildDXYMetric(
   tickers: Record<string, RawTickerEntry>,
   indicators: Record<string, RawMacroIndicator>,
-  fallbackDate: string,
+  fallbackDate: string | null,
 ): MarketMonitorMetric {
   const macro = indicators.DXY ?? {};
   const ticker = tickers.dxy ?? {};
@@ -282,9 +272,9 @@ function buildDXYMetric(
 
   return {
     key: "DXY",
-    label: asString(macro.label, "DXY"),
+    label: localizedMetricLabel(macro.label, "美元指数 DXY"),
     group: "dollar",
-    latest_date: asString(macro.date, fallbackDate),
+    latest_date: asOptionalString(macro.date) ?? fallbackDate,
     latest_value: value,
     unit: asString(macro.unit, asString(ticker.unit, "index")),
     one_week_change: asNumberOrNull(macro.weekly_change),
@@ -299,7 +289,7 @@ function buildDXYMetric(
 function buildTGAMetric(
   tickers: Record<string, RawTickerEntry>,
   indicators: Record<string, RawMacroIndicator>,
-  fallbackDate: string,
+  fallbackDate: string | null,
 ): MarketMonitorMetric {
   const macro = indicators.TGA ?? {};
   const ticker = tickers.tga ?? {};
@@ -307,9 +297,9 @@ function buildTGAMetric(
 
   return {
     key: "TGA",
-    label: asString(macro.label, "TGA"),
+    label: localizedMetricLabel(macro.label, "财政账户 TGA"),
     group: "liquidity",
-    latest_date: asString(macro.date, fallbackDate),
+    latest_date: asOptionalString(macro.date) ?? fallbackDate,
     latest_value: value,
     unit: asString(macro.unit, asString(ticker.unit, "B")),
     one_week_change: asNumberOrNull(macro.weekly_change),
@@ -327,7 +317,7 @@ function buildMacroMetric(
   group: MarketMonitorMetric["group"],
   unit: string,
   indicators: Record<string, RawMacroIndicator>,
-  fallbackDate: string,
+  fallbackDate: string | null,
   aliases: string[] = [],
 ): MarketMonitorMetric {
   const resolvedKey = [key, ...aliases].find((candidate) => indicators[candidate]);
@@ -336,9 +326,9 @@ function buildMacroMetric(
 
   return {
     key,
-    label: asString(macro.label, label),
+    label: localizedMetricLabel(macro.label, label),
     group,
-    latest_date: asString(macro.date, fallbackDate),
+    latest_date: asOptionalString(macro.date) ?? fallbackDate,
     latest_value: value,
     unit: asString(macro.unit, unit),
     one_week_change: asNumberOrNull(macro.weekly_change),
@@ -355,36 +345,36 @@ function buildMetrics(
   macroPayload: RawMacroLatestResponse,
 ): MarketMonitorMetric[] {
   if (!tickersPayload.tickers || typeof tickersPayload.tickers !== "object") {
-    throw new ApiError("Market Tickers API 响应缺少 tickers", { url: MARKET_TICKERS_PATH });
+    throw new ApiError("行情接口未返回可用价格数据", { url: MARKET_TICKERS_PATH });
   }
 
   if (!macroPayload.indicators || typeof macroPayload.indicators !== "object") {
-    throw new ApiError("Macro Latest API 响应缺少 indicators", { url: MACRO_LATEST_PATH });
+    throw new ApiError("宏观接口未返回可用指标数据", { url: MACRO_LATEST_PATH });
   }
 
   const tickers = tickersPayload.tickers as Record<string, RawTickerEntry>;
   const indicators = macroPayload.indicators as Record<string, RawMacroIndicator>;
-  const generatedAt = asString(tickersPayload.generated_at, "unavailable");
-  const latestDate = asString(macroPayload.as_of, generatedAt !== "unavailable" ? dateFromTimestamp(generatedAt) : "unavailable");
+  const generatedAt = asString(tickersPayload.generated_at);
+  const latestDate = asOptionalString(macroPayload.as_of);
 
   const metrics = [
     buildXAUUSDMetric(tickers, latestDate),
     buildDXYMetric(tickers, indicators, latestDate),
     buildTGAMetric(tickers, indicators, latestDate),
-    buildMacroMetric("US10Y", "US10Y", "rates", "%", indicators, latestDate),
-    buildMacroMetric("US02Y", "US02Y", "rates", "%", indicators, latestDate),
-    buildMacroMetric("T10YIE", "T10YIE", "rates", "%", indicators, latestDate, ["BREAKEVEN_10Y"]),
-    buildMacroMetric("YIELD_SPREAD_2Y_3M", "2Y-3M Spread", "rates", "%", indicators, latestDate),
-    buildMacroMetric("REAL_10Y", "10Y Real Rate", "rates", "%", indicators, latestDate),
-    buildMacroMetric("RRP", "RRP", "liquidity", "B", indicators, latestDate, ["ON_RRP_USAGE"]),
-    buildMacroMetric("SOFR", "SOFR", "funding", "%", indicators, latestDate),
-    buildMacroMetric("EFFR", "EFFR", "funding", "%", indicators, latestDate),
-    buildMacroMetric("IORB", "IORB", "funding", "%", indicators, latestDate),
+    buildMacroMetric("US10Y", "10年名义利率 US10Y", "rates", "%", indicators, latestDate),
+    buildMacroMetric("US02Y", "2年名义利率 US02Y", "rates", "%", indicators, latestDate),
+    buildMacroMetric("T10YIE", "10年通胀预期", "rates", "%", indicators, latestDate, ["BREAKEVEN_10Y"]),
+    buildMacroMetric("YIELD_SPREAD_2Y_3M", "2年-3个月利差", "rates", "%", indicators, latestDate),
+    buildMacroMetric("REAL_10Y", "10年实际利率", "rates", "%", indicators, latestDate),
+    buildMacroMetric("RRP", "隔夜逆回购 RRP", "liquidity", "B", indicators, latestDate, ["ON_RRP_USAGE"]),
+    buildMacroMetric("SOFR", "担保隔夜融资利率 SOFR", "funding", "%", indicators, latestDate),
+    buildMacroMetric("EFFR", "有效联邦基金利率 EFFR", "funding", "%", indicators, latestDate),
+    buildMacroMetric("IORB", "准备金利率 IORB", "funding", "%", indicators, latestDate),
   ];
 
   const hasAnyValidMetric = metrics.some((metric) => metric.latest_value !== null);
   if (!hasAnyValidMetric) {
-    throw new ApiError("Market Monitor API 归一化后没有有效 metrics", {
+    throw new ApiError("市场监控接口未返回有效指标", {
       url: `${MARKET_TICKERS_PATH}, ${MACRO_LATEST_PATH}`,
     });
   }
@@ -397,14 +387,14 @@ function buildSourceTrace(
   macroPayload: RawMacroLatestResponse,
 ): MarketMonitorSourceTraceItem[] {
   const generatedAt = asString(tickersPayload.generated_at);
-  const latestDate = asString(macroPayload.as_of, generatedAt ? dateFromTimestamp(generatedAt) : "unavailable");
+  const latestDate = asOptionalString(macroPayload.as_of) ?? "—";
   const tickers = tickersPayload.tickers && typeof tickersPayload.tickers === "object" ? tickersPayload.tickers as Record<string, RawTickerEntry> : {};
   const xauusd = tickers.xauusd ?? {};
   const xauusdSource = asString(xauusd.source);
 
   return [
     {
-      name: xauusdSource === "jin10_mcp_realtime" ? "Jin10 XAUUSD 实时报价" : "Market Tickers API",
+      name: xauusdSource === "jin10_mcp_realtime" ? "金十 XAUUSD 实时报价" : "市场行情接口",
       trade_date: latestDate,
       file: "api://market/tickers",
       snapshot_id: null,
@@ -416,7 +406,7 @@ function buildSourceTrace(
       status: "ok",
     },
     {
-      name: "Macro Latest API",
+      name: "宏观最新数据接口",
       trade_date: latestDate,
       file: "api://macro/latest",
       snapshot_id: null,
@@ -434,8 +424,8 @@ function normalizeApiResponse(
   tickersPayload: RawMarketTickersResponse,
   macroPayload: RawMacroLatestResponse,
 ): MarketMonitorResponse {
-  const generatedAt = asString(tickersPayload.generated_at, "unavailable");
-  const latestDate = asString(macroPayload.as_of, generatedAt !== "unavailable" ? dateFromTimestamp(generatedAt) : "unavailable");
+  const generatedAt = asString(tickersPayload.generated_at) || "未提供";
+  const latestDate = asOptionalString(macroPayload.as_of);
   const metrics = buildMetrics(tickersPayload, macroPayload);
   const realtimeRegime = tickersPayload.market_regime ?? null;
   const primaryDriver = tickersPayload.primary_driver ?? null;
@@ -447,6 +437,7 @@ function normalizeApiResponse(
   const marketRegimes = createUnavailableRegimes();
   if (realtimeRegime && typeof realtimeRegime === "object") {
     const regimeKey = asString(realtimeRegime.regime);
+    const confidence = asNumberOrNull(realtimeRegime.confidence);
     const mappedKey =
       regimeKey === "hawkish_gold_pressure"
         ? "rate_pressure"
@@ -454,16 +445,15 @@ function normalizeApiResponse(
           ? "trend_tailwind"
           : "transition_release";
     marketRegimes[mappedKey] = {
-      label:
-        mappedKey === "rate_pressure"
-          ? "Rate Pressure"
-          : mappedKey === "trend_tailwind"
-            ? "Trend Tailwind"
-            : "Transition Release",
-      status: asNumberOrNull(realtimeRegime.confidence) && asNumberOrNull(realtimeRegime.confidence)! > 0 ? "ok" : "info",
-      confidence: asNumberOrNull(realtimeRegime.confidence) ?? 0,
-      description: regimeKey || "neutral",
-      interpretation: `实时 regime: ${regimeKey || "neutral"}`,
+      label: mappedKey === "rate_pressure"
+        ? "利率压力"
+        : mappedKey === "trend_tailwind"
+          ? "趋势顺风"
+          : "过渡释放",
+      status: confidence !== null && confidence > 0 ? "ok" : "info",
+      confidence,
+      description: realtimeRegimeLabel(regimeKey),
+      interpretation: `实时阶段：${realtimeRegimeLabel(regimeKey)}`,
       drivers: primaryDriver && typeof primaryDriver === "object" ? [asString(primaryDriver.driver), asString(primaryDriver.secondary)].filter(Boolean) : [],
     };
   }
@@ -504,7 +494,7 @@ function normalizeApiResponse(
     one_month_change: xauMetric?.one_month_change ?? null,
     interpretation:
       primaryDriver && typeof primaryDriver === "object"
-        ? `主驱动 ${asString(primaryDriver.driver, "data_insufficient")} / 置信度 ${(asNumberOrNull(primaryDriver.confidence) ?? 0).toFixed(2)}`
+        ? `${primaryDriverLabel(asString(primaryDriver.driver, "data_insufficient"))}${asNumberOrNull(primaryDriver.confidence) === null ? "；把握程度未量化" : `；把握程度 ${asNumberOrNull(primaryDriver.confidence)!.toFixed(2)}`}`
         : xauMetric?.interpretation ?? "",
     unit: xauMetric?.unit ?? "",
   };
@@ -521,7 +511,7 @@ function normalizeApiResponse(
     realtime_regime: realtimeRegime
       ? {
           regime: asString(realtimeRegime.regime),
-          confidence: asNumberOrNull(realtimeRegime.confidence) ?? 0,
+          confidence: asNumberOrNull(realtimeRegime.confidence),
           available: Boolean(realtimeRegime.available),
         }
       : null,
@@ -529,7 +519,7 @@ function normalizeApiResponse(
       ? {
           driver: asString(primaryDriver.driver),
           secondary: asOptionalString(primaryDriver.secondary),
-          confidence: asNumberOrNull(primaryDriver.confidence) ?? 0,
+          confidence: asNumberOrNull(primaryDriver.confidence),
         }
       : null,
     agent_market_regime: null,
@@ -542,27 +532,72 @@ function normalizeAgentMarketRegime(raw: RawMarketAgentRegimeSummary | null | un
     agentName: asOptionalString(raw.agent_name),
     regime: asString(raw.regime, "unknown"),
     regimeLabel: asString(raw.regime_label, "市场阶段待生成"),
-    confidence: asNumberOrNull(raw.confidence) ?? 0,
+    confidence: asNumberOrNull(raw.confidence),
     summary: asString(raw.summary),
     keyDrivers: asStringList(raw.key_drivers),
     llmModel: asOptionalString(raw.llm_model),
     llmElapsedSeconds: asNumberOrNull(raw.llm_elapsed_seconds),
+    createdAt: asOptionalString(raw.created_at),
+    runId: asOptionalString(raw.run_id),
+    snapshotId: asOptionalString(raw.snapshot_id),
   };
 }
 
-function normalizeOverviewResponse(raw: MarketMonitorResponse & { agent_market_regime?: RawMarketAgentRegimeSummary | null }): MarketMonitorResponse {
+function normalizeOverviewResponse(raw: unknown): MarketMonitorResponse {
+  if (
+    !raw
+    || typeof raw !== "object"
+    || !Array.isArray((raw as { metrics?: unknown }).metrics)
+    || !Array.isArray((raw as { source_trace?: unknown }).source_trace)
+    || (raw as { metrics: unknown[] }).metrics.some((metric) => !metric || typeof metric !== "object")
+  ) {
+    throw new ApiError("市场监控总览数据结构无效", { url: MARKET_MONITOR_OVERVIEW_PATH });
+  }
+
+  const payload = raw as MarketMonitorResponse & { agent_market_regime?: RawMarketAgentRegimeSummary | null };
+  const realtimeRegime = payload.realtime_regime;
+  const primaryDriver = payload.primary_driver;
   return {
-    ...raw,
-    agent_market_regime: normalizeAgentMarketRegime(raw.agent_market_regime),
+    ...payload,
+    metrics: payload.metrics.map((metric) => ({
+      ...metric,
+      // A missing observation date is a real gap. Keep it null so the UI
+      // renders an unavailable date instead of inferring it from generated_at.
+      latest_date: asOptionalString(metric.latest_date),
+    })),
+    agent_market_regime: normalizeAgentMarketRegime(payload.agent_market_regime),
+    realtime_regime: realtimeRegime
+      ? {
+          regime: asString(realtimeRegime.regime),
+          confidence: asNumberOrNull(realtimeRegime.confidence),
+          available: Boolean(realtimeRegime.available),
+        }
+      : null,
+    primary_driver: primaryDriver
+      ? {
+          driver: asString(primaryDriver.driver),
+          secondary: asOptionalString(primaryDriver.secondary),
+          confidence: asNumberOrNull(primaryDriver.confidence),
+        }
+      : null,
   };
+}
+
+function isOverviewCompatibilityError(cause: unknown): boolean {
+  return cause instanceof ApiError && (cause.status === 404 || cause.status === 501);
 }
 
 export async function fetchMarketMonitorData(): Promise<MarketMonitorResponse> {
   try {
     try {
       return normalizeOverviewResponse(await fetchJson<MarketMonitorResponse & { agent_market_regime?: RawMarketAgentRegimeSummary | null }>(MARKET_MONITOR_OVERVIEW_PATH));
-    } catch {
-      // fall back to older dual-endpoint aggregation path
+    } catch (overviewCause) {
+      if (!isOverviewCompatibilityError(overviewCause)) {
+        throw overviewCause;
+      }
+      // Only a missing/unimplemented overview endpoint may use the legacy
+      // aggregation path.  5xx, malformed JSON, and network errors must be
+      // visible to the hook instead of being silently replaced by partial data.
     }
 
     const [tickersPayload, macroPayload] = await Promise.all([
@@ -572,19 +607,9 @@ export async function fetchMarketMonitorData(): Promise<MarketMonitorResponse> {
 
     return normalizeApiResponse(tickersPayload, macroPayload);
   } catch (apiCause) {
-    const apiError = apiCause instanceof Error ? apiCause.message : "Market Monitor API 请求失败";
-
-    try {
-      const mockData = await loadMockMarketMonitor();
-      return {
-        ...mockData,
-        source: "mock",
-        error_reason: apiError,
-      };
-    } catch (mockCause) {
-      const mockError = mockCause instanceof Error ? mockCause.message : "Market Monitor mock 请求失败";
-      return createUnavailableResponse(`${apiError}; ${mockError}`);
-    }
+    // A failed live read must remain an error. Rendering a bundled snapshot here
+    // would make an old market state look current and hide the failed refresh.
+    throw apiCause instanceof Error ? apiCause : new Error("Market Monitor API 请求失败");
   }
 }
 

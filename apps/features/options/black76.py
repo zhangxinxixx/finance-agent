@@ -6,6 +6,7 @@ import datetime as dt
 import math
 from dataclasses import dataclass
 from statistics import median
+from typing import Mapping
 
 from apps.features.options.normalize import NormalizedOptionRow
 
@@ -162,6 +163,14 @@ class OptionExposure:
     data_quality: list[str]
     trade_date: str = ""
     expiry: str = ""
+    # Explicit units/provenance are required because the fallback below is a
+    # dimensionless delta-shape proxy, not Black-76 gamma.  Keep the legacy
+    # ``gex_1pct`` field for consumers, but it is zero for shape-only rows and
+    # must never be aggregated with USD model GEX.
+    gamma_source: str = "unspecified"
+    gex_unit: str = "USD_per_1pct_move_model_gamma"
+    shape_proxy: float | None = None
+    shape_proxy_oi: float | None = None
 
 
 @dataclass(frozen=True)
@@ -464,20 +473,26 @@ def compute_exposure(row: NormalizedOptionRow, F: float, T: float, r: float = DE
                 data_quality=data_quality,
                 trade_date=row.trade_date,
                 expiry=row.expiry,
+                gamma_source="settlement_implied_black76",
+                gex_unit="USD_per_1pct_move_model_gamma",
             )
 
     proxy_delta = abs(row.delta_raw if row.delta_raw is not None else delta_signed)
     proxy_delta = max(0.0, min(proxy_delta, 1.0))
     gamma_proxy = proxy_delta * (1.0 - proxy_delta)
     data_quality.append("gamma_proxy_used")
-    gex_1pct = gamma_proxy * oi * CONTRACT_MULTIPLIER * F * F * 0.01
+    data_quality.append("shape_proxy_unscaled")
+    data_quality.append("gex_not_comparable_shape_proxy")
     delta_exposure = delta_signed * oi * CONTRACT_MULTIPLIER * F
     return OptionExposure(
         strike=strike,
         option_type=row.option_type,
         iv=None,
         gamma=gamma_proxy,
-        gex_1pct=gex_1pct,
+        # ``gamma_proxy`` has no price/gamma units.  Do not turn it into a
+        # USD-per-1% exposure by multiplying by F²; retain it in the separate
+        # shape fields instead.
+        gex_1pct=0.0,
         delta_exposure=delta_exposure,
         vega_exposure_1vol=0.0,
         theta_exposure_day=0.0,
@@ -485,6 +500,10 @@ def compute_exposure(row: NormalizedOptionRow, F: float, T: float, r: float = DE
         data_quality=data_quality,
         trade_date=row.trade_date,
         expiry=row.expiry,
+        gamma_source="delta_shape_proxy",
+        gex_unit="unavailable_for_shape_proxy",
+        shape_proxy=gamma_proxy,
+        shape_proxy_oi=gamma_proxy * oi,
     )
 
 
@@ -506,8 +525,15 @@ def compute_netgex_grid(
     grid_min: int = GEX_GRID_MIN,
     grid_max: int = GEX_GRID_MAX,
     grid_step: int = GEX_GRID_STEP,
+    forward_by_expiry: Mapping[str, float | None] | None = None,
 ) -> NetGEXResult:
-    """Compute a structural NetGEX grid and interpolate the gamma zero."""
+    """Compute an option-type-signed OI GEX proxy grid and interpolate its flip.
+
+    ``compute_exposure`` stores ``gex_1pct`` as a positive leg magnitude for
+    both Calls and Puts.  This function applies the Put sign exactly once via
+    ``call_gex - put_gex``.  It therefore does not claim dealer GEX or dealer
+    positioning, and callers must not subtract a Put value again.
+    """
     warnings: list[str] = []
     price_grid = [float(price) for price in range(grid_min, grid_max + 1, grid_step)]
     net_gex_values: list[float] = []
@@ -515,7 +541,12 @@ def compute_netgex_grid(
     row_specs: list[tuple[NormalizedOptionRow, float, float]] = []
     skipped_rows = 0
     for row in rows:
-        if row.settlement is None or F <= 0:
+        row_forward = F
+        if forward_by_expiry is not None:
+            candidate = forward_by_expiry.get(row.expiry)
+            if isinstance(candidate, (int, float)) and math.isfinite(float(candidate)) and float(candidate) > 0:
+                row_forward = float(candidate)
+        if row.settlement is None or row_forward <= 0:
             skipped_rows += 1
             continue
         row_T = T
@@ -527,7 +558,7 @@ def compute_netgex_grid(
         if row_T <= 0:
             skipped_rows += 1
             continue
-        sigma, _low_confidence = implied_vol_black76(row.settlement, F, row.strike, row_T, row.option_type, r=r)
+        sigma, _low_confidence = implied_vol_black76(row.settlement, row_forward, row.strike, row_T, row.option_type, r=r)
         if sigma is None:
             skipped_rows += 1
             continue
@@ -535,6 +566,7 @@ def compute_netgex_grid(
 
     if skipped_rows:
         warnings.append("grid_skipped_rows_without_iv")
+        warnings.append("shape_proxy_rows_excluded_from_gamma_flip")
 
     for price in price_grid:
         call_gex = 0.0

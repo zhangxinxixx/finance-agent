@@ -1,9 +1,11 @@
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { formatDateTime } from "@/lib/date";
 import type { SettingsHistoryEntry } from "@/adapters/settings";
 import { prettyJson, toneForAuditAction } from "./settingsAuditFormat";
+import { settingsActionLabel, settingsActorLabel, settingsKeyLabel, settingsScopeLabel, settingsSourceLabel } from "./settingsFormat";
 
 function DetailRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -17,7 +19,7 @@ function DetailRow({ label, value, mono = false }: { label: string; value: strin
 function ValueBlock({ title, value }: { title: string; value: string }) {
   return (
     <div>
-      <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-[var(--fg-5)]">{title}</div>
+      <div className="mb-1 text-[9px] font-semibold tracking-[0.1em] text-[var(--fg-5)]">{title}</div>
       <pre className="max-h-[280px] overflow-y-auto overflow-x-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-panel)] p-3 font-mono text-[10px] leading-5 text-[var(--fg-3)]">
         {value}
       </pre>
@@ -35,33 +37,39 @@ export function SettingsAuditEventDetail({
   onRollback: (entry: SettingsHistoryEntry) => void;
 }) {
   return (
-    <FACard title="事件详情" eyebrow="Selected Record" accent="info" bodyClassName="space-y-3">
+    <FACard title="事件详情" eyebrow="已选记录" accent="info" bodyClassName="space-y-3">
       {entry ? (
         <>
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-0.5 text-[10px] text-[var(--fg-4)]">
-              {entry.scope}
+              {settingsScopeLabel(entry.scope)}
             </span>
             {entry.sourceKey ? (
               <span className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-0.5 text-[10px] text-[var(--fg-4)]">
-                {entry.sourceKey}
+                {settingsSourceLabel(entry.sourceKey)}
               </span>
             ) : null}
-            <FAStatusPill tone={toneForAuditAction(entry.action)}>{entry.action}</FAStatusPill>
+            <FAStatusPill tone={toneForAuditAction(entry.action)}>{settingsActionLabel(entry.action)}</FAStatusPill>
           </div>
 
           <div className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
-            <DetailRow label="setting_key" value={entry.settingKey} />
-            <DetailRow label="actor" value={entry.actor ?? "system"} />
-            <DetailRow label="request_id" value={entry.requestId ?? "—"} mono />
-            <DetailRow label="audit_id" value={entry.auditId ?? "—"} mono />
-            <DetailRow label="created_at" value={formatDateTime(entry.createdAt)} mono />
+            <DetailRow label="配置项" value={settingsKeyLabel(entry.settingKey)} />
+            <DetailRow label="操作者" value={settingsActorLabel(entry.actor)} />
+            <DetailRow label="发生时间" value={formatDateTime(entry.createdAt)} mono />
+            <details className="border-t border-[var(--border-faint)] pt-2 text-[10px] text-[var(--fg-5)]">
+              <summary className="cursor-pointer">查看技术追踪标识</summary>
+              <div className="mt-2"><EvidenceRecordActions label="脱敏审计标识" record={{ request_id: entry.requestId, audit_id: entry.auditId, setting_key: entry.settingKey, scope: entry.scope, source_key: entry.sourceKey }} /></div>
+            </details>
           </div>
 
-          <div className="grid gap-3">
-            <ValueBlock title="old_value_json" value={prettyJson(entry.oldValueJson)} />
-            <ValueBlock title="new_value_json" value={prettyJson(entry.newValueJson)} />
-          </div>
+          {entry.scope === "secret" ? (
+            <div className="rounded-[var(--radius-md)] border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-2 text-[10px] leading-5 text-[var(--warn)]">密钥事件只保留状态和脱敏追踪标识，密钥值不在审计详情中展示。</div>
+          ) : (
+            <div className="grid gap-3">
+              <ValueBlock title="变更前配置结构" value={prettyJson(entry.oldValueJson)} />
+              <ValueBlock title="变更后配置结构" value={prettyJson(entry.newValueJson)} />
+            </div>
+          )}
 
           <div className="flex items-center justify-between gap-3">
             <div className="text-[10px] text-[var(--fg-5)]">{entry.reason ?? "未提供备注"}</div>
@@ -76,13 +84,13 @@ export function SettingsAuditEventDetail({
               </button>
             ) : (
               <div className="text-[10px] text-[var(--fg-5)]">
-                {entry.scope === "secret" ? "secret 事件不支持回滚" : "回滚事件不再提供再次回滚"}
+                {entry.scope === "secret" ? "密钥事件不支持回滚" : "回滚事件不再提供再次回滚"}
               </div>
             )}
           </div>
         </>
       ) : (
-        <FAEmptyState title="请选择一条事件" description="从左侧列表选择一条 Settings 审计记录查看详情。" className="p-6" />
+        <FAEmptyState title="请选择一条事件" description="从左侧列表选择一条设置变更记录查看详情。" className="p-6" />
       )}
     </FACard>
   );

@@ -181,6 +181,7 @@ def _write_collection_diagnostics(path: Path) -> None:
 def _isolated_data_source_project_root(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr("apps.api.data_service._PROJECT_ROOT", tmp_path)
     monkeypatch.setattr("apps.api.services.source_service._PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("FINANCE_AGENT_DISABLE_JIN10", raising=False)
     return tmp_path
 
 
@@ -340,6 +341,59 @@ def test_data_service_marks_high_frequency_source_stale_when_ttl_exceeded() -> N
     src = _sources_by_key(result)["jin10_mcp_flash"]
     assert src["freshness_status"] == "stale"
     assert src["freshness_reason"] == "ttl_exceeded"
+
+
+def test_runtime_disabled_jin10_overrides_historical_success_without_mutating_record(monkeypatch) -> None:
+    from apps.api.services.source_service import get_data_source_statuses
+
+    session = _db_session()
+    record = _seed_source(
+        session,
+        source_key="jin10_mcp_flash",
+        source_name="Jin10 MCP Flash",
+        source_group="news",
+        source_type="mcp",
+        access_method="mcp",
+        configured=True,
+        raw_ingested=True,
+        parsed=True,
+        analysis_ready=True,
+        status="ok",
+    )
+    record_id = record.id
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+
+    with patch("apps.api.services.source_service._try_db_session", return_value=session):
+        result = get_data_source_statuses()
+
+    src = _sources_by_key(result)["jin10_mcp_flash"]
+    assert src["configured"] is False
+    assert src["status"] == "disabled"
+    assert src["health_state"] == "unavailable"
+    assert src["readiness_state"] == "not_configured"
+    assert src["gate_state"] == "closed"
+    assert src["gating_reason"] == "not_configured"
+    assert src["freshness_status"] == "not_applicable"
+    assert src["raw_ingested"] is True
+    assert src["parsed"] is True
+    assert src["analysis_ready"] is False
+    assert src["metadata"]["runtime_control"] == {
+        "enabled": False,
+        "reason": "disabled_by_settings: FINANCE_AGENT_DISABLE_JIN10",
+    }
+    assert src["metadata"]["historical_projection"] == {
+        "configured": True,
+        "status": "ok",
+        "raw_ingested": True,
+        "parsed": True,
+        "analysis_ready": True,
+    }
+
+    persisted = session.get(DataSourceStatus, record_id)
+    assert persisted is not None
+    assert persisted.configured is True
+    assert persisted.analysis_ready is True
+    assert persisted.status == "ok"
 
 
 def test_data_service_marks_daily_batch_source_stale_when_older_than_sla() -> None:
@@ -778,7 +832,7 @@ def test_data_service_filesystem_fallback_exposes_jin10_multi_entry_sources(tmp_
         assert src["source_group"] == source_group
         assert src["source_type"] == source_type
         assert src["access_method"] == access_method
-        assert src["status"] == "not_connected"
+        assert src["status"] == ("disabled" if source_key == "jin10_mcp_market" else "not_connected")
         assert src["metadata"]["provider_role"] == "supplemental"
         assert src["metadata"]["frontend_label"]
         assert src["metadata"]["artifact_layers"]
@@ -1582,3 +1636,16 @@ def test_api_data_source_history_reads_persisted_snapshots_for_one_source() -> N
     assert [item["snapshot_date"] for item in data["items"]] == ["2026-06-24", "2026-06-23"]
     assert data["items"][0]["data_status"] == "live"
     assert data["items"][1]["freshness_status"] == "stale"
+
+
+def test_news_enabled_cannot_reenable_retired_numeric_source(monkeypatch):
+    from apps.api.services.source_service import _apply_runtime_source_controls
+
+    monkeypatch.delenv('FINANCE_AGENT_DISABLE_JIN10', raising=False)
+    for key in ('jin10_mcp_market', 'technical_yahoo'):
+        stored = {'source_key': key, 'configured': True, 'analysis_ready': True, 'status': 'ok'}
+        projected = _apply_runtime_source_controls(stored)
+        assert projected['status'] == 'disabled'
+        assert projected['analysis_ready'] is False
+        assert projected['metadata']['runtime_control']['reason'] == 'jin10_news_only'
+        assert stored['status'] == 'ok'

@@ -82,7 +82,8 @@ def evaluate_quality_gate(
     fallback_actions: list[str] = []
 
     context = overview.get("gold_analysis_context")
-    if isinstance(context, dict) and str(context.get("status") or "") not in {"", "ready"}:
+    context_disabled = isinstance(context, dict) and context.get("status") == "disabled" and context.get("reason") == "jin10_disabled" and "jin10" in context.get("disabled_sources", [])
+    if isinstance(context, dict) and not context_disabled and str(context.get("status") or "") not in {"", "ready"}:
         findings.append(
             QualityGateFinding(
                 code="gold_analysis_context_degraded",
@@ -391,11 +392,7 @@ def _collect_evidence_items(*, outputs: list[AgentOutput], overview: dict[str, A
 
 
 def _max_confidence(*, outputs: list[AgentOutput], overview: dict[str, Any]) -> float:
-    values = [
-        output.confidence
-        for output in outputs
-        if output.agent_name != "fact_review_agent"
-    ]
+    values = [output.confidence for output in outputs]
     for key in ("confidence", "confidence_score"):
         value = overview.get(key)
         if isinstance(value, int | float):

@@ -1,3 +1,5 @@
+import { normalizeResearchIdentity } from "@/adapters/researchIdentity";
+import { normalizeResearchTradePlan } from "@/adapters/researchTradePlan";
 import { ApiError, fetchJson } from "@/adapters/apiClient";
 import type { ArtifactRef } from "@/types/artifact";
 import type { DataStatus, ReportFormat, SourceRef } from "@/types/common";
@@ -10,10 +12,6 @@ import type {
   Jin10ReportBundleView,
   Jin10WeeklyReportResponse,
   Jin10WeeklyReportView,
-  ReportAnalysisAgentOutputResponse,
-  ReportAnalysisAgentOutputView,
-  ReportAnalysisInputItemView,
-  ReportAnalysisInputsResponse,
   ReportAnalysisInputsView,
   ReportArtifactContentView,
   ReportArtifactPayloadResponse,
@@ -23,7 +21,7 @@ import type {
   ReportDetailTabKey,
   ReportDetailView,
   ReportGenerationTrace,
-  ReportDeterministicInputResponse,
+  ReportWarningItem,
   ReportsDatesResponse,
   ReportsIndexResponse,
   VisualReportResponse,
@@ -31,11 +29,11 @@ import type {
 } from "@/types/reports";
 import { normalizeDataStatus } from "@/lib/status";
 import { normalizeResultIdentity } from "@/adapters/resultIdentity";
+import { createInFlightRequest } from "./inFlightRequest";
 
 const REPORTS_INDEX_PATH = "/api/reports/index";
 const REPORTS_DATES_PATH = "/api/reports/dates";
 const REPORTS_DETAIL_PATH = "/api/reports";
-const REPORTS_ANALYSIS_INPUTS_PATH = "/api/reports";
 const FINAL_REPORT_LATEST_PATH = "/api/final-report/latest";
 const FINAL_REPORT_PATH = "/api/final-report";
 const OPTIONS_VISUAL_REPORT_LATEST_PATH = "/api/options/visual-report/latest";
@@ -46,6 +44,8 @@ const JIN10_REPORT_BUNDLE_LATEST_PATH = "/api/jin10/report-bundle/latest";
 const JIN10_REPORT_BUNDLE_PATH = "/api/jin10/report-bundle";
 const JIN10_WEEKLY_REPORT_LATEST_PATH = "/api/jin10/weekly-report/latest";
 const JIN10_WEEKLY_REPORT_PATH = "/api/jin10/weekly-report";
+const fetchReportsIndexRequest = createInFlightRequest(() => fetchJson<ReportsIndexResponse>(REPORTS_INDEX_PATH));
+const fetchReportsDatesRequest = createInFlightRequest(() => fetchJson<ReportsDatesResponse>(REPORTS_DATES_PATH));
 const REPORT_DETAIL_TAB_CONFIG: Record<ReportArtifactTabKey, { label: string; endpoint: string }> = {
   analysis: { label: "分析稿", endpoint: "analysis" },
   source: { label: "来源稿", endpoint: "source" },
@@ -99,12 +99,12 @@ function toJin10ReportBundleView(payload: Jin10ReportBundleResponse, sourceEndpo
   };
 }
 
-export async function fetchReportsIndex(): Promise<ReportsIndexResponse> {
-  return fetchJson<ReportsIndexResponse>(REPORTS_INDEX_PATH);
+export function fetchReportsIndex(): Promise<ReportsIndexResponse> {
+  return fetchReportsIndexRequest();
 }
 
-export async function fetchReportsDates(): Promise<ReportsDatesResponse> {
-  return fetchJson<ReportsDatesResponse>(REPORTS_DATES_PATH);
+export function fetchReportsDates(): Promise<ReportsDatesResponse> {
+  return fetchReportsDatesRequest();
 }
 
 export async function fetchLatestFinalReport(): Promise<FinalReportView> {
@@ -261,10 +261,9 @@ export function stripEmbeddedSourceSection(content: string): string {
 }
 
 export function sanitizeReportAnalysisMarkdown(content: string): string {
-  const withoutSources = stripEmbeddedSourceSection(content);
-  const title = withoutSources.match(/^#\s+(XAUUSD 宏观 \/ 流动性更新（[^\n]+）)\s*$/m);
-  const table = withoutSources.match(/## 流动性与利率统一数据表\s*\n([\s\S]*?)(?=\n##\s|$)/);
-  if (!title || !table) return withoutSources;
+  const title = content.match(/^#\s+(XAUUSD 宏观 \/ 流动性更新（[^\n]+）)\s*$/m);
+  const table = content.match(/## 流动性与利率统一数据表\s*\n([\s\S]*?)(?=\n##\s|$)/);
+  if (!title || !table) return content;
 
   const dataRows = table[1]
     .split("\n")
@@ -272,7 +271,7 @@ export function sanitizeReportAnalysisMarkdown(content: string): string {
     .slice(2);
   const allRowsMissing = dataRows.length > 0
     && dataRows.every((line) => (line.match(/明确缺失/g) ?? []).length >= 5);
-  if (!allRowsMissing) return withoutSources;
+  if (!allRowsMissing) return content;
 
   return [
     `# ${title[1]}`,
@@ -324,80 +323,61 @@ async function fetchReportArtifactPayload(
   };
 }
 
-function mapDeterministicInput(item: ReportDeterministicInputResponse): ReportAnalysisInputItemView {
-  return {
-    input_id: item.input_id,
-    input_type: item.input_type,
-    title: item.title,
-    data_status: normalizeDataStatus(item.data_status) as DataStatus,
-    snapshot_id: item.snapshot?.snapshot_id ?? null,
-    run_id: item.snapshot?.run_id ?? null,
-    snapshot_type: item.snapshot?.snapshot_type ?? null,
-    trade_date: item.snapshot?.data_date ?? null,
-    created_at: item.snapshot?.created_at ?? null,
-    input_snapshot_ids: item.snapshot?.input_snapshot_ids ?? [],
-    sections: item.sections ?? [],
-    source_refs: (item.source_refs ?? []).map(mapSourceRef),
-    artifact_refs: (item.artifact_refs ?? []).map(mapArtifactRef),
-    payload: item.payload ?? null,
-  };
+interface OptionalReportPart<T> {
+  value: T | null;
+  warning: ReportWarningItem | null;
 }
 
-function mapAnalysisAgentOutput(item: ReportAnalysisAgentOutputResponse): ReportAnalysisAgentOutputView {
-  return {
-    agent_output_id: item.agent_output_id,
-    registry_id: item.registry_id ?? null,
-    agent_name: item.agent_name,
-    display_name: item.display_name,
-    role: item.role,
-    module: item.module,
-    version: item.version,
-    run_id: item.run_id ?? null,
-    snapshot_id: item.snapshot_id ?? null,
-    status: normalizeDataStatus(item.status) as DataStatus,
-    bias: item.bias,
-    confidence: item.confidence,
-    summary: item.summary,
-    summary_zh: item.summary_zh,
-    key_findings: item.key_findings ?? [],
-    risk_points: item.risk_points ?? [],
-    watchlist: item.watchlist ?? [],
-    invalid_conditions: item.invalid_conditions ?? [],
-    source_refs: (item.source_refs ?? []).map(mapSourceRef),
-    artifact_refs: (item.artifact_refs ?? []).map(mapArtifactRef),
-    claim_count: item.claim_count ?? 0,
-    fact_review_status: item.fact_review_status ?? null,
-    prompt_version: item.prompt_version ?? null,
-    generated_by: item.generated_by ?? null,
-    llm_model: item.llm_model ?? null,
-    llm_audit: item.llm_audit ?? null,
-    created_at: item.created_at ?? null,
-  };
-}
-
-async function fetchReportAnalysisInputs(reportId: string, signal?: AbortSignal): Promise<ReportAnalysisInputsView | null> {
-  const sourceEndpoint = `${REPORTS_ANALYSIS_INPUTS_PATH}/${reportId}/analysis-inputs`;
-  const payload = await fetchOptionalJson<ReportAnalysisInputsResponse>(sourceEndpoint, signal);
-  if (!payload) {
-    return null;
+function isAbortFailure(cause: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true;
   }
+  if (cause instanceof ApiError) {
+    return isAbortFailure(cause.cause, signal);
+  }
+  return typeof cause === "object" && cause !== null && "name" in cause && cause.name === "AbortError";
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException("请求已取消", "AbortError");
+  }
+}
+
+async function readOptionalReportPart<T>(
+  read: () => Promise<T | null>,
+  missingWarning: ReportWarningItem | null,
+  failedWarning: ReportWarningItem,
+  signal?: AbortSignal,
+): Promise<OptionalReportPart<T>> {
+  throwIfAborted(signal);
+  try {
+    const value = await read();
+    throwIfAborted(signal);
+    return { value, warning: value === null ? missingWarning : null };
+  } catch (cause) {
+    if (isAbortFailure(cause, signal)) {
+      throw cause;
+    }
+    return { value: null, warning: failedWarning };
+  }
+}
+
+function artifactReadWarnings(tab: ReportArtifactTabKey): { missing: ReportWarningItem; failed: ReportWarningItem } {
+  const label = REPORT_DETAIL_TAB_CONFIG[tab].label;
   return {
-    report_id: payload.report_id,
-    family: payload.family ?? null,
-    title: payload.title ?? null,
-    asset: payload.asset ?? null,
-    trade_date: payload.trade_date ?? null,
-    run_id: payload.run_id ?? null,
-    snapshot_id: payload.snapshot_id ?? null,
-    source_endpoint: sourceEndpoint,
-    data_status: normalizeDataStatus(payload.data_status) as DataStatus,
-    source_refs: (payload.source_refs ?? []).map(mapSourceRef),
-    artifact_refs: (payload.artifact_refs ?? []).map(mapArtifactRef),
-    warnings: payload.warnings ?? [],
-    deterministic_inputs: (payload.deterministic_inputs ?? []).map(mapDeterministicInput),
-    agent_outputs: (payload.agent_outputs ?? []).map(mapAnalysisAgentOutput),
-    fact_reviews: (payload.fact_reviews ?? []).map(mapAnalysisAgentOutput),
-    synthesis_outputs: (payload.synthesis_outputs ?? []).map(mapAnalysisAgentOutput),
+    missing: {
+      code: "report-artifact-content-missing",
+      message: `${label}已在报告元数据登记，但内容读取返回 404，无法核验该证据。`,
+      severity: "warning",
+      field: tab,
+    },
+    failed: {
+      code: "report-artifact-read-failed",
+      message: `${label}读取失败，无法核验该证据。`,
+      severity: "warning",
+      field: tab,
+    },
   };
 }
 
@@ -411,14 +391,42 @@ export async function fetchReportDetailView(reportId: string, signal?: AbortSign
   const shouldFetchTab = (tab: ReportArtifactTabKey) =>
     REPORT_TAB_ARTIFACT_TYPES[tab].some((artifactType) => artifactTypes.has(artifactType));
 
-  const [analysis, source, visual, evidence, sourceTrace, analysisInputs] = await Promise.all([
-    shouldFetchTab("analysis") ? fetchReportArtifactPayload(reportId, "analysis", signal) : Promise.resolve(null),
-    shouldFetchTab("source") ? fetchReportArtifactPayload(reportId, "source", signal) : Promise.resolve(null),
-    shouldFetchTab("visual") ? fetchReportArtifactPayload(reportId, "visual", signal) : Promise.resolve(null),
-    shouldFetchTab("evidence") ? fetchReportArtifactPayload(reportId, "evidence", signal) : Promise.resolve(null),
-    Promise.resolve(null),
-    fetchReportAnalysisInputs(reportId, signal),
+  const readArtifact = (tab: ReportArtifactTabKey): Promise<OptionalReportPart<ReportArtifactContentView>> => {
+    if (!shouldFetchTab(tab)) {
+      return Promise.resolve({ value: null, warning: null });
+    }
+    const warnings = artifactReadWarnings(tab);
+    return readOptionalReportPart(
+      () => fetchReportArtifactPayload(reportId, tab, signal),
+      warnings.missing,
+      warnings.failed,
+      signal,
+    );
+  };
+  const [analysisPart, sourcePart, visualPart, evidencePart] = await Promise.all([
+    readArtifact("analysis"),
+    readArtifact("source"),
+    readArtifact("visual"),
+    readArtifact("evidence"),
   ]);
+  return normalizeReportDetail(detail, {
+    analysis: analysisPart.value, source: sourcePart.value, visual: visualPart.value,
+    evidence: evidencePart.value, analysis_inputs: null,
+    warnings: [analysisPart, sourcePart, visualPart, evidencePart]
+      .map(part => part.warning).filter((warning): warning is ReportWarningItem => warning !== null),
+  });
+}
+
+export function normalizeReportDetail(detail: ReportDetailResponse, parts: {
+  analysis?: ReportArtifactContentView | null;
+  source?: ReportArtifactContentView | null;
+  visual?: ReportArtifactContentView | null;
+  evidence?: ReportArtifactContentView | null;
+  analysis_inputs?: ReportAnalysisInputsView | null;
+  warnings?: ReportWarningItem[];
+} = {}): ReportDetailView {
+  const { analysis = null, source = null, visual = null, evidence = null, analysis_inputs: analysisInputs = null } = parts;
+  const sourceTrace = null;
 
   const tabs: Partial<Record<ReportArtifactTabKey, ReportArtifactContentView>> = {};
   if (analysis) tabs.analysis = analysis;
@@ -429,9 +437,6 @@ export async function fetchReportDetailView(reportId: string, signal?: AbortSign
   const availableTabs: ReportDetailTabKey[] = (Object.keys(REPORT_DETAIL_TAB_CONFIG) as ReportArtifactTabKey[]).filter(
     (tab) => tabs[tab]?.available,
   );
-  if (analysisInputs) {
-    availableTabs.push("inputs");
-  }
   const analysisUnavailable = detail.family === "macro_report"
     && analysis?.content.includes("## 本次报告不可用") === true;
   const dataStatus = analysisUnavailable
@@ -439,7 +444,11 @@ export async function fetchReportDetailView(reportId: string, signal?: AbortSign
     : normalizeDataStatus(detail.data_status) as DataStatus;
   const sourceRefs = dedupeSourceRefViews((detail.source_refs ?? []).map(mapSourceRef));
   const artifactRefs = (detail.artifact_refs ?? detail.artifacts ?? []).map(mapArtifactRef);
-  const warnings = [...(detail.warnings ?? []), ...(analysisInputs?.warnings ?? [])]
+  const warnings = [
+    ...(detail.warnings ?? []),
+    ...(analysisInputs?.warnings ?? []),
+    ...(parts.warnings ?? []),
+  ]
     .filter((item, index, array) => array.findIndex((candidate) => candidate.code === item.code && candidate.message === item.message) === index)
     .filter((item) => !INFO_ONLY_WARNING_CODES.has(item.code));
 
@@ -453,7 +462,7 @@ export async function fetchReportDetailView(reportId: string, signal?: AbortSign
       asset: detail.asset ?? undefined,
       trade_date: detail.trade_date ?? undefined,
       dataDate: detail.trade_date ?? undefined,
-      asOf: detail.generated_at ?? undefined,
+      asOf: normalizeResearchIdentity(detail.research_identity)?.data_as_of ?? undefined,
       run_id: detail.run_id ?? undefined,
       snapshot_id: detail.snapshot_id ?? undefined,
       format: analysis?.format ?? visual?.format ?? evidence?.format ?? source?.format ?? "markdown",
@@ -465,6 +474,7 @@ export async function fetchReportDetailView(reportId: string, signal?: AbortSign
       input_snapshot_ids: detail.input_snapshot_ids ?? [],
       warning_count: warnings.length,
       artifact_count: detail.artifacts?.length ?? 0,
+      report_identity: detail.report_identity ?? null,
     },
     data_status: dataStatus,
     source_refs: sourceRefs,
@@ -474,7 +484,12 @@ export async function fetchReportDetailView(reportId: string, signal?: AbortSign
     analysis_inputs: analysisInputs,
     tabs,
     available_tabs: availableTabs,
+    final_trade_plan: normalizeResearchTradePlan(detail.structured_payload?._reader_trade_plan, {
+      report_id: detail.report_id, run_id: detail.run_id, snapshot_id: detail.snapshot_id ?? null, trade_date: detail.trade_date,
+    }),
     structured_payload: detail.structured_payload ?? null,
+    research_identity: normalizeResearchIdentity(detail.research_identity),
+    current_context: detail.current_context?.relationship === "current_context_only" ? detail.current_context : null,
     result_identity: normalizeResultIdentity(detail.result_identity),
     generation_trace: extractGenerationTrace(detail.structured_payload),
     gold_macro_overview: detail.gold_macro_overview ?? null,

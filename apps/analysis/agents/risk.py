@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import ValidationError
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
-
-if TYPE_CHECKING:
-    from apps.analysis.context_bundle import ConsumerProjection
 
 _AGENT_NAME = "risk_agent"
 _MODULE = "risk"
@@ -42,28 +38,6 @@ _BIAS_ALIASES = {
 
 
 def analyze_risk(
-    snapshot: dict[str, Any],
-    *,
-    macro_output: AgentOutput | dict[str, Any] | None,
-    options_output: AgentOutput | dict[str, Any] | None,
-    created_at: datetime | None = None,
-    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
-) -> AgentOutput:
-    from apps.analysis.context_bundle import validate_consumer_projection
-
-    projection = validate_consumer_projection(context_projection, "risk") if context_projection is not None else None
-    return _bind_context_projection(
-        _analyze_risk(
-            snapshot,
-            macro_output=macro_output,
-            options_output=options_output,
-            created_at=created_at,
-        ),
-        projection,
-    )
-
-
-def _analyze_risk(
     snapshot: dict[str, Any],
     *,
     macro_output: AgentOutput | dict[str, Any] | None,
@@ -133,6 +107,16 @@ def _analyze_risk(
         _extend_prefixed(invalid_conditions, "Options prior invalid condition: ", options.invalid_conditions)
 
     unavailable_modules = _unavailable_modules(snapshot)
+    macro_data = snapshot.get("macro", {}).get("data", {})
+    indicators = macro_data.get("indicators", {}) if isinstance(macro_data, dict) else {}
+    passport = {row["symbol"]: row for row in snapshot.get("daily_research", {}).get("passport", [])}
+    for symbol, label in (("HY_OAS", "美国高收益信用利差"), ("VIX", "VIX 日收盘")):
+        observation = indicators.get(symbol, {})
+        if observation.get("value") is not None and (not snapshot.get("daily_research") or passport.get(symbol, {}).get("status") == "fresh"):
+            key_findings.append(f"{label}：{observation['value']} {observation.get('unit', '')}，观察日 {observation.get('date', 'unavailable')}，前次变化 {observation.get('daily_change', 'unavailable')}。")
+        elif snapshot.get("daily_research"):
+            invalid_conditions.append(f"{label}缺失、过期或来源未通过校验，不能确认当前信用/波动是否共振。")
+            status = AgentStatus.PARTIAL
     if unavailable_modules:
         status = AgentStatus.PARTIAL
         joined = ", ".join(unavailable_modules)
@@ -155,6 +139,25 @@ def _analyze_risk(
     elif not key_findings:
         key_findings.append("Risk view has insufficient prior agent findings for directional conviction.")
 
+    research_risk = None
+    if snapshot.get("daily_research"):
+        from apps.analysis.agents.research_adjudication import adjudicate_research
+
+        assessment = adjudicate_research(snapshot)
+        project = snapshot["daily_research"].get("project_signals", {})
+        quantity = [factor["rationale"] for factor in assessment.get("factors", []) if factor["family"] == "liquidity"]
+        corridor = [signal["summary"] for name, signal in project.items() if "corridor" in name and isinstance(signal, dict) and signal.get("summary")]
+        research_risk = {"role": "risk_constraints_not_direction_vote", "quantity": quantity, "corridor": corridor,
+                         "missing_confirmations": assessment.get("missing_confirmations", [])}
+        key_findings.extend([*quantity, *corridor])
+        key_findings.append("准备金、财政账户属于数量层；SOFR−IORB、EFFR−IORB 属于融资价格层。数量收紧须由融资价格和信用证据确认，不能直接定义为流动性危机。")
+        bias = AgentBias.NEUTRAL
+        bullish_drivers, bearish_drivers = [], []
+        missing = assessment.get("missing_confirmations", [])
+        status = AgentStatus.PARTIAL if missing else status
+        if missing:
+            risk_points.extend(missing)
+
     return AgentOutput(
         version=_VERSION,
         agent_name=_AGENT_NAME,
@@ -167,7 +170,7 @@ def _analyze_risk(
         risk_points=risk_points,
         watchlist=list(_WATCHLIST),
         invalid_conditions=invalid_conditions,
-        summary=_summary(bias, status, confidence),
+        summary=("风险约束：" + " ".join([*research_risk["quantity"], *research_risk["corridor"]]) + " 数量、融资价格与信用风险分别验证；不复用宏观/期权方向作为独立投票。") if research_risk else _summary(bias, status, confidence),
         source_refs=source_refs,
         status=status,
         created_at=created_at,
@@ -175,6 +178,7 @@ def _analyze_risk(
         input_payload={
             "bullish_drivers": bullish_drivers,
             "bearish_drivers": bearish_drivers,
+            "research_risk": research_risk,
         },
     )
 
@@ -222,9 +226,7 @@ def _input_snapshot_ids(
     return ids
 
 
-def _source_refs(
-    snapshot: dict[str, Any], macro: AgentOutput | None, options: AgentOutput | None
-) -> list[dict[str, Any]]:
+def _source_refs(snapshot: dict[str, Any], macro: AgentOutput | None, options: AgentOutput | None) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     snapshot_refs = snapshot.get("source_refs")
     if isinstance(snapshot_refs, list):
@@ -336,11 +338,3 @@ def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
-
-
-def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
-    if projection is None:
-        return output
-    from apps.analysis.context_bundle import consume_projection_for_agent_output
-
-    return AgentOutput.model_validate(consume_projection_for_agent_output(projection, output, expected_consumer="risk"))

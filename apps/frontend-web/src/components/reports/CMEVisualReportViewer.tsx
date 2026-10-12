@@ -1,8 +1,10 @@
+import { ReportArtifactPanel } from "./ReportArtifactPanel";
 import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
 import type { VisualReportView } from "@/types/reports";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 interface CMEVisualReportViewerProps {
   report: VisualReportView | null;
@@ -32,10 +34,10 @@ export function CMEVisualReportViewer({
 
   if (error) {
     return (
-      <FACard title="CME 视觉报告加载失败" eyebrow="Visual Viewer" accent="down">
+      <FACard title="CME 图文报告加载失败" eyebrow="图文报告" accent="down">
         <FAWarningBanner
           title="HTML 视觉产物暂时不可用"
-          description={error.message}
+          description={readingErrorMessage(error, "图文报告读取失败，请稍后重试。")}
           tone="down"
           action={
             <button
@@ -53,10 +55,10 @@ export function CMEVisualReportViewer({
 
   if (!report || !report.content.trim()) {
     return (
-      <FACard title="暂无 CME 视觉报告" eyebrow="Visual Viewer" accent="warn">
+      <FACard title="暂无 CME 图文报告" eyebrow="图文报告" accent="warn">
         <FAEmptyState
           title="当前没有 HTML 视觉报告"
-          description="需要先生成 options_visual_report.html 或其 fallback HTML 产物后才能在此阅读。"
+          description="需要先生成可用的 CME 图文研究产物后才能在此阅读。"
         />
       </FACard>
     );
@@ -64,33 +66,20 @@ export function CMEVisualReportViewer({
 
   return (
     <FACard
-      title="CME Options Visual"
-      eyebrow="Visual Viewer"
+      title="CME期权研究报告"
+      eyebrow="图文报告"
       accent="info"
       action={
         <div className="flex flex-wrap items-center gap-2">
-          <FAStatusPill tone="info" dot={false}>
-            html
-          </FAStatusPill>
           <FAStatusPill tone="dim" dot={false} className="fa-num">
             {report.trade_date}
-          </FAStatusPill>
-          <FAStatusPill tone="neutral" dot={false} className="fa-num">
-            {report.run_id}
           </FAStatusPill>
         </div>
       }
       className="flex min-h-0 flex-1 flex-col"
       bodyClassName="min-h-0 flex-1 overflow-hidden"
     >
-      <div className="h-full rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
-        <iframe
-          title={`CME visual report ${report.trade_date} ${report.run_id}`}
-          srcDoc={report.content}
-          className="h-full w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
-          sandbox="allow-same-origin"
-        />
-      </div>
+      <ReportArtifactPanel tab={{ key: "analysis", source_endpoint: "", available: true, format: "html", content: report.content, label: "研究正文", asset_base_url: null, path: null }} />
     </FACard>
   );
 }

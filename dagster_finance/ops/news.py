@@ -9,6 +9,7 @@ from dagster import Config, In, Nothing, Out, Output, op
 
 from apps.worker.pipelines.news import NewsPipelineState, run_news_step
 from dagster_finance.ops.summary_status import raise_for_failed_summary
+from apps.worker.news_artifact_registration import persist_dagster_news_summary
 
 
 class NewsConfig(Config):
@@ -40,6 +41,8 @@ def news_collect_op(context, state: NewsPipelineState, config: NewsConfig) -> Ne
     )
     context.log.info(f"news_collect done: {summary.get('status', 'ok')}")
     raise_for_failed_summary("news_collect", summary)
+    persist_dagster_news_summary(context.resources.db_session, run_id=run_id, summary=summary, storage_root=storage)
+    context.resources.db_session.commit()
     return state
 
 
@@ -57,10 +60,13 @@ def news_feature_op(context, state: NewsPipelineState, config: NewsConfig) -> Ne
     )
     context.log.info(f"news_feature done: {summary.get('status', 'ok')}")
     raise_for_failed_summary("news_feature", summary)
+    persist_dagster_news_summary(context.resources.db_session, run_id=run_id, summary=summary, storage_root=storage)
+    context.resources.db_session.commit()
     return state
 
 
 @op(
+    required_resource_keys={"db_session"},
     tags={"pipeline": "news", "step": "news_brief"},
 )
 def news_brief_op(context, state: NewsPipelineState, config: NewsConfig) -> NewsPipelineState:
@@ -73,4 +79,6 @@ def news_brief_op(context, state: NewsPipelineState, config: NewsConfig) -> News
     )
     context.log.info(f"news_brief done: {summary.get('status', 'ok')}")
     raise_for_failed_summary("news_brief", summary)
+    persist_dagster_news_summary(context.resources.db_session, run_id=run_id, summary=summary, storage_root=storage)
+    context.resources.db_session.commit()
     return state

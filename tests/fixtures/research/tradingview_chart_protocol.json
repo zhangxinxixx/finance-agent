@@ -1,0 +1,44 @@
+{
+  "ticker": "NYMEX:CL1!",
+  "resolution": "15",
+  "messages": [
+    {
+      "session_id": "redacted"
+    },
+    {
+      "m": "symbol_resolved",
+      "p": [
+        "cs_redacted",
+        "symbol_1",
+        {
+          "pro_name": "NYMEX:CL1!",
+          "base_name": ["NYMEX:CL1!"],
+          "exchange": "NYMEX",
+          "type": "futures",
+          "currency_code": "USD",
+          "front_contract": "CLV2026",
+          "delay": 600,
+          "description": "Crude Oil Futures"
+        }
+      ]
+    },
+    {
+      "m": "timescale_update",
+      "p": [
+        "cs_redacted",
+        {
+          "s1": {
+            "s": [
+              {"i": 0, "v": [1789641000, 100.4, 100.8, 100.2, 100.7, 2511]},
+              {"i": 1, "v": [1789641900, 100.7, 100.9, 100.5, 100.6, 2515]}
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "m": "series_completed",
+      "p": ["cs_redacted", "s1", "delayed_streaming_600", "s1", {"rt_update_period": 5}]
+    }
+  ]
+}

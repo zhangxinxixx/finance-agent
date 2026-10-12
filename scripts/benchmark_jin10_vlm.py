@@ -46,11 +46,7 @@ def main() -> int:
     parser.add_argument("--model", default="gpt-5.6-luna")
     parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"), default="low")
     parser.add_argument("--sample", action="append", default=None, help="Optional sample_id filter; repeatable.")
-    parser.add_argument(
-        "--validate-only",
-        action="store_true",
-        help="Validate and print the fixed manifest without reading sample assets or calling models.",
-    )
+    parser.add_argument("--validate-only", action="store_true", help="Validate fixed assets without calling models.")
     args = parser.parse_args()
 
     os.environ.setdefault("no_proxy", "127.0.0.1,localhost,::1")
@@ -63,14 +59,13 @@ def main() -> int:
         manifest["samples"] = [item for item in manifest["samples"] if item["sample_id"] in selected]
     if not manifest["samples"]:
         raise SystemExit("no benchmark samples selected")
-    if args.validate_only:
-        print(json.dumps(manifest, ensure_ascii=False, indent=2))
-        return 0
-
     for sample in manifest["samples"]:
         assets = resolve_sample_assets(sample)
         sample["page_image"] = str(assets["page_image"])
         sample["analysis_image"] = str(assets["analysis_image"])
+    if args.validate_only:
+        print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return 0
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     model_slug = args.model.replace("/", "-")

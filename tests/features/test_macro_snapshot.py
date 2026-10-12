@@ -9,6 +9,109 @@ from apps.features.macro.snapshot import build_macro_snapshot
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "macro"
 
 
+def test_daily_tga_and_week_average_keep_separate_changes_and_lineage() -> None:
+    snapshot = build_macro_snapshot(
+        _build_points({
+            "TGA": [("2026-08-27", 950.8), ("2026-09-03", 903.928)],
+            "WTREGEN": [("2026-08-26", 950.736), ("2026-09-02", 967.935)],
+            "BAMLH0A0HYM2": [("2026-08-27", 2.60), ("2026-09-03", 2.66)],
+        }),
+        as_of="2026-09-05",
+    )
+    daily = snapshot.indicators["TGA"]
+    weekly = snapshot.indicators["TGA_WEEKLY_AVERAGE"]
+    assert daily.weekly_change == -46.872
+    assert weekly.weekly_change == 17.199
+    assert weekly.value == 967.935
+    assert weekly.date == "2026-09-02"
+    assert snapshot.indicators["HY_OAS"].weekly_change == 0.06
+    assert snapshot.indicators["HY_OAS"].unit == "%"
+    assert snapshot.source_refs["WTREGEN"]["source_url"] == "fixture://fred/WTREGEN"
+    assert snapshot.source_refs["TGA"]["source_url"] == "fixture://fred/TGA"
+
+
+def test_duplicate_symbol_lineage_follows_selected_point_and_future_gate() -> None:
+    points = [
+        {
+            "symbol": "IORB",
+            "date": "2026-09-05",
+            "value": 4.40,
+            "source": "fred",
+            "source_url": "fixture://fred/IORB",
+            "retrieved_at": "2026-09-05T12:00:00+00:00",
+            "raw_path": "storage/raw/macro/fred/2026-09-05/IORB.json",
+        },
+        {
+            "symbol": "IORB",
+            "date": "2026-09-08",
+            "value": 4.40,
+            "source": "fed_prates",
+            "source_url": "https://www.federalreserve.gov/monetarypolicy/prates/PRATES.json",
+            "retrieved_at": "2026-09-04T12:00:00+00:00",
+            "raw_path": "storage/raw/macro/fed/2026-09-06/IORB.json",
+        },
+    ]
+    snapshot = build_macro_snapshot(
+        points,
+        as_of="2026-09-05",
+        source_refs=[
+            {
+                "symbol": "IORB",
+                "source": "fred",
+                "source_url": "fixture://fred/IORB",
+                "raw_path": "storage/raw/macro/fred/2026-09-05/IORB.json",
+            },
+            {
+                "symbol": "IORB",
+                "source": "fed_prates",
+                "source_url": "https://www.federalreserve.gov/monetarypolicy/prates/PRATES.json",
+                "raw_path": "storage/raw/macro/fed/2026-09-06/IORB.json",
+            },
+        ],
+    )
+
+    assert snapshot.indicators["IORB"].date == "2026-09-05"
+    assert snapshot.source_refs["IORB"] == {
+        "source": "fred",
+        "source_url": "fixture://fred/IORB",
+        "raw_path": "storage/raw/macro/fred/2026-09-05/IORB.json",
+        "retrieved_at": "2026-09-05T12:00:00+00:00",
+    }
+
+
+def test_same_day_treasury_selection_keeps_treasury_lineage() -> None:
+    treasury_point = {
+        "symbol": "DGS10",
+        "date": "2026-09-05",
+        "value": 4.20,
+        "source": "treasury_rates",
+        "source_url": "fixture://treasury/DGS10",
+        "retrieved_at": "2026-09-05T12:00:00+00:00",
+        "raw_path": "storage/raw/macro/treasury_rates/2026-09-05/DGS10.csv",
+    }
+    fred_point = {
+        "symbol": "DGS10",
+        "date": "2026-09-05",
+        "value": 4.21,
+        "source": "fred",
+        "source_url": "fixture://fred/DGS10",
+        "retrieved_at": "2026-09-05T13:00:00+00:00",
+        "raw_path": "storage/raw/macro/fred/2026-09-05/DGS10.json",
+    }
+    snapshot = build_macro_snapshot(
+        [treasury_point, fred_point],
+        as_of="2026-09-05",
+        source_refs=[
+            {"symbol": "DGS10", **{key: treasury_point[key] for key in ("source", "source_url", "raw_path")}},
+            {"symbol": "DGS10", **{key: fred_point[key] for key in ("source", "source_url", "raw_path")}},
+        ],
+    )
+
+    assert snapshot.indicators["US10Y"].value == 4.20
+    assert snapshot.source_refs["DGS10"]["source"] == "treasury_rates"
+    assert snapshot.source_refs["DGS10"]["raw_path"] == treasury_point["raw_path"]
+
+
 def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavailable_series() -> None:
     points = _build_points(
         {
@@ -25,6 +128,7 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
             "RRPONTSYD": [("2026-04-06", 550.0), ("2026-04-29", 420.0), ("2026-05-06", 380.0)],
             "RRPONTSYAWARD": [("2026-04-06", 4.60), ("2026-04-29", 4.58), ("2026-05-06", 4.55)],
             "WRESBAL": [("2026-04-06", 3200.0), ("2026-04-29", 3180.0), ("2026-05-06", 3150.0)],
+            "WALCL": [("2026-04-06", 7100.0), ("2026-04-29", 7110.0), ("2026-05-06", 7120.0)],
         }
     )
 
@@ -96,8 +200,11 @@ def test_macro_snapshot_builds_indicator_table_fields_for_available_and_unavaila
     assert us10y.monthly_change == 0.3
     assert rrp_usage.unit == "B"
     assert rrp_usage.monthly_change == -170.0
+    assert snapshot.indicators["WALCL"].value == 7120.0
+    assert snapshot.indicators["WALCL"].unit == "B"
     assert "DXY" in snapshot.unavailable_symbols
     assert "TGA" in snapshot.unavailable_symbols
+    assert "GDP_NOW" in snapshot.unavailable_symbols
     assert snapshot.source_refs["TGA"]["reason"] == "collector unavailable"
     assert snapshot.source_refs["DFII10"]["source_url"] == "fixture://fred/DFII10"
     assert snapshot.source_refs["DTWEXBGS"]["source_url"] == "fixture://fred/DTWEXBGS"

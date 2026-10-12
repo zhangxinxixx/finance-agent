@@ -10,12 +10,14 @@ import {
   type OptionsWallSortDirection,
   type OptionsWallSortKey,
 } from "./OptionsWallTableParts";
+import { formatCMEExpiryLabel } from "./cmeOptionsFormat";
 
 interface OptionsWallTableProps {
   wallScores: CMEOptionsWallScore[];
+  selectedExpiry?: string;
 }
 
-export function OptionsWallTable({ wallScores }: OptionsWallTableProps) {
+export function OptionsWallTable({ wallScores, selectedExpiry }: OptionsWallTableProps) {
   const [sortKey, setSortKey] = useState<OptionsWallSortKey>("wall_score");
   const [sortDirection, setSortDirection] = useState<OptionsWallSortDirection>("desc");
   const [expanded, setExpanded] = useState(true);
@@ -61,8 +63,13 @@ export function OptionsWallTable({ wallScores }: OptionsWallTableProps) {
         </button>
       }
     >
+      <div className="border-b border-[var(--border-faint)] px-3 py-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
+        墙位评分和吸附值是当前快照的结构指标，不是概率。墙位接口未返回到期月坐标，因此到期月筛选不会赋予墙位期限归属；缺失吸附值显示为“—”。
+      </div>
       {expanded && (
-        <div className="overflow-x-auto">
+        <div>
+          {selectedExpiry ? <div className="border-b border-[var(--border-faint)] px-3 py-2 text-[length:var(--type-caption)] text-[var(--fg-4)]">当前筛选到期月：{formatCMEExpiryLabel(selectedExpiry)}；墙位仍按快照聚合。</div> : null}
+          <div className="overflow-x-auto">
           <table className="min-w-full border-collapse">
             <OptionsWallTableHeader
               sortKey={sortKey}
@@ -72,6 +79,7 @@ export function OptionsWallTable({ wallScores }: OptionsWallTableProps) {
             />
             <OptionsWallTableRows rows={sortedWallScores} />
           </table>
+          </div>
         </div>
       )}
     </FACard>

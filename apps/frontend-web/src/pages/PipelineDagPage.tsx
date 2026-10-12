@@ -39,7 +39,6 @@ import {
   fetchAgentAnalysis,
   fetchRunDetail,
   fetchSchedulerOverview,
-  formatStatus,
   type AgentAnalysisItem,
   type RunDetail,
   type SchedulerOverviewResponse,
@@ -49,7 +48,9 @@ import { fetchDagsterRunDetail } from "@/adapters/dagster";
 import { SmartNode } from "@/components/dag/SmartNode";
 import { SmartEdge } from "@/components/dag/SmartEdge";
 import { FARuntimeLog } from "@/components/shared/FARuntimeLog";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { useNodeDetail } from "@/hooks/useNodeDetail";
+import { evidenceLabel, operationEventLabel, operationFieldLabel, operationReadableLabel, operationReasonLabel, operationStageLabel, operationStatusLabel } from "@/components/operations/operationsLabels";
 
 // ═══════════════════════════════════════════════════════════════
 //  Constants
@@ -118,6 +119,20 @@ const TASK_DISPLAY_LABELS: Record<string, string> = {
   jin10_refresh_market_candles_daily: "市场日线补缺刷新",
   jin10_refresh_jin10_calendar: "金十日历刷新",
   premarket: "主流程",
+  fred: "FRED 宏观数据",
+  treasury: "美国国债利率",
+  dxy: "美元指数",
+  cme: "CME 结构",
+  cme_pdf: "CME 公告文件",
+  collectors: "采集器",
+  out: "结果输出",
+  agents: "分析代理",
+  coordinator: "协调分析",
+  reviewgate: "质量复核",
+  review_gate: "质量复核",
+  dashboard: "看板",
+  ops: "运维监控",
+  cme_agent: "CME 期权分析",
 };
 
 function findFlowNodeElement(nodeId: string): Element | null {
@@ -204,12 +219,12 @@ function formatPreflightBlockingReasons(blockingReasons: string[]): string {
   return blockingReasons.map((reason) => {
     if (reason === "legacy_active_task") return "已有旧任务运行中";
     if (reason === "dagster_active_run") return "Dagster 有活动运行";
-    return reason;
+    return operationReasonLabel(reason);
   }).join(" / ");
 }
 
 function summarizePreflight(preflight: PremarketLaunchPreflight | null, error: string | null): string | null {
-  if (error) return `预检异常: ${error}`;
+  if (error) return "启动前检查读取失败，启动条件尚未确认";
   if (!preflight) return null;
 
   const counts = preflight.source_readiness_summary?.decision_counts;
@@ -225,8 +240,8 @@ function summarizePreflight(preflight: PremarketLaunchPreflight | null, error: s
 
   if (blocked > 0) parts.push(`源阻塞 ${blocked}`);
   if (degraded > 0) parts.push(`源降级 ${degraded}`);
-  if (preflight.stale_legacy_task_ids.length > 0) parts.push(`忽略 stale ${preflight.stale_legacy_task_ids.length}`);
-  if (preflight.dagster_check_error) parts.push("Dagster 检查异常");
+  if (preflight.stale_legacy_task_ids.length > 0) parts.push(`发现 ${preflight.stale_legacy_task_ids.length} 项过期旧任务记录`);
+  if (preflight.dagster_check_error) parts.push("调度运行检查异常");
 
   return parts.join(" · ");
 }
@@ -562,7 +577,7 @@ function pollTaskStatus(
         startedAt = dagster.startedAt;
         endedAt = dagster.endedAt;
       } else {
-        const data = await fetchJson<any>(`/api/runs/${taskId}`);
+        const data = await fetchJson<any>(`/api/runs/${taskId}?view=ads`);
         status = data.status || "unknown";
         taskType = data.task_type || "premarket";
         startedAt = data.started_at;
@@ -572,7 +587,7 @@ function pollTaskStatus(
       const entry: RunLogEntry = {
         time: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
         type: "管线执行",
-        content: taskType,
+        content: formatTaskDisplayLabel(taskType),
         status: status === "success" ? "success" : status === "failed" ? "failed" : "running",
         duration: startedAt && endedAt
           ? `${((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 1000).toFixed(1)}s`
@@ -601,7 +616,7 @@ function schedulerEventSource(event: RunDetail["events"][number]): string {
   const payload = event.payload ?? {};
   const stepName = typeof payload.step_name === "string" ? payload.step_name : null;
   const source = typeof payload.source === "string" ? payload.source : null;
-  return stepName ?? event.task_id ?? source ?? "run";
+  return stepName ?? (event.task_id ? `任务 ${evidenceLabel(event.task_id)}` : source ?? "运行记录");
 }
 
 function schedulerEventMessage(event: RunDetail["events"][number]): string {
@@ -611,10 +626,11 @@ function schedulerEventMessage(event: RunDetail["events"][number]): string {
     typeof payload.blocked_reason === "string" ? payload.blocked_reason : null,
     typeof payload.error_message === "string" ? payload.error_message : null,
     typeof payload.from_status === "string" && typeof payload.to_status === "string"
-      ? `${payload.from_status} -> ${payload.to_status}`
+      ? `${operationStatusLabel(payload.from_status)} → ${operationStatusLabel(payload.to_status)}`
       : null,
   ].filter((item): item is string => Boolean(item));
-  return details.length > 0 ? `${event.event_type} · ${details.join(" · ")}` : event.event_type;
+  const eventLabel = operationEventLabel(event.event_type);
+  return details.length > 0 ? `${eventLabel} · ${details.join(" · ")}` : eventLabel;
 }
 
 function schedulerEventTime(value: string | null | undefined): string {
@@ -654,9 +670,26 @@ function stageFromTask(run: SchedulerTaskRun): string {
 
 function formatTaskDisplayLabel(value: string | null | undefined): string {
   if (!value) return "未标注";
-  if (value in STAGE_LABELS) return STAGE_LABELS[value as keyof typeof STAGE_LABELS];
-  if (value in TASK_DISPLAY_LABELS) return TASK_DISPLAY_LABELS[value];
-  return value.split("_").join(" ");
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized in STAGE_LABELS) return STAGE_LABELS[normalized as keyof typeof STAGE_LABELS];
+  if (normalized in TASK_DISPLAY_LABELS) return TASK_DISPLAY_LABELS[normalized];
+  const stageLabel = operationStageLabel(normalized);
+  if (stageLabel !== "阶段尚未说明") return stageLabel;
+  return operationReadableLabel(value, "任务类型尚未说明");
+}
+
+function readableDagSummary(value: string | null | undefined): string {
+  if (!value) return "节点说明未提供";
+  return /[\u4e00-\u9fff]/.test(value) ? value : "节点说明已登记，可在详情依据中核对。";
+}
+
+function readableDagField(key: string, value: unknown): string {
+  if (value === null || value === undefined || value === "") return "未返回";
+  if (typeof value === "object") return "记录已登记";
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (key === "status" || key.endsWith("_status")) return operationStatusLabel(value);
+  if (typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.:/-]*$/.test(value)) return formatTaskDisplayLabel(value);
+  return String(value);
 }
 
 function matchTaskToNodeId(task: SchedulerTaskRun | null, nodes: DagNodeSpec[]): string | null {
@@ -810,64 +843,32 @@ function StageLegend({ counts }: { counts: Record<string, number> }) {
 // ═══════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════
-//  JSON Viewer (compact key-value tree)
+//  Technical record entry
 // ═══════════════════════════════════════════════════════════════
 
-function JsonViewer({ data, maxDepth = 2 }: { data: unknown; maxDepth?: number }) {
-  if (data == null) return <span className="text-[8px] text-[var(--fg-5)]">空</span>;
-  if (typeof data === "string") return <span className="text-[8px] font-mono text-[var(--fg-3)] break-all">{data}</span>;
-  if (typeof data === "number" || typeof data === "boolean") return <span className="text-[8px] font-mono text-[var(--brand-gold)]">{String(data)}</span>;
-
-  if (Array.isArray(data)) {
-    if (data.length === 0) return <span className="text-[8px] text-[var(--fg-5)]">[]</span>;
-    return (
-      <div className="pl-2 border-l border-[var(--border-faint)]">
-        {data.slice(0, 10).map((item, i) => (
-          <div key={i} className="py-px">
-            <span className="text-[7px] text-[var(--fg-5)] mr-1">[{i}]</span>
-            <JsonViewer data={item} maxDepth={maxDepth - 1} />
-          </div>
-        ))}
-        {data.length > 10 && <div className="text-[7px] text-[var(--fg-5)]">其余 {data.length - 10} 项</div>}
-      </div>
-    );
-  }
-
-  if (typeof data === "object") {
-    const entries = Object.entries(data as Record<string, unknown>);
-    if (entries.length === 0) return <span className="text-[8px] text-[var(--fg-5)]">{"{}"}</span>;
-    return (
-      <div className="pl-2 border-l border-[var(--border-faint)]">
-        {entries.slice(0, 15).map(([k, v]) => (
-          <div key={k} className="py-px">
-            <span className="text-[7px] font-semibold text-[var(--fg-4)]">{k}:</span>{" "}
-            {typeof v === "object" && v !== null && maxDepth > 0 ? (
-              <JsonViewer data={v} maxDepth={maxDepth - 1} />
-            ) : (
-              <span className="text-[8px] font-mono text-[var(--fg-3)] break-all">
-                {v == null ? "空" : typeof v === "string" ? v : JSON.stringify(v)}
-              </span>
-            )}
-          </div>
-        ))}
-        {entries.length > 15 && <div className="text-[7px] text-[var(--fg-5)]">其余 {entries.length - 15} 项</div>}
-      </div>
-    );
-  }
-
-  return <span className="text-[8px] font-mono text-[var(--fg-3)]">{String(data)}</span>;
+function JsonViewer({ data }: { data: unknown }) {
+  const summary = data == null
+    ? "未返回记录"
+    : Array.isArray(data)
+      ? `${data.length} 项记录已登记`
+      : typeof data === "object"
+        ? `${Object.keys(data as Record<string, unknown>).length} 个字段已登记`
+        : "记录已登记";
+  return (
+    <div className="space-y-2 rounded border border-[var(--border-faint)] bg-[var(--bg-panel)] p-2">
+      <div className="text-[8px] text-[var(--fg-4)]">{summary}，原始字段通过依据入口复制。</div>
+      <EvidenceRecordActions record={data} label="原始字段记录" url={typeof data === "string" ? data : undefined} />
+    </div>
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  Inspector Panel (5-tab)
 // ═══════════════════════════════════════════════════════════════
 
-type InspectorTab = "input" | "output" | "logs" | "lineage" | "execution";
+type InspectorTab = "lineage" | "execution";
 
 const TAB_CONFIG: { key: InspectorTab; label: string; icon: typeof Database }[] = [
-  { key: "input",     label: "输入",   icon: Database },
-  { key: "output",    label: "输出",   icon: FileText },
-  { key: "logs",      label: "日志",   icon: Activity },
   { key: "lineage",   label: "血缘",   icon: GitBranch },
   { key: "execution", label: "执行",   icon: Clock },
 ];
@@ -880,7 +881,7 @@ function InspectorPanel({
   onClose: () => void;
   onFitNode: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<InspectorTab>("input");
+  const [activeTab, setActiveTab] = useState<InspectorTab>("lineage");
 
   if (!node) {
     return (
@@ -888,7 +889,7 @@ function InspectorPanel({
         <div className="flex items-center justify-between gap-3 border-b border-[var(--border-faint)] px-3 py-2.5">
           <div>
             <div className="text-[10px] font-semibold text-[var(--fg-2)]">节点详情</div>
-            <div className="text-[8px] text-[var(--fg-5)]">选择 DAG 节点后查看输入、输出、血缘与执行日志</div>
+            <div className="text-[8px] text-[var(--fg-5)]">选择流程节点后查看 ADS 血缘与执行状态摘要</div>
           </div>
           <GitBranch size={13} className="text-[var(--fg-5)]" />
         </div>
@@ -899,7 +900,7 @@ function InspectorPanel({
             </div>
             <div className="text-[10px] font-semibold text-[var(--fg-3)]">未选择节点</div>
             <div className="mt-1 text-[8px] leading-relaxed text-[var(--fg-5)]">
-              点击画布中的采集、解析、特征、分析或输出节点，右侧会同步显示该节点的来源、产物、错误与上下游关系。
+              点击画布中的流程节点，右侧会同步显示节点状态、时间与上下游关系，不展示低层输入输出和文件产物。
             </div>
           </div>
         </div>
@@ -918,7 +919,7 @@ function InspectorPanel({
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[var(--border-faint)] shrink-0 bg-[var(--bg-card)]">
         <div className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-        <h3 className="text-[11px] font-bold text-[var(--fg-2)] flex-1 truncate">{node.label}</h3>
+        <h3 className="text-[11px] font-bold text-[var(--fg-2)] flex-1 truncate">{readableDagSummary(node.label)}</h3>
         <button onClick={onFitNode} title="定位节点"
           className="rounded p-1 hover:bg-[var(--bg-hover)] text-[var(--fg-5)]">
           <Maximize2 size={12} />
@@ -934,9 +935,9 @@ function InspectorPanel({
         style={{ background: "var(--bg-panel)" }}>
         <span className="font-semibold" style={{
           color: node.status === "success" ? "var(--up)" : node.status === "failed" ? "var(--down)" : "var(--fg-4)",
-        }}>{node.status}</span>
+        }}>{operationStatusLabel(node.status)}</span>
         <span className="text-[var(--fg-5)]">·</span>
-        <span className="text-[var(--fg-4)]">{STAGE_LABELS[node.type] || node.type}</span>
+        <span className="text-[var(--fg-4)]">{STAGE_LABELS[node.type] || operationStageLabel(node.type)}</span>
         {node.execution.duration_ms != null && (
           <>
             <span className="text-[var(--fg-5)]">·</span>
@@ -979,9 +980,6 @@ function InspectorPanel({
           <div className="flex justify-center py-6"><Loader2 size={14} className="animate-spin text-[var(--fg-5)]" /></div>
         )}
 
-        {activeTab === "input" && <InputTab node={node} stepJsons={stepInputJsons} />}
-        {activeTab === "output" && <OutputTab node={node} stepJsons={stepOutputJsons} />}
-        {activeTab === "logs" && <LogsTab node={node} stepErrors={stepErrors} />}
         {activeTab === "lineage" && <LineageTab node={node} />}
         {activeTab === "execution" && <ExecutionTab node={node} />}
       </div>
@@ -993,15 +991,15 @@ function InputTab({ node, stepJsons }: { node: DagNodeSpec; stepJsons: Record<st
   return (
     <>
       <Section title="数据源" icon={<Database size={10} />}>
-        <div className="text-[8px] font-mono text-[var(--fg-4)] mb-1">{node.input.source}</div>
-        <div className="text-[8px] text-[var(--fg-5)]">{node.input.summary}</div>
+        <EvidenceRecordActions record={node.input.source} url={node.input.source} label="来源记录" />
+        <div className="text-[8px] text-[var(--fg-5)]">{readableDagSummary(node.input.summary)}</div>
       </Section>
 
       {Object.keys(node.input.fields).length > 0 && (
         <Section title="字段" icon={<Activity size={10} />}>
           <div className="space-y-0.5">
             {Object.entries(node.input.fields).slice(0, 10).map(([k, v]) => (
-              <KV key={k} label={k} value={typeof v === "object" ? JSON.stringify(v) : String(v)} />
+              <KV key={k} label={operationFieldLabel(k)} value={readableDagField(k, v)} />
             ))}
           </div>
         </Section>
@@ -1011,8 +1009,8 @@ function InputTab({ node, stepJsons }: { node: DagNodeSpec; stepJsons: Record<st
         <Section title="步骤输入详情" icon={<Database size={10} />}>
           {stepJsons.map((sj, i) => (
             <div key={i} className="mb-2 last:mb-0">
-              {stepJsons.length > 1 && <div className="text-[7px] text-[var(--fg-5)] mb-1">Step {i + 1}</div>}
-              <JsonViewer data={sj} />
+              {stepJsons.length > 1 && <div className="text-[7px] text-[var(--fg-5)] mb-1">步骤 {i + 1}</div>}
+              <details><summary className="cursor-pointer text-[8px] text-[var(--fg-4)]">展开原始输入记录</summary><JsonViewer data={sj} /></details>
             </div>
           ))}
         </Section>
@@ -1024,7 +1022,7 @@ function InputTab({ node, stepJsons }: { node: DagNodeSpec; stepJsons: Record<st
             <div key={i} className="flex items-center gap-1 text-[7px] py-px">
               <span className="w-1.5 h-1.5 rounded-full bg-[var(--up)] shrink-0" />
               <span className="text-[var(--fg-3)] truncate">{ref.label}</span>
-              {ref.endpoint && <span className="text-[var(--fg-5)] ml-auto font-mono truncate">{ref.endpoint}</span>}
+              {ref.endpoint && <EvidenceRecordActions record={ref} url={ref.endpoint} label="来源位置记录" />}
             </div>
           ))}
         </Section>
@@ -1037,15 +1035,15 @@ function OutputTab({ node, stepJsons }: { node: DagNodeSpec; stepJsons: Record<s
   return (
     <>
       <Section title="输出" icon={<FileText size={10} />}>
-        <div className="text-[8px] font-mono text-[var(--fg-4)] mb-1">{node.output.source?.slice(0, 32)}</div>
-        <div className="text-[8px] text-[var(--fg-5)]">{node.output.summary}</div>
+        <EvidenceRecordActions record={node.output.source} url={node.output.source} label="结果记录" />
+        <div className="text-[8px] text-[var(--fg-5)]">{readableDagSummary(node.output.summary)}</div>
       </Section>
 
       {Object.keys(node.output.fields).length > 0 && (
         <Section title="字段" icon={<Activity size={10} />}>
           <div className="space-y-0.5">
             {Object.entries(node.output.fields).slice(0, 10).map(([k, v]) => (
-              <KV key={k} label={k} value={typeof v === "object" ? JSON.stringify(v) : String(v)} />
+              <KV key={k} label={operationFieldLabel(k)} value={readableDagField(k, v)} />
             ))}
           </div>
         </Section>
@@ -1055,8 +1053,8 @@ function OutputTab({ node, stepJsons }: { node: DagNodeSpec; stepJsons: Record<s
         <Section title="步骤输出详情" icon={<FileText size={10} />}>
           {stepJsons.map((sj, i) => (
             <div key={i} className="mb-2 last:mb-0">
-              {stepJsons.length > 1 && <div className="text-[7px] text-[var(--fg-5)] mb-1">Step {i + 1}</div>}
-              <JsonViewer data={sj} />
+              {stepJsons.length > 1 && <div className="text-[7px] text-[var(--fg-5)] mb-1">步骤 {i + 1}</div>}
+              <details><summary className="cursor-pointer text-[8px] text-[var(--fg-4)]">展开原始输出记录</summary><JsonViewer data={sj} /></details>
             </div>
           ))}
         </Section>
@@ -1067,8 +1065,8 @@ function OutputTab({ node, stepJsons }: { node: DagNodeSpec; stepJsons: Record<s
           {node.output.artifact_refs.slice(0, 6).map((ref, i) => (
             <div key={i} className="flex items-center gap-1 text-[7px] py-px">
               <span className="w-1.5 h-1.5 rounded-full bg-[var(--brand-gold)] shrink-0" />
-              <span className="text-[var(--fg-3)] truncate">{ref.artifact_type}</span>
-              {ref.file_path && <span className="text-[var(--fg-5)] ml-auto font-mono truncate">{ref.file_path.split("/").pop()}</span>}
+              <span className="text-[var(--fg-3)] truncate">{operationFieldLabel(ref.artifact_type || "artifact_type")}</span>
+              {ref.file_path && <EvidenceRecordActions record={ref} label="产物位置记录" />}
             </div>
           ))}
         </Section>
@@ -1085,10 +1083,10 @@ function LogsTab({ node, stepErrors }: { node: DagNodeSpec; stepErrors: Record<s
       {hasError ? (
         <Section title="错误" icon={<XCircle size={10} />}>
           {stepErrors.length > 0 ? stepErrors.map((err, i) => (
-            <div key={i} className="mb-2 last:mb-0">
-              {stepErrors.length > 1 && <div className="text-[7px] text-[var(--fg-5)] mb-1">Step {i + 1}</div>}
+              <div key={i} className="mb-2 last:mb-0">
+              {stepErrors.length > 1 && <div className="text-[7px] text-[var(--fg-5)] mb-1">步骤 {i + 1}</div>}
               <div className="rounded bg-[var(--color-down-subtle)] p-2 text-[8px]">
-                <JsonViewer data={err} />
+              <div className="text-[8px] text-[var(--down)]">错误记录已登记，可复制依据</div><JsonViewer data={err} />
               </div>
             </div>
           )) : (
@@ -1102,10 +1100,10 @@ function LogsTab({ node, stepErrors }: { node: DagNodeSpec; stepErrors: Record<s
       )}
 
       <Section title="状态" icon={<Activity size={10} />}>
-        <KV label="状态" value={node.status}
+        <KV label="状态" value={operationStatusLabel(node.status)}
           color={node.status === "success" ? "var(--up)" : node.status === "failed" ? "var(--down)" : "var(--fg-4)"} />
-        <KV label="类型" value={node.sub_type} />
-        <KV label="阶段" value={node.category} />
+        <KV label="类型" value={formatTaskDisplayLabel(node.sub_type)} />
+        <KV label="阶段" value={formatTaskDisplayLabel(node.category)} />
       </Section>
     </>
   );
@@ -1124,7 +1122,7 @@ function LineageTab({ node }: { node: DagNodeSpec }) {
               {node.upstream_ids.slice(0, 5).map(id => (
                 <div key={id} className="flex items-center gap-1 text-[7px]">
                   <span className="w-1 h-1 rounded-full bg-[var(--brand-gold)]" />
-                  <span className="font-mono text-[var(--fg-3)]">{id.replace(/^(step|src|grp)::/, "")}</span>
+              <EvidenceRecordActions record={id} label="上游节点依据" />
                 </div>
               ))}
               {node.upstream_ids.length > 5 && <div className="text-[7px] text-[var(--fg-5)]">其余 {node.upstream_ids.length - 5} 项</div>}
@@ -1140,7 +1138,7 @@ function LineageTab({ node }: { node: DagNodeSpec }) {
               {node.downstream_ids.slice(0, 5).map(id => (
                 <div key={id} className="flex items-center gap-1 text-[7px]">
                   <span className="w-1 h-1 rounded-full bg-[var(--up)]" />
-                  <span className="font-mono text-[var(--fg-3)]">{id.replace(/^(step|src|grp)::/, "")}</span>
+                <EvidenceRecordActions record={id} label="下游节点依据" />
                 </div>
               ))}
               {node.downstream_ids.length > 5 && <div className="text-[7px] text-[var(--fg-5)]">其余 {node.downstream_ids.length - 5} 项</div>}
@@ -1163,7 +1161,7 @@ function ExecutionTab({ node }: { node: DagNodeSpec }) {
       typeof payload.blocked_reason === "string" ? payload.blocked_reason : null,
       typeof payload.error_message === "string" ? payload.error_message : null,
       typeof payload.from_status === "string" && typeof payload.to_status === "string"
-        ? `${payload.from_status} -> ${payload.to_status}`
+        ? `${operationStatusLabel(payload.from_status)} → ${operationStatusLabel(payload.to_status)}`
         : null,
     ].filter((item): item is string => Boolean(item));
     const eventType = event.event_type.toUpperCase();
@@ -1188,8 +1186,8 @@ function ExecutionTab({ node }: { node: DagNodeSpec }) {
           })
         : "--:--:--",
       level,
-      source: typeof payload.step_name === "string" ? payload.step_name : event.task_id ?? "run",
-      message: details.length > 0 ? `${event.event_type} · ${details.join(" · ")}` : event.event_type,
+      source: typeof payload.step_name === "string" ? formatTaskDisplayLabel(payload.step_name) : event.task_id ? `任务${evidenceLabel(event.task_id)}` : "运行记录",
+      message: details.length > 0 ? `${operationEventLabel(event.event_type)} · ${details.join(" · ")}` : operationEventLabel(event.event_type),
     };
   });
 
@@ -1205,10 +1203,10 @@ function ExecutionTab({ node }: { node: DagNodeSpec }) {
       </Section>
 
       <Section title="元数据" icon={<Activity size={10} />}>
-        <KV label="node_id" value={node.node_id} />
-        <KV label="type" value={node.type} />
-        <KV label="module" value={node.module} />
-        <KV label="category" value={node.category} />
+          <EvidenceRecordActions record={node.node_id} label="节点依据" />
+        <KV label="节点阶段" value={formatTaskDisplayLabel(node.type)} />
+        <KV label="业务模块" value={formatTaskDisplayLabel(node.module)} />
+        <KV label="流程分组" value={formatTaskDisplayLabel(node.category)} />
       </Section>
 
       <Section title="事件时间线" icon={<Activity size={10} />}>
@@ -1266,7 +1264,7 @@ function DailyRunsPanel({
           <div className="text-[8px] text-[var(--fg-5)]">{tradeDate} · {tasks.length} 条运行记录</div>
         </div>
         <div className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2.5 py-1 text-[7px] font-semibold uppercase tracking-[0.16em] text-[var(--fg-4)]">
-          Run Index
+          运行记录索引
         </div>
       </div>
 
@@ -1307,12 +1305,12 @@ function DailyRunsPanel({
                   <div className="flex items-center gap-1 pt-0.5">
                     <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ background: accent }} />
                     <span className="rounded px-1.5 py-px text-[7px] font-semibold" style={{ background: "var(--bg-panel)", color: accent }}>
-                      {formatStatus(task.status)}
+                      {operationStatusLabel(task.status)}
                     </span>
                   </div>
 
                   <div className="min-w-0">
-                    <div className="truncate text-[9px] font-semibold text-[var(--fg-2)]">{task.task_name}</div>
+                    <div className="truncate text-[9px] font-semibold text-[var(--fg-2)]">{formatTaskDisplayLabel(task.task_name)}</div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[7px] text-[var(--fg-5)]">
                       <span>{formatTaskDisplayLabel(stageFromTask(task))}</span>
                       <span>·</span>
@@ -1321,11 +1319,11 @@ function DailyRunsPanel({
                       <span>{task.step_count} 步</span>
                     </div>
                     {task.error_summary && (
-                      <div className="mt-0.5 truncate text-[7px] text-[var(--down)]">{task.error_summary}</div>
+                      <div className="mt-0.5 space-y-1 text-[7px] text-[var(--down)]"><div>任务错误说明已登记</div><EvidenceRecordActions record={task.error_summary} label="任务错误依据" /></div>
                     )}
                     {active && (
                       <div className="mt-1 text-[7px] font-mono uppercase tracking-[0.12em] text-[var(--brand-gold)]">
-                        selected
+                        当前选中
                       </div>
                     )}
                   </div>
@@ -1407,8 +1405,8 @@ function RunDetailPanel({
         </div>
         {selectedTask && (
           <div className="text-right text-[8px] text-[var(--fg-5)]">
-            <div>{formatStatus(selectedTask.status)}</div>
-            <div>{selectedTask.run_id.slice(0, 10)}</div>
+            <div>{operationStatusLabel(selectedTask.status)}</div>
+            <div>{evidenceLabel(selectedTask.run_id)}</div>
           </div>
         )}
       </div>
@@ -1448,14 +1446,14 @@ function RunDetailPanel({
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-2 text-[8px] xl:grid-cols-4">
                   {[
-                    { label: "状态", value: formatStatus(detail?.status ?? selectedTask.status) },
+                    { label: "状态", value: operationStatusLabel(detail?.status ?? selectedTask.status) },
                     { label: "阶段", value: formatTaskDisplayLabel(stageFromTask(selectedTask)) },
                     { label: "开始", value: formatRunClock(detail?.started_at ?? selectedTask.started_at) },
                     { label: "结束", value: formatRunClock(detail?.ended_at ?? selectedTask.ended_at) },
                     { label: "耗时", value: formatRunDuration(detail?.started_at ?? selectedTask.started_at, detail?.ended_at ?? selectedTask.ended_at) },
                     { label: "步骤", value: String(detail?.steps.length ?? selectedTask.step_count) },
                     { label: "类型", value: formatTaskDisplayLabel(selectedTask.task_type) },
-                    { label: "运行 ID", value: selectedTask.run_id.slice(0, 12) },
+                    { label: "运行标识", value: evidenceLabel(selectedTask.run_id) },
                   ].map((item) => (
                     <div key={item.label} className="rounded border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2 py-1.5">
                       <div className="text-[7px] uppercase text-[var(--fg-6)]">{item.label}</div>
@@ -1466,7 +1464,8 @@ function RunDetailPanel({
 
                 {(detail?.error_summary || detail?.error || selectedTask.error_summary) && (
                   <div className="rounded border border-[var(--down)]/20 bg-[var(--down)]/5 px-3 py-2 text-[8px] text-[var(--down)]">
-                    {detail?.error_summary || detail?.error || selectedTask.error_summary}
+                    任务执行返回错误说明。
+                    <div className="mt-2"><EvidenceRecordActions record={detail?.error_summary || detail?.error || selectedTask.error_summary} label="任务错误依据" /></div>
                   </div>
                 )}
               </div>
@@ -1493,9 +1492,9 @@ function RunDetailPanel({
                             <span className="mt-1 h-2 w-2 rounded-full" style={{ background: accent }} />
                             <div className="min-w-0">
                               <div className="flex items-center gap-2">
-                                <span className="truncate text-[9px] font-semibold text-[var(--fg-2)]">{step.name || `步骤 ${index + 1}`}</span>
+                                <span className="truncate text-[9px] font-semibold text-[var(--fg-2)]">{formatTaskDisplayLabel(step.name || `步骤 ${index + 1}`)}</span>
                                 <span className="rounded px-1.5 py-px text-[7px] font-semibold" style={{ background: "var(--bg-card)", color: accent }}>
-                                  {formatStatus(step.status)}
+                                  {operationStatusLabel(step.status)}
                                 </span>
                               </div>
                               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[8px] text-[var(--fg-5)]">
@@ -1506,7 +1505,7 @@ function RunDetailPanel({
                                 <span>{step.duration_ms != null ? `${(step.duration_ms / 1000).toFixed(1)}s` : "—"}</span>
                               </div>
                               {step.error && (
-                                <div className="mt-1 line-clamp-2 text-[8px] text-[var(--down)]">{step.error}</div>
+                                <div className="mt-1 space-y-1 text-[8px] text-[var(--down)]"><div>步骤错误说明已登记</div><EvidenceRecordActions record={step.error} label="步骤错误依据" /></div>
                               )}
                             </div>
                             <div className="text-[8px] font-mono text-[var(--fg-6)]">#{step.step_order ?? index + 1}</div>
@@ -1631,7 +1630,7 @@ function SchedulerWorkbenchPanel({
   const tabs: Array<{ key: WorkbenchTab; label: string; meta: string }> = [
     { key: "node", label: "节点", meta: node ? formatTaskDisplayLabel(node.type) : "未选中" },
     { key: "runs", label: "运行", meta: `${tasks.length} 条` },
-    { key: "events", label: "事件", meta: selectedTask ? formatStatus(selectedTask.status) : "无任务" },
+    { key: "events", label: "事件", meta: selectedTask ? operationStatusLabel(selectedTask.status) : "无任务" },
   ];
 
   return (
@@ -1648,7 +1647,7 @@ function SchedulerWorkbenchPanel({
             </div>
           </div>
           <div className="rounded-full border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-[var(--fg-4)]">
-            Ops
+            运维
           </div>
         </div>
       </div>
@@ -1752,6 +1751,13 @@ function FlowCanvas({
       edgeTypes={{ smartEdge: SmartEdge }}
       fitView
       fitViewOptions={{ padding: 0.06 }}
+      ariaLabelConfig={{
+        "controls.ariaLabel": "流程图控制",
+        "controls.zoomIn.ariaLabel": "放大",
+        "controls.zoomOut.ariaLabel": "缩小",
+        "controls.fitView.ariaLabel": "适配视图",
+        "controls.interactive.ariaLabel": "切换交互",
+      }}
       minZoom={0.18}
       maxZoom={2.4}
       defaultEdgeOptions={{
@@ -2061,10 +2067,10 @@ export function PipelineDagPage() {
       }
 
       if (!runId) throw new Error("无法启动管线");
-      setRunMessage(`运行中: ${runId.slice(0, 8)}`);
+      setRunMessage("运行中：运行记录已登记");
 
       pollTaskStatus(runId, (status, entry) => {
-        setRunMessage(status === "success" ? "完成" : status === "failed" ? "失败" : `运行中: ${status}`);
+        setRunMessage(status === "success" ? "完成" : status === "failed" ? "失败" : `运行中：${operationStatusLabel(status)}`);
         setRunLogs(prev => [entry, ...prev]);
         if (status === "success" || status === "failed") {
           setRunning(false); load();
@@ -2086,7 +2092,7 @@ export function PipelineDagPage() {
           source_readiness_summary: launchErrorDetail.source_readiness_summary,
         }));
       }
-      setRunMessage(`启动失败: ${launchErrorDetail?.message ?? (e instanceof Error ? e.message : "未知")}`);
+      setRunMessage("启动失败：具体原因已登记，请查看启动前检查结果");
       setTimeout(() => setRunMessage(null), 4000);
     }
   }, [load]);

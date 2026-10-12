@@ -14,6 +14,7 @@ import {
   statusTone,
   type SourceGroup,
 } from "./GroupedSourceTable.helpers";
+import { operationSourceGroupLabel, operationSourceTypeLabel, operationStatusLabel } from "@/components/operations/operationsLabels";
 
 const TABLE_HEADERS = ["数据源", "类型", "状态", "更新时间", "新鲜度", "行数", "库表 / 溯源"];
 
@@ -108,24 +109,24 @@ export function SourceRow({ source }: { source: DataSourceStatusViewModel }) {
           </span>
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[8px] text-[var(--fg-5)]">
-          <span>{source.group}</span>
+          <span>{operationSourceGroupLabel(source.group)}</span>
           <span>·</span>
           <span>{roleLabel(source.role)}</span>
         </div>
       </div>
 
       <span className="rounded border border-[var(--border)] bg-[var(--bg-card-inner)] px-1.5 py-0.5 text-center font-mono text-[8px] text-[var(--fg-5)]">
-        {source.type}
+        {operationSourceTypeLabel(source.type)}
       </span>
 
-      <FAStatusPill tone={statusTone(rs)}>{rs}</FAStatusPill>
+      <FAStatusPill tone={statusTone(rs)}>{operationStatusLabel(rs)}</FAStatusPill>
 
       <div className="min-w-0 font-mono tabular-nums">
         <div className="truncate text-[9px] text-[var(--fg-4)]" title={latestUpdate ?? undefined}>
           {latestUpdate ? formatDateTime(latestUpdate) : "—"}
         </div>
-        <div className="truncate text-[7px] text-[var(--fg-6)]" title={`raw=${source.latest_raw_time ?? "—"} parsed=${source.latest_parsed_time ?? "—"}`}>
-          raw {source.latest_raw_time ? formatDateTime(source.latest_raw_time).slice(11) : "—"} · parsed {source.latest_parsed_time ? formatDateTime(source.latest_parsed_time).slice(11) : "—"}
+        <div className="truncate text-[7px] text-[var(--fg-6)]" title={`原始数据=${source.latest_raw_time ?? "—"} · 解析数据=${source.latest_parsed_time ?? "—"}`}>
+          原始 {source.latest_raw_time ? formatDateTime(source.latest_raw_time).slice(11) : "—"} · 解析 {source.latest_parsed_time ? formatDateTime(source.latest_parsed_time).slice(11) : "—"}
         </div>
       </div>
 
@@ -142,7 +143,7 @@ export function SourceRow({ source }: { source: DataSourceStatusViewModel }) {
       </div>
 
       <span className="text-right font-mono text-[10px] text-[var(--fg-4)] tabular-nums">
-        {source.row_count.toLocaleString("en-US")}
+        {source.row_count == null ? "未返回" : source.row_count.toLocaleString("en-US")}
       </span>
 
       <div className="min-w-0 truncate text-[8px] text-[var(--fg-5)]" title={rawHref ?? undefined}>

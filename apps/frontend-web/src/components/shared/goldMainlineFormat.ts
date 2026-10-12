@@ -1,3 +1,5 @@
+import { readerSource } from "@/lib/readerLabels";
+import { readableWarning } from "@/lib/researchReading";
 import type {
   GoldMainline,
   GoldNetBias,
@@ -61,11 +63,11 @@ export const GOLD_MAINLINE_META: Record<GoldMainline, GoldMainlineDisplayMeta> =
   fed_policy_path: {
     id: "fed_policy_path",
     label: "美联储利率路径",
-    shortLabel: "Fed 路径",
+    shortLabel: "美联储路径",
     pricingLayer: "pricing_center",
     headline: "政策利率预期是否改变黄金机会成本",
     description: "观察 FOMC、通胀、就业和利率预期如何影响名义利率与黄金持有成本。",
-    evidenceTargets: ["FOMC/官员表态", "CPI/PCE/就业", "FedWatch/利率曲线", "2Y/10Y 美债"],
+    evidenceTargets: ["美联储声明与官员表态", "通胀与就业数据", "利率预期与曲线", "两年与十年美债"],
     transmissionPaths: ["inflation_to_real_rates"],
   },
   real_rates_usd: {
@@ -73,9 +75,9 @@ export const GOLD_MAINLINE_META: Record<GoldMainline, GoldMainlineDisplayMeta> =
     label: "实际利率与美元",
     shortLabel: "实际利率/美元",
     pricingLayer: "pricing_center",
-    headline: "实际收益率与 DXY 是否形成同向压制",
+    headline: "实际收益率与美元指数是否形成同向压制",
     description: "黄金短线定价中枢，重点看实际利率、美元指数和美元购买力变化。",
-    evidenceTargets: ["TIPS 实际收益率", "DXY", "通胀预期", "美债期限利差"],
+    evidenceTargets: ["通胀保值债券实际收益率", "美元指数", "通胀预期", "美债期限利差"],
     transmissionPaths: ["inflation_to_real_rates", "usd_pressure"],
   },
   oil_prices: {
@@ -85,7 +87,7 @@ export const GOLD_MAINLINE_META: Record<GoldMainline, GoldMainlineDisplayMeta> =
     pricingLayer: "external_shock",
     headline: "油价是地缘风险传向通胀和利率的桥",
     description: "油价上涨可能先带来避险，也可能通过通胀预期和鹰派利率反向压制黄金。",
-    evidenceTargets: ["WTI/Brent", "能源供应事件", "通胀预期", "实际利率响应"],
+    evidenceTargets: ["纽约与布伦特原油", "能源供应事件", "通胀预期", "实际利率响应"],
     transmissionPaths: ["geopolitics_to_oil_to_rates"],
   },
   geopolitical_war_risk: {
@@ -115,7 +117,7 @@ export const GOLD_MAINLINE_META: Record<GoldMainline, GoldMainlineDisplayMeta> =
     pricingLayer: "capital_confirmation",
     headline: "拥挤度和短线结构决定反弹质量",
     description: "COT、COMEX 净多、期权 Call/Put、波动率和机构目标价用于判断短线风险。",
-    evidenceTargets: ["COT/COMEX 净多", "Call/Put OI", "期权偏度", "机构目标价"],
+    evidenceTargets: ["黄金期货净多持仓", "看涨与看跌持仓量", "期权偏度", "机构目标价"],
     transmissionPaths: ["capital_confirmation"],
   },
   central_bank_gold: {
@@ -125,7 +127,7 @@ export const GOLD_MAINLINE_META: Record<GoldMainline, GoldMainlineDisplayMeta> =
     pricingLayer: "structural_support",
     headline: "储备资产再配置提供长期底层买盘",
     description: "央行买金是慢变量，解释长期底部支撑和美元信用重估，不用于日内追价。",
-    evidenceTargets: ["官方储备数据", "WGC/IMF", "美元信用事件", "美债财政风险"],
+    evidenceTargets: ["官方储备数据", "世界黄金协会与国际货币基金组织", "美元信用事件", "美债财政风险"],
     transmissionPaths: ["reserve_reallocation"],
   },
   china_asia_demand: {
@@ -144,8 +146,8 @@ export const GOLD_MAINLINE_META: Record<GoldMainline, GoldMainlineDisplayMeta> =
     shortLabel: "技术位",
     pricingLayer: "price_confirmation",
     headline: "价格结构验证宏观叙事是否被市场接受",
-    description: "3900 / 4000 / 4100-4120 / 4300 用于判断趋势恢复、弱修复或回调升级。",
-    evidenceTargets: ["3900 风险线", "4000 多空分水岭", "4100-4120 修复确认", "4300 趋势恢复确认"],
+    description: "观察本次研究返回的风险线、分水岭和确认位；未提供时不能推定趋势已恢复。",
+    evidenceTargets: ["本次风险线", "本次多空分水岭", "修复确认条件", "趋势恢复条件"],
     transmissionPaths: ["technical_confirmation"],
   },
 };
@@ -239,10 +241,10 @@ export const GOLD_DRIVER_LABELS: Record<string, string> = {
   institutional_forecasts: "机构预测",
   macro_data: "宏观数据",
   fx_market: "外汇市场",
-  dxy: "DXY",
+  dxy: "美元指数",
   inflation_expectations: "通胀预期",
   energy_inventory: "能源库存",
-  vix: "VIX",
+  vix: "市场波动率指数",
   equity_reaction: "股市反应",
   shanghai_gold_premium: "上海金溢价",
   china_gold_etf: "中国黄金ETF",
@@ -252,7 +254,7 @@ export const GOLD_DRIVER_LABELS: Record<string, string> = {
 
 export function formatGoldMainlineLabel(value: GoldMainline | string | null | undefined): string {
   if (!value) return "未归因";
-  return GOLD_MAINLINE_LABELS[value as GoldMainline] ?? value;
+  return GOLD_MAINLINE_LABELS[value as GoldMainline] ?? "主线待确认";
 }
 
 export function normalizeGoldMainlineId(value: GoldMainline | string | null | undefined): GoldMainline | null {
@@ -261,32 +263,32 @@ export function normalizeGoldMainlineId(value: GoldMainline | string | null | un
 
 export function formatTransmissionPathLabel(value: TransmissionPath | string | null | undefined): string {
   if (!value) return "未返回";
-  return TRANSMISSION_PATH_LABELS[value as TransmissionPath] ?? value;
+  return TRANSMISSION_PATH_LABELS[value as TransmissionPath] ?? "传导关系待确认";
 }
 
 export function formatGoldPricingLayerLabel(value: GoldPricingLayer | string | null | undefined): string {
   if (!value) return "未分层";
-  return GOLD_PRICING_LAYER_LABELS[value as GoldPricingLayer] ?? value;
+  return GOLD_PRICING_LAYER_LABELS[value as GoldPricingLayer] ?? "影响层次待确认";
 }
 
 export function formatGoldNetBiasLabel(value: GoldNetBias | string | null | undefined): string {
   if (!value) return "未知";
-  return GOLD_NET_BIAS_LABELS[value as GoldNetBias] ?? value;
+  return GOLD_NET_BIAS_LABELS[value as GoldNetBias] ?? "方向待确认";
 }
 
 export function formatGoldPhaseLabel(value: GoldPhase | string | null | undefined): string {
   if (!value) return "未知";
-  return GOLD_PHASE_LABELS[value as GoldPhase] ?? value;
+  return GOLD_PHASE_LABELS[value as GoldPhase] ?? "阶段待确认";
 }
 
 export function formatGoldDriverLabel(value: string | null | undefined): string {
   if (!value) return "待确认";
-  return GOLD_DRIVER_LABELS[value] ?? value.replace(/_/g, " ");
+  return GOLD_DRIVER_LABELS[value] ?? readableWarning(value);
 }
 
 export function formatGoldNarrativeText(value: string | null | undefined): string {
   if (!value) return "";
-  return value
+  return readableWarning(value
     .replace(/\bstrong_bullish\b/g, "强利多")
     .replace(/\bneutral_bullish\b/g, "中性偏多")
     .replace(/\bstrong_bearish\b/g, "强利空")
@@ -295,12 +297,12 @@ export function formatGoldNarrativeText(value: string | null | undefined): strin
     .replace(/\bbearish\b/g, "利空")
     .replace(/\bneutral\b/g, "中性")
     .replace(/\bmixed\b/g, "多空混合")
-    .replace(/\bunknown\b/g, "未知");
+    .replace(/\bunknown\b/g, "未知"));
 }
 
 export function formatGoldVerificationReasonLabel(value: string | null | undefined): string {
   if (!value) return "待确认";
-  return GOLD_DRIVER_LABELS[value] ?? value.replace(/_/g, " ");
+  return GOLD_DRIVER_LABELS[value] ?? readableWarning(value);
 }
 
 export function formatGoldSourceRefLabel(ref: SourceRef | Record<string, unknown> | null | undefined, fallback = "溯源"): string {
@@ -332,7 +334,7 @@ export function formatGoldSourceRefLabel(ref: SourceRef | Record<string, unknown
   if (lower.startsWith("macro_watchlist:")) return "宏观观察清单";
   if (lower.startsWith("gold_fund_flow:")) return "黄金资金流";
   if (lower.startsWith("gold_market_narrative:")) return "黄金市场叙事";
-  return normalized;
+  return readerSource(normalized, "已关联来源记录");
 }
 
 export function formatGoldEventRefLabel(value: string | null | undefined): string {
@@ -342,7 +344,7 @@ export function formatGoldEventRefLabel(value: string | null | undefined): strin
 
 export function formatGoldVerificationStatusLabel(value: GoldVerificationStatus | string | null | undefined): string {
   if (!value) return "未知";
-  return GOLD_VERIFICATION_STATUS_LABELS[value] ?? value.replace(/_/g, " ");
+  return GOLD_VERIFICATION_STATUS_LABELS[value] ?? "尚未核验";
 }
 
 export function goldNetBiasTone(value: GoldNetBias | string | null | undefined): FAStatusTone {
@@ -364,7 +366,7 @@ export function formatGoldConflictStatusLabel(value: string | null | undefined):
   if (value === "conflicted") return "冲突";
   if (value === "mixed") return "多空混合";
   if (value === "unknown") return "未知";
-  return value || "未知";
+  return "关系尚未说明";
 }
 
 export function goldVerificationStatusTone(value: GoldVerificationStatus | string | null | undefined): FAStatusTone {

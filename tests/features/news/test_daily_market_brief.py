@@ -106,16 +106,16 @@ def test_daily_market_brief_separates_confirmed_calendar_from_candidate_risks() 
                 published_at="2026-06-10T00:00:00+00:00",
             ),
         ],
-        as_of="2026-06-10T01:00:00+00:00",
+        as_of="2026-06-10T10:00:00+00:00",
     )
-    assessments = build_impact_assessments(bundle.event_candidates, as_of="2026-06-10T01:00:00+00:00")
+    assessments = build_impact_assessments(bundle.event_candidates, as_of="2026-06-10T10:00:00+00:00")
     hormuz_event = next(event for event in bundle.event_candidates if event.event_type == "hormuz_risk")
 
     brief = build_daily_market_brief(
         event_bundle=bundle,
         impact_assessments=assessments,
         market_reactions=[_market_reaction(hormuz_event.event_id)],
-        as_of="2026-06-10T01:00:00+00:00",
+        as_of="2026-06-10T10:00:00+00:00",
     )
     data = brief.to_dict()
 

@@ -29,13 +29,13 @@ export function TopMainlinesStrip({ rankings, limit = 5 }: TopMainlinesStripProp
             <span className="fa-num text-[length:var(--type-caption)] text-[var(--fg-5)]">#{item.rank}</span>
             <div className="min-w-0">
               <div className="truncate text-[length:var(--type-caption)] font-semibold text-[var(--fg-2)]">
-                {item.label || formatGoldMainlineLabel(mainlineId)}
+                {formatGoldMainlineLabel(mainlineId)}
               </div>
               <div className="truncate text-[length:var(--type-caption)] text-[var(--fg-5)]">{formatGoldNetBiasLabel(item.direction)}</div>
             </div>
             <div className="text-right">
               <div className="fa-num text-[length:var(--type-caption)] font-semibold text-[var(--fg-2)]">{formatGoldScore(item.theme_score ?? item.score)}</div>
-              <div className="fa-num text-[length:var(--type-caption)] text-[var(--fg-5)]">D/I/C/F {scoreFormulaLabel(item)}</div>
+              <div className="fa-num text-[length:var(--type-caption)] text-[var(--fg-5)]">评分分项 {scoreFormulaLabel(item)}</div>
             </div>
           </div>
         );

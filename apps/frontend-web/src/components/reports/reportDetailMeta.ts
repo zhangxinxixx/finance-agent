@@ -10,12 +10,16 @@ export function shortId(value: string | undefined): string {
 
 export function reportFamilyLabel(value: string | undefined): string {
   if (!value) return "-";
+  if (value === "observation_strategy_card") return "观察策略归档";
+  if (value === "observation_report_markdown") return "研究诊断归档";
+  if (value === "observation_daily_report") return "综合研究报告";
+  if (value === "gold_policy_daily_report") return "黄金日结报告";
   if (value === "macro_event_followup_supplement") return "宏观事件补充分析";
   if (value === "weekly_context_revision_supplement") return "周报上下文修订";
   if (value === "jin10_weekly_visual") return "周报";
   if (value === "jin10_daily_visual") return "日报";
   if (value === "jin10_market_observation_report") return "市场观察";
-  return value;
+  return /_/.test(value) ? "研究报告" : value;
 }
 
 export function reportTitleLabel(value: string | undefined): string {
@@ -58,13 +62,19 @@ export function factReviewLabel(status: string | null | undefined): string {
 }
 
 export function reportLifecycleLabel(status: string | null | undefined): string {
+  if (status?.trim().toLowerCase() === "needs_review") return "待质量复核";
   return getStatusLabel(status, "report");
 }
 
 export function reviewStatusLabel(status: string | null | undefined): string {
   const value = (status || "").toLowerCase();
-  if (value === "not_required") return "无需审查";
+  if (value === "not_required") return "未要求人工审查";
   return getStatusLabel(status, "review");
+}
+
+export function reportNeedsReadingWarning(data: Pick<ReportDetailView, "meta" | "data_status">): boolean {
+  return data.data_status !== "available"
+    || data.meta.lifecycle_status?.trim().toLowerCase() === "needs_review";
 }
 
 export function biasLabel(value: string | null | undefined): string {

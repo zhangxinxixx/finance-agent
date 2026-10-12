@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import uuid
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -9,9 +12,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from apps.worker.pipelines.daily_analysis_followup import (
     DAILY_ANALYSIS_STEP,
     DETAIL_FETCH_STEP,
+    MAX_SELECTED_FOLLOWUP_TASKS,
     VIP_BROWSER_FALLBACK_STEP,
     run_daily_analysis_followup_task,
     run_pending_daily_analysis_followup_tasks,
+    run_selected_daily_analysis_followup_tasks,
 )
 from apps.collectors.news.jin10_detail_fetcher import Jin10DetailFetchResult
 from database.models.execution import ExecutionEvent, RunArtifact, ensure_execution_tables
@@ -848,7 +853,7 @@ def test_run_daily_analysis_followup_task_fails_invalid_input_json(tmp_path: Pat
     assert step.error_type == "invalid_input_json"
 
 
-def test_run_pending_daily_analysis_followup_tasks_processes_initial_stage_only(tmp_path: Path) -> None:
+def test_run_pending_daily_analysis_followup_tasks_refuses_implicit_pending_scan(tmp_path: Path) -> None:
     session = _make_db_session(tmp_path)
     eligible = _seed_followup_run(session)
     already_expanded = _seed_followup_run(session, source_url="https://xnews.jin10.com/details/2")
@@ -857,13 +862,237 @@ def test_run_pending_daily_analysis_followup_tasks_processes_initial_stage_only(
 
     payload = run_pending_daily_analysis_followup_tasks(session, storage_root=tmp_path)
 
-    assert payload["status"] == "success"
-    assert payload["matched_count"] == 1
-    assert payload["processed_count"] == 1
-    assert payload["results"][0]["run_id"] == str(eligible.id)
+    assert payload["status"] == "disabled"
+    assert payload["reason"] == "explicit_task_ids_required"
+    assert payload["matched_count"] == 0
+    assert payload["processed_count"] == 0
+    session.refresh(eligible)
+    assert eligible.status == TaskStatus.pending
+    assert eligible.current_stage == "news_followup"
     session.refresh(already_expanded)
     assert already_expanded.current_stage == DETAIL_FETCH_STEP
     assert len(already_expanded.steps) == 1
+
+
+def test_run_selected_daily_analysis_followup_tasks_advances_all_stages_and_audits_them(tmp_path: Path) -> None:
+    session = _make_db_session(tmp_path)
+    ensure_execution_tables(session)
+    run = _seed_followup_run(session)
+
+    def fake_detail_fetcher(**kwargs):
+        return Jin10DetailFetchResult(
+            detail_url=kwargs["url"],
+            final_url=kwargs["url"],
+            status="fetched",
+            access_status="readable",
+            title="黄金日报",
+            raw_text="黄金和美联储主线仍需重点跟进。",
+            raw_html_path="raw/news/jin10_detail_pages/2026-06-12/detail.html",
+            parsed_path="parsed/news/jin10_detail_pages/2026-06-12/detail.json",
+            fetched_at="2026-06-12T00:00:00+00:00",
+        )
+
+    result = run_selected_daily_analysis_followup_tasks(
+        session,
+        [str(run.id)],
+        storage_root=tmp_path,
+        detail_fetcher=fake_detail_fetcher,
+    )
+
+    assert result["status"] == "success"
+    assert result["processed_count"] == 1
+    assert result["results"] == [
+        {
+            "task_id": str(run.id),
+            "status": "completed",
+            "task_status": "success",
+            "current_stage": DAILY_ANALYSIS_STEP,
+            "stages_processed": 3,
+        }
+    ]
+    session.refresh(run)
+    assert run.status == TaskStatus.success
+    assert [step.status for step in sorted(run.steps, key=lambda item: item.step_order or 0)] == [
+        StepStatus.success,
+        StepStatus.success,
+        StepStatus.skipped,
+        StepStatus.success,
+    ]
+    events = session.query(ExecutionEvent).filter(ExecutionEvent.run_id == run.id).all()
+    assert any(event.event_type == "RUN_STATUS_CHANGED" for event in events)
+
+
+def test_run_selected_daily_analysis_followup_tasks_reports_waiting_at_stage_bound(tmp_path: Path) -> None:
+    session = _make_db_session(tmp_path)
+    run = _seed_followup_run(session)
+
+    result = run_selected_daily_analysis_followup_tasks(
+        session,
+        [run.id],
+        storage_root=tmp_path,
+        max_stage_steps=1,
+    )
+
+    assert result["results"][0] == {
+        "task_id": str(run.id),
+        "status": "waiting",
+        "task_status": "pending",
+        "current_stage": DETAIL_FETCH_STEP,
+        "reason": "stage_step_limit_reached",
+        "stages_processed": 1,
+    }
+    session.refresh(run)
+    assert run.status == TaskStatus.pending
+    assert run.current_stage == DETAIL_FETCH_STEP
+
+
+def test_run_selected_daily_analysis_followup_tasks_returns_terminal_and_blocked_without_reexecution(
+    tmp_path: Path,
+) -> None:
+    session = _make_db_session(tmp_path)
+    terminal = _seed_followup_run(session)
+    terminal.status = TaskStatus.success
+    terminal.current_stage = DAILY_ANALYSIS_STEP
+    session.commit()
+    blocked = _seed_followup_run(session, source_url=None)
+
+    result = run_selected_daily_analysis_followup_tasks(
+        session,
+        [str(terminal.id), str(blocked.id), str(blocked.id)],
+        storage_root=tmp_path,
+    )
+
+    by_id = {item["task_id"]: item for item in result["results"]}
+    assert result["unique_task_count"] == 2
+    assert by_id[str(terminal.id)]["status"] == "terminal"
+    assert by_id[str(terminal.id)]["stages_processed"] == 0
+    assert by_id[str(blocked.id)]["status"] == "blocked"
+    session.refresh(blocked)
+    assert blocked.status == TaskStatus.blocked
+    assert blocked.current_stage == DETAIL_FETCH_STEP
+
+
+def test_run_selected_daily_analysis_followup_tasks_respects_no_jin10_switch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    session = _make_db_session(tmp_path)
+    run = _seed_followup_run(session)
+
+    def fetcher(**_kwargs):
+        raise AssertionError("disabled Jin10 must not fetch")
+
+    monkeypatch.setenv("FINANCE_AGENT_DISABLE_JIN10", "true")
+
+    result = run_selected_daily_analysis_followup_tasks(
+        session,
+        [run.id],
+        storage_root=tmp_path,
+        detail_fetcher=fetcher,
+    )
+
+    assert result["results"][0]["status"] == "blocked"
+    session.refresh(run)
+    assert run.status == TaskStatus.blocked
+    assert run.error_summary == "detail_fetch blocked: Jin10 is disabled"
+    detail_step = next(step for step in run.steps if step.name == DETAIL_FETCH_STEP)
+    assert detail_step.error_type == "source_disabled"
+    assert detail_step.retryable is False
+
+
+def test_run_selected_daily_analysis_followup_tasks_marks_worker_exception_and_step_audit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    session = _make_db_session(tmp_path)
+    run = _seed_followup_run(session)
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("worker exploded")
+
+    monkeypatch.setattr("apps.worker.pipelines.daily_analysis_followup.run_daily_analysis_followup_task", _raise)
+    result = run_selected_daily_analysis_followup_tasks(session, [run.id], storage_root=tmp_path)
+
+    assert result["results"][0]["status"] == "failed"
+    assert result["results"][0]["reason"] == "worker_exception"
+    session.refresh(run)
+    assert run.status == TaskStatus.failed
+    assert run.error_summary == "RuntimeError: worker exploded"
+    assert run.steps[0].status == StepStatus.failed
+    assert run.steps[0].error_type == "execution_error"
+    assert run.steps[0].retryable is True
+
+
+def test_run_selected_daily_analysis_followup_tasks_concurrent_starts_claim_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    engine = create_engine(
+        f"sqlite:///{(tmp_path / 'concurrent.db').as_posix()}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    seed_session = factory()
+    run = _seed_followup_run(seed_session)
+    task_id = run.id
+    seed_session.close()
+
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+    calls: list[str] = []
+    calls_lock = threading.Lock()
+
+    def _slow_worker(_db, selected_id, **_kwargs):
+        with calls_lock:
+            calls.append(str(selected_id))
+        worker_entered.set()
+        assert release_worker.wait(timeout=5)
+        return TaskStatus.running
+
+    monkeypatch.setattr("apps.worker.pipelines.daily_analysis_followup.run_daily_analysis_followup_task", _slow_worker)
+
+    def _run_once():
+        session = factory()
+        try:
+            return run_selected_daily_analysis_followup_tasks(session, [task_id], storage_root=tmp_path)
+        finally:
+            session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(_run_once)
+        assert worker_entered.wait(timeout=5)
+        second_future = executor.submit(_run_once)
+        second = second_future.result(timeout=5)
+        release_worker.set()
+        first = first_future.result(timeout=5)
+
+    assert calls == [str(task_id)]
+    assert second["results"][0]["status"] == "already_running"
+    assert first["results"][0]["status"] == "waiting"
+    check_session = factory()
+    try:
+        persisted = check_session.get(TaskRun, task_id)
+        assert persisted is not None
+        assert persisted.status == TaskStatus.running
+    finally:
+        check_session.close()
+
+
+def test_run_selected_daily_analysis_followup_tasks_rejects_unbounded_batch(tmp_path: Path) -> None:
+    session = _make_db_session(tmp_path)
+    task_ids = [str(uuid.uuid4()) for _ in range(MAX_SELECTED_FOLLOWUP_TASKS + 1)]
+
+    result = run_selected_daily_analysis_followup_tasks(session, task_ids, storage_root=tmp_path)
+
+    assert result == {
+        "status": "rejected",
+        "reason": "task_batch_too_large",
+        "requested_count": MAX_SELECTED_FOLLOWUP_TASKS + 1,
+        "unique_task_count": 0,
+        "processed_count": 0,
+        "results": [],
+    }
 
 
 def _route_run_to_vip_browser_fallback(session: Session, run: TaskRun, *, storage_root: Path) -> None:

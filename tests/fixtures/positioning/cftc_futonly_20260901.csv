@@ -1,0 +1,3 @@
+Report_Date_as_YYYY-MM-DD,Market_and_Exchange_Names,CFTC_Contract_Market_Code,Open_Interest_All,Prod_Merc_Positions_Long_All,Prod_Merc_Positions_Short_All,Swap_Positions_Long_All,Swap__Positions_Short_All,M_Money_Positions_Long_All,M_Money_Positions_Short_All,Other_Rept_Positions_Long_All,Other_Rept_Positions_Short_All,FutOnly_or_Combined
+2026-09-01,GOLD - COMMODITY EXCHANGE INC.,088691,  415196,   17444,   48733,   17798,  251227,  149721,   12950,  110764,   19411,FutOnly
+2026-08-25,GOLD - COMMODITY EXCHANGE INC.,088691,  427957,   16861,   51419,   16656,  261683,  159819,   15072,  117340,   18753,FutOnly

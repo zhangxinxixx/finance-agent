@@ -2,210 +2,42 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from apps.scheduler import jin10_refresh as scheduler
 from apps.collectors.news.jin10_detail_fetcher import Jin10DetailFetchResult
-from database.models.analysis import AppSetting, DataSourceStatus, MarketCandle, ensure_analysis_tables
+from database.models.analysis import AppSetting, DataSourceStatus, ensure_analysis_tables
 
 
-class _FakeClient:
-    def __init__(self, *args, **kwargs):
-        return None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def get_kline(self, symbol: str, count: int = 100):
-        assert symbol == "XAUUSD"
-        assert count == 5
-        return {
-            "data": {
-                "klines": [
-                    {"time": 1780645620, "open": "4462.47", "high": "4464.30", "low": "4461.88", "close": "4462.81", "volume": 20},
-                    {"time": 1780645680, "open": "4462.82", "high": "4463.11", "low": "4461.90", "close": "4463.04", "volume": 18},
-                ]
-            }
-        }
+def test_retired_numeric_refresh_preserves_old_cache_and_does_not_call_sources(monkeypatch, tmp_path):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retired numeric refresh must not access credentials, network or database")
+    monkeypatch.setattr(scheduler, "_get_mcp_key", forbidden)
+    monkeypatch.setattr(scheduler, "SessionLocal", forbidden)
+    cache = tmp_path / "old-jin10.json"
+    cache.write_text('{"price": 4462.81}')
+    before = cache.read_bytes()
+    assert scheduler.refresh_jin10_quotes_cache()["reason"] == "jin10_news_only"
+    assert scheduler.refresh_jin10_kline_cache(storage_root=tmp_path)["status"] == "skipped"
+    assert cache.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [cache]
 
 
-def test_refresh_jin10_kline_cache_upserts_overlapping_rows(monkeypatch, tmp_path):
-    engine = create_engine("sqlite:///:memory:", echo=False)
-    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-    with session_factory() as session:
-        ensure_analysis_tables(session)
-        session.add(
-            MarketCandle(
-                asset="XAUUSD",
-                timeframe="1m",
-                open_time=datetime.fromtimestamp(1780645620, tz=UTC),
-                open=4462.47,
-                high=4464.30,
-                low=4461.88,
-                close=4400.0,
-                volume=20,
-                source="jin10_mcp_kline_1m",
-            )
-        )
-        session.add(
-            MarketCandle(
-                asset="XAUUSD",
-                timeframe="1m",
-                open_time=datetime(2026, 6, 4, 6, 0, tzinfo=UTC),
-                open=4300.0,
-                high=4301.0,
-                low=4299.0,
-                close=4300.5,
-                volume=None,
-                source="jin10_mcp_kline_1m",
-            )
-        )
-        session.commit()
+def test_retired_market_candle_daily_refresh_does_not_access_database_or_sources(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retired daily refresh must not access database or market sources")
 
-    monkeypatch.setattr(scheduler, "_get_mcp_key", lambda: "fake-key")
-    monkeypatch.setattr(scheduler, "Jin10MCPClient", _FakeClient)
-    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler, "SessionLocal", forbidden)
 
-    scheduler.refresh_jin10_kline_cache(
-        now=datetime(2026, 6, 5, 7, 49, tzinfo=UTC),
-        storage_root=tmp_path,
-    )
+    result = scheduler.refresh_market_candle_daily_cache(range_="1y")
 
-    with session_factory() as session:
-        rows = session.query(MarketCandle).order_by(MarketCandle.open_time.asc()).all()
-        source_status = session.query(DataSourceStatus).filter_by(source_key="jin10_mcp_market").one_or_none()
-        assert len(rows) == 2
-        latest_open_time = rows[-1].open_time
-        if latest_open_time.tzinfo is None:
-            latest_open_time = latest_open_time.replace(tzinfo=UTC)
-        assert latest_open_time == datetime.fromtimestamp(1780645680, tz=UTC)
-        assert rows[-1].close == 4463.04
-        assert rows[0].close == 4462.81
-        assert rows[-1].source == "jin10_mcp_kline_1m"
-        assert rows[-1].source_ref["source_key"] == "jin10_mcp_market"
-        assert rows[-1].source_ref["source"] == "jin10_mcp"
-        assert rows[-1].source_ref["source_role"] == "staging_primary"
-        assert rows[-1].raw_path
-        assert source_status is not None
-        assert source_status.status == "ok"
-        assert source_status.raw_ingested is True
-        assert source_status.parsed is True
-        assert source_status.analysis_ready is True
-        assert source_status.row_count == 2
-        assert source_status.latest_raw_time == datetime(2026, 6, 5, 7, 49)
-
-
-class _FiveMinuteClient(_FakeClient):
-    def get_kline(self, symbol: str, count: int = 5):
-        assert symbol == "XAUUSD"
-        assert count == 5
-        base = datetime(2026, 6, 5, 7, 45, tzinfo=UTC)
-        return {
-            "data": {
-                "klines": [
-                    {
-                        "time": int((base + timedelta(minutes=index)).timestamp()),
-                        "open": str(4460 + index),
-                        "high": str(4462 + index),
-                        "low": str(4459 + index),
-                        "close": str(4460.5 + index),
-                        "volume": 10 + index,
-                    }
-                    for index in range(5)
-                ]
-            }
-        }
-
-
-def test_refresh_jin10_kline_cache_materializes_only_complete_closed_5m(monkeypatch, tmp_path):
-    engine = create_engine("sqlite:///:memory:", echo=False)
-    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-    monkeypatch.setattr(scheduler, "_get_mcp_key", lambda: "fake-key")
-    monkeypatch.setattr(scheduler, "Jin10MCPClient", _FiveMinuteClient)
-    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
-
-    scheduler.refresh_jin10_kline_cache(
-        now=datetime(2026, 6, 5, 7, 50, 45, tzinfo=UTC),
-        storage_root=tmp_path,
-    )
-
-    with session_factory() as session:
-        rows = session.query(MarketCandle).order_by(MarketCandle.timeframe.asc(), MarketCandle.open_time.asc()).all()
-        five_minute = [row for row in rows if row.timeframe == "5m"]
-        source_status = session.query(DataSourceStatus).filter_by(source_key="jin10_mcp_market").one_or_none()
-
-    assert len(five_minute) == 1
-    assert five_minute[0].open_time.replace(tzinfo=UTC) == datetime(2026, 6, 5, 7, 45, tzinfo=UTC)
-    assert five_minute[0].open == 4460.0
-    assert five_minute[0].high == 4466.0
-    assert five_minute[0].low == 4459.0
-    assert five_minute[0].close == 4464.5
-    assert five_minute[0].volume is None
-    assert five_minute[0].source == "jin10_mcp_derived_5m"
-    assert five_minute[0].source_ref["component_count"] == 5
-    assert source_status is not None
-    assert source_status.row_count == 6
-    assert source_status.status == "ok"
-
-
-def test_refresh_market_candle_daily_cache_upserts_daily_assets(monkeypatch):
-    engine = create_engine("sqlite:///:memory:", echo=False)
-    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-    base_time = datetime(2026, 7, 6, tzinfo=UTC)
-
-    def fake_collect_daily_market_candles(*, storage_root, asset: str, range_: str):
-        assert range_ == "1mo"
-        offset = scheduler.DAILY_MARKET_CANDLE_ASSETS.index(asset)
-        return (
-            [
-                {
-                    "open_time": base_time - timedelta(days=offset),
-                    "open": 4100.0 + offset,
-                    "high": 4120.0 + offset,
-                    "low": 4090.0 + offset,
-                    "close": 4110.0 + offset,
-                    "volume": 100.0 + offset,
-                }
-            ],
-            f"raw/{asset.lower()}.json",
-            f"test_source_{asset.lower()}",
-            {"provider_symbol": asset, "instrument_type": "test", "source_role": "market_primary", "source_url": f"https://example.test/{asset}"},
-        )
-
-    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
-    monkeypatch.setattr(scheduler, "_collect_daily_market_candles", fake_collect_daily_market_candles)
-
-    scheduler.refresh_market_candle_daily_cache()
-
-    with session_factory() as session:
-        rows = session.query(MarketCandle).order_by(MarketCandle.asset.asc()).all()
-        assert [row.asset for row in rows] == ["BRENT", "DXY", "GC", "VIX", "WTI"]
-        assert {row.timeframe for row in rows} == {"1d"}
-        assert all(row.source_ref["refresh_role"] == "scheduled_daily_gap_repair" for row in rows)
-
-
-def test_refresh_market_candle_daily_cache_isolates_one_asset_failure(monkeypatch):
-    engine = create_engine("sqlite:///:memory:", echo=False)
-    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-
-    def fake_collect_daily_market_candles(*, storage_root, asset: str, range_: str):
-        if asset == "VIX":
-            raise RuntimeError("provider unavailable")
-        return ([{"open_time": datetime(2026, 7, 6, tzinfo=UTC), "open": 1, "high": 2, "low": 1, "close": 2, "volume": None}], "raw/test.json", "test_source", {"provider_symbol": asset})
-
-    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
-    monkeypatch.setattr(scheduler, "_collect_daily_market_candles", fake_collect_daily_market_candles)
-    scheduler.refresh_market_candle_daily_cache()
-
-    with session_factory() as session:
-        rows = session.query(MarketCandle).order_by(MarketCandle.asset.asc()).all()
-        assert [row.asset for row in rows] == ["BRENT", "DXY", "GC", "WTI"]
+    assert result == {
+        "status": "skipped",
+        "reason": "market_candles_daily_retired",
+    }
 
 
 class _FakeHttpResponse:

@@ -9,6 +9,8 @@ FRONTEND_PORT="${FINANCE_AGENT_FRONTEND_PORT:-8080}"
 FRONTEND_MODE_DEFAULT="${FINANCE_AGENT_FRONTEND_MODE:-dev}"
 EVENT_FLOW_TRANSLATION_PROVIDER_DEFAULT="${FINANCE_AGENT_EVENT_FLOW_TRANSLATION_PROVIDER:-${EVENT_FLOW_TRANSLATION_PROVIDER:-}}"
 EVENT_FLOW_TRANSLATION_MODEL_DEFAULT="${FINANCE_AGENT_EVENT_FLOW_TRANSLATION_MODEL:-${EVENT_FLOW_TRANSLATION_MODEL:-}}"
+# Keep local restarts on the verified No-Jin10 path unless explicitly overridden.
+export FINANCE_AGENT_DISABLE_JIN10="${FINANCE_AGENT_DISABLE_JIN10:-true}"
 API_PID_FILE="$STATE_DIR/api.pid"
 API_LOG="$STATE_DIR/api.log"
 FRONTEND_PID_FILE="$STATE_DIR/frontend.pid"
@@ -26,8 +28,8 @@ DAGSTER_WEB_URL="http://127.0.0.1:${DAGSTER_WEB_PORT}"
 DAGSTER_GRAPHQL_URL_DEFAULT="${DAGSTER_WEB_URL}/graphql"
 DASHBOARD_API_URL="${BACKEND_URL}/dashboard"
 DASHBOARD_FRONTEND_URL="${FRONTEND_URL}/dashboard"
-HEALTH_URL="${BACKEND_URL}/health"
-DATABASE_URL_DEFAULT="postgresql://finance_agent:finance_agent@127.0.0.1:55432/finance_agent"
+HEALTH_URL="${BACKEND_URL}/ready"
+DATABASE_URL_DEFAULT="postgresql://finance_agent:CHANGE_ME@127.0.0.1:55432/finance_agent"
 
 mkdir -p "$STATE_DIR"
 
@@ -81,7 +83,7 @@ cleanup_pid_file() {
   fi
 }
 
-dagster_pid_matches() {
+dagster_pid_owned() {
   local pid="$1"
   local proc_dir="/proc/$pid"
   local cwd
@@ -120,7 +122,7 @@ cleanup_daemon_pid_file() {
     fi
     return 0
   fi
-  if ! dagster_pid_matches "$pid"; then
+  if ! dagster_pid_owned "$pid"; then
     echo "Ignoring stale Dagster pidfile for non-managed pid=$pid." >&2
     if [[ "$dry_run" != "1" ]]; then
       rm -f "$DAGSTER_DAEMON_PID_FILE"
@@ -133,7 +135,7 @@ find_existing_daemon() {
   local pid
   for proc_dir in /proc/[0-9]*; do
     pid="${proc_dir##*/}"
-    if pid_running "$pid" && dagster_pid_matches "$pid"; then
+    if pid_running "$pid" && dagster_pid_owned "$pid"; then
       printf '%s\n' "$pid"
       return 0
     fi
@@ -145,7 +147,7 @@ managed_daemon_pid() {
   local pid
   cleanup_daemon_pid_file
   if pid="$(pid_from_file "$DAGSTER_DAEMON_PID_FILE" 2>/dev/null)"; then
-    if pid_running "$pid" && dagster_pid_matches "$pid"; then
+    if pid_running "$pid" && dagster_pid_owned "$pid"; then
       printf '%s\n' "$pid"
       return 0
     fi
@@ -158,7 +160,7 @@ managed_daemon_pid() {
   printf '%s\n' "$pid"
 }
 
-dagster_web_pid_matches() {
+dagster_web_pid_owned() {
   local pid="$1"
   local proc_dir="/proc/$pid"
   local cwd
@@ -190,7 +192,7 @@ cleanup_dagster_web_pid_file() {
     fi
     return 0
   fi
-  if ! pid_running "$pid" || ! dagster_web_pid_matches "$pid"; then
+  if ! pid_running "$pid" || ! dagster_web_pid_owned "$pid"; then
     if pid_running "$pid"; then
       echo "Ignoring stale Dagster webserver pidfile for non-managed pid=$pid." >&2
     fi
@@ -205,7 +207,7 @@ find_existing_dagster_webserver() {
   local pid
   for proc_dir in /proc/[0-9]*; do
     pid="${proc_dir##*/}"
-    if pid_running "$pid" && dagster_web_pid_matches "$pid"; then
+    if pid_running "$pid" && dagster_web_pid_owned "$pid"; then
       printf '%s\n' "$pid"
       return 0
     fi
@@ -217,7 +219,7 @@ managed_dagster_web_pid() {
   local pid
   cleanup_dagster_web_pid_file
   if pid="$(pid_from_file "$DAGSTER_WEB_PID_FILE" 2>/dev/null)"; then
-    if pid_running "$pid" && dagster_web_pid_matches "$pid"; then
+    if pid_running "$pid" && dagster_web_pid_owned "$pid"; then
       printf '%s\n' "$pid"
       return 0
     fi
@@ -255,13 +257,52 @@ jin10_is_disabled_value() {
   return 1
 }
 
+jin10_mode_matches_requested() {
+  local process_value="${1:-}"
+  if jin10_is_disabled_value "$FINANCE_AGENT_DISABLE_JIN10"; then
+    jin10_is_disabled_value "$process_value"
+    return
+  fi
+  ! jin10_is_disabled_value "$process_value"
+}
+
+process_jin10_mode_matches_requested() {
+  local pid="$1"
+  local proc_environ="/proc/$pid/environ"
+  local environment
+  local disable_jin10
+  [[ -r "$proc_environ" ]] || return 1
+  environment="$(tr '\0' '\n' <"$proc_environ")"
+  disable_jin10="$(sed -n 's/^FINANCE_AGENT_DISABLE_JIN10=//p' <<<"$environment" | tail -n 1)"
+  jin10_mode_matches_requested "$disable_jin10"
+}
+
+dagster_pid_config_matches_requested() {
+  local pid="$1"
+  dagster_pid_owned "$pid" || return 1
+  process_jin10_mode_matches_requested "$pid"
+}
+
+dagster_web_pid_config_matches_requested() {
+  local pid="$1"
+  dagster_web_pid_owned "$pid" || return 1
+  process_jin10_mode_matches_requested "$pid"
+}
+
+twelvedata_refresh_requested_value() {
+  local jobs="${1//[[:space:]]/}"
+  case ",$jobs," in
+    *",twelvedata_xauusd_dispatch,"*|*",twelvedata_xauusd_5m,"*|*",twelvedata_xauusd_15m,"*|*",twelvedata_xauusd_1h,"*|*",twelvedata_xauusd_4h,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 api_has_required_background_refresh() {
   local pid="$1"
   local proc_environ="/proc/$pid/environ"
   local environment
   local configured_jobs
   local disable_jin10
-  local required_job
   [[ -r "$proc_environ" ]] || return 1
 
   environment="$(tr '\0' '\n' <"$proc_environ")"
@@ -270,25 +311,22 @@ api_has_required_background_refresh() {
   configured_jobs="$(sed -n 's/^FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS=//p' <<<"$environment" | tail -n 1)"
   configured_jobs="${configured_jobs//[[:space:]]/}"
   disable_jin10="$(sed -n 's/^FINANCE_AGENT_DISABLE_JIN10=//p' <<<"$environment" | tail -n 1)"
-  # An empty value or "*" enables all scheduler jobs.
-  if [[ -z "$configured_jobs" || "$configured_jobs" == "*" ]]; then
-    return 0
+  jin10_mode_matches_requested "$disable_jin10" || return 1
+  case ",$configured_jobs," in
+    *",jin10_quotes,"*|*",jin10_kline,"*|*",market_candles_daily,"*)
+      echo "Refusing API with retired numeric refresh jobs: $configured_jobs. Restart without local candle collection." >&2
+      return 1
+      ;;
+  esac
+  # Do not reuse an API that still polls intraday bars when the requested
+  # configuration does not request validation polling (or vice versa).
+  if twelvedata_refresh_requested_value "$configured_jobs"; then
+    twelvedata_refresh_requested_value "${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS:-}" || return 1
+  elif twelvedata_refresh_requested_value "${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS:-}"; then
+    return 1
   fi
-  if jin10_is_disabled_value "$disable_jin10"; then
-    for required_job in twelvedata_xauusd_dispatch market_candles_daily; do
-      case ",$configured_jobs," in
-        *",$required_job,"*) ;;
-        *) return 1 ;;
-      esac
-    done
-    return 0
-  fi
-  for required_job in jin10_kline twelvedata_xauusd_dispatch market_candles_daily; do
-    case ",$configured_jobs," in
-      *",$required_job,"*) ;;
-      *) return 1 ;;
-    esac
-  done
+  # Empty/"*" enables the configured news lane; local candle collection is retired.
+  return 0
 }
 
 adopt_existing_api() {
@@ -299,13 +337,13 @@ adopt_existing_api() {
       return 0
     fi
     rm -f "$API_PID_FILE"
-    echo "Refusing managed API pid=$pid: required market refresh jobs are not enabled." >&2
+    echo "Refusing managed API pid=$pid: API background refresh configuration is not usable." >&2
     return 1
   fi
   pid="$(listening_pid_for_port "$API_PORT" || true)"
   if [[ -n "$pid" ]] && pid_running "$pid" && wait_for_http "$HEALTH_URL" 1 1; then
     if ! api_has_required_background_refresh "$pid"; then
-      echo "Refusing to adopt API pid=$pid: required market refresh jobs are not enabled." >&2
+      echo "Refusing to adopt API pid=$pid: API background refresh configuration is not usable." >&2
       return 1
     fi
     printf '%s\n' "$pid" >"$API_PID_FILE"
@@ -373,7 +411,7 @@ wait_for_dagster_daemon() {
   local sleep_seconds="${3:-1}"
   local i
   for ((i=1; i<=attempts; i++)); do
-    if ! pid_running "$pid" || ! dagster_pid_matches "$pid"; then
+    if ! pid_running "$pid" || ! dagster_pid_owned "$pid"; then
       return 1
     fi
     if dagster_liveness_check; then
@@ -390,7 +428,7 @@ wait_for_dagster_webserver() {
   local sleep_seconds="${3:-1}"
   local i
   for ((i=1; i<=attempts; i++)); do
-    if ! pid_running "$pid" || ! dagster_web_pid_matches "$pid"; then
+    if ! pid_running "$pid" || ! dagster_web_pid_owned "$pid"; then
       return 1
     fi
     if dagster_graphql_check; then
@@ -433,7 +471,7 @@ build_frontend() {
 }
 
 ensure_local_services() {
-  echo "Checking PostgreSQL/Redis..."
+  echo "Checking PostgreSQL and optional Redis..."
   if [[ "$dry_run" == "1" ]]; then
     echo "[dry-run] $PROJECT_ROOT/scripts/start_local_services.sh"
     return 0
@@ -471,9 +509,9 @@ start_api() {
     export FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH="${FINANCE_AGENT_ENABLE_API_BACKGROUND_REFRESH:-1}"
     if [[ -z "${FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS+x}" ]]; then
       if jin10_is_disabled_value "${FINANCE_AGENT_DISABLE_JIN10:-}"; then
-        export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="twelvedata_xauusd_dispatch,market_candles_daily"
+        export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS=""
       else
-        export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="jin10_kline,twelvedata_xauusd_dispatch,market_candles_daily"
+        export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS="jin10_flash,jin10_web_flash,jin10_web_article_analysis,jin10_calendar"
       fi
     else
       export FINANCE_AGENT_API_BACKGROUND_REFRESH_JOBS
@@ -491,7 +529,7 @@ start_api() {
   )
 
   if ! wait_for_http "$HEALTH_URL" 45 1; then
-    echo "API failed to become healthy. Log: $API_LOG" >&2
+    echo "API failed database/schema readiness. Log: $API_LOG" >&2
     tail -n 120 "$API_LOG" >&2 || true
     exit 1
   fi
@@ -501,6 +539,10 @@ start_dagster_daemon() {
   local existing_pid
   existing_pid="$(managed_daemon_pid 2>/dev/null || true)"
   if [[ -n "$existing_pid" ]]; then
+    if ! dagster_pid_config_matches_requested "$existing_pid"; then
+      echo "Refusing to adopt managed Dagster daemon pid=$existing_pid: Jin10 mode does not match FINANCE_AGENT_DISABLE_JIN10=${FINANCE_AGENT_DISABLE_JIN10}." >&2
+      return 1
+    fi
     if wait_for_dagster_daemon "$existing_pid" 10 1; then
       echo "Dagster daemon already running (pid=$existing_pid)."
       return 0
@@ -547,6 +589,10 @@ start_dagster_webserver() {
   local port_pid
   existing_pid="$(managed_dagster_web_pid 2>/dev/null || true)"
   if [[ -n "$existing_pid" ]]; then
+    if ! dagster_web_pid_config_matches_requested "$existing_pid"; then
+      echo "Refusing to adopt managed Dagster webserver pid=$existing_pid: Jin10 mode does not match FINANCE_AGENT_DISABLE_JIN10=${FINANCE_AGENT_DISABLE_JIN10}." >&2
+      return 1
+    fi
     if wait_for_dagster_webserver "$existing_pid" 10 1; then
       echo "Dagster webserver already running (pid=$existing_pid)."
       return 0
@@ -648,7 +694,7 @@ stop_dagster_daemon() {
     echo "Dagster daemon is not running."
     return 0
   fi
-  if ! dagster_pid_matches "$pid"; then
+  if ! dagster_pid_owned "$pid"; then
     echo "Refusing to stop non-managed pid=$pid from Dagster pidfile." >&2
     return 1
   fi
@@ -667,7 +713,7 @@ stop_dagster_daemon() {
     fi
     sleep 1
   done
-  if dagster_pid_matches "$pid"; then
+  if dagster_pid_owned "$pid"; then
     kill -9 "$pid" 2>/dev/null || true
   fi
   rm -f "$DAGSTER_DAEMON_PID_FILE"
@@ -681,7 +727,7 @@ stop_dagster_webserver() {
     echo "Dagster webserver is not running."
     return 0
   fi
-  if ! dagster_web_pid_matches "$pid"; then
+  if ! dagster_web_pid_owned "$pid"; then
     echo "Refusing to stop non-managed pid=$pid from Dagster webserver pidfile." >&2
     return 1
   fi
@@ -700,7 +746,7 @@ stop_dagster_webserver() {
     fi
     sleep 1
   done
-  if dagster_web_pid_matches "$pid"; then
+  if dagster_web_pid_owned "$pid"; then
     kill -9 "$pid" 2>/dev/null || true
   fi
   rm -f "$DAGSTER_WEB_PID_FILE"
@@ -767,7 +813,9 @@ show_status() {
   fi
   dagster_pid="$(managed_daemon_pid 2>/dev/null || true)"
   if [[ -n "$dagster_pid" ]]; then
-    if dagster_liveness_check; then
+    if ! dagster_pid_config_matches_requested "$dagster_pid"; then
+      dagster_status="running, Jin10 mode mismatch"
+    elif dagster_liveness_check; then
       dagster_status="running, heartbeat ok"
     else
       dagster_status="running, heartbeat unavailable"
@@ -775,7 +823,9 @@ show_status() {
   fi
   dagster_web_pid="$(managed_dagster_web_pid 2>/dev/null || true)"
   if [[ -n "$dagster_web_pid" ]]; then
-    if dagster_graphql_check; then
+    if ! dagster_web_pid_config_matches_requested "$dagster_web_pid"; then
+      dagster_web_status="running, Jin10 mode mismatch"
+    elif dagster_graphql_check; then
       dagster_web_status="running, GraphQL ok"
     else
       dagster_web_status="running, GraphQL unavailable"

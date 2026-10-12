@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus, DataCategory
-
-if TYPE_CHECKING:
-    from apps.analysis.context_bundle import ConsumerProjection
 
 _AGENT_NAME = "positioning_agent"
 _MODULE = "positioning"
@@ -27,21 +23,7 @@ _WATCHLIST = [
 ]
 
 
-def analyze_positioning(
-    snapshot: dict[str, Any],
-    *,
-    created_at: datetime | None = None,
-    context_projection: "ConsumerProjection | Mapping[str, Any] | None" = None,
-) -> AgentOutput:
-    from apps.analysis.context_bundle import validate_consumer_projection
-
-    projection = (
-        validate_consumer_projection(context_projection, "positioning") if context_projection is not None else None
-    )
-    return _bind_context_projection(_analyze_positioning(snapshot, created_at=created_at), projection)
-
-
-def _analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
+def analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | None = None) -> AgentOutput:
     """Analyze already-loaded positioning (CFTC COT) snapshot data without mutating inputs."""
 
     created_at = created_at or datetime.now(timezone.utc)
@@ -68,6 +50,9 @@ def _analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | Non
     snapshot_id = str(snapshot.get("snapshot_id") or "unknown")
     input_snapshot_ids = _input_snapshot_ids(snapshot)
     source_refs = _source_refs(snapshot)
+    reports = snapshot.get("macro", {}).get("data", {}).get("cot_reports")
+    if isinstance(reports, dict):
+        return _analyze_official_reports(snapshot, reports, created_at=created_at)
     positioning = snapshot.get("positioning")
 
     if not isinstance(positioning, dict) or positioning.get("status") != "available":
@@ -145,7 +130,9 @@ def _analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | Non
 
     if producer_net is not None and swap_net is not None:
         data_points_available += 2
-        key_findings.append(f"Producer/Merchant net position: {producer_net:,.0f} contracts.")
+        key_findings.append(
+            f"Producer/Merchant net position: {producer_net:,.0f} contracts."
+        )
         key_findings.append(f"Swap Dealer net position: {swap_net:,.0f} contracts.")
     else:
         data_points_missing += 1
@@ -188,23 +175,30 @@ def _analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | Non
             )
             if noncomm_net > 200000:
                 risk_points.append(
-                    f"Speculative net long is extreme ({noncomm_net:,.0f}); crowded longs increase reversal risk."
+                    f"Speculative net long is extreme ({noncomm_net:,.0f}); "
+                    f"crowded longs increase reversal risk."
                 )
                 confidence -= 0.04
         else:
-            key_findings.append(f"Speculators (Managed Money) are net short {abs(noncomm_net):,.0f} contracts.")
+            key_findings.append(
+                f"Speculators (Managed Money) are net short {abs(noncomm_net):,.0f} contracts."
+            )
     else:
         data_points_missing += 1
 
     # Direction context
     if commercial_direction == "increasing_short":
-        key_findings.append("Commercial aggregate proxy is becoming more net short week-over-week — bearish momentum.")
+        key_findings.append(
+            "Commercial aggregate proxy is becoming more net short week-over-week — bearish momentum."
+        )
         if bias is AgentBias.BEARISH:
             confidence += 0.05
         elif bias is not AgentBias.UNAVAILABLE:
             risk_points.append("Commercial shorts increasing despite non-bearish bias; monitor closely.")
     elif commercial_direction == "increasing_long":
-        key_findings.append("Commercial aggregate proxy is becoming more net long week-over-week — bullish momentum.")
+        key_findings.append(
+            "Commercial aggregate proxy is becoming more net long week-over-week — bullish momentum."
+        )
         if bias is AgentBias.BULLISH:
             confidence += 0.05
         elif bias is not AgentBias.UNAVAILABLE:
@@ -224,7 +218,9 @@ def _analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | Non
             "elevated reversal risk."
         )
         confidence -= 0.06
-        key_findings.append("Commercial aggregate proxy is at a 52-week extreme — contrarian signal.")
+        key_findings.append(
+            "Commercial aggregate proxy is at a 52-week extreme — contrarian signal."
+        )
 
     # Open interest
     if total_oi is not None and total_oi > 0:
@@ -240,7 +236,8 @@ def _analyze_positioning(snapshot: dict[str, Any], *, created_at: datetime | Non
         status = AgentStatus.PARTIAL
         confidence -= 0.10 * data_points_missing
         invalid_conditions.append(
-            f"Partial positioning data: {data_points_missing} fields missing ({data_points_available} available)."
+            f"Partial positioning data: {data_points_missing} fields missing "
+            f"({data_points_available} available)."
         )
 
     if not key_findings:
@@ -301,6 +298,52 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _analyze_official_reports(snapshot: dict[str, Any], reports: dict[str, Any], *, created_at: datetime) -> AgentOutput:
+    from apps.features.positioning.formal_snapshot import COTPositioningSnapshot
+
+    findings, risks, invalid = [], [], []
+    usable = []
+    for report_type in ("futures_only", "combined"):
+        try:
+            report = COTPositioningSnapshot.model_validate(reports.get(report_type, {}))
+        except ValueError:
+            invalid.append(f"{report_type} 持仓契约不完整。")
+            continue
+        if report.quality_status == "blocked" or report.freshness_status != "fresh" or report.alignment_status != "aligned":
+            invalid.append(f"{report_type} 持仓不可用或过期。")
+            continue
+        usable.append(report)
+        delta = report.managed_money.delta
+        findings.append(f"CFTC {report_type} 截至 {report.report_date}，Managed Money 多仓 {report.managed_money.latest.long}、空仓 {report.managed_money.latest.short}、净仓 {report.managed_money.latest.net} 手；前期 {report.previous_report_date}。")
+        if delta is not None:
+            findings.append(f"{report_type} 多仓变化 {delta.long:+g}、空仓变化 {delta.short:+g}、净仓变化 {delta.net:+g} 手；总 OI {report.open_interest.value}、变化 {report.open_interest.delta} 手。")
+    changes = [report.managed_money.delta.net for report in usable if report.managed_money.delta is not None]
+    bias = AgentBias.UNAVAILABLE
+    if changes:
+        bias = AgentBias.BEARISH if all(value < 0 for value in changes) else AgentBias.BULLISH if all(value > 0 for value in changes) else AgentBias.MIXED
+    etf = snapshot.get("macro", {}).get("data", {}).get("official_etf", {})
+    if etf.get("status") == "available" and etf.get("shares_delta") is not None:
+        findings.append(f"GLD 份额变化 {etf['shares_delta']:+g} 份，持金变化 {etf.get('gold_holdings_tonnes_delta')} 吨；基金规模变化不当作资金流。")
+        if bias == AgentBias.BEARISH and etf["shares_delta"] > 0:
+            bias = AgentBias.MIXED
+            risks.append("期货 Managed Money 减仓与 GLD 份额增加形成分歧，不能把不同频率的持仓视为同一时点成交。")
+    risks.append("CFTC 周二持仓不是周五发布后的成交；商业空仓可能来自套保，不能单凭商业净空推断黄金下跌。")
+    status = AgentStatus.PARTIAL if usable else AgentStatus.UNAVAILABLE
+    summary = "期货与 ETF 持仓证据存在分歧，方向仍需价格与宏观确认。" if bias == AgentBias.MIXED else "Managed Money 净仓减少，资金增量偏弱；不构成独立价格预测。" if bias == AgentBias.BEARISH else "Managed Money 净仓增加，资金增量改善；仍需其他模块确认。" if bias == AgentBias.BULLISH else "官方持仓增量不足，保持不可用。"
+    flow_factors = []
+    if snapshot.get("daily_research"):
+        from apps.analysis.agents.research_adjudication import adjudicate_research
+
+        flow_factors = [factor for factor in adjudicate_research(snapshot).get("factors", []) if factor["family"] in {"positioning", "etf"}]
+        if flow_factors:
+            findings.extend(factor["rationale"] for factor in flow_factors)
+            directions = {factor["bias"] for factor in flow_factors}
+            bias = AgentBias(next(iter(directions))) if len(directions) == 1 else AgentBias.MIXED
+            summary = " ".join(factor["rationale"] for factor in flow_factors) + " 持仓窗口分别解释，不能替代黄金方向与买方身份确认。"
+            status = AgentStatus.PARTIAL
+    return AgentOutput(version="2.0", agent_name=_AGENT_NAME, module=_MODULE, snapshot_id=str(snapshot.get("snapshot_id") or "unknown"), input_snapshot_ids=_input_snapshot_ids(snapshot), bias=bias, confidence=.5 if changes or flow_factors else 0, key_findings=findings, risk_points=risks, watchlist=[*list(_WATCHLIST), "GLD daily/weekly shares"], invalid_conditions=invalid, summary=summary, source_refs=_source_refs(snapshot), status=status, created_at=created_at, data_category=DataCategory.SYSTEM_INFERENCE, input_payload={"flow_factors": flow_factors})
+
+
 def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
     if status is AgentStatus.UNAVAILABLE:
         return f"持仓只读视图不可用；确信度 {confidence:.2f}。"
@@ -311,13 +354,3 @@ def _summary(bias: AgentBias, status: AgentStatus, confidence: float) -> str:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, round(value, 2)))
-
-
-def _bind_context_projection(output: AgentOutput, projection: "ConsumerProjection | None") -> AgentOutput:
-    if projection is None:
-        return output
-    from apps.analysis.context_bundle import consume_projection_for_agent_output
-
-    return AgentOutput.model_validate(
-        consume_projection_for_agent_output(projection, output, expected_consumer="positioning")
-    )

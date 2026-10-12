@@ -25,7 +25,7 @@ export function groupSources(sources: DataSourceStatusViewModel[]): SourceGroup[
   }
 
   const all: SourceGroup[] = [
-    { key: "live", label: "可用数据源", note: "全部 live · 直接消费", status: "ok", sources: live },
+    { key: "live", label: "可用数据源", note: "可直接消费", status: "ok", sources: live },
     { key: "partial", label: "部分可用", note: "子源失败或覆盖受限", status: "partial", sources: partial },
     { key: "offline", label: "暂不可用", note: "未配置或上游不可用", status: "unavailable", sources: offline },
   ];
@@ -141,10 +141,10 @@ export function freshnessLabel(source: DataSourceStatusViewModel): string {
   const t = new Date(value).getTime();
   if (Number.isNaN(t)) return "—";
   const diffMin = Math.round((Date.now() - t) / 60000);
-  if (diffMin < 60) return `${diffMin}m`;
+  if (diffMin < 60) return `${diffMin} 分钟`;
   const diffH = Math.round(diffMin / 60);
-  if (diffH < 24) return `${diffH}h`;
-  return `${Math.round(diffH / 24)}d`;
+  if (diffH < 24) return `${diffH} 小时`;
+  return `${Math.round(diffH / 24)} 天`;
 }
 
 export function roleLabel(role: string): string {
@@ -156,6 +156,6 @@ export function roleLabel(role: string): string {
     case "supplemental":
       return "补充";
     default:
-      return "衍生";
+      return "角色尚未说明";
   }
 }

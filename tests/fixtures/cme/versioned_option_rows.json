@@ -1,0 +1,24 @@
+{
+  "trade_date": "2026-09-04",
+  "product": "OG",
+  "rows": [
+    {
+      "expiry": "OCT26",
+      "strike": 4500,
+      "option_type": "CALL",
+      "settlement": 100.0,
+      "delta": 0.5,
+      "open_interest": 100,
+      "oi_change": 10
+    },
+    {
+      "expiry": "OCT26",
+      "strike": 4500,
+      "option_type": "PUT",
+      "settlement": 20.0,
+      "delta": 0.4,
+      "open_interest": 200,
+      "oi_change": -5
+    }
+  ]
+}

@@ -113,6 +113,7 @@ def _options(*, strike: float = 102.0) -> dict:
             "current_trade_date": "2026-07-17",
             "previous_trade_date": "2026-07-16",
             "comparison_status": "available",
+            "generated_at": "2026-07-17T11:00:00+00:00",
         },
         "oi_summary": {"comparison_status": "available", "total": {"current": 12000.0, "delta": 450.0, "pct_change": 3.9}},
         "oi_change_rankings": {
@@ -391,6 +392,25 @@ def test_projects_cme_positioning_without_frontend_calculation() -> None:
     assert cme["scenario_paths"][0]["path_id"] == "base_repair_range"
 
 
+def test_gc_option_levels_do_not_drive_xauusd_nearest_distance_or_risk_plan() -> None:
+    options = _options_with_levels()
+    options["structure_summary"]["execution_scope"] = "gc_live_basis_validated"
+    options["key_levels"] = [
+        {**level, "coordinate_space": "GC futures"}
+        for level in options["key_levels"]
+    ]
+    options["scenario_paths"] = [{"path_id": "base_repair_range", "execution_scope": "gc_live_basis_validated"}]
+
+    payload = _build(options_decision=options)
+
+    assert payload["market_state"]["nearest_level"] is None
+    assert payload["market_state"]["distance"] is None
+    assert payload["update_reason"]["reason_code"] == "option_key_levels_coordinate_mismatch"
+    assert payload["feasibility"]["reasons"]["level_ready"] == ["option_key_levels_coordinate_mismatch"]
+    assert all(setup["reference_level"] is None for setup in payload["setups"])
+    assert payload["no_trade"]["range"] is None
+
+
 def test_missing_cme_positioning_fails_closed() -> None:
     payload = _build(options_decision={"meta": {"current_trade_date": "2026-07-17"}})
 
@@ -427,6 +447,59 @@ def test_cme_gate_blocks_directional_trigger_but_keeps_observation(
     assert payload["setups"][0]["gate"]["reasons"] == [reason_code]
     assert payload["cme_positioning"]["source_status"] == cme_status
     assert payload["market_state"]["key_levels"]
+    assert payload["data_quality"]["input_gates"]["cme"]["reason_code"] == reason_code
+
+
+def test_prior_session_final_published_cme_is_live_eligible() -> None:
+    options = _options_with_levels()
+    options["meta"].update(
+        current_trade_date="2026-07-16",
+        previous_trade_date="2026-07-15",
+        generated_at="2026-07-16T20:30:00+00:00",
+    )
+
+    payload = _build(
+        canonical_market=_confirmed_break_market(),
+        canonical_market_15m=_market_15m(),
+        options_decision=options,
+    )
+
+    cme_gate = payload["data_quality"]["input_gates"]["cme"]
+    assert cme_gate["ready"] is True
+    assert cme_gate["trade_date"] == "2026-07-16"
+    assert cme_gate["date_aligned"] is True
+    assert cme_gate["generated_at"] == "2026-07-16T20:30:00+00:00"
+    assert payload["data_quality"]["baseline_options_same_trade_date"] is False
+    assert payload["data_quality"]["baseline_options_date_aligned"] is True
+    assert payload["cme_positioning"]["trade_date"] == "2026-07-16"
+    assert payload["strategy_status"] == "TRIGGERED"
+
+
+@pytest.mark.parametrize(
+    ("generated_at", "reason_code"),
+    [
+        (None, "cme_publication_time_unavailable"),
+        ("2026-07-17T12:00:01+00:00", "cme_publication_after_decision"),
+    ],
+)
+def test_cme_publication_must_exist_by_live_decision_time(
+    generated_at: str | None,
+    reason_code: str,
+) -> None:
+    options = _options_with_levels()
+    if generated_at is None:
+        options["meta"].pop("generated_at")
+    else:
+        options["meta"]["generated_at"] = generated_at
+
+    payload = _build(
+        canonical_market=_confirmed_break_market(),
+        canonical_market_15m=_market_15m(),
+        options_decision=options,
+    )
+
+    assert payload["strategy_status"] == "WAITING"
+    assert payload["market_state"]["latest_price_event"] is None
     assert payload["data_quality"]["input_gates"]["cme"]["reason_code"] == reason_code
 
 
@@ -732,3 +805,14 @@ def test_event_overlay_is_additive_and_does_not_flip_stale_strategy() -> None:
     assert payload["strategy_status"] == "SUSPENDED_DATA"
     assert payload["event_overlay"]["recompute_candidate"] is True
     assert payload["event_overlay"]["status"] == "eligible"
+
+
+def test_fresh_legacy_jin10_cache_cannot_supply_live_numeric_fields() -> None:
+    payload = _build(quote_cache={
+        "generated_at": NOW.isoformat(),
+        "quotes": {"XAUUSD": {"price": 99.0, "bid": 99.9, "ask": 100.1, "change_pct": 1.2}},
+    })
+    assert payload["live_market"]["price"] == 100.0
+    assert payload["live_market"]["bid"] is None
+    assert payload["live_market"]["ask"] is None
+    assert "jin10_numeric_source_forbidden" in payload["data_quality"]["warnings"]

@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import type { CMEOptionsCalibration, CMEOptionsDataSource, CMEOptionsNetGEXAggregate, CMEOptionsWallScore } from "@/types/cme-options";
 import { FACard } from "../shared/FACard";
 import { FAMetricCard } from "../shared/FAMetricCard";
@@ -74,9 +75,11 @@ export function OptionsMarketReadout({ dataSource, netGexAggregate, wallScores, 
         <FAMetricCard label="看跌支撑" value={formatPrice(putWall?.strike)} hint={`评分 ${formatScore(putWall?.wall_score)} · 持仓 ${formatPrice(putWall?.oi)}`} trend="up" delta="下方支撑" />
       </div>
 
-      {calibration.calibration_warnings?.[0] ? (
+      {calibration.calibration_warnings?.length ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-3 py-2">
-          <div className="text-[length:var(--type-body-sm)] leading-4 text-[var(--fg-4)]">{translateDecisionText(calibration.calibration_warnings[0])}</div>
+          {calibration.calibration_warnings.map((warning) => (
+            <div key={warning} className="text-[length:var(--type-body-sm)] leading-4 text-[var(--fg-4)]">{translateDecisionText(warning)}</div>
+          ))}
         </div>
       ) : null}
     </FACard>

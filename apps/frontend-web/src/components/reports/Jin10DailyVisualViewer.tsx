@@ -2,9 +2,10 @@ import { FACard } from "@/components/shared/FACard";
 import { FAEmptyState } from "@/components/shared/FAEmptyState";
 import { FATabBar } from "@/components/shared/FATabBar";
 import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
-import { MarkdownViewer } from "@/components/reports/MarkdownViewer";
+import { ReportArtifactPanel } from "@/components/reports/ReportArtifactPanel";
 import { formatDateTime } from "@/lib/date";
 import type { Jin10ReportBundleView, Jin10Subview } from "@/types/reports";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 interface Jin10DailyVisualViewerProps {
   report: Jin10ReportBundleView | null;
@@ -16,15 +17,15 @@ interface Jin10DailyVisualViewerProps {
 }
 
 const VIEW_LABELS: Record<Jin10Subview, string> = {
-  raw_article: "原文 MD",
-  agent_analysis: "LLM 分析",
-  daily_visual: "可视化报告",
+  raw_article: "原文",
+  agent_analysis: "研究分析",
+  daily_visual: "图文报告",
 };
 
 const VIEW_HINTS: Record<Jin10Subview, string> = {
-  raw_article: "原文整理后的 Markdown 版本，用于快速核对正文、图表说明与摘录证据。",
-  agent_analysis: "基于原文与日报结构生成的 LLM 分析 Markdown，作为研究结论层阅读入口。",
-  daily_visual: "基于 LLM/日报分析结果生成的 HTML 可视化报告，用于图文化阅读和展示。",
+  raw_article: "原文整理版本，用于快速核对正文、图表说明与摘录证据。",
+  agent_analysis: "基于原文与日报结构生成的研究分析，作为结论层阅读入口。",
+  daily_visual: "基于日报分析结果生成的图文报告，用于结构化阅读和展示。",
 };
 
 export function Jin10DailyVisualViewer({
@@ -50,10 +51,10 @@ export function Jin10DailyVisualViewer({
 
   if (error) {
     return (
-      <FACard title="报告加载失败" eyebrow="Visual Viewer" accent="down">
+      <FACard title="报告加载失败" eyebrow="图文报告" accent="down">
         <FAWarningBanner
           title="Bundle 产物当前不可用"
-          description={error.message}
+          description={readingErrorMessage(error, "报告产物读取失败，请稍后重试。")}
           tone="down"
           action={
             <button
@@ -71,10 +72,10 @@ export function Jin10DailyVisualViewer({
 
   if (!report) {
     return (
-      <FACard title="暂无报告" eyebrow="Visual Viewer" accent="warn">
+      <FACard title="暂无报告" eyebrow="图文报告" accent="warn">
         <FAEmptyState
           title="当前没有报告 bundle 产物"
-          description="需要先生成 agent_analysis、daily_visual 或 raw_article 任一产物后才能在此阅读。"
+          description="需要先生成原文、研究分析或图文报告中的至少一种产物后才能在此阅读。"
         />
       </FACard>
     );
@@ -84,8 +85,6 @@ export function Jin10DailyVisualViewer({
   const metaItems = [
     { label: "报告日期", value: report.trade_date },
     { label: "生成时间", value: formatDateTime(report.generated_at) },
-    { label: "文章 ID", value: report.article_id ? `article ${report.article_id}` : "—" },
-    { label: "Run ID", value: report.run_id },
   ];
   const viewTabs = (["agent_analysis", "daily_visual", "raw_article"] as Jin10Subview[]).map((view) => ({
     value: view,
@@ -95,8 +94,8 @@ export function Jin10DailyVisualViewer({
 
   return (
     <FACard
-      title="三产物报告中心"
-      eyebrow="Visual Viewer"
+      title="市场观察报告"
+      eyebrow="图文报告"
       accent="warn"
       action={
         report.source_url ? (
@@ -129,9 +128,9 @@ export function Jin10DailyVisualViewer({
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
         {([
-          { key: "raw_article" as Jin10Subview, eyebrow: "Source MD", title: "原文 Markdown 报告" },
-          { key: "agent_analysis" as Jin10Subview, eyebrow: "Analysis MD", title: "LLM 分析报告" },
-          { key: "daily_visual" as Jin10Subview, eyebrow: "Visual HTML", title: "LLM 可视化报告" },
+          { key: "raw_article" as Jin10Subview, eyebrow: "原文", title: "原文报告" },
+          { key: "agent_analysis" as Jin10Subview, eyebrow: "研究分析", title: "研究分析" },
+          { key: "daily_visual" as Jin10Subview, eyebrow: "图文报告", title: "图文分析" },
         ]).map((card) => {
           const available = report.views[card.key]?.available;
           const selected = selectedView === card.key;
@@ -150,7 +149,7 @@ export function Jin10DailyVisualViewer({
               }}
             >
               <div className="mb-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--fg-5)]">
-                {card.eyebrow}
+
               </div>
               <div className="text-[12px] font-semibold text-[var(--fg-2)]">{card.title}</div>
             </button>
@@ -165,22 +164,10 @@ export function Jin10DailyVisualViewer({
       {!activeView?.available ? (
         <FAEmptyState
           title="当前视图缺少产物"
-          description="对应 artifact 尚未生成，建议切换到其他可用视图或回查后端输出。"
+          description="对应研究产物尚未生成，建议切换到其他可用视图或回查数据链路。"
         />
-      ) : activeView.kind === "html" ? (
-        <div className="min-h-[78vh] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-3">
-          <iframe
-            title={`report ${selectedView} ${report.trade_date} ${report.run_id}`}
-            srcDoc={activeView.content ?? ""}
-            className="min-h-[72vh] w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
-            sandbox="allow-same-origin"
-          />
-        </div>
-      ) : (
-        <div className="min-h-[78vh] max-h-[78vh] overflow-y-auto rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card-inner)] p-4">
-          <MarkdownViewer content={activeView.content ?? ""} assetBaseUrl={activeView.asset_base_url} />
-        </div>
-      )}
+      ) : <ReportArtifactPanel tab={{ key: "analysis", source_endpoint: "", available: true, format: activeView.kind === "html" ? "html" : "markdown", content: activeView.content ?? "", label: "研究正文", path: null, asset_base_url: activeView.asset_base_url ?? null }} />}
+
     </FACard>
   );
 }

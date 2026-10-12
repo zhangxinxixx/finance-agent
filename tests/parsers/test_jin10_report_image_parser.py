@@ -270,6 +270,13 @@ def test_vision_client_preserves_explicit_cockpit_luna_provider() -> None:
     assert client.model == "gpt-5.6-luna"
 
 
+def test_vision_client_preserves_explicit_jojocode_provider() -> None:
+    client = VisionMarkdownClient(provider="jojocode", model="gpt-5.6-sol")
+
+    assert client.provider == "jojocode"
+    assert client.model == "gpt-5.6-sol"
+
+
 def test_vision_client_uses_formal_luna_high_defaults(monkeypatch) -> None:
     for name in (
         "JIN10_VISION_PROVIDER",

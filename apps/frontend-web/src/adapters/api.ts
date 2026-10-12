@@ -1,3 +1,5 @@
+import { normalizeResearchIdentity } from "@/adapters/researchIdentity";
+import { normalizeDashboardTradePlan } from "@/adapters/researchTradePlan";
 import type { DashboardAgentCompactSummary, DashboardDataResponse, DashboardMetric, DashboardSummary, DashboardStrategyCardViewModel, DashboardViewModel, SignalDirection, StrategyCardData, UnifiedDate } from "@/types/dashboard";
 import type { DataStatus, ModuleStatus, ReportMeta, SourceRef } from "@/types/common";
 import { fetchJson } from "@/adapters/apiClient";
@@ -5,10 +7,13 @@ import { mergeDataStatus, normalizeDataStatus } from "@/lib/status";
 import { dedupeSourceRefs, normalizeSourceRefs, sourceRefFromEndpoint } from "@/lib/sourceRefs";
 
 const DASHBOARD_SUMMARY_PATH = "/api/dashboard/summary";
-const DASHBOARD_TIMEOUT_MS = 8000;
+// Aggregating registered snapshots and source health can exceed 8s on a cold read.
+const DASHBOARD_TIMEOUT_MS = 30000;
 const ENABLE_DASHBOARD_MOCK_FALLBACK = import.meta.env.VITE_ENABLE_DASHBOARD_MOCK_FALLBACK === "true";
+const dashboardRequests = new Map<string, Promise<DashboardDataResponse>>();
 
 type RawDashboardSummaryResponse = {
+  current_market?: Pick<RawDashboardSummaryResponse, "macro" | "options" | "realtime_quotes" | "realtime_status">;
   generated_at?: string;
   realtime_status?: {
     source?: string;
@@ -23,6 +28,8 @@ type RawDashboardSummaryResponse = {
     change_pct?: number | null;
     unit?: string | null;
     time?: string | null;
+    price_time?: string | null;
+    trade_date?: string | null;
     source?: string | null;
     name?: string | null;
   }>;
@@ -34,7 +41,13 @@ type RawDashboardSummaryResponse = {
     intent?: string;
     intent_score?: number;
     gamma_zero?: number | null;
+    gamma_flip_label?: string;
+    gex_semantics_label?: string;
+    dealer_position_unknown?: boolean;
+    coordinate_space?: string;
+    pin_level?: number | null;
     forward_price?: number | null;
+    wall_score?: number | null;
     walls?: {
       resistance?: Array<{ strike?: number; score?: number; distance_pct?: number }>;
       support?: Array<{ strike?: number; score?: number; distance_pct?: number }>;
@@ -45,12 +58,20 @@ type RawDashboardSummaryResponse = {
       level?: string;
       trade_date?: string;
       age_days?: number | null;
+      calendar_days?: number | null;
+      trading_days?: number | null;
+      weight_multiplier?: number;
+      role?: string;
+      rule?: string;
+      source_version?: string;
+      is_probability?: boolean;
       data_status?: string;
       reasons?: string[];
     };
   };
   macro?: {
     as_of?: string;
+    source_refs?: Array<{ symbol?: string; source?: string; observation_date?: string }>;
     available_count?: number;
     unavailable_count?: number;
     indicators?: Record<string, {
@@ -60,6 +81,7 @@ type RawDashboardSummaryResponse = {
       label?: string;
       monthly_change?: number | null;
       symbol?: string;
+      source?: string | null;
       unit?: string;
       value?: number | string | null;
       weekly_change?: number | null;
@@ -69,10 +91,15 @@ type RawDashboardSummaryResponse = {
   warnings?: string[];
   risk_alerts?: string[];
   integrated_macro?: {
+    research_identity?: unknown;
+    final_trade_plan?: unknown;
     report_type?: string;
     trade_date?: string;
     run_id?: string | null;
     source?: string;
+    as_of?: string | null;
+    authority?: string | null;
+    publish_allowed?: boolean | null;
     overall_bias?: string;
     direction?: unknown;
     macro_regime?: string;
@@ -109,6 +136,7 @@ type RawDashboardSummaryResponse = {
     synthesis?: RawDashboardAgentCompactSummary | null;
   } | null;
   composite_analysis?: DashboardSummary["composite_analysis"];
+  research_context?: DashboardSummary["research_context"];
   gold_macro_overview?: DashboardSummary["gold_macro_overview"];
   latest_supplemental_report?: DashboardSummary["latest_supplemental_report"];
   latest_reports?: DashboardSummary["latest_reports"];
@@ -128,6 +156,8 @@ type RawDashboardSummaryResponse = {
     key_levels?: {
       resistance?: number[];
       support?: number[];
+      coordinate_space?: string | null;
+      source?: string | null;
     };
     triggers?: unknown;
     invalid_conditions?: unknown;
@@ -210,20 +240,39 @@ function metricFromIndicator(
     change: weekly === null ? null : `${weekly >= 0 ? "+" : ""}${weekly.toFixed(2)}`,
     trend: trendFromChange(weekly),
     status: value === null || value === undefined || value === "" ? "unavailable" : "ok",
-    note: asString(raw?.direction_note),
+    note: [raw?.date ? `观测 ${raw.date}` : "日期待确认", asString(raw?.direction_note)].filter(Boolean).join(" · "),
+    data_date: asOptionalString(raw?.date),
+    source: asOptionalString(raw?.source),
   };
 }
 
 function xauusdMetric(options: RawDashboardSummaryResponse["options"]): DashboardMetric {
+  const hasFuturesReference = typeof options?.forward_price === "number";
+  const tradeDate = asOptionalString(options?.trade_date);
   return {
-    label: "XAUUSD",
+    label: hasFuturesReference ? "GC 期货" : "XAUUSD",
     value: options?.forward_price ?? null,
     unit: "USD/oz",
     change: null,
     trend: "flat",
-    status: options?.forward_price ? "ok" : "unavailable",
-    note: "CME GC forward / latest available",
+    status: hasFuturesReference ? "info" : "unavailable",
+    note: hasFuturesReference
+      ? `期货参考${tradeDate ? ` · ${tradeDate}` : " · 日期待确认"}`
+      : "现货价格不可用",
+    instrument_kind: hasFuturesReference ? "futures" : "reference",
+    source: hasFuturesReference ? "cme_gc_futures" : null,
+    data_date: tradeDate,
   };
+}
+
+function sourceDate(value: string | null | undefined): string | null {
+  const match = value?.match(/^\d{4}-\d{2}-\d{2}/);
+  return match?.[0] ?? null;
+}
+
+function isGcFuturesQuote(source: string | null | undefined, name: string | null | undefined): boolean {
+  const normalized = `${source ?? ""} ${name ?? ""}`.toLowerCase();
+  return normalized.includes("cme_gc_futures") || normalized.includes("gc futures") || normalized.includes("gc期货");
 }
 
 function overlayRealtimeMetric(
@@ -242,7 +291,80 @@ function overlayRealtimeMetric(
     change: liveChange === null ? metric.change : `${liveChange >= 0 ? "+" : ""}${liveChange.toFixed(2)}%`,
     trend: liveChange === null ? metric.trend : trendFromChange(liveChange),
     status: "ok",
-    note: realtime.source ?? metric.note ?? "",
+    note: [metric.note, realtime.source].filter(Boolean).join(" · "),
+  };
+}
+
+export function normalizeXauMarketMetric(
+  options: RawDashboardSummaryResponse["options"],
+  realtime: {
+    price?: number | null;
+    value?: number | null;
+    change_pct?: number | null;
+    source?: string | null;
+    name?: string | null;
+    time?: string | null;
+    price_time?: string | null;
+    trade_date?: string | null;
+  } | null | undefined,
+  realtimeGeneratedAt: string | null | undefined,
+): DashboardMetric {
+  const fallback = xauusdMetric(options);
+  if (!realtime) return fallback;
+
+  const metric = overlayRealtimeMetric(fallback, realtime, "USD/oz");
+  const hasValue = typeof realtime.price === "number" || typeof realtime.value === "number";
+  if (!hasValue) return fallback;
+
+  const source = asOptionalString(realtime.source);
+  const quoteDate = sourceDate(realtime.time) ?? sourceDate(realtime.price_time) ?? sourceDate(realtimeGeneratedAt);
+  if (isGcFuturesQuote(source, realtime.name)) {
+    const futuresDate = sourceDate(realtime.time) ?? asOptionalString(options?.trade_date);
+    return {
+      ...metric,
+      label: "GC 期货",
+      status: "info",
+      note: `期货参考${futuresDate ? ` · ${futuresDate}` : " · 日期待确认"}`,
+      instrument_kind: "futures",
+      source: source ?? "cme_gc_futures",
+      data_date: futuresDate,
+    };
+  }
+
+  if (source === "jin10_mcp_realtime" || source?.startsWith("twelvedata")) {
+    return {
+      ...metric,
+      label: "XAUUSD 现货",
+      status: "ok",
+      note: `现货报价${quoteDate ? ` · ${quoteDate}` : " · 日期待确认"}`,
+      instrument_kind: "spot",
+      source,
+      data_date: quoteDate,
+    };
+  }
+
+  if (source === "research_snapshot_spot") {
+    const priceTime = asOptionalString(realtime.price_time);
+    const tradeDate = asOptionalString(realtime.trade_date) ?? sourceDate(priceTime);
+    return {
+      ...metric,
+      label: "XAUUSD 现货",
+      status: "info",
+      note: `研究快照${priceTime ? ` · ${priceTime}` : tradeDate ? ` · ${tradeDate}` : " · 时间待确认"}`,
+      instrument_kind: "spot",
+      source,
+      data_date: tradeDate,
+    };
+  }
+
+  return {
+    ...metric,
+    label: "黄金参考",
+    status: "info",
+    note: `来源待确认${quoteDate ? ` · ${quoteDate}` : ""}`,
+    instrument_kind: "reference",
+    source,
+    data_date: quoteDate,
   };
 }
 
@@ -274,7 +396,7 @@ function normalizeDashboardAgent(item: RawDashboardAgentCompactSummary | null | 
     agentName: asOptionalString(item.agent_name),
     status: asOptionalString(item.status),
     bias: asString(item.bias, "neutral"),
-    confidence: typeof item.confidence === "number" ? item.confidence : 0,
+    confidence: typeof item.confidence === "number" && Number.isFinite(item.confidence) ? item.confidence : null,
     summary: asString(item.summary),
     summaryRaw: asString(item.summary_raw, asString(item.summary)),
     factReviewStatus: asOptionalString(item.fact_review_status),
@@ -292,10 +414,15 @@ function normalizeIntegratedMacro(
 ): DashboardSummary["integrated_macro"] {
   if (!item) return null;
   return {
+    research_identity: normalizeResearchIdentity(item.research_identity),
+    final_trade_plan: normalizeDashboardTradePlan(item.final_trade_plan, item),
     report_type: asString(item.report_type, "integrated_macro_summary"),
     trade_date: asString(item.trade_date),
     run_id: asOptionalString(item.run_id),
     source: asString(item.source, "macro_conclusion"),
+    as_of: asOptionalString(item.as_of),
+    authority: asOptionalString(item.authority),
+    publish_allowed: typeof item.publish_allowed === "boolean" ? item.publish_allowed : null,
     overall_bias: asString(item.overall_bias, "宏观结论待确认"),
     direction: normalizeSignalDirection(item.direction, "neutral"),
     macro_regime: asString(item.macro_regime, "宏观阶段待确认"),
@@ -304,7 +431,7 @@ function normalizeIntegratedMacro(
     rates_state: asString(item.rates_state, "利率状态待确认"),
     dollar_state: asString(item.dollar_state, "美元状态待确认"),
     options_alignment: asString(item.options_alignment, "期权结构待确认"),
-    confidence: typeof item.confidence === "number" ? item.confidence : null,
+    confidence: typeof item.confidence === "number" && Number.isFinite(item.confidence) ? item.confidence : null,
     reasoning: asString(item.reasoning),
     trade_implication: asString(item.trade_implication),
     quick_supports: (item.quick_supports ?? [])
@@ -354,11 +481,27 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
   const mappedIndicators: typeof indicators = { ...indicators };
   if (!mappedIndicators.RRP && indicators.ON_RRP_USAGE) mappedIndicators.RRP = indicators.ON_RRP_USAGE;
   if (!mappedIndicators.BANK_RESERVES && indicators.RESERVES) mappedIndicators.BANK_RESERVES = indicators.RESERVES;
-  if (!mappedIndicators.T10YIE && indicators.BREAKEVEN_10Y) mappedIndicators.T10YIE = indicators.BREAKEVEN_10Y;
+  const hasIndicator = (symbol: string) => Object.prototype.hasOwnProperty.call(indicators, symbol);
+  if (!hasIndicator("T10YIE") && hasIndicator("BREAKEVEN_10Y")) mappedIndicators.T10YIE = indicators.BREAKEVEN_10Y;
+  if (!hasIndicator("REAL_10Y") && hasIndicator("REAL10Y")) mappedIndicators.REAL_10Y = indicators.REAL10Y;
+  const rateSources: Record<string, string> = { US02Y: "DGS2", US10Y: "DGS10", REAL_10Y: "DFII10" };
+  for (const [symbol, sourceSymbol] of Object.entries(rateSources)) {
+    const indicator = mappedIndicators[symbol];
+    if (!indicator?.date || indicator.source) continue;
+    const sources = Array.isArray(raw.macro?.source_refs) ? raw.macro.source_refs : [];
+    const matching = sources.filter(ref => ref && ref.symbol === sourceSymbol
+      && ref.observation_date === indicator.date && typeof ref.source === "string");
+    const names = [...new Set(matching.map(ref => ref.source))];
+    if (names.length === 1) mappedIndicators[symbol] = { ...indicator, source: names[0] };
+  }
   const resistance = normalizeWallLevels(options.walls?.resistance);
   const support = normalizeWallLevels(options.walls?.support);
-  const intentScore = asNumber(options.intent_score);
-  const optionDirection = intentScore >= 0.6 ? "bullish" : intentScore <= 0.35 ? "bearish" : "neutral";
+  const intentScore = typeof options.intent_score === "number" && Number.isFinite(options.intent_score)
+    ? options.intent_score : null;
+  const effectiveIntentConfidence = typeof options.confidence?.score === "number" && Number.isFinite(options.confidence.score)
+    ? Math.max(0, Math.min(1, options.confidence.score))
+    : null;
+  const optionDirection = normalizeSignalDirection(options.intent, "neutral");
   const warnings = raw.warnings ?? [];
   const riskAlerts = raw.risk_alerts ?? [];
   const rawTriggers = asStringList(rawStrategy.triggers);
@@ -372,6 +515,21 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
   const rawSupport = Array.isArray(rawStrategy.key_levels?.support)
     ? rawStrategy.key_levels.support.filter((value): value is number => typeof value === "number")
     : [];
+  const levelIdentity = `${rawStrategy.key_levels?.coordinate_space ?? ""} ${rawStrategy.key_levels?.source ?? ""}`.toLowerCase();
+  const evidenceIdentities = rawEvidenceRefs.map((ref) => {
+    const identity = `${ref.source ?? ""} ${ref.ref ?? ""} ${ref.source_ref ?? ""} ${ref.description ?? ""}`.toLowerCase();
+    return identity;
+  });
+  const identifiesSpot = (identity: string) => {
+    if (identity.includes("research_snapshot_spot")) return true;
+    const identifiesXau = /xauusd|xau\/usd|xau_usd/.test(identity);
+    const identifiesSpotSource = /spot|market_candles|jin10/.test(identity);
+    return identifiesXau && identifiesSpotSource;
+  };
+  const identifiesFutures = (identity: string) => /cme|gc[_ -]?futures|options?/.test(identity);
+  const hasExplicitSpotLevelSource = identifiesSpot(levelIdentity)
+    || (evidenceIdentities.some(identifiesSpot) && !evidenceIdentities.some(identifiesFutures));
+  const rawLevelCoordinate: "spot" | "unknown" = hasExplicitSpotLevelSource ? "spot" : "unknown";
 
   return {
     generated_at: asString(raw.generated_at, new Date().toISOString()),
@@ -385,22 +543,19 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
     conclusion: {
       bias: `期权结构：${asString(options.intent, "unavailable")}`,
       direction: optionDirection,
-      confidence: intentScore,
+      confidence: effectiveIntentConfidence,
       macro_phase: raw.macro ? `macro: ${raw.macro.available_count ?? 0} available` : "macro unavailable",
-      options_summary: `Gamma Zero ${options.gamma_zero?.toFixed?.(1) ?? "—"}，Forward ${options.forward_price?.toFixed?.(1) ?? "—"}，到期月 ${(options.expiries ?? []).slice(0, 4).join(" / ")}`,
+      options_summary: `${asString(options.gamma_flip_label, "Proxy Gamma Flip（语义元数据缺失）")}（GC期货坐标）${options.gamma_zero?.toFixed?.(1) ?? "—"}，${asString(options.gex_semantics_label, "GEX Proxy 口径元数据缺失")}，dealer方向未知，到期月 ${(options.expiries ?? []).slice(0, 4).join(" / ")}`,
       pin_level: derivePinLevel({
-        pin_level: null,
-        gamma_zero: options.gamma_zero ?? null,
-        upper_resistance_walls: resistance,
-        lower_support_walls: support,
+        pin_level: options.pin_level ?? null,
       }),
       resistance_levels: resistance.map((item) => item.strike).slice(0, 3),
       support_levels: support.map((item) => item.strike).slice(0, 3),
-      wall_score: resistance.length > 0 || support.length > 0 ? Math.max(...[...resistance, ...support].map((item) => item.score), 0) : null,
+      wall_score: typeof options.wall_score === "number" && Number.isFinite(options.wall_score) ? options.wall_score : null,
       net_gex: null,
     },
     market_summary: {
-      XAUUSD: overlayRealtimeMetric(xauusdMetric(options), xauRealtime, "USD/oz"),
+      XAUUSD: normalizeXauMarketMetric(options, xauRealtime, raw.realtime_status?.generated_at),
       DXY: overlayRealtimeMetric(metricFromIndicator(mappedIndicators.DXY, "DXY", "index"), dxyRealtime, "index"),
       US10Y: metricFromIndicator(mappedIndicators.US10Y, "US10Y", "%"),
       US02Y: metricFromIndicator(mappedIndicators.US02Y, "US02Y", "%"),
@@ -423,23 +578,31 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
       intent: asString(options.intent, "unavailable"),
       intent_score: intentScore,
       gamma_zero: options.gamma_zero ?? null,
+      gamma_flip_label: asString(options.gamma_flip_label, "Proxy Gamma Flip（语义元数据缺失）"),
+      gex_semantics_label: asString(options.gex_semantics_label, "GEX Proxy 口径元数据缺失"),
+      dealer_position_unknown: options.dealer_position_unknown !== false,
+      coordinate_space: asString(options.coordinate_space, "GC futures"),
       pin_level: derivePinLevel({
-        pin_level: null,
-        gamma_zero: options.gamma_zero ?? null,
-        upper_resistance_walls: resistance,
-        lower_support_walls: support,
+        pin_level: options.pin_level ?? null,
       }),
       net_gex: null,
-      wall_score: resistance.length > 0 || support.length > 0 ? Math.max(...[...resistance, ...support].map((item) => item.score), 0) : null,
+      wall_score: typeof options.wall_score === "number" && Number.isFinite(options.wall_score) ? options.wall_score : null,
       market_regime: asString(options.intent, "unavailable"),
       upper_resistance_walls: resistance,
       lower_support_walls: support,
       data_status: asString(options.data_status, "UNAVAILABLE"),
       confidence: {
-        score: typeof options.confidence?.score === "number" ? options.confidence.score : intentScore,
+        score: typeof options.confidence?.score === "number" && Number.isFinite(options.confidence.score) ? options.confidence.score : null,
         level: asString(options.confidence?.level, "low"),
         trade_date: asOptionalString(options.confidence?.trade_date) ?? asOptionalString(options.trade_date),
         age_days: typeof options.confidence?.age_days === "number" ? options.confidence.age_days : null,
+        calendar_days: typeof options.confidence?.calendar_days === "number" ? options.confidence.calendar_days : null,
+        trading_days: typeof options.confidence?.trading_days === "number" ? options.confidence.trading_days : null,
+        weight_multiplier: typeof options.confidence?.weight_multiplier === "number" ? options.confidence.weight_multiplier : undefined,
+        role: asString(options.confidence?.role, "unavailable"),
+        rule: asString(options.confidence?.rule, ""),
+        source_version: asString(options.confidence?.source_version, "unknown"),
+        is_probability: options.confidence?.is_probability === true,
         data_status: asString(options.confidence?.data_status, asString(options.data_status, "UNAVAILABLE")),
         reasons: Array.isArray(options.confidence?.reasons)
           ? options.confidence?.reasons.filter((item): item is string => typeof item === "string")
@@ -449,14 +612,18 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
     strategy: {
       bias: asString(rawStrategy.bias, "综合报告待生成"),
       direction: normalizeSignalDirection(rawStrategy.direction, "neutral"),
-      confidence: typeof rawStrategy.confidence === "number" ? rawStrategy.confidence : 0,
+      confidence: typeof rawStrategy.confidence === "number" && Number.isFinite(rawStrategy.confidence) ? rawStrategy.confidence : null,
       macro_phase: asString(rawStrategy.macro_phase, raw.macro ? `macro as_of ${raw.macro.as_of ?? "—"}` : "macro unavailable"),
       key_levels: {
         resistance: rawResistance.length > 0 ? rawResistance : resistance.map((item) => item.strike),
         support: rawSupport.length > 0 ? rawSupport : support.map((item) => item.strike),
       },
-      triggers: rawTriggers.length > 0 ? rawTriggers : warnings,
-      invalid_conditions: rawInvalidConditions.length > 0 ? rawInvalidConditions : riskAlerts,
+      key_level_coordinates: {
+        resistance: rawResistance.length > 0 ? rawLevelCoordinate : resistance.length > 0 ? "gc_futures" : "unknown",
+        support: rawSupport.length > 0 ? rawLevelCoordinate : support.length > 0 ? "gc_futures" : "unknown",
+      },
+      triggers: rawTriggers,
+      invalid_conditions: rawInvalidConditions,
       risk_points: rawRiskPoints.length > 0 ? rawRiskPoints : [...warnings, ...riskAlerts],
       run_id: asOptionalString(rawStrategy.run_id) ?? undefined,
       snapshot_id: asOptionalString(rawStrategy.snapshot_id) ?? undefined,
@@ -471,6 +638,7 @@ function normalizeDashboardSummary(raw: RawDashboardSummaryResponse): DashboardS
     pipeline: raw.pipeline ?? { raw: "unavailable", parsed: "unavailable", features: "unavailable", agent: "unavailable", report: "unavailable", knowledge: "unavailable" },
     warnings,
     risk_alerts: riskAlerts,
+    research_context: raw.research_context ? { research_identity: normalizeResearchIdentity(raw.research_context.research_identity) } : null,
     integrated_macro: normalizeIntegratedMacro(raw.integrated_macro),
     gold_macro_overview: normalizeGoldMacroOverview(raw.gold_macro_overview),
     agent_summary: {
@@ -539,8 +707,10 @@ function dashboardStrategyStatus(summary: DashboardSummary, selectedDate?: strin
   return "unavailable";
 }
 
-function derivePinLevel(options: Pick<DashboardSummary["cme_options"], "pin_level" | "gamma_zero" | "upper_resistance_walls" | "lower_support_walls">): number | null {
-  return options.pin_level ?? options.gamma_zero ?? options.upper_resistance_walls[0]?.strike ?? options.lower_support_walls[0]?.strike ?? null;
+function derivePinLevel(options: { pin_level?: unknown }): number | null {
+  return typeof options.pin_level === "number" && Number.isFinite(options.pin_level)
+    ? options.pin_level
+    : null;
 }
 
 function metricHasValue(metric: DashboardMetric | undefined): boolean {
@@ -639,7 +809,9 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
 }
 
 function dashboardTradeDate(summary: DashboardSummary | null): string | null {
-  return summary?.composite_analysis?.trade_date ?? summary?.cme_options.trade_date ?? normalizeDateString(summary?.generated_at.slice(0, 10)) ?? null;
+  const researchDate = summary?.integrated_macro?.report_type === "research_observation_summary"
+    ? normalizeDateString(summary.integrated_macro.trade_date) : null;
+  return researchDate ?? summary?.composite_analysis?.trade_date ?? summary?.cme_options.trade_date ?? normalizeDateString(summary?.generated_at.slice(0, 10)) ?? null;
 }
 
 function buildDashboardDateSnapshot(summary: DashboardSummary, selectedDate: string | null): UnifiedDate[] {
@@ -796,7 +968,7 @@ function buildDashboardViewModel(
       trade_date: summary.cme_options.trade_date || null,
       product: summary.cme_options.product,
       intent: summary.cme_options.intent,
-      confidence: summary.cme_options.intent_score,
+      confidence: summary.cme_options.confidence?.score ?? null,
       gamma_zero: summary.cme_options.gamma_zero,
       pin_level: summary.cme_options.pin_level,
       resistance_levels: summary.conclusion.resistance_levels,
@@ -866,14 +1038,30 @@ async function loadDashboardFromMock(preferredDate?: string | null): Promise<Das
   return buildDashboardDataResponse(summary, selectedDate, "mock", dates);
 }
 
-export async function fetchDashboardData(preferredDate?: string | null): Promise<DashboardDataResponse> {
+export function normalizeDashboardWithCurrentMarket(raw: RawDashboardSummaryResponse): DashboardSummary {
+  const summary = normalizeDashboardSummary(raw);
+  if (!raw.current_market) return summary;
+  const current = normalizeDashboardSummary({ ...raw, ...raw.current_market });
+  // Only observed data panels consume current facts. Research and strategy retain
+  // their original frozen inputs and verification state.
+  return {
+    ...summary,
+    market_summary: current.market_summary,
+    macro_liquidity: current.macro_liquidity,
+    cme_options: current.cme_options,
+    realtime_quotes: current.realtime_quotes,
+    realtime_status: current.realtime_status,
+  };
+}
+
+async function loadDashboardData(preferredDate?: string | null): Promise<DashboardDataResponse> {
   try {
     const summaryRaw = await withTimeout(
       fetchJson<RawDashboardSummaryResponse>(DASHBOARD_SUMMARY_PATH),
       DASHBOARD_TIMEOUT_MS,
       "dashboard",
     );
-    const summary = normalizeDashboardSummary(summaryRaw);
+    const summary = normalizeDashboardWithCurrentMarket(summaryRaw);
     const selectedDate = dashboardTradeDate(summary);
     if (!isRenderableDashboardSummary(summary, "api") && ENABLE_DASHBOARD_MOCK_FALLBACK) {
       return loadDashboardFromMock(preferredDate);
@@ -885,4 +1073,18 @@ export async function fetchDashboardData(preferredDate?: string | null): Promise
     }
     throw error;
   }
+}
+
+export function fetchDashboardData(preferredDate?: string | null): Promise<DashboardDataResponse> {
+  const requestKey = preferredDate ?? "latest";
+  const pending = dashboardRequests.get(requestKey);
+  if (pending) return pending;
+
+  const request = loadDashboardData(preferredDate).finally(() => {
+    if (dashboardRequests.get(requestKey) === request) {
+      dashboardRequests.delete(requestKey);
+    }
+  });
+  dashboardRequests.set(requestKey, request);
+  return request;
 }

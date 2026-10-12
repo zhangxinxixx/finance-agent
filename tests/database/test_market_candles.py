@@ -82,9 +82,9 @@ def test_upsert_market_candle_creates_and_updates_idempotently() -> None:
         low=3358.0,
         close=3362.0,
         volume=12.5,
-        source="jin10_mcp",
+        source="twelvedata",
         source_ref={"symbol": "XAUUSD"},
-        raw_path="storage/raw/jin10/xau.json",
+        raw_path="storage/raw/twelvedata/xau.json",
     )
     second = upsert_market_candle(
         session,
@@ -96,9 +96,9 @@ def test_upsert_market_candle_creates_and_updates_idempotently() -> None:
         low=3359.0,
         close=3364.0,
         volume=13.0,
-        source="jin10_mcp",
+        source="twelvedata",
         source_ref={"symbol": "XAUUSD", "reloaded": True},
-        raw_path="storage/raw/jin10/xau-2.json",
+        raw_path="storage/raw/twelvedata/xau-2.json",
     )
     session.commit()
 
@@ -106,7 +106,7 @@ def test_upsert_market_candle_creates_and_updates_idempotently() -> None:
     rows = session.query(MarketCandle).all()
     assert len(rows) == 1
     assert rows[0].close == 3364.0
-    assert rows[0].raw_path == "storage/raw/jin10/xau-2.json"
+    assert rows[0].raw_path == "storage/raw/twelvedata/xau-2.json"
 
 
 def test_list_market_candles_returns_oldest_to_newest() -> None:
@@ -121,7 +121,7 @@ def test_list_market_candles_returns_oldest_to_newest() -> None:
             high=close + 1,
             low=close - 2,
             close=close,
-            source="jin10_mcp",
+            source="twelvedata",
         )
     session.commit()
 

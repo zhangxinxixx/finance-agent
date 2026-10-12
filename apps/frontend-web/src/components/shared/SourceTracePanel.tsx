@@ -1,3 +1,6 @@
+import { readerValue } from "@/lib/readerLabels";
+import { EvidenceRecordActions } from "./EvidenceRecordActions";
+import { ResearchDetails } from "./ResearchDetails";
 import type { ReactNode } from "react";
 import { FAStatusPill, type FAStatusTone } from "./FAStatusPill";
 
@@ -21,11 +24,11 @@ export function SourceTracePanel({
   title,
   description,
   items,
-  emptyLabel = "暂无 SourceTrace",
+  emptyLabel = "暂无来源记录",
   className = "",
 }: SourceTracePanelProps) {
   return (
-    <div className={`source-trace-panel ${className}`}>
+    <ResearchDetails label="查看数据记录"><div className={`source-trace-panel ${className}`}>
       {title || description ? (
         <div className="min-w-0">
           {title ? <div className="text-[13px] font-semibold text-[var(--fg-1)]">{title}</div> : null}
@@ -38,8 +41,9 @@ export function SourceTracePanel({
           <div key={`${String(item.label)}-${index}`} className="source-trace-row">
             <div className="min-w-0">
               <div className="source-trace-label">{item.label}</div>
-              <div className="source-trace-value">{item.value}</div>
-              {item.detail ? <div className="mt-1 text-[11px] leading-snug text-[var(--fg-5)]">{item.detail}</div> : null}
+              <div className="source-trace-value">{typeof item.value === "string" ? readerValue(item.value, "已关联记录，可复制核对") : item.value}</div>
+              <EvidenceRecordActions record={item} label="来源记录" />
+              {item.detail ? <div className="mt-1 text-[11px] leading-snug text-[var(--fg-5)]">{typeof item.detail === "string" ? readerValue(item.detail) : item.detail}</div> : null}
             </div>
             {item.status ? (
               <div className="shrink-0">
@@ -55,6 +59,6 @@ export function SourceTracePanel({
           {emptyLabel}
         </div>
       )}
-    </div>
+    </div></ResearchDetails>
   );
 }

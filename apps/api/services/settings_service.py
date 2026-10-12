@@ -483,12 +483,6 @@ def _collect_global_config() -> list[dict[str, str]]:
         {"label": "Redis", "value": "已连接" if os.getenv("REDIS_URL") else "未配置"},
         {"label": "Storage Root", "value": str(_PROJECT_ROOT / "storage")},
         {"label": "Output Root", "value": str(_PROJECT_ROOT / "storage" / "outputs")},
-        {
-            "label": "Knowledge Vault",
-            "value": os.path.expanduser(
-                os.getenv("FINANCE_AGENT_KNOWLEDGE_VAULT", "~/Finance-Agent-Knowledge-Vault")
-            ),
-        },
         {"label": "Jin10 Reports Dir", "value": os.path.expanduser("~/jin10-reports")},
     ]
 

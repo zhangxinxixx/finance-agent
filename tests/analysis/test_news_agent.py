@@ -53,6 +53,85 @@ def test_analyze_news_unavailable_when_snapshot_section_missing():
     assert output.bias is AgentBias.NEUTRAL
     assert output.confidence == 0.0
     assert "news status" in output.invalid_conditions[0]
+    assert output.input_payload["coverage_state"] == "uncovered"
+    assert "未覆盖" in output.summary
+
+
+def test_analyze_news_distinguishes_covered_window_with_no_news() -> None:
+    output = analyze_news(
+        _snapshot({
+            "status": "available",
+            "data": {
+                "news_collection": {
+                    "coverage_status": "covered",
+                    "collected_item_count": 150,
+                    "context_item_count": 150,
+                    "new_item_count": 0,
+                    "discovered_event_count": 0,
+                    "confirmed_event_count": 0,
+                    "unverified_event_count": 0,
+                },
+                "daily_market_brief": {
+                    "market_mainline": {},
+                    "confirmed_events": [],
+                    "candidate_events": [],
+                    "unconfirmed_risks": [],
+                    "next_7d_calendar": [],
+                    "report_inputs": {},
+                },
+            },
+        }),
+        created_at=_CREATED_AT,
+    )
+
+    assert output.status is AgentStatus.PARTIAL
+    assert output.input_payload["coverage_state"] == "covered"
+    assert output.input_payload["news_counts"] == {
+        "collected_item_count": 150,
+        "context_item_count": 150,
+        "new_item_count": 0,
+        "discovered_event_count": 0,
+        "confirmed_event_count": 0,
+        "unverified_event_count": 0,
+    }
+    assert "采集 150 条" in output.summary
+    assert "No news was found" in " ".join(output.invalid_conditions)
+
+
+def test_analyze_news_reports_collection_and_verification_counts() -> None:
+    output = analyze_news(
+        _snapshot({
+            "status": "available",
+            "data": {
+                "news_collection": {
+                    "coverage_status": "covered",
+                    "collected_item_count": 12,
+                    "context_item_count": 8,
+                    "new_item_count": 2,
+                    "discovered_event_count": 3,
+                    "confirmed_event_count": 1,
+                    "unverified_event_count": 2,
+                },
+                "daily_market_brief": {
+                    "market_mainline": {},
+                    "confirmed_events": [{"event_id": "confirmed-1", "what_happened": "Fed release", "verification_status": "official_confirmed"}],
+                    "candidate_events": [{"event_id": "candidate-1", "what_happened": "Headline", "verification_status": "single_source"}],
+                    "unconfirmed_risks": [{"event_id": "candidate-1", "what_happened": "Headline", "verification_status": "single_source"}],
+                    "next_7d_calendar": [],
+                    "report_inputs": {},
+                },
+            },
+        }),
+        created_at=_CREATED_AT,
+    )
+
+    assert output.input_payload["news_counts"]["collected_item_count"] == 12
+    assert output.input_payload["news_counts"]["discovered_event_count"] == 3
+    assert output.input_payload["news_counts"]["confirmed_event_count"] == 1
+    assert output.input_payload["news_counts"]["unverified_event_count"] == 2
+    assert "发现 3 条" in output.summary
+    assert "已确认 1 条" in output.summary
+    assert "未证实 2 条" in output.summary
 
 
 def test_analyze_news_emits_reviewable_gold_and_silver_etf_claims():

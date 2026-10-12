@@ -7,6 +7,8 @@
 
 This document defines the frontend ViewModel direction for reconnecting `apps/frontend-web` to backend APIs. It is a planning contract, not necessarily the final TypeScript source file.
 
+2026-10-10 implementation note: pages consume their existing page-specific adapters and types. The unused `types/page-envelope.ts` and `types/settings.ts` prototypes were removed; settings use `SettingsData` / `SettingsDataSource` in `adapters/settings.ts`. The envelope examples below remain design history, not a requirement to recreate a parallel type layer. Source, snapshot and availability fields on active read models remain unchanged.
+
 ## P2 action ViewModel primitives
 
 P2 introduces write-capable UI, but components still consume normalized ViewModels only. API action results must not be represented by optimistic local business state unless the backend response confirms the new state.

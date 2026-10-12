@@ -14,9 +14,11 @@ from apps.api.main import (
     api_jin10_weekly_report,
     api_jin10_weekly_report_latest,
 )
+from apps.api.services import report_service
 from apps.api.services.report_service import _legacy_jin10_report_detail
 _PROJECT_ROOT_PATCH = "apps.api.data_service._PROJECT_ROOT"
-_REPORT_SERVICE_PROJECT_ROOT_PATCH = "apps.api.services.report_service._PROJECT_ROOT"
+_REPORT_SERVICE_PROJECT_ROOT_PATCH = "apps.api.services._storage._PROJECT_ROOT"
+_REPORT_REGISTRY_PATCH = "apps.api.services.report_index_service._collect_registered_reports_from_db"
 
 
 def _make_tree(root: Path, files: dict[str, str | None]) -> None:
@@ -44,7 +46,7 @@ def test_list_reports_index_includes_jin10_daily_report(tmp_path: Path):
     assert "jin10_daily_report" in report_types
 
 
-def test_list_reports_index_includes_external_jin10_weekly_report(tmp_path: Path):
+def test_list_reports_index_excludes_unprocessed_external_jin10_reports(tmp_path: Path):
     _make_tree(
         tmp_path,
         {
@@ -71,17 +73,13 @@ def test_list_reports_index_includes_external_jin10_weekly_report(tmp_path: Path
     )
     with (
         mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
-        mock.patch("apps.api.services.report_service._JIN10_EXTERNAL_ROOT", tmp_path / "jin10-reports"),
+        mock.patch("apps.api.services.report_jin10_service._JIN10_EXTERNAL_ROOT", tmp_path / "jin10-reports"),
         mock.patch.dict(os.environ, {"HOME": str(tmp_path)}),
     ):
         index = list_reports_index()
 
     weekly = [item for item in index["reports"] if item["type"] == "jin10_weekly_report"]
-    assert len(weekly) == 1
-    assert weekly[0]["trade_date"] == "2026-05-31"
-    assert weekly[0]["run_id"] == "220787"
-    assert weekly[0]["format"] == "markdown"
-    assert "220973" not in {item["run_id"] for item in weekly}
+    assert weekly == []
 
 
 def test_list_unified_dates_marks_jin10_daily_report(tmp_path: Path):
@@ -92,11 +90,94 @@ def test_list_unified_dates_marks_jin10_daily_report(tmp_path: Path):
             "storage/outputs/jin10/2026-05-06/218330/daily_analysis.html": "<html>jin10</html>",
         },
     )
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch(_REPORT_REGISTRY_PATCH, return_value=[]):
         dates = list_unified_dates()
 
     assert dates["dates"][0]["trade_date"] == "2026-05-06"
     assert "jin10_daily_report" in dates["dates"][0]["modules"]
+
+
+def test_list_unified_dates_uses_self_contained_daily_metadata_without_legacy_reads(tmp_path: Path):
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/jin10/2026-05-06/218330/daily_analysis.json": json.dumps(
+                {
+                    "family": "jin10_daily_visual",
+                    "report_type": "daily",
+                    "title": "正常日报",
+                },
+                ensure_ascii=False,
+            ),
+            "storage/outputs/jin10/2026-05-06/218330/daily_analysis.html": "<html>jin10</html>",
+            "storage/outputs/jin10/2026-05-06/218330/raw_article_report.json": json.dumps(
+                {"title": "一周热榜精选：历史 raw 标题"},
+                ensure_ascii=False,
+            ),
+        },
+    )
+    daily_path = tmp_path / "storage/outputs/jin10/2026-05-06/218330/daily_analysis.json"
+    raw_path = tmp_path / "storage/outputs/jin10/2026-05-06/218330/raw_article_report.json"
+    daily_mtime_ns = daily_path.stat().st_mtime_ns
+    os.utime(raw_path, ns=(daily_mtime_ns - 1, daily_mtime_ns - 1))
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_REPORT_SERVICE_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_REPORT_REGISTRY_PATCH, return_value=[]),
+        mock.patch(
+            "apps.api.services.report_jin10_service._read_optional_json",
+            wraps=report_service._read_optional_json,
+        ) as read_json,
+        mock.patch("apps.api.services.report_jin10_service._find_external_jin10_meta") as find_external,
+    ):
+        dates = list_unified_dates()
+
+    raw_reads = [call.args[0] for call in read_json.call_args_list if call.args and Path(call.args[0]).name == raw_path.name]
+    assert raw_reads == []
+    find_external.assert_not_called()
+    assert dates["dates"][0]["modules"] == ["jin10_daily_report"]
+
+
+def test_list_unified_dates_does_not_read_raw_when_daily_metadata_is_missing(tmp_path: Path):
+    _make_tree(
+        tmp_path,
+        {
+            "storage/outputs/jin10/2026-07-04/223594/daily_analysis.json": json.dumps(
+                {"title": "弱非农下加息押注退潮"},
+                ensure_ascii=False,
+            ),
+            "storage/outputs/jin10/2026-07-04/223594/daily_analysis.html": "<html>hotlist</html>",
+            "storage/outputs/jin10/2026-07-04/223594/raw_article_report.json": json.dumps(
+                {"title": "一周热榜精选：弱非农下加息押注退潮"},
+                ensure_ascii=False,
+            ),
+        },
+    )
+    daily_path = tmp_path / "storage/outputs/jin10/2026-07-04/223594/daily_analysis.json"
+    raw_path = tmp_path / "storage/outputs/jin10/2026-07-04/223594/raw_article_report.json"
+    daily_mtime_ns = daily_path.stat().st_mtime_ns
+    os.utime(raw_path, ns=(daily_mtime_ns + 1, daily_mtime_ns + 1))
+
+    with (
+        mock.patch(_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_REPORT_SERVICE_PROJECT_ROOT_PATCH, tmp_path),
+        mock.patch(_REPORT_REGISTRY_PATCH, return_value=[]),
+        mock.patch(
+            "apps.api.services.report_jin10_service._read_optional_json",
+            wraps=report_service._read_optional_json,
+        ) as read_json,
+        mock.patch(
+            "apps.api.services.report_jin10_service._find_external_jin10_meta",
+            wraps=report_service._find_external_jin10_meta,
+        ) as find_external,
+    ):
+        dates = list_unified_dates()
+
+    raw_reads = [call.args[0] for call in read_json.call_args_list if call.args and Path(call.args[0]).name == raw_path.name]
+    assert raw_reads == []
+    assert find_external.call_count == 0
+    assert dates["dates"] == []
 
 
 def test_api_jin10_daily_report_latest_200(tmp_path: Path):
@@ -178,7 +259,7 @@ def test_daily_latest_index_and_dates_skip_non_report_title_marker(tmp_path: Pat
                     "trade_date": "2026-07-04",
                     "run_id": "223594",
                     "report_type": "daily",
-                    "title": "弱非农下加息押注退潮",
+                    "title": "一周热榜精选：弱非农下加息押注退潮",
                 }
             ),
             "storage/outputs/jin10/2026-07-04/223594/daily_analysis.html": "<html>hotlist</html>",
@@ -191,7 +272,11 @@ def test_daily_latest_index_and_dates_skip_non_report_title_marker(tmp_path: Pat
             "storage/outputs/jin10/2026-07-03/daily-run/daily_analysis.html": "<html>daily</html>",
         },
     )
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    marker_daily_path = tmp_path / "storage/outputs/jin10/2026-07-04/223594/daily_analysis.json"
+    marker_raw_path = tmp_path / "storage/outputs/jin10/2026-07-04/223594/raw_article_report.json"
+    marker_mtime_ns = marker_daily_path.stat().st_mtime_ns
+    os.utime(marker_raw_path, ns=(marker_mtime_ns + 1, marker_mtime_ns + 1))
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch(_REPORT_REGISTRY_PATCH, return_value=[]):
         latest = api_jin10_daily_report_latest()
         index = list_reports_index()
         dates = list_unified_dates()
@@ -267,7 +352,7 @@ def test_reports_index_and_unified_dates_expose_non_daily_jin10_report_families(
             "storage/outputs/jin10/2026-07-03/daily-run/daily_analysis.html": "<html>daily</html>",
         },
     )
-    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path):
+    with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch(_REPORT_REGISTRY_PATCH, return_value=[]):
         index = list_reports_index()
         dates = list_unified_dates()
 
@@ -304,6 +389,7 @@ def test_report_detail_preserves_market_observation_family(tmp_path: Path):
                     "run_id": "market-observation-run",
                     "report_type": "market_observation",
                     "title": "VIP每日市场观察：市场赔率表提示降息预期升温",
+                    "source_refs": [{"source_url": "https://svip.jin10.com/news/224000", "asset_type": "report_md"}],
                 },
                 ensure_ascii=False,
             ),
@@ -355,7 +441,7 @@ def test_weekly_report_reads_storage_rows_marked_weekly(tmp_path: Path):
     assert exact["content"] == "<html>weekly</html>"
 
 
-def test_weekly_latest_prefers_newer_external_report_over_older_storage(tmp_path: Path):
+def test_weekly_latest_uses_processed_report_even_when_external_source_is_newer(tmp_path: Path):
     _make_tree(
         tmp_path,
         {
@@ -384,12 +470,12 @@ def test_weekly_latest_prefers_newer_external_report_over_older_storage(tmp_path
     with mock.patch(_PROJECT_ROOT_PATCH, tmp_path), mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
         latest = api_jin10_weekly_report_latest()
 
-    assert latest["article_id"] == "221823"
-    assert latest["date"] == "2026-06-14"
-    assert latest["content"] == "# new weekly"
+    assert latest["article_id"] == "old-weekly"
+    assert latest["date"] == "2026-06-07"
+    assert latest["content"] == "<html>old weekly</html>"
 
 
-def test_weekly_report_prefers_storage_raw_markdown_with_local_assets(tmp_path: Path):
+def test_weekly_report_uses_processed_content_and_not_raw_markdown(tmp_path: Path):
     _make_tree(
         tmp_path,
         {
@@ -421,11 +507,10 @@ def test_weekly_report_prefers_storage_raw_markdown_with_local_assets(tmp_path: 
         latest = api_jin10_weekly_report_latest()
         exact = api_jin10_weekly_report(date="2026-07-05", run_id="223608")
 
-    assert latest["content"] == "# storage weekly\n\n![本地图表](figures/fig_p2_001.png)"
+    assert latest["content"] == "<html>weekly</html>"
     assert exact["content"] == latest["content"]
-    assert latest["image_count"] == 1
     assert latest["asset_base_url"] == "/api/jin10/report-bundle/2026-07-05/223608/asset/"
-    assert latest["path"] == "storage/outputs/jin10/2026-07-05/223608/raw_article_report.md"
+    assert "path" not in latest
 
 
 def test_api_jin10_daily_report_exact_404(tmp_path: Path):

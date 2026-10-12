@@ -1,7 +1,8 @@
+import { readableWarning } from "@/lib/researchReading";
 import { FACard } from "@/components/shared/FACard";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { MarketMonitorMockFile, MarketRegimeKey } from "@/types/market-monitor";
-import { statusTone, textOrDash } from "./format";
+import { marketMonitorStatusLabel, statusTone, textOrDash } from "./format";
 
 interface MarketRegimePanelProps {
   marketRegimes: MarketMonitorMockFile["market_regimes"];
@@ -15,8 +16,8 @@ const REGIME_ORDER: MarketRegimeKey[] = [
   "monetary_credit_repricing",
 ];
 
-function formatConfidence(confidence: number) {
-  if (!Number.isFinite(confidence)) {
+function formatConfidence(confidence: number | null | undefined) {
+  if (typeof confidence !== "number" || !Number.isFinite(confidence)) {
     return "—";
   }
 
@@ -47,7 +48,9 @@ export function MarketRegimePanel({ marketRegimes }: MarketRegimePanelProps) {
         {REGIME_ORDER.map((key) => {
           const item = marketRegimes?.[key];
           const meta = REGIME_LABELS[key];
-          const confidenceValue = item ? (item.confidence <= 1 ? item.confidence * 100 : item.confidence) : 0;
+          const confidenceValue = typeof item?.confidence === "number"
+            ? (item.confidence <= 1 ? item.confidence * 100 : item.confidence)
+            : null;
 
           return (
             <div
@@ -66,13 +69,13 @@ export function MarketRegimePanel({ marketRegimes }: MarketRegimePanelProps) {
                   <span style={{ color: meta.color, fontSize: 11 }}>{meta.icon}</span>
                   <div>
                     <div className="text-[11px] font-semibold text-[var(--fg-2)]">
-                      {item?.label ?? meta.zh}
+                      {item?.label && /[\u3400-\u9fff]/.test(item.label) ? item.label : meta.zh}
                     </div>
-                    <div className="mt-0.5 text-[9px] text-[var(--fg-5)] font-mono">{key}</div>
+                    <div className="mt-0.5 text-[9px] text-[var(--fg-5)]">{meta.zh}</div>
                   </div>
                 </div>
                 <FAStatusPill tone={statusTone(item?.status ?? "unavailable")}>
-                  {item?.status ?? "—"}
+                  {marketMonitorStatusLabel(item?.status)}
                 </FAStatusPill>
               </div>
 
@@ -83,21 +86,21 @@ export function MarketRegimePanel({ marketRegimes }: MarketRegimePanelProps) {
                   <div
                     className="h-full rounded-full transition-all duration-300"
                     style={{
-                      width: `${Math.max(0, Math.min(100, confidenceValue))}%`,
+                      width: `${confidenceValue === null ? 0 : Math.max(0, Math.min(100, confidenceValue))}%`,
                       background: meta.color,
                     }}
                   />
                 </div>
                 <span className="fa-num text-[10px] font-semibold text-[var(--fg-2)]">
-                  {formatConfidence(item?.confidence ?? 0)}
+                  {formatConfidence(item?.confidence)}
                 </span>
               </div>
 
               {item?.description ? (
-                <p className="mt-2 text-[10px] leading-5 text-[var(--fg-4)]">{item.description}</p>
+                <p className="mt-2 text-[10px] leading-5 text-[var(--fg-4)]">{readableWarning(item.description)}</p>
               ) : null}
               {item?.interpretation ? (
-                <p className="mt-1 text-[10px] leading-5 text-[var(--fg-3)]">{item.interpretation}</p>
+                <p className="mt-1 text-[10px] leading-5 text-[var(--fg-3)]">{readableWarning(item.interpretation)}</p>
               ) : !item ? (
                 <p className="mt-2 text-[10px] text-[var(--fg-5)]">暂无诊断数据</p>
               ) : null}

@@ -163,6 +163,7 @@ def _completed_analysis_snapshot() -> dict[str, object]:
                     "US02Y": {"value": 4.18, "date": "2026-07-17"},
                     "US10Y": {"value": 4.55, "date": "2026-07-17"},
                     "REAL_10Y": {"value": 2.31, "date": "2026-07-17"},
+                    "REAL10Y": {"value": 2.30, "date": "2026-07-17"},
                     "BREAKEVEN_10Y": {"value": 2.25, "date": "2026-07-20"},
                 }
             },

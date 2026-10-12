@@ -1,3 +1,4 @@
+import { readableWarning } from "@/lib/researchReading";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { MarketMonitorPageContent } from "@/components/market-monitor/MarketMonitorPageContent";
@@ -21,7 +22,8 @@ import {
   type MarketMonitorShape,
   type MarketMonitorTab,
 } from "@/components/market-monitor/marketMonitorPageModel";
-import { textOrDash } from "@/components/market-monitor/format";
+import { marketMonitorSourceLabel, textOrDash } from "@/components/market-monitor/format";
+import { formatDateTime } from "@/lib/date";
 
 const MARKET_MONITOR_TABS: MarketMonitorTab[] = ["overview", "pricing-chain", "cross-asset", "calendar"];
 
@@ -35,7 +37,18 @@ export function MarketMonitorPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = parseMarketMonitorTab(searchParams.get("tab"));
-  const { data, history, historyTimeframe, setHistoryTimeframe, isLoading, isError, error, refetch } = useMarketMonitor();
+  const {
+    data,
+    history,
+    historyTimeframe,
+    setHistoryTimeframe,
+    isLoading,
+    isRefreshing,
+    isError,
+    error,
+    historyError,
+    refetch,
+  } = useMarketMonitor();
   const calendar = useJin10Calendar();
   const [activeTab, setActiveTab] = useState<MarketMonitorTab>(requestedTab);
   const snapshot = (data ?? {}) as MarketMonitorShape;
@@ -55,10 +68,16 @@ export function MarketMonitorPage() {
     || Boolean(primaryDriver);
   const isCalendarTab = activeTab === "calendar";
   const isEmpty = !data || (!hasRenderableSnapshot && !isCalendarTab);
-  const sourceLabel = textOrDash(snapshot.source ?? "mock");
+  const sourceLabel = marketMonitorSourceLabel(snapshot.source);
   const pageStatus = isError ? "error" : isLoading ? "info" : isEmpty ? "unavailable" : diagnosisStatus(metrics);
-  const overviewSummary = agentMarketRegime?.summary
-    ?? `${diagnosisText(pageStatus)}。主页面只保留黄金核心定价链、市场阶段和关键过滤器，详细联动拆到下方分区。`;
+  const pageStatusText = diagnosisText(pageStatus);
+  const pageStatusLabel = isRefreshing ? `上次读取：${pageStatusText}` : pageStatusText;
+  const overviewSummaryBase = agentMarketRegime?.summary
+    ? `历史模型摘要 · 生成于 ${agentMarketRegime.createdAt ? formatDateTime(agentMarketRegime.createdAt) : "时间未知"}：${readableWarning(agentMarketRegime.summary)}`
+    : `${diagnosisText(pageStatus)}。部分指标尚无可用的研究解释，影响仍待确认。`;
+  const overviewSummary = isRefreshing
+    ? `上次读取结果：${overviewSummaryBase} 当前刷新尚未完成，暂不能视为最新判断。`
+    : overviewSummaryBase;
   const tabOptions = useMemo(() => buildMarketMonitorTabOptions(), []);
 
   useEffect(() => {
@@ -79,11 +98,13 @@ export function MarketMonitorPage() {
     }, { replace: true });
   }
 
-  if (isLoading) {
+  const hasExistingResult = Boolean(data || history);
+
+  if (isLoading && !hasExistingResult) {
     return <MarketMonitorPageLoadingState />;
   }
 
-  if (isError) {
+  if (isError && !hasExistingResult) {
     return <MarketMonitorPageErrorState message={error?.message ?? "未知错误"} onRetry={refetch} />;
   }
 
@@ -96,7 +117,7 @@ export function MarketMonitorPage() {
       activeTab={activeTab}
       onTabChange={handleTabChange}
       tabOptions={tabOptions}
-      pageStatusLabel={diagnosisText(pageStatus)}
+      pageStatusLabel={pageStatusLabel}
       sourceLabel={sourceLabel}
       errorReason={snapshot.error_reason}
       source={snapshot.source}
@@ -112,6 +133,9 @@ export function MarketMonitorPage() {
       calendarFreshness={calendar.freshness}
       calendarIsLoading={calendar.isLoading}
       calendarIsError={calendar.isError}
+      requestError={error?.message ?? null}
+      historyError={historyError?.message ?? null}
+      isRefreshing={isRefreshing}
       realtimeRegime={realtimeRegime}
       primaryDriver={primaryDriver}
       agentMarketRegime={agentMarketRegime}

@@ -8,6 +8,8 @@ import {
   SettingsAuditFilters,
   SettingsAuditSummary,
 } from "@/components/settings/SettingsAuditPanels";
+import { settingsScopeLabel } from "@/components/settings/settingsFormat";
+import { readingErrorMessage } from "@/components/reading/readingFormat";
 
 type AuditScopeFilter = "all" | "global" | "source" | "secret";
 type AuditActionFilter = "all" | "set" | "reset" | "rollback";
@@ -65,7 +67,7 @@ export function SettingsAuditPage() {
       setEntries(history);
       setSelectedAuditId((current) => current && history.some((entry) => entry.auditId === current) ? current : history[0]?.auditId ?? null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法加载 Settings 审计历史");
+      setError(readingErrorMessage(cause, "无法加载设置审计历史，请稍后重试。"));
       setEntries([]);
       setSelectedAuditId(null);
     } finally {
@@ -101,7 +103,7 @@ export function SettingsAuditPage() {
       await loadHistory();
       setSelectedAuditId(entry.auditId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "回滚失败");
+      setError(readingErrorMessage(cause, "回滚失败，请稍后重试。"));
     } finally {
       setRollingBackAuditId(null);
     }
@@ -122,7 +124,7 @@ export function SettingsAuditPage() {
           entriesCount={entries.length}
           rollbackableCount={rollbackableCount}
           selectedAuditId={selectedEntry?.auditId ?? null}
-          scopeLabel={scope === "all" ? "全部" : scope}
+          scopeLabel={scope === "all" ? "全部" : settingsScopeLabel(scope)}
         />
 
         <SettingsAuditFilters
@@ -144,7 +146,7 @@ export function SettingsAuditPage() {
           onRefresh={() => void loadHistory()}
         />
 
-        {error ? <FAWarningBanner title="Settings 审计页不可用" description={error} tone="down" /> : null}
+        {error ? <FAWarningBanner title="设置审计页不可用" description={error} tone="down" /> : null}
 
         <div className="grid gap-4 xl:grid-cols-[minmax(320px,1.1fr)_minmax(380px,0.9fr)]">
           <SettingsAuditEventList

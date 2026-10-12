@@ -57,12 +57,15 @@ export function GammaZeroCard({ netGexAggregate, decisionGamma, wallScores = [] 
 
   return (
     <FACard
-      title="真实伽马结构"
+      title="伽马结构"
       eyebrow="伽马核心"
       accent={direction === "positive" ? "up" : direction === "negative" ? "down" : "info"}
       action={<FAStatusPill tone={directionStatus === "ok" ? "up" : directionStatus === "error" ? "down" : "neutral"}>{directionLabel}</FAStatusPill>}
       bodyClassName="space-y-3"
     >
+      <div className="rounded-[var(--radius-md)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
+        净伽马是模型敞口指标：正负用于读取结构符号，不是价格概率；到期月、坐标和历史比较以对应后端字段为准，缺失时不作推断。
+      </div>
       <div className="grid gap-3 sm:grid-cols-3">
         <div style={{ padding: "12px 14px", background: "var(--bg-card-inner)", border: "1px solid var(--border)", borderLeft: "3px solid var(--brand)", borderRadius: 3 }}>
           <div style={{ fontSize: "var(--type-label)", fontWeight: 600, color: "var(--fg-5)" }}>伽马零点</div>

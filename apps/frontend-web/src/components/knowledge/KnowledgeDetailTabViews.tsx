@@ -1,30 +1,36 @@
+import { readableWarning } from "@/lib/researchReading";
 import type { ReactNode } from "react";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import type { KnowledgeCitation, KnowledgeItem } from "@/types/knowledge";
+import { knowledgeDependencyLabel, knowledgeStatusLabel, knowledgeTagLabel, KnowledgeReadableText } from "./knowledgeFormat";
 
 export function OverviewTab({ item }: { item: KnowledgeItem }) {
+  const invalidConditions = item.evidence
+    .map((entry) => entry.body?.trim())
+    .filter((value): value is string => Boolean(value))
+    .join("；");
+
   return (
     <div className="knowledge-reader-stack">
       <ReaderSection title="基础信息" eyebrow="概览">
         <div className="knowledge-field-grid">
-          <Field label="类型 / 主题" value={`${item.typeLabel} / ${item.topic}`} />
-          <Field label="版本 / 有效性" value={`${item.version} / ${item.status}`} />
-          <Field label="智能体 / 引用" value={`${item.agentReady ? "可调用" : "未接入"} / ${item.citations}`} />
+          <Field label="类型 / 主题" value={`${knowledgeTagLabel(item.typeLabel)} / ${knowledgeTagLabel(item.topic)}`} />
+          <Field label="版本 / 有效性" value={`${item.version} / ${knowledgeStatusLabel(item.status)}`} />
           <Field label="最近验证" value={item.verifiedAt} />
         </div>
       </ReaderSection>
 
       <div className="knowledge-reader-split">
         <ReaderSection title="核心摘要" eyebrow="摘要">
-          <p className="knowledge-reader-copy">{item.summary}</p>
+          <p className="knowledge-reader-copy"><KnowledgeReadableText value={readableWarning(item.summary)} /></p>
           <div className="knowledge-reader-divider" />
           <div className="knowledge-reader-subtitle">这条知识解决什么问题</div>
-          <p className="knowledge-reader-copy">{item.thesis}</p>
+          <p className="knowledge-reader-copy"><KnowledgeReadableText value={readableWarning(item.thesis)} /></p>
         </ReaderSection>
 
         <ReaderSection title="核心规则预览" eyebrow="规则预览" tone="warn">
           <RuleList rules={item.rules.slice(0, 4)} />
-          <p className="knowledge-reader-note">完整规则已放入「规则」标签页。</p>
+          <p className="knowledge-reader-note">完整规则已放入「规则」标签页。{item.rules.length > 4 ? ` 此处仅预览前 4 条，另有 ${item.rules.length - 4} 条。` : ""}</p>
         </ReaderSection>
       </div>
 
@@ -35,8 +41,11 @@ export function OverviewTab({ item }: { item: KnowledgeItem }) {
 
         <ReaderSection title="触发 / 失效条件" eyebrow="条件说明" tone="warn">
           <div className="knowledge-definition-list">
-            <Field label="触发条件" value={item.monitorMetrics.slice(0, 2).map((m) => `${m.label} ${m.change}`).join("；")} />
-            <Field label="失效条件" value={item.evidence[0]?.body ?? "暂无明确失效条件"} />
+            <Field label="触发条件" value={item.monitorMetrics.map((m) => `${m.label} ${m.change}`).join("；") || "暂无明确触发条件"} />
+            <div className="knowledge-field">
+              <span>失效条件</span>
+              <strong><KnowledgeReadableText value={invalidConditions || "暂无明确失效条件"} /></strong>
+            </div>
           </div>
         </ReaderSection>
       </div>
@@ -47,10 +56,10 @@ export function OverviewTab({ item }: { item: KnowledgeItem }) {
 export function RulesTab({ item }: { item: KnowledgeItem }) {
   return (
     <div className="knowledge-reader-stack">
-      <ReaderSection title="核心规则" eyebrow="规则详情" description="规则以行式结构呈现，方便复用到 Prompt、Agent 和盘前会议。">
+      <ReaderSection title="核心规则" eyebrow="规则详情" description="查看完整研究规则及适用条件。">
         <div className="knowledge-rule-list knowledge-rule-list--full">
           {item.rules.map((rule, index) => (
-            <RuleItem key={index} rule={rule} index={index} />
+            <RuleItem key={index} rule={readableWarning(rule)} index={index} />
           ))}
         </div>
       </ReaderSection>
@@ -61,7 +70,7 @@ export function RulesTab({ item }: { item: KnowledgeItem }) {
 export function IOTab({ item }: { item: KnowledgeItem }) {
   const downstreamOutputs = item.downstream.map((d) => d.name);
   const citationOutputs = item.citationFlow.downstream.map((c) => c.title);
-  const outputs = [...new Set([...downstreamOutputs, ...citationOutputs])].slice(0, 4);
+  const outputs = [...new Set([...downstreamOutputs, ...citationOutputs])];
 
   return (
     <div className="knowledge-reader-stack">
@@ -72,6 +81,7 @@ export function IOTab({ item }: { item: KnowledgeItem }) {
 
         <ReaderSection title="输出模块" eyebrow="输出">
           <BulletList items={outputs} />
+          {outputs.length > 4 ? <p className="knowledge-reader-note">共 {outputs.length} 个输出模块，已完整列出。</p> : null}
         </ReaderSection>
       </div>
 
@@ -91,10 +101,10 @@ export function DependenciesTab({ item }: { item: KnowledgeItem }) {
             <div key={dep.name} className="knowledge-row-item">
               <div className="min-w-0">
                 <div className="knowledge-row-title">{dep.name}</div>
-                <p className="knowledge-row-copy">{dep.note}</p>
+                <p className="knowledge-row-copy"><KnowledgeReadableText value={readableWarning(dep.note)} /></p>
               </div>
               <FAStatusPill tone="info" dot={false}>
-                {dep.state}
+                {knowledgeDependencyLabel(dep.state)}
               </FAStatusPill>
             </div>
           ))}
@@ -103,7 +113,7 @@ export function DependenciesTab({ item }: { item: KnowledgeItem }) {
 
       <ReaderSection title="剧本化建议" eyebrow="建议" tone="warn">
         <p className="knowledge-reader-copy">
-          当前条目的最佳沉淀形态是 <strong>{item.typeLabel}</strong>。如果下一步要强化复用，建议先补充{" "}
+          当前条目的最佳沉淀形态是 <strong>{knowledgeTagLabel(item.typeLabel)}</strong>。如果下一步要强化复用，建议先补充{" "}
           <strong>{item.playbookReady ? "盘中动作模板" : "动作约束或失败案例"}</strong>，再决定是否升级成剧本模板。
         </p>
       </ReaderSection>
@@ -134,7 +144,7 @@ export function ValidationTab({ item }: { item: KnowledgeItem }) {
                 <span>{entry.title}</span>
                 <span className="fa-num">{entry.meta}</span>
               </div>
-              <p className="knowledge-row-copy">{entry.body}</p>
+              <p className="knowledge-row-copy"><KnowledgeReadableText value={readableWarning(entry.body)} /></p>
             </div>
           ))}
         </div>
@@ -150,7 +160,7 @@ export function ValidationTab({ item }: { item: KnowledgeItem }) {
                   <span>{entry.title}</span>
                   <span className="fa-num">{entry.time}</span>
                 </div>
-                <p className="knowledge-row-copy">{entry.copy}</p>
+                <p className="knowledge-row-copy"><KnowledgeReadableText value={entry.copy} /></p>
               </div>
             </div>
           ))}
@@ -167,7 +177,7 @@ export function CitationsTab({ item }: { item: KnowledgeItem }) {
         <InlineFact label="引用次数" value={item.citations} />
         <InlineFact label="来源数" value={item.references} />
         <InlineFact label="下游模块" value={item.dashboards} />
-        <InlineFact label="资产形态" value={item.typeLabel} />
+        <InlineFact label="资产形态" value={knowledgeTagLabel(item.typeLabel)} />
       </div>
 
       <div className="knowledge-reader-split">
@@ -230,7 +240,7 @@ function RuleList({ rules }: { rules: string[] }) {
   return (
     <div className="knowledge-rule-list">
       {rules.map((rule, index) => (
-        <RuleItem key={index} rule={rule} index={index} />
+            <RuleItem key={index} rule={readableWarning(rule)} index={index} />
       ))}
     </div>
   );
@@ -240,7 +250,7 @@ function RuleItem({ rule, index }: { rule: string; index: number }) {
   return (
     <div className="knowledge-rule-item">
       <span className="fa-num">R{String(index + 1).padStart(2, "0")}</span>
-      <p>{rule}</p>
+      <p><KnowledgeReadableText value={readableWarning(rule)} /></p>
     </div>
   );
 }

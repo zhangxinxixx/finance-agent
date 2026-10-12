@@ -23,13 +23,11 @@ from database.models.task import StepStatus, TaskRun, TaskStatus, TaskStep, ensu
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_DATACENTER_SLUG = "dc_etf_gold"
-_DEFAULT_MARKET_CODE = "XAUUSD"
 _WEB_FLASH_SOURCE_KEYS = {"jin10_web_important_flash", "jin10_web_vip_flash"}
 _WEB_FLASH_ARTIFACT_FILENAME = "jin10_web_flash_briefs.json"
 _SUPPORTED_SOURCE_KEYS = {
     "jin10_mcp_flash",
     "jin10_mcp_calendar",
-    "jin10_mcp_market",
     "jin10_xnews_public",
     "jin10_datacenter_reports",
     "jin10_minipro_etf_reports",
@@ -54,6 +52,16 @@ def run_ingestion_source_test(
     source_key: str,
     body: DataSourceTestRequest | None = None,
 ) -> DataSourceTestResponse:
+    if source_key in {"technical_yahoo", "jin10_mcp_market"}:
+        return DataSourceTestResponse(
+            status="disabled",
+            source_key=source_key,
+            data_status=DataStatus.unavailable,
+            summary={
+                "reason_code": "jin10_news_only",
+                "reason": "金十仅用于新闻；旧报价和 K 线探测已停用。",
+            },
+        )
     request = body or DataSourceTestRequest()
     ensure_task_tables(db)
     run, step = _create_running_audit(db, source_key=source_key, request=request)
@@ -118,8 +126,6 @@ def _run_probe(*, source_key: str, limit: int, run_id: str, slug: str | None = N
         return _probe_mcp_flash(limit=limit)
     if source_key == "jin10_mcp_calendar":
         return _probe_mcp_calendar(limit=limit)
-    if source_key == "jin10_mcp_market":
-        return _probe_mcp_market(limit=limit)
     if source_key == "jin10_xnews_public":
         return _probe_xnews_public(limit=limit)
     if source_key in _WEB_FLASH_SOURCE_KEYS:
@@ -262,75 +268,6 @@ def _probe_mcp_calendar(*, limit: int) -> _ProbeOutcome:
         preview=preview,
         raw_payload=payload,
         source_type="mcp",
-    )
-
-
-def _probe_mcp_market(*, limit: int) -> _ProbeOutcome:
-    with Jin10MCPClient() as client:
-        quote_payload = client.get_quote(_DEFAULT_MARKET_CODE)
-        kline_payload = client.get_kline(_DEFAULT_MARKET_CODE, count=min(limit, 5))
-    quote = quote_payload.get("data", quote_payload)
-    klines = _extract_list(kline_payload, keys=("klines", "list", "data"))
-    quote_price = (quote.get("close") or quote.get("price")) if isinstance(quote, dict) else None
-    quote_available = quote_price is not None
-    kline_available = bool(klines)
-    missing_components = [
-        component
-        for component, available in (("quote", quote_available), ("kline", kline_available))
-        if not available
-    ]
-    if not missing_components:
-        status = "ok"
-        data_status = DataStatus.live
-        reason_code = "ok"
-        reason = None
-    elif quote_available or kline_available:
-        status = "partial"
-        data_status = DataStatus.partial
-        reason_code = "market_probe_partial"
-        reason = f"Missing market probe components: {', '.join(missing_components)}"
-    else:
-        status = "unavailable"
-        data_status = DataStatus.unavailable
-        reason_code = "market_probe_unavailable"
-        reason = "Neither quote nor kline data is available"
-    preview = [
-        {
-            "kind": "quote",
-            "code": _DEFAULT_MARKET_CODE,
-            "price": quote_price,
-            "change": quote.get("ups_price") if isinstance(quote, dict) else None,
-            "change_percent": quote.get("ups_percent") if isinstance(quote, dict) else None,
-        }
-    ]
-    preview.extend(
-        {
-            "kind": "kline",
-            "code": _DEFAULT_MARKET_CODE,
-            "time": _first_text(item, "time", "t", "datetime"),
-            "close": item.get("close") or item.get("c"),
-        }
-        for item in klines[:limit]
-    )
-    return _ProbeOutcome(
-        status=status,
-        data_status=data_status,
-        summary={
-            "code": _DEFAULT_MARKET_CODE,
-            "quote_available": quote_available,
-            "kline_available": kline_available,
-            "kline_count": len(klines),
-            "sample_count": len(preview),
-            "method": "mcp.get_quote+mcp.get_kline",
-            "reason_code": reason_code,
-            "reason": reason,
-            "missing_components": missing_components,
-        },
-        preview=preview,
-        raw_payload={"quote": quote_payload, "kline": kline_payload},
-        source_type="mcp",
-        error_message=reason if data_status == DataStatus.unavailable else None,
-        error_type=reason_code if data_status == DataStatus.unavailable else None,
     )
 
 

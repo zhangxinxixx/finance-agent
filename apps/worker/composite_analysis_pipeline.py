@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from datetime import datetime, timezone
-from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,59 +31,13 @@ from apps.analysis.agents.source_health import (
 )
 from apps.analysis.agents.risk import analyze_risk
 from apps.analysis.agents.technical import analyze_technical
-from apps.analysis.context_bundle import ConsumerProjection, project_context_bundle
 from apps.analysis.gold_policy.daily_close_delivery import build_gold_daily_close_delivery
-from apps.analysis.state.transition_generator import (
-    generate_scoped_transition_candidate_for_conclusion,
-)
 from apps.analysis.strategy.card import build_strategy_card
 from apps.gold_runtime_orchestration import build_gold_runtime_execution_summary
 from apps.output.final_report import write_final_report, write_strategy_card
 from apps.renderer.markdown.final_report import build_structured_report, render_final_report_markdown
-from apps.worker.composite_state_shadow import (
-    CANARY_CONTEXT_MODE,
-    LEGACY_CONTEXT_MODE,
-    STATE_DELTA_CONTEXT_MODE,
-    STATE_DELTA_PRIMARY_CONTEXT_MODE,
-    StateDeltaAnalyzer,
-    build_state_delta_setup_failure_review_item,
-    execute_composite_state_shadow,
-    finalize_composite_state_shadow,
-    prepare_composite_state_shadow,
-    resolve_analysis_context_mode,
-)
-from apps.worker.canary_materialization import (
-    CanaryActivation,
-    CanaryAuthorityPayload,
-    CanaryMaterializationRequest,
-    compute_canary_agent_loop_hash,
-    compute_canary_quality_gate_hash,
-)
 
 logger = logging.getLogger(__name__)
-
-_CONTEXT_BUNDLE_CONSUMERS = {
-    "macro_liquidity_agent": "macro",
-    "cme_options_agent": "options",
-    "risk_agent": "risk",
-    "technical_agent": "technical",
-    "positioning_agent": "positioning",
-    "news_agent": "news",
-    "market_odds_agent": "market_odds",
-    "fact_review_agent": "fact_review",
-    "coordinator_agent": "coordinator",
-}
-
-
-def _safe_requested_state_scope(shadow_input: dict[str, Any] | None) -> str | None:
-    value = shadow_input.get("state_scope") if isinstance(shadow_input, dict) else None
-    if isinstance(value, str) and value in {
-        "intraday",
-        "daily_close",
-        "weekly_fundamental",
-    }:
-        return value
-    return None
 
 
 def _build_gold_daily_close_summary(*, execution: Any, storage_root: Path) -> dict[str, Any]:
@@ -125,11 +77,6 @@ def run_composite_analysis_pipeline(
     positioning_output_prebuilt: Any = None,
     news_output_prebuilt: Any = None,
     coordinator_output_prebuilt: Any = None,
-    analysis_context_mode: str | None = None,
-    state_shadow_input: dict[str, Any] | None = None,
-    state_delta_analyzer: StateDeltaAnalyzer | None = None,
-    canary_sidecar_attempt: int | None = None,
-    canary_activation: CanaryActivation | None = None,
     gold_feature_snapshot_prebuilt: Any = None,
     previous_gold_feature_snapshot_prebuilt: Any = None,
     gold_daily_close_controls_prebuilt: Any = None,
@@ -144,118 +91,38 @@ def run_composite_analysis_pipeline(
     summaries: dict[str, dict[str, Any]] = {}
     trade_date = snapshot.get("trade_date", "")
     snapshot_id = snapshot.get("snapshot_id", "unknown")
-    context_mode = resolve_analysis_context_mode(analysis_context_mode)
-    if context_mode == CANARY_CONTEXT_MODE:
-        if canary_sidecar_attempt not in {0, 1}:
-            raise ValueError("canary composite execution requires sidecar attempt 0 or 1")
-        resolved_storage = storage_root.resolve()
-        attempt_identity = resolved_storage.parent.name
-        try:
-            uuid.UUID(attempt_identity)
-        except ValueError as exc:
-            raise ValueError("canary composite attempt identity is invalid") from exc
-        if (
-            resolved_storage.name != "sandbox"
-            or not attempt_identity
-            or resolved_storage.parents[1].name != f"attempt-{canary_sidecar_attempt}"
-            or len(resolved_storage.parents) < 5
-            or resolved_storage.parents[4].name != "analysis_memory_canary"
-        ):
-            raise ValueError("canary composite execution requires isolated sidecar storage")
-        if canary_activation is None:
-            raise ValueError("canary composite execution requires validated persistent approval")
-    elif canary_activation is not None:
-        raise ValueError("validated canary activation is only valid in canary context")
-    shadow_runtime = None
-    shadow_trace = None
-    canary_review = None
-    consumer_projections: dict[str, ConsumerProjection] = {}
-    if context_mode == STATE_DELTA_PRIMARY_CONTEXT_MODE:
-        shadow_trace = {
-            "schema_version": "composite_state_shadow.v3",
-            "mode": STATE_DELTA_PRIMARY_CONTEXT_MODE,
-            "requested_state_scope": _safe_requested_state_scope(state_shadow_input),
-            "status": "readiness_blocked",
-            "model_invocation": "skipped",
-            "shadow_review_status": "needs_review",
-            "evidence_delta_action": "not_evaluated",
-            "transition_diff": [],
-            "reason": "state_delta_primary_not_ready",
-        }
-    elif context_mode in {STATE_DELTA_CONTEXT_MODE, CANARY_CONTEXT_MODE}:
-        try:
-            if state_shadow_input is None:
-                raise ValueError(f"{context_mode} requires state_shadow_input")
-            shadow_runtime = prepare_composite_state_shadow(
-                storage_root=storage_root,
-                run_id=run_id,
-                created_at=created_at,
-                shadow_input=state_shadow_input,
-            )
-            if canary_activation is not None:
-                if getattr(shadow_runtime.previous_state, "state_scope", None) != "daily_close":
-                    raise ValueError("canary requires a scoped AnalysisState v1.1 daily_close head")
-                if shadow_runtime.bundle.asset != canary_activation.asset:
-                    raise ValueError("canary asset does not match Bundle")
-                if shadow_runtime.state_scope != canary_activation.state_scope:
-                    raise ValueError("canary state_scope does not match Bundle")
-                if shadow_runtime.trade_date != canary_activation.trade_date:
-                    raise ValueError("canary trade_date does not match Bundle")
-                if shadow_runtime.bundle.canonical_state_id != canary_activation.canonical_state_id:
-                    raise ValueError("canary canonical_state_id does not match Bundle")
-            consumer_projections = {
-                agent_name: project_context_bundle(
-                    shadow_runtime.bundle,
-                    consumer=consumer_name,  # type: ignore[arg-type]
-                )
-                for agent_name, consumer_name in _CONTEXT_BUNDLE_CONSUMERS.items()
-            }
-            if context_mode != CANARY_CONTEXT_MODE:
-                shadow_trace = execute_composite_state_shadow(
-                    runtime=shadow_runtime,
-                    analyzer=state_delta_analyzer,
-                    mode=context_mode,
-                    _return_review=False,
-                )
-        except _CanaryNotActivated:
-            pass
-        except Exception as exc:
-            logger.exception("State-delta shadow setup failed; continuing legacy output")
-            shadow_runtime = None
-            consumer_projections = {}
-            failure_kind = type(exc).__name__
-            review_item = build_state_delta_setup_failure_review_item(
-                run_id=run_id,
-                failure_kind=failure_kind,
-            )
-            shadow_trace = {
-                "schema_version": "composite_state_shadow.v3",
-                "mode": context_mode,
-                "requested_state_scope": _safe_requested_state_scope(state_shadow_input),
-                "status": "shadow_setup_failed",
-                "evidence_delta_action": "manual_review",
-                "model_invocation": "skipped",
-                "shadow_review_status": "needs_review",
-                "transition_diff": [],
-                "reason": review_item["reason"],
-                "review_items": [review_item],
-            }
-    elif context_mode != LEGACY_CONTEXT_MODE:  # pragma: no cover - resolver exhaustiveness
-        raise ValueError(f"unsupported context mode: {context_mode}")
-    if consumer_projections:
-        _reject_state_delta_prebuilt_outputs(
-            macro_output_prebuilt=macro_output_prebuilt,
-            options_output_prebuilt=options_output_prebuilt,
-            risk_output_prebuilt=risk_output_prebuilt,
-            technical_output_prebuilt=technical_output_prebuilt,
-            positioning_output_prebuilt=positioning_output_prebuilt,
-            news_output_prebuilt=news_output_prebuilt,
-            coordinator_output_prebuilt=coordinator_output_prebuilt,
-        )
+    from apps.analysis.snapshots.input_validation import prepare_analysis_inputs, research_report_rejection_reasons
+    snapshot = prepare_analysis_inputs(snapshot, storage_root=storage_root)
+    validation = snapshot["input_validation"]
+    summaries["input_validation"] = {"step": "input_validation", "status": validation["status"],
+                                     "snapshot_id": snapshot_id, "input_validation": validation}
+    if validation["status"] != "legacy":
+        # Only domain outputs tied to this exact validated input may be reused.
+        def bound(output):
+            return output if output is not None and (getattr(output, "input_payload", None) or {}).get("input_validation", {}).get("input_sha256") == validation["input_sha256"] else None
+        macro_output_prebuilt = bound(macro_output_prebuilt)
+        options_output_prebuilt = bound(options_output_prebuilt)
+        risk_output_prebuilt = bound(risk_output_prebuilt)
+        technical_output_prebuilt = bound(technical_output_prebuilt)
+        positioning_output_prebuilt = bound(positioning_output_prebuilt)
+        news_output_prebuilt = bound(news_output_prebuilt)
+        coordinator_output_prebuilt = bound(coordinator_output_prebuilt)
+    if not validation["can_analyze"]:
+        return blocked_research_result(storage_root=storage_root, snapshot=snapshot, run_id=run_id,
+            summaries=summaries, reasons=validation["reason_codes"])
     gold_macro_overview = gold_macro_overview_from_snapshot(snapshot)
     source_health = source_health_from_snapshot(snapshot, gold_macro_overview=gold_macro_overview)
+    core_health = snapshot.get("gold_workflow", {}).get("core_source_health")
+    if core_health:
+        source_health["core_freshness_sla"] = core_health
+        if not core_health.get("production_ready"):
+            source_health["can_emit_strong_conclusion"] = False
     canonical_run_dir = storage_root / "analysis" / "gold_mainlines" / str(trade_date) / run_id
     canonical_source_health_path = canonical_run_dir / "source_health.json"
+    if snapshot.get("daily_research"):
+        # News builds a preliminary overview before macro/CME join. Archive
+        # the integrated view under a distinct immutable name for this run.
+        write_canonical_gold_json(canonical_run_dir / "integrated_gold_macro_overview.json", gold_macro_overview, storage_root=storage_root)
     write_canonical_gold_json(
         canonical_source_health_path,
         source_health,
@@ -342,20 +209,12 @@ def run_composite_analysis_pipeline(
     macro_output = (
         macro_output_prebuilt
         if macro_output_prebuilt is not None
-        else analyze_macro_liquidity(
-            snapshot,
-            created_at=created_at,
-            context_projection=consumer_projections.get("macro_liquidity_agent"),
-        )
+        else analyze_macro_liquidity(snapshot, created_at=created_at)
     )
     options_output = (
         options_output_prebuilt
         if options_output_prebuilt is not None
-        else analyze_cme_options(
-            snapshot,
-            created_at=created_at,
-            context_projection=consumer_projections.get("cme_options_agent"),
-        )
+        else analyze_cme_options(snapshot, created_at=created_at)
     )
     risk_output = (
         risk_output_prebuilt
@@ -365,41 +224,22 @@ def run_composite_analysis_pipeline(
             macro_output=macro_output,
             options_output=options_output,
             created_at=created_at,
-            context_projection=consumer_projections.get("risk_agent"),
         )
     )
     technical_output = (
         technical_output_prebuilt
         if technical_output_prebuilt is not None
-        else analyze_technical(
-            snapshot,
-            created_at=created_at,
-            context_projection=consumer_projections.get("technical_agent"),
-        )
+        else analyze_technical(snapshot, created_at=created_at)
     )
     positioning_output = (
         positioning_output_prebuilt
         if positioning_output_prebuilt is not None
-        else analyze_positioning(
-            snapshot,
-            created_at=created_at,
-            context_projection=consumer_projections.get("positioning_agent"),
-        )
+        else analyze_positioning(snapshot, created_at=created_at)
     )
     news_output = (
-        news_output_prebuilt
-        if news_output_prebuilt is not None
-        else analyze_news(
-            snapshot,
-            created_at=created_at,
-            context_projection=consumer_projections.get("news_agent"),
-        )
+        news_output_prebuilt if news_output_prebuilt is not None else analyze_news(snapshot, created_at=created_at)
     )
-    market_odds_output = analyze_market_odds(
-        snapshot,
-        created_at=created_at,
-        context_projection=consumer_projections.get("market_odds_agent"),
-    )
+    market_odds_output = analyze_market_odds(snapshot, created_at=created_at)
     domain_outputs = [
         macro_output,
         options_output,
@@ -413,7 +253,6 @@ def run_composite_analysis_pipeline(
         domain_outputs,
         snapshot_id=str(snapshot_id),
         created_at=created_at,
-        context_projection=consumer_projections.get("fact_review_agent"),
     )
     reviewed_outputs = [*domain_outputs, fact_review_output]
     pre_coordinator_quality_gate_decision = evaluate_quality_gate(
@@ -451,23 +290,15 @@ def run_composite_analysis_pipeline(
                 else None
             ),
             created_at=created_at,
-            context_projection=consumer_projections.get("coordinator_agent"),
         )
     )
-    verified_bundle_consumers = _verified_bundle_consumers(
-        outputs={
-            "macro_liquidity_agent": macro_output,
-            "cme_options_agent": options_output,
-            "risk_agent": risk_output,
-            "technical_agent": technical_output,
-            "positioning_agent": positioning_output,
-            "news_agent": news_output,
-            "market_odds_agent": market_odds_output,
-            "fact_review_agent": fact_review_output,
-            "coordinator_agent": coordinator_output,
-        },
-        projections=consumer_projections,
-    )
+    if snapshot.get("gold_workflow", {}).get("schema_version") == "gold_workflow.v2":
+        from apps.analysis.agents.research_synthesis import enrich_research_coordinator
+
+        if coordinator_output_prebuilt is None:
+            coordinator_output = coordinator_output.model_copy(update={"input_payload": {
+                **(coordinator_output.input_payload or {}), "input_validation": validation}})
+        coordinator_output = enrich_research_coordinator(snapshot, coordinator_output)
     post_coordinator_gate_inputs = [*reviewed_outputs, coordinator_output]
     raw_post_coordinator_quality_gate_decision = evaluate_quality_gate(
         agent_outputs=post_coordinator_gate_inputs,
@@ -515,24 +346,6 @@ def run_composite_analysis_pipeline(
         fallback_execution=fallback_execution,
         agent_loop_decision=agent_loop_decision,
     )
-    if context_mode == CANARY_CONTEXT_MODE and shadow_runtime is not None:
-        conclusion = selected_coordinator.accepted_state_conclusion
-        if state_delta_analyzer is not None:
-            conclusion_analyzer = state_delta_analyzer
-        elif conclusion is not None and agent_loop_decision.accepted_output.source != "none":
-            conclusion_analyzer = partial(
-                generate_scoped_transition_candidate_for_conclusion,
-                accepted_state_conclusion=conclusion,
-            )
-        else:
-            conclusion_analyzer = None
-        shadow_trace = execute_composite_state_shadow(
-            runtime=shadow_runtime,
-            analyzer=conclusion_analyzer,
-            mode=CANARY_CONTEXT_MODE,
-            _return_review=True,
-        )
-        canary_review = shadow_trace.pop("_review_result", None)
 
     summaries["domain_agents"] = {
         "step": "domain_agents",
@@ -572,6 +385,49 @@ def run_composite_analysis_pipeline(
                 )
             )
 
+    from apps.analysis.agents.research_context import build_research_assessment
+
+    research_assessment = dict((selected_coordinator.input_payload or {}).get("daily_research_assessment") or build_research_assessment(snapshot))
+    if research_assessment:
+        research_assessment["report_controls"] = {
+            "source_health": {key: source_health.get(key) for key in ("overall_status", "can_build_gold_macro_overview", "can_emit_strong_conclusion", "blocked_mainlines", "stale_sources")},
+            "quality_gate": {"action": post_coordinator_quality_gate_decision.action.value, "publish_allowed": agent_loop_decision.publish_allowed},
+            "agent_loop": {"no_strong_conclusion": agent_loop_decision.no_strong_conclusion},
+            "gold_policy": {
+                "execution_mode": gold_policy_execution_mode,
+                "decision": gold_analysis_decision.model_dump(mode="json") if gold_analysis_decision is not None else None,
+                "artifact_refs": dict(gold_policy_artifact_paths),
+            },
+            "fact_review": {"status": fact_review_output.status.value, "summary": fact_review_output.summary},
+            "market_odds": {"status": market_odds_output.status.value, "summary": market_odds_output.summary},
+            "integrated_mainlines": [{key: row.get(key) for key in ("mainline_id", "coverage_status", "direction", "summary", "missing_data", "feature_fields")} for row in gold_macro_overview.get("theme_rankings", [])],
+            "source_refs": [
+                {"source": "source_health", "artifact_ref": canonical_source_health_path.relative_to(storage_root).as_posix()},
+                {"source": "quality_gate", "artifact_ref": canonical_quality_gate_path.relative_to(storage_root).as_posix()},
+            ],
+        }
+    shadow_record_path = None
+    if snapshot.get("gold_workflow", {}).get("production_shadow"):
+        from apps.analysis.research_shadow import build_shadow_record
+
+        shadow_record = build_shadow_record(
+            snapshot,
+            coordinator_output,
+            created_at=created_at,
+            report_output=selected_coordinator,
+        )
+        shadow_record_path = canonical_run_dir / "production_shadow_record.v1.json"
+        write_canonical_gold_json(shadow_record_path, shadow_record, storage_root=storage_root)
+        research_assessment["report_controls"]["production_shadow"] = {
+            "record": shadow_record, "artifact_ref": shadow_record_path.relative_to(storage_root).as_posix(),
+            "production_v1_approved": False,
+        }
+    rejection_reasons = research_report_rejection_reasons(snapshot, coordinator_output)
+    if rejection_reasons:
+        return blocked_research_result(storage_root=storage_root, snapshot=snapshot, run_id=run_id,
+            summaries=summaries, reasons=rejection_reasons,
+            agents={output.agent_name: output for output in [*reviewed_outputs, coordinator_output]},
+            quality_gate_decision=post_coordinator_quality_gate_decision)
     markdown = render_final_report_markdown(
         snapshot=snapshot,
         macro_output=macro_output,
@@ -582,6 +438,7 @@ def run_composite_analysis_pipeline(
         news_output=news_output,
         coordinator_output=selected_coordinator,
         created_at=created_at,
+        research_assessment=research_assessment,
     )
 
     try:
@@ -595,6 +452,7 @@ def run_composite_analysis_pipeline(
             news_output=news_output,
             coordinator_output=selected_coordinator,
             created_at=created_at,
+            research_assessment=research_assessment,
         )
         structured_dict = structured.model_dump(mode="json")
     except Exception:
@@ -603,7 +461,22 @@ def run_composite_analysis_pipeline(
 
     output_mode = "accepted" if agent_loop_decision.publish_allowed else "observe"
     report_artifact_type = "final_report" if agent_loop_decision.publish_allowed else "observation_report"
-    strategy_artifact_type = "strategy_card" if agent_loop_decision.publish_allowed else "observation_strategy_card"
+    strategy_artifact_type = (
+        "strategy_card" if agent_loop_decision.publish_allowed else "observation_strategy_card"
+    )
+    audit_kwargs = {}
+    if snapshot.get('gold_workflow', {}).get('reader_report_version') in {'gold_reader.v1', 'gold_reader.v2', 'gold_reader.v3', 'gold_reader.v4'}:
+        from apps.renderer.markdown.gold_workflow import gold_workflow_sections
+        from apps.renderer.markdown.daily_research import render_daily_research_report
+
+        audit_outputs = {'macro': macro_output, 'options': options_output, 'risk': risk_output,
+                         'technical': technical_output, 'positioning': positioning_output,
+                         'news': news_output, 'coordinator': selected_coordinator}
+        audit_kwargs['audit_markdown'] = render_daily_research_report(
+            snapshot, gold_workflow_sections(snapshot, audit_outputs, research_assessment))
+        if snapshot['gold_workflow']['reader_report_version'] in {'gold_reader.v3', 'gold_reader.v4'}:
+            from apps.renderer.markdown.gold_reader import reader_audit_details
+            audit_kwargs['audit_markdown'] += reader_audit_details(snapshot, audit_outputs)
     report_result = write_final_report(
         storage_root=storage_root,
         markdown=markdown,
@@ -612,6 +485,7 @@ def run_composite_analysis_pipeline(
         run_id=run_id,
         structured_report=structured_dict,
         artifact_type=report_artifact_type,
+        **audit_kwargs,
     )
     card = build_strategy_card(
         snapshot=snapshot,
@@ -620,7 +494,7 @@ def run_composite_analysis_pipeline(
         created_at=created_at,
     )
     if agent_loop_decision.no_strong_conclusion:
-        card = observe_strategy_card(card, reason=agent_loop_decision.strategy_card_override.get("reason"))
+        card = observe_strategy_card(card, reason=agent_loop_decision.strategy_card_override.get("reason"), keep_research_context=bool(research_assessment))
     card_result = write_strategy_card(
         storage_root=storage_root,
         card=card,
@@ -712,21 +586,6 @@ def run_composite_analysis_pipeline(
         **gold_runtime_summary,
     }
 
-    finalized_shadow = None
-    if shadow_trace is not None:
-        finalized_shadow = finalize_composite_state_shadow(
-            shadow_trace,
-            legacy_coordinator=selected_coordinator,
-            agent_loop_decision=agent_loop_decision,
-            consumer_names=verified_bundle_consumers,
-        )
-        summaries["state_delta_shadow"] = {
-            "step": "state_delta_shadow",
-            "status": "success",
-            "shadow_status": finalized_shadow["status"],
-            **{key: value for key, value in finalized_shadow.items() if key != "status"},
-        }
-
     composite_outputs: dict[str, Any] = {
         "agents": {
             "macro_liquidity_agent": macro_output,
@@ -739,7 +598,14 @@ def run_composite_analysis_pipeline(
             "fact_review_agent": fact_review_output,
             "coordinator_agent": coordinator_output,
             **fallback_execution.fallback_agent_outputs,
+            # Persist the exact observation projection consumed by the renderer.
+            # Keep its pre-projection model/fallback output independently intact.
+            **({selected_coordinator.agent_name: selected_coordinator}
+               if selected_coordinator.module == "report_observation_projection" else {}),
         },
+        "analysis_snapshot": snapshot,
+        "structured_report": structured_dict,
+        "input_validation": validation,
         "strategy_card": card,
         "report_result": report_result,
         "card_result": card_result,
@@ -759,114 +625,99 @@ def run_composite_analysis_pipeline(
         "gold_policy_artifact_paths": gold_policy_artifact_paths,
         "gold_policy_execution_mode": gold_policy_execution_mode,
         "gold_daily_close_execution": gold_daily_close_execution,
+        "production_shadow_record_path": str(shadow_record_path) if shadow_record_path else None,
     }
-    if finalized_shadow is not None:
-        composite_outputs["state_delta_shadow"] = finalized_shadow
-    if shadow_runtime is not None:
-        composite_outputs["context_bundle_registry_artifact"] = shadow_runtime.artifact.registry_artifact
-    if (
-        context_mode == CANARY_CONTEXT_MODE
-        and canary_activation is not None
-        and shadow_runtime is not None
-        and canary_review is not None
-        and set(verified_bundle_consumers) == set(_CONTEXT_BUNDLE_CONSUMERS)
-    ):
-        authority_payload = CanaryAuthorityPayload.build(
-            context_bundle_id=shadow_runtime.bundle.bundle_id,
-            context_bundle_hash=shadow_runtime.bundle.content_hash,
-            run_id=canary_activation.run_id,
-            canonical_state_id=canary_activation.canonical_state_id,
-            consumer_projections={projection.consumer: projection for projection in consumer_projections.values()},
-            quality_gate_inputs=post_coordinator_gate_inputs,
-            accepted_output_reference=agent_loop_decision.accepted_output,
-            accepted_output=(selected_coordinator if agent_loop_decision.accepted_output.source != "none" else None),
-            transition_review=canary_review,
-        )
-        composite_outputs["canary_authority_payload"] = authority_payload
-        composite_outputs["canary_materialization_request"] = CanaryMaterializationRequest(
-            asset=canary_activation.asset,
-            trade_date=canary_activation.trade_date,
-            run_id=canary_activation.run_id,
-            state_scope=canary_activation.state_scope,
-            canonical_state_id=canary_activation.canonical_state_id,
-            expected_head_version=canary_activation.expected_head_version,
-            approval_id=canary_activation.approval_id,
-            approval_hash=canary_activation.approval_hash,
-            activation_source=canary_activation.activation_source,
-            activation_identity=canary_activation.activation_identity,
-            context_bundle_id=shadow_runtime.bundle.bundle_id,
-            context_bundle_hash=shadow_runtime.bundle.content_hash,
-            consumer_projection_hashes={
-                projection.consumer: projection.projection_hash for projection in consumer_projections.values()
-            },
-            fact_review_snapshot_id=fact_review_output.snapshot_id,
-            quality_gate_hash=compute_canary_quality_gate_hash(
-                post_coordinator_quality_gate_decision,
-                authority_hash=authority_payload.authority_hash,
-            ),
-            agent_loop_hash=compute_canary_agent_loop_hash(
-                agent_loop_decision,
-                authority_hash=authority_payload.authority_hash,
-            ),
-            authority_hash=authority_payload.authority_hash,
-            review=canary_review,
-        )
+
+    # Store the complete structured renderer output in the existing output table.
+    # Observation archives have no FinalAnalysisResult row, so this is their DB owner too.
+    from apps.analysis.agents.schemas import AgentOutput, AgentStatus
+    composite_outputs["agents"]["report_render_agent"] = AgentOutput(
+        version="1.0", agent_name="report_render_agent", module="report_render",
+        snapshot_id=str(snapshot_id), input_snapshot_ids=dict(snapshot.get("input_snapshot_ids") or {}),
+        bias=AgentBias.NEUTRAL, confidence=0.0, status=AgentStatus.SUCCESS,
+        key_findings=[], risk_points=[], watchlist=[], invalid_conditions=[],
+        summary="报告渲染完成；结构化正文与校验记录已绑定本次输入。",
+        source_refs=list(snapshot.get("source_refs") or []), created_at=created_at or datetime.now(timezone.utc),
+        input_payload={"structured_report": structured_dict, "input_validation": validation},
+    )
 
     return summaries, composite_outputs
 
 
-class _CanaryNotActivated(Exception):
-    """Internal control flow for explicit canary authority misses."""
+def blocked_research_result(*, storage_root, snapshot, run_id, summaries, reasons,
+                            agents=None, quality_gate_decision=None):
+    """Materialize only a run-bound diagnostic; callers must tolerate absent reports."""
+    path = storage_root / "analysis" / "input_validation" / str(snapshot.get("trade_date", "")) / run_id / "research_diagnostic.json"
+    diagnostic = {"schema_version": "research_generation_diagnostic.v1", "status": "blocked",
+        "run_id": run_id, "snapshot_id": snapshot.get("snapshot_id"),
+        "input_validation": snapshot.get("input_validation"), "reason_codes": sorted(set(reasons)),
+        "publish_allowed": False, "report_generated": False}
+    write_canonical_gold_json(path, diagnostic, storage_root=storage_root)
+    result = {"paths": [str(path)], "status": "blocked", "artifact_type": "research_diagnostic"}
+    summary = {"status": "blocked", "snapshot_id": snapshot.get("snapshot_id"),
+        "run_id": run_id, "reason_codes": diagnostic["reason_codes"], "paths": [str(path)],
+        "output_refs": [{"file_path": str(path), "artifact_type": "structured_json", "status": "blocked"}],
+        "publish_allowed": False, "output_mode": "diagnostic"}
+    for step in ("final_report", "strategy_card", "research_generation"):
+        summaries[step] = {"step": step, **summary}
+    if not agents:
+        from apps.analysis.agents.schemas import AgentOutput, AgentStatus
+        diagnostic_agent = AgentOutput(version="1.0", agent_name="research_input_validation", module="input_validation",
+            snapshot_id=str(snapshot.get("snapshot_id", "unknown")), input_snapshot_ids=dict(snapshot.get("input_snapshot_ids") or {}),
+            bias=AgentBias.UNAVAILABLE, confidence=0.0, key_findings=[], risk_points=[], watchlist=[],
+            invalid_conditions=[], summary="研究输入校验阻断，详见诊断 artifact。", source_refs=list(snapshot.get("source_refs") or []),
+            status=AgentStatus.UNAVAILABLE, created_at=datetime.now(timezone.utc), input_payload=diagnostic)
+        agents = {diagnostic_agent.agent_name: diagnostic_agent}
+    # Rejected synthesis is not a research body worth persisting. Keep successful
+    # domain work, but replace the failed composite opinion with its diagnostic.
+    agents = {
+        name: _rejected_research_diagnostic(output, diagnostic)
+        if name in {"coordinator_agent", "report_render_agent", "research_input_validation"}
+        else output
+        for name, output in agents.items()
+    }
+    return summaries, {"agents": agents, "analysis_snapshot": snapshot,
+        "input_validation": snapshot.get("input_validation"), "diagnostic_result": result,
+        "report_result": None, "card_result": None, "strategy_card": None,
+        "agent_loop_decision": None, "quality_gate_decision": quality_gate_decision,
+        "post_coordinator_quality_gate_decision": quality_gate_decision,
+        "gold_runtime_summary": {"status": "blocked", "publish_allowed": False}, "observe_outputs": {}}
 
 
-def _reject_state_delta_prebuilt_outputs(**outputs: Any) -> None:
-    bypassed = sorted(name for name, output in outputs.items() if output is not None)
-    if bypassed:
-        raise ValueError("state_delta_context forbids unverified prebuilt Agent outputs: " + ", ".join(bypassed))
+def _rejected_research_diagnostic(output, diagnostic):
+    import hashlib
+    import json
+
+    from apps.analysis.agents.schemas import AgentOutput, AgentStatus
+
+    original = output.model_dump(mode="json")
+    marker = {
+        "schema_version": 1,
+        "status": "purged",
+        "reason_codes": diagnostic["reason_codes"],
+        "purged_at": datetime.now(timezone.utc).isoformat(),
+        "original_payload_sha256": hashlib.sha256(
+            json.dumps(original, ensure_ascii=False, sort_keys=True, default=str).encode()
+        ).hexdigest(),
+        "run_id": diagnostic["run_id"],
+        "snapshot_id": diagnostic["snapshot_id"],
+    }
+    return AgentOutput(
+        version=output.version, agent_name=output.agent_name, module=output.module,
+        snapshot_id=output.snapshot_id, input_snapshot_ids=output.input_snapshot_ids,
+        source_refs=output.source_refs, created_at=output.created_at,
+        status=AgentStatus.UNAVAILABLE, bias=AgentBias.UNAVAILABLE, confidence=0.0,
+        summary="研究未通过校验，正文未保留。", key_findings=[], risk_points=[],
+        watchlist=[], invalid_conditions=[], llm_model=output.llm_model,
+        llm_provider=output.llm_provider, llm_usage=output.llm_usage,
+        llm_latency_ms=output.llm_latency_ms, llm_audit_id=output.llm_audit_id,
+        input_payload={**diagnostic, "output_cleanup": marker},
+    )
 
 
-def _verified_bundle_consumers(
-    *,
-    outputs: dict[str, Any],
-    projections: dict[str, ConsumerProjection],
-) -> list[str]:
-    if not projections:
-        return []
-    verified: list[str] = []
-    for agent_name, projection in projections.items():
-        output = outputs.get(agent_name)
-        input_ids = getattr(output, "input_snapshot_ids", None)
-        input_payload = getattr(output, "input_payload", None)
-        if not isinstance(input_ids, dict) or not isinstance(input_payload, dict):
-            raise ValueError(f"{agent_name} did not return auditable ContextBundle lineage")
-        identity = projection.identity_payload
-        expected = {
-            "context_bundle_id": identity.bundle_id,
-            "context_bundle_hash": identity.content_hash,
-            "context_bundle_run_id": identity.run_id,
-            "context_bundle_projection_hash": projection.projection_hash,
-            "canonical_state_id": identity.canonical_state_id,
-            "state_scope": identity.state_scope,
-            "retained_evidence_ids": [
-                {"source": item["source"], "evidence_id": item["evidence_id"]}
-                for item in sorted(
-                    projection.retained_evidence,
-                    key=lambda item: (item["source"], item["evidence_id"]),
-                )
-            ],
-            "evidence_delta_decision_id": projection.decision_id,
-        }
-        if any(input_ids.get(key) != value for key, value in expected.items()):
-            raise ValueError(f"{agent_name} ContextBundle lineage does not match its projection")
-        if input_payload.get("context_bundle_consumer") != projection.consumer:
-            raise ValueError(f"{agent_name} did not acknowledge its typed projection")
-        if input_payload.get("context_bundle_projection") != projection.model_dump(mode="json"):
-            raise ValueError(f"{agent_name} did not consume its exact typed projection")
-        verified.append(agent_name)
-    return verified
-
-
-def report_coordinator_output(*, primary: Any, fallback_execution: Any, agent_loop_decision: Any) -> Any:
+def report_coordinator_output(
+    *, primary: Any, fallback_execution: Any, agent_loop_decision: Any
+) -> Any:
     accepted = agent_loop_decision.accepted_output
     if accepted.source == "primary":
         if primary.agent_name != accepted.agent_name or primary.snapshot_id != accepted.snapshot_id:
@@ -880,8 +731,9 @@ def report_coordinator_output(*, primary: Any, fallback_execution: Any, agent_lo
     candidate = getattr(fallback_execution, "fallback_agent_outputs", {}).get("fallback_synthesis_agent") or primary
     return candidate.model_copy(
         update={
+            "agent_name": "report_observation_projection",
+            "module": "report_observation_projection",
             "bias": AgentBias.NEUTRAL,
-            "accepted_state_conclusion": None,
             "confidence": min(candidate.confidence, 0.35),
             "summary": f"Observe and wait. No strong conclusion. {candidate.summary}",
             "watchlist": [*candidate.watchlist, "observe_wait: await validated source confirmation"],
@@ -898,8 +750,8 @@ def validated_rendered_outputs(
     *,
     storage_root: Path,
     snapshot_id: str,
-    report_result: dict[str, Any],
-    card_result: dict[str, Any],
+    report_result: dict[str, Any] | None,
+    card_result: dict[str, Any] | None,
     publish_allowed: bool,
 ) -> dict[str, Any]:
     """Return concrete renderer refs and fail closed for accepted publication.
@@ -909,6 +761,8 @@ def validated_rendered_outputs(
     beneath their canonical storage directories.  Observation-only callers keep
     their existing best-effort behavior and can never populate accepted output.
     """
+    report_result = report_result or {}
+    card_result = card_result or {}
     rendered = {
         "analysis_snapshot": snapshot_id,
         "final_report_paths": _string_paths(report_result.get("paths")),
@@ -924,16 +778,24 @@ def validated_rendered_outputs(
     root = storage_root.resolve()
     for artifact_type, result, paths in expected:
         if result.get("artifact_type") != artifact_type:
-            raise RuntimeError(f"accepted output materialization requires artifact_type={artifact_type}")
+            raise RuntimeError(
+                f"accepted output materialization requires artifact_type={artifact_type}"
+            )
         if not paths:
-            raise RuntimeError(f"accepted output materialization produced no {artifact_type} paths")
+            raise RuntimeError(
+                f"accepted output materialization produced no {artifact_type} paths"
+            )
         canonical_root = (root / "outputs" / artifact_type).resolve()
         for raw_path in paths:
             path = Path(raw_path).resolve()
             if not path.is_relative_to(canonical_root):
-                raise RuntimeError(f"accepted {artifact_type} path is outside canonical storage: {raw_path}")
+                raise RuntimeError(
+                    f"accepted {artifact_type} path is outside canonical storage: {raw_path}"
+                )
             if not path.is_file() or path.stat().st_size <= 0:
-                raise RuntimeError(f"accepted {artifact_type} artifact is not materialized: {raw_path}")
+                raise RuntimeError(
+                    f"accepted {artifact_type} artifact is not materialized: {raw_path}"
+                )
     return rendered
 
 
@@ -949,7 +811,7 @@ def accepted_coordinator_output(*, primary: Any, fallback_execution: Any) -> Any
     return primary
 
 
-def observe_strategy_card(card: Any, *, reason: Any) -> Any:
+def observe_strategy_card(card: Any, *, reason: Any, keep_research_context: bool = False) -> Any:
     reason_text = str(reason or "quality_gate_not_passed")
     return card.model_copy(
         update={
@@ -957,6 +819,7 @@ def observe_strategy_card(card: Any, *, reason: Any) -> Any:
             "confidence": min(card.confidence, 0.35),
             "scenario_summary": (
                 f"Observe and wait ({reason_text}). No strong conclusion is permitted until QualityGate passes."
+                + (f" 研究观察（不构成正式方向）：{card.scenario_summary}" if keep_research_context else "")
             ),
             "trigger_conditions": [
                 *card.trigger_conditions,
@@ -980,7 +843,11 @@ def validated_gold_agent_execution(
     news = snapshot.get("news") if isinstance(snapshot.get("news"), dict) else {}
     data = news.get("data") if isinstance(news.get("data"), dict) else {}
     execution = data.get("gold_agent_execution") if isinstance(data.get("gold_agent_execution"), dict) else {}
-    raw_declared = execution.get("declared_agents") if isinstance(execution.get("declared_agents"), list) else []
+    raw_declared = (
+        execution.get("declared_agents")
+        if isinstance(execution.get("declared_agents"), list)
+        else []
+    )
     raw_materialized = (
         execution.get("materialized_stage_envelopes")
         if isinstance(execution.get("materialized_stage_envelopes"), list)
@@ -1019,17 +886,29 @@ def validated_gold_agent_execution(
 def gold_macro_overview_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     news_data = snapshot.get("news", {}).get("data") if isinstance(snapshot.get("news"), dict) else None
     context_section = snapshot.get("gold_analysis_context")
-    context_data = (
-        context_section.get("data")
-        if isinstance(context_section, dict) and isinstance(context_section.get("data"), dict)
-        else {}
-    )
+    context_data = context_section.get("data") if isinstance(context_section, dict) and isinstance(context_section.get("data"), dict) else {}
     context_metadata = {
         "status": context_data.get("status") or (context_section or {}).get("status"),
         "baseline_kind": context_data.get("baseline_kind"),
         "freshness": context_data.get("freshness") or {},
         "input_snapshot_ids": context_data.get("input_snapshot_ids") or {},
     }
+    if context_metadata["status"] == "disabled" and "jin10" in snapshot.get("disabled_sources", []):
+        context_metadata = {"status": "disabled", "reason": "jin10_disabled", "disabled_sources": ["jin10"]}
+    if snapshot.get("daily_research"):
+        from apps.analysis.gold_mainline_engine import build_gold_macro_overview
+
+        macro = snapshot.get("macro", {}).get("data", {})
+        rows = snapshot["daily_research"].get("passport", [])
+        allowed = {row["symbol"] for row in rows if row.get("status") == "fresh" and row.get("lineage_status", "verified") == "verified"}
+        macro_context = {"indicators": {key: value for key, value in macro.get("indicators", {}).items() if key in allowed}, "source_refs": macro.get("source_refs", {}), "project_signals": snapshot["daily_research"].get("project_signals", {})}
+        event_mainlines = (news_data or {}).get("gold_event_mainlines", {})
+        integrated = build_gold_macro_overview(event_mainlines, macro_context=macro_context).to_dict()
+        integrated["source_refs"] = [*(integrated.get("source_refs") or []), *(ref for row in rows if row["symbol"] in allowed for ref in row.get("source_refs", []))]
+        integrated["input_snapshot_ids"] = dict(snapshot.get("input_snapshot_ids") or {})
+        integrated["gold_analysis_context"] = context_metadata
+        integrated["as_of"] = snapshot.get("snapshot_time")
+        return integrated
     if isinstance(news_data, dict) and isinstance(news_data.get("gold_macro_overview"), dict):
         overview = dict(news_data["gold_macro_overview"])
         overview["gold_analysis_context"] = context_metadata

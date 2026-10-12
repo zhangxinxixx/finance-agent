@@ -247,6 +247,8 @@ def _parse_google_news_items(
                 "query": query,
                 "publisher": publisher or None,
                 "publisher_url": publisher_url or None,
+                "content_scope": "headline_summary_only",
+                "full_text_available": False,
             },
         ))
     return result

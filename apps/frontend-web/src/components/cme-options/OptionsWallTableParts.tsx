@@ -32,8 +32,8 @@ function formatInteger(value: number) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }
 
-function formatScore(value: number) {
-  return value.toFixed(2);
+function formatScore(value: number | null) {
+  return value === null || !Number.isFinite(value) ? "—" : value.toFixed(2);
 }
 
 function formatDelta(value: number | null) {
@@ -60,7 +60,7 @@ function compareValues(
     case "wall_score":
       return a.wall_score - b.wall_score;
     case "pnt":
-      return a.pnt - b.pnt;
+      return (a.pnt ?? Number.NEGATIVE_INFINITY) - (b.pnt ?? Number.NEGATIVE_INFINITY);
     case "wall_type":
       return a.wall_type.localeCompare(b.wall_type);
     default:

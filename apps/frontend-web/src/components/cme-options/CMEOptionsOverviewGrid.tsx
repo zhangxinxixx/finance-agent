@@ -1,13 +1,16 @@
+import { readableWarning } from "@/lib/researchReading";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { getStatusLabel, getStatusTone } from "@/components/shared/statusMeta";
 import type { CMEOptionsDecisionResponse, CMEOptionsResponse } from "@/types/cme-options";
-import { formatCompactNumber, formatNumber, resolveDirectionalWall, summarizeDecision, toneStyle, translateDecisionText } from "./cmeOptionsFormat";
+import { formatCMEExpiryLabel, formatCMEProductLabel, formatCompactNumber, formatNumber, resolveDirectionalWall, summarizeDecision, toneStyle, translateDecisionText } from "./cmeOptionsFormat";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
+import { resolveCMEExpiryScope, selectCMEPinWall } from "./cmeDecisionIdentity";
 
 interface CMEOptionsOverviewGridProps {
   snapshot: CMEOptionsResponse;
   wallScores: CMEOptionsResponse["wall_scores"];
   decision?: CMEOptionsDecisionResponse | null;
+  selectedExpiry?: string;
 }
 
 interface LevelCard {
@@ -60,14 +63,11 @@ function reviewStatusLabel(status: string | null | undefined): string {
 function reportStatusLabel(status: string | undefined): string {
   if (status === "FINAL") return "终版";
   if (status === "PRELIM") return "预览";
-  return status ?? "未知";
+  return status ? "公告状态待确认" : "未提供";
 }
 
 function productLabel(product: string | null | undefined): string {
-  if (!product) return "期权";
-  if (product === "OG") return "COMEX 黄金期权 OG";
-  if (/CME|Options|OG/i.test(product)) return "黄金期权";
-  return product;
+  return formatCMEProductLabel(product);
 }
 
 function formatPercent(value: number | null | undefined, digits = 1) {
@@ -101,7 +101,7 @@ function directionalWallDetail(wall: ReturnType<typeof resolveDirectionalWall>, 
   if (wall.source === "support_resistance") {
     return `支撑阻力回退 / 距远期价 ${formatPercent(wall.distancePct)} / 评分 ${formatNumber(wall.wallScore, 2)}`;
   }
-  return `GEX 回退 / ${wall.expiry ?? "近月"} / ${formatGex(wall.gexValue)}`;
+  return `GEX 回退 / ${formatCMEExpiryLabel(wall.expiry)} / ${formatGex(wall.gexValue)}`;
 }
 
 function formatRange(min: number | null | undefined, max: number | null | undefined) {
@@ -118,8 +118,10 @@ function formatHoldingEvidence(value: string) {
 
 function formatModelName(model: string | null | undefined) {
   if (!model) return "—";
-  if (model.toLowerCase() === "black-76") return "Black-76";
-  return model;
+  const normalized = model.trim().toLowerCase();
+  if (normalized === "black-76" || normalized === "black_76") return "Black-76 定价模型";
+  if (normalized.includes("proxy") || normalized.includes("settlement_iv")) return "结算隐含波动率代理模型";
+  return /[\u3400-\u9fff]/.test(model) ? model : "模型口径待确认";
 }
 
 function reportAnchorSourceLabel(source: string | null | undefined) {
@@ -127,20 +129,19 @@ function reportAnchorSourceLabel(source: string | null | undefined) {
   if (source === "not_provided") return "报告未直接提供，使用模型锚点";
   if (source === "parity_inferred") return "平价反推";
   if (source === "jin10_close") return "金十收盘价";
-  return translateDecisionText(source);
+  const translated = translateDecisionText(source);
+  return /[\u3400-\u9fff]/.test(translated) ? translated : "报告锚点来源待确认";
 }
 
 function sourceRangeLabel(source: string | null | undefined) {
   if (source === "report_p0_plus_minus_1000") return "报告锚点上下 1000";
   if (source === "user_explicit") return "手动指定";
   if (source === "normal") return "波动率区间";
-  return source ?? "自动区间";
+  return source ? "区间来源待确认" : "自动区间";
 }
 
 function findPinWall(wallScores: CMEOptionsResponse["wall_scores"]) {
-  const explicitPin = wallScores.find((wall) => wall.wall_type === "Pin Wall");
-  if (explicitPin) return explicitPin;
-  return [...wallScores].sort((a, b) => b.pnt - a.pnt)[0] ?? null;
+  return selectCMEPinWall(wallScores);
 }
 
 function nearestLevel(
@@ -162,9 +163,10 @@ function dataQualityCount(snapshot: CMEOptionsResponse, key: string) {
   return snapshot.data_quality?.categories?.[key] ?? null;
 }
 
-function expiryOrder(snapshot: CMEOptionsResponse) {
+function expiryOrder(snapshot: CMEOptionsResponse, selectedExpiry?: string) {
   const byExpiry = snapshot.gex?.by_expiry ?? {};
   const configured = snapshot.data_source?.expiries ?? [];
+  if (selectedExpiry) return byExpiry[selectedExpiry] ? [selectedExpiry] : [];
   const ordered = configured.filter((expiry) => byExpiry[expiry]);
   return ordered.length > 0 ? ordered : Object.keys(byExpiry);
 }
@@ -174,22 +176,25 @@ function buildExpiryInsight(snapshot: CMEOptionsResponse, expiry: string | undef
   const data = snapshot.gex?.by_expiry?.[expiry];
   if (!data) return null;
   const summary = data.summary ?? {};
-  const callGex = summary.call_gex ?? data.gex_top.reduce((sum, item) => sum + Math.max(item.call_gex ?? 0, 0), 0);
-  const putGex = summary.put_gex ?? data.gex_top.reduce((sum, item) => sum + Math.max(item.put_gex ?? 0, 0), 0);
-  const netGex = summary.net_gex ?? callGex - putGex;
-  const totalGex = summary.total_gex ?? callGex + putGex;
+  const callGex = summary.call_gex ?? null;
+  const putGex = summary.put_gex ?? null;
+  const netGex = summary.net_gex ?? null;
+  const totalGex = summary.total_gex ?? null;
   const callTop = [...data.gex_top].sort((a, b) => b.call_gex - a.call_gex)[0];
   const putTop = [...data.gex_top].sort((a, b) => b.put_gex - a.put_gex)[0];
-  const dominance = callGex > putGex * 1.08
-    ? "看涨压力更强"
-    : putGex > callGex * 1.08
-      ? "看跌支撑更强"
-      : "看涨/看跌接近平衡";
-  const direction = netGex > 0
-    ? "上方关键位更容易形成压制与突破观察"
-    : netGex < 0
-      ? "下方保护更重，跌破支撑后的波动风险更高"
-      : "净伽马接近中性，优先看区间吸附";
+  const structureLabel: Record<string, string> = {
+    balanced: "模型看涨/看跌伽马敞口接近（Call/Put GEX）",
+    net_call_dominated: "模型看涨伽马敞口较高（Call GEX）",
+    net_put_dominated: "模型看跌伽马敞口较高（Put GEX）",
+  };
+  const dominance = summary.structure
+    ? structureLabel[summary.structure] ?? "模型结构待确认"
+    : callGex !== null || putGex !== null
+      ? "模型看涨/看跌伽马敞口数值已返回，未提供结构标签（Call/Put GEX）"
+      : "模型看涨/看跌伽马敞口不可用（Call/Put GEX）";
+  const direction = netGex === null
+    ? "模型净 GEX 不可用；未给出实盘方向"
+    : `模型净 GEX ${netGex > 0 ? "为正" : netGex < 0 ? "为负" : "为 0"}；正负号仅代表模型敞口符号，不代表实盘方向`;
 
   return {
     expiry,
@@ -226,7 +231,9 @@ function buildRange(snapshot: CMEOptionsResponse) {
 
 function buildLevelCards(snapshot: CMEOptionsResponse, wallScores: CMEOptionsResponse["wall_scores"]): LevelCard[] {
   const gex = snapshot.gex?.netgex_aggregate;
-  const currentPrice = snapshot.parameters?.f_value ?? gex?.gamma_zero?.price ?? null;
+  const currentPrice = snapshot.parameters?.report_p0
+    ?? snapshot.parameters?.p0
+    ?? null;
   const callWall = resolveDirectionalWall(snapshot, wallScores, "CALL");
   const putWall = resolveDirectionalWall(snapshot, wallScores, "PUT");
   const pinWall = findPinWall(wallScores);
@@ -273,7 +280,12 @@ function buildLevelCards(snapshot: CMEOptionsResponse, wallScores: CMEOptionsRes
   ];
 }
 
-function buildValueRows(snapshot: CMEOptionsResponse, wallScores: CMEOptionsResponse["wall_scores"]) {
+function buildValueRows(
+  snapshot: CMEOptionsResponse,
+  wallScores: CMEOptionsResponse["wall_scores"],
+  decision?: CMEOptionsDecisionResponse | null,
+  selectedExpiry?: string,
+) {
   const callWall = resolveDirectionalWall(snapshot, wallScores, "CALL");
   const putWall = resolveDirectionalWall(snapshot, wallScores, "PUT");
   const nearNext = snapshot.calibration?.near_month_vs_next_month;
@@ -284,23 +296,32 @@ function buildValueRows(snapshot: CMEOptionsResponse, wallScores: CMEOptionsResp
   const callDelta = wallScoreDelta(snapshot, callWall?.strike);
   const putDelta = wallScoreDelta(snapshot, putWall?.strike);
   const hasWallDelta = callDelta !== null || putDelta !== null;
-  const expiries = expiryOrder(snapshot);
+  const expiries = expiryOrder(snapshot, selectedExpiry);
   const nearInsight = buildExpiryInsight(snapshot, expiries[0]);
   const farInsight = buildExpiryInsight(snapshot, expiries[1]);
-  const hasNearNextOi = Boolean(nearNext?.near_total_oi || nearNext?.next_total_oi || nearNext?.oi_ratio);
+  const hasNearNextOi = !selectedExpiry && Boolean(nearNext?.near_total_oi || nearNext?.next_total_oi || nearNext?.oi_ratio);
+  const comparisonWindow = decision?.meta.previous_trade_date && decision.meta.current_trade_date
+    ? `${decision.meta.previous_trade_date} → ${decision.meta.current_trade_date}`
+    : "上一交易日 → 当前交易日";
 
   return [
     {
       label: "墙位稳定性",
       value: hasWallDelta ? `看涨 ${formatSignedNumber(callDelta, 2)} / 看跌 ${formatSignedNumber(putDelta, 2)}` : "缺历史校准",
-      detail: hasWallDelta ? "单日墙位评分变化，用于判断压制或支撑是否迁移" : "当前快照缺少墙位单日评分变化，需要连续 CME 日报校准后才能判断稳定性",
+      detail: hasWallDelta ? `区间墙位评分变化（${comparisonWindow}），用于判断压制或支撑是否迁移` : `当前快照缺少区间墙位评分变化（${comparisonWindow}），需要连续 CME 日报校准后才能判断稳定性`,
     },
     {
-      label: "近远月结构",
-      value: hasNearNextOi ? `持仓比 ${formatNumber(nearNext?.oi_ratio, 2)} 倍` : `${nearInsight?.expiry ?? "近月"} / ${farInsight?.expiry ?? "次月"}`,
-      detail: hasNearNextOi
-        ? `近月持仓 ${formatCompactNumber(nearNext?.near_total_oi, "张")} / 次月持仓 ${formatCompactNumber(nearNext?.next_total_oi, "张")}`
-        : `未返回近月与次月总持仓；改用 GEX 结构：${nearInsight?.dominance ?? "近月缺失"} / ${farInsight?.dominance ?? "远月缺失"}`,
+      label: selectedExpiry ? "当前到期月结构" : "近远月结构",
+      value: selectedExpiry
+        ? (nearInsight ? formatCMEExpiryLabel(nearInsight.expiry) : "所选到期月缺失")
+        : hasNearNextOi
+          ? `持仓比 ${formatNumber(nearNext?.oi_ratio, 2)} 倍`
+          : `${nearInsight ? formatCMEExpiryLabel(nearInsight.expiry) : "近月"} / ${farInsight ? formatCMEExpiryLabel(farInsight.expiry) : "次月"}`,
+      detail: selectedExpiry
+        ? nearInsight ? `${nearInsight.dominance}；${nearInsight.direction}` : "所选到期月没有可用 GEX 结构"
+        : hasNearNextOi
+          ? `近月持仓 ${formatCompactNumber(nearNext?.near_total_oi, "张")} / 次月持仓 ${formatCompactNumber(nearNext?.next_total_oi, "张")}`
+          : `未返回近月与次月总持仓；改用 GEX 结构：${nearInsight?.dominance ?? "近月缺失"} / ${farInsight?.dominance ?? "远月缺失"}`,
     },
     {
       label: "换月信号",
@@ -311,7 +332,7 @@ function buildValueRows(snapshot: CMEOptionsResponse, wallScores: CMEOptionsResp
     },
     {
       label: "数据价值",
-      value: `${reportStatusLabel(snapshot.data_source.status)} / ${snapshot.data_source.row_count} 行`,
+      value: `${reportStatusLabel(snapshot.data_source.status)} / ${formatNumber(snapshot.data_source.row_count)} 行`,
       detail: `${snapshot.source_trace.length} 条溯源记录，${calibrationWarnings.length > 0 ? `${calibrationWarnings.length} 条校准提示` : "缺历史校准"}，${qualityWarnings.length} 条质量提示`,
     },
   ];
@@ -339,13 +360,13 @@ function buildCMEReportHighlights(
     {
       label: "降权点",
       value: `Delta缺口 ${formatNumber(missingDelta)} / 代理 ${formatNumber(proxyStrikes)}`,
-      detail: `过滤 ${formatNumber(filteredRows)} 行，零持仓 ${formatNumber(zeroOi)}；${warnings.map((item) => translateDecisionText(item)).slice(0, 2).join("；") || "暂无额外质量提示"}`,
+      detail: `过滤 ${formatNumber(filteredRows)} 行，零持仓 ${formatNumber(zeroOi)}；${warnings.map((item) => translateDecisionText(item)).join("；") || "暂无额外质量提示"}`,
       tone: "warn",
     },
     {
       label: "近远月读数",
-      value: `${nearInsight?.expiry ?? "近月"} ${nearInsight?.dominance ?? "—"}`,
-      detail: farInsight ? `远月 ${farInsight.expiry}：${farInsight.dominance}，看高 ${formatNumber(farInsight.callTop?.strike)} / 看低 ${formatNumber(farInsight.putTop?.strike)}` : "远月结构暂缺",
+      value: `${nearInsight ? formatCMEExpiryLabel(nearInsight.expiry) : "近月"} ${nearInsight?.dominance ?? "—"}`,
+      detail: farInsight ? `远月 ${formatCMEExpiryLabel(farInsight.expiry)}：${farInsight.dominance}，看涨伽马敞口最高点（Call GEX）${formatNumber(farInsight.callTop?.strike)} / 看跌伽马敞口最高点（Put GEX）${formatNumber(farInsight.putTop?.strike)}` : "远月结构暂缺",
       tone: "info",
     },
   ];
@@ -354,8 +375,12 @@ function buildCMEReportHighlights(
 function buildCMEReportBasis(snapshot: CMEOptionsResponse): ReportBasis {
   const range = buildRange(snapshot);
   const expiries = snapshot.data_source.expiries ?? [];
-  const anchor = snapshot.parameters?.report_p0 ?? snapshot.parameters?.p0 ?? snapshot.parameters?.f_value;
-  const gexMode = snapshot.parameters?.used_real_gex ? "真实GEX" : "代理GEX";
+  const anchor = snapshot.parameters?.report_p0 ?? snapshot.parameters?.p0;
+  const gexMode = snapshot.parameters?.used_real_gex === true
+    ? "模型伽马敞口（GEX）"
+    : snapshot.parameters?.used_real_gex === false
+      ? "代理伽马敞口（GEX）"
+      : "伽马敞口（GEX）口径未标注";
   const sourceNote = snapshot.data_source.source_url ? "CME官方" : "来源未标注";
 
   return {
@@ -372,12 +397,17 @@ function buildAnalystReadout(
   decision?: CMEOptionsDecisionResponse | null,
 ): InterpretationRow[] {
   const gex = snapshot.gex?.netgex_aggregate;
-  const currentPrice = snapshot.parameters?.f_value ?? snapshot.parameters?.report_p0 ?? snapshot.parameters?.p0 ?? null;
+  const currentPrice = snapshot.parameters?.report_p0
+    ?? snapshot.parameters?.p0
+    ?? null;
   const gammaZero = gex?.gamma_zero?.price ?? decision?.gamma_summary.gamma_zero ?? null;
   const callWall = resolveDirectionalWall(snapshot, wallScores, "CALL");
   const putWall = resolveDirectionalWall(snapshot, wallScores, "PUT");
   const pinWall = findPinWall(wallScores);
-  const riskSignals = snapshot.roll_signals?.map((signal) => translateDecisionText(signal.evidence?.[0] ?? signal.roll_type)).slice(0, 2) ?? [];
+  const riskSignals = snapshot.roll_signals?.map((signal) => {
+    const evidence = signal.evidence?.map(translateDecisionText).filter(Boolean) ?? [];
+    return evidence.length > 0 ? evidence.join("；") : translateDecisionText(signal.roll_type);
+  }) ?? [];
   const snapshotDirection = gex?.net_gex_direction === "negative" || gex?.net_gex_direction === "positive" || gex?.net_gex_direction === "neutral"
     ? gex.net_gex_direction
     : null;
@@ -391,15 +421,15 @@ function buildAnalystReadout(
   const aggregateDirection = snapshotDirection ?? decisionDirection;
   const priceVsGamma = currentPrice !== null && gammaZero !== null
     ? currentPrice < gammaZero
-      ? "价格低于伽马零点，向下波动更容易被放大"
+      ? "黄金期货（GC）报告锚点低于伽马零点，仅描述报告结构"
       : currentPrice > gammaZero
-        ? "价格高于伽马零点，上方突破需要确认"
-        : "价格贴近伽马零点，区间吸附更强"
-    : "当前缺少价格与伽马零点关系";
+        ? "黄金期货（GC）报告锚点高于伽马零点，现货突破仍待独立确认"
+        : "黄金期货（GC）报告锚点贴近伽马零点，仅作结构观察"
+    : "缺少黄金期货（GC）报告锚点或伽马零点，无法比较";
 
   return [
     {
-      label: "当前环境",
+      label: "黄金期货（GC）报告环境",
       value: aggregateDirection === "negative" ? "负伽马风险" : aggregateDirection === "positive" ? "正伽马缓冲" : aggregateDirection === "neutral" ? "中性吸附" : "聚合方向未提供",
       detail: priceVsGamma,
       tone: "important",
@@ -417,10 +447,10 @@ function buildAnalystReadout(
       tone: "violet",
     },
     {
-      label: "远月资金",
-      value: farInsight ? `${farInsight.expiry} ${farInsight.dominance}` : "远月暂缺",
+      label: "远月模型分布",
+      value: farInsight ? `${formatCMEExpiryLabel(farInsight.expiry)} ${farInsight.dominance}` : "远月暂缺",
       detail: farInsight
-        ? `看高观察 ${formatNumber(farInsight.callTop?.strike)}，看低保护 ${formatNumber(farInsight.putTop?.strike)}；${farInsight.direction}`
+        ? `看涨伽马敞口最高点（Call GEX）${formatNumber(farInsight.callTop?.strike)}，看跌伽马敞口最高点（Put GEX）${formatNumber(farInsight.putTop?.strike)}；${farInsight.direction}`
         : "当前 CME 快照未返回可用远月结构",
       tone: "important",
     },
@@ -433,34 +463,51 @@ function buildAnalystReadout(
   ];
 }
 
-export function CMEOptionsOverviewGrid({ snapshot, wallScores, decision }: CMEOptionsOverviewGridProps) {
+export function CMEOptionsOverviewGrid({ snapshot, wallScores, decision, selectedExpiry }: CMEOptionsOverviewGridProps) {
   const analysis = snapshot.analysis;
   const agentSummary = analysis?.synthesis?.summary || analysis?.cme_options_agent?.summary;
   const decisionSummary = summarizeDecision(decision);
   const primarySummary = translateDecisionText(agentSummary || decisionSummary || "综合分析暂不可用，请以当前结构数据和风险提示为准。");
   const primarySummaryLabel = agentSummary ? "Agent 综合判断" : decisionSummary ? "决策数据摘要" : "结构数据说明";
-  const nextRisk = translateDecisionText(analysis?.pending_reviews[0]?.reason
-    || analysis?.synthesis?.risk_points[0]
-    || analysis?.cme_options_agent?.risk_points[0]
-    || decision?.data_quality.warnings[0]
-    || "暂无额外风险提示。");
+  const rollRiskNotices = (snapshot.roll_signals ?? []).flatMap((signal) => {
+    const evidence = signal.evidence?.map(translateDecisionText).filter(Boolean) ?? [];
+    return evidence.length > 0 ? [evidence.join("；")] : [translateDecisionText(signal.roll_type)];
+  });
+  const riskNotices = [
+    ...(analysis?.pending_reviews.map((item) => item.reason) ?? []),
+    ...(analysis?.synthesis?.risk_points ?? []),
+    ...(analysis?.cme_options_agent?.risk_points ?? []),
+    ...(decision?.data_quality.warnings ?? []),
+    ...(snapshot.data_quality?.warnings ?? []),
+    ...(snapshot.calibration?.calibration_warnings ?? []),
+    ...rollRiskNotices,
+  ].filter((item, index, items) => item && items.indexOf(item) === index);
   const levelCards = buildLevelCards(snapshot, wallScores);
-  const valueRows = buildValueRows(snapshot, wallScores);
-  const expiries = expiryOrder(snapshot);
+  const valueRows = buildValueRows(snapshot, wallScores, decision, selectedExpiry);
+  const expiries = expiryOrder(snapshot, selectedExpiry);
   const nearInsight = buildExpiryInsight(snapshot, expiries[0]);
   const farInsight = buildExpiryInsight(snapshot, expiries[1]);
+  const distributionInsight = selectedExpiry ? nearInsight : farInsight;
   const analysisRange = buildRange(snapshot);
   const reportHighlights = buildCMEReportHighlights(snapshot, nearInsight, farInsight);
   const reportBasis = buildCMEReportBasis(snapshot);
   const analystReadout = buildAnalystReadout(snapshot, wallScores, nearInsight, farInsight, decision);
+  const selectedExpiryScope = selectedExpiry ? resolveCMEExpiryScope(expiries, selectedExpiry) : null;
 
   return (
     <div className="cme-options-overview-layout">
+      {selectedExpiry ? (
+        <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-card-inner)] px-3 py-2 text-[length:var(--type-caption)] text-[var(--fg-3)]">
+          {selectedExpiryScope?.missing
+            ? `所选到期月 ${formatCMEExpiryLabel(selectedExpiry)} 未返回结构数据；当前总览不会静默改用其他期限。`
+            : `当前总览已限定到期月 ${formatCMEExpiryLabel(selectedExpiry)}。墙位与聚合净伽马仍按接口返回的快照聚合口径展示。`}
+        </div>
+      ) : null}
       <main className="cme-options-overview-main">
         <CMEOptionsSurface title="结构判断工作台" bodyStyle={{ display: "grid", gap: 10, background: "var(--bg-card-inner)" }}>
           <section className="cme-options-decision-board" aria-label="期权结构总览">
             <div className="cme-options-decision-cell cme-options-decision-cell--range">
-              <span className="cme-options-mini-label">近月影响区间</span>
+              <span className="cme-options-mini-label">{selectedExpiry ? "当前到期月影响区间" : "近月影响区间"}</span>
               <strong className="cme-options-range-value fa-num">
                 {formatRange(analysisRange.min, analysisRange.max)}
               </strong>
@@ -468,19 +515,19 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores, decision }: CMEOp
             </div>
 
             <div className="cme-options-decision-cell">
-              <span className="cme-options-mini-label cme-options-mini-label--down">看涨压力（GEX）</span>
+              <span className="cme-options-mini-label">看涨（Call）模型 GEX</span>
               <strong className="cme-options-decision-value fa-num">{formatGex(nearInsight?.callGex)}</strong>
-              <span className="cme-options-cell-detail cme-options-cell-detail--important">核心点位 {formatNumber(nearInsight?.callTop?.strike)}</span>
+              <span className="cme-options-cell-detail cme-options-cell-detail--important">最高点位 {formatNumber(nearInsight?.callTop?.strike)}</span>
             </div>
 
             <div className="cme-options-decision-cell">
-              <span className="cme-options-mini-label cme-options-mini-label--up">看跌支撑（GEX）</span>
+              <span className="cme-options-mini-label">看跌（Put）模型 GEX</span>
               <strong className="cme-options-decision-value fa-num">{formatGex(nearInsight?.putGex)}</strong>
-              <span className="cme-options-cell-detail cme-options-cell-detail--important">核心点位 {formatNumber(nearInsight?.putTop?.strike)}</span>
+              <span className="cme-options-cell-detail cme-options-cell-detail--important">最高点位 {formatNumber(nearInsight?.putTop?.strike)}</span>
             </div>
 
             <div className="cme-options-decision-cell cme-options-decision-cell--judgement">
-              <span className="cme-options-mini-label cme-options-mini-label--important">近月判断 · {nearInsight?.expiry ?? "—"}</span>
+              <span className="cme-options-mini-label cme-options-mini-label--important">{selectedExpiry ? "当前到期月判断" : "近月判断"} · {nearInsight ? formatCMEExpiryLabel(nearInsight.expiry) : "—"}</span>
               <strong className="cme-options-decision-title">{nearInsight?.dominance ?? "暂无近月分布"}</strong>
               <span className="cme-options-cell-detail">{nearInsight?.direction ?? "当前快照未返回近月伽马分布。"}</span>
             </div>
@@ -494,39 +541,39 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores, decision }: CMEOp
 
             <div className="cme-options-far-panel">
               <div className="cme-options-section-heading">
-                <span>远月资金押注</span>
-                <strong>{farInsight ? `${farInsight.expiry} · ${farInsight.dominance}` : "无远月数据"}</strong>
+                <span>{selectedExpiry ? "当前到期月模型 GEX 分布" : "远月模型 GEX 分布"}</span>
+                <strong>{distributionInsight ? `${formatCMEExpiryLabel(distributionInsight.expiry)} · ${distributionInsight.dominance}` : selectedExpiry ? "所选到期月无数据" : "无远月数据"}</strong>
               </div>
-              {farInsight ? (
+              {distributionInsight ? (
                 <>
                   <div className="cme-options-far-grid">
                     <div className="cme-options-far-cell cme-options-far-cell--wide">
-                      <span>资金倾向</span>
-                      <strong>{farInsight.dominance}</strong>
-                      <small>净伽马 {formatGex(farInsight.netGex)} / 总量 {formatGex(farInsight.totalGex)}</small>
+                      <span>模型分布</span>
+                      <strong>{distributionInsight.dominance}</strong>
+                      <small>净伽马 {formatGex(distributionInsight.netGex)} / 总量 {formatGex(distributionInsight.totalGex)}</small>
                     </div>
                     <div className="cme-options-far-cell">
-                      <span>看高观察</span>
-                      <strong className="fa-num">{formatNumber(farInsight.callTop?.strike)}</strong>
-                      <small>{formatGex(farInsight.callTop?.value)}</small>
+                      <span>看涨（Call）GEX 最高点</span>
+                      <strong className="fa-num">{formatNumber(distributionInsight.callTop?.strike)}</strong>
+                      <small>{formatGex(distributionInsight.callTop?.value)}</small>
                     </div>
                     <div className="cme-options-far-cell">
-                      <span>看低保护</span>
-                      <strong className="fa-num">{formatNumber(farInsight.putTop?.strike)}</strong>
-                      <small>{formatGex(farInsight.putTop?.value)}</small>
+                      <span>看跌（Put）GEX 最高点</span>
+                      <strong className="fa-num">{formatNumber(distributionInsight.putTop?.strike)}</strong>
+                      <small>{formatGex(distributionInsight.putTop?.value)}</small>
                     </div>
                   </div>
                   <div className="cme-options-far-tags">
-                    {farInsight.totalTop.map((item) => (
-                      <span key={`${farInsight.expiry}-${item.strike}`}>
+                    {distributionInsight.totalTop.map((item) => (
+                      <span key={`${distributionInsight.expiry}-${item.strike}`}>
                         {formatNumber(item.strike)} / {formatGex(item.value)}
                       </span>
                     ))}
                   </div>
-                  {farInsight.skewNote ? <p className="cme-options-muted-note">{farInsight.skewNote}</p> : null}
+                  {distributionInsight.skewNote ? <p className="cme-options-muted-note">{distributionInsight.skewNote}</p> : null}
                 </>
               ) : (
-                <p className="cme-options-muted-note">当前快照未返回远月伽马分布。</p>
+                <p className="cme-options-muted-note">{selectedExpiry ? "当前快照未返回所选到期月伽马分布。" : "当前快照未返回远月伽马分布。"}</p>
               )}
             </div>
           </section>
@@ -576,13 +623,17 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores, decision }: CMEOp
           </div>
 
           <div className="cme-options-rail-block cme-options-rail-block--risk">
-            <span className="cme-options-mini-label">下一风险提示</span>
-            <p>{nextRisk}</p>
+            <span className="cme-options-mini-label">风险提示（全部）</span>
+            {riskNotices.length > 0 ? (
+              <div className="space-y-1">
+                {riskNotices.map((risk) => <p key={risk}>{translateDecisionText(risk)}</p>)}
+              </div>
+            ) : <p>暂无额外风险提示。</p>}
           </div>
 
           <div className="cme-options-rail-block">
             <span className="cme-options-mini-label">CME 报告基准</span>
-            <strong>{reportBasis.summary}</strong>
+            <strong>{readableWarning(reportBasis.summary)}</strong>
             <p>{reportBasis.detail}</p>
           </div>
 
@@ -615,12 +666,8 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores, decision }: CMEOp
 
           <div className="cme-options-count-grid">
             <div>
-              <span>来源引用</span>
-              <strong className="fa-num">{snapshot.source_trace.length} 条</strong>
-            </div>
-            <div>
               <span>待复核</span>
-              <strong className="fa-num">{analysis?.pending_review_count ?? 0} 项</strong>
+              <strong className="fa-num">{analysis?.pending_review_count == null ? "—" : `${analysis.pending_review_count} 项`}</strong>
             </div>
           </div>
         </CMEOptionsSurface>

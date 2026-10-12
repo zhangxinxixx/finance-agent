@@ -1,3 +1,5 @@
+import { readerValue } from "@/lib/readerLabels";
+import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
 import { BookOpenText, ExternalLink, Link2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { FACard } from "@/components/shared/FACard";
@@ -5,7 +7,7 @@ import { FASourceTraceBadge } from "@/components/shared/FASourceTraceBadge";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { formatDateTime } from "@/lib/date";
 import type { Jin10ArticleBrief, Jin10ArticleBriefBundle } from "@/types/event-flow";
-import { formatEventFlowArtifactLabel, translateEventFlowValue } from "./eventFlowFormat";
+import { formatEventFlowHeadlineSummary, formatEventFlowArtifactLabel, translateEventFlowValue } from "./eventFlowFormat";
 import { articleBriefTone } from "./EventFlowSectionHelpers";
 
 export function Jin10ArticleBriefsPanel({
@@ -63,7 +65,7 @@ export function Jin10ArticleBriefsPanel({
                   <FAStatusPill tone={articleBriefTone(brief)}>{brief.display_bucket}</FAStatusPill>
                   <FAStatusPill tone={brief.access_status === "readable" ? "up" : "warn"}>{translateEventFlowValue(brief.access_status)}</FAStatusPill>
                 </div>
-                <div className="text-[12px] font-semibold leading-5 text-[var(--fg-1)]">{brief.headline}</div>
+                <div className="text-[12px] font-semibold leading-5 text-[var(--fg-1)]">{formatEventFlowHeadlineSummary(brief.headline).lead}</div>
                 {onOpenDetail ? (
                   <div className="text-[10px] font-semibold text-[var(--brand-hover)]">打开事件详情</div>
                 ) : null}
@@ -93,16 +95,17 @@ export function Jin10ArticleBriefsPanel({
               </div>
             </div>
 
+            <EvidenceRecordActions record={brief} url={brief.final_url ?? brief.source_url} label="文章摘要与原始事实" />
             {brief.original_excerpt ? (
               <div className="mt-2 rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-panel)] px-2.5 py-2 text-[11px] leading-5 text-[var(--fg-3)]">
-                {brief.original_excerpt}
+                {readerValue(brief.original_excerpt, "来源摘录暂无中文，请查看原始来源。")}
               </div>
             ) : null}
 
             {brief.analysis_summary ? (
               <div className="mt-2 flex gap-2 text-[11px] leading-5 text-[var(--fg-2)]">
                 <BookOpenText size={13} className="mt-0.5 shrink-0 text-[var(--warn)]" />
-                <span>{brief.analysis_summary}</span>
+                <span>{readerValue(brief.analysis_summary, "已有分析暂无中文说明，相关影响待核实。")}</span>
               </div>
             ) : null}
 
@@ -111,7 +114,7 @@ export function Jin10ArticleBriefsPanel({
                 {brief.key_points.slice(0, 3).map((point) => (
                   <li key={`${brief.brief_id}-${point}`} className="flex gap-2">
                     <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-[var(--fg-5)]" />
-                    <span>{point}</span>
+                    <span>{readerValue(point, "中文要点待补充，相关影响待核实。")}</span>
                   </li>
                 ))}
               </ul>

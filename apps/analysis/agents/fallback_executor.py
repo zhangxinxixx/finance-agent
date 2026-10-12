@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from apps.analysis.agents.quality_gate_evaluator import QualityGateAction, QualityGateDecision, evaluate_quality_gate
-from apps.analysis.agents.schemas import AcceptedStateConclusion, AgentBias, AgentOutput, AgentStatus
+from apps.analysis.agents.schemas import AgentBias, AgentOutput, AgentStatus
 
 
 class AgentLoopFallbackTask(BaseModel):
@@ -241,7 +241,7 @@ def _cme_options_reparse_output(
         update={
             "agent_name": "cme_options_reparse_agent",
             "module": "agent_loop_fallback_reparse",
-            "snapshot_id": f"{reparsed.snapshot_id}:fallback_reparse",
+            **_fallback_lineage_fields(primary),
             "data_quality": [*list(reparsed.data_quality), "fallback_reparse"],
             "input_payload": {
                 **dict(reparsed.input_payload or {}),
@@ -277,12 +277,7 @@ def _fallback_cross_check_output(
         version=primary.version,
         agent_name="fallback_cross_check_agent",
         module="agent_loop_fallback_cross_check",
-        snapshot_id=f"{primary.snapshot_id}:fallback_cross_check",
-        input_snapshot_ids={
-            **dict(primary.input_snapshot_ids),
-            "fallback_of": primary.snapshot_id,
-            "fallback_task": task.task_type,
-        },
+        **_fallback_lineage_fields(primary),
         bias=AgentBias.MIXED if independent_source_count >= 2 else AgentBias.NEUTRAL,
         confidence=confidence,
         key_findings=[
@@ -343,12 +338,7 @@ def _fallback_reanalysis_output(
         version=primary.version,
         agent_name=agent_name,
         module=module,
-        snapshot_id=f"{primary.snapshot_id}:{quality_tag}",
-        input_snapshot_ids={
-            **dict(primary.input_snapshot_ids),
-            "fallback_of": primary.snapshot_id,
-            "fallback_task": task.task_type,
-        },
+        **_fallback_lineage_fields(primary),
         bias=AgentBias.NEUTRAL,
         confidence=min(float(primary.confidence), 0.50),
         key_findings=[
@@ -447,12 +437,7 @@ def _jin10_vlm_reparse_output(
         version=primary.version,
         agent_name="jin10_vlm_reparse_agent",
         module="agent_loop_fallback_jin10_vlm_reparse",
-        snapshot_id=f"{primary.snapshot_id}:fallback_vlm_reparse",
-        input_snapshot_ids={
-            **dict(primary.input_snapshot_ids),
-            "fallback_of": primary.snapshot_id,
-            "fallback_task": "fallback_reparse",
-        },
+        **_fallback_lineage_fields(primary),
         bias=AgentBias.NEUTRAL,
         confidence=0.52 if status is AgentStatus.PARTIAL else 0.60,
         key_findings=[
@@ -548,12 +533,7 @@ def _jin10_report_reparse_output(
         version=primary.version,
         agent_name="jin10_report_reparse_agent",
         module="agent_loop_fallback_jin10_reparse",
-        snapshot_id=f"{primary.snapshot_id}:fallback_reparse",
-        input_snapshot_ids={
-            **dict(primary.input_snapshot_ids),
-            "fallback_of": primary.snapshot_id,
-            "fallback_task": "fallback_reparse",
-        },
+        **_fallback_lineage_fields(primary),
         bias=_jin10_reparse_bias(reparsed, primary.bias),
         confidence=min(float(primary.confidence), 0.58),
         key_findings=_dedupe_strings(
@@ -632,6 +612,21 @@ def _fallback_target_ref(agent_outputs: list[AgentOutput]) -> str:
     return f"{target.agent_name}:{target.snapshot_id}"
 
 
+def _fallback_lineage_fields(primary: AgentOutput) -> dict[str, Any]:
+    """Keep a fallback bound to the snapshot it reprocesses.
+
+    A fallback is an alternate agent view of the same input snapshot.  Its
+    agent name and ``input_payload.fallback_of`` carry the fallback identity;
+    ``snapshot_id`` remains the real snapshot identity so downstream artifact
+    lineage cannot mistake the fallback label for a new input snapshot.
+    """
+
+    return {
+        "snapshot_id": primary.snapshot_id,
+        "input_snapshot_ids": dict(primary.input_snapshot_ids),
+    }
+
+
 def _conservative_fallback_output(
     *,
     primary: AgentOutput,
@@ -644,19 +639,11 @@ def _conservative_fallback_output(
     source_refs = [dict(ref) for ref in primary.source_refs if isinstance(ref, dict)]
     evidence_items = [dict(item) for item in primary.evidence_items if isinstance(item, dict)]
     confidence = min(float(primary.confidence), 0.55)
-    task_types = [task.task_type for task in tasks]
-    fallback_summary = "No strong conclusion: fallback conservative synthesis is in effect."
-    primary_conclusion = primary.accepted_state_conclusion
     return AgentOutput(
         version=primary.version,
         agent_name="fallback_synthesis_agent",
         module="agent_loop_fallback",
-        snapshot_id=f"{primary.snapshot_id}:fallback",
-        input_snapshot_ids={
-            **dict(primary.input_snapshot_ids),
-            "fallback_of": primary.snapshot_id,
-            "fallback_tasks": task_types,
-        },
+        **_fallback_lineage_fields(primary),
         bias=AgentBias.NEUTRAL,
         confidence=confidence,
         key_findings=[
@@ -673,24 +660,13 @@ def _conservative_fallback_output(
         ],
         invalid_conditions=list(primary.invalidation_conditions),
         active_blockers=list(unresolved_reason_codes),
-        summary=fallback_summary,
+        summary="No strong conclusion: fallback conservative synthesis is in effect.",
         source_refs=source_refs,
         status=AgentStatus.PARTIAL,
         created_at=created_at,
         evidence_refs=[dict(ref) for ref in primary.evidence_refs if isinstance(ref, dict)],
         evidence_items=evidence_items,
         data_quality=[*list(primary.data_quality), "fallback_synthesis", "no_strong_conclusion"],
-        accepted_state_conclusion=AcceptedStateConclusion(
-            direction=AgentBias.NEUTRAL,
-            state_bias=AgentBias.NEUTRAL.value,
-            market_stage=(
-                primary_conclusion.market_stage
-                if primary_conclusion is not None
-                else primary.market_phase or "direction_decision"
-            ),
-            core_thesis=fallback_summary,
-            dominant_drivers=[],
-        ),
         input_payload={
             "fallback_of": {
                 "agent_name": primary.agent_name,
@@ -709,6 +685,7 @@ def _conservative_fallback_output(
             "unresolved_reason_codes": list(unresolved_reason_codes),
             "primary_invalid_conditions": list(primary.invalid_conditions),
             "dedicated_fallback_results": [dict(item) for item in task_results],
+            **{key: primary.input_payload[key] for key in ("daily_research_assessment", "gold_workflow", "research_synthesis") if key in (primary.input_payload or {})},
         },
     )
 

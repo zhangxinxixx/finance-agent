@@ -6,10 +6,11 @@ import {
   DOT_COLORS,
   formatGeneratedAt,
   getMarketObservationSubtype,
+  getReportListStatus,
   getReportTitle,
   marketObservationSubtypeLabel,
   matchesReportSearch,
-  shortRunId,
+  reportTypeLabel,
 } from "@/components/reports/reportListMeta";
 import { handleSelectKeyDown } from "@/components/reports/reportLibraryViewCommon";
 
@@ -28,12 +29,13 @@ export function TimelineView({
     <div style={{ maxWidth: 720 }}>
       {filtered.map((item, idx) => {
         const cat = CATEGORY_MAP[item.type] ?? {
-          label: item.type,
+          label: reportTypeLabel(item.type),
           color: "#94a3b8",
         };
         const dotColor = DOT_COLORS[item.type] ?? "#94a3b8";
         const isOpenable = canOpenReport(item);
         const generatedAtLabel = formatGeneratedAt(item.generated_at);
+        const status = getReportListStatus(item);
         const marketObservationSubtype = getMarketObservationSubtype(item);
         return (
           <div
@@ -51,7 +53,7 @@ export function TimelineView({
                   height: 10,
                   borderRadius: "50%",
                   background: dotColor,
-                  boxShadow: `0 0 6px ${dotColor}66`,
+                  boxShadow: `0 0 6px color-mix(in srgb, ${dotColor} 40%, transparent)`,
                   flexShrink: 0,
                 }}
               />
@@ -103,7 +105,7 @@ export function TimelineView({
                 <span
                   style={{
                     padding: "1px 5px",
-                    background: `${cat.color}1f`,
+                    background: cat.softColor ?? `color-mix(in srgb, ${cat.color} 12%, transparent)`,
                     color: cat.color,
                     borderRadius: 2,
                     fontSize: "var(--text-10)",
@@ -129,6 +131,19 @@ export function TimelineView({
                 ) : null}
                 <span
                   style={{
+                    padding: "1px 5px",
+                    background: status.softColor ?? `color-mix(in srgb, ${status.color} 12%, transparent)`,
+                    color: status.color,
+                    border: `1px solid ${status.borderColor ?? `color-mix(in srgb, ${status.color} 20%, transparent)`}`,
+                    borderRadius: 2,
+                    fontSize: "var(--text-10)",
+                    fontWeight: 700,
+                  }}
+                >
+                  {status.label}
+                </span>
+                <span
+                  style={{
                     fontSize: "var(--text-11)",
                     color: "var(--fg-5)",
                     fontFamily: "var(--font-mono)",
@@ -148,7 +163,7 @@ export function TimelineView({
                   fontFamily: "var(--font-mono)",
                 }}
               >
-                {shortRunId(item.run_id)} · 生成 {generatedAtLabel}
+                生成 {generatedAtLabel}
               </div>
             </div>
           </div>

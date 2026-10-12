@@ -4,6 +4,8 @@
 > 视觉 source of truth：`docs/frontend/finanalytics-pro-design-system/FinAnalytics_Preview.html`
 > 目标前端：`apps/frontend-web/`，Tailwind 3.4 + React 18
 
+> 2026-10-10 清理校准：组件是否仍可复用，以源码和 `npm run test:source-reachability` 为准。无页面消费者的旧 `ContextRightPanel`、`MetricCard`、`PipelineStepper`、`FAConvictionBar` 已退役；历史视觉稿不构成恢复这些组件的需求。
+
 ## 1. 映射原则
 
 P0-09 起，新增视觉迁移以 `FinAnalytics_Preview.html` 的 class/style 和交互密度为准，但不得大段复制 HTML 或 mock 数据。正式项目应将重复结构沉淀到 `apps/frontend-web/src/components/shared/` 的 FinAnalytics shared components，再由页面消费 API/view model 数据。
@@ -23,14 +25,14 @@ P0-09 起，新增视觉迁移以 `FinAnalytics_Preview.html` 的 class/style �
 | `.eyebrow` | `FASectionHeader` / `FACard` eyebrow | `9px` uppercase、tracking `0.08em`、`--fg-5` | 已有 |
 | timeframe button group / filter row | `FAFilterBar` | panel surface、紧凑 gap、左右区；具体 button 仍由页面传入 | 已有 |
 | tab buttons in DailyComposite | `FATabBar` | active `--bg-active` + `--brand-hover`；inactive `--fg-4`，hover `--bg-hover` | 已有 |
-| Conviction numeric / progress | `FAConvictionBar` | 0-100 clamp，label uppercase，bar 使用 semantic tone | 已有 |
+| Conviction numeric / progress | 页面实际使用的字段展示 | 只呈现后端已有字段，不在前端计算策略结论 | 旧 `FAConvictionBar` 无消费者，已清理 |
 | `EmptyState()` | `FAEmptyState` | dashed border、center icon、短标题和说明；不复制 mock 文案 | 已有 |
 | alert strip / risk warning inline block | `FAWarningBanner` | semantic soft fill + border；适合 PRELIM、风险、错误提示 | 已有 |
 | `Pipeline` / `PipelineStage` | `FAPipelineStepper` | stage status 映射 `done/running/queued/error/unavailable`；保留 compact stage 卡片和连接线 | 已有 |
 | queue popover task rows / runtime rows | `FARuntimeLog` | mono terminal surface、time/level/source/message 四类信息；适合 task log 和运行流水 | 已有 |
 | source popover compact source item | `FASourceTraceBadge` | source + status + snapshotId，作为 compact trace badge；详情仍用 `SourceTrace` | 已有 |
 | `.status-bar` / `.statusbar-*` | `DataStatusBar` + 后续 status bar shared shell | 保留现有数据状态来源，视觉向 Preview 底部 30px status bar 收敛 | 现有组件需后续视觉迁移 |
-| `.right-panel` | 页面右栏 / 后续 `ContextRightPanel` | 300px、`--bg-panel`、left border、12px padding/gap；内容由页面 API 数据驱动 | 需后续统一 |
+| `.right-panel` | 页面实际使用的右栏 | 宽度随页面布局，内容由页面 API 数据驱动 | 旧独立 `ContextRightPanel` 已清理，不新增平行壳层 |
 | `.num` | `fa-num` utility | mono、tabular numerics、tight tracking；价格/百分比/id/time 全部使用 | 需全局统一 |
 
 ## 3. Shared Components 逐项说明
@@ -43,7 +45,6 @@ P0-09 起，新增视觉迁移以 `FinAnalytics_Preview.html` 的 class/style �
 | `FASectionHeader` | 页面/section 标题结构 | 用于替代页面中重复的标题、eyebrow、description、action 组合 |
 | `FAFilterBar` | 筛选、时间周期、工具按钮容器 | 只管布局和 surface，不承载业务筛选逻辑 |
 | `FATabBar` | 视图切换和报告详情 tab | 只处理受控 tab UI，不在组件内绑定路由或请求 |
-| `FAConvictionBar` | conviction / confidence / progress 类横向强度条 | 输入必须是已有字段或 view model 字段，不在组件内计算策略结论 |
 | `FAEmptyState` | 空态展示 | 缺失数据文案应明确 `unavailable` / `暂无数据`，不伪造占位值 |
 | `FAWarningBanner` | PRELIM、风险、错误、延迟提示 | tone 对应 warn/down/info，不能用红黄绿表达笼统好坏 |
 | `FAPipelineStepper` | pipeline stage 可视化 | 对应 task_runs/task_steps、collector/parser/feature/report 阶段，只展示已有状态 |
@@ -54,11 +55,11 @@ P0-09 起，新增视觉迁移以 `FinAnalytics_Preview.html` 的 class/style �
 
 | 现有组件 | 当前角色 | P0-09 映射策略 |
 |---|---|---|
-| `MetricCard` | 旧 dashboard KPI 组件，使用 `finance-*` token | 保留兼容；新页面迁移优先使用 `FAMetricCard`，后续可逐步替换 |
+| `MetricCard` | 已退役的旧 dashboard KPI 组件 | 无页面消费者；使用现有 `FAMetricCard` |
 | `StatusBadge` | 旧通用数据状态 badge，绑定 `available/partial/error/unavailable/info/neutral` | 保留数据状态语义；新视觉或 uppercase pill 使用 `FAStatusPill` |
 | `SourceTrace` | 完整数据溯源展示 | 不替代；与 `FASourceTraceBadge` 分工，详情区域继续用 `SourceTrace` |
 | `DataStatusBar` | 当前全局数据状态条，消费 `useDataStatus()` | 数据来源保留；视觉后续向 Preview `.status-bar` / `.statusbar-*` 收敛 |
-| `PipelineStepper` | 旧 pipeline stepper | 保留兼容；FinAnalytics Pro 新视觉统一走 `FAPipelineStepper` |
+| `PipelineStepper` | 已退役的旧 pipeline stepper | 无页面消费者；保留现有 `FAPipelineStepper` 的独立验证用途 |
 | `EmptyState` / `ErrorState` | 旧空态/错误态 | 保留兼容；FinAnalytics Pro 新视觉统一走 `FAEmptyState` / `FAWarningBanner` |
 
 ## 5. Page / Shell 映射

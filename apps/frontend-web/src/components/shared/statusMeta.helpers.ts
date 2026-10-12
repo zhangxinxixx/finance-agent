@@ -37,7 +37,7 @@ export function resolveExplicitStatusLabel(key: string): string | undefined {
 }
 
 export function resolveStatusLabel(key: string, domain: StatusDomain): string {
-  return DOMAIN_LABELS[domain]?.[key] ?? resolveExplicitStatusLabel(key) ?? GENERIC_LABELS[key] ?? key.toUpperCase();
+  return DOMAIN_LABELS[domain]?.[key] ?? resolveExplicitStatusLabel(key) ?? GENERIC_LABELS[key] ?? "状态待确认";
 }
 
 export function isExplicitStatusKey(key: string): boolean {

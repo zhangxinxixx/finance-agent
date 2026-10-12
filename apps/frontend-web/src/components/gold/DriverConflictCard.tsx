@@ -18,7 +18,7 @@ function DriverList({ label, values, tone }: { label: string; values: string[]; 
     <div className="min-w-0">
       <div className="fa-label text-[var(--fg-5)]">{label}</div>
       <div className="mt-1 flex flex-wrap gap-1">
-        {values.length ? values.slice(0, 4).map((item) => (
+        {values.length ? values.map((item) => (
           <FAStatusPill key={`${label}-${item}`} tone={tone} dot={false}>
             {formatGoldDriverLabel(item)}
           </FAStatusPill>
@@ -43,7 +43,7 @@ export function DriverConflictCard({ conflict }: DriverConflictCardProps) {
       <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[length:var(--type-caption)] font-semibold text-[var(--fg-5)]">
         <ShieldAlert size={11} />
         <span>驱动冲突</span>
-        <FAStatusPill tone={goldConflictTone(conflict.status)} dot={false}>{conflict.status}</FAStatusPill>
+        <FAStatusPill tone={goldConflictTone(conflict.status)} dot={false}>{conflict.status === "mixed" ? "多空冲突" : conflict.status === "aligned" ? "驱动一致" : "驱动关系待确认"}</FAStatusPill>
         <FAStatusPill tone={goldNetBiasTone(conflict.net_effect)} dot={false}>{formatGoldNetBiasLabel(conflict.net_effect)}</FAStatusPill>
         {mixedIncomplete ? <FAStatusPill tone="warn" dot={false}>拆解不完整</FAStatusPill> : null}
       </div>

@@ -22,7 +22,7 @@ export function AgentPromptFeedbackForm({
   return (
     <div className="rounded-[var(--radius-sm)] border border-[var(--border-faint)] bg-[var(--bg-panel)] p-2.5">
       <div className="text-[12px] font-semibold text-[var(--fg-2)]">人工反馈</div>
-      <div className="mt-0.5 text-[11px] text-[var(--fg-4)]">反馈会追加到 Prompt Feedback；严重类别会进入 Review Center。</div>
+      <div className="mt-0.5 text-[11px] text-[var(--fg-4)]">反馈会追加到提示词反馈记录；严重类别会进入复核中心。</div>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
         <label className="block">
           <div className="mb-1 text-[10px] text-[var(--fg-5)]">评分</div>
@@ -45,9 +45,9 @@ export function AgentPromptFeedbackForm({
             onChange={(event) => onCategoryChange(event.target.value)}
             className="h-8 w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2 text-[11px] text-[var(--fg-2)] outline-none"
           >
-            <option value="prompt_quality" className="bg-[var(--bg-card)] text-[var(--fg-2)]">prompt_quality</option>
-            <option value="analysis_error" className="bg-[var(--bg-card)] text-[var(--fg-2)]">analysis_error</option>
-            <option value="missing_context" className="bg-[var(--bg-card)] text-[var(--fg-2)]">missing_context</option>
+            <option value="prompt_quality" className="bg-[var(--bg-card)] text-[var(--fg-2)]">提示词质量</option>
+            <option value="analysis_error" className="bg-[var(--bg-card)] text-[var(--fg-2)]">分析错误</option>
+            <option value="missing_context" className="bg-[var(--bg-card)] text-[var(--fg-2)]">上下文缺失</option>
           </select>
         </label>
       </div>
@@ -55,7 +55,7 @@ export function AgentPromptFeedbackForm({
         value={comment}
         onChange={(event) => onCommentChange(event.target.value)}
         rows={3}
-        placeholder="记录 Prompt 或输出需要调整的具体问题"
+        placeholder="记录提示词或输出需要调整的具体问题"
         className="mt-2 w-full resize-none rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-card-inner)] px-2.5 py-2 text-[11px] leading-5 text-[var(--fg-2)] outline-none placeholder:text-[var(--fg-5)]"
       />
       <div className="mt-2 flex justify-end">
