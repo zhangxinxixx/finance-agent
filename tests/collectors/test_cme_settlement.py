@@ -269,7 +269,7 @@ def test_incremental_migration_preserves_existing_data(tmp_path):
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE preserved_data (value INTEGER)"))
         connection.execute(text("INSERT INTO preserved_data VALUES (117)"))
-    command.stamp(build_alembic_config(url), "20260704_0001")
+    command.upgrade(build_alembic_config(url), "20260704_0001")
     run_database_migrations(url)
     run_database_migrations(url)
     assert "cme_settlement_contract" in inspect(engine).get_table_names()
