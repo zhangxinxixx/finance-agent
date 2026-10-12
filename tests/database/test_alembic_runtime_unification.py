@@ -9,6 +9,13 @@ def _metadata_table_names(target_metadata) -> set[str]:
     return {table.name for metadata in metadatas for table in metadata.tables.values()}
 
 
+def test_alembic_config_preserves_percent_encoded_database_url() -> None:
+    from database.migrations.runtime import build_alembic_config
+
+    database_url = "postgresql://finance_agent@127.0.0.1/finance_agent?options=-csearch_path%3Dwarehouse_test"
+    assert build_alembic_config(database_url).get_main_option("sqlalchemy.url") == database_url
+
+
 def test_alembic_env_targets_all_runtime_metadata() -> None:
     from database.migrations.env import target_metadata
 
