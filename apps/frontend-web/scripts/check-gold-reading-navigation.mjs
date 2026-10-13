@@ -55,7 +55,35 @@ assert.equal(readFrozenGoldReport({...frozenReport,meta:{...frozenReport.meta,as
 assert.equal(readFrozenGoldReport({...frozenReport,meta:{...frozenReport.meta,report_id:'another'}}),null);
 const frozenMarkup=render(GoldFrozenReport,{report:frozenReport,onLatest(){}});
 assert.match(frozenMarkup,/报告未通过质量审核/);assert.doesNotMatch(frozenMarkup,/SHOULD_NOT_RENDER_BLOCKED_ARTIFACT/);
+// A normalized report can carry a reader plan even when its quality gate is blocked.
+const {normalizeReportDetail}=load('@/adapters/reports');
+const readerPlan={schema_version:'research_trade_plan.v1',...source,as_of:'2026-10-13T01:00:00Z',status:'waiting',
+ execution_ready:false,is_trade_instruction:false,current_action:'等待确认，暂不开新单',summary:'质量受阻方案摘要不可展示',reason:'质量受阻等待原因',
+ scenarios:[{name:'质量受阻情景',macro_conditions:'质量受阻宏观条件',price_conditions:'质量受阻价格4098.37',invalidation:'质量受阻失效条件'}],
+ attention_points:['质量受阻注意点'],position_guidance:{flat:'质量受阻空仓条件',long:null,short:null},entry:null,stop_loss:null,targets:[]};
+const detailRaw={...source,asset:'XAUUSD',family:'gold_policy_daily',title:'工程冻结报告',generated_at:readerPlan.as_of,
+ lifecycle_status:'needs_review',data_status:'unavailable',artifacts:[],source_refs:[],artifact_refs:[],warnings:[],input_snapshot_ids:[],review_items:[],
+ structured_payload:{_reader_trade_plan:readerPlan}};
+const parts={analysis:{tab:'analysis',label:'分析稿',available:true,format:'markdown',content:'工程可读正文'}};
+const blockedPlanReport=normalizeReportDetail(detailRaw,parts);
+assert.ok(blockedPlanReport.final_trade_plan,'fixture must include the real normalized reader plan');
+const blockedPlanHtml=render(GoldFrozenReport,{report:blockedPlanReport,onLatest(){}});
+assert.match(blockedPlanHtml,/报告未通过质量审核/);
+for(const value of [readerPlan.current_action,readerPlan.summary,readerPlan.reason,...readerPlan.attention_points,
+ readerPlan.scenarios[0].name,readerPlan.scenarios[0].macro_conditions,readerPlan.scenarios[0].price_conditions,readerPlan.scenarios[0].invalidation,
+ readerPlan.position_guidance.flat,'工程可读正文','research-trade-plan'])assert.ok(!blockedPlanHtml.includes(value),`quality-blocked report leaked ${value}`);
+for(const [status,warnings] of [
+ ['partial',[{code:'optional_source_missing',severity:'warning',message:'来源尚未齐备，仅参考已取得正文。'}]],
+ ['available',[{code:'optional_artifact_error',severity:'error',message:'可选证据读取失败，不补造缺失证据。'}]],
+ ['partial',[]],
+]){
+ const report=normalizeReportDetail({...detailRaw,lifecycle_status:'reviewed',data_status:status,warnings},parts);
+ const html=render(GoldFrozenReport,{report,onLatest(){}});
+ assert.ok(html.includes(readerPlan.summary),'readable reference plan remains available');assert.match(html,/工程可读正文/);
+ assert.match(html,/报告资格与参考限制/,'qualification caveats remain visible even without explicit warnings');
+ for(const warning of warnings)assert.ok(html.includes(warning.message),'frozen view lost a source/artifact warning');
+}
 const {GoldSpotLevels,GoldCmeLevels}=load('@/components/gold-workspace/GoldKeyLevels');
 assert.match(render(GoldSpotLevels,{data:workspace,reviewOnly:true}),/不确认当前有效性或触发/);
 assert.match(render(GoldCmeLevels,{data:workspace,reviewOnly:true}),/上次读取的GC结构/);
-console.log('Gold reading navigation passed: frozen DTO/zero/missing timing, malformed state, all report identity mismatches, strategy unknown/different/formal comparisons, fail-closed reading and disabled analysis transport.');
+console.log('Gold reading navigation passed: frozen DTO/zero/missing timing, malformed state, all report identity mismatches, strategy unknown/different/formal comparisons, quality-blocked reader-plan isolation, partial/error warning retention, fail-closed reading and disabled analysis transport.');

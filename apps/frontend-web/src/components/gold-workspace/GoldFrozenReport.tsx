@@ -4,7 +4,9 @@ import { ResearchIdentity } from "@/components/shared/ResearchIdentity";
 import { ResearchTradePlanCard } from "@/components/shared/ResearchTradePlanCard";
 import { ResultIdentityBar } from "@/components/shared/ResultIdentityBar";
 import { ReportArtifactPanel } from "@/components/reports/ReportArtifactPanel";
-import { getReportDetailStatus } from "@/components/reports/reportDetailMeta";
+import { getReportDetailStatus, reportNeedsReadingWarning } from "@/components/reports/reportDetailMeta";
+import { FAWarningBanner } from "@/components/shared/FAWarningBanner";
+import { readableWarning, uniqueReading } from "@/lib/researchReading";
 import type { ReportArtifactTabKey, ReportDetailView } from "@/types/reports";
 
 /** Uses only the selected report DTO. Missing workspace observations stay missing. */
@@ -27,9 +29,16 @@ export function GoldFrozenReport({ report, onLatest }: { report: ReportDetailVie
     <div className="gold-reading-risk" role="status"><strong className="fa-card-title">历史／冻结报告 · 不是当前执行许可</strong>
       <p className="fa-body-text">仅保留这份报告已读取的内容与证据。对应工作台观测未提供，不补入最新宏观、CME 或行情作为当时依据。</p>
       <p className="fa-body-text">{qualification.label} · {qualification.description}</p></div>
+    {reportNeedsReadingWarning(report) || report.warnings.length ? <FAWarningBanner
+      title="报告资格与参考限制"
+      description={uniqueReading([
+        ...(reportNeedsReadingWarning(report) ? [qualification.description] : []),
+        ...report.warnings.map(warning => readableWarning(warning.message)),
+      ]).join("；")}
+      tone={report.warnings.some(warning => warning.severity === "error") ? "down" : "warn"} /> : null}
     <ResearchIdentity identity={report.research_identity} />
-    <ResearchTradePlanCard identity={report.research_identity} plan={report.final_trade_plan}
-      tradeDate={report.meta.trade_date} asOf={report.meta.asOf} referenceOnly />
+    {!qualityBlocked ? <ResearchTradePlanCard identity={report.research_identity} plan={report.final_trade_plan}
+      tradeDate={report.meta.trade_date} asOf={report.meta.asOf} referenceOnly /> : null}
     <ResultIdentityBar identity={report.result_identity} subjectLabel="所选报告" baselineLabel="报告读取时的黄金基线" />
     <nav className="gold-workspace-navigation" aria-label="冻结报告内容">{tabs.map(key => <button type="button" key={key}
       className="gold-secondary-button" aria-pressed={tab === key} onClick={() => setTab(key)}>{report.tabs[key]?.label ?? key}</button>)}</nav>
