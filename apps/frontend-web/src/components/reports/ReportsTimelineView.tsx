@@ -155,6 +155,7 @@ export function TimelineView({
               <div style={{ fontSize: "var(--text-12)", color: "var(--fg-2)", fontWeight: 600, lineHeight: 1.4 }}>
                 {getReportTitle(item)}
               </div>
+              <p className="fa-muted-text">{status.description}</p>
               <div
                 style={{
                   fontSize: "var(--text-10)",

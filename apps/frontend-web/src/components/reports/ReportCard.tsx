@@ -104,6 +104,7 @@ export function ReportCard({
       </div>
 
       <div style={{ fontSize: "var(--text-11)", color: "var(--fg-4)", lineHeight: 1.55, marginBottom: 8, flex: 1 }}>
+        <p className="fa-muted-text">{status.description}</p>
         {meta.summary}
       </div>
 

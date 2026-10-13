@@ -38,6 +38,7 @@ export const ASSET_OPTIONS = [
 
 export const STATUS_OPTIONS = [
   { key: "published", label: "已发布" },
+  { key: "unknown", label: "资格未知" },
   { key: "draft", label: "草稿" },
   { key: "review", label: "待复核" },
   { key: "archived", label: "已归档" },

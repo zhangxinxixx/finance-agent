@@ -66,7 +66,7 @@ export const TYPE_DESCRIPTIONS: Record<string, { summary: string; tags: string[]
   jin10_fx_report: { summary: "外汇报告作为 DXY、Fed 路径和外汇压力上下文，需结合行情验证。", tags: ["外汇", "美元"] },
   jin10_market_observation_report: { summary: "市场观察承接 VIP 每日市场观察和市场赔率表，只作为辅助决策证据。", tags: ["市场观察", "赔率"] },
   observation_report: { summary: "研究观察报告展示本轮快照和分析证据，需复核后才能进入正式发布链。", tags: ["研究观察", "待复核"] },
-  observation_strategy_card: { summary: "观察策略卡承接本轮研究观察的策略加工结果，保持观察态，不代表正式策略。", tags: ["观察策略", "不可发布"] },
+  observation_strategy_card: { summary: "观察策略卡承接本轮研究观察的策略加工结果，保持观察态，不代表正式策略。", tags: ["观察策略", "只读参考"] },
 };
 
 const XAUUSD_REPORT_TYPES = new Set<string>([
@@ -117,7 +117,7 @@ export function canOpenReport(item: ReportIndexItem): boolean {
   return item.available && (item.type === "options_report" || Boolean(getReportDetailId(item)));
 }
 
-export type ReportListStatusKey = "published" | "review" | "draft" | "archived";
+export type ReportListStatusKey = "published" | "review" | "draft" | "archived" | "unknown";
 
 export interface ReportListStatusMeta {
   key: ReportListStatusKey;
@@ -125,37 +125,78 @@ export interface ReportListStatusMeta {
   color: string;
   softColor?: string;
   borderColor?: string;
+  description: string;
+  referenceOnly: boolean;
 }
 
-export function isObservationReport(item: ReportIndexItem): boolean {
+export function isObservationReport(item: Partial<ReportIndexItem>): boolean {
   return (
     item.type === "observation_report" ||
     item.type === "observation_strategy_card" ||
     item.family === "observation_report_markdown" ||
-    item.family === "observation_strategy_card"
+    item.family === "observation_strategy_card" ||
+    item.authority === "observation_only" || item.output_mode === "observe" ||
+    item.report_identity?.authority === "observation_only" || item.report_identity?.output_mode === "observe" ||
+    item.publication_status === "observe" || item.report_identity?.publication_status === "observe"
   );
 }
 
-export function getReportListStatus(item: ReportIndexItem): ReportListStatusMeta {
-  if (item.authority === "historical_only" || item.output_mode === "historical") {
-    return { key: "archived", label: "历史报告 · 未通过当前校验", color: "var(--warn)", softColor: "var(--warn-soft)", borderColor: "var(--warn-border)" };
-  }
-  if (isObservationReport(item)) {
-    return { key: "review", label: "待复核 · 不可发布", color: "var(--warn)", softColor: "var(--warn-soft)", borderColor: "var(--warn-border)" };
-  }
-  if (
-    item.publish_allowed === false ||
-    item.lifecycle_status === "needs_review" ||
-    item.review_status === "blocked" ||
-    item.review_status === "needs_review"
-  ) {
-    return { key: "review", label: item.publish_allowed === false ? "待复核 · 不可发布" : "待复核", color: "var(--warn)", softColor: "var(--warn-soft)", borderColor: "var(--warn-border)" };
-  }
-  if (!item.available) {
-    const qualityBlocked = item.status === "degraded";
-    return { key: "draft", label: qualityBlocked ? "审核未通过" : "草稿", color: qualityBlocked ? "#ef4444" : "#f59e0b" };
-  }
-  return { key: "published", label: "已发布", color: "#10b981" };
+/** Presentation of backend facts only; this grants no publication or trading permission. */
+export function getReportListStatus(item: Partial<ReportIndexItem>): ReportListStatusMeta {
+  const identity = item.report_identity;
+  const text = (value: unknown) => typeof value === "string" && value.trim() ? value.trim().toLowerCase() : null;
+  const bool = (value: unknown) => typeof value === "boolean" ? value : null;
+  const topPermission = bool(item.publish_allowed), identityPermission = bool(identity?.publish_allowed);
+  const permission = topPermission ?? identityPermission;
+  const authority = text(identity?.authority) ?? text(item.authority);
+  const mode = text(identity?.output_mode) ?? text(item.output_mode);
+  const review = text(identity?.review_status) ?? text(item.review_status);
+  const lifecycle = text(item.lifecycle_status);
+  const publicationStatus = text(identity?.publication_status) ?? text(item.publication_status);
+  const observation = isObservationReport(item) || authority === "observation_only" || mode === "observe";
+  const research = item.research_identity;
+  const validity = research?.key_level_validity?.status;
+  const historical = authority === "historical_only" || mode === "historical" || lifecycle === "archived" || validity === "historical";
+  const published = lifecycle === "published";
+  const notPublished = lifecycle === "draft" || lifecycle === "generated" || lifecycle === "snapshot_bound";
+  const conflicts = [
+    item.qualification_conflict === true,
+    topPermission !== null && identityPermission !== null && topPermission !== identityPermission,
+    ...(["authority", "output_mode", "review_status", "publication_status"] as const).map(key =>
+      text(item[key]) !== null && text(identity?.[key]) !== null && text(item[key]) !== text(identity?.[key])),
+    observation && (published || permission === true),
+    ...(["report_id", "run_id", "snapshot_id", "trade_date"] as const).map(key =>
+      Boolean(item[key] && research?.[key] && item[key] !== research[key])),
+  ];
+  const conflict = conflicts.some(Boolean);
+  const unknownEnum = [
+    lifecycle !== null && !["draft", "generated", "snapshot_bound", "needs_review", "published", "exported", "archived"].includes(lifecycle),
+    review !== null && !["not_required", "pending", "approved", "rejected", "rerun", "blocked", "needs_review"].includes(review),
+    authority !== null && !["observation_only", "historical_only"].includes(authority),
+    mode !== null && !["observe", "historical", "accepted"].includes(mode),
+    publicationStatus !== null && !["accepted", "observe", "degraded"].includes(publicationStatus),
+  ].some(Boolean);
+  const restrictedData = ["partial", "unavailable", "degraded"].includes(text(item.data_status ?? item.status) ?? "");
+  const needsReview = restrictedData || publicationStatus === "degraded" || lifecycle === "needs_review"
+    || ["blocked", "needs_review", "pending", "rejected", "rerun"].includes(review ?? "");
+  const permissionLabel = conflict ? "许可待核验（资格字段冲突）" : permission === true ? "获准发布" : permission === false ? "不可发布" : "许可未知";
+  const publicationLabel = observation && published ? "发布状态冲突，待核验" : published ? "已发布" : notPublished && !historical ? "尚未发布" : "发布记录未知";
+  const validityLabel = conflict ? "当前有效性待核验" : historical ? "仅供历史参考" : observation ? "观察稿，不代表当前信号"
+    : validity === "active" ? "当前价位有效，不代表交易触发" : validity === "expired" ? "当前价位已失效" : "当前有效性未知";
+  const description = [item.available === true ? "可读" : "内容未确认可读", permissionLabel, publicationLabel, validityLabel,
+    unknownEnum ? "存在未解释资格状态" : null, restrictedData ? "报告数据需复核" : null].filter((value): value is string => value !== null).join(" · ");
+  const referenceOnly = item.available !== true || conflict || unknownEnum || observation || historical || needsReview || permission !== true || !published || validity !== "active";
+  const status = (key: ReportListStatusKey, label: string, color = "var(--warn)"): ReportListStatusMeta => ({
+    key, label, color, description, referenceOnly,
+  });
+  if (conflict) return status("unknown", "资格冲突 · 待核验");
+  if (historical) return status("archived", published ? "历史已发布" : "历史参考");
+  if (observation) return status("review", permission === false ? "待复核 · 不可发布" : "研究观察 · 许可待核验");
+  if (unknownEnum) return status("unknown", "资格未知");
+  if (permission === false || needsReview) return status("review", published ? "已发布 · 当前需复核" : permission === false ? "不可发布" : "待复核");
+  if (published) return status("published", "已发布", "var(--up)");
+  if (lifecycle === "draft") return status("draft", "草稿");
+  return status("unknown", permission === true ? "获准发布 · 尚无发布记录" : "资格未知", "var(--fg-4)");
 }
 
 export function getReportDetailId(item: ReportIndexItem): string | null {

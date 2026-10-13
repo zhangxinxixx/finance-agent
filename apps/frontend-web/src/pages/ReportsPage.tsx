@@ -198,7 +198,7 @@ export function ReportsPage() {
     if (!isSupportedReportType(item.type)) return;
     const reportId = getReportDetailId(item);
     if (!reportId) return;
-    navigate(`/reports/${encodeURIComponent(reportId)}`, { state: { reportsReturnTo: `/reports${location.search}` } });
+    navigate(`/reports/${encodeURIComponent(reportId)}`, { state: { reportsReturnTo: `/reports${location.search}`, reportSelection: item } });
   }
 
   if (allReports.length === 0 && railLoading) {

@@ -1,7 +1,8 @@
 import type { FAStatusTone } from "@/components/shared/FAStatusPill";
 import { getStatusLabel } from "@/components/shared/statusMeta";
 import { getDataStatusTone } from "@/lib/status";
-import type { ReportAnalysisAgentOutputView, ReportDetailView } from "@/types/reports";
+import type { ReportAnalysisAgentOutputView, ReportDetailView, ReportIndexItem } from "@/types/reports";
+import { getReportListStatus } from "./reportListMeta";
 
 export function shortId(value: string | undefined): string {
   if (!value) return "-";
@@ -72,9 +73,24 @@ export function reviewStatusLabel(status: string | null | undefined): string {
   return getStatusLabel(status, "review");
 }
 
-export function reportNeedsReadingWarning(data: Pick<ReportDetailView, "meta" | "data_status">): boolean {
+export function reportNeedsReadingWarning(data: Pick<ReportDetailView, "meta" | "data_status" | "research_identity">): boolean {
   return data.data_status !== "available"
-    || data.meta.lifecycle_status?.trim().toLowerCase() === "needs_review";
+    || getReportListStatus({ ...data.meta, available: data.data_status === "available", research_identity: data.research_identity }).referenceOnly;
+}
+
+export function getReportDetailStatus(data: Pick<ReportDetailView, "meta" | "available_tabs" | "research_identity">) {
+  return getReportListStatus({ ...data.meta, available: data.available_tabs.length > 0, research_identity: data.research_identity });
+}
+
+export function reportSelectionDifference(item: ReportIndexItem | null | undefined, data: ReportDetailView): string | null {
+  if (!item) return null;
+  const mismatch = (["report_id", "run_id", "snapshot_id", "trade_date"] as const).some(key =>
+    item[key] && data.meta[key] && item[key] !== data.meta[key]);
+  const versionMismatch = item.research_identity?.research_version && data.research_identity?.research_version
+    && item.research_identity.research_version !== data.research_identity.research_version;
+  if (mismatch || versionMismatch) return "列表摘要与详情的身份或版本不一致；以下仅展示详情自身正文和资格，未合并列表字段。";
+  const list = getReportListStatus(item), detail = getReportDetailStatus(data);
+  return list.description !== detail.description ? "列表摘要与详情的资格信息不同；以下仅按详情自身字段展示，列表资格未回填。" : null;
 }
 
 export function biasLabel(value: string | null | undefined): string {

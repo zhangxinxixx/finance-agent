@@ -44,7 +44,14 @@ const JIN10_REPORT_BUNDLE_LATEST_PATH = "/api/jin10/report-bundle/latest";
 const JIN10_REPORT_BUNDLE_PATH = "/api/jin10/report-bundle";
 const JIN10_WEEKLY_REPORT_LATEST_PATH = "/api/jin10/weekly-report/latest";
 const JIN10_WEEKLY_REPORT_PATH = "/api/jin10/weekly-report";
-const fetchReportsIndexRequest = createInFlightRequest(() => fetchJson<ReportsIndexResponse>(REPORTS_INDEX_PATH));
+const fetchReportsIndexRequest = createInFlightRequest(async () => {
+  const payload = await fetchJson<ReportsIndexResponse>(REPORTS_INDEX_PATH);
+  return { ...payload, reports: payload.reports.map(item => ({
+    ...item,
+    publish_allowed: typeof item.publish_allowed === "boolean" ? item.publish_allowed : null,
+    research_identity: normalizeResearchIdentity(item.research_identity),
+  })) };
+});
 const fetchReportsDatesRequest = createInFlightRequest(() => fetchJson<ReportsDatesResponse>(REPORTS_DATES_PATH));
 const REPORT_DETAIL_TAB_CONFIG: Record<ReportArtifactTabKey, { label: string; endpoint: string }> = {
   analysis: { label: "分析稿", endpoint: "analysis" },
@@ -300,12 +307,16 @@ async function fetchReportArtifactPayload(
   reportId: string,
   tab: ReportArtifactTabKey,
   signal?: AbortSignal,
+  canonicalReportId = reportId,
 ): Promise<ReportArtifactContentView | null> {
   const config = REPORT_DETAIL_TAB_CONFIG[tab];
   const sourceEndpoint = `${REPORTS_DETAIL_PATH}/${reportId}/${config.endpoint}`;
   const payload = await fetchOptionalJson<ReportArtifactPayloadResponse>(sourceEndpoint, signal);
   if (!payload) {
     return null;
+  }
+  if (typeof payload.report_id === "string" && payload.report_id !== canonicalReportId) {
+    throw new ApiError("报告正文身份与元数据不一致，未合并该内容", { url: sourceEndpoint });
   }
   const format = inferArtifactFormat(payload);
   const rawContent = normalizeArtifactContent(payload);
@@ -382,7 +393,13 @@ function artifactReadWarnings(tab: ReportArtifactTabKey): { missing: ReportWarni
 }
 
 export async function fetchReportDetail(reportId: string, signal?: AbortSignal): Promise<ReportDetailResponse> {
-  return fetchJson<ReportDetailResponse>(`${REPORTS_DETAIL_PATH}/${reportId}`, { signal });
+  const url = `${REPORTS_DETAIL_PATH}/${reportId}`;
+  const detail = await fetchJson<ReportDetailResponse>(url, { signal });
+  // The API also supports an explicit run_id alias for legacy report links.
+  if (detail.report_id !== reportId && detail.run_id !== reportId) {
+    throw new ApiError("报告身份与请求不一致，未合并正文与资格", { url });
+  }
+  return detail;
 }
 
 export async function fetchReportDetailView(reportId: string, signal?: AbortSignal): Promise<ReportDetailView> {
@@ -397,7 +414,7 @@ export async function fetchReportDetailView(reportId: string, signal?: AbortSign
     }
     const warnings = artifactReadWarnings(tab);
     return readOptionalReportPart(
-      () => fetchReportArtifactPayload(reportId, tab, signal),
+      () => fetchReportArtifactPayload(reportId, tab, signal, detail.report_id),
       warnings.missing,
       warnings.failed,
       signal,
@@ -452,6 +469,20 @@ export function normalizeReportDetail(detail: ReportDetailResponse, parts: {
     .filter((item, index, array) => array.findIndex((candidate) => candidate.code === item.code && candidate.message === item.message) === index)
     .filter((item) => !INFO_ONLY_WARNING_CODES.has(item.code));
 
+  // Weekly revision detail qualification is part of its structured read model,
+  // whereas the index exposes these fields directly. Do not inspect arbitrary
+  // report artifacts or borrow the list's qualification to fill a detail.
+  const weeklyQualification = detail.family === "weekly_context_revision_supplement"
+    ? detail.structured_payload : null;
+  const bool = (value: unknown) => typeof value === "boolean" ? value : null;
+  const text = (value: unknown) => typeof value === "string" && value.trim() ? value.trim() : null;
+  const topPermission = bool(detail.publish_allowed);
+  const structuredPermission = bool(weeklyQualification?.publish_allowed);
+  const topPublication = text(detail.publication_status);
+  const structuredPublication = text(weeklyQualification?.publication_status);
+  const qualificationConflict = (topPermission !== null && structuredPermission !== null && topPermission !== structuredPermission)
+    || (topPublication !== null && structuredPublication !== null && topPublication.toLowerCase() !== structuredPublication.toLowerCase());
+
   return {
     report_id: detail.report_id,
     meta: {
@@ -475,6 +506,11 @@ export function normalizeReportDetail(detail: ReportDetailResponse, parts: {
       warning_count: warnings.length,
       artifact_count: detail.artifacts?.length ?? 0,
       report_identity: detail.report_identity ?? null,
+      publish_allowed: topPermission ?? structuredPermission,
+      authority: detail.authority,
+      output_mode: detail.output_mode,
+      publication_status: topPublication ?? structuredPublication,
+      qualification_conflict: qualificationConflict,
     },
     data_status: dataStatus,
     source_refs: sourceRefs,

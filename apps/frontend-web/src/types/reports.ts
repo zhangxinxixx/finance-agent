@@ -14,6 +14,7 @@ export interface ReportIndexItem {
   type: ReportType;
   trade_date: string;
   run_id: string | null;
+  snapshot_id?: string | null;
   generated_at?: string | null;
   report_id?: string | null;
   family?: string | null;
@@ -28,6 +29,11 @@ export interface ReportIndexItem {
   output_mode?: string | null;
   publish_allowed?: boolean | null;
   authority?: string | null;
+  publication_status?: string | null;
+  /** Detail projection can flag conflicting source values without resolving them. */
+  qualification_conflict?: boolean;
+  report_identity?: ReportIdentityView | null;
+  research_identity?: ResearchIdentity | null;
 }
 
 export interface ReportsIndexResponse {
@@ -280,6 +286,10 @@ export interface ReportDetailResponse {
   trade_date?: string | null;
   lifecycle_status: string;
   review_status?: string;
+  publish_allowed?: boolean | null;
+  authority?: string | null;
+  output_mode?: string | null;
+  publication_status?: string | null;
   generated_at?: string | null;
   llm_audits?: ReportLLMAuditSummary[];
   artifacts: ReportArtifactResponse[];
@@ -459,6 +469,12 @@ export interface ReportDetailMeta extends ReportMeta {
   warning_count: number;
   artifact_count: number;
   report_identity?: ReportIdentityView | null;
+  publish_allowed?: boolean | null;
+  authority?: string | null;
+  output_mode?: string | null;
+  publication_status?: string | null;
+  /** Conflicting explicit values in the detail read model; presentation only. */
+  qualification_conflict?: boolean;
 }
 
 export interface ReportIdentityView {
@@ -468,6 +484,7 @@ export interface ReportIdentityView {
   publish_allowed?: boolean | null;
   review_status?: string | null;
   authority?: string | null;
+  publication_status?: string | null;
 }
 
 export interface ReportAnalysisInputItemView {

@@ -136,7 +136,7 @@ export function ListView({
                 {title}
               </span>
               <span style={{ display: "block", marginTop: 2, fontSize: "var(--text-10)", color: "var(--fg-5)" }}>
-                {""}
+                {status.description}
               </span>
             </span>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-11)" }}>
