@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "tsc --noEmit",
-    "test": "npm run test:page-data-boundary && npm run test:source-reachability && npm run test:dashboard-research-brief && npm run test:markdown-viewer && npm run test:tradingview && npm run test:gold-v3-page-bindings && npm run test:pipeline-dag && npm run test:review-center-actions && npm run test:agent-inspection && npm run test:event-flow-api-contract && npm run test:event-flow-date-contract && npm run test:cme-options-decision-contract && npm run test:cme-missing-values-behavior && npm run test:live-strategy-contract && npm run test:shadow-evaluation-contract && npm run test:shadow-evaluation-history-contract && npm run test:reports && npm run test:report-qualification-behavior && npm run test:reports-request-dedupe && npm run test:research-identity",
+    "test": "npm run test:page-data-boundary && npm run test:source-reachability && npm run test:dashboard-research-brief && npm run test:markdown-viewer && npm run test:tradingview && npm run test:gold-v3-page-bindings && npm run test:pipeline-dag && npm run test:review-center-actions && npm run test:agent-inspection && npm run test:event-flow-api-contract && npm run test:event-flow-date-contract && npm run test:cme-options-decision-contract && npm run test:cme-missing-values-behavior && npm run test:live-strategy-contract && npm run test:shadow-evaluation-contract && npm run test:shadow-evaluation-history-contract && npm run test:reports && npm run test:report-qualification-behavior && npm run test:reports-request-dedupe && npm run test:research-identity && npm run test:gold-policy-reports",
     "test:markdown-viewer": "node scripts/check-markdown-viewer.mjs",
     "test:tradingview": "node scripts/check-tradingview-chart.mjs",
     "test:gold-v3-page-bindings": "node scripts/check-gold-v3-page-bindings.mjs",
@@ -31,7 +31,8 @@
     "test:dashboard-research-brief": "node scripts/check-dashboard-research-brief.mjs",
     "test:page-data-boundary": "node scripts/check-page-data-boundary.mjs",
     "test:cme-missing-values-behavior": "node scripts/check-cme-missing-values-behavior.mjs",
-    "test:report-qualification-behavior": "node scripts/check-report-qualification-behavior.mjs"
+    "test:report-qualification-behavior": "node scripts/check-report-qualification-behavior.mjs",
+    "test:gold-policy-reports": "node scripts/check-gold-policy-reports.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.1.2",

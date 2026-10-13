@@ -1,4 +1,4 @@
-import { getReportListStatus, isSupportedReportType, reportMatchesAsset, reportSearchText } from "@/components/reports/reportListMeta";
+import { getReportItemKey, getReportListStatus, isSupportedReportType, reportMatchesAsset, reportSearchText } from "@/components/reports/reportListMeta";
 import type { ReportFilters } from "@/components/reports/reportsRailOptions";
 import type { ReportDateItem, ReportIndexItem } from "@/types/reports";
 
@@ -11,10 +11,12 @@ function getDateRangeCutoff(dateRange: string | null): string | null {
 
 export function dedupeSupportedReports(indexItems: ReportIndexItem[]): ReportIndexItem[] {
   const seen = new Map<string, ReportIndexItem>();
-  for (const item of indexItems) {
+  for (const [index, item] of indexItems.entries()) {
     if (!isSupportedReportType(item.type)) continue;
     const key =
-      item.type === "jin10_market_observation_report" || item.type === "final_report"
+      item.type === "gold_policy_daily"
+        ? getReportItemKey(item, index)
+        : item.type === "jin10_market_observation_report" || item.type === "final_report"
         ? `${item.type}|${item.trade_date}|${item.run_id ?? item.report_id ?? ""}`
         : `${item.type}|${item.trade_date}`;
     const existing = seen.get(key);

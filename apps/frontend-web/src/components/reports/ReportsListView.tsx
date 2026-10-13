@@ -5,6 +5,7 @@ import {
   CATEGORY_MAP,
   formatGeneratedAt,
   getReportListStatus,
+  getReportItemKey,
   getMarketObservationSubtype,
   getReportTitle,
   inferAssetLabel,
@@ -71,7 +72,7 @@ export function ListView({
         const marketObservationSubtype = getMarketObservationSubtype(item);
         return (
           <div className="reports-list-row"
-            key={`${item.type}-${item.trade_date}-${item.run_id ?? idx}`}
+            key={getReportItemKey(item, idx)}
             role={isOpenable ? "button" : undefined}
             tabIndex={isOpenable ? 0 : undefined}
             aria-label={isOpenable ? `查看${cat.label} ${item.trade_date || "未知日期"}报告` : undefined}
