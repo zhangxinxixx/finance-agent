@@ -160,6 +160,7 @@ export function getReportListStatus(item: Partial<ReportIndexItem>): ReportListS
   const published = lifecycle === "published";
   const notPublished = lifecycle === "draft" || lifecycle === "generated" || lifecycle === "snapshot_bound";
   const conflicts = [
+    item.qualification_conflict === true,
     topPermission !== null && identityPermission !== null && topPermission !== identityPermission,
     ...(["authority", "output_mode", "review_status", "publication_status"] as const).map(key =>
       text(item[key]) !== null && text(identity?.[key]) !== null && text(item[key]) !== text(identity?.[key])),

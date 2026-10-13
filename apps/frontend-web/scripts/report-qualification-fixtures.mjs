@@ -19,3 +19,22 @@ export function reportArtifact(item) {
   return { report_id: item.report_id, artifact_type: 'analysis_md', content_type: 'text/markdown',
     content: `# 隔离合成正文 ${item.report_id}\n\n本报告仅作离线验收，不代表真实分析或交易依据。\n\n## 原始研究\n\n只读正文标记 ${item.report_id}。`, path: `synthetic/${item.report_id}.md` };
 }
+
+// The weekly index exposes qualification fields at the top level; ReportDetail
+// carries the same fields only in structured_payload (report_reading/detail.py).
+export function weeklyRevisionFixture(publicationStatus = 'observe') {
+  const runId = `synthetic-weekly-${publicationStatus}`;
+  const tradeDate = publicationStatus === 'accepted' ? '2026-10-12' : '2026-10-13';
+  const item = { type: 'weekly_context_revision', family: 'weekly_context_revision_supplement',
+    title: `隔离合成周报修订 ${publicationStatus}`, report_id: `weekly_context_revision:${tradeDate}:${runId}`,
+    run_id: runId, trade_date: tradeDate, available: true, format: 'markdown+json',
+    publish_allowed: publicationStatus === 'accepted', publication_status: publicationStatus };
+  const detail = { report_id: item.report_id, family: item.family, title: item.title, asset: 'XAUUSD',
+    run_id: runId, snapshot_id: null, trade_date: item.trade_date, generated_at: null,
+    lifecycle_status: 'generated', review_status: 'not_required',
+    data_status: item.publish_allowed ? 'live' : 'partial', source_refs: [], artifact_refs: [], warnings: [],
+    artifacts: [{ artifact_id: `artifact-${runId}`, artifact_type: 'analysis_md', report_id: item.report_id }],
+    input_snapshot_ids: [], review_items: [], report_identity: null, research_identity: null,
+    structured_payload: { publish_allowed: item.publish_allowed, publication_status: publicationStatus } };
+  return { item, detail };
+}

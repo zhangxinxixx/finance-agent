@@ -30,6 +30,8 @@ export interface ReportIndexItem {
   publish_allowed?: boolean | null;
   authority?: string | null;
   publication_status?: string | null;
+  /** Detail projection can flag conflicting source values without resolving them. */
+  qualification_conflict?: boolean;
   report_identity?: ReportIdentityView | null;
   research_identity?: ResearchIdentity | null;
 }
@@ -471,6 +473,8 @@ export interface ReportDetailMeta extends ReportMeta {
   authority?: string | null;
   output_mode?: string | null;
   publication_status?: string | null;
+  /** Conflicting explicit values in the detail read model; presentation only. */
+  qualification_conflict?: boolean;
 }
 
 export interface ReportIdentityView {

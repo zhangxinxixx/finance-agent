@@ -469,6 +469,20 @@ export function normalizeReportDetail(detail: ReportDetailResponse, parts: {
     .filter((item, index, array) => array.findIndex((candidate) => candidate.code === item.code && candidate.message === item.message) === index)
     .filter((item) => !INFO_ONLY_WARNING_CODES.has(item.code));
 
+  // Weekly revision detail qualification is part of its structured read model,
+  // whereas the index exposes these fields directly. Do not inspect arbitrary
+  // report artifacts or borrow the list's qualification to fill a detail.
+  const weeklyQualification = detail.family === "weekly_context_revision_supplement"
+    ? detail.structured_payload : null;
+  const bool = (value: unknown) => typeof value === "boolean" ? value : null;
+  const text = (value: unknown) => typeof value === "string" && value.trim() ? value.trim() : null;
+  const topPermission = bool(detail.publish_allowed);
+  const structuredPermission = bool(weeklyQualification?.publish_allowed);
+  const topPublication = text(detail.publication_status);
+  const structuredPublication = text(weeklyQualification?.publication_status);
+  const qualificationConflict = (topPermission !== null && structuredPermission !== null && topPermission !== structuredPermission)
+    || (topPublication !== null && structuredPublication !== null && topPublication.toLowerCase() !== structuredPublication.toLowerCase());
+
   return {
     report_id: detail.report_id,
     meta: {
@@ -492,10 +506,11 @@ export function normalizeReportDetail(detail: ReportDetailResponse, parts: {
       warning_count: warnings.length,
       artifact_count: detail.artifacts?.length ?? 0,
       report_identity: detail.report_identity ?? null,
-      publish_allowed: typeof detail.publish_allowed === "boolean" ? detail.publish_allowed : null,
+      publish_allowed: topPermission ?? structuredPermission,
       authority: detail.authority,
       output_mode: detail.output_mode,
-      publication_status: detail.publication_status,
+      publication_status: topPublication ?? structuredPublication,
+      qualification_conflict: qualificationConflict,
     },
     data_status: dataStatus,
     source_refs: sourceRefs,

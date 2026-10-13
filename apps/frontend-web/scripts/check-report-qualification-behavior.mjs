@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { loader, React, renderToStaticMarkup, cases } from './strategy-test-harness.mjs';
-import { reportFixture, researchFixture, detailFixture, reportArtifact } from './report-qualification-fixtures.mjs';
+import { reportFixture, researchFixture, detailFixture, reportArtifact, weeklyRevisionFixture } from './report-qualification-fixtures.mjs';
 const load = loader({'@/adapters/apiClient': {ApiError: class extends Error{}, fetchJson(){throw new Error('Network forbidden');}}});
 const meta = load('@/components/reports/reportListMeta');
 const adapter = load('@/adapters/reports');
@@ -113,5 +113,37 @@ await cases([
     assert.equal((await aliasAdapter.fetchReportDetailView(item.run_id)).report_id,item.report_id);
     const rendered=html(load('@/components/reports/ReportDetailSections').ReportDetailHero,{data:view(item),metrics:[],onRefresh(){},tabs:[],activeTab:'analysis',onTabChange(){},summaryChips:[],qualificationPending:true});
     assert.match(rendered,/资格待重新核验/);assert.doesNotMatch(rendered,/获准发布|已发布/);
+  }],
+  ['weekly-detail-reads-existing-structured-qualification', () => {
+    for (const publicationStatus of ['observe', 'accepted']) {
+      const {item, detail} = weeklyRevisionFixture(publicationStatus);
+      assert.equal(Object.hasOwn(detail, 'publish_allowed'), false);
+      assert.equal(Object.hasOwn(detail, 'publication_status'), false);
+      const v = adapter.normalizeReportDetail(detail, parts(item));
+      assert.equal(v.meta.publish_allowed, item.publish_allowed);
+      assert.equal(v.meta.publication_status, item.publication_status);
+      const state = detailMeta.getReportDetailStatus(v);
+      assert.match(state.description, item.publish_allowed ? /获准发布/ : /不可发布/);
+      assert.doesNotMatch(state.description, /许可未知|已发布/);
+      assert.equal(state.key, meta.getReportListStatus(item).key);
+      assert.equal(v.tabs.analysis.content, reportArtifact(item).content);
+      assert.match(html(load('@/components/reports/ReportDetailSections').ReportDetailHero,
+        {data:v,metrics:[],onRefresh(){},tabs:[],activeTab:'analysis',onTabChange(){},summaryChips:[]}),
+        item.publish_allowed ? /获准发布/ : /不可发布/);
+      for (const structured_payload of [null, {}, {publish_allowed:'false', publication_status:1}]) {
+        const missing = adapter.normalizeReportDetail({...detail, structured_payload}, parts(item));
+        assert.equal(missing.meta.publish_allowed, null);
+        assert.match(detailMeta.getReportDetailStatus(missing).description, /许可未知/);
+      }
+      for (const overrides of [{publish_allowed:!item.publish_allowed}, {publication_status:'different_status'}]) {
+        const conflict = adapter.normalizeReportDetail({...detail,...overrides}, parts(item));
+        assert.equal(detailMeta.getReportDetailStatus(conflict).key, 'unknown');
+        assert.match(detailMeta.getReportDetailStatus(conflict).description, /冲突/);
+      }
+    }
+    const unrelated = reportFixture('non-weekly');
+    const v = adapter.normalizeReportDetail({...detailFixture(unrelated),structured_payload:{publish_allowed:true,publication_status:'accepted'}},parts(unrelated));
+    assert.equal(v.meta.publish_allowed,null);
+    assert.match(detailMeta.getReportDetailStatus(v).description,/许可未知/);
   }],
 ]);
