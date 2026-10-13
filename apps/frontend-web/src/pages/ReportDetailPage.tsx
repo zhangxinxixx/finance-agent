@@ -17,8 +17,8 @@ import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { ReportMarketOddsMatrix } from "@/components/reports/ReportMarketOddsMatrix";
 import { ReportArtifactPanel } from "@/components/reports/ReportArtifactPanel";
 import { ResultIdentityBar } from "@/components/shared/ResultIdentityBar";
-import { reportNeedsReadingWarning } from "@/components/reports/reportDetailMeta";
-import { reportAssetLabel } from "@/components/reports/reportListMeta";
+import { getReportDetailStatus, reportNeedsReadingWarning, reportSelectionDifference } from "@/components/reports/reportDetailMeta";
+import { isObservationReport, reportAssetLabel } from "@/components/reports/reportListMeta";
 import { useReportDetail } from "@/hooks/useReportDetail";
 import type { ReportDetailTabKey } from "@/types/reports";
 import { reportsReturnTarget } from "@/components/reports/reportsNavigation";
@@ -121,6 +121,9 @@ export function ReportDetailPage() {
     { label: "日期", value: data.meta.trade_date ?? "-" },
   ];
   const summaryChips: string[] = [];
+  const qualification = getReportDetailStatus(data);
+  const selectionDifference = reportSelectionDifference(location.state?.reportSelection, data);
+  const qualificationPending = isRefreshing || Boolean(error);
 
   return (
     <div className="finance-page-shell">
@@ -135,18 +138,24 @@ export function ReportDetailPage() {
           onTabChange={setActiveTab}
           summaryChips={summaryChips}
           returnTo={returnTo}
+          qualificationPending={qualificationPending}
         />
 
         {reportNeedsReadingWarning(data) || data.warnings.length ? (
           <FAWarningBanner
-            title="仅供研究观察，暂不具备正式参考条件"
+            title="报告资格与参考限制"
             description={uniqueReading([
-              ...(reportNeedsReadingWarning(data) ? ["数据或审核尚不完整，不能据此确认当前触发条件。"] : []),
+              ...(reportNeedsReadingWarning(data) ? [qualification.description] : []),
               ...data.warnings.map((warning) => readableWarning(warning.message)),
             ]).join("；")}
             tone={data.warnings.some((warning) => warning.severity === "error") ? "down" : "warn"}
           />
         ) : null}
+
+        {selectionDifference ? <ResearchDetails label="查看列表与详情差异">
+          <p className="fa-muted-text">{selectionDifference}</p>
+          <p className="fa-faint-text">列表：{location.state?.reportSelection?.report_id ?? "未提供报告 ID"} / {location.state?.reportSelection?.snapshot_id ?? "未提供快照"}；详情：{data.report_id} / {data.meta.snapshot_id ?? "未提供快照"}。</p>
+        </ResearchDetails> : null}
 
         {!qualityBlocked && hasMarketObservation ? (
           <FAWarningBanner
@@ -171,7 +180,7 @@ export function ReportDetailPage() {
 
         {!qualityBlocked && activeTab === "analysis" && tabs.includes("analysis") && data.report_id === reportId ? <ResearchTradePlanCard
           key={data.report_id} identity={data.research_identity} plan={data.final_trade_plan} tradeDate={data.meta.trade_date} asOf={data.meta.asOf}
-          observation={reportNeedsReadingWarning(data)} /> : null}
+          observation={isObservationReport(data.meta)} referenceOnly={qualification.referenceOnly || qualificationPending} /> : null}
 
         <ResearchIdentity identity={data.research_identity} />
         {data.current_context ? <ResearchDetails label="查看当前背景（独立于原始研究）">

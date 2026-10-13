@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { modelDisplayLabel } from "@/components/llm-audit/llmAuditFormat";
 import { formatGoldMainlineLabel, formatGoldNetBiasLabel, goldNetBiasTone, normalizeGoldMainlineId } from "@/components/shared/goldMainlineFormat";
-import { reportFamilyLabel, reportLifecycleLabel, reportTitleLabel, reviewStatusLabel, statusTone } from "@/components/reports/reportDetailMeta";
+import { getReportDetailStatus, reportFamilyLabel, reportTitleLabel, reviewStatusLabel, statusTone } from "@/components/reports/reportDetailMeta";
 import { getDataStatusLabel } from "@/lib/status";
 import type { FATabOption } from "@/components/shared/FATabBar";
 import type { GoldMainlineRanking } from "@/types/gold-mainlines";
@@ -371,6 +371,7 @@ export function ReportDetailHero({
   summaryChips = [],
   returnTo = "/reports",
   isRefreshing = false,
+  qualificationPending = false,
 }: {
   data: ReportDetailView;
   metrics: Array<{ label: string; value: string }>;
@@ -381,6 +382,7 @@ export function ReportDetailHero({
   summaryChips?: string[];
   returnTo?: string;
   isRefreshing?: boolean;
+  qualificationPending?: boolean;
 }) {
   const familyLabel = reportFamilyLabel(data.meta.family);
   const titleLabel = reportTitleLabel(data.meta.title);
@@ -390,6 +392,7 @@ export function ReportDetailHero({
   const isSupplementalReport =
     data.meta.family === "macro_event_followup_supplement" || String(data.meta.title ?? "").includes("宏观事件跟进补充");
   const originalUrl = pickOriginalUrl(data);
+  const qualification = getReportDetailStatus(data);
   const observationOnly =
     data.meta.report_identity?.authority === "observation_only" ||
     data.meta.report_identity?.output_mode === "observe";
@@ -412,20 +415,17 @@ export function ReportDetailHero({
             {getDataStatusLabel(data.data_status)}
           </FAStatusPill>
           <FAStatusPill tone="neutral" className="text-[length:var(--type-caption)]">
-            {reportLifecycleLabel(data.meta.lifecycle_status)}
+            {qualificationPending ? "资格待重新核验" : qualification.label}
           </FAStatusPill>
-          {data.meta.review_status ? (
+          {!qualificationPending && data.meta.review_status ? (
             <FAStatusPill tone="info" className="text-[length:var(--type-caption)]">
-              {reviewStatusLabel(data.meta.review_status)}
+              复核：{reviewStatusLabel(data.meta.review_status)}
             </FAStatusPill>
           ) : null}
           {observationOnly ? (
             <>
               <FAStatusPill tone="warn" className="text-[length:var(--type-caption)]">
                 研究观察
-              </FAStatusPill>
-              <FAStatusPill tone="warn" className="text-[length:var(--type-caption)]">
-                不可发布
               </FAStatusPill>
             </>
           ) : null}
@@ -457,6 +457,9 @@ export function ReportDetailHero({
           </button>
         </div>
       </div>
+      <p className="mt-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
+        {qualificationPending ? "正文保留上次读取版本；当前发布许可、发布状态和参考有效性待重新核验。" : qualification.description}
+      </p>
 
       <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-[var(--border-faint)] pt-1.5">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">

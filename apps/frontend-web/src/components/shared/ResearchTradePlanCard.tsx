@@ -7,7 +7,7 @@ function Conditions({ value }: { value: ResearchPlanConditions }) {
   return <>{(Array.isArray(value) ? value : [value]).map((line, index) => <p key={index}>{line}</p>)}</>;
 }
 
-export function ResearchTradePlanCard({ plan, identity, observation = false, embedded = false }: {
+export function ResearchTradePlanCard({ plan, identity, observation = false, embedded = false, referenceOnly = false }: {
   identity?: Identity | null;
   plan?: ResearchTradePlan | null;
   tradeDate?: string | null;
@@ -15,9 +15,10 @@ export function ResearchTradePlanCard({ plan, identity, observation = false, emb
   today?: string;
   observation?: boolean;
   embedded?: boolean;
+  referenceOnly?: boolean;
 }) {
   const historical = identity?.key_level_validity.status === "historical" || identity?.key_level_validity.status === "expired";
-  const title = historical ? "历史做单条件与注意点" : identity?.key_level_validity.status === "active" ? "当前做单策略与注意点" : "研究做单条件与注意点（有效性待核验）";
+  const title = historical ? "历史做单条件与注意点" : referenceOnly ? "研究条件与注意点（只读参考）" : identity?.key_level_validity.status === "active" ? "当前做单策略与注意点" : "研究做单条件与注意点（有效性待核验）";
   return <section className={`research-trade-plan${embedded ? " research-trade-plan-embedded" : " fa-card"}`} aria-label={title}>
     <header>
       <h2 className="fa-section-title">{title}</h2>
@@ -25,7 +26,7 @@ export function ResearchTradePlanCard({ plan, identity, observation = false, emb
       {historical ? <p className="fa-body-text research-trade-plan-status">历史条件，需更新后重新核验。</p> : null}
       {observation && !embedded ? <p className="fa-label">研究观察稿</p> : null}
     </header>
-    <p className="fa-card-title research-trade-plan-action">{historical ? "报告当时行动" : identity?.key_level_validity.status === "active" ? "当前做单策略" : "本研究行动"}：{plan?.current_action ?? "等待核验"}</p>
+    <p className="fa-card-title research-trade-plan-action">{historical ? "报告当时行动" : !referenceOnly && identity?.key_level_validity.status === "active" ? "当前做单策略" : "本研究行动"}：{plan?.current_action ?? "等待核验"}</p>
     <ul className="research-trade-plan-levels fa-body-text" aria-label="入场止损目标核验状态">
       <li>入场待核验</li><li>止损待核验</li><li>目标未形成</li>
     </ul>

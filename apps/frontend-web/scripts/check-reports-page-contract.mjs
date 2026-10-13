@@ -29,7 +29,8 @@ assert.match(model, /getReportListStatus\(item\)\.key/, "status filtering must d
 assert.match(list, /getReportListStatus\(item\)/, "list view must render the report lifecycle status");
 assert.match(card, /getReportListStatus\(item\)/, "card view must render the report lifecycle status");
 assert.match(detail, /authority === "observation_only"/, "detail view must preserve observation-only authority");
-assert.match(detail, /不可发布/, "detail view must show the non-publishable state");
+assert.match(detail, /getReportDetailStatus\(data\)/, "detail view must project publication permission with the shared report semantics");
+assert.match(detail, /qualification\.description/, "detail view must retain the explicit permission and reference restrictions");
 assert.match(types, /publish_allowed\?: boolean \| null/, "report index type must retain publication authority");
 assert.match(types, /report_identity\?: ReportIdentityView/, "report detail type must retain observation identity");
 assert.match(adapter, /report_identity: detail\.report_identity/, "report detail adapter must retain observation identity");
