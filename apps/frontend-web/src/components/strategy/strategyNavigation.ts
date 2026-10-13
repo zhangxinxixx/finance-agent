@@ -1,6 +1,7 @@
 import type { DashboardDataResponse, DashboardSummary, DashboardViewModel } from "@/types/dashboard";
 import type { ResultIdentity } from "@/types/result-identity";
 import type { FAStatusTone } from "@/components/shared/FAStatusPill";
+import { readGoldReadingContext, type GoldReadingContext } from "@/components/gold-workspace/goldReadingNavigation";
 export type StrategyReturnTarget = "/dashboard" | "/dashboard/analysis";
 
 function isKnownResultIdentity(identity: ResultIdentity | null | undefined): boolean {
@@ -28,6 +29,7 @@ export interface StrategyNavigationState {
   strategySource: StrategySourceContext;
   /** The frozen dashboard DTO is returned to DashboardAnalysisPage when present. */
   dashboardResult?: DashboardDataResponse | null;
+  goldWorkspaceResult?: GoldReadingContext | null;
 }
 
 interface BuildStrategyNavigationInput {
@@ -178,6 +180,7 @@ export function readStrategyNavigationState(value: unknown): StrategyNavigationS
   return {
     strategySource: source,
     dashboardResult: isRecord(value.dashboardResult) ? value.dashboardResult as unknown as DashboardDataResponse : undefined,
+    goldWorkspaceResult: readGoldReadingContext(value.goldWorkspaceResult),
   };
 }
 

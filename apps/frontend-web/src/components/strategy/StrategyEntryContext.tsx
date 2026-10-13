@@ -2,6 +2,7 @@ import { ArrowLeft, ShieldAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { EvidenceRecordActions } from "@/components/shared/EvidenceRecordActions";
+import { compareGoldStrategyResearch } from "@/components/gold-workspace/goldReadingNavigation";
 import {
   compareStrategySourceIdentity,
   type StrategyNavigationState,
@@ -40,7 +41,9 @@ export function StrategySourceNotice({
   currentIdentity?: import("@/types/result-identity").ResultIdentity | null;
 }) {
   const { strategySource: source } = navigation;
-  const comparison = compareStrategySourceIdentity(source, currentIdentity);
+  const comparison = navigation.goldWorkspaceResult
+    ? compareGoldStrategyResearch(navigation.goldWorkspaceResult, currentIdentity)
+    : compareStrategySourceIdentity(source, currentIdentity);
   return (
     <section className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2.5" aria-label="策略来源与当前结果">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -55,7 +58,8 @@ export function StrategySourceNotice({
         </div>
         <Link
           to={source.returnTo}
-          state={navigation.dashboardResult ? { dashboardResult: navigation.dashboardResult } : undefined}
+          state={navigation.goldWorkspaceResult ? { goldWorkspaceResult: navigation.goldWorkspaceResult }
+            : navigation.dashboardResult ? { dashboardResult: navigation.dashboardResult } : undefined}
           className="inline-flex shrink-0 items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[11px] font-semibold text-[var(--info)] hover:bg-[var(--bg-hover)]"
         >
           <ArrowLeft size={12} aria-hidden="true" />

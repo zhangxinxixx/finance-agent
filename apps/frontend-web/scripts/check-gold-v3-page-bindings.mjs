@@ -51,11 +51,7 @@ for (const componentPath of [
   assert.ok(exists(componentPath), `missing Gold v3 page component ${componentPath}`);
 }
 
-assertIncludes(
-  dashboardPage,
-  "<GoldWorkspacePanel />",
-  "Dashboard must retain the current backend-driven Gold workspace",
-);
+assert.match(dashboardPage, /<GoldWorkspacePanel(?:\s|\/)/, "Dashboard must retain the current backend-driven Gold workspace");
 assertIncludes(workspaceAdapter, "normalizeResearchIdentity(r.research_identity)", "Gold workspace must preserve backend research identity");
 for (const forbidden of ["useGoldMainlines", "fetchGoldMainlines", "mainlineCoverageRows(", "topicRankings("]) {
   assertNotIncludes(goldOverviewPanel, forbidden, `Dashboard Gold overview panel must not recalculate or refetch mainline data: ${forbidden}`);

@@ -3,7 +3,7 @@ import { fetchGoldAnalysisPreflight, fetchGoldAnalysisTask, readGoldAnalysisTask
 import type { GoldAnalysisTask } from "@/types/gold-workspace";
 
 type Phase = "idle" | "checking" | "running" | "blocked" | "uncertain" | "complete" | "failed";
-export function useGoldAnalysisRefresh(onCompleted: (taskId: string) => Promise<boolean>) {
+export function useGoldAnalysisRefresh(onCompleted: (taskId: string) => Promise<boolean>, enabled = true) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [message, setMessage] = useState("");
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -16,6 +16,7 @@ export function useGoldAnalysisRefresh(onCompleted: (taskId: string) => Promise<
 
   useEffect(() => {
     mounted.current = true;
+    if (!enabled) return () => { mounted.current = false; };
     let cancelled = false;
     const saved = readGoldAnalysisTask();
     if (saved && saved !== "uncertain") { setTaskId(saved); setPhase("running"); setMessage("恢复跟踪上次分析任务。"); }
@@ -29,10 +30,10 @@ export function useGoldAnalysisRefresh(onCompleted: (taskId: string) => Promise<
       }).catch(() => undefined);
     }
     return () => { mounted.current = false; cancelled = true; };
-  }, []);
+  }, [enabled]);
 
   const start = useCallback(async () => {
-    if (starting.current || phase === "running" || phase === "checking") return;
+    if (!enabled || starting.current || phase === "running" || phase === "checking") return;
     starting.current = true;
     setPhase("checking"); setMessage("正在检查数据源与已有分析任务。");
     try {
@@ -41,7 +42,7 @@ export function useGoldAnalysisRefresh(onCompleted: (taskId: string) => Promise<
     } catch {
       if (mounted.current) { setPhase("blocked"); setMessage("无法核验分析启动条件，请恢复服务连接后重试。"); }
     } finally { starting.current = false; }
-  }, [phase]);
+  }, [enabled, phase]);
 
   const clearUncertain = useCallback(() => {
     if (phase !== "uncertain" || starting.current) return;
@@ -50,7 +51,7 @@ export function useGoldAnalysisRefresh(onCompleted: (taskId: string) => Promise<
   }, [phase]);
 
   useEffect(() => {
-    if (!taskId) return;
+    if (!enabled || !taskId) return;
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
@@ -80,6 +81,6 @@ export function useGoldAnalysisRefresh(onCompleted: (taskId: string) => Promise<
     };
     void poll();
     return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
-  }, [taskId]);
+  }, [enabled, taskId]);
   return { phase, message, task, taskId, lookupError, start, clearUncertain, busy: phase === "checking" || phase === "running" };
 }
