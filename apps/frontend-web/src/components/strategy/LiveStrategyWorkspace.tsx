@@ -19,7 +19,7 @@ import {
   type LiveStrategyStatus,
 } from "@/types/live-strategy";
 import {
-  getDisplayLiveStrategyStatus,
+  getLiveStrategyQualification,
   getLiveStrategyTrustState,
   isLiveStrategyMarketUsable,
   isLiveStrategyCurrent,
@@ -27,6 +27,7 @@ import {
   liveStrategyTrustMessage,
   type LiveStrategyTrustState,
 } from "./liveStrategyTrust";
+import { LiveStrategyQualificationNotice } from "./LiveStrategyScenarios";
 import {
   cmePathStatusLabel,
   cmeScopeLabel,
@@ -642,14 +643,8 @@ export function LiveStrategyWorkspace({ data, isLoading, error, tradeDate, daily
   const goldBaseline = data.data_quality.gold_baseline;
   const goldAuthorityReady = hasVerifiedGoldBaseline(goldBaseline);
   const trustState = getLiveStrategyTrustState({ isLoading, error });
-  const strategyStatus = getDisplayLiveStrategyStatus({
-    status: data.strategy_status,
-    availability: data.status,
-    dataReady: data.feasibility.data_ready,
-    market: data.live_market,
-    trustState,
-    goldBaselineVerified: goldAuthorityReady,
-  });
+  const qualification = getLiveStrategyQualification(data, trustState, goldAuthorityReady);
+  const strategyStatus = qualification.displayStatus;
   const copy = decisionCopy[strategyStatus];
   const updateMessage = trustState !== "current"
     ? liveStrategyTrustMessage(trustState)
@@ -661,7 +656,7 @@ export function LiveStrategyWorkspace({ data, isLoading, error, tradeDate, daily
   const dataGateBlocked = data.status !== "available"
     || !data.feasibility.data_ready
     || !isLiveStrategyMarketUsable(data.live_market);
-  const blocked = strategyStatus === "SUSPENDED_DATA" || dataGateBlocked || !goldAuthorityReady;
+  const blocked = qualification.blocked || strategyStatus === "SUSPENDED_DATA" || dataGateBlocked || !goldAuthorityReady;
   const marketTimestamps = data.live_market.timestamps;
   const reviewOnly = trustState !== "current";
   const marketStatus = liveMarketStatusLabel(data.live_market.status);
@@ -689,6 +684,8 @@ export function LiveStrategyWorkspace({ data, isLoading, error, tradeDate, daily
           <button type="button" onClick={onRefresh}><RefreshCw size={13} aria-hidden="true" />立即刷新</button>
         </div>
       </header>
+
+      <LiveStrategyQualificationNotice qualification={qualification} recordedStatus={data.strategy_status} activeScenario={data.active_scenario} />
 
       <div className="live-strategy-focus-grid">
         <div>

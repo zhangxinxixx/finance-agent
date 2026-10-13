@@ -14,7 +14,7 @@ import { StrategyScenarioSection } from "@/components/strategy/StrategyScenarioS
 import { StrategyModuleSignalsSection, StrategyPlaybookMatchesSection } from "@/components/strategy/StrategySignalsPanels";
 import { StrategyDataTraceSection } from "@/components/strategy/StrategyTracePanel";
 import { LiveStrategyDiagnostics, LiveStrategyTrustNotice, LiveStrategyWorkspace } from "@/components/strategy/LiveStrategyWorkspace";
-import { LiveStrategyScenarios } from "@/components/strategy/LiveStrategyScenarios";
+import { LiveStrategyQualificationNotice, LiveStrategyScenarios } from "@/components/strategy/LiveStrategyScenarios";
 import { ShadowEvaluationPanel } from "@/components/strategy/ShadowEvaluationPanel";
 import {
   DEFAULT_STRATEGY_ASSET,
@@ -27,7 +27,7 @@ import { useShadowEvaluationHistory } from "@/hooks/useShadowEvaluationHistory";
 import { ShadowEvaluationHistoryPanel } from "@/components/strategy/ShadowEvaluationHistoryPanel";
 import { LegacyStrategyIdentityNotice, ResultIdentityBar } from "@/components/shared/ResultIdentityBar";
 import { hasVerifiedGoldBaseline } from "@/types/live-strategy";
-import { getDisplayLiveStrategyStatus, getLiveStrategyTrustState, isLiveStrategyMarketUsable } from "@/components/strategy/liveStrategyTrust";
+import { getLiveStrategyQualification, getLiveStrategyTrustState, isLiveStrategyMarketUsable } from "@/components/strategy/liveStrategyTrust";
 import {
   readStrategyNavigationState,
   StrategyEvaluationScopeNotice,
@@ -62,6 +62,7 @@ export function StrategyPage() {
     error,
     selectedStrategyCardId,
     isDetailLoading,
+    detailError,
     isTraceLoading,
     traceError,
     assetOptions,
@@ -93,16 +94,9 @@ export function StrategyPage() {
       || !liveStrategy.data.feasibility.data_ready
       || !isLiveStrategyMarketUsable(liveStrategy.data.live_market)
     : true;
-  const displayLiveStrategyStatus = liveStrategy.data
-    ? getDisplayLiveStrategyStatus({
-        status: liveStrategy.data.strategy_status,
-        availability: liveStrategy.data.status,
-        dataReady: liveStrategy.data.feasibility.data_ready,
-        market: liveStrategy.data.live_market,
-        trustState: liveStrategyTrustState,
-        goldBaselineVerified: hasVerifiedLiveGoldBaseline,
-      })
-    : "SUSPENDED_DATA";
+  const liveQualification = liveStrategy.data
+    ? getLiveStrategyQualification(liveStrategy.data, liveStrategyTrustState, hasVerifiedLiveGoldBaseline)
+    : null;
 
   if (isLoading && !data) {
     return <StrategyPageLoadingState />;
@@ -168,6 +162,14 @@ export function StrategyPage() {
 
       {activeView !== "current" ? <LegacyStrategyIdentityNotice /> : null}
 
+      {(activeView === "daily" || activeView === "history" || activeView === "evidence") && (isDetailLoading || detailError) ? (
+        <div className="finance-panel p-3 text-[length:var(--type-body-sm)] text-[var(--fg-3)]" role="status" aria-live="polite">
+          {isDetailLoading ? <span>正在加载所选策略详情，正文与依据等待同一记录核验。</span> : (
+            <><p>{readingErrorMessage(detailError, "所选策略详情读取失败，请重试。")}</p><button type="button" className="mt-2 text-[var(--brand)]" onClick={() => selectedStrategyCardId && selectStrategyCard(selectedStrategyCardId)}>重试所选记录</button></>
+          )}
+        </div>
+      ) : null}
+
       {activeView === "daily" ? (
         <section className="strategy-tab-panel" aria-label="日度研究">
           {liveStrategy.data ? (
@@ -178,30 +180,38 @@ export function StrategyPage() {
               dataGateBlocked={liveStrategyDataGateBlocked}
             />
           ) : null}
-          {liveStrategy.data ? (
+          {liveStrategy.data && liveQualification ? (
+            <LiveStrategyQualificationNotice qualification={liveQualification} recordedStatus={liveStrategy.data.strategy_status} activeScenario={liveStrategy.data.active_scenario} />
+          ) : null}
+          {liveStrategy.data && liveQualification ? (
             <LiveStrategyScenarios
               activeScenario={liveStrategy.data.active_scenario}
               setups={liveStrategy.data.setups}
               noTrade={liveStrategy.data.no_trade}
-              dataBlocked={liveStrategyTrustState !== "current" || liveStrategyDataGateBlocked}
-              strategyStatus={displayLiveStrategyStatus}
+              dataBlocked={liveQualification.blocked}
+              strategyStatus={liveQualification.displayStatus}
+              qualification={liveQualification}
             />
           ) : null}
-          <StrategyHeroSection
-            hero={data.hero}
-            scenario={data.scenario}
-            dailyUpdate={data.daily_update}
-            weekendContext={data.weekend_context}
-            asset={selectedAsset}
-            sampleSize={data.sample_size}
-            source={data.source}
-            updatedAt={data.updated_at}
-          />
-          {data.scenario ? <StrategyScenarioSection scenario={data.scenario} /> : null}
-          <div className="grid gap-3 lg:grid-cols-2">
-            <StrategyModuleSignalsSection signals={data.module_signals} />
-            <StrategyPlaybookMatchesSection matches={data.playbook_matches} />
-          </div>
+          {!isDetailLoading && !detailError ? (
+            <>
+              <StrategyHeroSection
+                hero={data.hero}
+                scenario={data.scenario}
+                dailyUpdate={data.daily_update}
+                weekendContext={data.weekend_context}
+                asset={selectedAsset}
+                sampleSize={data.sample_size}
+                source={data.source}
+                updatedAt={data.updated_at}
+              />
+              {data.scenario ? <StrategyScenarioSection scenario={data.scenario} /> : null}
+              <div className="grid gap-3 lg:grid-cols-2">
+                <StrategyModuleSignalsSection signals={data.module_signals} />
+                <StrategyPlaybookMatchesSection matches={data.playbook_matches} />
+              </div>
+            </>
+          ) : null}
         </section>
       ) : null}
 
@@ -255,7 +265,7 @@ export function StrategyPage() {
             />
           ) : null}
           <LiveStrategyDiagnostics data={liveStrategy.data} />
-          <StrategyDataTraceSection data={data} isTraceLoading={isTraceLoading} traceError={traceError} />
+          {!isDetailLoading && !detailError ? <StrategyDataTraceSection data={data} isTraceLoading={isTraceLoading} traceError={traceError} /> : null}
         </section>
       ) : null}
     </FAPageScaffold>

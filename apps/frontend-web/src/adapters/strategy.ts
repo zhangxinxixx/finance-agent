@@ -164,19 +164,37 @@ async function fetchHistoryList(asset: string, limit = STRATEGY_HISTORY_LIMIT): 
   }
 }
 
-/** Fetch a single strategy card detail by id. Returns null on failure. */
+export interface StrategyRequestIdentity {
+  run_id?: string | null;
+  snapshot_id?: string | null;
+}
+
+function checkIdentityField(actual: string | null | undefined, expected: string | null | undefined) {
+  if (actual && expected && actual !== expected) throw new Error("策略详情身份核验失败：响应与所选记录不匹配。");
+}
+
+/** The detail endpoint may use legacy run/snapshot IDs; compare actual fields before mapping fallbacks. */
 export async function fetchStrategyCardById(
   strategyCardId: string,
   asset = DEFAULT_STRATEGY_ASSET,
+  identity?: StrategyRequestIdentity,
 ): Promise<StrategyViewModel | null> {
-  try {
-    const raw = await fetchJson<StrategyCardRawResponse>(
-      `${STRATEGY_CARDS_LIST_PATH}/${encodeURIComponent(strategyCardId)}?asset=${encodeURIComponent(asset)}`,
-    );
-    return mapStrategyResponse(raw, "api", asset);
-  } catch {
-    return null;
+  const raw = await fetchJson<StrategyCardRawResponse>(
+    `${STRATEGY_CARDS_LIST_PATH}/${encodeURIComponent(strategyCardId)}?asset=${encodeURIComponent(asset)}`,
+  );
+  checkIdentityField(raw.strategy_card_id, strategyCardId);
+  checkIdentityField(raw.asset, asset);
+  checkIdentityField(raw.run_id, raw.hero?.run_id);
+  checkIdentityField(raw.snapshot_id, raw.hero?.snapshot_id);
+  for (const actual of [raw.run_id, raw.hero?.run_id]) checkIdentityField(actual, identity?.run_id);
+  for (const actual of [raw.snapshot_id, raw.hero?.snapshot_id]) checkIdentityField(actual, identity?.snapshot_id);
+  const runId = raw.run_id ?? raw.hero?.run_id;
+  const snapshotId = raw.snapshot_id ?? raw.hero?.snapshot_id;
+  if (!raw.strategy_card_id && !(runId && (runId === identity?.run_id || runId === strategyCardId))
+    && !(snapshotId && (snapshotId === identity?.snapshot_id || snapshotId === strategyCardId))) {
+    throw new Error("策略详情身份未核验：响应未提供可匹配所选记录的身份。");
   }
+  return mapStrategyResponse(raw, "api", asset);
 }
 
 /** Fetch discovered strategy assets with sample counts. Returns empty on failure. */
@@ -192,6 +210,7 @@ export async function fetchStrategyAssetSummaries(): Promise<StrategyAssetSummar
 /** Fetch source-trace drilldown for a strategy card. Returns null when the trace endpoint has no row yet. */
 export async function fetchStrategySourceTraceByCardId(
   strategyCardId: string,
+  identity?: StrategyRequestIdentity,
 ): Promise<StrategySourceTraceViewModel | null> {
   const raw = await fetchOptionalJson<StrategySourceTraceRawResponse>(
     `${STRATEGY_SOURCE_TRACE_PATH}/${encodeURIComponent(strategyCardId)}`,
@@ -199,6 +218,12 @@ export async function fetchStrategySourceTraceByCardId(
   if (!raw) {
     return null;
   }
+  // This endpoint promises run/snapshot fields, not a returned card ID. Check
+  // those original fields before adding the endpoint target to the envelope.
+  checkIdentityField(raw.run_id, raw.snapshot?.run_id);
+  checkIdentityField(raw.snapshot_id, raw.snapshot?.snapshot_id);
+  for (const actual of [raw.run_id, raw.snapshot?.run_id]) checkIdentityField(actual, identity?.run_id);
+  for (const actual of [raw.snapshot_id, raw.snapshot?.snapshot_id]) checkIdentityField(actual, identity?.snapshot_id);
   return mapStrategySourceTrace(strategyCardId, raw);
 }
 
@@ -232,7 +257,7 @@ export async function fetchStrategyCardsOverview(asset = DEFAULT_STRATEGY_ASSET)
   if (history.length > 0) {
     const latestHistoryId = history[0]?.strategy_card_id;
     if (latestHistoryId) {
-      const historyDetail = await fetchStrategyCardById(latestHistoryId, requestedAsset);
+      const historyDetail = await fetchStrategyCardById(latestHistoryId, requestedAsset, history[0]).catch(() => null);
       if (historyDetail) {
         const alignedHistoryDetail = alignStrategyStatusWithHero(historyDetail);
         return {

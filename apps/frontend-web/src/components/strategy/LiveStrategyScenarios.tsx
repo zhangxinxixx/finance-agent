@@ -2,6 +2,7 @@ import { Ban, CheckCircle2, CircleAlert, ShieldAlert, Target } from "lucide-reac
 import { FAStatusPill, type FAStatusTone } from "@/components/shared/FAStatusPill";
 import type { LiveStrategyNoTrade, LiveStrategySetup } from "@/types/live-strategy";
 import { liveStrategyScenarioStatusLabel, preserveStrategyItems, strategyEvidenceLabel } from "./strategyDisplayLabels";
+import type { LiveStrategyQualification } from "./liveStrategyTrust";
 
 interface LiveStrategyScenariosProps {
   activeScenario: "long" | "short" | "no_trade" | null;
@@ -9,6 +10,27 @@ interface LiveStrategyScenariosProps {
   noTrade: LiveStrategyNoTrade;
   dataBlocked: boolean;
   strategyStatus: "WAITING" | "WATCHING" | "ARMED" | "TRIGGERED" | "SUSPENDED_DATA";
+  qualification?: LiveStrategyQualification;
+}
+
+export function LiveStrategyQualificationNotice({ qualification, recordedStatus, activeScenario }: {
+  qualification: LiveStrategyQualification;
+  recordedStatus: string;
+  activeScenario: LiveStrategyScenariosProps["activeScenario"];
+}) {
+  if (!qualification.blocked) return null;
+  const statusLabels: Record<string, string> = { TRIGGERED: "已触发", ARMED: "待确认", WATCHING: "观察中", WAITING: "等待中", SUSPENDED_DATA: "数据暂停" };
+  const scenarioLabels = { long: "多头", short: "空头", no_trade: "不交易" };
+  return (
+    <div className="live-strategy-quality" role="status" aria-label="当前参考资格">
+      <CircleAlert size={16} aria-hidden="true" />
+      <div>
+        <strong>当前：暂停参考</strong>
+        <p>{qualification.reason}</p>
+        <p>响应当时：{statusLabels[recordedStatus] ?? "状态未知"}{activeScenario ? `；记录场景：${scenarioLabels[activeScenario]}` : ""}。保留历史记录供复盘。</p>
+      </div>
+    </div>
+  );
 }
 
 function formatNumber(value: number | null | undefined, digits = 2) {
@@ -46,7 +68,7 @@ function ListValue({ items, empty }: { items: string[]; empty: string }) {
   return items.length > 0 ? <ul>{items.map((item, index) => <li key={`${item}-${index}`}>{strategyEvidenceLabel(item)}</li>)}</ul> : <p>{empty}</p>;
 }
 
-function SetupCard({ setup, activeScenario, dataBlocked }: { setup: LiveStrategySetup; activeScenario: LiveStrategyScenariosProps["activeScenario"]; dataBlocked: boolean }) {
+function SetupCard({ setup, activeScenario, dataBlocked, pauseReason }: { setup: LiveStrategySetup; activeScenario: LiveStrategyScenariosProps["activeScenario"]; dataBlocked: boolean; pauseReason?: string | null }) {
   const isBlocked = dataBlocked || setup.status === "blocked_data";
   const status = isBlocked ? "blocked_data" : setup.status;
   const hasCoreValues = Boolean(setup.reference_level || setup.entry_zone || setup.invalidation_level !== null || setup.stop_reference !== null);
@@ -66,10 +88,11 @@ function SetupCard({ setup, activeScenario, dataBlocked }: { setup: LiveStrategy
     <article className="live-strategy-scenario-card">
       <div className="live-strategy-panel-heading">
         <div><Target size={15} aria-hidden="true" /><h2>{setup.direction === "long" ? "多头场景" : "空头场景"}</h2></div>
-        <FAStatusPill tone={scenarioTone(status)}>{statusMeta.label}</FAStatusPill>
+        <FAStatusPill tone={scenarioTone(status)}>{dataBlocked ? "暂停参考" : statusMeta.label}</FAStatusPill>
       </div>
       {activeScenario === setup.direction ? <p className="live-strategy-scenario-active"><CheckCircle2 size={14} aria-hidden="true" />后端标记为当前场景</p> : null}
-      {isBlocked ? <p className="live-strategy-scenario-blocked"><CircleAlert size={14} aria-hidden="true" />数据阻断：后端未确认完整行情数据，以下仅保留只读字段。</p> : null}
+      {isBlocked ? <p className="live-strategy-scenario-blocked"><CircleAlert size={14} aria-hidden="true" />{pauseReason ?? "后端未确认完整行情数据"}；以下仅保留复盘字段。</p> : null}
+      {dataBlocked && setup.status === "triggered" ? <p className="fa-muted-text">响应当时：已触发；当前暂停参考。</p> : null}
       {hasCoreValues ? (
         <div className="live-strategy-scenario-values">
           <div><span>参考位</span><strong>{levelRoleLabel(setup.reference_level?.role)} <b className="fa-num">{formatNumber(setup.reference_level?.value)}</b></strong></div>
@@ -99,15 +122,15 @@ function SetupCard({ setup, activeScenario, dataBlocked }: { setup: LiveStrategy
   );
 }
 
-function NoTradeCard({ noTrade, activeScenario, dataBlocked }: { noTrade: LiveStrategyNoTrade; activeScenario: LiveStrategyScenariosProps["activeScenario"]; dataBlocked: boolean }) {
+function NoTradeCard({ noTrade, activeScenario, dataBlocked, pauseReason }: { noTrade: LiveStrategyNoTrade; activeScenario: LiveStrategyScenariosProps["activeScenario"]; dataBlocked: boolean; pauseReason?: string | null }) {
   return (
     <article className="live-strategy-scenario-card live-strategy-no-trade-card">
       <div className="live-strategy-panel-heading">
         <div><Ban size={15} aria-hidden="true" /><h2>不交易场景</h2></div>
-        <FAStatusPill tone={dataBlocked ? "dim" : "neutral"}>{dataBlocked ? "数据阻断" : "不交易"}</FAStatusPill>
+        <FAStatusPill tone={dataBlocked ? "dim" : "neutral"}>{dataBlocked ? "暂停参考" : "不交易"}</FAStatusPill>
       </div>
       {activeScenario === "no_trade" ? <p className="live-strategy-scenario-active"><CheckCircle2 size={14} aria-hidden="true" />后端标记为当前场景</p> : null}
-      {dataBlocked ? <p className="live-strategy-scenario-blocked"><CircleAlert size={14} aria-hidden="true" />数据阻断：等待后端恢复完整数据。</p> : null}
+      {dataBlocked ? <p className="live-strategy-scenario-blocked"><CircleAlert size={14} aria-hidden="true" />{pauseReason ?? "等待后端恢复完整数据"}；以下仅供复盘。</p> : null}
       <div className="live-strategy-no-trade-range"><span>观望区间</span><strong className="fa-num">{formatRange(noTrade.range)}</strong></div>
       <div className="live-strategy-scenario-lists">
         <div><span>不交易原因</span><ListValue items={preserveStrategyItems(noTrade.reasons)} empty="后端未提供不交易原因。" /></div>
@@ -117,7 +140,7 @@ function NoTradeCard({ noTrade, activeScenario, dataBlocked }: { noTrade: LiveSt
   );
 }
 
-export function LiveStrategyScenarios({ activeScenario, setups, noTrade, dataBlocked, strategyStatus }: LiveStrategyScenariosProps) {
+export function LiveStrategyScenarios({ activeScenario, setups, noTrade, dataBlocked, strategyStatus, qualification }: LiveStrategyScenariosProps) {
   const longSetup = setups.find((setup) => setup.direction === "long");
   const shortSetup = setups.find((setup) => setup.direction === "short");
   const fallbackSetup = (direction: "long" | "short"): LiveStrategySetup => ({ direction, status: "unavailable", setup_id: null, reference_level: null, entry_zone: null, trigger_conditions: [], confirmation_conditions: [], invalidation_level: null, stop_reference: null, volatility_buffer: null, spread_buffer: null, targets: [], risk_reward: { tp1: null, tp2: null, tp3: null }, gate: { passed: false, reasons: [] }, calculation: { ruleset: null, inputs: {} } });
@@ -132,9 +155,9 @@ export function LiveStrategyScenarios({ activeScenario, setups, noTrade, dataBlo
         <span>当前场景：<b>{dataBlocked ? "无法核验（上次结果仅供复盘）" : visibleActiveScenario ?? (strategyStatus === "WAITING" ? "等待关键位接近/确认" : strategyStatus === "SUSPENDED_DATA" ? "后端数据暂停" : "尚未激活")}</b></span>
       </div>
       <div className="live-strategy-scenarios-grid">
-        {visibleActiveScenario === "no_trade" ? <NoTradeCard noTrade={noTrade} activeScenario={visibleActiveScenario} dataBlocked={dataBlocked} /> : null}
-        {orderedSetups.map((setup) => <SetupCard key={setup.direction} setup={setup} activeScenario={visibleActiveScenario} dataBlocked={dataBlocked} />)}
-        {visibleActiveScenario !== "no_trade" ? <NoTradeCard noTrade={noTrade} activeScenario={visibleActiveScenario} dataBlocked={dataBlocked} /> : null}
+        {visibleActiveScenario === "no_trade" ? <NoTradeCard noTrade={noTrade} activeScenario={visibleActiveScenario} dataBlocked={dataBlocked} pauseReason={qualification?.reason} /> : null}
+        {orderedSetups.map((setup) => <SetupCard key={setup.direction} setup={setup} activeScenario={visibleActiveScenario} dataBlocked={dataBlocked} pauseReason={qualification?.reason} />)}
+        {visibleActiveScenario !== "no_trade" ? <NoTradeCard noTrade={noTrade} activeScenario={visibleActiveScenario} dataBlocked={dataBlocked} pauseReason={qualification?.reason} /> : null}
       </div>
     </section>
   );
