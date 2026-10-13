@@ -2,7 +2,7 @@ import { readableWarning } from "@/lib/researchReading";
 import { FAStatusPill } from "@/components/shared/FAStatusPill";
 import { getStatusLabel, getStatusTone } from "@/components/shared/statusMeta";
 import type { CMEOptionsDecisionResponse, CMEOptionsResponse } from "@/types/cme-options";
-import { formatCMEExpiryLabel, formatCMEProductLabel, formatCompactNumber, formatNumber, resolveDirectionalWall, summarizeDecision, toneStyle, translateDecisionText } from "./cmeOptionsFormat";
+import { formatCMEExpiryLabel, formatCMEProductLabel, formatCompactNumber, formatNumber, isFiniteNumber, resolveDirectionalWall, summarizeDecision, toneStyle, translateDecisionText } from "./cmeOptionsFormat";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
 import { resolveCMEExpiryScope, selectCMEPinWall } from "./cmeDecisionIdentity";
 
@@ -46,6 +46,7 @@ interface ExpiryInsight {
   skewNote: string | null;
   dominance: string;
   direction: string;
+  partial: boolean;
 }
 
 function reportStatusTone(status: string | undefined) {
@@ -71,25 +72,25 @@ function productLabel(product: string | null | undefined): string {
 }
 
 function formatPercent(value: number | null | undefined, digits = 1) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (!isFiniteNumber(value)) return "—";
   return `${value.toFixed(digits)}%`;
 }
 
 function formatSignedNumber(value: number | null | undefined, digits = 0) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (!isFiniteNumber(value)) return "—";
   const prefix = value > 0 ? "+" : "";
   return `${prefix}${formatNumber(value, digits)}`;
 }
 
 function formatConfidence(value: number | null | undefined) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "无置信度";
+  if (!isFiniteNumber(value)) return "无置信度";
   const pct = value * 100;
   if (pct > 0 && pct < 1) return `极低 ${pct.toFixed(2)}%`;
   return `${pct.toFixed(0)}%`;
 }
 
 function formatGex(value: number | null | undefined) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (!isFiniteNumber(value)) return "—";
   return `${(value / 100000000).toFixed(2)}亿`;
 }
 
@@ -148,13 +149,13 @@ function nearestLevel(
   levels: CMEOptionsResponse["support_resistance"]["support" | "resistance"],
   currentPrice: number | null | undefined,
 ) {
-  if (!levels.length) return null;
-  if (!currentPrice) return levels[0] ?? null;
-  return [...levels].sort((a, b) => Math.abs(a.strike - currentPrice) - Math.abs(b.strike - currentPrice))[0] ?? null;
+  const valid = levels.filter((level): level is typeof level & { strike: number } => isFiniteNumber(level.strike));
+  if (!isFiniteNumber(currentPrice)) return valid[0] ?? null;
+  return valid.sort((a, b) => Math.abs(a.strike - currentPrice) - Math.abs(b.strike - currentPrice))[0] ?? null;
 }
 
 function wallScoreDelta(snapshot: CMEOptionsResponse, strike: number | null | undefined) {
-  if (!strike) return null;
+  if (!isFiniteNumber(strike)) return null;
   const map = snapshot.calibration?.wall_score_delta_1d ?? {};
   return map[String(strike)] ?? map[String(Math.round(strike))] ?? null;
 }
@@ -180,8 +181,12 @@ function buildExpiryInsight(snapshot: CMEOptionsResponse, expiry: string | undef
   const putGex = summary.put_gex ?? null;
   const netGex = summary.net_gex ?? null;
   const totalGex = summary.total_gex ?? null;
-  const callTop = [...data.gex_top].sort((a, b) => b.call_gex - a.call_gex)[0];
-  const putTop = [...data.gex_top].sort((a, b) => b.put_gex - a.put_gex)[0];
+  const ranked = (key: "call_gex" | "put_gex" | "total_gex") => data.gex_top.flatMap((item) => {
+    const value = item[key];
+    return isFiniteNumber(item.strike) && isFiniteNumber(value) ? [{ strike: item.strike, value }] : [];
+  }).sort((a, b) => b.value - a.value);
+  const callTop = ranked("call_gex")[0];
+  const putTop = ranked("put_gex")[0];
   const structureLabel: Record<string, string> = {
     balanced: "模型看涨/看跌伽马敞口接近（Call/Put GEX）",
     net_call_dominated: "模型看涨伽马敞口较高（Call GEX）",
@@ -204,15 +209,13 @@ function buildExpiryInsight(snapshot: CMEOptionsResponse, expiry: string | undef
     totalGex,
     gammaZero: summary.gamma_zero ?? null,
     structure: summary.structure ?? null,
-    callTop: callTop ? { strike: callTop.strike, value: callTop.call_gex } : null,
-    putTop: putTop ? { strike: putTop.strike, value: putTop.put_gex } : null,
-    totalTop: [...data.gex_top]
-      .sort((a, b) => b.total_gex - a.total_gex)
-      .slice(0, 4)
-      .map((item) => ({ strike: item.strike, value: item.total_gex })),
+    callTop: callTop ?? null,
+    putTop: putTop ?? null,
+    totalTop: ranked("total_gex").slice(0, 4),
     skewNote: data.iv_skew?.interpretation ? translateDecisionText(data.iv_skew.interpretation) : null,
     dominance,
     direction,
+    partial: data.gex_top.some((item) => !isFiniteNumber(item.strike) || !isFiniteNumber(item.call_gex) || !isFiniteNumber(item.put_gex) || !isFiniteNumber(item.total_gex)),
   };
 }
 
@@ -220,8 +223,10 @@ function buildRange(snapshot: CMEOptionsResponse) {
   const range = snapshot.parameters?.analysis_range;
   const support = snapshot.support_resistance?.support ?? [];
   const resistance = snapshot.support_resistance?.resistance ?? [];
-  const fallbackMin = support.length ? Math.min(...support.map((item) => item.strike)) : null;
-  const fallbackMax = resistance.length ? Math.max(...resistance.map((item) => item.strike)) : null;
+  const supportStrikes = support.map((item) => item.strike).filter(isFiniteNumber);
+  const resistanceStrikes = resistance.map((item) => item.strike).filter(isFiniteNumber);
+  const fallbackMin = supportStrikes.length ? Math.min(...supportStrikes) : null;
+  const fallbackMax = resistanceStrikes.length ? Math.max(...resistanceStrikes) : null;
   return {
     min: range?.strike_min ?? fallbackMin,
     max: range?.strike_max ?? fallbackMax,
@@ -563,6 +568,7 @@ export function CMEOptionsOverviewGrid({ snapshot, wallScores, decision, selecte
                       <small>{formatGex(distributionInsight.putTop?.value)}</small>
                     </div>
                   </div>
+                  {distributionInsight.partial ? <p className="cme-options-muted-note">部分字段未提供；最高点仅比较已提供数值，缺失行保留在伽马敞口明细。</p> : null}
                   <div className="cme-options-far-tags">
                     {distributionInsight.totalTop.map((item) => (
                       <span key={`${distributionInsight.expiry}-${item.strike}`}>

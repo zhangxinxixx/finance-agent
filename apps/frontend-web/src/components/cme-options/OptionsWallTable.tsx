@@ -64,13 +64,13 @@ export function OptionsWallTable({ wallScores, selectedExpiry }: OptionsWallTabl
       }
     >
       <div className="border-b border-[var(--border-faint)] px-3 py-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
-        墙位评分和吸附值是当前快照的结构指标，不是概率。墙位接口未返回到期月坐标，因此到期月筛选不会赋予墙位期限归属；缺失吸附值显示为“—”。
+        墙位评分和吸附值是当前快照的结构指标，不是概率。墙位接口未返回到期月坐标，因此到期月筛选不会赋予墙位期限归属；未提供的数值显示为“—”，真实零保留。缺失评分不参与强弱比较。
       </div>
       {expanded && (
         <div>
           {selectedExpiry ? <div className="border-b border-[var(--border-faint)] px-3 py-2 text-[length:var(--type-caption)] text-[var(--fg-4)]">当前筛选到期月：{formatCMEExpiryLabel(selectedExpiry)}；墙位仍按快照聚合。</div> : null}
           <div className="overflow-x-auto">
-          <table className="min-w-full border-collapse">
+          <table className="w-full min-w-[600px] border-collapse">
             <OptionsWallTableHeader
               sortKey={sortKey}
               sortDirection={sortDirection}

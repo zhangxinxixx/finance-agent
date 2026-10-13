@@ -18,7 +18,7 @@ export function toneStyle(kind: string) {
 }
 
 export function formatNumber(value: number | null | undefined, digits = 0) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (!isFiniteNumber(value)) return "—";
   return value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
@@ -55,7 +55,7 @@ export function formatCompactNumber(
   digits = 2,
   signed = false,
 ) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (!isFiniteNumber(value)) return "—";
   const absolute = Math.abs(value);
   const scale = absolute >= 100_000_000
     ? { divisor: 100_000_000, suffix: "亿" }
@@ -101,11 +101,23 @@ export function summarizeDecision(decision: CMEOptionsDecisionResponse | null | 
 }
 
 export function topWall(wallScores: CMEOptionsResponse["wall_scores"], side: "CALL" | "PUT") {
-  return [...wallScores].filter((wall) => wall.side === side).sort((a, b) => b.wall_score - a.wall_score)[0] ?? null;
+  return [...wallScores].filter((wall) => wall.side === side && isFiniteNumber(wall.strike) && isFiniteNumber(wall.wall_score))
+    .sort((a, b) => compareNullableNumbers(a.wall_score, b.wall_score, "desc"))[0] ?? null;
+}
+
+export function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** Missing observations stay last in either direction, outside numeric ranking. */
+export function compareNullableNumbers(a: number | null, b: number | null, direction: "asc" | "desc" = "asc") {
+  if (!isFiniteNumber(a)) return isFiniteNumber(b) ? 1 : 0;
+  if (!isFiniteNumber(b)) return -1;
+  return direction === "asc" ? a - b : b - a;
 }
 
 export interface DirectionalWallDisplay {
-  strike: number;
+  strike: number | null;
   wallScore: number | null;
   oi: number | null;
   deltaOi: number | null;
@@ -127,11 +139,12 @@ function nearestDirectionalLevel(
   levels: CMEOptionsResponse["support_resistance"]["support" | "resistance"],
   currentPrice: number | null | undefined,
 ) {
-  if (!levels.length) return null;
-  if (currentPrice === null || currentPrice === undefined || Number.isNaN(currentPrice)) {
-    return [...levels].sort((a, b) => b.wall_score - a.wall_score)[0] ?? null;
+  const validLevels = levels.filter((level): level is typeof level & { strike: number } => isFiniteNumber(level.strike));
+  if (!isFiniteNumber(currentPrice)) {
+    return validLevels.filter((level) => isFiniteNumber(level.wall_score))
+      .sort((a, b) => compareNullableNumbers(a.wall_score, b.wall_score, "desc"))[0] ?? null;
   }
-  return [...levels].sort((a, b) => Math.abs(a.strike - currentPrice) - Math.abs(b.strike - currentPrice))[0] ?? null;
+  return validLevels.sort((a, b) => Math.abs(a.strike - currentPrice) - Math.abs(b.strike - currentPrice))[0] ?? null;
 }
 
 export function resolveDirectionalWall(
@@ -140,10 +153,9 @@ export function resolveDirectionalWall(
   side: "CALL" | "PUT",
 ): DirectionalWallDisplay | null {
   const directWall = [...wallScores]
-    .filter((wall) => wall.side === side || wallTypeMatches(side, wall.wall_type))
+    .filter((wall) => (wall.side === side || wallTypeMatches(side, wall.wall_type)) && isFiniteNumber(wall.strike) && isFiniteNumber(wall.wall_score))
     .sort((a, b) => {
-      if (b.wall_score !== a.wall_score) return b.wall_score - a.wall_score;
-      return b.oi - a.oi;
+      return compareNullableNumbers(a.wall_score, b.wall_score, "desc") || compareNullableNumbers(a.oi, b.oi, "desc");
     })[0];
 
   if (directWall) {
@@ -191,14 +203,14 @@ export function resolveDirectionalWall(
   for (const expiry of expiryOrder) {
     const gexTop = byExpiry[expiry]?.gex_top ?? [];
     if (!gexTop.length) continue;
-    const best = [...gexTop].sort((a, b) => {
+    const best = [...gexTop].filter((item) => isFiniteNumber(item.strike) && isFiniteNumber(side === "CALL" ? item.call_gex : item.put_gex)).sort((a, b) => {
       const aValue = side === "CALL" ? a.call_gex : a.put_gex;
       const bValue = side === "CALL" ? b.call_gex : b.put_gex;
-      return bValue - aValue;
+      return compareNullableNumbers(aValue, bValue, "desc");
     })[0];
     if (!best) continue;
     const gexValue = side === "CALL" ? best.call_gex : best.put_gex;
-    if (!gexValue) continue;
+    if (!isFiniteNumber(gexValue)) continue;
     return {
       strike: best.strike,
       wallScore: null,

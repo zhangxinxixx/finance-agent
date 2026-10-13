@@ -1,7 +1,7 @@
 import type { CMEOptionsDecisionGammaSummary, CMEOptionsNetGEXAggregate, CMEOptionsWallScore } from "@/types/cme-options";
 import { FACard } from "../shared/FACard";
 import { FAStatusPill } from "../shared/FAStatusPill";
-import { formatCompactNumber, translateDecisionText } from "./cmeOptionsFormat";
+import { formatCompactNumber, isFiniteNumber, topWall, translateDecisionText } from "./cmeOptionsFormat";
 
 interface GammaZeroCardProps {
   netGexAggregate?: CMEOptionsNetGEXAggregate | null;
@@ -10,7 +10,7 @@ interface GammaZeroCardProps {
 }
 
 function formatNumber(value: number | null | undefined, fractionDigits = 2) {
-  if (value === null || value === undefined || Number.isNaN(value)) {
+  if (!isFiniteNumber(value)) {
     return "—";
   }
 
@@ -37,8 +37,8 @@ export function GammaZeroCard({ netGexAggregate, decisionGamma, wallScores = [] 
     : null);
   const netGex = netGexAggregate?.net_gex ?? decisionGamma?.net_gex;
 
-  const callWall = [...wallScores].filter((w) => w.side === "CALL").sort((a, b) => b.wall_score - a.wall_score)[0];
-  const putWall = [...wallScores].filter((w) => w.side === "PUT").sort((a, b) => b.wall_score - a.wall_score)[0];
+  const callWall = topWall(wallScores, "CALL");
+  const putWall = topWall(wallScores, "PUT");
   const directionStyles = direction === null ? "text-[var(--fg-5)]" : {
     positive: "text-[var(--up)]",
     negative: "text-[var(--down)]",
@@ -108,13 +108,13 @@ export function GammaZeroCard({ netGexAggregate, decisionGamma, wallScores = [] 
           {callWall && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <span style={{ fontSize: "var(--type-body-sm)", color: "var(--fg-4)" }}>看涨压制</span>
-              <span className="fa-num" style={{ fontSize: "var(--type-body-sm)", fontWeight: 600, color: "var(--down)" }}>{formatNumber(callWall.strike)} 点 · 评分 {callWall.wall_score.toFixed(2)}</span>
+              <span className="fa-num" style={{ fontSize: "var(--type-body-sm)", fontWeight: 600, color: "var(--down)" }}>{formatNumber(callWall.strike)} 点 · 评分 {formatNumber(callWall.wall_score, 2)}</span>
             </div>
           )}
           {putWall && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <span style={{ fontSize: "var(--type-body-sm)", color: "var(--fg-4)" }}>看跌支撑</span>
-              <span className="fa-num" style={{ fontSize: "var(--type-body-sm)", fontWeight: 600, color: "var(--up)" }}>{formatNumber(putWall.strike)} 点 · 评分 {putWall.wall_score.toFixed(2)}</span>
+              <span className="fa-num" style={{ fontSize: "var(--type-body-sm)", fontWeight: 600, color: "var(--up)" }}>{formatNumber(putWall.strike)} 点 · 评分 {formatNumber(putWall.wall_score, 2)}</span>
             </div>
           )}
         </div>

@@ -7,19 +7,19 @@ export type CMEOptionsWallType = "Call Wall" | "Put Wall" | "Balanced Wall" | "A
 export type CMEOptionsSourceStatus = "ok" | "warn" | "error" | "unavailable" | "info";
 
 export interface CMEOptionsWallScore {
-  strike: number;
+  strike: number | null;
   wall_type: CMEOptionsWallType;
   side?: "CALL" | "PUT" | null;
-  oi: number;
+  oi: number | null;
   delta_oi: number | null;
-  wall_score: number;
+  wall_score: number | null;
   pnt: number | null;
 }
 
 export interface CMEOptionsLevelItem {
-  strike: number;
-  wall_score: number;
-  distance_pct: number;
+  strike: number | null;
+  wall_score: number | null;
+  distance_pct: number | null;
 }
 
 export interface CMEOptionsSupportResistance {
@@ -41,11 +41,11 @@ export interface CMEOptionsNetGEXAggregate {
 // ── Per-expiry detail (P2-11) ──
 
 export interface CMEOptionsGEXTopItem {
-  strike: number;
-  call_gex: number;
-  put_gex: number;
-  net_gex: number;
-  total_gex: number;
+  strike: number | null;
+  call_gex: number | null;
+  put_gex: number | null;
+  net_gex: number | null;
+  total_gex: number | null;
 }
 
 export interface CMEOptionsExpirySummary {

@@ -1,6 +1,7 @@
 import { FACard } from "../shared/FACard";
 import { FAStatusPill, type FAStatusTone } from "../shared/FAStatusPill";
 import type { CMEOptionsWallScore } from "../../types/cme-options";
+import { compareNullableNumbers, isFiniteNumber } from "./cmeOptionsFormat";
 
 export type OptionsWallSortKey =
   | "strike"
@@ -28,7 +29,8 @@ const WALL_COLUMNS: Array<{ key: OptionsWallSortKey; label: string }> = [
   { key: "pnt", label: "吸附值" },
 ];
 
-function formatInteger(value: number) {
+function formatInteger(value: number | null) {
+  if (!isFiniteNumber(value)) return "—";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }
 
@@ -37,35 +39,9 @@ function formatScore(value: number | null) {
 }
 
 function formatDelta(value: number | null) {
-  if (value === null) return "—";
+  if (!isFiniteNumber(value)) return "—";
   const sign = value > 0 ? "+" : "";
   return `${sign}${formatInteger(value)}`;
-}
-
-function compareValues(
-  a: CMEOptionsWallScore,
-  b: CMEOptionsWallScore,
-  sortKey: OptionsWallSortKey,
-) {
-  switch (sortKey) {
-    case "strike":
-      return a.strike - b.strike;
-    case "oi":
-      return a.oi - b.oi;
-    case "delta_oi": {
-      const aValue = a.delta_oi ?? Number.NEGATIVE_INFINITY;
-      const bValue = b.delta_oi ?? Number.NEGATIVE_INFINITY;
-      return aValue - bValue;
-    }
-    case "wall_score":
-      return a.wall_score - b.wall_score;
-    case "pnt":
-      return (a.pnt ?? Number.NEGATIVE_INFINITY) - (b.pnt ?? Number.NEGATIVE_INFINITY);
-    case "wall_type":
-      return a.wall_type.localeCompare(b.wall_type);
-    default:
-      return 0;
-  }
 }
 
 export function sortWallRows(
@@ -74,13 +50,10 @@ export function sortWallRows(
   direction: OptionsWallSortDirection,
 ) {
   const sorted = [...rows].sort((a, b) => {
-    const result = compareValues(a, b, sortKey);
-    if (result !== 0) return direction === "asc" ? result : -result;
-
-    const wallScoreResult = b.wall_score - a.wall_score;
-    if (wallScoreResult !== 0) return wallScoreResult;
-
-    return b.strike - a.strike;
+    const result = sortKey === "wall_type"
+      ? (direction === "asc" ? 1 : -1) * a.wall_type.localeCompare(b.wall_type)
+      : compareNullableNumbers(a[sortKey], b[sortKey], direction);
+    return result || compareNullableNumbers(a.wall_score, b.wall_score, "desc") || compareNullableNumbers(a.strike, b.strike, "desc");
   });
 
   return sorted;
@@ -178,7 +151,7 @@ function OptionsWallTableRow({ row, index }: OptionsWallTableRowProps) {
       <td className={`${CELL_CLASS_NAME} ${wallAccentClassName(row.wall_type)} whitespace-nowrap`}>
         <span className={MONO_CELL}>{formatInteger(row.strike)}</span>
       </td>
-      <td className={CELL_CLASS_NAME}>
+      <td className={`${CELL_CLASS_NAME} whitespace-nowrap`}>
         <FAStatusPill tone={wallStatus(row.wall_type)}>{wallTypeLabel(row.wall_type)}</FAStatusPill>
       </td>
       <td className={`${NUMERIC_CLASS_NAME} whitespace-nowrap`}>{formatInteger(row.oi)}</td>

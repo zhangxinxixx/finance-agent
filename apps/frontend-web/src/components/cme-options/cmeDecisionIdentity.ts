@@ -82,7 +82,7 @@ export function resolveCMEExpiryScope(
 }
 
 export function selectCMEPinWall(rows: readonly CMEOptionsWallScore[]): CMEOptionsWallScore | null {
-  const validRows = rows.filter((row) => typeof row.pnt === "number" && Number.isFinite(row.pnt));
+  const validRows = rows.filter((row) => typeof row.strike === "number" && Number.isFinite(row.strike) && typeof row.pnt === "number" && Number.isFinite(row.pnt));
   const explicitPin = validRows.find((row) => row.wall_type === "Pin Wall");
   if (explicitPin) return explicitPin;
   return [...validRows].sort((left, right) => (right.pnt ?? Number.NEGATIVE_INFINITY) - (left.pnt ?? Number.NEGATIVE_INFINITY))[0] ?? null;
