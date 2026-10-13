@@ -49,11 +49,11 @@ export function GEXBreakdown({ snapshot, selectedExpiry }: { snapshot: CMEOption
             </tr>
           </thead>
           <tbody>
-            {data.gex_top.map((item) => (
-              <tr key={item.strike} style={{ borderBottom: "1px solid var(--border-faint)" }}>
+            {data.gex_top.map((item, index) => (
+              <tr key={`${item.strike}-${index}`} style={{ borderBottom: "1px solid var(--border-faint)" }}>
                 <td className="fa-num" style={{ padding: "4px 10px", fontWeight: 600, color: "var(--fg-2)" }}>{formatNumber(item.strike)}</td>
                 <td className="fa-num" style={{ padding: "4px 10px", textAlign: "right", color: "var(--fg-3)" }}>{formatGEXM(item.total_gex)}</td>
-                <td className="fa-num" style={{ padding: "4px 10px", textAlign: "right", fontWeight: 600, color: !Number.isFinite(item.net_gex) ? "var(--fg-4)" : item.net_gex < 0 ? "var(--down)" : "var(--up)" }}>{formatGEXM(item.net_gex)}</td>
+                <td className="fa-num" style={{ padding: "4px 10px", textAlign: "right", fontWeight: 600, color: item.net_gex == null || !Number.isFinite(item.net_gex) ? "var(--fg-4)" : item.net_gex < 0 ? "var(--down)" : "var(--up)" }}>{formatGEXM(item.net_gex)}</td>
                 <td className="fa-num" style={{ padding: "4px 10px", textAlign: "right", color: "var(--fg-3)" }}>{formatGEXM(item.call_gex)}</td>
                 <td className="fa-num" style={{ padding: "4px 10px", textAlign: "right", color: "var(--fg-3)" }}>{formatGEXM(item.put_gex)}</td>
               </tr>

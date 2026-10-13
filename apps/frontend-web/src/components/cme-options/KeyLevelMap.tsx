@@ -6,31 +6,34 @@ import type {
 import { FACard } from "../shared/FACard";
 import { FAMetricCard } from "../shared/FAMetricCard";
 import { FAStatusPill } from "../shared/FAStatusPill";
+import { compareNullableNumbers, isFiniteNumber } from "./cmeOptionsFormat";
 
 interface KeyLevelMapProps {
   supportResistance: CMEOptionsSupportResistance;
   wallScores: CMEOptionsWallScore[];
 }
 
-function formatPrice(value: number) {
+function formatPrice(value: number | null) {
+  if (!isFiniteNumber(value)) return "—";
   return value.toLocaleString("zh-CN", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   });
 }
 
-function formatScore(value: number) {
+function formatScore(value: number | null) {
+  if (!isFiniteNumber(value)) return "—";
   return value.toFixed(2);
 }
 
-function formatPercent(value: number) {
+function formatPercent(value: number | null) {
+  if (!isFiniteNumber(value)) return "—";
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
 function sortLevels(levels: CMEOptionsLevelItem[]) {
   return [...levels].sort((left, right) => {
-    if (right.wall_score !== left.wall_score) return right.wall_score - left.wall_score;
-    return right.strike - left.strike;
+    return compareNullableNumbers(left.wall_score, right.wall_score, "desc") || compareNullableNumbers(left.strike, right.strike, "desc");
   });
 }
 
@@ -39,14 +42,12 @@ function pickTop(levels: CMEOptionsLevelItem[], limit = 3) {
 }
 
 function highestResistance(levels: CMEOptionsLevelItem[]) {
-  return sortLevels(levels)[0] ?? null;
+  return sortLevels(levels.filter((level) => isFiniteNumber(level.strike) && isFiniteNumber(level.wall_score)))[0] ?? null;
 }
 
 function highestOiStrike(wallScores: CMEOptionsWallScore[]) {
-  return [...wallScores].sort((left, right) => {
-    if (right.oi !== left.oi) return right.oi - left.oi;
-    if (right.wall_score !== left.wall_score) return right.wall_score - left.wall_score;
-    return right.strike - left.strike;
+  return [...wallScores].filter((row) => isFiniteNumber(row.strike) && isFiniteNumber(row.oi)).sort((left, right) => {
+    return compareNullableNumbers(left.oi, right.oi, "desc") || compareNullableNumbers(left.wall_score, right.wall_score, "desc") || compareNullableNumbers(left.strike, right.strike, "desc");
   })[0] ?? null;
 }
 

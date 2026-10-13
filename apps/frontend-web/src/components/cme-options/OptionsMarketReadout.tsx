@@ -3,7 +3,7 @@ import type { CMEOptionsCalibration, CMEOptionsDataSource, CMEOptionsNetGEXAggre
 import { FACard } from "../shared/FACard";
 import { FAMetricCard } from "../shared/FAMetricCard";
 import { FAStatusPill, type FAStatusTone } from "../shared/FAStatusPill";
-import { translateDecisionText } from "./cmeOptionsFormat";
+import { compareNullableNumbers, isFiniteNumber, topWall, translateDecisionText } from "./cmeOptionsFormat";
 
 interface OptionsMarketReadoutProps {
   dataSource: CMEOptionsDataSource;
@@ -19,12 +19,12 @@ interface OptionsMarketReadoutProps {
 }
 
 function formatPrice(value: number | null | undefined, digits = 0) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (!isFiniteNumber(value)) return "—";
   return value.toLocaleString("en-US", { maximumFractionDigits: digits });
 }
 
 function formatScore(value: number | null | undefined) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (!isFiniteNumber(value)) return "—";
   return value.toFixed(2);
 }
 
@@ -41,16 +41,14 @@ function sourceStatusLabel(status: CMEOptionsDataSource["status"] | null | undef
 }
 
 function strongestBySide(wallScores: CMEOptionsWallScore[], side: "CALL" | "PUT") {
-  return [...wallScores]
-    .filter((wall) => wall.side === side)
-    .sort((left, right) => right.wall_score - left.wall_score)[0] ?? null;
+  return topWall(wallScores, side);
 }
 
 function topPinWall(wallScores: CMEOptionsWallScore[]) {
   return [...wallScores]
+    .filter((wall) => isFiniteNumber(wall.strike) && isFiniteNumber(wall.wall_score))
     .sort((left, right) => {
-      if (right.wall_score !== left.wall_score) return right.wall_score - left.wall_score;
-      return right.oi - left.oi;
+      return compareNullableNumbers(left.wall_score, right.wall_score, "desc") || compareNullableNumbers(left.oi, right.oi, "desc");
     })
     .find((wall) => wall.wall_type === "Pin Wall") ?? null;
 }

@@ -1,6 +1,6 @@
 import { readableWarning } from "@/lib/researchReading";
 import type { CMEOptionsResponse } from "@/types/cme-options";
-import { CME_META_TEXT, formatNumber, toneStyle } from "./cmeOptionsFormat";
+import { CME_META_TEXT, formatNumber, isFiniteNumber, toneStyle } from "./cmeOptionsFormat";
 
 export type PriceLadderLevel = {
   strike: number;
@@ -21,8 +21,10 @@ export function buildPriceLadderLevels(
   currentLabel = "黄金期货（GC）报告锚点",
   currentNote = "黄金期货（GC）报告基准（非实时现货）",
 ): PriceLadderLevel[] {
-  const resistances = [...(supportResistance?.resistance ?? [])].sort((a, b) => b.strike - a.strike);
-  const supports = [...(supportResistance?.support ?? [])].sort((a, b) => b.strike - a.strike);
+  const validLevels = (levels: CMEOptionsResponse["support_resistance"]["support"]) => levels
+    .filter((item): item is typeof item & { strike: number } => isFiniteNumber(item.strike));
+  const resistances = validLevels(supportResistance?.resistance ?? []);
+  const supports = validLevels(supportResistance?.support ?? []);
   const anchor = currentPrice !== null && Number.isFinite(currentPrice)
     ? [{ strike: currentPrice, label: currentLabel, tone: "info" as const, note: currentNote, current: true }]
     : [];
@@ -31,14 +33,14 @@ export function buildPriceLadderLevels(
       strike: item.strike,
       label: "阻力",
       tone: "down" as const,
-      note: `墙位评分 ${item.wall_score.toFixed(2)} · ${distanceNote(item.distance_pct)}`,
+      note: `墙位评分 ${formatNumber(item.wall_score, 2)} · ${distanceNote(item.distance_pct)}`,
     })),
     ...anchor,
     ...supports.map((item) => ({
       strike: item.strike,
       label: "支撑",
       tone: "up" as const,
-      note: `墙位评分 ${item.wall_score.toFixed(2)} · ${distanceNote(item.distance_pct)}`,
+      note: `墙位评分 ${formatNumber(item.wall_score, 2)} · ${distanceNote(item.distance_pct)}`,
     })),
   ].sort((a, b) => b.strike - a.strike);
 }

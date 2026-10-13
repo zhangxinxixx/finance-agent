@@ -1,5 +1,5 @@
 import type { CMEOptionsResponse } from "@/types/cme-options";
-import { CME_META_TEXT, formatCMEExpiryLabel, formatNumber, toneStyle, translateDecisionText } from "./cmeOptionsFormat";
+import { CME_META_TEXT, formatCMEExpiryLabel, formatNumber, isFiniteNumber, toneStyle, translateDecisionText } from "./cmeOptionsFormat";
 import { formatBillions } from "./cmeOptionsGammaFormat";
 import { GEXBreakdown, IVSkewTable } from "./CMEOptionsGammaTables";
 import { CMEOptionsSurface } from "./CMEOptionsSurface";
@@ -16,11 +16,13 @@ export function PriceLadder({
   currentPrice: number | null;
 }) {
   const levels = buildPriceLadderLevels(supportResistance, currentPrice);
+  const missingLevels = [...supportResistance.resistance, ...supportResistance.support].filter((item) => !isFiniteNumber(item.strike));
 
   return (
     <CMEOptionsSurface title="价格层级" bodyStyle={{ padding: 0 }}>
       <div className="border-b border-[var(--border-faint)] px-3 py-2 text-[length:var(--type-caption)] leading-5 text-[var(--fg-4)]">
         这是 CME 期权行权价坐标上的结构参考。报告锚点不是实时现货；支撑/阻力也不代表触发概率，实时条件需另行核验。
+        {missingLevels.length > 0 ? ` ${missingLevels.length} 行行权价未提供，未绘制为零点。` : null}
       </div>
       <div style={{ display: "flex", flexDirection: "column" }}>
         {levels.map((level, index) => (
@@ -36,12 +38,13 @@ export function ChangeTable({ snapshot }: { snapshot: CMEOptionsResponse }) {
   const wallScores = snapshot.wall_scores ?? [];
   const callWalls = wallScores.filter((wall) => wall.side === "CALL");
   const putWalls = wallScores.filter((wall) => wall.side === "PUT");
-  const callOi = callWalls.length > 0
-    ? callWalls.reduce((sum, wall) => sum + wall.oi, 0)
-    : null;
-  const putOi = putWalls.length > 0
-    ? putWalls.reduce((sum, wall) => sum + wall.oi, 0)
-    : null;
+  const completeOi = (rows: typeof wallScores) => {
+    const values = rows.map((wall) => wall.oi);
+    return values.length > 0 && values.every(isFiniteNumber) ? values.reduce((sum, value) => sum + value, 0) : null;
+  };
+  const callOi = completeOi(callWalls);
+  const putOi = completeOi(putWalls);
+  const partialOi = wallScores.some((wall) => !isFiniteNumber(wall.oi));
   const hasHistoricalComparison = Object.keys(snapshot.calibration?.wall_score_delta_1d ?? {}).length > 0
     || Object.keys(snapshot.calibration?.wall_score_delta_1w ?? {}).length > 0
     || Object.keys(snapshot.calibration?.oi_change_by_strike ?? {}).length > 0;
@@ -58,6 +61,7 @@ export function ChangeTable({ snapshot }: { snapshot: CMEOptionsResponse }) {
         {hasHistoricalComparison
           ? "接口返回部分历史校准字段；下方仍是当前快照值，不能把当前值直接当成日变化。"
           : "未提供历史快照比较；下方当前值不能解释为日变化。"}
+        {partialOi ? " 持仓部分未提供，对应汇总不可比；明细保留缺失行。" : null}
       </div>
       {rows.map((row, index) => (
         <div

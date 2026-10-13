@@ -634,9 +634,9 @@ function normalizeSupportResistance(value: RawCMEOptionsSnapshot["support_resist
     return levels.map((level) => {
       const entry = (level ?? {}) as RawCMEOptionsLevelItem;
       return {
-        strike: asNumber(entry.strike),
-        wall_score: asNumber(entry.wall_score),
-        distance_pct: asNumber(entry.distance_pct),
+        strike: asNullableNumber(entry.strike),
+        wall_score: asNullableNumber(entry.wall_score),
+        distance_pct: asNullableNumber(entry.distance_pct),
       };
     });
   };
@@ -660,14 +660,14 @@ function normalizeIVSkew(value: unknown): CMEOptionsIVSkew {
   if (!value || typeof value !== "object") return {};
   const r = value as Record<string, unknown>;
   return {
-    atm_iv: typeof r.atm_iv === "number" ? r.atm_iv : null,
-    call_25d_iv: typeof r.call_25d_iv === "number" ? r.call_25d_iv : null,
-    put_25d_iv: typeof r.put_25d_iv === "number" ? r.put_25d_iv : null,
-    skew_25d: typeof r.skew_25d === "number" ? r.skew_25d : null,
-    call_10d_iv: typeof r.call_10d_iv === "number" ? r.call_10d_iv : null,
-    put_10d_iv: typeof r.put_10d_iv === "number" ? r.put_10d_iv : null,
-    skew_10d: typeof r.skew_10d === "number" ? r.skew_10d : null,
-    tail_skew_10d: typeof r.tail_skew_10d === "number" ? r.tail_skew_10d : null,
+    atm_iv: asNullableNumber(r.atm_iv),
+    call_25d_iv: asNullableNumber(r.call_25d_iv),
+    put_25d_iv: asNullableNumber(r.put_25d_iv),
+    skew_25d: asNullableNumber(r.skew_25d),
+    call_10d_iv: asNullableNumber(r.call_10d_iv),
+    put_10d_iv: asNullableNumber(r.put_10d_iv),
+    skew_10d: asNullableNumber(r.skew_10d),
+    tail_skew_10d: asNullableNumber(r.tail_skew_10d),
     interpretation: typeof r.interpretation === "string" ? r.interpretation : null,
   };
 }
@@ -677,11 +677,11 @@ function normalizeGEXTopItems(value: unknown): CMEOptionsGEXTopItem[] {
   return value.map((item) => {
     const r = (item ?? {}) as Record<string, unknown>;
     return {
-      strike: asNumber(r.strike),
-      call_gex: asNumber(r.call_gex),
-      put_gex: asNumber(r.put_gex),
-      net_gex: asNumber(r.net_gex),
-      total_gex: asNumber(r.total_gex),
+      strike: asNullableNumber(r.strike),
+      call_gex: asNullableNumber(r.call_gex),
+      put_gex: asNullableNumber(r.put_gex),
+      net_gex: asNullableNumber(r.net_gex),
+      total_gex: asNullableNumber(r.total_gex),
     };
   });
 }
@@ -696,16 +696,16 @@ function normalizeGEXByExpiry(value: unknown): Record<string, CMEOptionsGEXByExp
     result[expiry] = {
       gex_top: normalizeGEXTopItems(r.gex_top),
       summary: {
-        forward_price: typeof summary.forward_price === "number" ? summary.forward_price : (typeof summary.f_value === "number" ? summary.f_value : null),
-        f_value: typeof summary.f_value === "number" ? summary.f_value : null,
-        gamma_zero: typeof summary.gamma_zero === "number" ? summary.gamma_zero : null,
+        forward_price: asNullableNumber(summary.forward_price) ?? asNullableNumber(summary.f_value),
+        f_value: asNullableNumber(summary.f_value),
+        gamma_zero: asNullableNumber(summary.gamma_zero),
         gamma_zero_method: typeof summary.gamma_zero_method === "string" ? summary.gamma_zero_method : null,
-        net_gex: typeof summary.net_gex === "number" ? summary.net_gex : null,
-        call_gex: typeof summary.call_gex === "number" ? summary.call_gex : null,
-        put_gex: typeof summary.put_gex === "number" ? summary.put_gex : null,
-        total_gex: typeof summary.total_gex === "number" ? summary.total_gex : null,
-        atm_iv: typeof summary.atm_iv === "number" ? summary.atm_iv : null,
-        time_to_expiry: typeof summary.time_to_expiry === "number" ? summary.time_to_expiry : null,
+        net_gex: asNullableNumber(summary.net_gex),
+        call_gex: asNullableNumber(summary.call_gex),
+        put_gex: asNullableNumber(summary.put_gex),
+        total_gex: asNullableNumber(summary.total_gex),
+        atm_iv: asNullableNumber(summary.atm_iv),
+        time_to_expiry: asNullableNumber(summary.time_to_expiry),
         structure: typeof summary.structure === "string" ? summary.structure : null,
       },
       iv_skew: normalizeIVSkew(r.iv_skew),
@@ -808,17 +808,17 @@ function normalizeWallScores(value: unknown): CMEOptionsWallScore[] {
   return value.map((item) => {
     const wall = (item ?? {}) as RawCMEOptionsWallScore;
     return {
-      strike: asNumber(wall.strike),
+      strike: asNullableNumber(wall.strike),
       wall_type: normalizeWallType(wall.wall_type, wall.side),
       side: wall.side === "CALL" || wall.side === "PUT" ? wall.side : null,
-      oi: asNumber(wall.oi),
+      oi: asNullableNumber(wall.oi),
       delta_oi:
         typeof wall.oi_change === "number" && Number.isFinite(wall.oi_change)
           ? wall.oi_change
           : typeof wall.delta_oi === "number" && Number.isFinite(wall.delta_oi)
             ? wall.delta_oi
             : null,
-      wall_score: asNumber(wall.wall_score),
+      wall_score: asNullableNumber(wall.wall_score),
       pnt: asNullableNumber(wall.pnt),
     };
   });
