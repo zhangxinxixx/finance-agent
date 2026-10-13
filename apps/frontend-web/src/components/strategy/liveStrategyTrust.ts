@@ -1,4 +1,6 @@
 import type { LiveStrategyAvailability, LiveStrategyMarket, LiveStrategyResponse, LiveStrategyStatus } from "@/types/live-strategy";
+import { hasVerifiedGoldBaseline } from "@/types/live-strategy";
+import { isKnownResultIdentity } from "@/types/result-identity";
 
 /**
  * A live strategy response can remain on screen while its next read is in
@@ -68,6 +70,48 @@ export function getDisplayLiveStrategyStatus({
   if (!isLiveStrategyMarketUsable(market)) return "SUSPENDED_DATA";
   if (!goldBaselineVerified) return "WAITING";
   return status;
+}
+
+export interface LiveStrategyQualification {
+  blocked: boolean;
+  displayStatus: LiveStrategyStatus;
+  reason: string | null;
+}
+
+/** Projects existing request, baseline and result-relationship checks into UI copy. */
+export function getLiveStrategyQualification(
+  data: LiveStrategyResponse,
+  trustState: LiveStrategyTrustState,
+  goldBaselineVerified = hasVerifiedGoldBaseline(data.data_quality.gold_baseline),
+): LiveStrategyQualification {
+  const displayStatus = getDisplayLiveStrategyStatus({
+    status: data.strategy_status,
+    availability: data.status,
+    dataReady: data.feasibility.data_ready,
+    market: data.live_market,
+    trustState,
+    goldBaselineVerified,
+  });
+  let reason: string | null = null;
+  if (trustState !== "current") reason = liveStrategyTrustLabel(trustState);
+  else if (data.status !== "available" || !data.feasibility.data_ready || !isLiveStrategyMarketUsable(data.live_market)) {
+    reason = "行情数据不可用，当前条件无法核验";
+  } else if (!goldBaselineVerified) {
+    reason = data.data_quality.gold_baseline.status === "invalid"
+      ? "黄金日结基线已失效，核验失败"
+      : "黄金日结基线缺失或未核验，等待核验";
+  } else if (data.result_identity?.relationship.status === "different_result") {
+    reason = "结果身份不匹配，当前结果与有效基线属于不同结果";
+  } else if (!isKnownResultIdentity(data.result_identity) || data.result_identity?.relationship.status !== "same_effective_head") {
+    reason = "结果身份未核验，等待确认同一有效基线";
+  } else if (displayStatus === "SUSPENDED_DATA") {
+    reason = "后端策略数据暂停，当前条件无法核验";
+  }
+  return {
+    blocked: reason !== null,
+    displayStatus: reason !== null && displayStatus !== "SUSPENDED_DATA" ? "WAITING" : displayStatus,
+    reason,
+  };
 }
 
 export interface DashboardStrategyPresentation {
