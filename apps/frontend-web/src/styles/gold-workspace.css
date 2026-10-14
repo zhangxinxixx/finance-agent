@@ -34,6 +34,10 @@
 .gold-research-decision { border-left: 3px solid var(--important-border); }
 .gold-research-summary { display: grid; gap: var(--space-2, 8px); }
 .gold-research-summary .report-reading-full strong { color: var(--fa-text-primary); }
+.gold-reading-risk { display: grid; gap: var(--space-2); padding: var(--space-3); border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: var(--radius-sm); }
+.gold-reading-risk strong { color: var(--warn); }
+.gold-reading-risk a { color: var(--brand); }
+.gold-workspace a:focus-visible, .gold-workspace button:focus-visible, .gold-workspace summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .gold-detail-copy { display: grid; gap: var(--space-3, 12px); }
 .gold-horizon-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4, 16px); }
 .gold-horizon { display: flex; flex-direction: column; gap: var(--space-3, 12px); }

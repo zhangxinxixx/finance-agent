@@ -19,10 +19,10 @@ export function GoldMarketHeadline({ data, reviewOnly }: { data: GoldWorkspace; 
           : `${tone === "up" ? "↑ 上涨 · " : tone === "down" ? "↓ 下跌 · " : ""}${factChange(price)}`}</span></div>
       <p className="fa-muted-text">{goldSourceLabel(price.source)}</p>
     </div>
-    <div className="gold-quote-research"><span className="fa-label">研究状态</span>
-      <strong className="fa-body-text">{data.research.latest_status === "unavailable" ? "等待本次分析" : data.research.status === "current" ? "本次研究" : "原研究需更新"}</strong>
-      <p className="fa-muted-text">{data.research.status === "unavailable" ? "点击更新数据并分析，生成短线与长线研究。"
-        : data.research.status === "current" && !reviewOnly ? "短线、长线和策略均沿用这次研究。" : "行情与研究分别更新，原结论仍需核验。"}</p>
+    <div className="gold-quote-research"><span className="fa-label">观测与研究分别标时点</span>
+      <p className="fa-muted-text">行情观测：{beijingTime(price.observed_at)}</p>
+      <p className="fa-muted-text">研究截止：{beijingTime(data.research.as_of)}</p>
+      <p className="fa-muted-text">行情更新不代表研究已更新，也不代表条件已触发。</p>
       {compared ? <p className={`fa-body-text gold-tone--${changeTone(data.comparison.price_change)}`}>较研究参考价 {goldNumber(data.comparison.price_change)} 美元（{goldNumber(data.comparison.price_change_pct)}%）</p> : null}
     </div>
     <ResearchDetails className="gold-quote-details" label="查看行情来源与涨跌口径">

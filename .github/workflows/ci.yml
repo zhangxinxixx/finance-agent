@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
   push:
     branches: [main]
 
@@ -56,6 +56,18 @@ jobs:
           tests/scripts/test_run_automation_orchestrator.py
           tests/contracts
           tests/architecture
+      - name: Run Gold report read-model contracts
+        run: >-
+          uv run pytest -q
+          tests/api/test_gold_policy_report_read_model_contract.py
+          tests/api/test_gold_policy_report_delivery_api.py
+          tests/api/test_report_detail_api.py
+          tests/api/test_report_history_visibility.py
+      - name: Run purged-report index visibility contracts
+        run: >-
+          uv run pytest -q
+          tests/api/test_report_purge_index_identity.py
+          tests/api/test_purged_output_reading.py
       - name: Run warehouse, page-boundary and retention regression tests
         run: >-
           uv run pytest -q -m 'not live'

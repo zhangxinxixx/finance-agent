@@ -38,6 +38,9 @@ class ReportDetail(ReportSummary):
     review_items: list[ReviewItem] = Field(default_factory=list)
     structured_payload: dict | None = None
     report_identity: dict | None = None
+    publication_status: str | None = None
+    output_mode: str | None = None
+    publish_allowed: bool | None = None
     result_identity: dict | None = None
     research_identity: dict | None = None
     current_context: dict | None = None

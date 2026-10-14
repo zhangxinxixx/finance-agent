@@ -78,7 +78,7 @@ export function GoldResearchTopics({ data, reviewOnly, groups, initialGroup = "c
       <p className="fa-muted-text">判断 → 依据 → 传导 → 黄金响应 → 反证 → 改判条件</p></div>
       <FAStatusPill tone="info" dot={false}>{topics.length ? `${topics.length}项分析点` : "等待主题研究"}</FAStatusPill></header>
     {choices.length > 1 ? <nav className="gold-topic-navigation" aria-label="黄金日报分析模块">{choices.map(group => <button key={group.key}
-      type="button" aria-pressed={active?.key === group.key} aria-controls={id} onClick={() => setSelected(group.key)}>
+      type="button" data-gold-group={group.key} aria-pressed={active?.key === group.key} aria-controls={id} onClick={() => setSelected(group.key)}>
       {group.label}<span>{topics.filter(topic => topic.group === group.key).length}</span></button>)}</nav> : null}
     <div id={id}><p className="gold-topic-group-description fa-body-text">{active?.description}</p>
       {shown.length ? <div className="gold-topic-grid">{shown.map(topic => <TopicCard dataAsOf={data.research.research_identity?.data_as_of} key={topic.key} topic={topic} factors={data.factors} reviewOnly={reviewOnly} />)}</div>

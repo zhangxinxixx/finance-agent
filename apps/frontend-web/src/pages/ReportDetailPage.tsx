@@ -24,6 +24,7 @@ import type { ReportDetailTabKey } from "@/types/reports";
 import { reportsReturnTarget } from "@/components/reports/reportsNavigation";
 import { auditStatusLabel, auditStatusTone, callerLabel, modelDisplayLabel } from "@/components/llm-audit/llmAuditFormat";
 import { readingErrorMessage } from "@/components/reading/readingFormat";
+import { compareGoldReportResearch, readGoldReadingContext } from "@/components/gold-workspace/goldReadingNavigation";
 
 function reportTabLabel(tab: ReportDetailTabKey, fallback?: string | null): string {
   if (fallback) return fallback;
@@ -43,6 +44,7 @@ function currentMarketContextLines(value: Record<string, unknown>): string[] {
 export function ReportDetailPage() {
   const { reportId } = useParams<{ reportId: string }>();
   const location = useLocation();
+  const goldReading = readGoldReadingContext(location.state?.goldWorkspaceResult);
   const returnTo = reportsReturnTarget(location.state);
   const { data, isLoading, isRefreshing, error, refetch } = useReportDetail(reportId);
   const [selection, setSelection] = useState<{ reportId: string | undefined; tab: ReportDetailTabKey }>({ reportId, tab: "analysis" });
@@ -101,6 +103,7 @@ export function ReportDetailPage() {
                 >
                   返回报告中心
                 </Link>
+                {goldReading ? <Link to="/dashboard" state={{ goldWorkspaceResult: goldReading }} className="fa-label text-[var(--brand)]">返回同一研究工作台</Link> : null}
               </div>
             }
           />
@@ -128,6 +131,15 @@ export function ReportDetailPage() {
   return (
     <div className="finance-page-shell">
       <div className="report-detail-stack min-w-0 flex flex-col gap-4">
+        {goldReading ? <section aria-label="来源研究与返回" className="fa-card fa-body-text">
+          <p>{compareGoldReportResearch(goldReading, { report_id: data.report_id, run_id: data.meta.run_id ?? null,
+            snapshot_id: data.meta.snapshot_id ?? null, trade_date: data.meta.trade_date ?? null })}</p>
+          <Link to="/dashboard" state={{ goldWorkspaceResult: goldReading }} className="fa-label text-[var(--brand)]">返回同一研究工作台</Link>
+        </section> : null}
+        {!goldReading && data.meta.asset === "XAUUSD" ? <section aria-label="冻结研究入口" className="fa-card fa-body-text">
+          <p>可将这份报告冻结阅读；对应工作台观测未提供，不拼入最新数据。</p>
+          <Link to="/dashboard" state={{ frozenGoldReport: data, reportsReturnTo: returnTo }} className="fa-label text-[var(--brand)]">在工作台冻结阅读本报告</Link>
+        </section> : null}
         <ReportDetailHero
           data={data}
           metrics={metrics}

@@ -22,7 +22,7 @@ export function NumericCondition({ text }: { text: string }) {
     ? <strong key={index} className="gold-condition-number">{part}</strong> : part)}</>;
 }
 
-export function GoldSpotLevels({ data }: { data: GoldWorkspace }) {
+export function GoldSpotLevels({ data, reviewOnly = false }: { data: GoldWorkspace; reviewOnly?: boolean }) {
   const r = data.research;
   const topic = r.topics.find(row => row.key === "levels" && row.status !== "unavailable");
   // Retain explicit spot sentences verbatim; never turn numbers in prose into
@@ -32,7 +32,8 @@ export function GoldSpotLevels({ data }: { data: GoldWorkspace }) {
   const invalidation = topic ? spotSentences(topic.falsification) : "";
   return <section className="fa-card gold-level-map" aria-label="黄金现货关键位地图">
     <header className="gold-section-header"><h2 className="fa-section-title">现货关键点位 <span className="fa-label">XAUUSD</span></h2>
-      <FAStatusPill tone={r.status === "current" ? "info" : "warn"}>{r.status === "current" ? "研究观察" : "原研究 · 需重验"}</FAStatusPill></header>
+      <FAStatusPill tone={r.status === "current" && !reviewOnly ? "info" : "warn"}>{r.status === "current" && !reviewOnly ? "研究观察" : "原研究 · 需重验"}</FAStatusPill></header>
+    {reviewOnly ? <p className="gold-notice fa-body-text">以下为读取时的点位状态；不确认当前有效性或触发。</p> : null}
     <ResearchIdentity identity={r.research_identity} />
     {r.key_levels.length ? <ol className="gold-price-ladder">{r.key_levels.map((row, index) => <li key={index}>
       <span className="gold-level-marker" /><strong>{goldNumber(row.price as number)}</strong><span>{role(row.role)}</span>
@@ -49,7 +50,7 @@ export function GoldSpotLevels({ data }: { data: GoldWorkspace }) {
   </section>;
 }
 
-export function GoldCmeLevels({ data }: { data: GoldWorkspace }) {
+export function GoldCmeLevels({ data, reviewOnly = false }: { data: GoldWorkspace; reviewOnly?: boolean }) {
   const cme = data.cme_structure;
   const [expanded, setExpanded] = useState(false);
   const priority = cme.levels.filter(level => ["primary_support", "primary_resistance", "gamma_flip"].includes(level.role));
@@ -59,6 +60,7 @@ export function GoldCmeLevels({ data }: { data: GoldWorkspace }) {
     <header className="gold-section-header"><h2 className="fa-section-title">CME关键价位 <span className="fa-label">GC期货</span></h2>
       <FAStatusPill tone="warn">{cme.status === "unavailable" ? "结构待核验" : cme.status === "historical" ? "历史结构" : cme.version_type === "FINAL" ? "终版结构" : "初步版结构"}</FAStatusPill></header>
     <p className="fa-body-text">OI／模型GEX结构参考；GC价位不直接用于现货执行。</p>
+    {reviewOnly ? <p className="gold-notice fa-body-text">以下保留上次读取的GC结构；当前资格与期现基差需核验。</p> : null}
     {shown.length ? <ol className="gold-price-ladder">{shown.map((level, index) => <li key={index}>
       <span className="gold-level-marker" /><strong>{level.price !== null ? goldNumber(level.price) : `${goldNumber(level.lower)}—${goldNumber(level.upper)}`}</strong>
       <span>{level.label}{level.expiry ? ` · ${level.expiry === "aggregate" ? "合并模型" : level.expiry}` : ""}</span>
