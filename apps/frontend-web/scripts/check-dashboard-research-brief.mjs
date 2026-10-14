@@ -22,7 +22,7 @@ function load(file) {
     if (name === 'react-router-dom') return { ...router, useLocation: () => ({ state: locationState }), useOutletContext: () => null };
     if (!name.startsWith('@/') && !name.startsWith('.')) return require(name);
     const stem = name.startsWith('@/') ? path.join(root, name.slice(2)) : path.resolve(path.dirname(file), name);
-    const target = [stem + '.ts', stem + '.tsx'].find(existsSync);
+    const target = [stem + '.ts', stem + '.tsx', ...(stem.endsWith('.mjs') ? [stem] : [])].find(existsSync);
     if (!target) throw new Error(name);
     return load(target);
   } }, { filename: file });
