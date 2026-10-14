@@ -8,6 +8,7 @@ import type { DashboardDataResponse } from "@/types/dashboard";
 import { GoldWorkspacePanel } from "@/components/gold-workspace/GoldWorkspacePanel";
 import { readGoldReadingContext } from "@/components/gold-workspace/goldReadingNavigation";
 import { GoldFrozenReport, readFrozenGoldReport } from "@/components/gold-workspace/GoldFrozenReport";
+import { reportsReturnTarget } from "@/components/reports/reportsNavigation";
 import "@/styles/gold-workspace.css";
 
 export function DashboardPage() {
@@ -31,7 +32,7 @@ export function DashboardPage() {
         <button type="button" className="ml-2 fa-label text-[var(--brand)]" onClick={() => { setFrozen(null); navigate("/dashboard", { replace: true, state: null }); }}>返回最新黄金工作台</button>
       </div>{frozen.has_data && frozen.summary ? <DashboardResearchBrief dashboardResult={frozen} />
         : <SharedEmptyState title="所选研究结果不可用" description="可以返回最新黄金工作台，或在报告中心重新选择研究。" />}</>
-        : frozenReport ? <GoldFrozenReport report={frozenReport} onLatest={() => navigate("/dashboard", { replace: true, state: null })} />
+        : frozenReport ? <GoldFrozenReport report={frozenReport} reportsReturnTo={reportsReturnTarget(location.state)} onLatest={() => navigate("/dashboard", { replace: true, state: null })} />
         : <GoldWorkspacePanel key={frozenReading ? "frozen" : "latest"} frozenReading={frozenReading}
           onLatest={() => navigate("/dashboard", { replace: true, state: null })} />}
     </div>

@@ -18,7 +18,7 @@ export function readFrozenGoldReport(value: unknown): ReportDetailView | null {
     && report.tabs && Array.isArray(report.warnings) ? report : null;
 }
 
-export function GoldFrozenReport({ report, onLatest }: { report: ReportDetailView; onLatest: () => void }) {
+export function GoldFrozenReport({ report, onLatest, reportsReturnTo = "/reports" }: { report: ReportDetailView; onLatest: () => void; reportsReturnTo?: string }) {
   const qualityBlocked = report.data_status === "unavailable" && report.meta.lifecycle_status === "needs_review";
   const tabs = qualityBlocked ? [] : report.available_tabs.filter((tab): tab is ReportArtifactTabKey => tab !== "inputs");
   const [tab, setTab] = useState<ReportArtifactTabKey>(tabs.includes("analysis") ? "analysis" : tabs[0] ?? "analysis");
@@ -44,6 +44,6 @@ export function GoldFrozenReport({ report, onLatest }: { report: ReportDetailVie
       className="gold-secondary-button" aria-pressed={tab === key} onClick={() => setTab(key)}>{report.tabs[key]?.label ?? key}</button>)}</nav>
     {qualityBlocked ? <p className="gold-notice fa-body-text">报告未通过质量审核，正文与图表不可参考；保留身份供核验。</p>
       : <ReportArtifactPanel tab={report.tabs[tab] ?? null} />}
-    <Link to={`/reports/${encodeURIComponent(report.report_id)}`} className="fa-label text-[var(--brand)]">返回所选报告详情与来源 →</Link>
+    <Link to={`/reports/${encodeURIComponent(report.report_id)}`} state={{ reportsReturnTo }} className="fa-label text-[var(--brand)]">返回所选报告详情与来源 →</Link>
   </section>;
 }

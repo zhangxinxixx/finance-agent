@@ -138,7 +138,7 @@ export function ReportDetailPage() {
         </section> : null}
         {!goldReading && data.meta.asset === "XAUUSD" ? <section aria-label="冻结研究入口" className="fa-card fa-body-text">
           <p>可将这份报告冻结阅读；对应工作台观测未提供，不拼入最新数据。</p>
-          <Link to="/dashboard" state={{ frozenGoldReport: data }} className="fa-label text-[var(--brand)]">在工作台冻结阅读本报告</Link>
+          <Link to="/dashboard" state={{ frozenGoldReport: data, reportsReturnTo: returnTo }} className="fa-label text-[var(--brand)]">在工作台冻结阅读本报告</Link>
         </section> : null}
         <ReportDetailHero
           data={data}

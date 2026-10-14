@@ -86,4 +86,31 @@ for(const [status,warnings] of [
 const {GoldSpotLevels,GoldCmeLevels}=load('@/components/gold-workspace/GoldKeyLevels');
 assert.match(render(GoldSpotLevels,{data:workspace,reviewOnly:true}),/不确认当前有效性或触发/);
 assert.match(render(GoldCmeLevels,{data:workspace,reviewOnly:true}),/上次读取的GC结构/);
+// Preserve the selected list context through actual frozen/route components.
+const listReturn='/reports?asset=XAUUSD&q=gold_policy_daily&page=2';
+const frozenLinks=[];
+const returnRouter={
+ Link(props){frozenLinks.push({to:props.to,state:props.state});return React.createElement('a',{href:props.to},props.children);},
+ useLocation:()=>({state:{reportsReturnTo:listReturn,frozenGoldReport:frozenReport}}),
+ useNavigate:()=>()=>{},useOutletContext:()=>({setHeaderContent(){}}),
+};
+const returnLoad=loader({'react-router-dom':returnRouter});
+renderToStaticMarkup(React.createElement(returnLoad('@/components/gold-workspace/GoldFrozenReport').GoldFrozenReport,
+ {report:frozenReport,onLatest(){},reportsReturnTo:listReturn}));
+assert.equal(frozenLinks.find(link=>link.to==='/reports/engineering-report')?.state?.reportsReturnTo,listReturn,
+ 'frozen report return link must carry list filters and page');
+let dashboardFrozenProps=null;
+const dashboardReturnLoad=loader({'react-router-dom':returnRouter,'@/components/gold-workspace/GoldFrozenReport':{
+ readFrozenGoldReport,GoldFrozenReport(props){dashboardFrozenProps=props;return React.createElement('div');},
+},'@/adapters/apiClient':{fetchJson(){throw new Error('Network forbidden');}}});
+renderToStaticMarkup(React.createElement(dashboardReturnLoad('@/components/dashboard/DashboardPage').DashboardPage));
+assert.equal(dashboardFrozenProps?.reportsReturnTo,listReturn,'dashboard must forward validated list context');
+const detailReturnLoad=loader({'react-router-dom':{...returnRouter,useParams:()=>({reportId:source.report_id})},
+ '@/adapters/apiClient':{fetchJson(){throw new Error('Network forbidden');}},
+ '@/hooks/useReportDetail':{useReportDetail:()=>({data:blockedPlanReport,isLoading:false,isRefreshing:false,error:null,refetch(){}})},
+});
+renderToStaticMarkup(React.createElement(detailReturnLoad('@/pages/ReportDetailPage').ReportDetailPage));
+const frozenEntry=frozenLinks.find(link=>link.to==='/dashboard'&&link.state?.frozenGoldReport);
+assert.equal(frozenEntry?.state?.reportsReturnTo,listReturn,'detail frozen entry must preserve validated list context');
+assert.equal(frozenEntry?.state?.frozenGoldReport,blockedPlanReport,'frozen entry retains the exact already-read DTO');
 console.log('Gold reading navigation passed: frozen DTO/zero/missing timing, malformed state, all report identity mismatches, strategy unknown/different/formal comparisons, quality-blocked reader-plan isolation, partial/error warning retention, fail-closed reading and disabled analysis transport.');
