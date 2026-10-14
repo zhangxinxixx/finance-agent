@@ -41,6 +41,10 @@ from apps.api.services.report_reading.detail import (
     _non_authoritative_premarket_run_ids,
     _safe_final_report_path,
 )
+from apps.api.services.report_reading.gold_policy import (
+    project_gold_policy_report,
+    project_gold_policy_research_identity,
+)
 from apps.runtime.output_disposition import (
     FAIL_CLOSED_AGENT_NAMES,
     OUTPUT_CLEANUP_KEY,
@@ -49,7 +53,7 @@ from apps.runtime.output_disposition import (
 )
 from database.models.report import ReportArtifact as ReportArtifactModel
 from database.models.report import ReportItem
-from database.models.analysis import AgentOutput, FinalAnalysisResult
+from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
 
 logger = logging.getLogger(__name__)
 
@@ -282,16 +286,38 @@ def _collect_registered_reports_from_db(asset: str) -> list[dict[str, Any]]:
             for artifact in artifact_rows:
                 artifacts_by_report[str(artifact.report_id)].append(artifact)
         non_authoritative_run_ids = _non_authoritative_premarket_run_ids(db, (item.run_id for item in rows))
+        gold_snapshot_ids = {
+            item.snapshot_id
+            for item in rows
+            if item.report_type == "gold_policy_daily" and item.family == "gold_policy_daily_report" and item.snapshot_id
+        }
+        snapshots_by_binding = {}
+        if gold_snapshot_ids:
+            snapshot_rows = _safe_model_rows(
+                db,
+                AnalysisSnapshot,
+                lambda: db.execute(
+                    select(AnalysisSnapshot.snapshot_id, AnalysisSnapshot.run_id, AnalysisSnapshot.payload)
+                    .where(AnalysisSnapshot.snapshot_id.in_(gold_snapshot_ids))
+                ).mappings().all(),
+            )
+            snapshots_by_binding = {
+                (snapshot.snapshot_id, snapshot.run_id): snapshot.payload for snapshot in snapshot_rows
+            }
         for item in rows:
             if is_output_purged(item) or str(item.lifecycle_status or "").lower() == "purged":
                 continue
+            registered_artifacts = artifacts_by_report.get(str(item.report_id), [])
             artifacts = [
                 artifact
-                for artifact in artifacts_by_report.get(str(item.report_id), [])
+                for artifact in registered_artifacts
                 if not is_output_purged(artifact)
             ]
             report_type = str(item.report_type or item.family or "").strip()
             if not report_type:
+                continue
+            is_gold = report_type == "gold_policy_daily" and item.family == "gold_policy_daily_report"
+            if is_gold and any(is_output_purged(artifact) for artifact in registered_artifacts):
                 continue
             is_final = (report_type == "final_report" or item.family == "final_report_markdown")
             if item.family in _OBSERVATION_REPORT_FAMILIES or report_type in {
@@ -335,6 +361,16 @@ def _collect_registered_reports_from_db(asset: str) -> list[dict[str, Any]]:
             }
             if is_final and not verified:
                 index_item.update(_historical_final_report_fields())
+            if is_gold:
+                index_item.update(
+                    snapshot_id=item.snapshot_id,
+                    data_status=item.data_status,
+                    lifecycle_status=item.lifecycle_status,
+                    research_identity=project_gold_policy_research_identity(
+                        item, snapshots_by_binding.get((item.snapshot_id, item.run_id)),
+                    ),
+                    **project_gold_policy_report(item, artifacts),
+                )
             results.append(index_item)
     except Exception:
         pass
@@ -1007,7 +1043,9 @@ def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:
             continue
         report_type = str(report.get("type") or "").strip()
         report_family = str(report.get("family") or "").strip()
-        if report_type in {"observation_report", "observation_strategy_card"}:
+        if report_type == "gold_policy_daily" and report_family == "gold_policy_daily_report":
+            date_modules[trade_date].add("gold_policy_daily")
+        elif report_type in {"observation_report", "observation_strategy_card"}:
             date_modules[trade_date].add(report_type)
         elif report_family in _OBSERVATION_REPORT_FAMILIES:
             date_modules[trade_date].add(report_family.removesuffix("_markdown"))
