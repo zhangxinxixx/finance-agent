@@ -47,6 +47,10 @@ from apps.api.services.report_reading.common import (
     _report_index_family,
     _report_index_title,
 )
+from apps.api.services.report_reading.gold_policy import (
+    project_gold_policy_report,
+    project_gold_policy_report_identity,
+)
 from apps.api.services.research_identity import build_research_identity
 from apps.renderer.contracts import MacroEventFollowupStructuredPayload, WeeklyContextRevisionPayload
 from apps.runtime.storage_paths import project_artifact_path, remap_storage_path
@@ -1056,10 +1060,13 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
 
     input_snapshot_ids: list[str] = []
     report_identity: dict[str, Any] | None = None
+    gold_qualification: dict[str, Any] = {}
     metadata = item.report_metadata if isinstance(item.report_metadata, dict) else {}
     if item.family == "gold_policy_daily_report":
         input_snapshot_ids = _normalize_snapshot_ids(metadata.get("input_snapshot_ids"))
-        report_identity = _project_gold_policy_report_identity(metadata)
+        projection = project_gold_policy_report(item, artifacts)
+        report_identity = projection["report_identity"]
+        gold_qualification = {key: projection[key] for key in ("publication_status", "output_mode", "publish_allowed")}
     elif observation_report:
         # Observation reports are deliberately readable, but they never become
         # an accepted final result.  Keep the registry decision visible in the
@@ -1081,6 +1088,8 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
 
     lifecycle_status = _coerce_lifecycle_status(item.lifecycle_status)
     review_status = ReviewStatus.not_required
+    if item.family == "gold_policy_daily_report" and projection["review_status"] is not None:
+        review_status = ReviewStatus(projection["review_status"])
     if observation_report:
         lifecycle_status = ReportLifecycleStatus.needs_review
         review_status = ReviewStatus.pending
@@ -1104,31 +1113,13 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
         input_snapshot_ids=input_snapshot_ids,
         report_identity=report_identity,
         structured_payload=_load_structured_payload(schema_artifacts),
+        **gold_qualification,
     )
 
 
-_GOLD_POLICY_REPORT_IDENTITY_KEYS = (
-    "report_context_id",
-    "report_render_id",
-    "authority_result_id",
-    "canonical_receipt_id",
-    "canonical_receipt_revision_no",
-    "canonical_commit_action",
-    "manifest_schema_version",
-    "structured_schema_version",
-    "publication_status",
-)
-
-
 def _project_gold_policy_report_identity(metadata: dict[str, Any]) -> dict[str, Any] | None:
-    """Project non-empty registry metadata fields into a read-only report_identity."""
-    identity: dict[str, Any] = {}
-    for key in _GOLD_POLICY_REPORT_IDENTITY_KEYS:
-        value = metadata.get(key)
-        if value in (None, ""):
-            continue
-        identity[key] = value
-    return identity or None
+    """Compatibility wrapper for the shared, restricted registry projection."""
+    return project_gold_policy_report_identity(metadata)
 
 
 def _project_observation_report_identity(

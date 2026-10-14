@@ -41,6 +41,10 @@ from apps.api.services.report_reading.detail import (
     _non_authoritative_premarket_run_ids,
     _safe_final_report_path,
 )
+from apps.api.services.report_reading.gold_policy import (
+    project_gold_policy_report,
+    project_gold_policy_research_identity,
+)
 from apps.runtime.output_disposition import (
     FAIL_CLOSED_AGENT_NAMES,
     OUTPUT_CLEANUP_KEY,
@@ -49,7 +53,7 @@ from apps.runtime.output_disposition import (
 )
 from database.models.report import ReportArtifact as ReportArtifactModel
 from database.models.report import ReportItem
-from database.models.analysis import AgentOutput, FinalAnalysisResult
+from database.models.analysis import AgentOutput, AnalysisSnapshot, FinalAnalysisResult
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +189,7 @@ def _collect_reports_from_db(report_type: str, fmt: str, asset: str) -> list[dic
                     "type": report_type,
                     "trade_date": _iso(row.trade_date),
                     "run_id": row.run_id,
+                    "snapshot_id": row.snapshot_id,
                     "report_id": report_id,
                     "family": _report_index_family(report_type),
                     "title": _report_index_title(report_type, _iso(row.trade_date)),
@@ -282,16 +287,38 @@ def _collect_registered_reports_from_db(asset: str) -> list[dict[str, Any]]:
             for artifact in artifact_rows:
                 artifacts_by_report[str(artifact.report_id)].append(artifact)
         non_authoritative_run_ids = _non_authoritative_premarket_run_ids(db, (item.run_id for item in rows))
+        gold_snapshot_ids = {
+            item.snapshot_id
+            for item in rows
+            if item.report_type == "gold_policy_daily" and item.family == "gold_policy_daily_report" and item.snapshot_id
+        }
+        snapshots_by_binding = {}
+        if gold_snapshot_ids:
+            snapshot_rows = _safe_model_rows(
+                db,
+                AnalysisSnapshot,
+                lambda: db.execute(
+                    select(AnalysisSnapshot.snapshot_id, AnalysisSnapshot.run_id, AnalysisSnapshot.payload)
+                    .where(AnalysisSnapshot.snapshot_id.in_(gold_snapshot_ids))
+                ).mappings().all(),
+            )
+            snapshots_by_binding = {
+                (snapshot.snapshot_id, snapshot.run_id): snapshot.payload for snapshot in snapshot_rows
+            }
         for item in rows:
             if is_output_purged(item) or str(item.lifecycle_status or "").lower() == "purged":
                 continue
+            registered_artifacts = artifacts_by_report.get(str(item.report_id), [])
             artifacts = [
                 artifact
-                for artifact in artifacts_by_report.get(str(item.report_id), [])
+                for artifact in registered_artifacts
                 if not is_output_purged(artifact)
             ]
             report_type = str(item.report_type or item.family or "").strip()
             if not report_type:
+                continue
+            is_gold = report_type == "gold_policy_daily" and item.family == "gold_policy_daily_report"
+            if is_gold and any(is_output_purged(artifact) for artifact in registered_artifacts):
                 continue
             is_final = (report_type == "final_report" or item.family == "final_report_markdown")
             if item.family in _OBSERVATION_REPORT_FAMILIES or report_type in {
@@ -333,14 +360,54 @@ def _collect_registered_reports_from_db(asset: str) -> list[dict[str, Any]]:
                 or _generated_at_from_datetime(item.updated_at)
                 or _generated_at_from_datetime(item.created_at),
             }
+            if report_type in {"final_report", "strategy_card"}:
+                index_item["snapshot_id"] = item.snapshot_id
             if is_final and not verified:
                 index_item.update(_historical_final_report_fields())
+            if is_gold:
+                index_item.update(
+                    snapshot_id=item.snapshot_id,
+                    data_status=item.data_status,
+                    lifecycle_status=item.lifecycle_status,
+                    research_identity=project_gold_policy_research_identity(
+                        item, snapshots_by_binding.get((item.snapshot_id, item.run_id)),
+                    ),
+                    **project_gold_policy_report(item, artifacts),
+                )
             results.append(index_item)
     except Exception:
         pass
     finally:
         db.close()
     return results
+
+
+def _index_identity(value: Any) -> str | None:
+    """Missing values never become string IDs; literal IDs such as 'None' remain valid."""
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _typed_legacy_report_alias(value: str | None) -> str | None:
+    if value:
+        for prefix in ("final_report:", "strategy_card:"):
+            if value.startswith(prefix):
+                return _index_identity(value[len(prefix):])
+    return None
+
+
+def _legacy_index_path_run_id(file_path: Any, asset: str) -> str | None:
+    """Only run-directory aliases supported by the final/strategy filesystem index."""
+    path = _index_identity(file_path)
+    if not path:
+        return None
+    parts = Path(path).parts
+    filenames = {
+        "final_report": {"final_report.md", "structured_report.json"},
+        "strategy_card": {"strategy_card.json", "strategy_card.md"},
+    }
+    if len(parts) >= 5 and parts[-4] == asset and parts[-1] in filenames.get(parts[-5], set()):
+        return _index_identity(parts[-2])
+    return None
 
 
 def _collect_purged_report_anchors(asset: str) -> list[dict[str, Any]]:
@@ -366,22 +433,47 @@ def _collect_purged_report_anchors(asset: str) -> list[dict[str, Any]]:
             ).mappings().all(),
         )
         for row in rows:
-            if not (
-                is_output_purged(row)
-                or str(row.lifecycle_status or "").lower() == "purged"
-                or any(is_output_purged(artifact) for artifact in _safe_row_artifacts(db, row))
-            ):
+            artifacts = _safe_model_rows(
+                db,
+                ReportArtifactModel,
+                lambda: db.execute(
+                    select(
+                        ReportArtifactModel.status,
+                        ReportArtifactModel.file_path,
+                        ReportArtifactModel.artifact_metadata.label("artifact_metadata"),
+                    )
+                    .where(ReportArtifactModel.report_id == row.report_id)
+                ).mappings().all(),
+            )
+            if not artifacts:
+                # Old tables can still expose a purge marker without a path.
+                artifacts = _safe_row_artifacts(db, row)
+            row_purged = is_output_purged(row) or str(row.lifecycle_status or "").lower() == "purged"
+            if not (row_purged or any(is_output_purged(artifact) for artifact in artifacts)):
                 continue
             marker = purged_output_summary(row) or {}
+            run_id = _index_identity(row.run_id) or _index_identity(marker.get("run_id"))
+            snapshot_id = _index_identity(row.snapshot_id) or _index_identity(marker.get("snapshot_id"))
             anchors.append(
                 {
-                    "report_id": str(row.report_id),
-                    "run_id": str(row.run_id) if row.run_id else marker.get("run_id"),
-                    "snapshot_id": str(row.snapshot_id) if row.snapshot_id else marker.get("snapshot_id"),
+                    "report_id": _index_identity(row.report_id),
+                    "run_id": run_id,
+                    "snapshot_id": snapshot_id,
                     "trade_date": _iso(row.trade_date) if row.trade_date else None,
                     "created_at": getattr(row, "created_at", None),
                 }
             )
+            for artifact in artifacts:
+                if not row_purged and not is_output_purged(artifact):
+                    continue
+                artifact_marker = purged_output_summary(artifact) or {}
+                artifact_run = _index_identity(artifact_marker.get("run_id"))
+                artifact_snapshot = _index_identity(artifact_marker.get("snapshot_id"))
+                if (artifact_run and artifact_run != run_id) or (artifact_snapshot and artifact_snapshot != snapshot_id):
+                    anchors.append({"report_id": None, "run_id": artifact_run, "snapshot_id": artifact_snapshot})
+                path_run = _legacy_index_path_run_id(getattr(artifact, "file_path", None), asset)
+                if path_run and path_run not in {run_id, artifact_run}:
+                    anchors.append({"report_id": None, "run_id": path_run, "snapshot_id": None})
         final_rows = _safe_model_rows(
             db,
             FinalAnalysisResult,
@@ -400,11 +492,12 @@ def _collect_purged_report_anchors(asset: str) -> list[dict[str, Any]]:
             if not is_output_purged(row):
                 continue
             marker = purged_output_summary(row) or {}
+            run_id = _index_identity(row.run_id) or _index_identity(marker.get("run_id"))
             anchors.append(
                 {
-                    "report_id": str(row.run_id),
-                    "run_id": str(row.run_id),
-                    "snapshot_id": str(row.snapshot_id) if row.snapshot_id else marker.get("snapshot_id"),
+                    "report_id": run_id,
+                    "run_id": run_id,
+                    "snapshot_id": _index_identity(row.snapshot_id) or _index_identity(marker.get("snapshot_id")),
                     "trade_date": _iso(row.trade_date) if row.trade_date else None,
                     "created_at": getattr(row, "created_at", None),
                 }
@@ -432,11 +525,12 @@ def _collect_purged_report_anchors(asset: str) -> list[dict[str, Any]]:
             if not is_output_purged(row):
                 continue
             marker = purged_output_summary(row) or {}
+            run_id = _index_identity(row.run_id) or _index_identity(marker.get("run_id"))
             anchors.append(
                 {
-                    "report_id": str(row.run_id),
-                    "run_id": str(row.run_id),
-                    "snapshot_id": str(row.snapshot_id) if row.snapshot_id else marker.get("snapshot_id"),
+                    "report_id": run_id,
+                    "run_id": run_id,
+                    "snapshot_id": _index_identity(row.snapshot_id) or _index_identity(marker.get("snapshot_id")),
                     "trade_date": _iso(row.trade_date) if row.trade_date else None,
                     "created_at": getattr(row, "created_at", None),
                 }
@@ -451,21 +545,21 @@ def _collect_purged_report_anchors(asset: str) -> list[dict[str, Any]]:
 def _purged_index_identity(item: dict[str, Any], anchors: list[dict[str, Any]]) -> bool:
     if not anchors or str(item.get("type") or "") not in {"final_report", "strategy_card"}:
         return False
-    identities = {
-        str(item.get("report_id") or ""),
-        str(item.get("run_id") or ""),
-        str(item.get("snapshot_id") or ""),
-    }
-    return any(
-        identities.intersection(
-            {
-                str(anchor.get("report_id") or ""),
-                str(anchor.get("run_id") or ""),
-                str(anchor.get("snapshot_id") or ""),
-            }
-        )
-        for anchor in anchors
-    )
+    keys = ("report_id", "run_id", "snapshot_id")
+    identities = {key: _index_identity(item.get(key)) for key in keys}
+    report_alias = _typed_legacy_report_alias(identities["report_id"])
+    for anchor in anchors:
+        anchor_ids = {key: _index_identity(anchor.get(key)) for key in keys}
+        if any(identities[key] and identities[key] == anchor_ids[key] for key in keys):
+            return True
+        # Registry IDs are typed run aliases; detail also supports typed snapshot
+        # aliases.  Bare IDs only match their own field, never an arbitrary union.
+        anchor_alias = _typed_legacy_report_alias(anchor_ids["report_id"])
+        if report_alias and report_alias in {anchor_ids["run_id"], anchor_ids["snapshot_id"], anchor_alias}:
+            return True
+        if anchor_alias and anchor_alias in {identities["run_id"], identities["snapshot_id"]}:
+            return True
+    return False
 
 
 def _dedupe_reports_index_items(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1007,7 +1101,9 @@ def list_unified_dates(asset: str = "XAUUSD") -> dict[str, Any]:
             continue
         report_type = str(report.get("type") or "").strip()
         report_family = str(report.get("family") or "").strip()
-        if report_type in {"observation_report", "observation_strategy_card"}:
+        if report_type == "gold_policy_daily" and report_family == "gold_policy_daily_report":
+            date_modules[trade_date].add("gold_policy_daily")
+        elif report_type in {"observation_report", "observation_strategy_card"}:
             date_modules[trade_date].add(report_type)
         elif report_family in _OBSERVATION_REPORT_FAMILIES:
             date_modules[trade_date].add(report_family.removesuffix("_markdown"))

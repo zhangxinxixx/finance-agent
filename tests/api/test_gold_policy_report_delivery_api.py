@@ -24,7 +24,7 @@ from sqlalchemy.pool import StaticPool
 from apps.analysis.gold_policy.daily_close_store import verify_gold_daily_close_bundle
 from apps.worker.report_registry_sink import register_gold_policy_report_bundle
 from database.models.analysis import ensure_analysis_tables
-from database.models.report import ensure_report_tables
+from database.models.report import ReportItem, ensure_report_tables
 
 
 _FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "gold_daily_report"
@@ -164,6 +164,7 @@ def test_reports_index_lists_gold_policy_daily_report(
     run_id = env["run_id"]
 
     with factory() as db:
+        registered = db.get(ReportItem, report_id)
         client = _client_with_session(db)
         try:
             response = client.get("/api/reports/index")
@@ -182,6 +183,13 @@ def test_reports_index_lists_gold_policy_daily_report(
     assert item["trade_date"] == trade_date
     assert item["run_id"] == run_id
     assert item["available"] is True
+    assert item["snapshot_id"] == registered.snapshot_id
+    assert item["data_status"] == registered.data_status
+    assert item["lifecycle_status"] == registered.lifecycle_status
+    assert item["publication_status"] == registered.report_metadata["publication_status"]
+    assert item["output_mode"] == registered.report_metadata["output_mode"]
+    assert item["publish_allowed"] is False
+    assert item["report_identity"]["canonical_receipt_id"] == registered.report_metadata["canonical_receipt_id"]
 
 
 def test_report_detail_returns_v2_structured_payload_and_identity(
