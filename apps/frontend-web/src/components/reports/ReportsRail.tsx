@@ -21,9 +21,10 @@ interface ReportsRailProps {
   onFilterChange: (filters: ReportFilters) => void;
   railLoading: boolean;
   railError: Error | null;
+  indexHasLoaded?: boolean;
 }
 
-export function ReportsRail({ reports, filters, onFilterChange, railLoading, railError }: ReportsRailProps) {
+export function ReportsRail({ reports, filters, onFilterChange, railLoading, railError, indexHasLoaded = reports.length > 0 }: ReportsRailProps) {
   const totalCount = reports.length;
 
   function countByType(matchType: string): number {
@@ -64,11 +65,11 @@ export function ReportsRail({ reports, filters, onFilterChange, railLoading, rai
     return true;
   }).length;
 
-  if (railLoading) {
+  if (railLoading && !indexHasLoaded) {
     return <ReportsRailLoadingState />;
   }
 
-  if (railError) {
+  if (railError && !indexHasLoaded) {
     return <ReportsRailErrorState message={readingErrorMessage(railError, "报告筛选读取失败，请稍后重试。") } />;
   }
 

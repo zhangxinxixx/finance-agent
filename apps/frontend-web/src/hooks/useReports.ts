@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchReportsDates, fetchReportsIndex } from "@/adapters/reports";
 import type {
   ReportDateItem,
@@ -12,8 +12,14 @@ interface ReportsState {
   dates: ReportDateItem[];
   indexItems: ReportIndexItem[];
   finalReportItems: ReportIndexItem[];
-  railLoading: boolean;
-  railError: Error | null;
+  indexLoading: boolean;
+  indexError: Error | null;
+  indexHasLoaded: boolean;
+  indexReadAt: string | null;
+  datesLoading: boolean;
+  datesError: Error | null;
+  datesHasLoaded: boolean;
+  datesReadAt: string | null;
   refetch: () => void;
 }
 
@@ -25,58 +31,69 @@ function normalizeAsset(indexData: ReportsIndexResponse | null, datesData: Repor
   return indexData?.asset ?? datesData?.asset ?? "—";
 }
 
+interface ReadState<T> {
+  data: T | null;
+  loading: boolean;
+  error: Error | null;
+  // Local read completion, never the report's data_as_of or generated_at.
+  readAt: string | null;
+}
+
+function initialReadState<T>(): ReadState<T> {
+  return { data: null, loading: true, error: null, readAt: null };
+}
+
 export function useReports(): ReportsState {
-  const [indexData, setIndexData] = useState<ReportsIndexResponse | null>(null);
-  const [datesData, setDatesData] = useState<ReportsDatesResponse | null>(null);
-  const [railLoading, setRailLoading] = useState(true);
-  const [railError, setRailError] = useState<Error | null>(null);
+  const [index, setIndex] = useState(initialReadState<ReportsIndexResponse>);
+  const [dates, setDates] = useState(initialReadState<ReportsDatesResponse>);
   const [reloadToken, setReloadToken] = useState(0);
+  const refetch = useCallback(() => setReloadToken((value) => value + 1), []);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function loadReports() {
-      setRailLoading(true);
-      setRailError(null);
-
-      const [indexResult, datesResult] = await Promise.allSettled([
-          fetchReportsIndex(),
-          fetchReportsDates(),
-      ]);
-
-      if (cancelled) {
-        return;
-      }
-
-      if (indexResult.status === "fulfilled" && datesResult.status === "fulfilled") {
-        setIndexData(indexResult.value);
-        setDatesData(datesResult.value);
-        setRailLoading(false);
-      } else {
-        const cause = indexResult.status === "rejected" ? indexResult.reason : datesResult.status === "rejected" ? datesResult.reason : null;
-        const nextError = cause instanceof Error ? cause : new Error("加载报告索引失败");
-        setRailError(nextError);
-        setRailLoading(false);
+    async function read<T>(load: () => Promise<T>, setState: (update: (previous: ReadState<T>) => ReadState<T>) => void, label: string) {
+      setState((previous) => ({ ...previous, loading: true, error: null }));
+      try {
+        const data = await load();
+        if (!cancelled) {
+          const readAt = new Date().toISOString();
+          setState(() => ({ data, loading: false, error: null, readAt }));
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          const error = cause instanceof Error ? cause : new Error(`${label}读取失败`);
+          setState((previous) => ({ ...previous, loading: false, error }));
+        }
       }
     }
 
-    void loadReports();
+    // Each result is published on arrival. Adapters retain shared in-flight
+    // deduplication; cleanup invalidates this subscriber, not other consumers.
+    void read(fetchReportsIndex, setIndex, "报告索引");
+    void read(fetchReportsDates, setDates, "报告日期");
 
     return () => {
       cancelled = true;
     };
   }, [reloadToken]);
 
-  const finalReportItems = useMemo(() => filterFinalReports(indexData?.reports ?? []), [indexData?.reports]);
-  const asset = normalizeAsset(indexData, datesData);
+  const finalReportItems = useMemo(() => filterFinalReports(index.data?.reports ?? []), [index.data?.reports]);
+  const asset = normalizeAsset(index.data, dates.data);
 
   return {
     asset,
-    dates: datesData?.dates ?? [],
-    indexItems: indexData?.reports ?? [],
+    dates: dates.data?.dates ?? [],
+    indexItems: index.data?.reports ?? [],
     finalReportItems,
-    railLoading,
-    railError,
-    refetch: () => setReloadToken((value) => value + 1),
+    indexLoading: index.loading,
+    indexError: index.error,
+    indexHasLoaded: index.data !== null,
+    indexReadAt: index.readAt,
+    datesLoading: dates.loading,
+    datesError: dates.error,
+    datesHasLoaded: dates.data !== null,
+    datesReadAt: dates.readAt,
+    refetch,
   };
 }

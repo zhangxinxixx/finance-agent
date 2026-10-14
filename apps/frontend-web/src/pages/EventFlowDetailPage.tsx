@@ -21,6 +21,7 @@ import { formatEventFlowHeadlineSummary, formatEventFlowSourceLabel, translateEv
 import { useEventFlow } from "@/hooks/useEventFlow";
 import { useEventFlowEventEvidence } from "@/hooks/useEventFlowEventEvidence";
 import { useReports } from "@/hooks/useReports";
+import { ReportsReadStatus } from "@/components/reports/ReportsReadStatus";
 import { formatDateTime } from "@/lib/date";
 import { compactSourceLabel, dedupeSourceRefs, normalizeSourceRefs } from "@/lib/sourceRefs";
 import { CATEGORY_MAP, getReportDetailId, shortRunId } from "@/components/reports/reportListMeta";
@@ -361,15 +362,21 @@ function sourceRefRenderKey(ref: SourceRef): string {
   ].join("|");
 }
 
-function EventRelatedReportsCard({
+export function EventRelatedReportsCard({
   reports,
   isLoading,
   error,
+  indexHasLoaded,
+  indexReadAt,
+  onRetry,
   onOpen,
 }: {
   reports: ReportIndexItem[];
   isLoading: boolean;
   error: Error | null;
+  indexHasLoaded: boolean;
+  indexReadAt: string | null;
+  onRetry: () => void;
   onOpen: (report: ReportIndexItem) => void;
 }) {
   return (
@@ -383,13 +390,15 @@ function EventRelatedReportsCard({
       eyebrow="候选报告"
       accent="brand"
     >
-      {isLoading ? (
+      <ReportsReadStatus kind="index" loading={isLoading} error={error} hasLoaded={indexHasLoaded} readAt={indexReadAt} />
+      {error ? <button type="button" className="fa-workspace-toolbar-button" onClick={onRetry}>重试报告索引</button> : null}
+      {isLoading && !indexHasLoaded ? (
         <div className="space-y-2">
           {Array.from({ length: 3 }).map((_, index) => (
             <div key={index} className="h-16 animate-pulse rounded-[var(--radius-md)] bg-[var(--bg-card-inner)]" />
           ))}
         </div>
-      ) : error ? (
+      ) : error && !indexHasLoaded ? (
         <FAEmptyState title="报告索引加载失败" description={error.message} />
       ) : reports.length === 0 ? (
         <FAEmptyState
@@ -655,7 +664,7 @@ export function EventFlowDetailPage() {
   const [reviewPending, setReviewPending] = useState(false);
   const [reviewReceipt, setReviewReceipt] = useState<{ runId: string | null; reviewId: string | null; status: string } | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
-  const { indexItems, railLoading, railError } = useReports();
+  const { indexItems, indexLoading, indexError, indexHasLoaded, indexReadAt, refetch: refetchReports } = useReports();
   const routeEventId = eventId ? decodeURIComponent(eventId) : "";
   const evidenceEventId = routeEventId && !routeEventId.startsWith("brief_") ? routeEventId : null;
   const eventEvidence = useEventFlowEventEvidence(evidenceEventId);
@@ -771,6 +780,7 @@ export function EventFlowDetailPage() {
   function refreshEventDetail() {
     refetch();
     eventEvidence.refetch();
+    refetchReports();
   }
 
   async function requestReview() {
@@ -953,8 +963,11 @@ export function EventFlowDetailPage() {
             <ResearchDetails label="查看来源记录"><EventFlowSourceRefsCard eventRefs={eventRefs} briefRefs={briefRefs} pageRefs={pageRefs} /></ResearchDetails>
             <EventRelatedReportsCard
               reports={relatedReports}
-              isLoading={railLoading}
-              error={railError}
+              isLoading={indexLoading}
+              error={indexError}
+              indexHasLoaded={indexHasLoaded}
+              indexReadAt={indexReadAt}
+              onRetry={refetchReports}
               onOpen={(report) => {
                 const detailId = getReportDetailId(report);
                 if (detailId) navigate(`/reports/${encodeURIComponent(detailId)}`);

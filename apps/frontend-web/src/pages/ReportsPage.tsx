@@ -37,6 +37,7 @@ import { useReports } from "@/hooks/useReports";
 import type { ReportIndexItem } from "@/types/reports";
 import { readReportsQuery } from "@/components/reports/reportsNavigation";
 import { readingErrorMessage } from "@/components/reading/readingFormat";
+import { ReportsReadStatus } from "@/components/reports/ReportsReadStatus";
 
 export function ReportsPage() {
   const navigate = useNavigate();
@@ -70,8 +71,14 @@ export function ReportsPage() {
     asset,
     dates,
     indexItems,
-    railLoading,
-    railError,
+    indexLoading,
+    indexError,
+    indexHasLoaded,
+    indexReadAt,
+    datesLoading,
+    datesError,
+    datesHasLoaded,
+    datesReadAt,
     refetch,
   } = useReports();
 
@@ -148,10 +155,10 @@ export function ReportsPage() {
   }, [allReports]);
 
   useEffect(() => {
-    if (!railLoading && !railError && currentPage > totalPages) {
+    if (indexHasLoaded && !indexLoading && !indexError && currentPage > totalPages) {
       setCurrentPage(totalPages);
     }
-  }, [currentPage, totalPages, railLoading, railError]);
+  }, [currentPage, totalPages, indexHasLoaded, indexLoading, indexError]);
 
   useEffect(() => {
     if (previousScrollKeyRef.current !== scrollKey) {
@@ -162,7 +169,7 @@ export function ReportsPage() {
   }, [scrollKey]);
 
   useEffect(() => {
-    if (railLoading) return;
+    if (!indexHasLoaded || indexLoading) return;
     const frame = requestAnimationFrame(() => {
       try {
         const saved = preservedScrollTopRef.current ?? Number(sessionStorage.getItem(scrollKey) ?? 0);
@@ -175,7 +182,7 @@ export function ReportsPage() {
       } catch { /* Session storage may be disabled; the list is still usable. */ }
     });
     return () => cancelAnimationFrame(frame);
-  }, [scrollKey, railLoading]);
+  }, [scrollKey, indexHasLoaded, indexLoading]);
 
   function resetFilters() {
     setFilters({
@@ -201,19 +208,23 @@ export function ReportsPage() {
     navigate(`/reports/${encodeURIComponent(reportId)}`, { state: { reportsReturnTo: `/reports${location.search}`, reportSelection: item } });
   }
 
-  if (allReports.length === 0 && railLoading) {
+  const datesStatus = <ReportsReadStatus kind="dates" loading={datesLoading} error={datesError} hasLoaded={datesHasLoaded} readAt={datesReadAt} latestDate={availableDates[0]} />;
+
+  if (!indexHasLoaded && indexLoading) {
     return (
       <div className="finance-page-shell" aria-busy="true">
         <p role="status" className="fa-muted-text">正在加载报告索引…</p>
+        {datesStatus}
         <LoadingSkeleton variant="page" />
       </div>
     );
   }
 
-  if (allReports.length === 0 && railError) {
+  if (!indexHasLoaded && indexError) {
     return (
       <div className="finance-page-shell">
-        <ErrorState title="报告索引加载失败" message={readingErrorMessage(railError, "报告索引加载失败，请稍后重试。")} onRetry={refetch} />
+        <ErrorState title="报告索引加载失败" message={readingErrorMessage(indexError, "报告索引加载失败，请稍后重试。")} onRetry={refetch} />
+        {datesStatus}
       </div>
     );
   }
@@ -222,6 +233,7 @@ export function ReportsPage() {
     <FAPageScaffold
       className="reports-page-shell"
       toolbar={(
+        <>
         <FAWorkspaceHeader
           className="reports-workspace-header"
           icon={FileText}
@@ -245,10 +257,12 @@ export function ReportsPage() {
           ]}
           secondaryLabel="时间"
           secondaryItems={[
-            { label: "最新", value: availableDates[0] ?? "—" },
+            { label: datesLoading || datesError ? datesHasLoaded ? "上次日期" : "日期" : "最新", value: availableDates[0] ?? (datesError ? "暂不可用" : datesLoading ? "读取中" : "—") },
             { label: "页数", value: totalPages },
           ]}
         />
+        <div className="fa-chrome-band px-1.5">{datesStatus}</div>
+        </>
       )}
     >
       <div className="fa-split-grid fa-split-grid--left reports-page-grid overflow-hidden">
@@ -258,8 +272,9 @@ export function ReportsPage() {
           reports={allReports}
           filters={filters}
           onFilterChange={setFilters}
-          railLoading={railLoading}
-          railError={railError}
+          railLoading={indexLoading}
+          railError={indexError}
+          indexHasLoaded={indexHasLoaded}
           />
         </details>
 
@@ -267,8 +282,7 @@ export function ReportsPage() {
           if (preserveScrollDuringRefreshRef.current) return;
           rememberScrollPosition(event.currentTarget.scrollTop);
         }}>
-          {railLoading ? <p role="status" className="fa-muted-text">正在刷新，暂保留上次报告列表。</p> : null}
-          {railError ? <p role="alert" className="fa-muted-text">刷新失败，当前为上次加载的报告列表。请点击刷新重试。</p> : null}
+          <ReportsReadStatus kind="index" loading={indexLoading} error={indexError} hasLoaded={indexHasLoaded} readAt={indexReadAt} />
           <ReportsToolbar
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
