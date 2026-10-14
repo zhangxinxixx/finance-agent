@@ -24,7 +24,38 @@ export function dedupeSupportedReports(indexItems: ReportIndexItem[]): ReportInd
       seen.set(key, item);
     }
   }
-  return Array.from(seen.values()).sort((a, b) => b.trade_date.localeCompare(a.trade_date));
+  return Array.from(seen.values()).sort((a, b) => {
+    const left = typeof a.trade_date === "string" ? a.trade_date : "";
+    const right = typeof b.trade_date === "string" ? b.trade_date : "";
+    return right.localeCompare(left);
+  });
+}
+
+/**
+ * The report index can contain incomplete or malformed records. A header date
+ * is useful only when the record supplies a real calendar day, not a timestamp
+ * or a date string that JavaScript happens to coerce.
+ */
+export function isValidReportTradeDate(value: string | null | undefined): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  if (year < 1) return false;
+
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(0, 0, 0, 0);
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+/** Latest valid trade day across the already displayable report index. */
+export function getLatestReportTradeDate(allReports: ReportIndexItem[]): string | null {
+  let latestDate: string | null = null;
+  for (const report of allReports) {
+    if (isValidReportTradeDate(report.trade_date) && (!latestDate || report.trade_date > latestDate)) {
+      latestDate = report.trade_date;
+    }
+  }
+  return latestDate;
 }
 
 function compareReportFreshness(next: ReportIndexItem, current: ReportIndexItem): number {
