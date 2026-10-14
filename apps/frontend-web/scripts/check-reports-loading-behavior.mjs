@@ -142,23 +142,104 @@ const filters = { reportTypes: [], asset: null, status: null, dataSource: null, 
 const baseState = { asset: 'XAUUSD', dates: [], indexItems: [reportFixture('A')], finalReportItems: [],
   indexLoading: false, indexError: null, indexHasLoaded: true, indexReadAt: '2030-01-01T01:00:00Z',
   datesLoading: false, datesError: null, datesHasLoaded: false, datesReadAt: null, refetch() {} };
-function renderPage(state) {
+function renderPage(state, search = '?q=A') {
   const load = loader({ '@/hooks/useReports': { useReports: () => state }, 'react-router-dom': {
-    useNavigate: () => () => {}, useLocation: () => ({ search: '?q=A' }),
-    useSearchParams: () => [new URLSearchParams('q=A'), () => {}],
+    useNavigate: () => () => {}, useLocation: () => ({ search }),
+    useSearchParams: () => [new URLSearchParams(search), () => {}],
   } }, { window: { matchMedia: () => ({ matches: true }) } });
   return renderToStaticMarkup(React.createElement(load('@/pages/ReportsPage').ReportsPage));
 }
 entries.push(
+  ['page-report-date-summary-uses-displayable-index-not-module-date', () => {
+    const report = reportFixture('report-a', { trade_date: '2028-02-07', generated_at: '2030-01-01T01:00:00Z' });
+    const html = renderPage({ ...baseState, indexItems: [report], dates: dates('2028-02-12').dates, datesHasLoaded: true,
+      datesReadAt: '2030-01-01T00:00:00Z', indexReadAt: '2099-01-01T00:00:00Z' });
+    assert.match(html, /索引内最新报告交易日/);
+    assert.match(html, /索引内最新报告交易日<\/span><span class="fa-workspace-context-chip-value">2028-02-07<\/span>/);
+    assert.match(html, /2028-02-07/);
+    assert.doesNotMatch(html, /2028-02-12/);
+  }],
+  ['report-date-helper-rejects-impossible-dates-and-ignores-non-displayable-types', () => {
+    const { dedupeSupportedReports, getLatestReportTradeDate, isValidReportTradeDate } = loader()('@/components/reports/reportsPageModel');
+    for (const value of ['', '2028-2-07', '2028-02-30', '2028-13-01', '2027-02-29', '2028-02-07T00:00:00Z', '0000-01-01']) {
+      assert.equal(isValidReportTradeDate(value), false, value);
+    }
+    assert.equal(isValidReportTradeDate('2028-02-29'), true);
+    const allReports = dedupeSupportedReports([
+      reportFixture('valid', { trade_date: '2028-02-07' }),
+      reportFixture('invalid', { trade_date: '2028-02-30' }),
+      reportFixture('unsupported', { type: 'unsupported_report', trade_date: '2028-02-12' }),
+    ]);
+    assert.equal(getLatestReportTradeDate(allReports), '2028-02-07');
+  }],
+  ['report-date-helper-finds-global-index-maximum-after-dedupe', () => {
+    const { dedupeSupportedReports, getLatestReportTradeDate } = loader()('@/components/reports/reportsPageModel');
+    const allReports = dedupeSupportedReports([
+      reportFixture('later-generated', { trade_date: '2028-02-05', generated_at: '2099-01-01T00:00:00Z' }),
+      reportFixture('same-day-a', { trade_date: '2028-02-07', generated_at: '2028-02-07T01:00:00Z' }),
+      reportFixture('same-day-b', { trade_date: '2028-02-07', generated_at: '2028-02-07T02:00:00Z' }),
+      reportFixture('latest', { trade_date: '2028-02-09', generated_at: '2000-01-01T00:00:00Z' }),
+    ]);
+    assert.equal(allReports.length, 4);
+    assert.equal(getLatestReportTradeDate(allReports), '2028-02-09');
+  }],
+  ['page-module-date-states-never-change-report-summary', () => {
+    const report = reportFixture('A', { trade_date: '2028-02-07' });
+    const cases = [
+      { name: 'older-success', state: { dates: dates('2028-02-06').dates, datesHasLoaded: true } },
+      { name: 'newer-success', state: { dates: dates('2028-02-12').dates, datesHasLoaded: true } },
+      { name: 'pending', state: { dates: dates('2028-02-12').dates, datesHasLoaded: true, datesLoading: true } },
+      { name: 'failure', state: { dates: dates('2028-02-12').dates, datesHasLoaded: true, datesError: error('dates') } },
+    ];
+    for (const { name, state } of cases) {
+      const html = renderPage({ ...baseState, indexItems: [report], ...state });
+      assert.match(html, /索引内最新报告交易日/, name);
+      assert.match(html, /2028-02-07/, name);
+      assert.doesNotMatch(html, /2028-02-12/, name);
+    }
+  }],
+  ['page-index-initial-states-never-borrow-module-date', () => {
+    const pending = renderPage({ ...baseState, indexItems: [], indexHasLoaded: false, indexLoading: true,
+      indexReadAt: null, dates: dates('2028-02-12').dates, datesHasLoaded: true });
+    assert.match(pending, /正在加载报告索引/); assert.doesNotMatch(pending, /2028-02-12/);
+    const failure = renderPage({ ...baseState, indexItems: [], indexHasLoaded: false, indexLoading: false,
+      indexReadAt: null, indexError: error('index'), dates: dates('2028-02-12').dates, datesHasLoaded: true });
+    assert.match(failure, /报告索引加载失败/); assert.doesNotMatch(failure, /2028-02-12/);
+  }],
+  ['page-retained-index-labels-previous-summary-during-refresh-or-failure', () => {
+    const report = reportFixture('A', { trade_date: '2028-02-07' });
+    for (const state of [{ indexLoading: true }, { indexError: error('index') }]) {
+      const html = renderPage({ ...baseState, indexItems: [report], ...state });
+      assert.match(html, /上次索引内最新报告交易日/); assert.match(html, /2028-02-07/);
+    }
+  }],
+  ['page-successful-empty-or-invalid-index-clears-summary-date', () => {
+    const empty = renderPage({ ...baseState, indexItems: [] });
+    assert.match(empty, /索引内最新报告交易日/); assert.match(empty, /未知/);
+    const missing = reportFixture('missing'); delete missing.trade_date;
+    const invalid = renderPage({ ...baseState, indexItems: [missing, reportFixture('invalid', { trade_date: '2028-02-30' })] });
+    assert.match(invalid, /索引内最新报告交易日/); assert.match(invalid, /未知/);
+  }],
+  ['page-filters-and-pagination-do-not-narrow-global-report-summary', () => {
+    const indexItems = [
+      reportFixture('A', { trade_date: '2028-02-07' }),
+      reportFixture('B', { type: 'macro_report', trade_date: '2028-02-11' }),
+      ...Array.from({ length: 14 }, (_, index) => reportFixture(`extra-${index}`, { trade_date: '2028-02-01' })),
+    ];
+    for (const search of ['?q=A', '?page=2', '?types=final_report']) {
+      const html = renderPage({ ...baseState, indexItems }, search);
+      assert.match(html, /索引内最新报告交易日/); assert.match(html, /2028-02-11/);
+    }
+  }],
   ['page-dates-error-does-not-hide-list-or-filters', () => {
     const html = renderPage({ ...baseState, datesError: error('dates') });
-    assert.match(html, /reports-list-row/); assert.match(html, /报告日期暂不可用/); assert.match(html, /搜索报告/);
+    assert.match(html, /reports-list-row/); assert.match(html, /辅助数据日期暂不可用/); assert.match(html, /搜索报告/);
     assert.doesNotMatch(html, /报告索引加载失败/); assert.match(html, /筛选导航/);
   }],
-  ['page-index-failure-retains-successful-date-fact', () => {
+  ['page-index-failure-does-not-promote-successful-module-date', () => {
     const html = renderPage({ ...baseState, indexItems: [], indexHasLoaded: false, indexReadAt: null, indexError: error('index'),
       dates: dates('2026-10-13').dates, datesHasLoaded: true, datesReadAt: '2030-01-01T00:00:00Z' });
-    assert.match(html, /报告索引加载失败/); assert.match(html, /2026-10-13/); assert.doesNotMatch(html, /reports-list-row/);
+    assert.match(html, /报告索引加载失败/); assert.match(html, /辅助数据日期读取完成/); assert.doesNotMatch(html, /2026-10-13/); assert.doesNotMatch(html, /reports-list-row/);
   }],
   ['page-successful-empty-retains-scaffold-during-refresh', () => {
     const html = renderPage({ ...baseState, indexItems: [], indexLoading: true, datesLoading: true });
@@ -170,10 +251,10 @@ entries.push(
     assert.match(html, /reports-list-row/); assert.match(html, /保留上次报告索引/); assert.match(html, /2030-01-01T01:00:00Z/);
     assert.match(html, /非研究数据时点/);
   }],
-  ['page-stale-dates-are-not-labelled-latest', () => {
+  ['page-stale-dates-are-labelled-as-auxiliary-request-state', () => {
     const html = renderPage({ ...baseState, dates: dates('2026-10-12').dates, datesHasLoaded: true,
       datesReadAt: '2030-01-01T00:00:00Z', datesError: error('dates') });
-    assert.match(html, /上次日期/); assert.doesNotMatch(html, />最新</); assert.match(html, /2030-01-01T00:00:00Z/);
+    assert.match(html, /上次辅助数据日期结果/); assert.doesNotMatch(html, /最新报告日期/); assert.match(html, /2030-01-01T00:00:00Z/);
   }],
   ['rail-controls-retained-during-background-read', () => {
     const Rail = loader()('@/components/reports/ReportsRail').ReportsRail;

@@ -31,7 +31,7 @@ import {
 import {
   dedupeSupportedReports,
   filterReports,
-  listAvailableReportDates,
+  getLatestReportTradeDate,
 } from "@/components/reports/reportsPageModel";
 import { useReports } from "@/hooks/useReports";
 import type { ReportIndexItem } from "@/types/reports";
@@ -69,7 +69,6 @@ export function ReportsPage() {
   }
   const {
     asset,
-    dates,
     indexItems,
     indexLoading,
     indexError,
@@ -112,6 +111,13 @@ export function ReportsPage() {
     return filterReports(allReports, searchQuery, filters);
   }, [allReports, searchQuery, filters]);
 
+  const latestReportTradeDate = useMemo(() => getLatestReportTradeDate(allReports), [allReports]);
+  const indexRetainsPreviousResult = indexHasLoaded && (indexLoading || Boolean(indexError));
+  const reportDateSummaryLabel = indexRetainsPreviousResult ? "上次索引内最新报告交易日" : "索引内最新报告交易日";
+  const reportDateSummaryValue = !indexHasLoaded
+    ? (indexLoading ? "读取中" : "未取得")
+    : (latestReportTradeDate ?? "未知");
+
   const pageSize = useMemo(() => {
     switch (viewMode) {
       case "timeline":
@@ -130,10 +136,6 @@ export function ReportsPage() {
     return filteredReports.slice(start, start + pageSize);
   }, [filteredReports, currentPage, pageSize]);
 
-  const availableDates = useMemo(
-    () => listAvailableReportDates(dates),
-    [dates],
-  );
   const activeReportTab: SupportedReportType | "all" =
     filters.reportTypes.length === 1 && isSupportedReportType(filters.reportTypes[0])
       ? filters.reportTypes[0]
@@ -208,7 +210,7 @@ export function ReportsPage() {
     navigate(`/reports/${encodeURIComponent(reportId)}`, { state: { reportsReturnTo: `/reports${location.search}`, reportSelection: item } });
   }
 
-  const datesStatus = <ReportsReadStatus kind="dates" loading={datesLoading} error={datesError} hasLoaded={datesHasLoaded} readAt={datesReadAt} latestDate={availableDates[0]} />;
+  const datesStatus = <ReportsReadStatus kind="dates" loading={datesLoading} error={datesError} hasLoaded={datesHasLoaded} readAt={datesReadAt} />;
 
   if (!indexHasLoaded && indexLoading) {
     return (
@@ -257,7 +259,7 @@ export function ReportsPage() {
           ]}
           secondaryLabel="时间"
           secondaryItems={[
-            { label: datesLoading || datesError ? datesHasLoaded ? "上次日期" : "日期" : "最新", value: availableDates[0] ?? (datesError ? "暂不可用" : datesLoading ? "读取中" : "—") },
+            { label: reportDateSummaryLabel, value: reportDateSummaryValue },
             { label: "页数", value: totalPages },
           ]}
         />
