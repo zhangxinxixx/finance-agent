@@ -14,6 +14,7 @@ export interface CategoryConfig {
 }
 
 export const CATEGORY_CONFIGS: CategoryConfig[] = [
+  { key: "gold_policy_daily", label: "黄金日结报告", color: "var(--important)", matchType: "gold_policy_daily" },
   { key: "final", label: "综合报告", color: "#60a5fa", matchType: "final_report" },
   { key: "macro", label: "宏观数据", color: "#38bdf8", matchType: "macro_report" },
   { key: "options", label: "期权分析", color: "#a78bfa", matchType: "options_report" },

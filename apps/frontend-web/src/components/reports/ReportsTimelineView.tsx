@@ -7,6 +7,7 @@ import {
   formatGeneratedAt,
   getMarketObservationSubtype,
   getReportListStatus,
+  getReportItemKey,
   getReportTitle,
   marketObservationSubtypeLabel,
   matchesReportSearch,
@@ -39,7 +40,7 @@ export function TimelineView({
         const marketObservationSubtype = getMarketObservationSubtype(item);
         return (
           <div
-            key={`${item.type}-${item.trade_date}-${item.run_id ?? idx}`}
+            key={getReportItemKey(item, idx)}
             style={{
               display: "flex",
               gap: 12,

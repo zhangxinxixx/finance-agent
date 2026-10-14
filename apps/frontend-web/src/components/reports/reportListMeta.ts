@@ -2,6 +2,7 @@ import type { ReportIndexItem, ReportType } from "@/types/reports";
 import { formatDateTime } from "@/lib/date";
 
 export const SUPPORTED_REPORT_TYPES = [
+  "gold_policy_daily",
   "final_report",
   "macro_report",
   "weekly_context_revision",
@@ -22,6 +23,7 @@ export type SupportedReportType = (typeof SUPPORTED_REPORT_TYPES)[number];
 const SUPPORTED_REPORT_TYPE_SET = new Set<string>(SUPPORTED_REPORT_TYPES);
 
 export const CATEGORY_MAP: Record<string, { label: string; color: string; softColor?: string; borderColor?: string }> = {
+  gold_policy_daily: { label: "黄金日结报告", color: "var(--important)" },
   final_report: { label: "综合报告", color: "#60a5fa" },
   macro_report: { label: "宏观流动性报告", color: "#38bdf8" },
   weekly_context_revision: { label: "周报修订", color: "var(--important)" },
@@ -38,6 +40,7 @@ export const CATEGORY_MAP: Record<string, { label: string; color: string; softCo
 };
 
 export const DOT_COLORS: Record<string, string> = {
+  gold_policy_daily: "var(--important)",
   final_report: "#60a5fa",
   macro_report: "#38bdf8",
   weekly_context_revision: "var(--important)",
@@ -54,6 +57,7 @@ export const DOT_COLORS: Record<string, string> = {
 };
 
 export const TYPE_DESCRIPTIONS: Record<string, { summary: string; tags: string[] }> = {
+  gold_policy_daily: { summary: "黄金日结报告汇总 Gold Policy 研究结果；发布记录、数据限制和当前有效性按各版本独立展示。", tags: ["黄金日结", "Gold Policy"] },
   final_report: { summary: "综合报告汇总宏观、期权、风险与事件证据链，输出当前研究判断和数据限制。", tags: ["综合", "证据链"] },
   macro_report: { summary: "宏观流动性报告聚焦流动性、实际利率、美元和黄金阶段判断。", tags: ["宏观", "流动性"] },
   weekly_context_revision: { summary: "周报修订以周报为不可变锚点，按最新价格、利率、期权、持仓和新闻证据逐项微调结论。", tags: ["周报", "上下文修订"] },
@@ -70,6 +74,7 @@ export const TYPE_DESCRIPTIONS: Record<string, { summary: string; tags: string[]
 };
 
 const XAUUSD_REPORT_TYPES = new Set<string>([
+  "gold_policy_daily",
   "final_report",
   "macro_report",
   "weekly_context_revision",
@@ -205,6 +210,16 @@ export function getReportDetailId(item: ReportIndexItem): string | null {
   return null;
 }
 
+export function getReportItemKey(item: ReportIndexItem, index: number): string {
+  if (item.type === "gold_policy_daily") {
+    if (item.report_id) return JSON.stringify([item.type, "report", item.report_id]);
+    if (item.run_id) return JSON.stringify([item.type, "run", item.trade_date, item.run_id]);
+    // Without an identity, two rows cannot be confirmed as the same report.
+    return JSON.stringify([item.type, "unidentified", index]);
+  }
+  return `${item.type}-${item.trade_date}-${item.run_id ?? index}`;
+}
+
 export function inferAssetLabel(item: ReportIndexItem): string {
   if (item.type === "options_report") return "OG";
   if (item.type === "jin10_oil_report") return "OIL";
@@ -244,6 +259,7 @@ export function getMarketObservationSubtype(item: ReportIndexItem): MarketObserv
 export function getReportTitle(item: ReportIndexItem): string {
   if (item.title) return item.title;
   const dateLabel = item.trade_date || "-";
+  if (item.type === "gold_policy_daily") return `黄金现货（XAUUSD）黄金日结报告 · ${dateLabel}`;
   if (item.type === "final_report") return `黄金现货（XAUUSD）综合报告 · ${dateLabel}`;
   if (item.type === "macro_report") return `黄金现货（XAUUSD）宏观流动性报告 · ${dateLabel}`;
   if (item.type === "weekly_context_revision") return `黄金现货（XAUUSD）周报最新上下文修正 · ${dateLabel}`;

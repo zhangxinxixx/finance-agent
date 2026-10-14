@@ -1,6 +1,7 @@
 import { ReportCard, ListView, TimelineView } from "@/components/reports/ReportLibraryViews";
 import type { ViewMode } from "@/components/reports/ReportsToolbar";
 import type { ReportIndexItem } from "@/types/reports";
+import { getReportItemKey } from "@/components/reports/reportListMeta";
 
 interface ReportsSummaryBarProps {
   hasFilteredResults: boolean;
@@ -143,7 +144,7 @@ export function ReportsLibraryContent({
     <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-2">
       {filteredReports.map((item, idx) => (
         <ReportCard
-          key={`${item.type}-${item.trade_date}-${item.run_id ?? idx}`}
+          key={getReportItemKey(item, idx)}
           item={item}
           onSelect={() => onSelectReport(item)}
           searchQuery={searchQuery}
