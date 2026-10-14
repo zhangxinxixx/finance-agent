@@ -90,6 +90,34 @@ jobs:
           tests/test_conftest_fixtures.py
           tests/worker/test_dagster_agent_ops.py
 
+  report-api-bridge:
+    name: Report API consumer bridge
+    runs-on: ubuntu-latest
+    env:
+      FINANCE_AGENT_DISABLE_BACKGROUND_JOBS: "1"
+      UV_CACHE_DIR: /tmp/uv-cache
+      no_proxy: 127.0.0.1,localhost,::1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/frontend-web/pnpm-lock.yaml
+      - name: Install Python dependencies
+        run: uv sync --locked --extra dev
+      - name: Install frontend dependencies
+        run: pnpm --dir apps/frontend-web install --frozen-lockfile
+      - name: Test actual report API responses against frontend consumers
+        run: uv run npm --prefix apps/frontend-web run test:report-api-bridge
+
   gold-policy-core:
     name: Gold Policy core
     runs-on: ubuntu-latest

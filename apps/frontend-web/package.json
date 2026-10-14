@@ -33,7 +33,8 @@
     "test:cme-missing-values-behavior": "node scripts/check-cme-missing-values-behavior.mjs",
     "test:report-qualification-behavior": "node scripts/check-report-qualification-behavior.mjs",
     "test:gold-policy-reports": "node scripts/check-gold-policy-reports.mjs",
-    "test:gold-reading-navigation": "node scripts/check-gold-reading-navigation.mjs"
+    "test:gold-reading-navigation": "node scripts/check-gold-reading-navigation.mjs",
+    "test:report-api-bridge": "python -m pytest ../../tests/contracts/report_api_bridge.py -q --import-mode=importlib"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.1.2",
