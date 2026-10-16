@@ -4,8 +4,10 @@ This is a method contract, not a benchmark score or a market evidence source.
 """
 from hashlib import sha256
 from pathlib import Path
+from copy import deepcopy
 
 VERSION = "gold_research_quality.v1"
+GATE_VERSION = "research_quality_gate.v1"
 ROOT = Path(__file__).resolve().parents[3]
 STANDARD_PATH = ROOT / "docs/evals/gold-research-quality-v1.md"
 METHOD_PATH = ROOT / "apps/analysis/prompts/gold_research_quality.md"
@@ -20,20 +22,58 @@ QUALITY_QUESTIONS = [
 ]
 
 
-def quality_contract():
-    return {
+class ResearchQualityError(ValueError):
+    """Safe, traceable refusal; never include local filenames or file contents."""
+
+    def __init__(self, reason_code, *, requested_contract=None, available_contract=None):
+        super().__init__(reason_code.replace('_', ' '))
+        self.reason_code = reason_code
+        self.details = {
+            'requested_contract': deepcopy(requested_contract),
+            'available_contract': deepcopy(available_contract),
+            'recovery_condition': 'Restore the exact frozen standard and method, or create a new '
+                                  'request bound to the new versions; never rewrite a frozen request.',
+        }
+
+
+def _materials():
+    values = []
+    for path, reason in ((STANDARD_PATH, 'quality_standard_unavailable'),
+                         (METHOD_PATH, 'quality_method_unavailable')):
+        try:
+            data = path.read_bytes()
+            text = data.decode('utf-8')
+            if not text.strip():
+                raise ValueError('empty method material')
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ResearchQualityError(reason) from exc
+        values.append((data, text))
+    contract = {
         "version": VERSION,
-        "standard_sha256": sha256(STANDARD_PATH.read_bytes()).hexdigest(),
-        "method_sha256": sha256(METHOD_PATH.read_bytes()).hexdigest(),
+        "standard_sha256": sha256(values[0][0]).hexdigest(),
+        "method_sha256": sha256(values[1][0]).hexdigest(),
         "reference_is_truth": False,
         "benchmark_parity": "not_evaluated",
     }
+    return contract, values[1][1]
+
+
+def quality_contract():
+    return _materials()[0]
 
 
 def quality_instructions(payload):
     contract = payload.get("research_quality_standard")
-    if contract is None:
+    if 'research_quality_standard' not in payload:
+        if payload.get('report_profile', {}).get('version') == 'gold_reader.v4':
+            raise ResearchQualityError('quality_contract_missing')
         return ""
-    if contract != quality_contract():
-        raise ValueError("research quality method fingerprint mismatch; use its frozen source version")
-    return METHOD_PATH.read_text(encoding="utf-8")
+    try:
+        available, method = _materials()
+    except ResearchQualityError as exc:
+        exc.details['requested_contract'] = deepcopy(contract)
+        raise
+    if contract != available:
+        raise ResearchQualityError('quality_method_fingerprint_mismatch',
+                                   requested_contract=contract, available_contract=available)
+    return method

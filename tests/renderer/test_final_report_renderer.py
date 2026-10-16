@@ -587,7 +587,12 @@ def test_detailed_reader_is_used_by_public_markdown_and_structured_entrypoints()
     snapshot['benchmark_replay'] = {'mode': 'engineering_replay'}
     import json
     from apps.analysis.agents.research_synthesis import enrich_research_coordinator
-    coordinator = enrich_research_coordinator(snapshot, _coordinator(), gateway=lambda **kwargs: {"content": json.dumps(response())})
+    def gateway(**kwargs):
+        body = ({'checks': [{'id': i, 'passed': True, 'reason': 'Synthetic protocol check'}
+                            for i in range(17)]}
+                if kwargs['audit_context']['caller'] == 'macro_causal_reviewer' else response())
+        return {'content': json.dumps(body)}
+    coordinator = enrich_research_coordinator(snapshot, _coordinator(), gateway=gateway)
     before = deepcopy(snapshot)
     kwargs = dict(snapshot=snapshot, coordinator_output=coordinator,
                   macro_output=_macro(), options_output=_options(), risk_output=_risk(),

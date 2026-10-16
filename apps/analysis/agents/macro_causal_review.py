@@ -2,7 +2,7 @@
 
 import json
 from apps.analysis.agents.research_input import bounded_review, encode, input_metrics
-from apps.analysis.agents.research_quality import QUALITY_QUESTIONS, quality_instructions
+from apps.analysis.agents.research_quality import QUALITY_QUESTIONS, quality_instructions, ResearchQualityError
 
 QUESTIONS = [
     "重复计权",
@@ -77,7 +77,10 @@ def review_macro_thesis(*, gateway, analysis, evidence, audit_context):
             "input_metrics": input_metrics(review_input),
             "audit_id": getattr(response, "audit_id", None),
             "is_probability": False,
-            "rule": "review downgrade affects research confidence only, never Accepted",
+            "rule": ("Non-pass blocks research quality eligibility; never grants Accepted"
+                     if method else "review downgrade affects research confidence only, never Accepted"),
         }
+    except ResearchQualityError as exc:
+        return {**fallback, 'reason': exc.reason_code, 'quality_failure': exc.details}
     except Exception as exc:
         return {**fallback, "reason": type(exc).__name__}

@@ -227,10 +227,14 @@ def test_single_repair_and_v4_token_budget_leave_hard_fields_unchanged():
     calls = []
     def gateway(**kwargs):
         calls.append(kwargs)
+        if kwargs['audit_context']['caller'] == 'macro_causal_reviewer':
+            return {'content': json.dumps({'checks': [
+                {'id': i, 'passed': True, 'reason': 'Synthetic protocol check'} for i in range(17)]})}
         return {'content': json.dumps({'wrong': 'output'} if len(calls) == 1 else response())}
     result = enrich_research_coordinator(data, original, gateway)
     meta = result.input_payload['research_synthesis']
-    assert len(calls) == 2 and all(c['max_tokens'] == 32000 for c in calls)
+    assert len(calls) == 3 and all(c['max_tokens'] == 32000 for c in calls[:2])
+    assert meta['review_status'] == 'pass' and meta['quality_eligible'] is True
     assert meta['status'] == 'success' and meta['report_coverage']['prose_contract'] == 'complete'
     assert meta['report_coverage']['financial_evidence']['flows'] == 'missing'
     for field in ('bias', 'status', 'accepted_state_conclusion'):
@@ -306,7 +310,8 @@ def test_v4_macro_review_revision_is_bounded_and_keeps_original_state():
     result = enrich_research_coordinator(data, original, gateway)
     meta = result.input_payload['research_synthesis']
     assert len(calls) == 4  # synthesis, review, one revision, second review
-    assert meta['status'] == 'success' and meta['macro_review']['revision_attempts'] == 1
+    assert meta['status'] == 'quality_blocked' and meta['macro_review']['revision_attempts'] == 1
+    assert meta['generation_status'] == 'success' and meta['quality_eligible'] is False
     assert meta['macro_review']['status'] == 'needs_revision'
     assert result.confidence == original.confidence * .7
     assert result.accepted_state_conclusion == original.accepted_state_conclusion

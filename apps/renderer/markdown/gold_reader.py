@@ -69,11 +69,30 @@ def reader_sections(snapshot, outputs, assessment):
     analysis = synthesis.get('analysis', {})
     if flow.get('reader_report_version') == 'gold_reader.v4':
         from apps.renderer.markdown.gold_detailed import concise_sections, detailed_sections
+        quality = []
+        if synthesis.get('quality_gate_version'):
+            eligible = synthesis.get('quality_eligible') is True
+            generation = {'success': '完成', 'failed': '失败', 'unavailable': '不可用'}.get(
+                synthesis.get('generation_status'), '未完成')
+            review = {'pass': '通过', 'needs_revision': '未通过', 'unavailable': '不可用',
+                      'not_run': '未执行'}.get(synthesis.get('review_status'), '未知')
+            body = f'正文生成：{generation}；独立审阅：{review}。'
+            body += ('本轮自动审阅通过；实际研究质量基准仍未验收。' if eligible else
+                     '研究质量未通过。草稿保留在审计记录，当前只展示可核验的数据。'
+                     '审阅不可用或未执行不表示已经查明具体分析错误。')
+            if synthesis.get('quality_failure'):
+                body += ('方法材料不可用或与请求指纹不匹配。恢复原冻结版本，'
+                         '或按新版本创建新请求；不能改写旧请求。')
+            quality = [{'section_id': 'research_quality', 'title': '研究生成与质量资格',
+                        'body': body, 'status': 'ok' if eligible else 'partial',
+                        'source_refs': [], 'data_category': 'confirmed_data'}]
+            if not eligible:
+                synthesis = {**synthesis, 'analysis': {}}
         if flow.get('reader_presentation') == 'gold_reader.concise.v1':
-            return concise_sections(snapshot, synthesis)
+            return quality + concise_sections(snapshot, synthesis)
         if flow.get('reader_presentation') == RESEARCH_PRESENTATION_VERSION:
-            return research_sections(snapshot, synthesis)
-        return detailed_sections(snapshot, synthesis)
+            return quality + research_sections(snapshot, synthesis)
+        return quality + detailed_sections(snapshot, synthesis)
     rows = {r['symbol']: r for r in snapshot['daily_research']['passport']}
     if flow.get('reader_report_version') == 'gold_reader.v3':
         return readable_sections(snapshot, synthesis)

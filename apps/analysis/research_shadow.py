@@ -93,7 +93,7 @@ def _model_record(coordinator):
         _attribute(coordinator, "llm_audit_id"),
     )
     provenance_complete = (
-        synthesis.get("status") == "success"
+        synthesis.get("generation_status", synthesis.get("status")) == "success"
         and synthesis.get("generated_by") == "llm"
         and all(isinstance(value, str) and value.strip() for value in required_strings)
         and isinstance(messages, list)
@@ -107,6 +107,9 @@ def _model_record(coordinator):
         "version": _attribute(coordinator, "version"),
         "schema_version": synthesis.get("schema_version"),
         "status": synthesis.get("status"),
+        **({'quality_review_required': True} if 'research_quality_standard' in synthesis else {}),
+        **{key: synthesis[key] for key in ('generation_status', 'review_status', 'quality_eligible',
+                                          'quality_gate_version') if key in synthesis},
         "generated_by": synthesis.get("generated_by"),
         "provenance_complete": provenance_complete,
         "llm_model": _attribute(coordinator, "llm_model"),
@@ -184,6 +187,8 @@ def evaluate_shadow_readiness(records, *, minimum_days=20):
             eligible = (record.get("run_mode") == "live_shadow" and completed and record.get("artifacts_verified") is True
                         and model.get("status") == "success" and model.get("generated_by") == "llm"
                         and model.get("provenance_complete") is True and bool(record.get("report_output"))
+                        and (not (model.get('quality_gate_version') or model.get('quality_review_required'))
+                             or model.get('quality_eligible') is True)
                         and record["trade_date"] == trade_day.isoformat()
                         and trade_day <= t.astimezone(ZoneInfo("Asia/Shanghai")).date()
                         and session.get("session_type") == "NORMAL" and trade_day.weekday() < 5)
