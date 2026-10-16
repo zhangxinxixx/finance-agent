@@ -54,17 +54,23 @@ def test_missing_v4_method_is_not_silently_skipped(tmp_path, monkeypatch):
 
 def test_actual_v4_gateway_receives_method_without_contract_or_state_changes():
     from tests.analysis.test_gold_detailed_report import snapshot, response
-    from tests.analysis.test_research_synthesis import _output, _FakeGateway, _hard_fields
+    from tests.analysis.test_research_synthesis import _output, _hard_fields
 
     data, original, answer = snapshot(), _output(), response()
     before_data = deepcopy(data)
     before_output = original.model_dump(mode='json')
-    gateway = _FakeGateway(json.dumps(answer, ensure_ascii=False))
+    calls = []
+    def gateway(**kwargs):
+        calls.append(kwargs)
+        content = ({'checks': [{'id': i, 'passed': True, 'reason': 'Synthetic review'} for i in range(17)]}
+                   if kwargs['audit_context']['caller'] == 'macro_causal_reviewer' else answer)
+        return {'content': json.dumps(content, ensure_ascii=False)}
 
     result = synthesis.enrich_research_coordinator(data, original, gateway)
 
-    assert len(gateway.calls) == 1
-    call = gateway.calls[0]
+    assert len(calls) == 2
+    assert calls[1]['audit_context']['caller'] == 'macro_causal_reviewer'
+    call = calls[0]
     assert call['json_mode'] is True
     messages = call['messages']
     assert len(messages) == 3

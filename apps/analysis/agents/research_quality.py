@@ -65,8 +65,8 @@ def quality_contract():
 def quality_instructions(payload):
     contract = payload.get("research_quality_standard")
     if 'research_quality_standard' not in payload:
-        if payload.get('report_profile', {}).get('version') == 'gold_reader.v4':
-            raise ResearchQualityError('quality_contract_missing')
+        # Historical message builders may read unversioned payloads. New v4
+        # requests enforce the required contract at the coordinator boundary.
         return ""
     try:
         available, method = _materials()

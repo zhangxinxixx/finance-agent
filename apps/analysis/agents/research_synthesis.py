@@ -94,6 +94,8 @@ def enrich_research_coordinator(
     prompt_payload = {}
     try:
         prompt_payload = _build_prompt_payload(snapshot, output)
+        if quality_required and 'research_quality_standard' not in prompt_payload:
+            raise ResearchQualityError('quality_contract_missing')
         messages = _build_messages(prompt_payload)
     except ResearchInputTooLarge:
         return _apply_rule_fallback(output, messages=[], prompt_payload={},
@@ -109,7 +111,7 @@ def enrich_research_coordinator(
         "trade_date": snapshot.get("trade_date"),
         "workflow_schema_version": GOLD_WORKFLOW_SCHEMA_VERSION,
         "prompt_schema_version": RESEARCH_SYNTHESIS_SCHEMA_VERSION,
-        "input_payload": prompt_payload,
+        "input_payload": deepcopy(prompt_payload),
     }
 
     raw_response: str | None = None
