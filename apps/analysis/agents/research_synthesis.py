@@ -226,6 +226,10 @@ def _response_content(response: Any) -> str:
 
 def _build_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
     template = _PROMPT_PATH.read_text(encoding="utf-8")
+    from apps.analysis.agents.research_quality import quality_instructions
+    method = quality_instructions(payload)
+    if method:
+        template += "\n\n" + method
     messages = [{"role": "system", "content": template}]
     if payload.get("report_profile", {}).get("version") == DETAILED_PROFILE_VERSION:
         if _new_daily_presentation(payload):
@@ -631,6 +635,7 @@ def _apply_success(
         "prompt_input_snapshot_id": output.snapshot_id,
     }
     if prompt_payload.get('report_profile', {}).get('version') == DETAILED_PROFILE_VERSION:
+        metadata['research_quality_standard'] = deepcopy(prompt_payload.get('research_quality_standard'))
         metadata['report_profile_version'] = DETAILED_PROFILE_VERSION
         metadata['evidence_catalog_ids'] = [r['evidence_id'] for r in prompt_payload.get('evidence_catalog', [])]
         metadata['allowed_fields'] = list(_DETAILED_ALLOWED_FIELDS)

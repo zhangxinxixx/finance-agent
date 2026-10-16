@@ -298,7 +298,8 @@ def test_v4_macro_review_revision_is_bounded_and_keeps_original_state():
     def gateway(**kwargs):
         calls.append(kwargs)
         if kwargs['audit_context']['caller'] == 'macro_causal_reviewer':
-            content = {'checks': [{'id': i, 'passed': i != 0, 'reason': '仍缺独立因果证据'} for i in range(14)]}
+            count = len(json.loads(kwargs['messages'][1]['content'])['questions'])
+            content = {'checks': [{'id': i, 'passed': i != 0, 'reason': '仍缺独立因果证据'} for i in range(count)]}
         else:
             content = body
         return {'content': json.dumps(content)}
@@ -406,7 +407,8 @@ def test_real_shape_acceptance_budget_and_immutable_reader_when_supplied():
     calls = []
     def gateway(**kwargs):
         calls.append(kwargs)
-        content = ({'checks': [{'id': i, 'passed': True, 'reason': '测试审阅'} for i in range(14)]}
+        content = ({'checks': [{'id': i, 'passed': True, 'reason': '测试审阅'}
+                               for i in range(len(json.loads(kwargs['messages'][1]['content'])['questions']))]}
                    if kwargs['audit_context']['caller'] == 'macro_causal_reviewer' else body)
         return {'content': json.dumps(content)}
     result = enrich_research_coordinator(data, _output(), gateway)

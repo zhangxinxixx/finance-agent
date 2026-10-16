@@ -1,0 +1,95 @@
+{
+  "kind": "public_review_summary_not_raw_evidence",
+  "case_id": "G-02",
+  "cutoff": "2026-10-14T12:10:43+08:00",
+  "reference_is_truth": false,
+  "as_known_reconstruction": "incomplete",
+  "model_input_ready": false,
+  "execution_ready": false,
+  "candidate_full_output": null,
+  "quality_score": null,
+  "reasoning_parity": "not_evaluated",
+  "source_files": [
+    {
+      "evidence_id": "E01",
+      "sha256": "73087566c8870eb353625cce9a9c784d1c379552a3435a16b4b3e50d1355f5f3",
+      "bytes": 155553
+    },
+    {
+      "evidence_id": "E02",
+      "sha256": "0e7164f6f348497a4541b61ce9b3e76fc00902c988540d08332a7d956350c764",
+      "bytes": 15905
+    },
+    {
+      "evidence_id": "E03",
+      "sha256": "2fe4b3a277eae774a79748c4cb8db54a64b1bec5ad4a84cc453a5915a573a509",
+      "bytes": 7062
+    },
+    {
+      "evidence_id": "E04",
+      "sha256": "8031426b8e2ceee13d3c52719b14f9bf19c00ba4216c727cd57fd2dd1c41b2ca",
+      "bytes": 8956
+    },
+    {
+      "evidence_id": "E05",
+      "sha256": "b34440f04d584a96e33c7a0afe11cbb1de2e6c675303cb8fcfcdacc7a3fe4ad6",
+      "bytes": 8497
+    },
+    {
+      "evidence_id": "E06",
+      "sha256": "e746488b440273aa6d0ec37149c50fe1dca8071191cc03c6fbfed3cbc76ad02e",
+      "bytes": 1589
+    },
+    {
+      "evidence_id": "E07",
+      "sha256": "534f3cda821ea2e9c6a86379325fe9b7d6aae13f68536d41fd227246c250b446",
+      "bytes": 2278
+    },
+    {
+      "evidence_id": "E08",
+      "sha256": "dc1f4a515e0ae5bb2405afe08da77a1b3704abb33663ec6a4c26fcffb7832038",
+      "bytes": 2417
+    },
+    {
+      "evidence_id": "E09",
+      "sha256": "3a089fc98281e23cfa9d7aaa65cff6e7a8b237b50ae14a4d5d3c6762a212d596",
+      "bytes": 557
+    },
+    {
+      "evidence_id": "E10",
+      "sha256": "589833320a41e8ce81edae90add579c0531bc80f23fcddea04493ab4f1a11575",
+      "bytes": 557
+    },
+    {
+      "evidence_id": "E11",
+      "sha256": "4e96a0b6bece93a7d9d0b1c4001e09ef6c810b9c5fe048f3977c8038a640dfd0",
+      "bytes": 560
+    },
+    {
+      "evidence_id": "E12",
+      "sha256": "edc1fc3f90910cf72a18d5fe5939f11fe40a2cc3d53b4e1b7cd179e471136b71",
+      "bytes": 129755
+    }
+  ],
+  "private_comparison_sha256": "b84138c02e8f621c85cb083f40e623f83e048ad13b8643743979d1c546850596",
+  "private_calibration_plan_sha256": "49e5f8888f969b22069acf3fb8b9670fff30a24c39b2004adea244847d6f29b5",
+  "reference_zip_sha256": "727b36c05ff3736459d84bac84aeb5eceb10f1a60c9d452ff32e3fdef348221d",
+  "reported_input_validation": {
+    "type": "input_traceability_not_model_acceptance",
+    "frozen_sources_verified": 12,
+    "retrieval_or_observation_times_before_cutoff": 12,
+    "existing_outputs_correctly_excluded": 6,
+    "post_cutoff_snapshot_excluded": 1,
+    "original_members_unchanged": 8,
+    "local_links_resolve": 18,
+    "review_strike_difference_and_gc_arithmetic": "passed_not_upstream_model_reproduction",
+    "source_bindings_and_partial_calculations": "passed",
+    "failed_price_requests_kept_unusable": 3,
+    "main_status_and_tracked_diff_unchanged": true,
+    "business_source_unchanged": true,
+    "matching_G02_model_outputs": 0,
+    "full_reconstruction": "incomplete",
+    "score": null
+  },
+  "validation_scope": "Source validation was performed against separately retained local originals; this summary is not independent reproduction from public files. No new model evaluation."
+}

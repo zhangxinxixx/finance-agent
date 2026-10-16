@@ -34,6 +34,9 @@ def archive_research_versions(storage_root, *, repo_root=None):
             children[:] = [name for name in children if name not in {"node_modules", ".venv", ".git", "dist", "build", "__pycache__", ".pytest_cache"}]
             files.extend(Path(directory) / name for name in names if Path(name).suffix in {".py", ".md"})
     files.extend(root/name for name in ("uv.lock", "pyproject.toml", ".python-version") if (root/name).is_file())
+    quality_standard = root / "docs/evals/gold-research-quality-v1.md"
+    if quality_standard.is_file():
+        files.append(quality_standard)
     files.extend(root/".agents"/"skills"/name/"SKILL.md" for name in SKILLS)
     manifest = {}
     for path in sorted(set(files)):

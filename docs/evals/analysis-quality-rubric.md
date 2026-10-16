@@ -2,6 +2,8 @@
 
 本文件定义黄金宏观分析结果的稳定回归维度。它不进入每次开发提示词；只在分析 pipeline、report、AgentOutput 或质量门发生变化时使用。
 
+当前产品验收以[黄金研究质量基准与自动化验收规范 v1.0](gold-research-quality-v1.md)为准。下列维度作为工程回归保留；旧最低标准不能覆盖新规范的 P0 硬门、100 分权重、E2E / 同证据实验分离和设计样本隔离要求。五份参考稿与当时输入实际导入前，不填写等质分数或样本外成绩。
+
 ## Required Dimensions
 
 | Dimension | Pass condition |
