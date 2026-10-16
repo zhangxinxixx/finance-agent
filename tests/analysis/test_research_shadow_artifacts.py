@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 import uuid
 
+import pytest
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -15,7 +17,8 @@ from database.queries.analysis import _sha256_hex
 from database.queries.research_shadow import shadow_readiness
 
 
-def test_registered_shadow_requires_exact_source_model_and_version_blobs(tmp_path):
+@pytest.mark.parametrize('quality_case', ['legacy', 'v4_pass', 'v4_stripped'])
+def test_registered_shadow_requires_exact_source_model_and_version_blobs(tmp_path, quality_case):
     repo, storage = tmp_path / "repo", tmp_path / "storage"
     for name in SKILLS:
         path = repo / ".agents" / "skills" / name / "SKILL.md"
@@ -35,7 +38,17 @@ def test_registered_shadow_requires_exact_source_model_and_version_blobs(tmp_pat
     agent_payload = {"agent_name": "coordinator_agent", "module": "coordinator", "version": "1.0", "status": "success", "snapshot_id": snapshot["snapshot_id"], "input_payload": {"research_synthesis": {"schema_version": "research_synthesis.v2", "status": "success", "generated_by": "llm"}},
                      "llm_model": "recorded-test", "llm_provider": "fixture", "llm_audit_id": "fixture",
                      "prompt_messages": [{"role": "user", "content": "recorded input"}], "llm_raw_output": "recorded output"}
+    if quality_case.startswith('v4'):
+        flow['reader_report_version'] = 'gold_reader.v4'
+    if quality_case == 'v4_pass':
+        agent_payload['input_payload']['research_synthesis'].update(
+            research_quality_standard={'version': 'synthetic-fixture'}, quality_gate_version='research_quality_gate.v1',
+            generation_status='success', review_status='pass', quality_eligible=True, macro_review={'status': 'pass'})
     record = build_shadow_record(snapshot, SimpleNamespace(**agent_payload), created_at=now)
+    if quality_case == 'v4_stripped':
+        # Simulate an old record format: the DB must recover the v4 contract
+        # from the registered input, never from model/record self-declarations.
+        record.pop('reader_report_version', None)
     record_path = storage / "analysis" / "gold_mainlines" / "2026-09-08" / str(run_id) / "production_shadow_record.v1.json"
     record_path.parent.mkdir(parents=True)
     record_path.write_text(json.dumps(record))
@@ -62,6 +75,13 @@ def test_registered_shadow_requires_exact_source_model_and_version_blobs(tmp_pat
         artifact = RunArtifact(run_id=run_id, artifact_type="structured_json", file_path=str(record_path), sha256=sha256(record_path.read_bytes()).hexdigest())
         db.add(artifact)
         db.commit()
+        if quality_case == 'v4_stripped':
+            before = record_path.read_bytes()
+            result = shadow_readiness(db, storage_root=storage)
+            assert result['verified_trading_days'] == 0
+            assert 'recorded research quality not eligible' in result['artifact_errors'][0]['reason']
+            assert record_path.read_bytes() == before
+            return
         assert shadow_readiness(db, storage_root=storage)["verified_trading_days"] == 1
 
         # Re-hashing a forged record is insufficient: it must match its input.

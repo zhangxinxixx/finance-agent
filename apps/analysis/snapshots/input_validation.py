@@ -441,7 +441,8 @@ def research_report_rejection_reasons(snapshot: dict, coordinator: Any) -> list[
     synthesis = ((coordinator.get("input_payload") if isinstance(coordinator, dict) else getattr(coordinator, "input_payload", None)) or {}).get("research_synthesis") or {}
     if synthesis.get("generation_status", synthesis.get("status")) != "success" or synthesis.get("generated_by") != "llm":
         reasons.append("research_generation_failed")
-    quality_required = 'research_quality_standard' in synthesis or bool(synthesis.get('quality_gate_version'))
+    quality_required = (snapshot.get('gold_workflow', {}).get('reader_report_version') == 'gold_reader.v4'
+                        or 'research_quality_standard' in synthesis or bool(synthesis.get('quality_gate_version')))
     if quality_required and (synthesis.get('quality_eligible') is not True
                              or synthesis.get('review_status') != 'pass'
                              or synthesis.get('status') != 'success'):

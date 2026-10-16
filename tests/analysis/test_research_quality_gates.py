@@ -1,5 +1,6 @@
 """Synthetic coordinator integration checks; no market/model quality claims."""
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
 
 import pytest
@@ -227,3 +228,56 @@ def test_method_drift_after_generation_blocks_review_and_preserves_recovery(monk
     assert meta['macro_review']['reason'] == 'quality_method_fingerprint_mismatch'
     assert meta['quality_failure']['recovery_condition']
     assert meta['generation_status'] == 'success' and meta['review_status'] == 'unavailable'
+
+
+@pytest.mark.parametrize('consumer', ['formal_report', 'shadow'])
+def test_frozen_v4_identity_requires_review_even_when_all_quality_fields_are_removed(consumer):
+    from apps.analysis.research_shadow import build_shadow_record, evaluate_shadow_readiness
+    from apps.analysis.snapshots.input_validation import research_report_rejection_reasons
+    from apps.renderer.markdown.final_report import render_final_report_markdown, build_structured_report
+
+    data = snapshot()
+    data.update(run_id='synthetic-consumer-boundary', trade_date='2026-10-02')
+    data['gold_workflow'].update(scenario_engine={}, report_session_quality={'session_type': 'NORMAL'})
+    assert not data['gold_workflow'].get('macro_causal')
+
+    def accepted(frozen, result):
+        if consumer == 'formal_report':
+            return not research_report_rejection_reasons(frozen, result)
+        record = build_shadow_record(frozen, result, created_at=datetime(2026, 10, 4, 8, tzinfo=timezone.utc))
+        record.update(task_status='success', artifacts_verified=True)
+        return evaluate_shadow_readiness([record])['verified_trading_days'] == 1
+
+    qualified = research_synthesis.enrich_research_coordinator(data, _output(), _gateway([], ['pass']))
+    assert accepted(data, qualified)
+    legacy = deepcopy(data)
+    legacy['gold_workflow']['reader_report_version'] = 'gold_reader.v3'
+    def legacy_gateway(**kwargs):
+        if kwargs['audit_context']['caller'] == 'macro_causal_reviewer':
+            content = {'checks': [{'id': i, 'passed': True, 'reason': 'Synthetic legacy check'} for i in range(14)]}
+        else:
+            payload = kwargs['audit_context']['input_payload']
+            content = {key: value for key, value in response().items() if key != 'report_sections'}
+            content.update(reader_narrative='合成旧版正文，用于兼容性验证。',
+                           evidence_ids=[payload['evidence_catalog'][0]['evidence_id']],
+                           macro_answers={k: '旧版合成检查' for k in ('growth', 'inflation', 'reaction', 'policy', 'treasury', 'oil', 'response', 'residual')},
+                           macro_narrative={k: '旧版合成检查' for k in ('growth', 'inflation', 'labor', 'fed', 'treasury', 'term_premium', 'fiscal', 'dollar', 'liquidity', 'credit', 'oil')},
+                           dominant_shocks={k: '旧版合成检查' for k in ('primary', 'secondary', 'counter')})
+        return {'content': json.dumps(content), 'model': 'synthetic',
+                'provider': 'fixture', 'audit_id': 'fixture-audit'}
+    legacy_output = research_synthesis.enrich_research_coordinator(legacy, _output(), legacy_gateway)
+    assert 'research_quality_standard' not in legacy_output.input_payload['research_synthesis']
+    assert accepted(legacy, legacy_output)
+
+    stripped = qualified.model_copy(deep=True)
+    meta = stripped.input_payload['research_synthesis']
+    for key in ('research_quality_standard', 'quality_gate_version', 'quality_eligible',
+                'review_status', 'generation_status', 'macro_review'):
+        meta.pop(key, None)
+    assert meta['status'] == 'success' and meta['generated_by'] == 'llm'
+    assert not accepted(data, stripped)
+    if consumer == 'formal_report':
+        for render in (render_final_report_markdown, build_structured_report):
+            with pytest.raises(ValueError, match='research_quality_not_eligible'):
+                render(snapshot=data, coordinator_output=stripped, macro_output=None,
+                       options_output=None, risk_output=None)

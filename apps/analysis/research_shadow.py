@@ -148,6 +148,7 @@ def build_shadow_record(snapshot, coordinator, *, created_at, report_output=None
         "run_id": snapshot["run_id"], "snapshot_id": snapshot["snapshot_id"], "analysis_time": snapshot["snapshot_time"],
         "recorded_at": created_at.isoformat(), "trade_date": snapshot["trade_date"], "run_mode": "live_shadow",
         "state_record": flow["state_record"], "versions": snapshot.get("research_versions", {}),
+        "reader_report_version": flow.get("reader_report_version"),
         "model": _model_record(coordinator),
         "report_output": _report_output_record(selected_output, model_coordinator=coordinator),
         "source_snapshot_sha256": payload_hash(snapshot), "session_quality": flow.get("report_session_quality", {}),
@@ -187,8 +188,9 @@ def evaluate_shadow_readiness(records, *, minimum_days=20):
             eligible = (record.get("run_mode") == "live_shadow" and completed and record.get("artifacts_verified") is True
                         and model.get("status") == "success" and model.get("generated_by") == "llm"
                         and model.get("provenance_complete") is True and bool(record.get("report_output"))
-                        and (not (model.get('quality_gate_version') or model.get('quality_review_required'))
-                             or model.get('quality_eligible') is True)
+                        and (not (record.get('reader_report_version') == 'gold_reader.v4'
+                                  or model.get('quality_gate_version') or model.get('quality_review_required'))
+                             or (model.get('quality_eligible') is True and model.get('review_status') == 'pass'))
                         and record["trade_date"] == trade_day.isoformat()
                         and trade_day <= t.astimezone(ZoneInfo("Asia/Shanghai")).date()
                         and session.get("session_type") == "NORMAL" and trade_day.weekday() < 5)

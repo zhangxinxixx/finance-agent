@@ -66,6 +66,15 @@ def shadow_readiness(db, *, storage_root):
             if agent is None or _sha256_hex(agent.payload) != agent.payload_sha256:
                 raise ValueError("recorded model output missing or hash mismatch")
             synthesis = (agent.payload.get("input_payload") or {}).get("research_synthesis", {})
+            # The registered input determines the contract, including old records
+            # without a projected report version or self-declared quality fields.
+            record["reader_report_version"] = flow.get("reader_report_version")
+            quality_required = (record["reader_report_version"] == "gold_reader.v4"
+                                or "research_quality_standard" in synthesis or bool(synthesis.get("quality_gate_version")))
+            if quality_required and (synthesis.get("quality_eligible") is not True
+                                     or synthesis.get("review_status") != "pass"
+                                     or (synthesis.get("macro_review") or {}).get("status") != "pass"):
+                raise ValueError("recorded research quality not eligible")
             raw_output = agent.payload.get("llm_raw_output") or ""
             prompt_messages = agent.payload.get("prompt_messages") or []
             provenance_complete = (
