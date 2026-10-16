@@ -439,8 +439,14 @@ def research_report_rejection_reasons(snapshot: dict, coordinator: Any) -> list[
     if not validation.get("can_analyze"):
         reasons.append("input_validation_blocked")
     synthesis = ((coordinator.get("input_payload") if isinstance(coordinator, dict) else getattr(coordinator, "input_payload", None)) or {}).get("research_synthesis") or {}
-    if synthesis.get("status") != "success" or synthesis.get("generated_by") != "llm":
+    if synthesis.get("generation_status", synthesis.get("status")) != "success" or synthesis.get("generated_by") != "llm":
         reasons.append("research_generation_failed")
+    quality_required = (snapshot.get('gold_workflow', {}).get('reader_report_version') == 'gold_reader.v4'
+                        or 'research_quality_standard' in synthesis or bool(synthesis.get('quality_gate_version')))
+    if quality_required and (synthesis.get('quality_eligible') is not True
+                             or synthesis.get('review_status') != 'pass'
+                             or synthesis.get('status') != 'success'):
+        reasons.append('research_quality_not_eligible')
     binding = synthesis.get("input_validation") or {}
     if binding.get("input_sha256") != validation.get("input_sha256"):
         reasons.append("research_input_binding_missing_or_mismatched")
@@ -457,6 +463,6 @@ def research_report_rejection_reasons(snapshot: dict, coordinator: Any) -> list[
             if not isinstance(analysis.get("reader_narrative"), str) or not analysis["reader_narrative"].strip():
                 reasons.append("research_reader_narrative_missing")
     review = synthesis.get("macro_review") or {}
-    if (snapshot.get("gold_workflow", {}).get("macro_causal") and review.get("status") != "pass") or review.get("status") in {"needs_revision", "failed", "unavailable", "blocked"}:
+    if ((quality_required or snapshot.get("gold_workflow", {}).get("macro_causal")) and review.get("status") != "pass") or review.get("status") in {"needs_revision", "failed", "unavailable", "blocked"}:
         reasons.append("research_review_not_accepted")
     return sorted(set(reasons))

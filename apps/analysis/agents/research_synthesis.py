@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from apps.analysis.agents.schemas import AgentOutput
+from apps.analysis.agents.research_quality import GATE_VERSION, ResearchQualityError
 from apps.analysis.agents.research_input import final_input, encode, input_metrics, ResearchInputTooLarge
 from apps.analysis.agents.research_input import (
     DETAILED_PROFILE_VERSION,
@@ -67,6 +68,7 @@ def enrich_research_coordinator(
 
     if not _workflow_enabled(snapshot):
         return output
+    quality_required = snapshot.get('gold_workflow', {}).get('reader_report_version') == DETAILED_PROFILE_VERSION
 
     from apps.analysis.snapshots.input_validation import prepare_analysis_inputs
     snapshot = prepare_analysis_inputs(dict(snapshot))
@@ -79,22 +81,29 @@ def enrich_research_coordinator(
     output = output.model_copy(update={"input_payload": {**original_payload, "input_validation": validation}})
     if not validation["can_analyze"]:
         result = _apply_rule_fallback(output, messages=[], prompt_payload={},
-            reason_code="input_validation_blocked", raw_response=None)
+            reason_code="input_validation_blocked", raw_response=None, quality_required=quality_required)
         from apps.analysis.agents.schemas import AgentStatus, AgentBias
         return result.model_copy(update={"status": AgentStatus.UNAVAILABLE, "bias": AgentBias.UNAVAILABLE,
             "confidence": 0.0, "summary": "研究输入校验阻断，详见 input_validation。",
             "key_findings": [], "watchlist": [], "evidence_items": []})
     existing_payload = output.input_payload if isinstance(output.input_payload, dict) else {}
     existing = existing_payload.get("research_synthesis")
-    if isinstance(existing, dict) and existing.get("status") in {"success", "rule_fallback"} and (existing.get("input_validation") or {}).get("input_sha256") == validation.get("input_sha256"):
+    if isinstance(existing, dict) and existing.get("status") in {"success", "rule_fallback", "quality_blocked"} and (existing.get("input_validation") or {}).get("input_sha256") == validation.get("input_sha256"):
         return output
 
+    prompt_payload = {}
     try:
         prompt_payload = _build_prompt_payload(snapshot, output)
+        if quality_required and 'research_quality_standard' not in prompt_payload:
+            raise ResearchQualityError('quality_contract_missing')
         messages = _build_messages(prompt_payload)
     except ResearchInputTooLarge:
         return _apply_rule_fallback(output, messages=[], prompt_payload={},
-                                   reason_code='ResearchInputTooLarge', raw_response=None)
+                                   reason_code='ResearchInputTooLarge', raw_response=None,
+                                   quality_required=quality_required)
+    except ResearchQualityError as exc:
+        return _apply_rule_fallback(output, messages=[], prompt_payload=prompt_payload,
+            reason_code=exc.reason_code, raw_response=None, quality_failure=exc.details)
     audit_context = {
         "caller": "research_synthesis.enrich_research_coordinator",
         "run_id": snapshot.get("run_id"),
@@ -102,7 +111,7 @@ def enrich_research_coordinator(
         "trade_date": snapshot.get("trade_date"),
         "workflow_schema_version": GOLD_WORKFLOW_SCHEMA_VERSION,
         "prompt_schema_version": RESEARCH_SYNTHESIS_SCHEMA_VERSION,
-        "input_payload": prompt_payload,
+        "input_payload": deepcopy(prompt_payload),
     }
 
     raw_response: str | None = None
@@ -126,7 +135,7 @@ def enrich_research_coordinator(
             raw_response = _response_content(response)
             parsed = _parse_and_validate(raw_response, prompt_payload)
         review = None
-        if prompt_payload.get("macro_causal"):
+        if prompt_payload.get("macro_causal") or 'research_quality_standard' in prompt_payload:
             from apps.analysis.agents.macro_causal_review import review_macro_thesis
             review = review_macro_thesis(gateway=gateway, analysis=parsed,
                 evidence=prompt_payload, audit_context=audit_context)
@@ -155,6 +164,7 @@ def enrich_research_coordinator(
             prompt_payload=prompt_payload,
             reason_code=f"{type(exc).__name__}",
             raw_response=raw_response,
+            quality_required=quality_required,
         )
 
 
@@ -226,6 +236,10 @@ def _response_content(response: Any) -> str:
 
 def _build_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
     template = _PROMPT_PATH.read_text(encoding="utf-8")
+    from apps.analysis.agents.research_quality import quality_instructions
+    method = quality_instructions(payload)
+    if method:
+        template += "\n\n" + method
     messages = [{"role": "system", "content": template}]
     if payload.get("report_profile", {}).get("version") == DETAILED_PROFILE_VERSION:
         if _new_daily_presentation(payload):
@@ -630,7 +644,20 @@ def _apply_success(
         "evidence_ids": list(parsed["evidence_ids"]),
         "prompt_input_snapshot_id": output.snapshot_id,
     }
+    if 'research_quality_standard' in prompt_payload:
+        review_status = (prompt_payload.get('macro_review') or {}).get('status', 'unavailable')
+        eligible = review_status == 'pass'
+        metadata.update({
+            'quality_gate_version': GATE_VERSION,
+            'generation_status': 'success',
+            'review_status': review_status,
+            'quality_eligible': eligible,
+            'status': 'success' if eligible else 'quality_blocked',
+        })
+        if (prompt_payload.get('macro_review') or {}).get('quality_failure'):
+            metadata['quality_failure'] = deepcopy(prompt_payload['macro_review']['quality_failure'])
     if prompt_payload.get('report_profile', {}).get('version') == DETAILED_PROFILE_VERSION:
+        metadata['research_quality_standard'] = deepcopy(prompt_payload.get('research_quality_standard'))
         metadata['report_profile_version'] = DETAILED_PROFILE_VERSION
         metadata['evidence_catalog_ids'] = [r['evidence_id'] for r in prompt_payload.get('evidence_catalog', [])]
         metadata['allowed_fields'] = list(_DETAILED_ALLOWED_FIELDS)
@@ -641,6 +668,19 @@ def _apply_success(
             'publish_allowed': 'unchanged_external_gate',
         }
     payload["research_synthesis"] = metadata
+    if metadata.get('quality_eligible') is False:
+        # Retain the challenged draft and call identity for audit. Do not copy
+        # unapproved claims into the coordinator's summary or decision fields.
+        return output.model_copy(update={
+            'input_payload': payload,
+            'llm_model': _response_value(response, 'model'),
+            'llm_provider': _response_value(response, 'provider'),
+            'llm_usage': _response_value(response, 'usage'),
+            'llm_latency_ms': _response_value(response, 'latency_ms'),
+            'llm_audit_id': _response_value(response, 'audit_id'),
+            'prompt_messages': messages, 'llm_raw_output': raw_response,
+            'data_quality': _append_unique(output.data_quality, 'research_quality_blocked'),
+        })
     evidence_refs = [*output.evidence_refs, {"source": "gold_workflow", "snapshot_id": output.snapshot_id, "evidence_ids": list(parsed["evidence_ids"]), "generated_by": "llm"}]
     return output.model_copy(
         update={
@@ -671,6 +711,8 @@ def _apply_rule_fallback(
     prompt_payload: dict[str, Any],
     reason_code: str,
     raw_response: str | None,
+    quality_failure: dict | None = None,
+    quality_required: bool = False,
 ) -> AgentOutput:
     payload = deepcopy(output.input_payload) if isinstance(output.input_payload, dict) else {}
     payload["research_synthesis"] = {
@@ -682,6 +724,16 @@ def _apply_rule_fallback(
         "evidence_ids": [],
         "prompt_input_snapshot_id": output.snapshot_id,
     }
+    if quality_required or quality_failure is not None or 'research_quality_standard' in prompt_payload:
+        payload['research_synthesis'].update({
+            'input_validation': deepcopy(payload.get('input_validation')),
+            'research_quality_standard': deepcopy(prompt_payload.get('research_quality_standard')),
+            'quality_gate_version': GATE_VERSION,
+            'generation_status': 'unavailable' if quality_failure is not None else 'failed',
+            'review_status': 'not_run', 'quality_eligible': False,
+        })
+        if quality_failure is not None:
+            payload['research_synthesis']['quality_failure'] = deepcopy(quality_failure)
     # Keep the actual response out of a failed artifact.  The shared gateway
     # audit retains the call record; this output only records a safe reason code.
     _ = messages, prompt_payload, raw_response

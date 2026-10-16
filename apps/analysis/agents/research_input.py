@@ -1132,6 +1132,8 @@ def final_input(snapshot, output, *, catalog, assessment):
                         'rechecked against current evidence.'),
     }
     if flow.get('reader_report_version') == DETAILED_PROFILE_VERSION:
+        from apps.analysis.agents.research_quality import quality_contract
+        payload['research_quality_standard'] = quality_contract()
         profile = detailed_report_profile(snapshot)
         # Resolve reviewed evidence once, rather than copying it into each module.
         paths = {
