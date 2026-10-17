@@ -9,6 +9,30 @@ const parts = item => ({ analysis: { key: 'analysis', label: '分析稿', availa
 const view = item => adapter.normalizeReportDetail(detailFixture(item), parts(item));
 const html = (component, props) => renderToStaticMarkup(React.createElement(load('react-router-dom').StaticRouter, {location:'/'}, React.createElement(component, props)));
 await cases([
+  ['gold-macro-candidates-visible-without-merging-different-runs', () => {
+    const model = load('@/components/reports/reportsPageModel');
+    const items = ['morning', 'evening'].map(id => reportFixture(id, {
+      type:'gold_macro_daily', family:'gold_macro_daily_markdown', trade_date:'2026-10-16',
+      run_id:id, report_id:`gold_macro_daily:${id}`, publish_allowed:false,
+      lifecycle_status:'needs_review', output_mode:'candidate', review_status:'pending',
+      authority:'research_candidate',
+      report_identity:{authority:'research_candidate',output_mode:'candidate',review_status:'pending',
+        model_review_status:'pass',quality_eligible:true,publish_allowed:false,execution_ready:false},
+    }));
+    assert.equal(model.dedupeSupportedReports(items).length,2);
+    const filters={reportTypes:['gold_macro_daily'],asset:'XAUUSD',status:null,dataSource:null,dateRange:null};
+    assert.equal(model.filterReports(items,'黄金宏观日报',filters).length,2);
+    for(const item of items) {
+      assert.equal(meta.isSupportedReportType(item.type),true);
+      assert.equal(meta.reportTypeLabel(item.type),'黄金宏观日报');
+      assert.equal(meta.canOpenReport(item),true);
+      assert.notEqual(meta.getReportListStatus(item).key,'published');
+      assert.match(meta.getReportListStatus(item).description,/不可发布/);
+      assert.doesNotMatch(meta.getReportListStatus(item).description,/冲突|未解释/);
+      assert.match(detailMeta.getReportDetailStatus(view(item)).description,/不可发布/);
+      assert.doesNotMatch(detailMeta.getReportDetailStatus(view(item)).description,/冲突|未解释/);
+    }
+  }],
   ['original-readable-is-not-published', () => {
     const item = reportFixture();
     assert.equal(meta.canOpenReport(item), true);

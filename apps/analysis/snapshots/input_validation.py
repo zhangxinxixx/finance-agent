@@ -50,7 +50,9 @@ def _failed(item):
                ("status", "source_status", "collector_status", "collection_status", "freshness_status")) or bool(item.get("error"))
 
 
-def prepare_analysis_inputs(snapshot: dict, *, storage_root: Path | None = None) -> dict:
+def prepare_analysis_inputs(
+    snapshot: dict, *, storage_root: Path | None = None, prior_report_root: Path | None = None,
+) -> dict:
     """Return a complete derived snapshot; archives and inputs stay immutable.
 
     With storage_root, source archives and saved hashes are checked read-only.
@@ -75,7 +77,7 @@ def prepare_analysis_inputs(snapshot: dict, *, storage_root: Path | None = None)
         result = attach_prior_report_contexts(
             result,
             result["prior_report_contexts"],
-            storage_root=storage_root,
+            storage_root=prior_report_root if prior_report_root is not None else storage_root,
         )
     if not research_enabled(result):
         def has_rejection(value):
@@ -356,7 +358,7 @@ def prepare_analysis_inputs(snapshot: dict, *, storage_root: Path | None = None)
     for key in ("official_etf", "cot_reports", "supplemental_sources", "public_evidence"):
         if key in research:
             research[key] = checked_evidence(research[key], "daily_research." + key)
-    for key in ("fedwatch", "official_etf", "cot_reports", "policy_distribution", "policy_target_reference", "fed_sep"):
+    for key in ("fedwatch", "official_etf", "cot_reports", "policy_distribution", "policy_target_reference", "fed_sep", "release_events"):
         if key in macro:
             macro[key] = checked_evidence(macro[key], "macro.data." + key)
     if "tradingview_cross_asset" in result:

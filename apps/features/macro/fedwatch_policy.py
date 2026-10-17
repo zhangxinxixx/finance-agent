@@ -9,10 +9,34 @@ from apps.features.macro.policy_path import _compare_sep
 
 
 def project_fedwatch_policy(view, *, as_of, sep=None):
+    # Offline archives carry the collector contract, whereas the worker supplies
+    # a view. Both must pass the same deterministic normalization and age rules.
+    if isinstance(view, dict) and 'parse_status' in view:
+        from apps.features.macro.fedwatch import build_fedwatch_view
+        view = build_fedwatch_view(view, as_of=as_of)
+    view = deepcopy(view) if isinstance(view, dict) else {}
     factor = view.get("factor") or {}
     path = factor.get("market_implied_path") or {}
-    health = view.get("source_health") or {}
+    health = view.get("source_health") or {"status": "missing", "reason": "fedwatch_view_contract_missing"}
+    if health.get('status') in {'fresh', 'stale'}:
+        try:
+            cutoff = datetime.fromisoformat(as_of.replace('Z', '+00:00'))
+            evaluated = datetime.fromisoformat(health['evaluated_at'].replace('Z', '+00:00'))
+            received = datetime.fromisoformat(health['collected_at'].replace('Z', '+00:00'))
+            age = health['age_seconds'] + (cutoff - evaluated).total_seconds()
+            if received > cutoff or age < 0:
+                raise ValueError('future_snapshot')
+            health.update(evaluated_at=as_of, age_seconds=age)
+            if age > health['allowed_staleness_seconds']:
+                health.update(status='stale', reason='source_stale', actionable=False)
+        except (KeyError, TypeError, ValueError):
+            health.update(status='parse_failed', reason='view_time_not_verified', actionable=False)
+            path = {}
     fresh = health.get("status") == "fresh"
+    if not fresh:
+        factor['repricing'] = {**factor.get('repricing', {}), 'status': 'unavailable',
+                               'direction': None, 'strength': None, 'score': None,
+                               'reason': health.get('reason')}
     meetings = []
     for m in path.get("meetings", []):
         expected = m["expected_rate_pct"]
@@ -37,6 +61,8 @@ def project_fedwatch_policy(view, *, as_of, sep=None):
             "official_policy": deepcopy(factor.get("official_policy", {})),
             "market_implied_path": deepcopy(path), "repricing": deepcopy(factor.get("repricing", {})),
             "source_health": deepcopy(health), "confirmation": deepcopy(factor.get("confirmation", {})),
+            "distribution_scope": "current_snapshot" if fresh else "historical_snapshot_only" if meetings else "unavailable",
+            "current_repricing_eligible": fresh and factor.get('repricing', {}).get('status') == 'available',
             "policy_path": {"rows": rows, "market_vs_sep": _compare_sep(rows[1], sep, as_of=as_of)}}
 
 

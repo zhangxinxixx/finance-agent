@@ -124,6 +124,7 @@ export function ReportDetailPage() {
   const qualification = getReportDetailStatus(data);
   const selectionDifference = reportSelectionDifference(location.state?.reportSelection, data);
   const qualificationPending = isRefreshing || Boolean(error);
+  const isMacroDaily = data.meta.family === "gold_macro_daily_markdown";
 
   return (
     <div className="finance-page-shell">
@@ -178,7 +179,7 @@ export function ReportDetailPage() {
           />
         ) : null}
 
-        {!qualityBlocked && activeTab === "analysis" && tabs.includes("analysis") && data.report_id === reportId ? <ResearchTradePlanCard
+        {!isMacroDaily && !qualityBlocked && activeTab === "analysis" && tabs.includes("analysis") && data.report_id === reportId ? <ResearchTradePlanCard
           key={data.report_id} identity={data.research_identity} plan={data.final_trade_plan} tradeDate={data.meta.trade_date} asOf={data.meta.asOf}
           observation={isObservationReport(data.meta)} referenceOnly={qualification.referenceOnly || qualificationPending} /> : null}
 
@@ -193,11 +194,11 @@ export function ReportDetailPage() {
             </ResearchDetails>
           ) : null}
         </ResearchDetails> : null}
-        <ResultIdentityBar
+        {!isMacroDaily ? <ResultIdentityBar
           identity={data.result_identity}
           subjectLabel="报告自身"
           baselineLabel="当前有效的黄金研究基线"
-        />
+        /> : null}
 
         {qualityBlocked ? (
           <FAWarningBanner

@@ -4,6 +4,7 @@ import { formatDateTime } from "@/lib/date";
 export const SUPPORTED_REPORT_TYPES = [
   "final_report",
   "macro_report",
+  "gold_macro_daily",
   "weekly_context_revision",
   "options_report",
   "jin10_daily_report",
@@ -24,6 +25,7 @@ const SUPPORTED_REPORT_TYPE_SET = new Set<string>(SUPPORTED_REPORT_TYPES);
 export const CATEGORY_MAP: Record<string, { label: string; color: string; softColor?: string; borderColor?: string }> = {
   final_report: { label: "综合报告", color: "#60a5fa" },
   macro_report: { label: "宏观流动性报告", color: "#38bdf8" },
+  gold_macro_daily: { label: "黄金宏观日报", color: "var(--brand)" },
   weekly_context_revision: { label: "周报修订", color: "var(--important)" },
   options_report: { label: "期权分析", color: "#a78bfa" },
   jin10_daily_report: { label: "日报", color: "#f59e0b" },
@@ -40,6 +42,7 @@ export const CATEGORY_MAP: Record<string, { label: string; color: string; softCo
 export const DOT_COLORS: Record<string, string> = {
   final_report: "#60a5fa",
   macro_report: "#38bdf8",
+  gold_macro_daily: "var(--brand)",
   weekly_context_revision: "var(--important)",
   options_report: "#a78bfa",
   jin10_daily_report: "#f59e0b",
@@ -56,6 +59,7 @@ export const DOT_COLORS: Record<string, string> = {
 export const TYPE_DESCRIPTIONS: Record<string, { summary: string; tags: string[] }> = {
   final_report: { summary: "综合报告汇总宏观、期权、风险与事件证据链，输出当前研究判断和数据限制。", tags: ["综合", "证据链"] },
   macro_report: { summary: "宏观流动性报告聚焦流动性、实际利率、美元和黄金阶段判断。", tags: ["宏观", "流动性"] },
+  gold_macro_daily: { summary: "黄金宏观日报结合宏观证据、价格响应与条件观察；候选阅读不代表获准发布或交易。", tags: ["黄金", "宏观日报"] },
   weekly_context_revision: { summary: "周报修订以周报为不可变锚点，按最新价格、利率、期权、持仓和新闻证据逐项微调结论。", tags: ["周报", "上下文修订"] },
   options_report: { summary: "CME 期权结构分析 Markdown 报告，聚焦墙位、Gamma 零点与主导情景。", tags: ["策略卡", "期权"] },
   jin10_daily_report: { summary: "日报三视图报告包，承接原文、视觉版与智能体二次分析。", tags: ["看板", "日报"] },
@@ -70,6 +74,7 @@ export const TYPE_DESCRIPTIONS: Record<string, { summary: string; tags: string[]
 };
 
 const XAUUSD_REPORT_TYPES = new Set<string>([
+  "gold_macro_daily",
   "final_report",
   "macro_report",
   "weekly_context_revision",
@@ -172,8 +177,8 @@ export function getReportListStatus(item: Partial<ReportIndexItem>): ReportListS
   const unknownEnum = [
     lifecycle !== null && !["draft", "generated", "snapshot_bound", "needs_review", "published", "exported", "archived"].includes(lifecycle),
     review !== null && !["not_required", "pending", "approved", "rejected", "rerun", "blocked", "needs_review"].includes(review),
-    authority !== null && !["observation_only", "historical_only"].includes(authority),
-    mode !== null && !["observe", "historical", "accepted"].includes(mode),
+    authority !== null && !["observation_only", "historical_only", "research_candidate"].includes(authority),
+    mode !== null && !["observe", "historical", "accepted", "candidate"].includes(mode),
     publicationStatus !== null && !["accepted", "observe", "degraded"].includes(publicationStatus),
   ].some(Boolean);
   const restrictedData = ["partial", "unavailable", "degraded"].includes(text(item.data_status ?? item.status) ?? "");
@@ -246,6 +251,7 @@ export function getReportTitle(item: ReportIndexItem): string {
   const dateLabel = item.trade_date || "-";
   if (item.type === "final_report") return `黄金现货（XAUUSD）综合报告 · ${dateLabel}`;
   if (item.type === "macro_report") return `黄金现货（XAUUSD）宏观流动性报告 · ${dateLabel}`;
+  if (item.type === "gold_macro_daily") return `黄金宏观日报 · ${dateLabel}`;
   if (item.type === "weekly_context_revision") return `黄金现货（XAUUSD）周报最新上下文修正 · ${dateLabel}`;
   if (item.type === "options_report") return `黄金期权结构报告 · ${dateLabel}`;
   if (item.type === "jin10_weekly_report") return `黄金周报 · ${dateLabel}`;

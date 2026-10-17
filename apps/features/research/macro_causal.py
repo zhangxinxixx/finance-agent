@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from apps.features.macro.policy_path import build_policy_path
 from apps.features.macro.treasury_causal import build_treasury
+from apps.features.macro.release_evidence import build_release_evidence
 
 
 QUESTIONS = [
@@ -142,6 +143,7 @@ def build_macro_causal(snapshot):
         "research_question": "if gold contradicts rates, test USD, hedging, funds and positioning alternatives",
     }
     evidence = {
+        "releases": build_release_evidence(snapshot),
         "growth": growth,
         "inflation": inflation,
         "reaction": reaction,

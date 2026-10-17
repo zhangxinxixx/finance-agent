@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
 
 from database.models.report import ReportArtifact, ReportItem
@@ -78,6 +79,35 @@ def _date(value: Any) -> date | None:
     return None
 
 
+def _failure_category(reason: str) -> str:
+    if reason in {"report_registry_unavailable", "report_registry_session_not_supplied",
+                  "bound_analysis_snapshot_database_unavailable"}:
+        return "database_unavailable"
+    if reason == "no_matching_report":
+        return "no_eligible_prior"
+    if reason in {"artifact_missing_or_storage_escape", "artifact_read_failed", "body_empty",
+                  "body_oversized", "body_not_utf8", "primary_main_markdown_not_unique",
+                  "unsupported_storage_backend", "primary_artifact_not_markdown"}:
+        return "body_unavailable"
+    return "cutoff_or_version_rejected"
+
+
+def _classify_failure(item: dict[str, Any]) -> dict[str, Any]:
+    """Add recovery categories without erasing rejection reasons or mixed failures."""
+    reasons = (item.get("details") or {}).get("rejected_reason_counts") or {
+        item.get("reason_code", "context_missing"): 1
+    }
+    counts: dict[str, int] = {}
+    for reason, count in reasons.items():
+        category = _failure_category(reason)
+        counts[category] = counts.get(category, 0) + count
+    item["failure_category"] = next(category for category in (
+        "database_unavailable", "body_unavailable", "cutoff_or_version_rejected", "no_eligible_prior"
+    ) if category in counts)
+    item["failure_category_counts"] = counts
+    return item
+
+
 def _unavailable(cadence: str, reason_code: str, **details: Any) -> dict[str, Any]:
     result = {
         "status": "unavailable",
@@ -88,7 +118,7 @@ def _unavailable(cadence: str, reason_code: str, **details: Any) -> dict[str, An
     }
     if details:
         result["details"] = details
-    return result
+    return _classify_failure(result)
 
 
 def _classify(item: ReportItem) -> str | None:
@@ -225,6 +255,8 @@ def _cutoff_from(
                 or report_metadata.get("input_snapshot_ids") != row.input_snapshot_ids):
             return None, "bound_analysis_snapshot_identity_invalid"
         return actual, "verified_analysis_snapshot.snapshot_time"
+    except SQLAlchemyError:
+        return None, "bound_analysis_snapshot_database_unavailable"
     except (OSError, ValueError, TypeError, KeyError):
         return None, "bound_analysis_snapshot_invalid"
     except Exception:
@@ -263,6 +295,8 @@ def _validate_candidate(
     if generated_at is None or generated_at >= current_cutoff:
         return None, "generated_time_missing_or_not_before_cutoff"
     actual_cutoff, cutoff_source = _cutoff_from(item, artifact, db_session=db_session, storage_root=storage_root)
+    if cutoff_source == "bound_analysis_snapshot_database_unavailable":
+        return None, cutoff_source
     if actual_cutoff is None or actual_cutoff >= current_cutoff or actual_cutoff > generated_at:
         return None, "report_cutoff_invalid"
     if not isinstance(artifact.sha256, str) or len(artifact.sha256) != 64:
@@ -290,6 +324,13 @@ def _validate_candidate(
         return None, "body_not_utf8"
     if not body.strip():
         return None, "body_empty"
+    registry_times = [_aware_time(value, database_timezone_utc=True) for value in
+                      (item.created_at, item.updated_at, artifact.created_at, artifact.updated_at)]
+    if not all(registry_times):
+        return None, "registry_availability_missing"
+    available_at = max(generated_at, *registry_times)
+    if available_at >= current_cutoff:
+        return None, "registry_revision_not_available_before_cutoff"
     metadata = item.report_metadata if isinstance(item.report_metadata, dict) else {}
     provenance = deepcopy(item.source_refs)
     context_ref = {
@@ -313,6 +354,8 @@ def _validate_candidate(
         "actual_cutoff": actual_cutoff.isoformat(),
         "cutoff_source": cutoff_source,
         "generated_at": generated_at.isoformat(),
+        "available_at": available_at.isoformat(),
+        "availability_basis": "report_and_artifact_registry_revision",
         "family": item.family,
         "report_type": item.report_type,
         "body": body,
@@ -403,6 +446,15 @@ def load_prior_report_contexts(
                 valid.append(context)
             else:
                 rejected[reason or "invalid_candidate"] = rejected.get(reason or "invalid_candidate", 0) + 1
+        # A failed lookup can hide a newer eligible candidate. Do not silently
+        # substitute an older body or say that the registry contains no reports.
+        if "bound_analysis_snapshot_database_unavailable" in rejected:
+            base["contexts"][cadence] = _unavailable(
+                cadence, "bound_analysis_snapshot_database_unavailable",
+                classified_candidates=classified, rejected_reason_counts=rejected,
+                verified_candidates=len(valid),
+            )
+            continue
         if not valid:
             reason = "no_matching_report" if classified == 0 else "no_valid_report"
             base["contexts"][cadence] = _unavailable(
@@ -434,6 +486,7 @@ def validate_prior_report_contexts(
     storage_root: Path | None = None,
     expected_asset: str | None = None,
     current_snapshot_id: str | None = None,
+    require_availability: bool = False,
 ) -> dict[str, Any]:
     """Revalidate attached bodies against the final snapshot cutoff."""
     final_cutoff = _aware_time(cutoff)
@@ -450,7 +503,8 @@ def validate_prior_report_contexts(
     for cadence in _CADENCES:
         item = deepcopy(contexts.get(cadence)) if isinstance(contexts.get(cadence), Mapping) else None
         if not item or item.get("status") != "verified":
-            checked[cadence] = item if item and item.get("status") == "unavailable" else _unavailable(cadence, "context_missing")
+            checked[cadence] = (_classify_failure(item) if item and item.get("status") == "unavailable"
+                                else _unavailable(cadence, "context_missing"))
             continue
         body = item.get("body")
         actual_cutoff = _aware_time(item.get("actual_cutoff"))
@@ -505,6 +559,11 @@ def validate_prior_report_contexts(
                            or actual_cutoff >= final_cutoff or generated_at >= final_cutoff
                            or actual_cutoff > generated_at):
             reason = "context_time_not_before_final_cutoff"
+        if not reason and require_availability:
+            available_at = _aware_time(item.get("available_at"))
+            if (available_at is None or not generated_at <= available_at < final_cutoff
+                    or item.get("availability_basis") != "report_and_artifact_registry_revision"):
+                reason = "context_availability_not_verified_before_cutoff"
         if not reason and (item.get("formal_state_authority") is not False
                            or item.get("accepted_authority") is not False
                            or item.get("data_category") != "historical_opinion"):
@@ -535,6 +594,7 @@ def attach_prior_report_contexts(
         storage_root=storage_root,
         expected_asset=result.get("asset"),
         current_snapshot_id=result.get("snapshot_id"),
+        require_availability=_requires_availability(result),
     )
     result["prior_report_contexts"] = validated
     input_ids = result.setdefault("input_snapshot_ids", {})
@@ -591,6 +651,7 @@ def prior_report_context_model_input(snapshot: Mapping[str, Any]) -> dict[str, A
     validated = validate_prior_report_contexts(
         snapshot.get("prior_report_contexts"), cutoff=snapshot.get("snapshot_time"),
         expected_asset=snapshot.get("asset"), current_snapshot_id=snapshot.get("snapshot_id"),
+        require_availability=_requires_availability(snapshot),
     )
     return {
         "schema_version": validated["schema_version"],
@@ -604,8 +665,9 @@ def prior_report_context_model_input(snapshot: Mapping[str, Any]) -> dict[str, A
             cadence: ({
                 key: deepcopy(item[key])
                 for key in (
-                    "status", "asset", "cadence", "reason_code", "report_id", "run_id", "snapshot_id",
-                    "trade_date", "actual_cutoff", "generated_at", "family", "report_type",
+                    "status", "asset", "cadence", "reason_code", "failure_category", "failure_category_counts",
+                    "details", "report_id", "run_id", "snapshot_id",
+                    "trade_date", "actual_cutoff", "generated_at", "available_at", "availability_basis", "family", "report_type",
                     "body", "body_utf8_bytes", "verified_body_sha256", "artifact_ref",
                     "source_refs", "model_input_status", "data_category", "formal_state_authority",
                     "accepted_authority",
@@ -614,6 +676,12 @@ def prior_report_context_model_input(snapshot: Mapping[str, Any]) -> dict[str, A
             for cadence, item in validated["contexts"].items()
         },
     }
+
+
+def _requires_availability(snapshot):
+    flow = snapshot.get("gold_workflow") or {}
+    return (flow.get("reader_report_version") == "gold_reader.v4"
+            or flow.get("reader_presentation") == "gold_reader.research.v1")
 
 
 __all__ = [

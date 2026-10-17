@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from copy import deepcopy
+from hashlib import sha256
+import json
 
 from apps.features.research.timeframes import build_execution_timeframe_features
 from apps.features.research.sessions import build_session_quality
@@ -14,6 +16,52 @@ def _time(value):
         return t if t.tzinfo else None
     except ValueError:
         return None
+
+
+def qualify_price_action_evidence(price_action, *, as_of):
+    """Annotate research evidence without changing the historical PA engine.
+
+Confirmation clocks come from complete bars; availability comes from capture
+receipts. Neither clock proves that a live system recognized an event then.
+    """
+    result = deepcopy(price_action)
+    result['availability_contract'] = 'pa_evidence_availability.v1'
+    cutoff = _time(as_of)
+    for timeframe, frame in (result.get('timeframes') or {}).items():
+        if not isinstance(frame, dict):
+            continue
+        refs = frame.get('source_refs') or []
+        receipts = [_time(r.get('retrieved_at')) for r in refs if isinstance(r, dict)]
+        received = max(receipts) if receipts and len(receipts) == len(refs) and all(receipts) else None
+        for pivot in frame.get('pivots') or []:
+            identity = [frame.get('ticker'), timeframe, pivot.get('side'), pivot.get('price'), pivot.get('pivot_time')]
+            pivot['pivot_id'] = 'pa-pivot:' + sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()
+            confirmed = _time(pivot.get('confirmed_at'))
+            available = received if confirmed and received and received >= confirmed else None
+            pivot.update(pivot_observed_at=pivot.get('pivot_time'), pivot_confirmed_at=pivot.get('confirmed_at'),
+                         available_at=available.isoformat() if available else None,
+                         decision_eligible_at_cutoff=bool(frame.get('status') == 'available' and cutoff and available and available <= cutoff),
+                         availability_basis='source_capture_and_completed_bar' if available else 'receipt_missing',
+                         historical_use_rule='post_hoc_geometry_before_available_at')
+        for event in frame.get('events') or []:
+            if event.get('type') not in {'STRUCTURE_BREAK', 'BOS', 'CHoCH'}:
+                continue
+            side = {'bullish': 'high', 'bearish': 'low'}.get(event.get('direction'))
+            matches = [p for p in frame.get('pivots') or [] if side is not None
+                       and p.get('side') == side and p.get('price') == event.get('price')
+                       and p.get('pivot_time') == event.get('pivot_time')
+                       and p.get('confirmed_at') == event.get('pivot_confirmed_at')]
+            at = _time(event.get('time'))
+            confirmed = _time(event.get('pivot_confirmed_at'))
+            matched = len(matches) == 1 and at and confirmed and confirmed < at
+            available = received if at and received and received >= at else None
+            event.update(pivot_id=matches[0]['pivot_id'] if matched else None,
+                         pivot_match_status='matched' if matched else 'unverified',
+                         available_at=available.isoformat() if available else None,
+                         decision_eligible_at_cutoff=bool(matched and matches[0]['decision_eligible_at_cutoff']
+                                                        and cutoff and available and available <= cutoff))
+        frame['availability_note'] = 'Rule-derived confirmation is not receipt time; earlier geometry is post_hoc_geometry, not an earlier executable opportunity.'
+    return result
 
 
 def analyze_bars(bars, *, zones=(), known_at=None):

@@ -91,6 +91,8 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
         item = query_report_detail(db, report_id)
         if item is not None:
             registered_artifacts = query_report_artifacts(db, report_id)
+            if item.family == 'gold_macro_daily_markdown' and not _macro_daily_bundle_readable(item, registered_artifacts):
+                return None
             if (
                 is_output_purged(item)
                 or str(item.lifecycle_status or "").lower() == "purged"
@@ -161,6 +163,10 @@ def get_report_detail(db: Session, report_id: str) -> ReportDetail | None:
                 snapshot_payload = snapshot_row.payload
         except SQLAlchemyError:
             pass
+    if registered and detail.family == "gold_macro_daily_markdown" and snapshot_payload is None:
+        # This bundle was byte-verified above. Use its bound frozen input when
+        # no separate AnalysisSnapshot row exists; never substitute latest data.
+        snapshot_payload = (detail.structured_payload or {}).get("analysis_input")
     identity = build_research_identity(
         report_id=detail.report_id, run_id=detail.run_id, snapshot_id=detail.snapshot_id,
         trade_date=detail.trade_date, snapshot=snapshot_payload, generated_at=detail.generated_at,
@@ -1060,6 +1066,15 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
     if item.family == "gold_policy_daily_report":
         input_snapshot_ids = _normalize_snapshot_ids(metadata.get("input_snapshot_ids"))
         report_identity = _project_gold_policy_report_identity(metadata)
+    elif item.family == 'gold_macro_daily_markdown':
+        input_snapshot_ids = _normalize_snapshot_ids(metadata.get('input_snapshot_ids'))
+        report_identity = {key: metadata.get(key) for key in (
+            'analysis_cutoff', 'input_sha256', 'model_input_sha256', 'generation_status',
+            'quality_eligible', 'research_quality',
+        )}
+        report_identity.update(authority='research_candidate', output_mode='candidate',
+                               publish_allowed=False, execution_ready=False,
+                               model_review_status=metadata.get('review_status'), review_status='pending')
     elif observation_report:
         # Observation reports are deliberately readable, but they never become
         # an accepted final result.  Keep the registry decision visible in the
@@ -1082,6 +1097,11 @@ def _build_report_detail_from_item(item: ReportItem, artifacts: list[ReportArtif
     lifecycle_status = _coerce_lifecycle_status(item.lifecycle_status)
     review_status = ReviewStatus.not_required
     if observation_report:
+        lifecycle_status = ReportLifecycleStatus.needs_review
+        review_status = ReviewStatus.pending
+    elif item.family == 'gold_macro_daily_markdown':
+        # Automatic review has its own model_review_status; it is not
+        # formal publication approval or human/benchmark acceptance.
         lifecycle_status = ReportLifecycleStatus.needs_review
         review_status = ReviewStatus.pending
 
@@ -1902,7 +1922,7 @@ def _missing_standard_artifacts(
     present = {artifact.artifact_type for artifact in artifacts}
     required = (
         _FINAL_REPORT_MARKDOWN_ARTIFACT_TYPES
-        if family == "final_report_markdown"
+        if family in {"final_report_markdown", "gold_macro_daily_markdown"}
         else _OBSERVATION_REPORT_MARKDOWN_ARTIFACT_TYPES
         if family == "observation_report_markdown"
         else _OBSERVATION_STRATEGY_CARD_ARTIFACT_TYPES
@@ -1910,6 +1930,31 @@ def _missing_standard_artifacts(
         else _STANDARD_ARTIFACT_TYPES
     )
     return not required.issubset(present)
+
+
+def _macro_daily_bundle_readable(item: ReportItem, artifacts: list[ReportArtifactModel]) -> bool:
+    """Read only the registered candidate and verify every byte before exposure."""
+    from hashlib import sha256
+    from apps.output.final_report import verify_gold_macro_daily_bundle
+
+    try:
+        paths = [_resolve_report_path(a.file_path) for a in artifacts]
+        if (len(paths) != 3 or any(p is None or not p.is_file() for p in paths)
+                or {p.name for p in paths} != {'final_report.md', 'audit_report.md', 'structured_report.json'}
+                or len({p.parent for p in paths}) != 1):
+            return False
+        hashes = {p.name: sha256(p.read_bytes()).hexdigest() for p in paths}
+        if any(a.sha256 != hashes[p.name] for a, p in zip(artifacts, paths)):
+            return False
+        metadata = item.report_metadata or {}
+        payload = verify_gold_macro_daily_bundle(paths[0].parent)
+        return (hashes == metadata.get('artifact_sha256')
+                and payload['snapshot_id'] == item.snapshot_id and payload['run_id'] == item.run_id
+                and payload['asset'] == item.asset and payload['trade_date'] == item.trade_date.isoformat()
+                and payload['input_sha256'] == metadata.get('input_sha256')
+                and payload['analysis_cutoff'] == metadata.get('analysis_cutoff'))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
 
 
 def _missing_files(artifacts: list[ReportArtifactSchema]) -> bool:

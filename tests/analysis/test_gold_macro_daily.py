@@ -33,6 +33,8 @@ def context_payload(current=None, *, daily_body="# 日报\n旧假设。", weekly
             "trade_date": day,
             "actual_cutoff": generated,
             "generated_at": generated,
+            "available_at": generated,
+            "availability_basis": "report_and_artifact_registry_revision",
             "family": f"gold_macro_{cadence}_markdown",
             "report_type": f"gold_macro_{cadence}",
             "body": body,
@@ -148,11 +150,13 @@ def test_final_synthesis_input_receives_same_verified_daily_and_weekly_bodies():
         "trade_date": "2026-10-03",
         "actual_cutoff": "2026-10-03T06:00:00+00:00",
         "generated_at": "2026-10-03T06:00:00+00:00",
+        "available_at": "2026-10-03T06:00:00+00:00",
     })
     contexts["contexts"]["weekly"].update({
         "trade_date": "2026-09-27",
         "actual_cutoff": "2026-09-27T06:00:00+00:00",
         "generated_at": "2026-09-27T06:00:00+00:00",
+        "available_at": "2026-09-27T06:00:00+00:00",
     })
     data = attach_prior_report_contexts(data, contexts)
 
@@ -262,5 +266,6 @@ def test_rejected_context_is_explicitly_not_claimed_as_read():
     assert model_input["contexts"]["weekly"] == {
         "status": "unavailable", "cadence": "weekly", "reason_code": "body_oversized",
         "model_input_status": "not_included", "formal_state_authority": False,
+        "failure_category": "body_unavailable", "failure_category_counts": {"body_unavailable": 1},
     }
     assert "body" not in model_input["contexts"]["weekly"]

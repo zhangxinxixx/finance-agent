@@ -459,6 +459,114 @@ def test_unbound_oversize_workflow_cannot_bypass_input_gate_or_accept_state():
     assert result.accepted_state_conclusion == before.accepted_state_conclusion
 
 
+def _synthetic_native_history():
+    from datetime import datetime, timedelta, timezone
+    start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    bars = [{'open_time': (start + timedelta(minutes=15*i)).isoformat(),
+             'close_time': (start + timedelta(minutes=15*(i+1))).isoformat(),
+             'open': 10, 'high': 12, 'low': 0, 'close': 11, 'volume': 0}
+            for i in range(100)]
+    bars[10]['high'] = 99  # Old, decisive structure outside the recent slice.
+    bars[11].pop('volume')
+    bars[12]['volume'] = None
+    technical = {'data': {'execution_timeframes': {'15m': {
+        'status': 'available', 'bar_count': 100, 'bars': bars,
+        'continuity_status': 'continuous', 'execution_eligible': False,
+        'source_refs': [{'source': 'synthetic', 'raw_sha256': 'a'*64}],
+    }}}}
+    pa = {'timeframes': {'15m': {'status': 'available', 'trade_permission': False,
+        'recent_pivots': [{'pivot_time': bars[10]['close_time'], 'confirmed_at': bars[12]['close_time']}],
+        'recent_events': [{'time': bars[55]['close_time'], 'pivot_time': bars[10]['close_time']}],
+    }}}
+    return technical, pa
+
+
+def test_macro_bar_projection_preserves_old_structure_support_and_discloses_every_omission():
+    from hashlib import sha256
+    from apps.analysis.agents.research_input import project_macro_daily_bars, _project_packed_tables
+    technical, pa = _synthetic_native_history()
+    pa['timeframes']['15m']['recent_pivots'][0]['pivot_time'] = (
+        pa['timeframes']['15m']['recent_pivots'][0]['pivot_time'].replace('+00:00', 'Z'))
+    pa['timeframes']['15m']['recent_events'][0]['time'] = (
+        pa['timeframes']['15m']['recent_events'][0]['time'].replace('+00:00', 'Z'))
+    before, pa_before = deepcopy(technical), deepcopy(pa)
+    result = project_macro_daily_bars(technical, pa, snapshot_id='synthetic')
+    frame = result['data']['execution_timeframes']['15m']
+    manifest = frame['bar_projection']
+    def expand(ranges):
+        return {i for start, end in ranges for i in range(start, end+1)}
+    provided = expand(manifest['provided_index_ranges'])
+    omitted = expand(manifest['not_provided_index_ranges'])
+    bars = technical['data']['execution_timeframes']['15m']['bars']
+    assert set(range(8, 15)) <= provided and set(range(53, 58)) <= provided
+    assert set(range(68, 100)) <= provided
+    assert provided | omitted == set(range(100)) and not provided & omitted
+    assert frame['bars'] == [bars[i] for i in sorted(provided)]
+    assert manifest['full_bars_sha256'] == sha256(encode(bars).encode()).hexdigest()
+    assert manifest['not_provided_count'] == len(omitted) > 0
+    assert frame['bar_count'] == 100 and frame['execution_eligible'] is False
+    assert technical == before and pa == pa_before
+    payload = {'technical_daily': result}
+    _project_packed_tables(payload)
+    assert _expand_table(frame['bars_table']) == [bars[i] for i in sorted(provided)]
+
+
+@pytest.mark.parametrize('invalid', ['unavailable', 'duplicate_close', 'missing_close'])
+def test_bar_projection_does_not_hide_invalid_native_history(invalid):
+    from apps.analysis.agents.research_input import project_macro_daily_bars
+    technical, pa = _synthetic_native_history()
+    frame = technical['data']['execution_timeframes']['15m']
+    if invalid == 'unavailable':
+        frame.update(status='unavailable', reason='overlapping_bars')
+    elif invalid == 'duplicate_close':
+        frame['bars'][1]['close_time'] = frame['bars'][0]['close_time']
+    else:
+        frame['bars'][0].pop('close_time')
+    assert project_macro_daily_bars(technical, pa, snapshot_id='synthetic') == technical
+
+
+def test_bounded_history_is_macro_daily_only_and_reaches_actual_final_input():
+    from types import SimpleNamespace
+    technical, pa = _synthetic_native_history()
+    # Feed the original events/pivots shape to the existing PA projection.
+    frame = pa['timeframes']['15m']
+    frame['events'] = frame.pop('recent_events')
+    frame['pivots'] = frame.pop('recent_pivots')
+    snapshot = {'technical': technical, 'gold_workflow': {'price_action': pa}}
+    legacy = final_input(snapshot, SimpleNamespace(input_payload={}), catalog=[], assessment={})
+    native = legacy['technical_daily']['data']['execution_timeframes']['15m']
+    assert len(_expand_table(native['bars_table'])) == 100 and 'bar_projection' not in native
+    snapshot['report_kind'] = 'gold_macro_daily'
+    projected = final_input(snapshot, SimpleNamespace(input_payload={}), catalog=[], assessment={})
+    native = projected['technical_daily']['data']['execution_timeframes']['15m']
+    assert len(_expand_table(native['bars_table'])) < 100
+    assert projected['price_action'] == legacy['price_action']
+    assert projected['input_contract']['size_limit_chars'] == 200000
+    assert 'NOT supplied' in projected['input_contract']['tabular_projection']
+
+
+def test_release_table_is_reversible_including_unique_counterevidence_and_source_versions():
+    from apps.analysis.agents.research_input import _project_packed_tables
+    events = [{'event_id': f'synthetic-{i}', 'published_at': '2026-10-01T12:30:00Z',
+               'actual': {'status': 'unavailable'}, 'consensus': {'status': 'unavailable'},
+               'source_refs': [{'source': 'synthetic', 'source_url': 'https://example.test/release',
+                                'raw_sha256': str(i % 10)*64, 'parser_version': str(i)}]}
+              for i in range(30)]
+    events[-1]['actual'] = {'status': 'available', 'value': 0, 'unit': 'percent'}
+    events[-1]['consensus'] = {'status': 'unavailable', 'reason': 'received_after_release'}
+    original = {'macro_causal': {'engines': {'releases': {'events': events}}}}
+    before = deepcopy(original)
+    expected = pack_evidence(original, stage='synthetic')
+    packed = pack_evidence(original, stage='synthetic', packed_projection=_project_packed_tables)
+    restored = _expand_table(packed['macro_causal']['engines']['releases']['events_table'])
+    assert restored == expected['macro_causal']['engines']['releases']['events']
+    assert original == before
+    assert packed['source_catalog'] == expected['source_catalog']
+    assert len(packed['source_catalog']) == 30
+    assert all('raw_sha256' in source and 'parser_version' in source for source in packed['source_catalog'].values())
+    assert len(encode(packed)) < len(encode(expected))
+
+
 def test_source_qualifications_are_preserved():
     ref = {'source': 'news', 'source_url': 'https://example.com/story',
            'full_text_available': False, 'content_scope': 'headline_only',
@@ -541,8 +649,13 @@ def test_revision_failure_keeps_valid_challenged_draft():
 def _expand_table(table):
     if isinstance(table, list):
         return table
+    cells_by_row = table.get('rows')
+    if cells_by_row is None:
+        columns = [([value for value, count in column['value_runs'] for _ in range(count)]
+                    if isinstance(column, dict) else column) for column in table['column_values']]
+        cells_by_row = list(zip(*columns))
     rows = []
-    for index, cells in enumerate(table['rows']):
+    for index, cells in enumerate(cells_by_row):
         missing = table.get('missing_by_row', {}).get(str(index), [])
         row = deepcopy(table.get('shared_fields', {}))
         row.update({column: cell for i, (column, cell) in
@@ -607,7 +720,7 @@ def test_synthesis_shares_article_policy_without_losing_body_or_source_identity(
         assert source['source'] == document['publisher']
         assert packed['url_catalog'][source['source_url_id']].startswith('https://example.test/')
     assert snapshot == original
-    assert packed['input_contract']['decision_projection_version'] == 'decision_tables.v2'
+    assert packed['input_contract']['decision_projection_version'] == 'decision_tables.v3'
     assert bounded_review({}, packed, [])['evidence'] == packed
 
 

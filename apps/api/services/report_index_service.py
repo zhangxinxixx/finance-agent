@@ -38,6 +38,7 @@ from apps.api.services.report_reading.detail import (
     _load_non_authoritative_premarket_run_ids,
     _load_weekly_context_revision_payload,
     _macro_report_md_path,
+    _macro_daily_bundle_readable,
     _non_authoritative_premarket_run_ids,
     _safe_final_report_path,
 )
@@ -320,6 +321,9 @@ def _collect_registered_reports_from_db(asset: str) -> list[dict[str, Any]]:
                 )
             ):
                 continue
+            is_macro_daily = item.family == 'gold_macro_daily_markdown'
+            if is_macro_daily and not _macro_daily_bundle_readable(item, artifacts):
+                continue
             index_item = {
                 "type": report_type,
                 "trade_date": trade_date,
@@ -335,6 +339,20 @@ def _collect_registered_reports_from_db(asset: str) -> list[dict[str, Any]]:
             }
             if is_final and not verified:
                 index_item.update(_historical_final_report_fields())
+            if is_macro_daily:
+                from apps.api.services.research_identity import build_research_identity
+
+                metadata = item.report_metadata or {}
+                identity = build_research_identity(
+                    report_id=item.report_id, run_id=item.run_id, snapshot_id=item.snapshot_id,
+                    trade_date=trade_date, snapshot={
+                        'run_id': item.run_id, 'snapshot_id': item.snapshot_id, 'trade_date': trade_date,
+                        'snapshot_time': metadata.get('analysis_cutoff'),
+                    })
+                index_item.update(snapshot_id=item.snapshot_id, data_status=item.data_status,
+                    lifecycle_status='needs_review', review_status='pending',
+                    authority='research_candidate', output_mode='candidate', publish_allowed=False,
+                    analysis_cutoff=metadata.get('analysis_cutoff'), research_identity=identity)
             results.append(index_item)
     except Exception:
         pass

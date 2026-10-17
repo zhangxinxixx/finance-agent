@@ -16,6 +16,7 @@ export interface CategoryConfig {
 export const CATEGORY_CONFIGS: CategoryConfig[] = [
   { key: "final", label: "综合报告", color: "#60a5fa", matchType: "final_report" },
   { key: "macro", label: "宏观数据", color: "#38bdf8", matchType: "macro_report" },
+  { key: "gold_macro_daily", label: "黄金宏观日报", color: "var(--brand)", matchType: "gold_macro_daily" },
   { key: "options", label: "期权分析", color: "#a78bfa", matchType: "options_report" },
   { key: "jin10_daily", label: "日报", color: "#f59e0b", matchType: "jin10_daily_report" },
   { key: "jin10_weekly", label: "周报", color: "#14b8a6", matchType: "jin10_weekly_report" },
