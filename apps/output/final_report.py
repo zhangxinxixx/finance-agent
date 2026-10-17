@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +125,42 @@ def write_final_report(
         "paths": paths,
         "skipped": skipped,
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# independent macro daily bundle verification
+# ──────────────────────────────────────────────────────────────────────
+
+
+def verify_gold_macro_daily_bundle(directory: Path) -> dict[str, Any]:
+    """Verify the exact macro candidate before registration or API reading."""
+    from apps.analysis.snapshots.input_validation import research_report_rejection_reasons
+
+    payload = json.loads((directory / 'structured_report.json').read_text(encoding='utf-8'))
+    if (payload.get('schema_version') != 'gold_macro_daily_bundle.v1'
+            or payload.get('report_type') != 'gold_macro_daily'
+            or payload.get('publish_allowed') is not False
+            or payload.get('execution_ready') is not False
+            or payload.get('output_mode') != 'candidate'):
+        raise ValueError('invalid_macro_daily_bundle_contract')
+    snapshot = payload['analysis_input']
+    for key in ('snapshot_id', 'run_id', 'asset', 'trade_date', 'input_snapshot_ids', 'source_refs'):
+        if payload.get(key) != snapshot.get(key):
+            raise ValueError('macro_daily_bundle_identity_mismatch')
+    synthesis = payload['coordinator'].get('input_payload', {}).get('research_synthesis', {})
+    if (payload['coordinator'].get('snapshot_id') != snapshot['snapshot_id']
+            or payload.get('input_sha256') != snapshot.get('input_validation', {}).get('input_sha256')
+            or payload.get('analysis_cutoff') != snapshot.get('snapshot_time')
+            or research_report_rejection_reasons(snapshot, payload['coordinator'])):
+        raise ValueError('macro_daily_research_not_eligible')
+    for key in ('generation_status', 'review_status', 'quality_eligible'):
+        if payload.get(key) != synthesis.get(key):
+            raise ValueError('macro_daily_quality_identity_mismatch')
+    for name in ('final_report.md', 'audit_report.md'):
+        content = (directory / name).read_bytes()
+        if not content.strip() or sha256(content).hexdigest() != payload.get('content_sha256', {}).get(name):
+            raise ValueError('macro_daily_content_hash_mismatch')
+    return payload
 
 
 # ──────────────────────────────────────────────────────────────────────

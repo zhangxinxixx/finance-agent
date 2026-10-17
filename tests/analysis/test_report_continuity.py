@@ -83,6 +83,9 @@ def register(
         lifecycle_status="generated",
         source_refs=[{"source": "report_registry", "source_ref": f"report-{name}", "captured_at": generated_at.isoformat()}],
         report_metadata=report_metadata,
+        # Synthetic receipt clocks: this fixture existed before the cutoff.
+        created_at=generated_at,
+        updated_at=generated_at,
     )
     item.artifacts = [ReportArtifact(
         artifact_id=f"artifact-{name}",
@@ -90,6 +93,8 @@ def register(
         file_path=str(path.relative_to(root)),
         storage_backend="local_fs",
         generated_at=generated_at,
+        created_at=generated_at,
+        updated_at=generated_at,
         status="generated",
         sha256=sha256(content).hexdigest(),
         byte_size=len(content),
@@ -140,6 +145,8 @@ def test_missing_weekly_and_missing_validity_metadata_are_explicit(registry):
         "review_validity_not_proven": 1
     }
     assert loaded["contexts"]["weekly"]["reason_code"] == "no_matching_report"
+    assert loaded["contexts"]["daily"]["failure_category"] == "cutoff_or_version_rejected"
+    assert loaded["contexts"]["weekly"]["failure_category"] == "no_eligible_prior"
 
 
 def test_registry_absence_wrong_asset_and_future_rows_never_fallback(tmp_path, registry):
@@ -149,6 +156,7 @@ def test_registry_absence_wrong_asset_and_future_rows_never_fallback(tmp_path, r
     assert {item["reason_code"] for item in unavailable["contexts"].values()} == {
         "report_registry_unavailable"
     }
+    assert all(item['failure_category'] == 'database_unavailable' for item in unavailable['contexts'].values())
     empty_db.close()
     empty_engine.dispose()
 
@@ -189,6 +197,55 @@ def test_body_integrity_storage_containment_and_size_fail_closed(registry, damag
         "oversized": "body_oversized",
     }[damage]
     assert reasons == {expected: 1}
+
+
+def test_body_failure_and_cutoff_rejection_remain_separate_in_model_input(registry):
+    from apps.analysis.snapshots.report_continuity import prior_report_context_model_input
+    root, db = registry
+    _, path, _ = register(db, root, name='missing-body', trade_date='2026-10-06',
+                          generated_at=datetime(2026, 10, 6, 12, tzinfo=timezone.utc))
+    path.unlink()
+    item, _, _ = register(db, root, name='late-version', trade_date='2026-10-06',
+                          generated_at=datetime(2026, 10, 6, 12, tzinfo=timezone.utc))
+    item.updated_at = datetime(2026, 10, 8, 12, tzinfo=timezone.utc)
+    loaded = load_prior_report_contexts(db, storage_root=root, snapshot=snapshot())
+    daily = loaded['contexts']['daily']
+    assert daily['failure_category'] == 'body_unavailable'
+    assert daily['failure_category_counts'] == {'body_unavailable': 1, 'cutoff_or_version_rejected': 1}
+    projected = prior_report_context_model_input({**snapshot(), 'prior_report_contexts': loaded})['contexts']['daily']
+    assert projected['details'] == daily['details']
+    assert projected['failure_category_counts'] == daily['failure_category_counts']
+    assert 'body' not in projected
+
+
+def test_bound_snapshot_database_error_is_not_cutoff_rejection_or_older_fallback(registry):
+    root, db = registry
+    # Real SQLite query failure: report tables exist, analysis_snapshots does not.
+    register(db, root, name='older-valid', trade_date='2026-10-05',
+             generated_at=datetime(2026, 10, 5, 12, tzinfo=timezone.utc))
+    item, _, _ = register(db, root, name='legacy-needs-lookup', trade_date='2026-10-06',
+                          generated_at=datetime(2026, 10, 6, 12, tzinfo=timezone.utc))
+    item.report_metadata.pop('analysis_cutoff')
+    daily = load_prior_report_contexts(db, storage_root=root, snapshot=snapshot())['contexts']['daily']
+    assert daily['failure_category'] == 'database_unavailable'
+    assert daily['reason_code'] == 'bound_analysis_snapshot_database_unavailable'
+    assert daily['details']['verified_candidates'] == 1
+    assert 'body' not in daily
+
+
+def test_legacy_frozen_registry_error_keeps_diagnostics_without_retrying_database():
+    from apps.analysis.snapshots.report_continuity import prior_report_context_model_input, CONTEXT_SCHEMA_VERSION
+    context = {'schema_version': CONTEXT_SCHEMA_VERSION, 'contexts': {
+        cadence: {'status': 'unavailable', 'reason_code': 'report_registry_unavailable',
+                  'details': {'error_type': 'OperationalError'}, 'model_input_status': 'not_included'}
+        for cadence in ('daily', 'weekly')}}
+    before = deepcopy(context)
+    projected = prior_report_context_model_input({**snapshot(), 'prior_report_contexts': context})
+    assert context == before
+    for item in projected['contexts'].values():
+        assert item['failure_category'] == 'database_unavailable'
+        assert item['details']['error_type'] == 'OperationalError'
+        assert 'body' not in item
 
 
 def test_equal_latest_cutoffs_are_ambiguous_not_filename_sorted(registry):

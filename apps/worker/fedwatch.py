@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import os
 from pathlib import Path
 
-from apps.features.macro.fedwatch import build_fedwatch_factors, build_fedwatch_health
+from apps.features.macro.fedwatch import build_fedwatch_factors, build_fedwatch_health, build_fedwatch_view
 from apps.runtime.immutable_artifact import immutable_json_item, write_immutable_artifact_bundle
 from database.queries.fedwatch import save_fedwatch_snapshot
 from database.queries.warehouse_fedwatch import get_fedwatch_warehouse_snapshot, get_latest_fedwatch_attempt
@@ -34,44 +34,8 @@ def _time(value):
 
 def fedwatch_view(observed, *, as_of, latest_attempt=None, event_window=False):
     """Re-evaluate age at read time; cached factors never retain fresh status."""
-    settings = fedwatch_settings(event_window=event_window)
-    source = deepcopy(observed or latest_attempt or {})
-    health = build_fedwatch_health(source, as_of=as_of,
-                                   allowed_staleness_seconds=settings["allowed_staleness_seconds"])
-    failed_attempt = (latest_attempt and latest_attempt.get("parse_status") != "ok"
-                      and (not observed or _time(latest_attempt["collected_at"]) >= _time(observed["collected_at"])))
-    if failed_attempt:
-        health.update(status="stale" if observed else latest_attempt.get("parse_status", "missing"),
-                      actionable=False,
-                      reason="latest_collection_failed_cached_snapshot" if observed else latest_attempt.get("reason"))
-    elif latest_attempt and observed and latest_attempt.get("snapshot_id") != observed.get("snapshot_id") and (
-        _time(latest_attempt["collected_at"]) >= _time(observed["collected_at"])
-    ):
-        health.update(status="stale", actionable=False, reason="latest_collection_not_materialized")
-    # The feature builder validates source values independently of this view.
-    factor = build_fedwatch_factors(source, as_of=as_of, target_reference=source.get("target_reference"),
-                                    allowed_staleness_seconds=settings["allowed_staleness_seconds"])
-    if health["status"] != "fresh":
-        factor["status"] = "degraded"
-        repricing = dict(factor.get("repricing") or {})
-        repricing.update(status="unavailable", direction=None, strength=None, score=None,
-                         reason="fedwatch_" + health["status"])
-        factor["repricing"] = repricing
-    factor["health"] = deepcopy(health)
-    path = factor.get("market_implied_path", {})
-    complete = bool(path.get("next_meeting") and path.get("year_end") and all(
-        all(w in m.get("comparisons", {}) for w in ("1d", "1w", "1m"))
-        for m in path.get("meetings", [])))
-    return {"schema_version": "fedwatch_view.v1", "as_of": source.get("as_of"),
-            "evaluated_at": str(as_of), "snapshot_id": source.get("snapshot_id"),
-            "source_health": health, "factor": factor, "source_refs": factor.get("source_refs", []),
-            "quality_summary": health.get("quality_summary"),
-            "next_meeting": path.get("next_meeting"), "year_end": path.get("year_end"),
-            "repricing": factor.get("repricing"),
-            "latest_attempt": {k: (latest_attempt or {}).get(k) for k in
-                               ("snapshot_id", "collected_at", "parse_status", "reason")},
-            "settings": settings, "coverage_status": "complete" if complete else "partial",
-            "status": "available" if health["status"] == "fresh" and complete else "degraded"}
+    return build_fedwatch_view(observed, as_of=as_of, latest_attempt=latest_attempt,
+                               settings=fedwatch_settings(event_window=event_window))
 
 
 def refresh_fedwatch(session, *, storage_root, now=None, collector=None, target_collector=None,

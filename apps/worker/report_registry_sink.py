@@ -18,6 +18,62 @@ from apps.worker.artifact_registration import (
 from database.queries.report import upsert_report_artifact, upsert_report_item
 
 
+def register_gold_macro_daily_bundle(db: DBSession, *, directory: Path, storage_root: Path) -> dict:
+    """Stage a reviewed macro candidate without a strategy card or publication.
+
+    Caller owns the session/transaction. No production connection or commit is
+    created here. An identical retry preserves registry revision timestamps.
+    """
+    from apps.output.final_report import _safe_artifact_dir, verify_gold_macro_daily_bundle
+    from database.models.report import ReportItem
+
+    root, directory = storage_root.resolve(), directory.resolve()
+    if not directory.is_relative_to(root):
+        raise ValueError('macro_daily_bundle_storage_escape')
+    payload = verify_gold_macro_daily_bundle(directory)
+    expected = _safe_artifact_dir(root, artifact_type='gold_macro_daily', asset=payload['asset'],
+                                 trade_date=payload['trade_date'], run_id=payload['run_id'])
+    if directory != expected:
+        raise ValueError('macro_daily_bundle_path_identity_mismatch')
+    report_id = f"gold_macro_daily:{payload['run_id']}"
+    paths = [directory / name for name in ('final_report.md', 'audit_report.md', 'structured_report.json')]
+    hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+    existing = db.get(ReportItem, report_id)
+    if existing is not None:
+        if (existing.snapshot_id != payload['snapshot_id']
+                or existing.report_metadata.get('artifact_sha256') != hashes):
+            raise ValueError('macro_daily_registry_conflict')
+        return {'report_id': report_id, 'created': False, 'publish_allowed': False}
+    metadata = {key: payload[key] for key in (
+        'analysis_cutoff', 'input_sha256', 'model_input_sha256', 'messages_sha256',
+        'input_snapshot_ids', 'generation_status', 'review_status', 'quality_eligible',
+        'research_quality', 'publish_allowed', 'output_mode', 'execution_ready',
+    )}
+    metadata.update(writer='gold_macro_daily', report_cadence='daily', artifact_sha256=hashes)
+    # Registry lineage uses the same compatibility projection as other sinks.
+    # Keep the frozen Bundle's original references (including unavailable queries).
+    source_refs = coerce_lineage_source_refs(payload['source_refs']) or []
+    with db.begin_nested():
+        upsert_report_item(db, {
+            'report_id': report_id, 'family': 'gold_macro_daily_markdown', 'report_type': 'gold_macro_daily',
+            'title': f"{payload['trade_date']} 黄金宏观日报（研究候选）", 'asset': payload['asset'],
+            'trade_date': payload['trade_date'], 'run_id': payload['run_id'], 'snapshot_id': payload['snapshot_id'],
+            'data_status': 'partial', 'lifecycle_status': 'generated',
+            'source_refs': source_refs, 'metadata': metadata,
+        })
+        for path in paths:
+            upsert_report_artifact(db, {
+                'artifact_id': f'{report_id}:{path.name}', 'report_id': report_id,
+                'artifact_type': 'analysis_md' if path.suffix == '.md' else 'structured_json',
+                'file_path': str(path), 'storage_backend': 'local_fs', 'sha256': hashes[path.name],
+                'byte_size': path.stat().st_size, 'status': 'generated',
+                'content_type': 'text/markdown' if path.suffix == '.md' else 'application/json',
+                'is_primary': path.name == 'final_report.md', 'source_refs': source_refs,
+                'metadata': metadata,
+            })
+    return {'report_id': report_id, 'created': True, 'publish_allowed': False}
+
+
 def register_composite_report_registry_entries(
     db: DBSession,
     *,

@@ -58,6 +58,7 @@ def enrich_research_coordinator(
     snapshot: Mapping[str, Any],
     output: AgentOutput,
     gateway: Any = None,
+    allow_repairs: bool = True,
 ) -> AgentOutput:
     """Add a bounded final-agent explanation to a deterministic coordinator.
 
@@ -122,6 +123,8 @@ def enrich_research_coordinator(
         try:
             parsed = _parse_and_validate(raw_response, prompt_payload)
         except ValueError:
+            if not allow_repairs:
+                raise
             # One bounded format/constraint repair through the same gateway.
             # Every attempt is audited; the repaired answer faces identical
             # validation, with no changes to facts, sources or hard decisions.
@@ -139,7 +142,7 @@ def enrich_research_coordinator(
             from apps.analysis.agents.macro_causal_review import review_macro_thesis
             review = review_macro_thesis(gateway=gateway, analysis=parsed,
                 evidence=prompt_payload, audit_context=audit_context)
-            if (review.get('status') == 'needs_revision'
+            if (allow_repairs and review.get('status') == 'needs_revision'
                     and prompt_payload.get('gold_workflow', {}).get('reader_report_version') in {'gold_reader.v3', DETAILED_PROFILE_VERSION}):
                 parsed, raw_response, response, messages, review = _revise_after_review(
                     gateway=gateway, parsed=parsed, raw_response=raw_response, response=response,

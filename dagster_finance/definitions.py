@@ -5,6 +5,8 @@ and resources.
 """
 
 from dagster import Definitions
+from dagster_finance.jobs.gold_macro_daily_job import gold_macro_daily_job
+from dagster_finance.schedules.gold_macro_daily_schedule import gold_macro_daily_weekday_noon
 
 from dagster_finance.jobs.automation_orchestration_job import automation_orchestration_job
 from dagster_finance.jobs.data_quality_job import data_quality_monitor_job
@@ -31,8 +33,9 @@ from dagster_finance.schedules.warehouse_maintenance_schedule import warehouse_m
 
 
 defs = Definitions(
-    jobs=[premarket_job, automation_orchestration_job, data_quality_monitor_job, xauusd_shadow_summary_job, fedwatch_refresh_job, cme_settlement_job, warehouse_maintenance_job, daily_analysis_followup_job],
+    jobs=[premarket_job, automation_orchestration_job, data_quality_monitor_job, xauusd_shadow_summary_job, fedwatch_refresh_job, cme_settlement_job, warehouse_maintenance_job, daily_analysis_followup_job, gold_macro_daily_job],
     schedules=[
+        gold_macro_daily_weekday_noon,
         warehouse_maintenance_schedule,
         cme_settlement_schedule,
         fedwatch_free_schedule,

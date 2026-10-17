@@ -208,7 +208,11 @@ def curated_evidence(key, evidence):
         summary(diagnostics, _STATUS + ('classification', 'classification_status', 'primary_report_type'), '资金诊断')
         records(diagnostics.get('position_contraction'), ('managed_money_long_delta', 'managed_money_short_delta',
                 'open_interest_delta', 'classification', 'status', 'price_attribution'), '仓位变化：不同口径分开')
-        for name, report in (evidence.get('cot_reports') or {}).items():
+        cot_reports = evidence.get('cot_reports') or {}
+        summary(cot_reports, _STATUS, 'CFTC覆盖')
+        for name, report in cot_reports.items():
+            if not isinstance(report, dict):
+                continue
             summary(report, ('report_type', 'report_date', 'previous_report_date', 'status', 'reason'), 'CFTC ' + name)
             summary(report.get('open_interest'), ('value', 'previous', 'delta', 'unit'), name + ' OI')
             for group in ('managed_money', 'producer_merchant', 'swap_dealers', 'other_reportables'):

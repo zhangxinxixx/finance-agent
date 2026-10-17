@@ -221,7 +221,7 @@ def detailed_report_profile(snapshot):
     execution = deepcopy(flow.get('execution') or {})
     if 'timeframe_features' in execution:
         execution['timeframe_features'] = [r for r in execution['timeframe_features'] if r.get('timeframe') in {'4H', '1H', '15m'}]
-    pa = project_price_action(flow.get('price_action') or {})
+    pa = project_price_action(flow.get('price_action') or {}, as_of=snapshot.get('snapshot_time'))
     if 'timeframes' in pa:
         pa['timeframes'] = {k: v for k, v in pa['timeframes'].items() if k in {'4H', '1H', '15m'}}
     evidence = {
@@ -329,6 +329,9 @@ SOURCE_KEYS = {'source', 'source_url', 'url', 'reference', 'symbol', 'date', 'ob
                'full_text_available', 'content_scope', 'release_datetime', 'release_timezone',
                'release_status', 'release_date_kind', 'time_precision', 'unit',
                'provider_observation_time', 'instrument_type', 'contract_code', 'source_kind'}
+SOURCE_KEYS |= {'raw_sha256', 'sha256', 'rule_version', 'adapter_version', 'parser_version',
+                'ticker', 'timeframe', 'interval', 'observed_at', 'available_at',
+                'captured_at', 'timezone', 'regular_hours'}
 _CREDENTIAL_QUERY_KEYS = {
     'api_key', 'apikey', 'access_token', 'token', 'auth_token', 'authorization',
     'client_secret', 'secret', 'password', 'passwd',
@@ -632,16 +635,16 @@ def _project_market_windows(value):
         ) if key in value
     }
     projected['series_health'] = [
-        {key: item[key] for key in health_keys if key in item}
+        {key: item[key] for key in sorted(health_keys) if key in item}
         for item in value.get('series_health', []) if isinstance(item, dict)
     ]
     projected['windows'] = []
     for window in value.get('windows', []):
         if not isinstance(window, dict):
             continue
-        item = {key: window[key] for key in window_keys if key in window}
+        item = {key: window[key] for key in sorted(window_keys) if key in window}
         item['changes'] = [
-            {key: change[key] for key in change_keys if key in change}
+            {key: change[key] for key in sorted(change_keys) if key in change}
             for change in window.get('changes', []) if isinstance(change, dict)
         ]
         projected['windows'].append(item)
@@ -1017,13 +1020,16 @@ def project_macro(macro, *, energy_channels=None, cross_asset=None):
     return result
 
 
-def project_price_action(price_action):
+def project_price_action(price_action, *, as_of=None):
     """Keep the current deterministic PA state without replaying every swing.
 
     The model interprets the computed structure; it does not recompute BOS or
     CHoCH from the full pivot history.  Counts make the bounded projection
     explicit, while the immutable snapshot retains every event and pivot.
     """
+    if as_of is not None:
+        from apps.features.research.price_action import qualify_price_action_evidence
+        price_action = qualify_price_action_evidence(price_action, as_of=as_of)
     result = {k: v for k, v in price_action.items() if k != 'timeframes'}
     timeframes = {}
     for timeframe, raw in (price_action.get('timeframes') or {}).items():
@@ -1080,6 +1086,81 @@ def _prior_report_contexts(snapshot):
     return prior_report_context_model_input(snapshot)
 
 
+def project_macro_daily_bars(technical, price_action, *, snapshot_id):
+    """Select inspectable recent/PA support rows; never recompute PA on this slice."""
+    result = deepcopy(technical)
+    for timeframe, frame in (result.get('data') or {}).get('execution_timeframes', {}).items():
+        bars = frame.get('bars') if isinstance(frame, dict) else None
+        pa = (price_action.get('timeframes') or {}).get(timeframe) or {}
+        if (not isinstance(bars, list) or len(bars) <= 32
+                or frame.get('status') != 'available' or pa.get('status') != 'available'
+                or not all(isinstance(bar, dict) and bar.get('close_time') for bar in bars)):
+            continue
+        # Match actual close timestamps. No timeframe arithmetic, resampling or
+        # timestamp repair: native breaks and pivot/confirmation clocks survive.
+        def clock(value):
+            try:
+                parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                return parsed if parsed.utcoffset() is not None else None
+            except (AttributeError, ValueError):
+                return None
+
+        closes = {clock(bar['close_time']): index for index, bar in enumerate(bars)}
+        if None in closes or len(closes) != len(bars):
+            continue
+        anchor_times = set()
+
+        def anchors(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in {'time', 'bar_time', 'pivot_time', 'confirmed_at',
+                               'pivot_confirmed_at', 'first_event_time', 'zone_known_at'} and isinstance(child, str):
+                        anchor_times.add(child)
+                    else:
+                        anchors(child)
+            elif isinstance(value, list):
+                for child in value:
+                    anchors(child)
+
+        anchors(pa)
+        anchors(frame.get('events'))
+        selected = set(range(len(bars) - 32, len(bars)))
+        for time in anchor_times:
+            if clock(time) in closes:
+                index = closes[clock(time)]
+                selected.update(range(max(0, index - 2), min(len(bars), index + 3)))
+
+        def ranges(indices):
+            result = []
+            for index in sorted(indices):
+                if result and index == result[-1][1] + 1:
+                    result[-1][1] = index
+                else:
+                    result.append([index, index])
+            return result
+
+        frame['bar_projection'] = {
+            'version': 'macro_daily_native_bars.v1',
+            'snapshot_id': snapshot_id,
+            'snapshot_path': f'technical.data.execution_timeframes.{timeframe}.bars',
+            'full_bars_sha256': sha256(encode(bars).encode()).hexdigest(),
+            'hash_encoding': 'UTF-8 JSON; sorted keys; compact separators; ensure_ascii=false',
+            'archived_count': len(bars), 'provided_count': len(selected),
+            'not_provided_count': len(bars) - len(selected),
+            'provided_index_ranges': ranges(selected),
+            'not_provided_index_ranges': ranges(set(range(len(bars))) - selected),
+            'unmatched_pa_times': sorted(time for time in anchor_times if clock(time) not in closes),
+            'scope': ('Zero-based inclusive archive indices. Last 32 rows plus +/-2 rows around '
+                      'supplied PA pivot/event/confirmation times. Original rows and clocks unchanged. '
+                      'bar_count and continuity describe the full archived series; this view may have gaps. '
+                      'Use supplied deterministic PA, not recomputed PA on selected rows. '
+                      'Omitted bars were NOT supplied to the model; archive access must not be claimed. '
+                      'Full raw archive resolves via frame source references and hashes.'),
+        }
+        frame['bars'] = [bar for index, bar in enumerate(bars) if index in selected]
+    return result
+
+
 def final_input(snapshot, output, *, catalog, assessment):
     flow = snapshot['gold_workflow']
     energy_channels = flow.get('energy_channels', {})
@@ -1115,7 +1196,7 @@ def final_input(snapshot, output, *, catalog, assessment):
             energy_channels=energy_channels,
             cross_asset=cross_asset,
         ),
-        'price_action': project_price_action(flow.get('price_action', {})),
+        'price_action': project_price_action(flow.get('price_action', {}), as_of=snapshot.get('snapshot_time')),
         'technical_daily': snapshot.get('technical', {}),
         'cme_options': project_options(snapshot.get('options', {})),
         'cot_reports': snapshot.get('daily_research', {}).get('cot_reports', {}),
@@ -1131,6 +1212,9 @@ def final_input(snapshot, output, *, catalog, assessment):
                         'Prior report bodies are historical opinion only and every old hypothesis must be '
                         'rechecked against current evidence.'),
     }
+    if snapshot.get('report_kind') == 'gold_macro_daily':
+        payload['technical_daily'] = project_macro_daily_bars(
+            payload['technical_daily'], payload['price_action'], snapshot_id=snapshot.get('snapshot_id'))
     if flow.get('reader_report_version') == DETAILED_PROFILE_VERSION:
         from apps.analysis.agents.research_quality import quality_contract
         payload['research_quality_standard'] = quality_contract()
@@ -1207,7 +1291,13 @@ def final_input(snapshot, output, *, catalog, assessment):
         'shared_fields belong to EVERY row of that table and are written once; '
         'they retain the exact original values, including dates, units and qualifications.'
     )
-    packed['input_contract']['decision_projection_version'] = 'decision_tables.v2'
+    packed['input_contract']['decision_projection_version'] = 'decision_tables.v3'
+    native_frames = ((packed.get('technical_daily') or {}).get('data') or {}).get('execution_timeframes') or {}
+    if any(isinstance(frame, dict) and 'bars_table' in frame for frame in native_frames.values()):
+        packed['input_contract']['tabular_projection'] += (
+            ' Native bars_table retains supplied rows in archive order. Where bar_projection exists, '
+            'it explicitly lists supplied and NOT supplied history; otherwise all input rows are retained.'
+        )
     size = len(encode(packed))
     if size > SYNTHESIS_INPUT_MAX_CHARS:
         raise ResearchInputTooLarge(
@@ -1340,6 +1430,12 @@ def _project_packed_tables(payload):
             profile[key] = _rows_table(profile[key], key_name='symbol')
             _share_table_fields(profile[key])
 
+    # Reversible transport encoding of the rows selected before packing.
+    technical = payload.get('technical_daily') or {}
+    for frame in (technical.get('data') or {}).get('execution_timeframes', {}).values():
+        if isinstance(frame, dict) and isinstance(frame.get('bars'), list):
+            frame['bars_table'] = _rows_table(frame.pop('bars'))
+
     workflow = payload.get('gold_workflow') or {}
     delta = workflow.get('delta_vs_previous') or {}
     if 'changed_or_noncomparable_rows' in delta:
@@ -1364,6 +1460,9 @@ def _project_packed_tables(payload):
     if 'liquidity_credit' in macro:
         macro['liquidity_credit_table'] = _rows_table(macro.pop('liquidity_credit'))
     engines = macro.get('engines') or {}
+    releases = engines.get('releases') or {}
+    if isinstance(releases.get('events'), list):
+        releases['events_table'] = _rows_table(releases.pop('events'))
     inflation = engines.get('inflation') or {}
     if 'series' in inflation:
         inflation['series_table'] = _indexed_records_table(inflation.pop('series'), key_name='series_name')
@@ -1418,26 +1517,26 @@ def _project_packed_tables(payload):
                 'missing_by_row distinguishes absent fields from null. All rows, horizons, '
                 'times, values and missing reasons are retained exactly.'
             )
-    # Source and URL catalogs are appended afterward and also consume budget.
-    if len(encode(payload)) > 150000:
-        def compact_tables(value):
-            changed = False
-            if isinstance(value, dict):
-                for child in list(value.values()):
-                    changed = compact_tables(child) or changed
-                changed = _encode_column_runs(value) or changed
-            elif isinstance(value, list):
-                for child in value:
-                    changed = compact_tables(child) or changed
-            return changed
+    # Apply only when each table saves >=256 characters. Do not switch this
+    # lossless codec off when another section shrinks below an aggregate size.
+    def compact_tables(value):
+        changed = False
+        if isinstance(value, dict):
+            for child in list(value.values()):
+                changed = compact_tables(child) or changed
+            changed = _encode_column_runs(value) or changed
+        elif isinstance(value, list):
+            for child in value:
+                changed = compact_tables(child) or changed
+        return changed
 
-        if compact_tables(payload):
-            payload['table_encoding'] = (
-                'A table may use column_values instead of rows. columns[i] names column_values[i]; '
-                'value_runs expands ordered [value, repeat_count] pairs. shared_fields apply to '
-                'every row; missing_by_row preserves absent fields separately from null. '
-                'Row order, types, values and source references are unchanged.'
-            )
+    if compact_tables(payload):
+        payload['table_encoding'] = (
+            'A table may use column_values instead of rows. columns[i] names column_values[i]; '
+            'value_runs expands ordered [value, repeat_count] pairs. shared_fields apply to '
+            'every row; missing_by_row preserves absent fields separately from null. '
+            'Row order, types, values and source references are unchanged.'
+        )
 
 
 def _encode_column_runs(table):

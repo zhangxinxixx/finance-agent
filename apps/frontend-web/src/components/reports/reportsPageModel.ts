@@ -14,7 +14,7 @@ export function dedupeSupportedReports(indexItems: ReportIndexItem[]): ReportInd
   for (const item of indexItems) {
     if (!isSupportedReportType(item.type)) continue;
     const key =
-      item.type === "jin10_market_observation_report" || item.type === "final_report"
+      item.type === "jin10_market_observation_report" || item.type === "final_report" || item.type === "gold_macro_daily"
         ? `${item.type}|${item.trade_date}|${item.run_id ?? item.report_id ?? ""}`
         : `${item.type}|${item.trade_date}`;
     const existing = seen.get(key);

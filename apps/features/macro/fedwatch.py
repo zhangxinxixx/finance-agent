@@ -809,3 +809,49 @@ def build_fedwatch_factors(
         "confirmation": confirmations,
         "warnings": warnings,
     }
+
+
+def _view_time(value):
+    return _timestamp(value, "view_time")
+
+
+def build_fedwatch_view(observed, *, as_of, latest_attempt=None, settings=None):
+    """Pure shared normalization for archived collectors and worker consumers."""
+    settings = deepcopy(settings or {"allowed_staleness_seconds": 3600, "event_window": False})
+    source = deepcopy(observed or latest_attempt or {})
+    health = build_fedwatch_health(source, as_of=as_of,
+                                   allowed_staleness_seconds=settings["allowed_staleness_seconds"])
+    failed_attempt = (latest_attempt and latest_attempt.get("parse_status") != "ok"
+                      and (not observed or _view_time(latest_attempt["collected_at"]) >= _view_time(observed["collected_at"])))
+    if failed_attempt:
+        health.update(status="stale" if observed else latest_attempt.get("parse_status", "missing"),
+                      actionable=False,
+                      reason="latest_collection_failed_cached_snapshot" if observed else latest_attempt.get("reason"))
+    elif latest_attempt and observed and latest_attempt.get("snapshot_id") != observed.get("snapshot_id") and (
+        _view_time(latest_attempt["collected_at"]) >= _view_time(observed["collected_at"])
+    ):
+        health.update(status="stale", actionable=False, reason="latest_collection_not_materialized")
+    # The feature builder validates source values independently of this view.
+    factor = build_fedwatch_factors(source, as_of=as_of, target_reference=source.get("target_reference"),
+                                    allowed_staleness_seconds=settings["allowed_staleness_seconds"])
+    if health["status"] != "fresh":
+        factor["status"] = "degraded"
+        repricing = dict(factor.get("repricing") or {})
+        repricing.update(status="unavailable", direction=None, strength=None, score=None,
+                         reason="fedwatch_" + health["status"])
+        factor["repricing"] = repricing
+    factor["health"] = deepcopy(health)
+    path = factor.get("market_implied_path", {})
+    complete = bool(path.get("next_meeting") and path.get("year_end") and all(
+        all(w in m.get("comparisons", {}) for w in ("1d", "1w", "1m"))
+        for m in path.get("meetings", [])))
+    return {"schema_version": "fedwatch_view.v1", "as_of": source.get("as_of"),
+            "evaluated_at": str(as_of), "snapshot_id": source.get("snapshot_id"),
+            "source_health": health, "factor": factor, "source_refs": factor.get("source_refs", []),
+            "quality_summary": health.get("quality_summary"),
+            "next_meeting": path.get("next_meeting"), "year_end": path.get("year_end"),
+            "repricing": factor.get("repricing"),
+            "latest_attempt": {k: (latest_attempt or {}).get(k) for k in
+                               ("snapshot_id", "collected_at", "parse_status", "reason")},
+            "settings": settings, "coverage_status": "complete" if complete else "partial",
+            "status": "available" if health["status"] == "fresh" and complete else "degraded"}

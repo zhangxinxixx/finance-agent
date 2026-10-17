@@ -76,8 +76,8 @@ def reader_sections(snapshot, outputs, assessment):
                 synthesis.get('generation_status'), '未完成')
             review = {'pass': '通过', 'needs_revision': '未通过', 'unavailable': '不可用',
                       'not_run': '未执行'}.get(synthesis.get('review_status'), '未知')
-            body = f'正文生成：{generation}；独立审阅：{review}。'
-            body += ('本轮自动审阅通过；实际研究质量基准仍未验收。' if eligible else
+            body = f'正文生成：{generation}；模型自动审阅：{review}。'
+            body += ('实际研究质量基准仍未验收。' if eligible else
                      '研究质量未通过。草稿保留在审计记录，当前只展示可核验的数据。'
                      '审阅不可用或未执行不表示已经查明具体分析错误。')
             if synthesis.get('quality_failure'):
@@ -91,7 +91,7 @@ def reader_sections(snapshot, outputs, assessment):
         if flow.get('reader_presentation') == 'gold_reader.concise.v1':
             return quality + concise_sections(snapshot, synthesis)
         if flow.get('reader_presentation') == RESEARCH_PRESENTATION_VERSION:
-            return quality + research_sections(snapshot, synthesis)
+            return research_sections(snapshot, synthesis) + quality
         return quality + detailed_sections(snapshot, synthesis)
     rows = {r['symbol']: r for r in snapshot['daily_research']['passport']}
     if flow.get('reader_report_version') == 'gold_reader.v3':
@@ -220,7 +220,7 @@ def readable_sections(snapshot, synthesis):
     review = synthesis.get('macro_review') or {}
     notes = []
     if review.get('status') == 'unavailable':
-        notes.append('独立审阅暂未完成，研究可信度已下调；这不表示已经发现具体分析错误。')
+        notes.append('模型自动审阅暂未完成，研究可信度已下调；这不表示已经发现具体分析错误。')
     elif review and review.get('status') != 'pass':
         notes.append('本次分析仍有尚未通过核验的判断，研究可信度已下调，请结合附件中的具体问题阅读。')
     if not (flow.get('state_record') or {}).get('accepted_state'):
@@ -252,10 +252,20 @@ def research_sections(snapshot, synthesis):
     if missing:
         labels = {'spot': '现货报价', 'growth': '增长', 'inflation': '通胀', 'rates': '利率',
                   'policy': '政策定价', 'oil': '原油', 'options': 'CME期权', 'flows': '资金',
-                  'execution': '日内价格结构', 'news': '新闻原文', 'cross_asset': '跨资产行情'}
+                  'execution': '日内价格结构', 'news': '新闻原文', 'cross_asset': '跨资产行情',
+                  'employment': '就业领域完整发布与审计材料', 'positioning': '持仓数据'}
         limits.append('缺失输入：' + '、'.join(labels.get(key, key) for key in missing) + '；只限制依赖这些输入的判断。')
+        supplemental = (snapshot.get('daily_research') or {}).get('supplemental_sources') or {}
+        labor = [key for key in ('PAYEMS', 'UNRATE', 'CIVPART', 'CES0500000003')
+                 if isinstance(supplemental.get(key), dict)
+                 and supplemental[key].get('status') == 'available'
+                 and supplemental[key].get('value') is not None
+                 and supplemental[key].get('source_refs')]
+        if 'employment' in missing and labor:
+            limits.append('部分历史就业与工资序列仍可用：' + '、'.join(labor)
+                          + '；它们不能替代完整就业发布、事前预期或事件时点证据。')
     if review.get('status') != 'pass':
-        limits.append('独立因果审阅：' + str(review.get('status') or '未完成') + '。')
+        limits.append('模型自动因果审阅：' + str(review.get('status') or '未完成') + '。')
     if gate.get('publish_allowed') is not True:
         limits.append('当前快照未证明发布条件通过；生成正文不授予 Accepted、发布或交易权限。')
     if not limits:
@@ -263,11 +273,90 @@ def research_sections(snapshot, synthesis):
     limits.append('事实来源、输入缺口、内部结构化推理与确定性明细见[数据与审计附件](audit_report.md)。')
     return [
         {'section_id': 'model_research', 'title': '完整研判', 'body': primary,
+         'endpoint_window_basis': endpoint_window_sections(flow),
          'status': status if complete else 'partial', 'source_refs': refs,
          'data_category': 'external_opinion' if complete else 'system_inference'},
         {'section_id': 'research_scope', 'title': '数据、审阅与权限边界', 'body': '\n\n'.join(limits),
          'status': 'partial' if limits else status, 'source_refs': [], 'data_category': 'confirmed_data'},
     ]
+
+
+def endpoint_window_sections(flow):
+    """Explain duration vs native bar identity from qualified frozen evidence.
+
+    Keep recorded model prose and hashes intact. This deterministic note applies
+    only to the named cross-asset window, never to the native PA timeframe.
+    """
+    matrix = (flow.get('cross_asset_freshness') or {}).get('chart_windows', {}).get('multi_horizon') or {}
+    rows, refs, windows = [], [], []
+    for row in matrix.get('rows', []):
+        changes = row.get('changes') or []
+        if (row.get('horizon') != '4h' or row.get('aligned_comparison_allowed') is not True
+                or row.get('comparison_scope') != 'BOUNDED_WINDOW'
+                or {c.get('symbol') for c in changes} != {'XAUUSD', 'DXY'}):
+            continue
+        resolution = row.get('bar_resolution_seconds')
+        if (isinstance(resolution, bool) or not isinstance(resolution, (int, float))
+                or not 0 < resolution < 14400):
+            continue
+        try:
+            start = datetime.fromisoformat(row['window_start'].replace('Z', '+00:00'))
+            end = datetime.fromisoformat(row['window_end'].replace('Z', '+00:00'))
+        except (ValueError, KeyError, TypeError):
+            continue
+        if not start.tzinfo or not end.tzinfo or (end-start).total_seconds() != 14400:
+            continue
+        rows.append(f"{row['window_start']} 至 {row['window_end']}：四小时长度的端点窗口，"
+                    f"底层为{resolution / 60:g}分钟完整K线，比较两端收盘。")
+        refs.extend(ref for c in changes for ref in c.get('source_refs') or [])
+        windows.append({'start': start.isoformat(), 'end': end.isoformat(), 'resolution': resolution})
+    if not rows:
+        return []
+    return [{'section_id': 'cross_asset_window_basis', 'title': '黄金与美元比较窗口口径',
+             'body': '\n\n'.join(rows) + '\n\n正文黄金/DXY跨资产表中的“4H”仅表示上述四小时长度，'
+                     '不表示取得合格原生DXY 4H K线，也不改变独立黄金PA的4H资格。'
+                     '该说明来自冻结输入；模型原始正文保留不变。',
+             'windows': windows, 'status': 'ok', 'source_refs': refs, 'data_category': 'confirmed_data'}]
+
+
+def annotate_endpoint_tables(narrative, notes):
+    """Render a qualified window label and footnote; never edit stored model prose."""
+    if not notes:
+        return narrative
+    lines, result, matched = narrative.splitlines(), [], set()
+    index = 0
+    while index < len(lines):
+        if not lines[index].lstrip().startswith('|'):
+            result.append(lines[index])
+            index += 1
+            continue
+        end = index
+        while end < len(lines) and lines[end].lstrip().startswith('|'):
+            end += 1
+        table = lines[index:end]
+        table_notes = []
+        if '黄金' in table[0] and ('DXY' in table[0] or '美元' in table[0]):
+            for note_index, note in enumerate(notes):
+                for window in note['windows']:
+                    start = datetime.fromisoformat(window['start'])
+                    finish = datetime.fromisoformat(window['end'])
+                    for row_index in range(2, len(table)):
+                        cells = table[row_index].split('|')
+                        cell = cells[1]
+                        if all(token in cell for token in (start.strftime('%Y-%m-%d'), start.strftime('%H:%M'), finish.strftime('%H:%M'))):
+                            cells[1] = re.sub(r'(?<!\w)4H(?!\w)', '4小时端点窗口', cell, flags=re.I)
+                            table[row_index] = '|'.join(cells)
+                            matched.add(note_index)
+                            table_notes.append(f"注：四小时端点窗口由{window['resolution'] / 60:g}分钟已完成K线的两端收盘构成，"
+                                               '不代表原生DXY 4H已通过校验；不改变黄金PA原生4H的独立资格。')
+        result.extend(table)
+        for note in dict.fromkeys(table_notes):
+            result.extend(['', '> ' + note])
+        index = end
+    for note_index, note in enumerate(notes):
+        if note_index not in matched:
+            result.extend(['', '> 窗口口径：' + note['body'].replace('\n\n', ' ')])
+    return '\n'.join(result)
 
 
 def reader_prose(value):
@@ -319,7 +408,8 @@ def render_reader_report(snapshot, sections):
             and (raw_cutoff.tzinfo is None or raw_cutoff.utcoffset() is None)):
         raise ValueError('gold_reader.research.v1 requires a timezone-aware snapshot cutoff')
     cutoff = raw_cutoff.astimezone(ZoneInfo('Asia/Shanghai'))
-    parts = [f"# {snapshot['trade_date']} 黄金综合分析", f"分析截止北京时间 **{cutoff:%Y年%m月%d日 %H:%M}**。不使用金十数据。"]
+    title = '黄金宏观日报' if snapshot.get('report_kind') == 'gold_macro_daily' else '黄金综合分析'
+    parts = [f"# {snapshot['trade_date']} {title}", f"分析截止北京时间 **{cutoff:%Y年%m月%d日 %H:%M}**。不使用金十数据。"]
     if snapshot.get('gold_workflow', {}).get('reader_presentation') == RESEARCH_PRESENTATION_VERSION:
         parts.append(_reference_spot_line(snapshot))
     if snapshot.get('benchmark_replay', {}).get('mode') == 'engineering_replay':
@@ -328,7 +418,7 @@ def render_reader_report(snapshot, sections):
     for s in sections:
         if (snapshot.get('gold_workflow', {}).get('reader_presentation') == RESEARCH_PRESENTATION_VERSION
                 and s['section_id'] == 'model_research'):
-            parts.append(s['body'])
+            parts.append(annotate_endpoint_tables(s['body'], s.get('endpoint_window_basis')))
         else:
             parts.extend([f"## {s['title']}", s['body']])
     return '\n\n'.join(parts) + '\n'
